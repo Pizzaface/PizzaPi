@@ -37,7 +37,7 @@ describe("hydrateViewerFromCache — snapshot path", () => {
 
     test("returns true and emits event when Redis has a session_active snapshot", async () => {
         const snapshot = { type: "session_active", state: { messages: [{ role: "user" }] } };
-        deps = createDeps({ getLatestCachedSnapshotEvent: mock(async () => snapshot) });
+        deps = createDeps({ getLatestCachedSnapshotEvent: mock(async () => ({ event: snapshot, eventsAfter: [] })) });
 
         const { emit, calls } = createMockSocket();
         const result = await hydrateViewerFromCache({ emit }, "sess-001", {}, deps);
@@ -50,7 +50,7 @@ describe("hydrateViewerFromCache — snapshot path", () => {
 
     test("returns true and emits with generation when generation is provided", async () => {
         const snapshot = { type: "agent_end", messages: [{ role: "assistant" }] };
-        deps = createDeps({ getLatestCachedSnapshotEvent: mock(async () => snapshot) });
+        deps = createDeps({ getLatestCachedSnapshotEvent: mock(async () => ({ event: snapshot, eventsAfter: [] })) });
 
         const { emit, calls } = createMockSocket();
         const result = await hydrateViewerFromCache({ emit }, "sess-002", { generation: 7 }, deps);
@@ -79,7 +79,7 @@ describe("hydrateViewerFromCache — snapshot path", () => {
 
     test("works for agent_end snapshot (full session end)", async () => {
         const snapshot = { type: "agent_end", messages: [{ role: "user" }, { role: "assistant" }] };
-        deps = createDeps({ getLatestCachedSnapshotEvent: mock(async () => snapshot) });
+        deps = createDeps({ getLatestCachedSnapshotEvent: mock(async () => ({ event: snapshot, eventsAfter: [] })) });
 
         const { emit, calls } = createMockSocket();
         const result = await hydrateViewerFromCache({ emit }, "sess-005", {}, deps);
@@ -118,7 +118,7 @@ describe("hydrateViewerFromCache — delta resume path", () => {
         const snapshot = { type: "session_active", state: { messages: [] } };
         const deps = createDeps({
             getCachedRelayEventsAfterSeq: mock(async () => []),
-            getLatestCachedSnapshotEvent: mock(async () => snapshot),
+            getLatestCachedSnapshotEvent: mock(async () => ({ event: snapshot, eventsAfter: [] })),
         });
 
         const { emit, calls } = createMockSocket();
@@ -163,7 +163,7 @@ describe("hydrateViewerFromCache — delta resume path", () => {
         const snapshot = { type: "session_active", state: { messages: [{ role: "assistant" }] } };
         const deps = createDeps({
             getCachedRelayEventsAfterSeq: mock(async () => [{ event: { type: "old_event" } }]),
-            getLatestCachedSnapshotEvent: mock(async () => snapshot),
+            getLatestCachedSnapshotEvent: mock(async () => ({ event: snapshot, eventsAfter: [] })),
         });
 
         const { emit, calls } = createMockSocket();
@@ -177,7 +177,7 @@ describe("hydrateViewerFromCache — delta resume path", () => {
 describe("cache-first → runner signal suppression invariant", () => {
     test("cache HIT: returns true → activateSession sets suppressRunnerSignal=true (no runner signal)", async () => {
         const deps = createDeps({
-            getLatestCachedSnapshotEvent: mock(async () => ({ type: "session_active", state: { messages: [] } })),
+            getLatestCachedSnapshotEvent: mock(async () => ({ event: { type: "session_active", state: { messages: [] } }, eventsAfter: [] })),
         });
 
         const { emit } = createMockSocket();

@@ -50,6 +50,12 @@ export interface ResumeSessionOption {
   serverSourced?: boolean;
 }
 
+/** A prior user message the conversation can be rewound (forked) to. */
+export interface ForkMessageOption {
+  entryId: string;
+  text: string;
+}
+
 export interface QueuedMessage {
   id: string;
   text: string;
@@ -69,6 +75,8 @@ export interface SessionUiCacheEntry {
   tokenUsage: TokenUsage | null;
   lastHeartbeatAt: number | null;
   todoList: TodoItem[];
+  /** Pending follow-up messages queued while the agent is busy. */
+  messageQueue: QueuedMessage[];
   pendingQuestion: { toolCallId: string; questions: Array<{ question: string; options: string[]; type?: QuestionType }>; display: QuestionDisplayMode } | null;
   pendingPlan: {
     toolCallId: string;

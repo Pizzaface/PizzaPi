@@ -9,6 +9,7 @@ import {
     touchSessionActivity,
     updateSessionHeartbeat,
     getSharedSession,
+    getSharedSessionSummary,
     broadcastSessionEventToViewers,
     publishSessionEvent,
     consumePendingRecovery,
@@ -37,6 +38,8 @@ export interface ChunkedSessionState {
     totalChunks: number;
     receivedChunkIndexes: Set<number>;
     finalChunkSeen: boolean;
+    /** Recovery nonce echoed by the runner on the chunk-start session_active. */
+    recoveryNonce?: string;
 }
 
 export interface PendingChunkUpdate {
@@ -121,7 +124,7 @@ export async function finalizeChunkedSnapshot(
 ): Promise<Record<string, unknown>> {
     const allMessages = pending.chunks.flat();
     const fullState = { ...pending.metadata, messages: allMessages };
-    const isRecovery = deps.consumePendingRecovery(sessionId);
+    const isRecovery = deps.consumePendingRecovery(sessionId, pending.recoveryNonce);
     await deps.updateSessionState(sessionId, fullState, { isRecovery });
 
     // Append a full session_active to the Redis replay cache
@@ -234,8 +237,15 @@ export function registerEventHandler(socket: RelaySocket): void {
         // consumers (state storage, Redis cache, viewer broadcast) see
         // already-stripped payloads. The _imagesStripped flag causes
         // storeAndReplaceImages / storeAndReplaceImagesInEvent to skip.
-        const session = await getSharedSession(sessionId);
-        const userId = session?.userId ?? "unknown";
+        // Only fetch the lightweight session summary for event types that
+        // actually carry images; all others skip the Redis round-trip.
+        const needsImageStrip =
+            event.type === "session_active" ||
+            event.type === "agent_end" ||
+            event.type === "session_messages_chunk";
+        const userId = needsImageStrip
+            ? (await getSharedSessionSummary(sessionId))?.userId ?? "unknown"
+            : "unknown";
         try {
             const stripped = await stripImagesFromPipelineEvent(event, sessionId, userId);
             if (stripped !== event) {
@@ -269,6 +279,7 @@ export function registerEventHandler(socket: RelaySocket): void {
                     totalChunks: 0,
                     receivedChunkIndexes: new Set<number>(),
                     finalChunkSeen: false,
+                    recoveryNonce: typeof event.recoveryNonce === "string" ? event.recoveryNonce : undefined,
                 });
                 // Touch activity but DON'T update lastState yet
                 await touchSessionActivity(sessionId);
@@ -276,8 +287,13 @@ export function registerEventHandler(socket: RelaySocket): void {
                 // Non-chunked: persist immediately (original path).
                 // Check if this session_active was triggered by a viewer
                 // reconnect (cold-start fallback) — if so, skip the SQLite
-                // write since it's redundant recovery data.
-                const isRecovery = consumePendingRecovery(sessionId);
+                // write since it's redundant recovery data. Only a matching
+                // recovery nonce consumes the flag; real updates racing in
+                // must still be persisted.
+                const isRecovery = consumePendingRecovery(
+                    sessionId,
+                    typeof event.recoveryNonce === "string" ? event.recoveryNonce : undefined,
+                );
                 pendingChunkedStates.delete(sessionId);
                 await updateSessionState(sessionId, event.state, { isRecovery });
             }

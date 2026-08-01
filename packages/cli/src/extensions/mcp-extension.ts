@@ -1,7 +1,8 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
-import { loadConfig, toggleMcpServer, globalConfigDir, type PizzaPiConfig } from "../config.js";
+import { loadConfig, resolveAgentDir, resolveExplicitProjectTrust, toggleMcpServer, globalConfigDir, type PizzaPiConfig } from "../config.js";
+import { mergeOverlayMcpServers, inferMcpCompatTransport, type OverlayMcpServerProvenance } from "./mcp-overlay.js";
 import {
   registerMcpTools,
   type McpConfig,
@@ -38,9 +39,18 @@ type McpConfigFileState = {
 };
 
 type EffectiveMcpServer = McpServerConfigEntry & {
-  scope: "global" | "project";
+  /** "global"/"project" for explicit PizzaPi config file entries; "user-package"/"project-package"/"legacy-plugin" for pi.pizzapi overlay + legacy Claude-plugin .mcp.json entries (see mcp-overlay.ts's OverlayMcpServerProvenance). */
+  scope: "global" | "project" | "user-package" | "project-package" | "legacy-plugin";
   sourcePath: string;
 };
+
+function overlayOwnerToScope(owner: OverlayMcpServerProvenance["owner"]): EffectiveMcpServer["scope"] {
+  switch (owner) {
+    case "user": return "user-package";
+    case "project": return "project-package";
+    case "legacy": return "legacy-plugin";
+  }
+}
 
 type McpConfigInspection = {
   global: McpConfigFileState;
@@ -311,22 +321,7 @@ function parseConfigFile(scope: "global" | "project", path: string): McpConfigFi
   const compatibilityServers: McpServerConfigEntry[] = [];
   if (isRecord(raw.mcpServers)) {
     for (const [name, value] of Object.entries(raw.mcpServers)) {
-      let transport = "unknown";
-      if (isRecord(value) && typeof value.command === "string") {
-        transport = "stdio";
-      } else if (isRecord(value) && typeof value.url === "string") {
-        // "transport" is our field; "type" is Claude Code / VS Code format.
-        // In the standard MCP ecosystem, type "http" = streamable HTTP.
-        if (typeof value.transport === "string") {
-          transport = value.transport;
-        } else if (value.type === "http") {
-          transport = "streamable";
-        } else if (typeof value.type === "string") {
-          transport = value.type;
-        } else {
-          transport = "http";
-        }
-      }
+      const transport = isRecord(value) ? inferMcpCompatTransport(value) : "unknown";
 
       compatibilityServers.push({
         name,
@@ -348,7 +343,7 @@ function parseConfigFile(scope: "global" | "project", path: string): McpConfigFi
   };
 }
 
-function inspectMcpConfig(cwd: string): McpConfigInspection {
+export function inspectMcpConfig(cwd: string, overlayProvenance: OverlayMcpServerProvenance[] = []): McpConfigInspection {
   const globalPath = join(globalConfigDir(), "config.json");
   const projectPath = join(cwd, ".pizzapi", "config.json");
 
@@ -413,6 +408,21 @@ function inspectMcpConfig(cwd: string): McpConfigInspection {
         effectiveServers.push({ ...entry, scope: source.scope, sourcePath: source.path });
       }
     }
+  }
+
+  // Overlay/legacy-plugin servers — carried over from the SAME merge that
+  // feeds the live MCP registry (mergeOverlayMcpServers()), so `/mcp`
+  // status and disable/enable completion see exactly what's actually
+  // running, not just explicit config-file entries.
+  for (const p of overlayProvenance) {
+    effectiveServers.push({
+      name: p.name,
+      transport: p.transport,
+      keyPath: p.identity,
+      format: "mcpServers",
+      scope: overlayOwnerToScope(p.owner),
+      sourcePath: p.sourcePath,
+    });
   }
 
   // Collect disabled server names from merged config
@@ -672,8 +682,13 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
   let loadLifecycleController = new AbortController();
 
   async function load(): Promise<McpSnapshot> {
-    const mergedConfig = loadConfig(process.cwd()) as PizzaPiConfig & McpConfig;
-    const inspection = inspectMcpConfig(process.cwd());
+    const cwd = process.cwd();
+    const baseConfig = loadConfig(cwd) as PizzaPiConfig & McpConfig;
+    // Feed pi.pizzapi.mcp overlay sidecars (and the legacy plugin .mcp.json
+    // gap) into the same registry — explicit config always wins a collision.
+    const agentDir = resolveAgentDir(cwd);
+    const { config: mergedConfig, serverProvenance } = mergeOverlayMcpServers(baseConfig, cwd, agentDir, resolveExplicitProjectTrust(cwd, agentDir));
+    const inspection = inspectMcpConfig(process.cwd(), serverProvenance);
 
     // Remember previous MCP tool names so we can update active tools after reload.
     const previousMcpToolNames = new Set(lastSnapshot.toolNames);

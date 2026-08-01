@@ -106,16 +106,16 @@ export function GitHistoryView({ cwd, path, className }: GitHistoryViewProps) {
     return (
         <div className={cn("flex flex-col h-full overflow-hidden", className)}>
             {selected.size === 2 && (
-                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 p-2 border-b border-border bg-muted/30 shrink-0">
+                <div className="flex flex-col @sm:flex-row items-start @sm:items-center gap-2 p-2 border-b border-border bg-muted/30 shrink-0">
                     <span className="text-xs text-muted-foreground truncate flex-1 min-w-0">
                         Diff {short(Array.from(selected)[0])} ↔ {short(Array.from(selected)[1])}
                     </span>
-                    <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+                    <div className="flex flex-col @sm:flex-row gap-2 w-full @sm:w-auto">
                         <Button
                             size="sm"
                             disabled={loading}
                             onClick={viewSelectedDiff}
-                            className="w-full sm:w-auto h-9"
+                            className="w-full @sm:w-auto h-9"
                         >
                             <Diff className="size-3.5" />
                             <span className="ml-1.5">View diff</span>
@@ -124,7 +124,7 @@ export function GitHistoryView({ cwd, path, className }: GitHistoryViewProps) {
                             variant="outline"
                             size="sm"
                             onClick={() => setSelected(new Set())}
-                            className="w-full sm:w-auto h-9"
+                            className="w-full @sm:w-auto h-9"
                         >
                             Clear
                         </Button>
@@ -145,7 +145,7 @@ export function GitHistoryView({ cwd, path, className }: GitHistoryViewProps) {
                         {log.map((entry) => (
                             <div
                                 key={entry.hash}
-                                className="flex flex-col sm:flex-row sm:items-center gap-2 px-3 py-2 hover:bg-accent/30 transition-colors"
+                                className="flex flex-col @sm:flex-row @sm:items-center gap-2 px-3 py-2 hover:bg-accent/30 transition-colors"
                             >
                                 <div className="flex items-center gap-2 min-w-0 flex-1">
                                     <input
@@ -179,7 +179,7 @@ export function GitHistoryView({ cwd, path, className }: GitHistoryViewProps) {
                                     </button>
                                 </div>
                                 {entry.refs.length > 0 && (
-                                    <div className="flex flex-wrap gap-1 items-center shrink-0 pl-6 sm:pl-0">
+                                    <div className="flex flex-wrap gap-1 items-center shrink-0 pl-6 @sm:pl-0">
                                         {entry.refs.map((ref) => (
                                             <Badge key={ref} variant="secondary" className="text-[0.65rem]">
                                                 {ref}

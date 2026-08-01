@@ -393,4 +393,18 @@ describe("bashTool", () => {
             expect(bashTool.parameters).toBeDefined();
         });
     });
+
+    // ── stdin ──────────────────────────────────────────────────────────────
+    // Regression: exec() leaves stdin open, so commands that read stdin hang
+    // until the timeout fires. Uses the real exec, not the mock.
+
+    describe("stdin is closed", () => {
+        test.skipIf(process.platform === "win32")("a stdin-reading command exits immediately", async () => {
+            const real = createBashTool();
+            const start = Date.now();
+            const result: any = await real.execute("stdin-test", { command: "cat", timeout: 5000 });
+            expect(Date.now() - start).toBeLessThan(4000);
+            expect(result.details.stdout).toBe("");
+        });
+    });
 });

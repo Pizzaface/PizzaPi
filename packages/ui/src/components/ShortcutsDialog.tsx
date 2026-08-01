@@ -39,6 +39,7 @@ export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
               { key: isMac ? "⌘K" : "Ctrl+K", action: "Focus prompt" },
               { key: "Ctrl+`", action: "Toggle terminal" },
               { key: isMac ? "⌘⇧E" : "Ctrl+Shift+E", action: "Toggle file explorer" },
+              { key: isMac ? "⌘⇧H" : "Ctrl+Shift+H", action: "Session history" },
               { key: isMac ? "⌘." : "Ctrl+.", action: "Abort active agent" },
               { key: "?", action: "Show this dialog" },
             ] as { key: string; action: string }[]

@@ -15,7 +15,15 @@ pizzapi
 
 The first time you run `pizzapi`, a setup wizard walks you through connecting to a relay server. It takes about 30 seconds.
 
-## Self-Host the Relay
+## Self-Host the Relay (One Command)
+
+```bash
+pizzapi local
+```
+
+One command starts the local relay, web UI, and runner and opens your browser at **http://localhost:7492**. Re-running is safe and idempotent. The relay stays running after the command exits; stop it with `pizzapi web stop`.
+
+For production Docker hosting with persistent config and HTTPS, use `pizzapi web`:
 
 ```bash
 pizzapi web

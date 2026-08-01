@@ -54,11 +54,50 @@ const mockRedis = {
         for (const member of members) current.delete(member);
     }),
     incr: mock(async () => 1),
-    eval: mock(async () => 0),
+    eval: mock(async (_script: string, options: { keys: string[] }) => {
+        const hash = hashStore.get(options.keys[0]);
+        if (!hash || hash.spawned !== "0") return 0;
+        hash.spawned = "1";
+        return 1;
+    }),
 };
 
 // No mock.module needed — mock Redis client is injected directly via initStateRedis().
-import { initStateRedis, setSession, getSessionSummary } from "./sio-state.js";
+import {
+    claimTerminalSpawn,
+    getSessionSummary,
+    initStateRedis,
+    setSession,
+    setTerminal,
+} from "./sio-state.js";
+
+describe("claimTerminalSpawn", () => {
+    beforeEach(async () => {
+        hashStore.clear();
+        setStore.clear();
+        mockRedis.eval.mockClear();
+        await initStateRedis(mockRedis as never);
+    });
+
+    it("allows only one concurrent spawn claim", async () => {
+        const terminalId = "terminal-race";
+        await setTerminal(terminalId, {
+            terminalId,
+            runnerId: "runner-1",
+            userId: "user-1",
+            spawned: false,
+            exited: false,
+            spawnOpts: "{}",
+        });
+
+        const claims = await Promise.all([
+            claimTerminalSpawn(terminalId),
+            claimTerminalSpawn(terminalId),
+        ]);
+
+        expect(claims.filter(Boolean)).toHaveLength(1);
+    });
+});
 
 describe("getSessionSummary", () => {
     beforeEach(async () => {

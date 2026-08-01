@@ -137,7 +137,7 @@ export function GitBlameView({ cwd, path, revision, className }: GitBlameViewPro
                                                 {isFirst && (
                                                     <td
                                                         rowSpan={group.count}
-                                                        className="align-top p-0 border-r border-border/50 bg-muted/20 w-28 sm:w-36 md:w-44"
+                                                        className="align-top p-0 border-r border-border/50 bg-muted/20 w-28 @sm:w-36 @md:w-44"
                                                     >
                                                         <button
                                                             type="button"
@@ -159,7 +159,7 @@ export function GitBlameView({ cwd, path, revision, className }: GitBlameViewPro
                                                         </button>
                                                     </td>
                                                 )}
-                                                <td className="w-10 sm:w-12 text-right text-muted-foreground/60 px-2 py-0.5 select-none align-top whitespace-nowrap">
+                                                <td className="w-10 @sm:w-12 text-right text-muted-foreground/60 px-2 py-0.5 select-none align-top whitespace-nowrap">
                                                     {lineNumber}
                                                 </td>
                                                 <td className="px-2 py-0.5 align-top">
@@ -305,10 +305,10 @@ function GitDiffCode({ diff }: { diff: string }) {
                         }
                         return (
                             <tr key={i} className={cn(rowClass, "border-b border-border/10 hover:bg-accent/5")}>
-                                <td className="w-10 sm:w-12 text-right px-2 py-0.5 select-none text-muted-foreground/50 align-top whitespace-nowrap">
+                                <td className="w-10 @sm:w-12 text-right px-2 py-0.5 select-none text-muted-foreground/50 align-top whitespace-nowrap">
                                     {line.oldLine ?? ""}
                                 </td>
-                                <td className="w-10 sm:w-12 text-right px-2 py-0.5 select-none text-muted-foreground/50 align-top whitespace-nowrap border-r border-border/30">
+                                <td className="w-10 @sm:w-12 text-right px-2 py-0.5 select-none text-muted-foreground/50 align-top whitespace-nowrap border-r border-border/30">
                                     {line.newLine ?? ""}
                                 </td>
                                 <td className="px-2 py-0.5 align-top">

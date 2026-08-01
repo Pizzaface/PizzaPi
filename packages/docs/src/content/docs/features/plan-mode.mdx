@@ -13,13 +13,12 @@ This is useful when you want the agent to **think before it acts**: explore a co
 
 ## Activating Plan Mode
 
-There are three ways to enter plan mode:
+There are two ways to enter plan mode:
 
 | Method | Who uses it | How |
 |--------|-------------|-----|
-| `/plan` slash command | You (human) | Type `/plan` in the input bar — toggles plan mode on/off |
+| `/plan` slash command | You (human) | Type `/plan` in the chat input (web UI or TUI) — toggles plan mode on/off |
 | `toggle_plan_mode` tool | The agent | Agent calls `toggle_plan_mode` with `enabled: true` to enter or `enabled: false` to exit |
-| Web UI remote command | You (human) | Send `/plan` from the PizzaPi web interface |
 
 When plan mode activates, you'll see a notification:
 
@@ -42,8 +41,10 @@ The following tools are **completely blocked** while plan mode is active:
 - `edit` — file editing
 - `write` — file creation/overwrite
 - `write_file` — custom write tool
+- `subagent` — spawns a subagent process with full write access
+- `spawn_session` — spawns an independent child session with full write access
 
-The agent can still use `read`, `bash` (with restrictions), `grep`, `find`, `ls`, and any MCP read tools.
+The agent can still use `read`, `bash` (with restrictions), `grep`, `find`, `ls`, and **all MCP tools**. Plan mode does not inspect MCP tools for read/write semantics, so MCP write tools are allowed.
 
 ### Bash command restrictions
 
@@ -64,7 +65,7 @@ Bash commands go through a destructive-command detector that blocks:
 
 - Read any file (`read` tool)
 - Run read-only bash commands (`ls`, `find`, `grep`, `rg`, `cat`, `head`, `wc`, `git log`, `git diff`, etc.)
-- Use MCP tools that only read data
+- Use MCP tools (both read and write MCP tools are allowed)
 - Call `toggle_plan_mode` to exit plan mode
 - Call `plan_mode` to submit a structured plan for review
 
@@ -133,7 +134,7 @@ In the terminal TUI, the plan renders as an ANSI-styled box with numbered option
 
 ## Execution Tracking
 
-After a plan is approved, the agent enters **execution mode**. If the plan had steps, PizzaPi tracks progress:
+After a plan is approved via the **legacy TUI menu path**, the agent enters **execution mode**. If the plan had steps, PizzaPi tracks progress:
 
 - The agent marks steps complete by including `[DONE:n]` tags in its responses (e.g., `[DONE:1]`)
 - A checklist of plan steps is displayed, updating as steps are completed
@@ -143,6 +144,10 @@ In the TUI, after the agent finishes exploring (if it hasn't used the `plan_mode
 - **Execute the plan (track progress)** — exits plan mode and starts execution with step tracking
 - **Stay in plan mode** — keep exploring
 - **Refine the plan** — opens an editor to provide feedback
+
+<Aside type="note">
+  Plans approved through the `plan_mode` tool (the web UI and primary remote flow) exit plan mode and proceed to execution, but they **do not currently track step progress** with `[DONE:n]` tags or the execution checklist.
+</Aside>
 
 ---
 
@@ -166,9 +171,9 @@ Use respond_to_trigger with action: "approve" to accept, "cancel" to reject, or 
 
 The parent agent can respond with:
 
-- `respond_to_trigger(triggerId, "approve", { action: "approve" })` — child proceeds with execution
-- `respond_to_trigger(triggerId, "cancel", { action: "cancel" })` — child stops
-- `respond_to_trigger(triggerId, "Your step 2 should also handle middleware", { action: "edit" })` — child revises the plan
+- `respond_to_trigger(triggerId, "approve", "approve")` — child proceeds with execution
+- `respond_to_trigger(triggerId, "cancel", "cancel")` — child stops
+- `respond_to_trigger(triggerId, "Your step 2 should also handle middleware", "edit")` — child revises the plan
 - `escalate_trigger(triggerId)` — passes the decision to the human viewer
 
 <Aside type="caution">
@@ -199,7 +204,7 @@ If the agent exits plan mode without ever submitting a plan via `plan_mode`, it 
 
 ## Session Behavior
 
-- **State persists across resumes** — if you resume a session that was in plan mode, plan mode is restored along with any in-progress execution steps and the sandbox overlay.
+- **State does not persist across resumes** — resuming a session currently starts with plan mode off and the sandbox overlay cleared. Any in-progress execution steps are not restored.
 - **State resets on session switch** — switching to a different session clears plan mode so the new session starts with full access. The sandbox overlay is also cleared.
 - **Context filtering** — when plan mode is off, the `[PLAN MODE ACTIVE]` context messages are automatically stripped from the conversation to keep the context window clean.
 

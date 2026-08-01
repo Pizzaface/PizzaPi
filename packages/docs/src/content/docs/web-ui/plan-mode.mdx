@@ -22,7 +22,7 @@ There are two ways to turn plan mode on from the web UI:
 | **Slash command** | Type `/plan` in the chat input — toggles plan mode on or off |
 | **Agent-initiated** | The agent calls the `toggle_plan_mode` tool directly |
 
-When plan mode activates, a notification appears in the conversation confirming that read-only exploration is enabled. The session toolbar also shows a **"Plan Mode"** status indicator so you can see at a glance that writes are blocked.
+When plan mode activates from the agent's `toggle_plan_mode` tool call, an in-conversation card confirms that read-only exploration is enabled. The `/plan` slash command instead updates the session toolbar and viewer status directly; no message is injected into the transcript. The session toolbar shows a **⏸ plan** pill so you can see at a glance that writes are blocked.
 
 Type `/plan` again to manually exit plan mode and restore full tool access.
 
@@ -80,8 +80,8 @@ When a parent agent spawns a child session via `spawn_session`, the child can al
 
 The parent sees a trigger message in its conversation showing the child's plan title, steps, and a trigger ID. The parent can then:
 
-- **Approve** — `respond_to_trigger(triggerId, "approve")` — the child proceeds
-- **Reject** — `respond_to_trigger(triggerId, "cancel")` — the child stops
+- **Approve** — `respond_to_trigger(triggerId, "approve", { action: "approve" })` — the child proceeds
+- **Reject** — `respond_to_trigger(triggerId, "cancel", { action: "cancel" })` — the child stops
 - **Request edits** — `respond_to_trigger(triggerId, "Your feedback", { action: "edit" })` — the child revises
 - **Escalate** — `escalate_trigger(triggerId)` — passes the decision to you (the human viewer)
 
@@ -93,19 +93,19 @@ For more on inter-agent communication and triggers, see [Subagents](/customizati
 
 ## Plan cards in the conversation
 
+Pending plans are hidden from the transcript while the plan review panel is active in the composer area; once you respond, the styled card appears in the conversation.
+
 After you respond to a plan, it remains in the conversation as a **styled card** — not just a text message. Cards show:
 
 - The plan **title** and **numbered steps**
 - A **status pill** indicating what happened: *Begin*, *Clear Context & Begin*, *Edit Suggested*, or *Cancelled*
 - If you suggested an edit, your feedback is shown below the steps
 
-Pending (unresolved) plans are visually distinct — they display a waiting indicator while the plan review panel is active in the composer area. Once resolved, the card updates with the final action.
-
 Plan cards are stored in the session history and survive page reloads.
 
 ## Write-blocking enforcement
 
-Plan mode blocks writes through two layers:
+Plan mode blocks writes through two layers. For the full technical details on how blocking works (tool restrictions, bash blocklist, sandbox overlay), see the [Plan Mode](/features/plan-mode/) feature doc.
 
 | Layer | How it works |
 |-------|-------------|

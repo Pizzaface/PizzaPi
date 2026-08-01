@@ -29,6 +29,18 @@ const RUNNER_TUNNEL_PATH_RE = /^\/api\/tunnel\/runner\/([^/]+)\/(\d+)(\/.*)?$/;
 /** Pattern: /api/tunnel/:sessionId/:port/<rest> */
 const TUNNEL_PATH_RE = /^\/api\/tunnel\/([^/]+)\/(\d+)(\/.*)?$/;
 
+/**
+ * decodeURIComponent that returns "" on malformed percent-encoding instead of
+ * throwing URIError — callers already 400 on empty path components.
+ */
+export function safeDecodePathComponent(component: string): string {
+    try {
+        return decodeURIComponent(component);
+    } catch {
+        return "";
+    }
+}
+
 function getTunnelBasePath(sessionId: string, port: number): string {
     return `/api/tunnel/${encodeURIComponent(sessionId)}/${port}`;
 }
@@ -482,7 +494,13 @@ function proxyTunnelRequestViaRelay(
                     responseHeaders = new Headers();
                     for (const [key, value] of Object.entries(headers)) {
                         try {
-                            responseHeaders.set(key, value);
+                            if (Array.isArray(value)) {
+                                // Multi-value headers (Set-Cookie) must be appended
+                                // individually — joining them corrupts cookie values.
+                                for (const v of value) responseHeaders.append(key, v);
+                            } else {
+                                responseHeaders.set(key, value);
+                            }
                         } catch {
                             // Skip invalid header values rejected by the Headers API.
                         }
@@ -756,7 +774,7 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
     if (identity instanceof Response) return identity;
 
     // ── Parse path segments ──────────────────────────────────────────────────
-    const sessionId = decodeURIComponent(match[1]);
+    const sessionId = safeDecodePathComponent(match[1]);
     const port = parseInt(match[2], 10);
     const proxyPath = match[3] ?? "/";
 
@@ -899,7 +917,7 @@ async function handleRunnerTunnel(req: Request, url: URL, match: RegExpMatchArra
     const identity = await requireSession(req);
     if (identity instanceof Response) return identity;
 
-    const runnerId = decodeURIComponent(match[1]);
+    const runnerId = safeDecodePathComponent(match[1]);
     const port = parseInt(match[2], 10);
     const proxyPath = match[3] ?? "/";
 

@@ -19,7 +19,7 @@ import { bindSocketHandlersToAuthContext } from "./context.js";
 import {
     getTerminalEntry,
     setTerminalViewer,
-    markTerminalSpawned,
+    claimTerminalSpawn,
     removeTerminalViewer,
     getLocalRunnerSocket,
 } from "../sio-registry.js";
@@ -137,7 +137,7 @@ export function registerTerminalNamespace(io: SocketIOServer, context: AuthConte
 
             // Deferred spawn: if the PTY hasn't been spawned yet and we receive
             // the first terminal_resize from the viewer, use those dimensions to spawn.
-            if (!te.spawned) {
+            if (!te.spawned && await claimTerminalSpawn(tid)) {
                 const spawnOpts = JSON.parse(te.spawnOpts) as {
                     cwd?: string;
                     shell?: string;
@@ -157,8 +157,6 @@ export function registerTerminalNamespace(io: SocketIOServer, context: AuthConte
                     `deferred spawn: viewer sent resize → spawning PTY ` +
                         `terminalId=${tid} ${cols}x${rows} cwd=${spawnOpts.cwd ?? "(default)"}`,
                 );
-
-                await markTerminalSpawned(tid);
 
                 try {
                     runnerSocket.emit("new_terminal" as string, {

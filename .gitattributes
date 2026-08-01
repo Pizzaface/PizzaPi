@@ -1,0 +1,5 @@
+# Files whose content is executed by POSIX shells must keep LF endings even
+# on Windows checkouts (core.autocrlf=true) — a trailing \r breaks sh parsing
+# (e.g. lefthook pre-commit hooks failing with "unexpected end of file").
+lefthook.yml text eol=lf
+*.sh text eol=lf

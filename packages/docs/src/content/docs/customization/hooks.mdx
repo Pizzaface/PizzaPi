@@ -25,7 +25,7 @@ Hooks live in your PizzaPi config files under the `hooks` key:
 | `.pizzapi/config.json` | Project-local — only this repo | ⚠️ Requires `allowProjectHooks` |
 
 <Aside type="caution" title="Project hooks require explicit trust">
-  Project-local hooks (`.pizzapi/config.json`) are **silently ignored** unless you set `allowProjectHooks: true` in your **global** `~/.pizzapi/config.json`. Projects cannot self-authorize — the trust gate lives in global config only.
+  Project-local hooks (`.pizzapi/config.json`) are **ignored** unless you set `allowProjectHooks: true` in your **global** `~/.pizzapi/config.json`. A one-time warning is emitted when project hooks are present but untrusted. Projects cannot self-authorize — the trust gate lives in global config only.
 
   This prevents a malicious repository from running arbitrary code on your machine via hooks.
 
@@ -48,7 +48,7 @@ Every event fires at a specific lifecycle point. Some can block the action, and 
 | `PreToolUse` | Before any tool call | Yes (exit 2) | Yes |
 | `PostToolUse` | After a tool completes | No (can inject context) | Yes |
 | `Input` | When user sends input | Yes (exit 2), can transform | No |
-| `BeforeAgentStart` | Before agent turn begins | Can override system prompt | No |
+| `BeforeAgentStart` | Before agent turn begins | No (can override system prompt) | No |
 | `UserBash` | User runs `!` or `!!` shell command | Yes (exit 2) | No |
 | `SessionBeforeSwitch` | Before switching sessions | Yes (exit 2) | No |
 | `SessionBeforeFork` | Before forking a session | Yes (exit 2) | No |
@@ -56,6 +56,8 @@ Every event fires at a specific lifecycle point. Some can block the action, and 
 | `SessionBeforeCompact` | Before context compaction | Yes (exit 2) | No |
 | `SessionBeforeTree` | Before session tree navigation | Yes (exit 2) | No |
 | `ModelSelect` | When model is selected | No (observability only) | No |
+| `TurnEnd` | After each agent turn completes | No (fire-and-forget) | No |
+| `SessionStart` | On session start/reload/new/resume/fork | No (fire-and-forget) | No |
 
 ---
 
@@ -69,7 +71,7 @@ A hook is any executable that reads JSON from **stdin** and communicates its dec
 |-----------|---------|
 | `0` | **Allow** — action proceeds normally |
 | `2` | **Block** — action is cancelled (stderr is shown as the reason) |
-| Other non-zero | **Error** — treated as a block (fail-closed for safety) |
+| Other non-zero | **Error** — treated as a block (fail-closed for `PreToolUse` and cancelable event hooks only; `PostToolUse`, `BeforeAgentStart`, and fire-and-forget events do not fail-closed) |
 
 ### Stdout JSON fields
 
@@ -78,7 +80,8 @@ Hooks can return JSON on stdout to influence the agent:
 | Field | Used by | Purpose |
 |-------|---------|---------|
 | `additionalContext` | PreToolUse, PostToolUse, BeforeAgentStart | Text injected into the agent's context window |
-| `permissionDecision` | PreToolUse | `"allow"`, `"deny"`, or `"ask"` |
+| `permissionDecision` | PreToolUse | `"deny"` blocks the tool call. `"allow"` and `"ask"` are reserved/future. |
+| `updatedInput` | PreToolUse | Object replacing tool input fields (rewrites tool args before execution) |
 | `text` | Input | Transformed input text to replace the original |
 | `action` | Input | `"continue"`, `"transform"`, or `"handled"` |
 | `systemPrompt` | BeforeAgentStart | Override the system prompt for this turn |
@@ -99,7 +102,7 @@ PostToolUse hooks additionally receive:
 ```json
 {
   "tool_name": "Write",
-  "tool_input": { "command": "...", "file_path": "src/index.ts" },
+  "tool_input": { "file_path": "src/index.ts" },
   "tool_response": "File written successfully."
 }
 ```
@@ -215,7 +218,7 @@ MCP tool names are passed as-is (e.g., `mcp__tavily__tavily_search`). Matching i
 
 ## Claude Code Compatibility
 
-Claude Code plugins can bundle hooks in a `hooks/hooks.json` file. PizzaPi's plugin adapter automatically discovers these and registers them alongside your config-defined hooks.
+Claude Code plugins can bundle hooks in one or more `*.json` files inside a `hooks/` directory (commonly `hooks/hooks.json`). PizzaPi's plugin adapter automatically discovers these and registers them alongside your config-defined hooks.
 
 For full plugin documentation, see [Claude Code Plugins](/PizzaPi/customization/claude-plugins/).
 
@@ -223,14 +226,14 @@ For full plugin documentation, see [Claude Code Plugins](/PizzaPi/customization/
 
 ## Examples
 
-### 1. RTK Token Optimization (PreToolUse)
+### 1. Advisory RTK suggestion (PreToolUse)
 
-Rewrites Bash commands through an RTK (Read-Transform-Keep) compressor to reduce token usage in tool responses:
+Injects a suggestion to pipe verbose Bash output through `rtk` to reduce token usage:
 
 ```bash
 #!/bin/bash
 # ~/.pizzapi/hooks/rtk-compress.sh
-# PreToolUse hook — rewrites bash commands to pipe through rtk
+# PreToolUse hook — suggests RTK compression for verbose Bash commands
 INPUT=$(cat)
 TOOL=$(echo "$INPUT" | jq -r '.tool_name')
 
@@ -352,7 +355,7 @@ Config:
 PizzaPi enforces a strict trust boundary for project-local hooks:
 
 1. **Global hooks** (`~/.pizzapi/config.json`) always run — you control your own machine.
-2. **Project hooks** (`.pizzapi/config.json` in a repo) are **silently ignored by default**.
+2. **Project hooks** (`.pizzapi/config.json` in a repo) are **ignored by default**.
 3. To enable project hooks, set `allowProjectHooks: true` in your **global** config.
 4. The project config **cannot** set `allowProjectHooks` — only the global config controls this gate.
 

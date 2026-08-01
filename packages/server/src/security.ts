@@ -85,14 +85,18 @@ export class RateLimiter {
     }
 
     private async syncFromRedis(): Promise<void> {
-        for (const key of this.knownKeys) {
-            const window = await getRateLimitWindow(key);
+        const keys = [...this.knownKeys];
+        const windows = await Promise.all(
+            keys.map(async (key) => ({ key, window: await getRateLimitWindow(key) })),
+        );
+        const now = Date.now();
+        for (const { key, window } of windows) {
             if (!window) continue;
             const record = this.hits.get(key);
             // Adopt the Redis window when it has a higher count or when our
             // local window has expired. This prevents long-running nodes from
             // falling behind the cluster-wide counter.
-            if (!record || Date.now() > record.resetTime || window.count > record.count) {
+            if (!record || now > record.resetTime || window.count > record.count) {
                 this.hits.set(key, window);
             }
         }
@@ -129,6 +133,7 @@ export class RateLimiter {
         for (const [key, record] of this.hits.entries()) {
             if (now > record.resetTime) {
                 this.hits.delete(key);
+                this.knownKeys.delete(key);
             }
         }
     }
@@ -562,4 +567,48 @@ export function getClientIp(req: Request): string {
     }
 
     return clientIp;
+}
+
+// ── CSRF origin verification ─────────────────────────────────────────────────
+
+/**
+ * Cross-origin request forgery gate for cookie-authenticated state-changing
+ * API requests. Defense-in-depth on top of SameSite cookies and CORS:
+ *
+ * - Requests without a Cookie header can't ride a victim's session — skip.
+ * - Requests authenticated via x-api-key set a custom header, which browsers
+ *   don't allow cross-site without a CORS preflight — skip.
+ * - Otherwise the Origin header (when present) must be in trustedOrigins,
+ *   and Sec-Fetch-Site (when present) must not be "cross-site".
+ * - Requests with neither header (curl, scripts, old same-origin browsers)
+ *   are allowed — they aren't riding ambient browser credentials cross-site.
+ *
+ * Returns a 403 Response to reject, or null to continue.
+ */
+export function verifyCsrfOrigin(req: Request, trustedOrigins: string[]): Response | null {
+    const method = req.method.toUpperCase();
+    if (method === "GET" || method === "HEAD" || method === "OPTIONS") return null;
+    if (!req.headers.get("cookie")) return null;
+    if (req.headers.get("x-api-key")) return null;
+
+    const origin = req.headers.get("origin");
+    if (origin !== null) {
+        if (!trustedOrigins.includes(origin)) {
+            return Response.json(
+                { error: "Cross-origin request rejected" },
+                { status: 403 },
+            );
+        }
+        return null;
+    }
+
+    const secFetchSite = req.headers.get("sec-fetch-site");
+    if (secFetchSite === "cross-site") {
+        return Response.json(
+            { error: "Cross-origin request rejected" },
+            { status: 403 },
+        );
+    }
+
+    return null;
 }

@@ -192,7 +192,7 @@ export function FolderBrowser({
                     variant="secondary"
                     size="sm"
                     onClick={() => onSelect(currentPath)}
-                    disabled={disabled}
+                    disabled={disabled || loading || !!error}
                 >
                     <FolderOpen className="h-3.5 w-3.5 mr-1.5" />
                     Select this folder

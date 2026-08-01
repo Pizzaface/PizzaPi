@@ -52,6 +52,25 @@ function entry(
     return { sessionId, triggerType, subscriptionId: subscriptionId ?? `${sessionId}-${triggerType}`, runnerId: "runner-test", params };
 }
 
+interface RecordedCall { method: string; url: string; body: string }
+
+/** Install a recording fetch mock. Returns the call log (fires are POSTs, one-shot cleanup are DELETEs). */
+function mockFetch(status = 200): RecordedCall[] {
+    const calls: RecordedCall[] = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        calls.push({
+            method: init?.method ?? "GET",
+            url: typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
+            body: typeof init?.body === "string" ? init.body : "",
+        });
+        return new Response(null, { status });
+    }) as typeof fetch;
+    return calls;
+}
+
+const posts = (calls: RecordedCall[]) => calls.filter((c) => c.method === "POST");
+const deletes = (calls: RecordedCall[]) => calls.filter((c) => c.method === "DELETE");
+
 function setupBroadcastEnv(): void {
     const home = mkdtempSync(join(tmpdir(), "pizzapi-time-service-"));
     mkdirSync(join(home, ".pizzapi"), { recursive: true });
@@ -267,14 +286,7 @@ describe("TimeService.reconcileSubscriptions()", () => {
     describe("same-type multi-subscriptions", () => {
         test("snapshot keeps two same-session timer subscriptions distinct", async () => {
             setupBroadcastEnv();
-            const fetchCalls: Array<{ url: string; body: string }> = [];
-            globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-                fetchCalls.push({
-                    url: typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
-                    body: typeof init?.body === "string" ? init.body : "",
-                });
-                return new Response(null, { status: 200 });
-            }) as typeof fetch;
+            const fetchCalls = mockFetch();
 
             service = new TimeService();
             const result = service.reconcileSubscriptions([
@@ -284,8 +296,9 @@ describe("TimeService.reconcileSubscriptions()", () => {
 
             expect(result.applied).toBe(2);
             await new Promise((resolve) => setTimeout(resolve, 90));
-            expect(fetchCalls).toHaveLength(2);
-            expect(fetchCalls.map((call) => call.body)).toEqual(expect.arrayContaining([
+            const fires = posts(fetchCalls);
+            expect(fires).toHaveLength(2);
+            expect(fires.map((call) => call.body)).toEqual(expect.arrayContaining([
                 expect.stringContaining('"label":"first"'),
                 expect.stringContaining('"label":"second"'),
             ]));
@@ -293,14 +306,7 @@ describe("TimeService.reconcileSubscriptions()", () => {
 
         test("targeted unsubscribe removes only the matching subscription id", async () => {
             setupBroadcastEnv();
-            const fetchCalls: Array<{ url: string; body: string }> = [];
-            globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-                fetchCalls.push({
-                    url: typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
-                    body: typeof init?.body === "string" ? init.body : "",
-                });
-                return new Response(null, { status: 200 });
-            }) as typeof fetch;
+            const fetchCalls = mockFetch();
 
             service = new TimeService();
             service.reconcileSubscriptions([
@@ -314,22 +320,16 @@ describe("TimeService.reconcileSubscriptions()", () => {
 
             expect(result.applied).toBe(1);
             await new Promise((resolve) => setTimeout(resolve, 90));
-            expect(fetchCalls).toHaveLength(1);
-            expect(fetchCalls[0]?.body).toContain('"label":"second"');
+            const fires = posts(fetchCalls);
+            expect(fires).toHaveLength(1);
+            expect(fires[0]?.body).toContain('"label":"second"');
         });
     });
 
     describe("delta reconciliation", () => {
         test("unsubscribe delta removes an existing timer", async () => {
             setupBroadcastEnv();
-            const fetchCalls: Array<{ url: string; body: string }> = [];
-            globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-                fetchCalls.push({
-                    url: typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
-                    body: typeof init?.body === "string" ? init.body : "",
-                });
-                return new Response(null, { status: 200 });
-            }) as typeof fetch;
+            const fetchCalls = mockFetch();
 
             service = new TimeService();
             service.reconcileSubscriptions([
@@ -347,14 +347,7 @@ describe("TimeService.reconcileSubscriptions()", () => {
 
         test("single-subscription delta does not remove unrelated timers", async () => {
             setupBroadcastEnv();
-            const fetchCalls: Array<{ url: string; body: string }> = [];
-            globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-                fetchCalls.push({
-                    url: typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
-                    body: typeof init?.body === "string" ? init.body : "",
-                });
-                return new Response(null, { status: 200 });
-            }) as typeof fetch;
+            const fetchCalls = mockFetch();
 
             service = new TimeService();
             service.reconcileSubscriptions([
@@ -368,9 +361,79 @@ describe("TimeService.reconcileSubscriptions()", () => {
 
             expect(result.applied).toBe(1);
             await new Promise((resolve) => setTimeout(resolve, 70));
-            expect(fetchCalls).toHaveLength(1);
-            expect(fetchCalls[0]?.url).toBe("http://relay.test/api/runners/runner-test/trigger-broadcast");
-            expect(fetchCalls[0]?.body).toContain('"label":"short"');
+            const fires = posts(fetchCalls);
+            expect(fires).toHaveLength(1);
+            expect(fires[0]?.url).toBe("http://relay.test/api/sessions/sess-b/trigger");
+            expect(fires[0]?.body).toContain('"label":"short"');
+        });
+    });
+
+    describe("follow-up semantics", () => {
+        test("fire is delivered only to the owning session with the message in the payload", async () => {
+            setupBroadcastEnv();
+            const fetchCalls = mockFetch();
+
+            service = new TimeService();
+            service.reconcileSubscriptions([
+                entry("sess-1", "time:timer_fired", { duration: "0.02s", message: "Check the build" }, "sub-1"),
+            ]);
+
+            await new Promise((resolve) => setTimeout(resolve, 60));
+            const fires = posts(fetchCalls);
+            expect(fires).toHaveLength(1);
+            expect(fires[0]?.url).toBe("http://relay.test/api/sessions/sess-1/trigger");
+            const body = JSON.parse(fires[0]!.body);
+            expect(body.payload.message).toBe("Check the build");
+            expect(body.summary).toBe("Check the build");
+            expect(body.deliverAs).toBe("followUp");
+        });
+
+        test("one-shot subscription is removed server-side after successful delivery", async () => {
+            setupBroadcastEnv();
+            const fetchCalls = mockFetch();
+
+            service = new TimeService();
+            service.reconcileSubscriptions([
+                entry("sess-1", "time:timer_fired", { duration: "0.02s" }, "sub-1"),
+            ]);
+
+            await new Promise((resolve) => setTimeout(resolve, 60));
+            const cleanup = deletes(fetchCalls);
+            expect(cleanup).toHaveLength(1);
+            expect(cleanup[0]?.url).toBe(
+                "http://relay.test/api/sessions/sess-1/trigger-subscriptions/time%3Atimer_fired?subscriptionId=sub-1",
+            );
+        });
+
+        test("past time:at fires immediately and removes its subscription", async () => {
+            setupBroadcastEnv();
+            const fetchCalls = mockFetch();
+
+            service = new TimeService();
+            service.reconcileSubscriptions([
+                entry("sess-1", "time:at", { at: "2020-01-01T00:00:00Z", message: "Morning check-in" }, "sub-at"),
+            ]);
+
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            const fires = posts(fetchCalls);
+            expect(fires).toHaveLength(1);
+            expect(fires[0]?.url).toBe("http://relay.test/api/sessions/sess-1/trigger");
+            expect(JSON.parse(fires[0]!.body).payload.message).toBe("Morning check-in");
+            expect(deletes(fetchCalls)).toHaveLength(1);
+        });
+
+        test("failed delivery keeps the subscription (no DELETE)", async () => {
+            setupBroadcastEnv();
+            const fetchCalls = mockFetch(503);
+
+            service = new TimeService();
+            service.reconcileSubscriptions([
+                entry("sess-1", "time:timer_fired", { duration: "0.02s" }, "sub-1"),
+            ]);
+
+            await new Promise((resolve) => setTimeout(resolve, 60));
+            expect(posts(fetchCalls)).toHaveLength(1);
+            expect(deletes(fetchCalls)).toHaveLength(0);
         });
     });
 

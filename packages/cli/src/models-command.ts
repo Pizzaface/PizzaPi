@@ -6,12 +6,13 @@
  * https://ollama.com/v1/models endpoint is fetched and enriched with /api/show
  * metadata. Results are cached for 24 hours in ~/.pizzapi.
  */
-import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { join } from "path";
 import { c } from "./cli-colors.js";
 import { defaultAgentDir, expandHome, loadConfig } from "./config.js";
 import { createLogger } from "@pizzapi/tools";
-import { fetchOllamaCloudModels, type OllamaCloudModel } from "./ollama-cloud-models.js";
+import { fetchOllamaCloudModels, registerOllamaCloudProvider, type OllamaCloudModel } from "./ollama-cloud-models.js";
+import { mergeModelLists, readSessionModelsCache } from "./session-models-cache.js";
 
 const log = createLogger("models");
 
@@ -29,8 +30,15 @@ export async function runModelsCommand(args: string[], cwd: string): Promise<num
     const config = loadConfig(cwd);
     const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
 
-    const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-    const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+    const runtime = await ModelRuntime.create({
+        authPath: join(agentDir, "auth.json"),
+        modelsPath: join(agentDir, "models.json"),
+    });
+    // This runtime never loads extensions, so "ollama-cloud" is otherwise an
+    // unknown provider here: no offline fallback catalog and stored/env
+    // credentials go unrecognized. Mirrors ollamaCloudProviderExtension.
+    registerOllamaCloudProvider(runtime);
+    const modelRegistry = new ModelRegistry(runtime);
 
     const staticEntries = modelRegistry
         .getAvailable()
@@ -43,7 +51,7 @@ export async function runModelsCommand(args: string[], cwd: string): Promise<num
         }));
 
     let ollamaEntries: ModelListEntry[] = [];
-    if (authStorage.hasAuth("ollama-cloud") || process.env.OLLAMA_API_KEY) {
+    if (runtime.hasConfiguredAuth("ollama-cloud") || process.env.OLLAMA_API_KEY) {
         try {
             const live = await fetchOllamaCloudModels();
             ollamaEntries = live.map(toModelListEntry);
@@ -54,15 +62,12 @@ export async function runModelsCommand(args: string[], cwd: string): Promise<num
         }
     }
 
-    // Deduplicate: static registry wins for any provider+id conflict.
-    const seen = new Set(staticEntries.map((m) => `${m.provider}:${m.id}`));
-    const allEntries = [
-        ...staticEntries,
-        ...ollamaEntries.filter((m) => !seen.has(`${m.provider}:${m.id}`)),
-    ].sort((a, b) => {
-        if (a.provider !== b.provider) return a.provider.localeCompare(b.provider);
-        return a.id.localeCompare(b.id);
-    });
+    // Deduplicate: static registry wins, then live Ollama, then the last live
+    // session's snapshot (extension-registered providers like claude-subscription).
+    const allEntries = mergeModelLists(
+        mergeModelLists(staticEntries, ollamaEntries),
+        readSessionModelsCache() ?? [],
+    );
 
     if (showJson) {
         log.info(JSON.stringify({ models: allEntries }, null, 2));

@@ -63,14 +63,58 @@ function piTuiPath(subpath: string): string {
 // ---------------------------------------------------------------------------
 
 describe("pi-coding-agent patch application", () => {
-    test("agent-session.js: extension sendUserMessage accepts expandPromptTemplates opt-in", async () => {
+    // Phase 2 (SessionHost sendUserMessage routing): the expandPromptTemplates
+    // opt-in hunk was removed. PizzaPi's remote extension no longer calls the
+    // patched ExtensionAPI.sendUserMessage at all — connection-handlers-factory.ts
+    // drives SessionHost.sendUserMessage, which calls session.prompt() directly
+    // (packages/cli/src/runner/session-host.ts). These guards prevent the hunk
+    // from silently reappearing on a version bump.
+    test("agent-session.js: extension sendUserMessage does NOT special-case expandPromptTemplates (removed — PizzaPi routes through SessionHost)", async () => {
         const source = await Bun.file(
             piCodingAgentPath("dist/core/agent-session.js"),
         ).text();
 
-        // The patch lets callers opt into command/template expansion (default false)
-        expect(source).toContain("PATCH(pizzapi): allow callers to opt into command/template expansion");
-        expect(source).toContain("options?.expandPromptTemplates ?? false");
+        expect(source).not.toContain("PATCH(pizzapi): allow callers to opt into command/template expansion");
+        expect(source).not.toContain("options?.expandPromptTemplates ?? false");
+        // Upstream's original hardcoded false is back in place.
+        expect(source).toContain("expandPromptTemplates: false,");
+    });
+
+    test("types.d.ts: ExtensionAPI.sendUserMessage does NOT carry the expandPromptTemplates PATCH (removed — SessionHost owns expansion)", async () => {
+        const source = await Bun.file(
+            piCodingAgentPath("dist/core/extensions/types.d.ts"),
+        ).text();
+
+        expect(source).not.toContain("expandPromptTemplates");
+        expect(source).not.toContain("PATCH(pizzapi): opt into slash-command and template expansion");
+    });
+
+    // Phase 1: the ExtensionAPI control-plane exposure (newSession/switchSession/
+    // fork + getQueuedMessages/replaceQueuedMessages) was removed from the patch.
+    // PizzaPi's remote extension now drives control through the host-owned
+    // SessionHost (packages/cli/src/runner/session-host.ts). These guards prevent
+    // the surface-widening hunks from silently returning on a version bump.
+    test("agent-session.js: pending-queue getters are NOT patched onto the runtime (SessionHost owns them)", async () => {
+        const source = await Bun.file(
+            piCodingAgentPath("dist/core/agent-session.js"),
+        ).text();
+
+        expect(source).not.toContain("PATCH(pizzapi): expose the pending queues");
+        expect(source).not.toContain("getQueuedMessages: () => ({ steering: [...this._steeringMessages]");
+        expect(source).not.toContain("replaceQueuedMessages: (followUp) => {");
+    });
+
+    test("loader.js + runner.js: queue read/replace is NOT wired through ExtensionAPI", async () => {
+        const loader = await Bun.file(
+            piCodingAgentPath("dist/core/extensions/loader.js"),
+        ).text();
+        const runner = await Bun.file(
+            piCodingAgentPath("dist/core/extensions/runner.js"),
+        ).text();
+
+        expect(loader).not.toContain("replaceQueuedMessages(followUp)");
+        expect(runner).not.toContain("this.runtime.getQueuedMessages = actions.getQueuedMessages");
+        expect(runner).not.toContain("this.runtime.replaceQueuedMessages = actions.replaceQueuedMessages");
     });
 
     test("interactive-mode.js: version check call is removed from run()", async () => {
@@ -168,7 +212,7 @@ describe("pi-coding-agent patched runtime behavior", () => {
         expect(dir).not.toContain(".pizzapi/agent/sessions");
     });
 
-    test("extension API exposes bound newSession and switchSession handlers", async () => {
+    test("extension API does NOT expose newSession/switchSession/fork (removed in Phase 1)", async () => {
         const { createExtensionRuntime, loadExtensionFromFactory } = await import(
             piCodingAgentPath("dist/core/extensions/loader.js")
         );
@@ -177,20 +221,15 @@ describe("pi-coding-agent patched runtime behavior", () => {
         );
 
         const runtime = createExtensionRuntime() as any;
-        const calls: string[] = [];
         const runner = new ExtensionRunner([], runtime, process.cwd(), {} as any, {} as any);
+        // Command-context handlers still bind natively (slash commands, TUI) —
+        // that is upstream behavior, unaffected by the patch removal.
         runner.bindCommandContext({
             waitForIdle: async () => undefined,
-            newSession: async () => {
-                calls.push("new");
-                return { cancelled: false };
-            },
+            newSession: async () => ({ cancelled: false }),
             fork: async () => ({ cancelled: false }),
             navigateTree: async () => ({ cancelled: false }),
-            switchSession: async (sessionPath: string) => {
-                calls.push(`switch:${sessionPath}`);
-                return { cancelled: false };
-            },
+            switchSession: async () => ({ cancelled: false }),
             reload: async () => undefined,
         });
 
@@ -199,11 +238,13 @@ describe("pi-coding-agent patched runtime behavior", () => {
             api = pi;
         }, process.cwd(), {} as any, runtime);
 
-        expect(typeof api.newSession).toBe("function");
-        expect(typeof api.switchSession).toBe("function");
-        await expect(api.newSession()).resolves.toEqual({ cancelled: false });
-        await expect(api.switchSession("/tmp/session.jsonl")).resolves.toEqual({ cancelled: false });
-        expect(calls).toEqual(["new", "switch:/tmp/session.jsonl"]);
+        // The patch no longer copies these onto ExtensionAPI — PizzaPi reaches
+        // session control via SessionHost, not pi.*.
+        expect(api.newSession).toBeUndefined();
+        expect(api.switchSession).toBeUndefined();
+        expect(api.fork).toBeUndefined();
+        expect(api.getQueuedMessages).toBeUndefined();
+        expect(api.replaceQueuedMessages).toBeUndefined();
     });
 
 });
@@ -231,9 +272,14 @@ describe("pi-coding-agent API surface compatibility", () => {
         expect(typeof mod.SessionManager).toBe("function");
     });
 
-    test("AuthStorage is exported", async () => {
+    test("readStoredCredential is exported", async () => {
         const mod = await import("@earendil-works/pi-coding-agent");
-        expect(mod.AuthStorage).toBeDefined();
+        expect(typeof mod.readStoredCredential).toBe("function");
+    });
+
+    test("ModelRuntime is exported", async () => {
+        const mod = await import("@earendil-works/pi-coding-agent");
+        expect(typeof mod.ModelRuntime).toBe("function");
     });
 
     test("buildSessionContext is exported", async () => {
@@ -478,7 +524,7 @@ describe("pi-ai patch application — Anthropic web search", () => {
 describe("pi-ai patch application — Claude Code credentials fallback (Keychain-first)", () => {
     test("anthropic.js (oauth): tryReadClaudeCodeCredentials with Keychain + file fallback", async () => {
         const source = await Bun.file(
-            piAiPath("dist/utils/oauth/anthropic.js"),
+            piAiPath("dist/auth/oauth/anthropic.js"),
         ).text();
 
         expect(source).toContain("PATCH(pizzapi): read Claude Code credentials as a refresh fallback");
@@ -494,33 +540,86 @@ describe("pi-ai patch application — Claude Code credentials fallback (Keychain
 
     test("anthropic.js (oauth): refreshToken awaits Claude Code credentials first", async () => {
         const source = await Bun.file(
-            piAiPath("dist/utils/oauth/anthropic.js"),
+            piAiPath("dist/auth/oauth/anthropic.js"),
         ).text();
 
         expect(source).toContain("PATCH(pizzapi): try Claude Code credentials first");
         // Verify the fallback awaits tryReadClaudeCodeCredentials before refreshAnthropicToken
         const ccCredsIndex = source.indexOf("await tryReadClaudeCodeCredentials()");
-        const refreshIndex = source.indexOf("refreshAnthropicToken(credentials.refresh)");
+        const refreshIndex = source.indexOf("refreshAnthropicToken(credential.refresh)");
         expect(ccCredsIndex).toBeGreaterThan(-1);
         expect(refreshIndex).toBeGreaterThan(-1);
         expect(ccCredsIndex).toBeLessThan(refreshIndex);
     });
 
     test("anthropic.js (oauth): file is syntactically valid", async () => {
-        const mod = await import(piAiPath("dist/utils/oauth/anthropic.js"));
-        expect(typeof mod.anthropicOAuthProvider).toBe("object");
-        expect(typeof mod.anthropicOAuthProvider.refreshToken).toBe("function");
-        expect(typeof mod.loginAnthropic).toBe("function");
-        expect(typeof mod.refreshAnthropicToken).toBe("function");
+        const mod = await import(piAiPath("dist/auth/oauth/anthropic.js"));
+        expect(typeof mod.anthropicOAuth).toBe("object");
+        expect(typeof mod.anthropicOAuth.refresh).toBe("function");
+        expect(typeof mod.anthropicOAuth.login).toBe("function");
     });
 
     test("anthropic.js (oauth): 60s safety margin on credential expiry", async () => {
         const source = await Bun.file(
-            piAiPath("dist/utils/oauth/anthropic.js"),
+            piAiPath("dist/auth/oauth/anthropic.js"),
         ).text();
 
         // Ensures we don't use credentials that expire within 60 seconds
         expect(source).toContain("Date.now() + 60000");
+    });
+});
+
+describe("pi-ai patch application — ollama-cloud hunks removed (replaced by extension registration)", () => {
+    // Task 0.2 (Godmother idea Uq2WsWiW): the ollama-cloud hunks that used to
+    // live in this patch (env-key recognition, inlined model catalog,
+    // providers/all.js factory, KnownProvider typing) are gone. The provider
+    // and its fallback model catalog are now registered at runtime via
+    // ollamaCloudProviderExtension calling pi.registerProvider() — see
+    // extensions/ollama-cloud-provider.ts and ollama-provider.test.ts for the
+    // functional replacement tests.
+    test("env-api-keys.js no longer maps ollama-cloud to OLLAMA_API_KEY", async () => {
+        const source = await Bun.file(piAiPath("dist/env-api-keys.js")).text();
+        expect(source).not.toContain("ollama-cloud");
+    });
+
+    test("models.generated.js/.d.ts no longer inline an Ollama Cloud catalog", async () => {
+        const source = await Bun.file(piAiPath("dist/models.generated.js")).text();
+        const types = await Bun.file(piAiPath("dist/models.generated.d.ts")).text();
+        expect(source).not.toContain("ollama");
+        expect(source).not.toContain("OLLAMA");
+        expect(types).not.toContain("ollama");
+    });
+
+    test("providers/all.js/.d.ts no longer export ollamaCloudProvider()", async () => {
+        const source = await Bun.file(piAiPath("dist/providers/all.js")).text();
+        const types = await Bun.file(piAiPath("dist/providers/all.d.ts")).text();
+        expect(source).not.toContain("ollamaCloudProvider");
+        expect(types).not.toContain("ollamaCloudProvider");
+    });
+
+    test("types.d.ts KnownProvider no longer includes ollama-cloud", async () => {
+        const source = await Bun.file(piAiPath("dist/types.d.ts")).text();
+        expect(source).not.toContain("ollama-cloud");
+    });
+
+    test("getModels('ollama-cloud') returns nothing from the bare pi-ai catalog (no longer builtin)", async () => {
+        const { getModels } = await import(piAiPath("dist/compat.js"));
+        expect(getModels("ollama-cloud")).toEqual([]);
+    });
+
+    test("ollamaCloudProviderExtension provides the same provider + models via pi.registerProvider", async () => {
+        const { ollamaCloudProviderExtension } = await import("./extensions/ollama-cloud-provider.js");
+        const registered: Array<{ name: string; config: any }> = [];
+        await ollamaCloudProviderExtension({
+            registerProvider: (name: string, config: any) => registered.push({ name, config }),
+        } as any);
+
+        expect(registered).toHaveLength(1);
+        expect(registered[0].name).toBe("ollama-cloud");
+        expect(registered[0].config.apiKey).toBe("$OLLAMA_API_KEY");
+        expect(registered[0].config.api).toBe("openai-completions");
+        expect(registered[0].config.models.length).toBeGreaterThan(0);
+        expect(registered[0].config.models.some((m: any) => m.id === "glm-5.1")).toBe(true);
     });
 });
 

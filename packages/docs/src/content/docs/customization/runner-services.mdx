@@ -5,9 +5,19 @@ description: Create custom runner services with UI panels, custom triggers, and 
 
 import { Aside, FileTree, Steps } from "@astrojs/starlight/components";
 
-Runner services are background processes on the runner daemon. They can expose interactive **UI panels** in the PizzaPi web interface and advertise **custom triggers** that agent sessions can subscribe to. Each service is discovered automatically from `~/.pizzapi/services/` on startup.
+Runner services are background processes on the runner daemon. They can expose interactive **UI panels** in the PizzaPi web interface and advertise **custom triggers** that agent sessions can subscribe to.
+
+A service ships inside a **[pi package](/PizzaPi/customization/overlay-packages/)** that declares it under `pi.pizzapi.services`. That is the only way to load one — a service runs on the daemon, outside any session sandbox, so it needs an explicit trust grant that a package install can carry and a loose file cannot.
 
 ![Service panel showing a System Monitor with CPU, memory, disk, and process information](../../../assets/service-panel-screenshot.png)
+
+<Aside type="caution" title="Runner services are runner-global">
+Services are always runner-wide. A package configured at project scope does **not** mount its services.
+
+The daemon keeps a single service registry shared by every workspace on the machine. Mounting a service found in one checkout would silently activate that project's code for unrelated sessions, so PizzaPi does not do it. Overlay packages that declare services are still installable at project scope — PizzaPi warns that the services stay inactive.
+
+Supporting genuinely project-scoped services needs scoped registry instances and lifecycle isolation, not a global grant. See §6.3 of `docs/specs/pi-pizzapi-overlay.md`.
+</Aside>
 
 ---
 
@@ -15,80 +25,94 @@ Runner services are background processes on the runner daemon. They can expose i
 
 <Steps>
 
-1. **Create the service directory:**
+1. **Create the package:**
 
    ```bash
-   mkdir -p ~/.pizzapi/services/my-service/panel
+   mkdir -p ~/my-service/service/panel
+   cd ~/my-service
    ```
 
-2. **Add `manifest.json`:**
+2. **Declare the service in `package.json`:**
 
-   ```json
+   ```json title="package.json"
    {
-     "id": "my-service",
-     "label": "My Service",
-     "icon": "activity",
-     "entry": "./index.ts",
-     "panel": {
-       "dir": "./panel"
-     },
-     "triggers": [
-       {
-         "type": "my-service:something_happened",
-         "label": "Something Happened",
-         "description": "Emitted when something noteworthy occurs"
+     "name": "@me/my-service",
+     "version": "1.0.0",
+     "private": true,
+     "type": "module",
+     "pi": {
+       "pizzapi": {
+         "schemaVersion": 1,
+         "services": [
+           {
+             "id": "my-service",
+             "label": "My Service",
+             "icon": "activity",
+             "entry": "./service/index.ts",
+             "panel": { "dir": "./service/panel" },
+             "triggers": [
+               {
+                 "type": "my-service:something_happened",
+                 "label": "Something Happened",
+                 "description": "Emitted when something noteworthy occurs"
+               }
+             ]
+           }
+         ]
        }
-     ]
+     }
    }
    ```
 
-3. **Add `index.ts`** with a ServiceHandler class (see [ServiceHandler API](#servicehandler-api) below).
+3. **Add `service/index.ts`** with a ServiceHandler class (see [ServiceHandler API](#servicehandler-api) below).
 
-4. **Add `panel/index.html`** with self-contained HTML/CSS/JS (see [Panel Guidelines](#panel-guidelines) below).
+4. **Add `service/panel/index.html`** with self-contained HTML/CSS/JS (see [Panel Guidelines](#panel-guidelines) below).
 
-5. **Restart the runner** — the panel button appears in the session toolbar header, and triggers become discoverable by agents.
+5. **Install and grant the service:**
+
+   ```bash
+   pizza install ~/my-service --allow-daemon-services
+   ```
+
+6. **Restart the runner** — the panel button appears in the session toolbar header, and triggers become discoverable by agents.
 
 </Steps>
+
+<Aside type="tip">
+The grant is per package and per service ID. Installing without `--allow-daemon-services` still installs agents, rules, skills and MCP servers — the services just stay inactive until granted.
+</Aside>
 
 ---
 
 ## Folder Structure
 
 <FileTree>
-- ~/.pizzapi/services/my-service/
-  - manifest.json — metadata, panel config, and trigger definitions
-  - index.ts — ServiceHandler module (default export)
-  - panel/
-    - index.html — self-contained UI (HTML/CSS/JS)
-    - … — additional static assets
+- my-service/
+  - package.json — the `pi.pizzapi.services` declaration
+  - service/
+    - index.ts — ServiceHandler module (default export)
+    - triggers.json — trigger definitions (optional)
+    - sigils.json — sigil type definitions (optional)
+    - panel/
+      - index.html — self-contained UI (HTML/CSS/JS)
+      - … — additional static assets
 </FileTree>
 
-Services can also be bundled inside Claude Code plugins:
-
-<FileTree>
-- ~/.pizzapi/plugins/my-plugin/
-  - plugin.json
-  - services/
-    - my-service/
-      - manifest.json
-      - index.ts
-      - panel/
-        - index.html
-</FileTree>
+Layout inside the package is up to you — only the paths named in the declaration matter, and they are confined to the package root.
 
 ---
 
-## manifest.json
+## Service declaration
 
-```json
+Each entry in `pi.pizzapi.services` describes one service:
+
+```json title="package.json"
 {
   "id": "my-service",
   "label": "My Service",
   "icon": "activity",
-  "entry": "./index.ts",
-  "panel": {
-    "dir": "./panel"
-  },
+  "entry": "./service/index.ts",
+  "panel": { "dir": "./service/panel" },
   "triggers": [
     {
       "type": "my-service:something_happened",
@@ -111,25 +135,40 @@ Services can also be bundled inside Claude Code plugins:
 | `id` | Yes | — | Unique service ID (must match `ServiceHandler.id`) |
 | `label` | Yes | — | Button label shown in the PizzaPi header bar |
 | `icon` | No | `"square"` | [Lucide](https://lucide.dev/icons) icon name (kebab-case) |
-| `entry` | No | `"./index.ts"` | Service module path relative to the service folder |
-| `panel.dir` | No | `"./panel"` | Panel static files directory (omit if no panel) |
-| `triggers` | No | `[]` | Trigger type definitions (see [Custom Triggers](#custom-triggers) below, or use `triggers.json`) |
-| `sigils` | No | `[]` | Sigil type definitions (see [Custom Sigils](#custom-sigils) below, or use `sigils.json`) |
+| `entry` | No | `"./index.ts"` | Service module path, relative to the package root |
+| `panel.dir` | No | — | Panel static files directory (omit if no panel) |
+| `triggers` | No | `[]` | Inline definitions, or a path to a JSON file (see [Custom Triggers](#custom-triggers)) |
+| `sigils` | No | `[]` | Inline definitions, or a path to a JSON file (see [Custom Sigils](#custom-sigils)) |
+
+<Aside type="caution" title="The handler id must match the declaration">
+The `id` your module's handler exposes must equal the declared `id`, or the loader rejects the service outright. Trigger types must also be namespaced by the service id (`my-service:thing`) — the daemon routes on `triggerType.split(":")[0]`, so an unnamespaced trigger is silently dropped.
+</Aside>
 
 ---
 
 ## Split Configuration Files
 
-For services with many triggers or sigils, you can split configuration into separate files. Split files take precedence over inline arrays in `manifest.json`.
+For services with many triggers or sigils, point `triggers` and `sigils` at their own JSON files instead of inlining the arrays in `package.json`.
+
+```json title="package.json"
+{
+  "id": "my-service",
+  "label": "My Service",
+  "entry": "./service/index.ts",
+  "triggers": "./service/triggers.json",
+  "sigils": "./service/sigils.json"
+}
+```
 
 <FileTree>
-- ~/.pizzapi/services/my-service/
-  - manifest.json — core identity (id, label, icon, entry, panel)
-  - triggers.json — trigger definitions (optional, overrides manifest triggers)
-  - sigils.json — sigil type definitions (optional, overrides manifest sigils)
-  - index.ts — ServiceHandler module
-  - panel/
-    - index.html — self-contained UI (HTML/CSS/JS)
+- my-service/
+  - package.json — core identity (id, label, icon, entry, panel)
+  - service/
+    - triggers.json — trigger definitions (optional)
+    - sigils.json — sigil type definitions (optional)
+    - index.ts — ServiceHandler module
+    - panel/
+      - index.html — self-contained UI (HTML/CSS/JS)
 </FileTree>
 
 ### triggers.json
@@ -196,35 +235,32 @@ Defines sigil types this service teaches the UI to render. Can be a bare array o
 | `aliases` | No | Alternative type names that resolve to this sigil |
 
 <Aside type="tip">
-  Split files are optional — inline `triggers` and `sigils` arrays in `manifest.json` continue to work. Use split files when your trigger or sigil definitions are large enough to make `manifest.json` hard to read.
+  Split files are optional — inline `triggers` and `sigils` arrays work exactly the same. Use split files when the definitions are large enough to make `package.json` hard to read.
 </Aside>
 
 ### Migrating to Split Files
 
-To split an existing `manifest.json`:
-
 <Steps>
 
-1. **Copy the `triggers` array** from `manifest.json` into a new `triggers.json` file (as a bare JSON array).
+1. **Copy the `triggers` array** out of the service declaration into a new `triggers.json` file (as a bare JSON array).
 
-2. **Remove the `triggers` key** from `manifest.json`.
+2. **Replace the `triggers` value** with the path to that file.
 
-3. **(Optional)** Create `sigils.json` with any sigil definitions.
+3. **(Optional)** Do the same for `sigils`.
 
-4. **Restart the runner** — the daemon will load split files automatically.
+4. **Restart the runner** — the daemon resolves the paths automatically.
 
 </Steps>
 
-**Before** — everything in one file:
+**Before** — everything inline:
 
-```json
-// manifest.json
+```json title="package.json"
 {
   "id": "my-service",
   "label": "My Service",
   "icon": "activity",
-  "entry": "./index.ts",
-  "panel": { "dir": "./panel" },
+  "entry": "./service/index.ts",
+  "panel": { "dir": "./service/panel" },
   "triggers": [
     { "type": "my-service:event_a", "label": "Event A" },
     { "type": "my-service:event_b", "label": "Event B" }
@@ -234,14 +270,14 @@ To split an existing `manifest.json`:
 
 **After** — split into focused files:
 
-```json
-// manifest.json
+```json title="package.json"
 {
   "id": "my-service",
   "label": "My Service",
   "icon": "activity",
-  "entry": "./index.ts",
-  "panel": { "dir": "./panel" }
+  "entry": "./service/index.ts",
+  "panel": { "dir": "./service/panel" },
+  "triggers": "./service/triggers.json"
 }
 ```
 
@@ -261,7 +297,7 @@ Services can advertise custom trigger types that agent sessions subscribe to at 
 
 ### Declaring Triggers
 
-Add a `triggers` array to `manifest.json`. Each entry describes a trigger type:
+Add a `triggers` array to the service declaration. Each entry describes a trigger type:
 
 | Field | Required | Description |
 |-------|----------|-------------|
@@ -269,6 +305,7 @@ Add a `triggers` array to `manifest.json`. Each entry describes a trigger type:
 | `label` | Yes | Human-readable label for the UI and agent tools |
 | `description` | No | When/why this trigger fires |
 | `schema` | No | JSON Schema describing the trigger payload |
+| `params` | No | Array of subscription params the service accepts. Each: `name`, `label`, `type` (`string`/`number`/`boolean`/`json`), `description`, `required`, `default`, `enum`, `multiselect` |
 
 ```json
 "triggers": [
@@ -319,8 +356,9 @@ await fetch(`${relayUrl}/api/runners/${runnerId}/trigger-broadcast`, {
 | `type` | Yes | Must match a type declared in the manifest `triggers[]` array |
 | `payload` | Yes | Arbitrary JSON object delivered to subscribers |
 | `source` | No | Identifier shown in trigger history (typically the service name) |
-| `deliverAs` | No | `"steer"` interrupts the current turn; `"followUp"` (default) queues after the turn ends |
+| `deliverAs` | No | `"steer"` interrupts the current turn; `"followUp"` queues after the turn ends. Default: `"followUp"`. |
 | `summary` | No | Human-readable one-liner for trigger history |
+| `expectsResponse` | No | Whether the delivered trigger expects a response from the agent/viewer |
 
 The relay fans out the trigger to every session subscribed to that type on this runner.
 
@@ -547,7 +585,7 @@ Sigils are `[[type:id]]` tokens in agent output that render as interactive UI el
 
 ### Declaring Sigils
 
-Add a `sigils` array to `manifest.json`, or create a standalone `sigils.json` file (see [Split Configuration Files](#split-configuration-files)).
+Add a `sigils` array to the service declaration, or point it at a standalone `sigils.json` file (see [Split Configuration Files](#split-configuration-files)).
 
 Each entry describes a sigil type using the `ServiceSigilDef` schema:
 
@@ -559,6 +597,7 @@ Each entry describes a sigil type using the `ServiceSigilDef` schema:
 | `resolve` | No | API endpoint path to resolve a sigil ID to display data (e.g. PR number → title/status) |
 | `schema` | No | JSON Schema for sigil params (`[[type:id key=val]]`) |
 | `aliases` | No | Alternative type names that resolve to this sigil (e.g. `["pull-request", "mr"]`) |
+| `icon` | No | Lucide icon name rendered with the sigil |
 
 ### Example: GitHub Service Sigils
 
@@ -611,6 +650,193 @@ A service doesn't need a UI panel. Omit `panel` from the manifest and skip `anno
 
 ---
 
+## Connectivity Services
+
+A **connectivity service** owns a live connection to an outside network — a chat
+gateway, a webhook receiver, a message queue, an MQTT broker. This is the shape
+to reach for whenever sessions need to talk to a third-party system that keeps a
+persistent connection open.
+
+The rule is simple: **the daemon owns one connection, and sessions never open
+their own.**
+
+### Why not a per-session abstraction
+
+The tempting design is a per-session object — every session gets a `bridge` it
+can connect and send through. It does not survive contact with a real service:
+
+| Problem | What happens with N sessions |
+|---------|------------------------------|
+| **N connections** | Ten sessions means ten gateway connections on one bot token. Discord rate-limits identifies per token; other providers ban outright. |
+| **Duplicate inbound** | Every connection receives every event. Ten sessions each see the same message and ten agents answer it. |
+| **Lifetime mismatch** | Connections belong to the machine, not the conversation. Sessions start and stop constantly; a connection that dies with a session cannot receive anything between sessions — including the message that should *start* one. |
+| **Credential spread** | The token has to be readable by every session process instead of living in one place on the daemon. |
+| **No routing authority** | "Which session owns this thread?" has no answer if every session holds its own map. |
+
+The daemon is the only component with the right lifetime and the right
+cardinality. Everything else follows from putting the connection there.
+
+<Aside type="caution" title="One connection, one owner">
+If you find yourself writing a class that a session constructs to talk to an
+external network, stop. That is the wrong shape. Move the connection to a
+runner service and give sessions a message channel to it.
+</Aside>
+
+### The two directions
+
+Inbound and outbound use different transports, because they have different
+routing problems.
+
+**Inbound — outside world → session.** The service already knows which session
+the event belongs to (it owns the mapping), so it delivers straight to that one
+session over HTTP:
+
+```typescript
+// Targeted: this session only. No subscription required.
+await fetch(`${relayUrl}/api/sessions/${sessionId}/trigger`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+    body: JSON.stringify({
+        type: "discord:message",
+        payload: { threadId, text },
+        source: "discord",
+        deliverAs: "steer",
+    }),
+});
+```
+
+Use `POST /api/runners/{runnerId}/trigger-broadcast` instead only when the event
+has **no** single owner and any interested session should hear it — a CI result,
+a repo-wide push. Broadcast fans out to every *subscriber*; it cannot address one
+conversation.
+
+**Outbound — session → outside world.** The session emits a `service_message`
+envelope on its own relay socket. The relay forwards it to the daemon, which
+routes it to the service by `serviceId`:
+
+```typescript
+// In a session-side extension.
+socket.emit("service_message", {
+    serviceId: "discord",
+    type: "discord_post",
+    payload: { sessionId, content },
+});
+```
+
+The service picks it up in the handler it registered during `init()`:
+
+```typescript
+init(socket, opts) {
+    this.onMessage = (envelope) => {
+        if (envelope.serviceId !== "discord") return;
+        if (envelope.type === "discord_post") void this.post(envelope.payload);
+    };
+    socket.on("service_message", this.onMessage);
+}
+```
+
+Note what the session does **not** do: it does not look up a thread, hold a
+token, or know whether the bridge is even configured. It emits one envelope and
+the service drops it if that session has no mapping. Routing lives in exactly one
+place.
+
+<Aside type="tip" title="Round-trip vs fire-and-forget">
+Add a `requestId` and listen for the matching reply when the session needs an
+answer (`create_tunnel` does this — see `packages/cli/src/extensions/tunnel-tools.ts`).
+Omit it for notifications, so a slow or disconnected external service can never
+stall an agent turn.
+</Aside>
+
+<Aside type="caution" title="service_message delivery is at-least-once">
+The relay's `emitToRunner()` emits to the per-runner room **and** to the local
+runner socket as a rolling-deploy fallback. A local runner is in both, so in
+practice **every envelope arrives twice**.
+
+This is invisible for idempotent operations — exposing an already-exposed port
+is a no-op, and request/response pairs are matched by `requestId`, so the first
+reply wins. It is *not* invisible for side effects: an un-deduped handler posts
+every chat message twice.
+
+Stamp each envelope with a unique id and skip ids you have already handled:
+
+```typescript
+#seen = new Set<string>();
+
+#isDuplicate(id: unknown): boolean {
+    if (typeof id !== "string" || !id) return false;   // no id — process it
+    if (this.#seen.has(id)) return true;
+    this.#seen.add(id);
+    if (this.#seen.size > 500) {
+        const oldest = this.#seen.values().next().value; // insertion-ordered
+        if (oldest !== undefined) this.#seen.delete(oldest);
+    }
+    return false;
+}
+```
+
+Treat any handler with an external side effect — posting a message, sending an
+email, charging something — as needing this.
+</Aside>
+
+### Mapping sessions to conversations
+
+The service owns the mapping and is responsible for its whole lifecycle:
+
+- **Persist it.** Write bindings to the service's `settings.json` (write-to-temp
+  then rename) so a daemon restart does not orphan every live conversation.
+- **Index both ways.** Keep `sessionId → conversation` in memory for outbound
+  routing; the persisted map is keyed by conversation for inbound.
+- **Clean up on session end.** Implement `handleSessionEnded(sessionId)` to drop
+  the binding, and tell the remote side the conversation is over.
+- **Unbind on delivery failure.** A `404` from the trigger endpoint means the
+  session is gone. Drop the binding rather than silently swallowing every
+  subsequent message.
+
+### Driving the session from the far side
+
+A connectivity service usually wants to *control* the session, not just relay
+text. Most of that already exists over HTTP with API-key auth:
+
+| Action | Endpoint |
+|--------|----------|
+| Spawn a session | `POST /api/runners/:runnerId/spawn` |
+| Send input to a session | `POST /api/sessions/:id/trigger` |
+| List sessions | `GET /api/sessions` |
+| List models | `GET /api/runners/:runnerId/models` |
+| Switch a session's model | `POST /api/sessions/:id/model` |
+
+<Aside type="note" title="requireSession() accepts API keys">
+Despite the name, `requireSession()` falls back to `validateApiKey()`, so routes
+using it are already reachable from a runner service. Check before adding an
+auth shim — the endpoint you want probably works with `x-api-key` today.
+</Aside>
+
+Anything a *viewer* drives over a socket event has no HTTP equivalent unless one
+is added. `POST /api/sessions/:id/model` exists precisely because switching a
+live model was viewer-only (`model_set`), and a runner service is not a viewer.
+There is still no HTTP route to stop a session — `kill_session` is
+server→runner only.
+
+### Worked example
+
+The Discord bridge implements exactly this pattern — one gateway connection for
+the runner, thread-per-session bindings, session spawning from a mention, native
+slash commands, and a panel for status and controls. Its session-side half is
+`packages/cli/src/extensions/discord-mirror.ts`, which forwards each settled
+assistant turn and nothing else.
+
+Commands that pick from a list render a **select menu** rather than asking the
+user to type an exact id — `/models` shows the available models with the current
+one preselected, `/sessions` binds the thread to a running session. Two details
+worth copying:
+
+- **Defer before any network call.** Discord expires an interaction after 3
+  seconds, so `deferReply()` first and `editReply()` once the data arrives.
+- **Encode the target in `custom_id`.** The menu carries the thread it was built
+  for, so a stale menu left open elsewhere cannot retarget a different binding.
+
+---
+
 ## ServiceHandler API
 
 The service module must default-export a class implementing the ServiceHandler interface:
@@ -654,7 +880,7 @@ function getApiKey(): string | null {
 async function broadcastTrigger(
     type: string,
     payload: Record<string, unknown>,
-    opts?: { deliverAs?: "steer" | "followUp"; summary?: string },
+    opts?: { deliverAs?: "steer" | "followUp"; summary?: string; expectsResponse?: boolean },
 ): Promise<void> {
     const runnerId = readRunnerId();
     const apiKey = getApiKey();
@@ -667,7 +893,7 @@ async function broadcastTrigger(
             type,
             payload,
             source: "my-service",
-            deliverAs: opts?.deliverAs ?? "followUp",
+            deliverAs: opts?.deliverAs ?? "steer",
             summary: opts?.summary,
         }),
     }).catch(err => console.error("[my-service] trigger broadcast failed:", err));
@@ -680,7 +906,7 @@ class MyService {
 
     #server: Server | null = null;
 
-    init(_socket: any, { announcePanel }: any) {
+    init(_socket: any, { announcePanel, announceSigilServer }: any) {
         const panelDir = join(dirname(fileURLToPath(import.meta.url)), "panel");
         const indexHtml = readFileSync(join(panelDir, "index.html"), "utf-8");
 
@@ -716,6 +942,9 @@ class MyService {
         if (announcePanel) {
             announcePanel(this.#server.port);
         }
+        if (announceSigilServer) {
+            announceSigilServer(this.#server.port);
+        }
     }
 
     dispose() {
@@ -730,18 +959,18 @@ export default MyService;
 ```
 
 **Lifecycle:**
-- **`init(socket, context)`** — called when the runner starts. Start your HTTP server, call `announcePanel(port)` to register the panel, and set up any trigger-firing logic.
+- **`init(socket, context)`** — called when the runner starts. Start your HTTP server, call `announcePanel(port)` to register a panel or `announceSigilServer(port)` to register a sigil-resolve server, and set up any trigger-firing logic.
 - **`dispose()`** — called on shutdown. Must clean up the HTTP server to avoid port leaks.
 
 <Aside type="caution">
-  Always call `announcePanel(port)` after starting your server — without it, the panel won't appear in the UI. If your service has no panel, skip this call.
+  Always call `announcePanel(port)` after starting your server — without it, the panel won't appear in the UI. If your service declares sigils but no panel, call `announceSigilServer(port)` so the tunnel can route resolve requests. If your service has neither, skip both calls.
 </Aside>
 
 ---
 
 ## Panel Guidelines
 
-Panels render inside a **280px-tall iframe** in the PizzaPi web interface. Key constraints:
+Panels render inside an iframe in the PizzaPi web interface. The bottom dock is **280px tall**; the side dock is **320px wide**. Key constraints:
 
 - **Self-contained** — all CSS and JS must be inline (no build step required)
 - **Dark theme** — match PizzaPi's dark UI:
@@ -751,15 +980,15 @@ Panels render inside a **280px-tall iframe** in the PizzaPi web interface. Key c
   ```
 - **Relative API URLs** — use `./api/data` (the tunnel proxy preserves the path)
 - **Polling for live data** — use `setInterval` + `fetch` (typically 3–5s intervals)
-- **No external CDN scripts** — the iframe is sandboxed; external scripts may be blocked
+- **Keep panels self-contained** — external resources may fail depending on CSP/network
 - **CORS headers** — API responses need `Access-Control-Allow-Origin: *`
 
 ---
 
 ## How It Works
 
-1. The runner daemon discovers service folders in `~/.pizzapi/services/` (and plugin `services/` dirs)
-2. It reads `manifest.json` for panel metadata and trigger definitions
+1. The runner daemon reads `pi.pizzapi.services` from every configured package that holds a daemon-service grant
+2. It resolves panel metadata and trigger definitions from the declaration (or the split JSON files it points at)
 3. It loads the service module and calls `init(socket, { announcePanel })`
 4. The service starts `Bun.serve()` on port 0 and calls `announcePanel(port)`
 5. The daemon aggregates all trigger defs and sigil defs from all loaded services
@@ -773,13 +1002,14 @@ Panels render inside a **280px-tall iframe** in the PizzaPi web interface. Key c
 
 | Task | How |
 |------|-----|
-| Declare triggers | Add `triggers[]` to `manifest.json` or `triggers.json` |
-| Declare sigils | Add `sigils[]` to `manifest.json` or `sigils.json` |
+| Declare triggers | Add `triggers[]` to the service declaration, or point it at `triggers.json` |
+| Declare sigils | Add `sigils[]` to the service declaration, or point it at `sigils.json` |
 | Fire a trigger | `POST /api/runners/{runnerId}/trigger-broadcast` with API key |
 | Serve static files | `Bun.serve()` with `readFileSync` for `index.html` |
 | Expose an API | Add route checks in the `fetch` handler |
 | Get a random port | `Bun.serve({ port: 0 })` then read `.port` |
 | Announce the panel | Call `announcePanel(server.port)` in `init()` |
+| Announce a sigil server | Call `announceSigilServer(server.port)` in `init()` |
 | Match PizzaPi theme | `#0a0a0b` bg, `#e4e4e7` text, `#27272a` borders |
 | Choose an icon | Browse [lucide.dev/icons](https://lucide.dev/icons), use kebab-case |
 
@@ -794,6 +1024,6 @@ Panels render inside a **280px-tall iframe** in the PizzaPi web interface. Key c
 | Panel doesn't appear in UI | Check that `announcePanel()` is called after the server starts |
 | Blank panel iframe | Tunnel proxy can't reach local server — check the service is still running |
 | API calls fail in panel | Add `Access-Control-Allow-Origin: *` header to API responses |
-| Large panel doesn't fit | Panel container is 280px tall — design accordingly |
+| Large panel doesn't fit | Bottom dock is 280px tall; side dock is 320px wide — design accordingly |
 | Absolute API URLs break | Use relative URLs (`./api/...`) — the tunnel proxy rewrites paths |
 | Port leak after restart | Ensure `dispose()` calls `server.stop(true)` |

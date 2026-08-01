@@ -1,9 +1,9 @@
-import { writeFileSync } from "node:fs";
+import { renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { AuthStorage } from "@earendil-works/pi-coding-agent";
+import { readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { loadConfig, defaultAgentDir, expandHome } from "../config.js";
-import { getOAuthAccessToken, parseGeminiQuotaCredential } from "./usage-auth.js";
+import { getOAuthAccessToken, getAnthropicKeychainToken, parseGeminiQuotaCredential } from "./usage-auth.js";
 import { logInfo, logWarn } from "./logger.js";
 
 // ── Runner-wide usage cache (shared with worker processes via file) ───────────
@@ -55,41 +55,38 @@ export function runnerUsageCacheFilePath(): string {
 }
 
 /**
- * Returns all unique AuthStorage instances known to the daemon:
+ * Returns all unique auth.json paths known to the daemon:
  * the daemon's own startup CWD first, followed by any CWD registered by active
  * worker sessions that maps to a different auth.json (e.g. a project-specific
- * agentDir override).  Results are deduplicated by resolved auth.json path so
- * the same file is never probed twice.
+ * agentDir override). Deduplicated so the same file is never probed twice.
  *
- * Usage fetch functions iterate this list and use the first storage that
+ * Usage fetch functions iterate this list and use the first path that
  * yields valid credentials, ensuring that sessions spawned in projects with
  * their own agentDir overrides are covered even when the daemon was started
  * from a different directory.
  */
-function getKnownAuthStorages(): AuthStorage[] {
+function getKnownAuthPaths(): string[] {
     const seen = new Set<string>();
-    const result: AuthStorage[] = [];
     const cwds = [process.cwd(), ..._activeSessionCwds.keys()];
     for (const cwd of cwds) {
         const config = loadConfig(cwd);
         const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
-        const authPath = join(agentDir, "auth.json");
-        if (!seen.has(authPath)) {
-            seen.add(authPath);
-            result.push(AuthStorage.create(authPath));
-        }
+        seen.add(join(agentDir, "auth.json"));
     }
-    return result;
+    return [...seen];
 }
 
 async function fetchAnthropicUsageData(): Promise<ProviderUsageData | null> {
     let token: string | null = null;
     try {
-        for (const authStorage of getKnownAuthStorages()) {
-            const raw = authStorage.get("anthropic");
+        for (const authPath of getKnownAuthPaths()) {
+            const raw = readStoredCredential("anthropic", authPath);
             token = getOAuthAccessToken(raw);
             if (token) break;
         }
+        // No anthropic entry in auth.json (never ran /login inside pizzapi) —
+        // fall back to Claude Code's own stored OAuth token, read-only.
+        if (!token) token = getAnthropicKeychainToken();
     } catch (err: any) {
         logWarn(`failed to get Anthropic credentials: ${err?.message ?? String(err)}`);
         return null;
@@ -148,17 +145,14 @@ async function getRunnerAnthropicUsageData(opts: { force?: boolean } = {}): Prom
 
 async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
     let token: string | undefined;
-    let projectId: string | undefined;
+    let projectId: string | null = null;
     try {
-        for (const authStorage of getKnownAuthStorages()) {
-            // AuthStorage.getApiKey handles OAuth token refresh and returns
-            // JSON.stringify({ token, projectId }) via the provider's getApiKey().
-            // Use parseGeminiQuotaCredential to validate the result — API-key
-            // credentials return a plain string that fails JSON.parse, so we
-            // must not short-circuit on the first truthy raw value; we need to
-            // confirm it is a valid OAuth Gemini credential before stopping.
-            const raw = await authStorage.getApiKey("google-gemini-cli");
-            const cred = parseGeminiQuotaCredential(raw);
+        for (const authPath of getKnownAuthPaths()) {
+            // parseGeminiQuotaCredential handles both the oauth credential a real
+            // /login writes and the legacy api_key wrapper. It validates the
+            // result, so we must not short-circuit on the first truthy raw value —
+            // only on the first path that yields a usable Gemini credential.
+            const cred = parseGeminiQuotaCredential(readStoredCredential("google-gemini-cli", authPath));
             if (cred) {
                 token = cred.token;
                 projectId = cred.projectId;
@@ -169,17 +163,23 @@ async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
         logWarn(`failed to get Google credentials: ${err?.message ?? String(err)}`);
         return null;
     }
-    if (!token || !projectId) return null;
+    if (!token) return null;
     try {
         const endpoint = process.env["CODE_ASSIST_ENDPOINT"] ?? "https://cloudcode-pa.googleapis.com";
         const version = process.env["CODE_ASSIST_API_VERSION"] ?? "v1internal";
         const res = await fetch(`${endpoint}/${version}:retrieveUserQuota`, {
             method: "POST",
             headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-            body: JSON.stringify({ project: projectId }),
+            // `project` is optional — the endpoint resolves the caller's Code Assist
+            // project from the token, so no :loadCodeAssist round-trip is needed.
+            body: JSON.stringify(projectId ? { project: projectId } : {}),
         });
         if (!res.ok) {
-            if (res.status === 403) return { windows: [], status: "unknown", errorCode: 403 };
+            // 401 = expired/invalid token, 403 = no access. Report both rather than
+            // dropping Gemini from the usage list with no explanation.
+            if (res.status === 401 || res.status === 403) {
+                return { windows: [], status: "unknown", errorCode: res.status };
+            }
             return null;
         }
         const raw = (await res.json()) as {
@@ -201,8 +201,8 @@ async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
 async function fetchCodexUsageData(): Promise<ProviderUsageData | null> {
     let token: string | null = null;
     try {
-        for (const authStorage of getKnownAuthStorages()) {
-            const raw = authStorage.get("openai-codex");
+        for (const authPath of getKnownAuthPaths()) {
+            const raw = readStoredCredential("openai-codex", authPath);
             token = getOAuthAccessToken(raw);
             if (token) break;
         }
@@ -286,11 +286,38 @@ async function refreshAndWriteRunnerUsageCache(opts: { forceAnthropic?: boolean 
 
     const cache: RunnerUsageCacheFile = { fetchedAt: Date.now(), providers };
     try {
-        writeFileSync(runnerUsageCacheFilePath(), JSON.stringify(cache, null, 2), { encoding: "utf-8", mode: 0o600 });
+        await writeUsageCacheAtomic(runnerUsageCacheFilePath(), JSON.stringify(cache, null, 2));
         logInfo(`usage cache refreshed (${Object.keys(providers).join(", ")})`);
     } catch (err: any) {
         logWarn(`failed to write usage cache: ${err?.message ?? String(err)}`);
     }
+}
+
+/**
+ * Write the cache via temp-file + rename so workers never observe a
+ * truncated/partial JSON file mid-write. On Windows the rename can fail
+ * transiently (EPERM/EACCES/EBUSY) while a worker holds the destination open
+ * for reading — retry briefly, then fall back to a direct write rather than
+ * dropping the refresh entirely.
+ */
+async function writeUsageCacheAtomic(path: string, contents: string): Promise<void> {
+    const tmp = `${path}.tmp`;
+    writeFileSync(tmp, contents, { encoding: "utf-8", mode: 0o600 });
+    for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+            renameSync(tmp, path);
+            return;
+        } catch (err: any) {
+            const code = err?.code;
+            if (code !== "EPERM" && code !== "EACCES" && code !== "EBUSY") {
+                rmSync(tmp, { force: true });
+                throw err;
+            }
+            await new Promise((r) => setTimeout(r, 50 * (attempt + 1)));
+        }
+    }
+    writeFileSync(path, contents, { encoding: "utf-8", mode: 0o600 });
+    rmSync(tmp, { force: true });
 }
 
 export function startUsageRefreshLoop(): void {

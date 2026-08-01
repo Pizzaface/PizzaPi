@@ -86,6 +86,7 @@ import type { SessionViewerProps as BaseSessionViewerProps, CmdEntry } from "@/c
 import { formatTokenCount } from "@/components/session-viewer/formatters";
 import { useMessageProcessor } from "@/components/session-viewer/message-processor";
 import { useDraftManagement } from "@/components/session-viewer/draft-management";
+import { queueRecallTarget } from "@/lib/message-queue";
 import { useSessionActionsSetup } from "@/components/session-viewer/session-actions";
 import { useAtMentionHandlers } from "@/components/session-viewer/at-mention-handlers";
 import { useSlashCommands } from "@/components/session-viewer/slash-commands";
@@ -99,6 +100,8 @@ import {
 import { ComposerSubmitButton } from "@/components/session-viewer/composer-submit";
 import { SessionMessageItem, PaginationSentinel } from "@/components/session-viewer/message-item";
 import { GoalStatusBadge } from "@/components/session-viewer/goal-status-badge";
+import { DraggableToolbarButton } from "@/components/session-viewer/DraggableToolbarButton";
+import type { ToolbarButtonId } from "@/hooks/useButtonPosition";
 
 // ── Public re-exports (existing consumers import these from SessionViewer) ────
 export type { RelayMessage } from "@/components/session-viewer/types";
@@ -121,9 +124,13 @@ export function SessionViewer({
   resumeSessions,
   resumeSessionsLoading,
   onRequestResumeSessions,
+  forkMessages,
+  forkMessagesLoading,
+  onRequestForkMessages,
   onSendInput,
   onExec,
   onShowModelSelector,
+  onNewSession,
   agentActive,
   isCompacting,
   effortLevel,
@@ -165,20 +172,28 @@ export function SessionViewer({
   onDuplicateSession,
   runnerInfo,
   extraHeaderButtons,
+  extraOverflowItems,
   mcpOAuthPastes,
   onMcpOAuthPaste,
   onMcpOAuthPasteDismiss,
   onMcpServerDisable,
+  onButtonDragStart,
   hasMoreServerMessages,
   onLoadMoreServerMessages,
   loadingOlderMessages,
+  toolbarPositions,
 }: BaseSessionViewerProps & {
   hasMoreServerMessages?: boolean;
   onLoadMoreServerMessages?: () => void;
   loadingOlderMessages?: boolean;
 }) {
+  const inHeader = (id: ToolbarButtonId) => (toolbarPositions?.[id] ?? "top") === "top";
+
   // ── Misc local state ──────────────────────────────────────────────────────
   const [composerError, setComposerError] = React.useState<string | null>(null);
+  // True when the session has been stuck hydrating ("Connecting…"/"Loading
+  // session…") long enough that the disabled composer needs an explanation.
+  const [hydrationStuck, setHydrationStuck] = React.useState(false);
 
   const sendActionSigilResponse = React.useCallback(
     async (text: string): Promise<boolean> => {
@@ -200,6 +215,33 @@ export function SessionViewer({
   const sessionIdRef = React.useRef<string | null>(sessionId);
   const [editingQueuedId, setEditingQueuedId] = React.useState<string | null>(null);
   const [editingQueuedText, setEditingQueuedText] = React.useState("");
+
+  // Recall/browse queued follow-ups with Up/Down (shell-history style). Returns
+  // true when it handled the key so the caller can preventDefault.
+  const recallQueuedMessage = React.useCallback(
+    (currentId: string | null, dir: "up" | "down"): boolean => {
+      if (!messageQueue || messageQueue.length === 0) return false;
+      const targetId = queueRecallTarget(messageQueue, currentId, dir);
+      if (targetId === null) {
+        // Down past the newest hands focus back to the composer.
+        if (dir === "down" && currentId !== null) {
+          setEditingQueuedId(null);
+          setEditingQueuedText("");
+          requestAnimationFrame(() => {
+            document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]")?.focus();
+          });
+          return true;
+        }
+        return false;
+      }
+      const target = messageQueue.find((m) => m.id === targetId);
+      if (!target) return false;
+      setEditingQueuedId(target.id);
+      setEditingQueuedText(target.text);
+      return true;
+    },
+    [messageQueue],
+  );
 
   // Keep sessionIdRef current for async callbacks
   React.useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
@@ -230,7 +272,7 @@ export function SessionViewer({
       new Set([
         "new", "resume", "mcp", "plugins", "skills", "agents", "model",
         "cycle_model", "effort", "cycle_effort", "compact", "name", "copy",
-        "stop", "restart", "remote", "plan", "sandbox",
+        "stop", "restart", "remote", "plan", "sandbox", "goal",
       ]),
     [],
   );
@@ -272,6 +314,8 @@ export function SessionViewer({
     onSendInput,
     resumeSessions,
     onRequestResumeSessions,
+    forkMessages,
+    onRequestForkMessages,
     runnerId,
     sessionCwd,
     onAppendSystemMessage,
@@ -302,7 +346,10 @@ export function SessionViewer({
     promptSuggestions,
     isResumeMode,
     isAgentMode,
+    isRewindMode,
     resumeCandidates,
+    rewindCandidates,
+    rewindToMessage,
     checkTriggersAndRun,
     requestNewSession,
     subCommandMode,
@@ -387,6 +434,7 @@ export function SessionViewer({
   const commandHighlightedValue = React.useMemo(() => {
     if (!commandOpen) return "";
     if (isResumeMode) return resumeCandidates[commandHighlightedIndex]?.path ?? "";
+    if (isRewindMode) return rewindCandidates[commandHighlightedIndex]?.entryId ?? "";
     if (isAgentMode) return agentCandidates[commandHighlightedIndex]?.name ?? "";
     if (subCommandMode.active)
       return subCommandMode.filtered[commandHighlightedIndex]?.name ?? "";
@@ -400,9 +448,11 @@ export function SessionViewer({
   }, [
     commandOpen,
     isResumeMode,
+    isRewindMode,
     isAgentMode,
     subCommandMode,
     resumeCandidates,
+    rewindCandidates,
     agentCandidates,
     commandSuggestions,
     extensionSuggestions,
@@ -414,6 +464,7 @@ export function SessionViewer({
   const commandOptionCount = React.useMemo(() => {
     if (!commandOpen) return 0;
     if (isResumeMode) return resumeCandidates.length;
+    if (isRewindMode) return rewindCandidates.length;
     if (isAgentMode) return agentCandidates.length;
     if (subCommandMode.active) return subCommandMode.filtered.length;
     return commandSuggestions.length + extensionSuggestions.length + promptSuggestions.length + skillSuggestions.length;
@@ -421,6 +472,8 @@ export function SessionViewer({
     commandOpen,
     isResumeMode,
     resumeCandidates.length,
+    isRewindMode,
+    rewindCandidates.length,
     isAgentMode,
     agentCandidates.length,
     subCommandMode,
@@ -439,14 +492,30 @@ export function SessionViewer({
     ignoreTargetSelector: "[data-pp-prompt]",
   });
 
-  const composerReady = canSubmitSessionInput(sessionId, viewerStatus, !!isCompacting);
+  // Allow composing while the session is still hydrating (e.g. MCP servers
+  // loading on the runner) — input submitted then is queued and flushed once
+  // the snapshot completes. Only lock the composer when hydration is stuck
+  // (runner likely offline) so drafts aren't queued into the void.
+  const hydrating = isSessionHydrating(viewerStatus);
+  const composerReady =
+    canSubmitSessionInput(sessionId, viewerStatus, !!isCompacting) ||
+    (!!sessionId && !isCompacting && hydrating && !hydrationStuck);
+
+  React.useEffect(() => {
+    if (!sessionId || !isSessionHydrating(viewerStatus)) {
+      setHydrationStuck(false);
+      return;
+    }
+    const timer = setTimeout(() => setHydrationStuck(true), 10_000);
+    return () => clearTimeout(timer);
+  }, [sessionId, viewerStatus]);
 
   // ── handleSubmit ──────────────────────────────────────────────────────────
   const handleSubmit = React.useCallback(
     (message: PromptInputMessage) => {
       if (!composerReady) {
         if (isSessionHydrating(viewerStatus)) {
-          setComposerError("Session is still connecting — wait a moment and try again.");
+          setComposerError("Session is still connecting — your draft is preserved, try again shortly.");
         }
         return;
       }
@@ -546,7 +615,8 @@ export function SessionViewer({
               {/* Right: badges + actions */}
               <div className="flex items-center gap-1.5 flex-shrink-0">
                 <HeartbeatStaleBadge lastHeartbeatAt={lastHeartbeatAt} />
-                {(activeModel?.reasoning || effortLevel != null) && (
+                {((activeModel?.reasoning || effortLevel != null) && inHeader("effort")) && (
+                  <DraggableToolbarButton buttonId="effort" onDragStart={onButtonDragStart}>
                   <button
                     className="rounded-full border border-border bg-muted px-2 py-0.5 text-[0.65rem] font-medium text-muted-foreground uppercase tracking-wide hover:bg-muted/80 transition-colors cursor-pointer"
                     onClick={() => {
@@ -560,8 +630,10 @@ export function SessionViewer({
                   >
                     {effortLevel && effortLevel !== "off" ? effortLevel : "off"}
                   </button>
+                  </DraggableToolbarButton>
                 )}
-                {planModeEnabled && (
+                {(planModeEnabled && inHeader("plan")) && (
+                  <DraggableToolbarButton buttonId="plan" onDragStart={onButtonDragStart}>
                   <button
                     className="rounded-full border border-yellow-500/40 bg-yellow-500/10 px-2 py-0.5 text-[0.65rem] font-medium text-yellow-600 dark:text-yellow-400 uppercase tracking-wide hover:bg-yellow-500/20 transition-colors cursor-pointer"
                     onClick={() => {
@@ -575,9 +647,11 @@ export function SessionViewer({
                   >
                     ⏸ plan
                   </button>
+                  </DraggableToolbarButton>
                 )}
                 <GoalStatusBadge goal={goal} />
-                {tokenUsage && (tokenUsage.input > 0 || tokenUsage.output > 0) && (
+                {(tokenUsage && (tokenUsage.input > 0 || tokenUsage.output > 0) && inHeader("tokens")) && (
+                  <DraggableToolbarButton buttonId="tokens" onDragStart={onButtonDragStart}>
                   <span
                     className="text-[0.7rem] text-muted-foreground tabular-nums hidden xs:inline"
                     title={`Input: ${tokenUsage.input.toLocaleString()} tokens\nOutput: ${tokenUsage.output.toLocaleString()} tokens${tokenUsage.cacheRead ? `\nCache read: ${tokenUsage.cacheRead.toLocaleString()}` : ""}${tokenUsage.cacheWrite ? `\nCache write: ${tokenUsage.cacheWrite.toLocaleString()}` : ""}${tokenUsage.cost ? `\nCost: $${tokenUsage.cost.toFixed(4)}` : ""}`}
@@ -587,8 +661,10 @@ export function SessionViewer({
                       {tokenUsage.cost > 0 && ` · $${tokenUsage.cost.toFixed(3)}`}
                     </span>
                   </span>
+                  </DraggableToolbarButton>
                 )}
-                {showTerminalButton && onToggleTerminal && (
+                {(showTerminalButton && onToggleTerminal && inHeader("terminal")) && (
+                  <DraggableToolbarButton buttonId="terminal" onDragStart={onButtonDragStart}>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button className="hidden md:inline-flex h-7 w-7" onClick={onToggleTerminal} size="icon" type="button" variant="outline" aria-label="Toggle terminal">
@@ -597,8 +673,10 @@ export function SessionViewer({
                     </TooltipTrigger>
                     <TooltipContent>Terminal</TooltipContent>
                   </Tooltip>
+                  </DraggableToolbarButton>
                 )}
-                {showFileExplorerButton && onToggleFileExplorer && (
+                {(showFileExplorerButton && onToggleFileExplorer && inHeader("files")) && (
+                  <DraggableToolbarButton buttonId="files" onDragStart={onButtonDragStart}>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button className="hidden md:inline-flex h-7 w-7" onClick={onToggleFileExplorer} size="icon" type="button" variant="outline" aria-label="Toggle file explorer">
@@ -607,8 +685,10 @@ export function SessionViewer({
                     </TooltipTrigger>
                     <TooltipContent>Files</TooltipContent>
                   </Tooltip>
+                  </DraggableToolbarButton>
                 )}
-                {showGitButton && onToggleGit && (
+                {(showGitButton && onToggleGit && inHeader("git")) && (
+                  <DraggableToolbarButton buttonId="git" onDragStart={onButtonDragStart}>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button className="hidden md:inline-flex h-7 w-7" onClick={onToggleGit} size="icon" type="button" variant="outline" aria-label="Toggle git panel">
@@ -617,8 +697,10 @@ export function SessionViewer({
                     </TooltipTrigger>
                     <TooltipContent>Git</TooltipContent>
                   </Tooltip>
+                  </DraggableToolbarButton>
                 )}
-                {showTriggersButton && onToggleTriggers && (
+                {(showTriggersButton && onToggleTriggers && inHeader("triggers")) && (
+                  <DraggableToolbarButton buttonId="triggers" onDragStart={onButtonDragStart}>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button className="hidden md:inline-flex h-7 w-7 relative" onClick={onToggleTriggers} size="icon" type="button" variant="outline" aria-label="Toggle triggers panel">
@@ -645,18 +727,23 @@ export function SessionViewer({
                       {(triggerCount?.subscriptions ?? 0) > 0 && ` • ${triggerCount!.subscriptions} subscribed`}
                     </TooltipContent>
                   </Tooltip>
+                  </DraggableToolbarButton>
                 )}
-                {showAnalyzerButton && onToggleAnalyzer && (
+                {(showAnalyzerButton && onToggleAnalyzer && inHeader("analyzer")) && (
+                  <DraggableToolbarButton buttonId="analyzer" onDragStart={onButtonDragStart}>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button className="hidden md:inline-flex h-7 w-7" onClick={onToggleAnalyzer} size="icon" type="button" variant="outline" aria-label="Toggle context analysis">
                         <BarChart3 className="size-3.5" />
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent>Context &amp; Cache Analysis</TooltipContent>
+                    <TooltipContent>Context &amp; Cache Analysis · click-and-hold to reposition</TooltipContent>
                   </Tooltip>
+                  </DraggableToolbarButton>
                 )}
                 {extraHeaderButtons}
+                {inHeader("export") && (
+                <DraggableToolbarButton buttonId="export" onDragStart={onButtonDragStart}>
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <ConversationExport
@@ -669,7 +756,10 @@ export function SessionViewer({
                   </TooltipTrigger>
                   <TooltipContent>Export</TooltipContent>
                 </Tooltip>
-                {onDuplicateSession && (
+                </DraggableToolbarButton>
+                )}
+                {(onDuplicateSession && inHeader("duplicate")) && (
+                  <DraggableToolbarButton buttonId="duplicate" onDragStart={onButtonDragStart}>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button className="hidden md:inline-flex h-7 w-7" onClick={onDuplicateSession} size="icon" type="button" variant="outline" aria-label="Duplicate session">
@@ -678,6 +768,7 @@ export function SessionViewer({
                     </TooltipTrigger>
                     <TooltipContent>Duplicate</TooltipContent>
                   </Tooltip>
+                  </DraggableToolbarButton>
                 )}
                 <HeaderOverflowMenu
                   showTerminalButton={showTerminalButton}
@@ -699,11 +790,14 @@ export function SessionViewer({
                   onDuplicateSession={onDuplicateSession}
                   messages={sortedMessages}
                   sessionId={sessionId}
+                  extraItems={extraOverflowItems}
                 />
+                {inHeader("delete") && (
+                <DraggableToolbarButton buttonId="delete" onDragStart={onButtonDragStart}>
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
-                      className="h-7 w-7"
+                      className="h-9 w-9 sm:h-7 sm:w-7"
                       disabled={!onExec}
                       onClick={() => {
                         if (!onExec || !sessionId) return;
@@ -723,10 +817,12 @@ export function SessionViewer({
                   </TooltipTrigger>
                   <TooltipContent>End Session</TooltipContent>
                 </Tooltip>
+                </DraggableToolbarButton>
+                )}
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
-                      className="h-7 w-7"
+                      className="h-9 w-9 sm:h-7 sm:w-7"
                       disabled={!onExec}
                       onClick={() => { void requestNewSession(); }}
                       size="icon"
@@ -746,11 +842,21 @@ export function SessionViewer({
           {/* ── Conversation area ─────────────────────────────────────────── */}
           <div className="relative flex flex-col flex-1 min-h-0">
             {!sessionId ? (
-              <ConversationEmptyState
-                icon={<MessageSquare className="size-8 opacity-40" />}
-                title="No session selected"
-                description="Open the sidebar and pick a session to get started."
-              />
+              <ConversationEmptyState>
+                <MessageSquare className="size-8 opacity-40 text-muted-foreground" aria-hidden="true" />
+                <div className="space-y-1">
+                  <h3 className="font-medium text-sm">No session selected</h3>
+                  <p className="text-muted-foreground text-sm">
+                    Pick a session from the sidebar or start a new one.
+                  </p>
+                </div>
+                {onNewSession && (
+                  <Button size="sm" onClick={onNewSession}>
+                    <Plus className="size-4" />
+                    New session
+                  </Button>
+                )}
+              </ConversationEmptyState>
             ) : shouldShowSessionTranscript(sessionId, viewerStatus, visibleMessages.length > 0) ? (
               <Conversation key={sessionId} className="overflow-x-hidden">
                 <ConversationContent className="w-full gap-0 p-0 py-2">
@@ -848,6 +954,11 @@ export function SessionViewer({
                                 } else if (e.key === "Escape") {
                                   setEditingQueuedId(null);
                                   setEditingQueuedText("");
+                                } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+                                  // ponytail: arrows browse the queue rather than
+                                  // move within the box; queued follow-ups are
+                                  // short. Enter saves, Escape cancels.
+                                  if (recallQueuedMessage(qm.id, e.key === "ArrowUp" ? "up" : "down")) e.preventDefault();
                                 }
                               }}
                               autoFocus
@@ -929,6 +1040,10 @@ export function SessionViewer({
                 questions={pendingQuestion.questions}
                 promptKey={pendingQuestion.toolCallId}
                 className="mb-2"
+                onCancel={onExec ? () => {
+                  onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "abort" });
+                  onQuestionDismiss?.();
+                } : undefined}
                 onSubmit={(answers) => {
                   if (!onSendInput) return Promise.resolve(false);
                   setComposerError(null);
@@ -991,6 +1106,9 @@ export function SessionViewer({
                     if (isResumeMode) {
                       const idx = resumeCandidates.findIndex((s) => s.path.toLowerCase() === v.toLowerCase());
                       if (idx !== -1) setCommandHighlightedIndex(idx);
+                    } else if (isRewindMode) {
+                      const idx = rewindCandidates.findIndex((m) => m.entryId.toLowerCase() === v.toLowerCase());
+                      if (idx !== -1) setCommandHighlightedIndex(idx);
                     } else if (isAgentMode) {
                       const idx = agentCandidates.findIndex((a) => a.name.toLowerCase() === v.toLowerCase());
                       if (idx !== -1) setCommandHighlightedIndex(idx);
@@ -1006,7 +1124,7 @@ export function SessionViewer({
                 >
                   <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/50">
                     <span className="text-xs text-muted-foreground font-medium">
-                      {isResumeMode ? "Resume session" : isAgentMode ? "Start as agent" : subCommandMode.active ? `/${subCommandMode.parentCommand}` : "Commands"}
+                      {isResumeMode ? "Resume session" : isRewindMode ? "Rewind conversation" : isAgentMode ? "Start as agent" : subCommandMode.active ? `/${subCommandMode.parentCommand}` : "Commands"}
                     </span>
                     <button type="button" onClick={() => { setCommandOpen(false); setCommandQuery(""); }} className="inline-flex items-center justify-center rounded-sm p-0.5 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors" aria-label="Close command menu">
                       <X className="size-3.5" />
@@ -1035,6 +1153,22 @@ export function SessionViewer({
                                   <span className="text-[11px] text-muted-foreground shrink-0">{new Date(session.modified).toLocaleDateString()}</span>
                                 </div>
                                 <span className="text-[11px] text-muted-foreground truncate" title={session.path}>{formatPathTail(session.path, 2)}</span>
+                              </div>
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </>
+                    ) : isRewindMode ? (
+                      <>
+                        <CommandEmpty>{forkMessagesLoading ? "Loading messages…" : "No messages to rewind to"}</CommandEmpty>
+                        <CommandGroup heading="Rewind to message (forks the session)">
+                          {rewindCandidates.map((message, idx) => (
+                            <CommandItem key={message.entryId} value={message.entryId} onSelect={() => {
+                              rewindToMessage(message);
+                            }}>
+                              <div className="flex min-w-0 items-start gap-2">
+                                <span className="text-[11px] text-muted-foreground shrink-0 tabular-nums pt-0.5">#{rewindCandidates.length - idx}</span>
+                                <span className="text-sm line-clamp-2 break-words">{message.text}</span>
                               </div>
                             </CommandItem>
                           ))}
@@ -1118,13 +1252,16 @@ export function SessionViewer({
                               <CommandItem key={cmd.name} value={cmd.name} onSelect={() => {
                                 setInput(`/${cmd.name} `);
                                 setCommandQuery("");
-                                setCommandOpen(false);
+                                setCommandOpen(keepPopoverOpenNames.has(cmd.name.toLowerCase()));
                                 requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]")?.focus());
                               }}>
                                 <div className="flex w-full items-center justify-between gap-2">
                                   <div className="flex items-center gap-1.5 min-w-0">
                                     <Puzzle className="size-3.5 shrink-0 text-primary/60" />
                                     <span className="font-mono text-sm truncate">/{cmd.name}</span>
+                                    {cmd.argumentHint && (
+                                      <span className="font-mono text-xs text-muted-foreground/70 truncate">{cmd.argumentHint}</span>
+                                    )}
                                   </div>
                                   {cmd.description && <span className="text-xs text-muted-foreground truncate max-w-[50%]">{cmd.description}</span>}
                                 </div>
@@ -1224,8 +1361,21 @@ export function SessionViewer({
             )}
 
             {composerError && (
-              <div className="mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-xs text-destructive">
-                {composerError}
+              <div role="alert" className="mb-2 flex items-start justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-xs text-destructive">
+                <span>{composerError} Your draft is preserved.</span>
+                <button
+                  type="button"
+                  onClick={() => setComposerError(null)}
+                  className="shrink-0 font-medium underline underline-offset-2 hover:no-underline"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+
+            {!composerReady && hydrationStuck && (
+              <div className="mb-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-600 dark:text-amber-400">
+                Still connecting to this session — the runner may be offline. Your draft is preserved.
               </div>
             )}
 
@@ -1243,6 +1393,7 @@ export function SessionViewer({
                 <div className="flex w-full items-end">
                   <PromptInputTextarea
                     data-pp-prompt=""
+                    aria-label="Message"
                     value={input}
                     onChange={(event) => {
                       const next = event.currentTarget.value;
@@ -1328,6 +1479,20 @@ export function SessionViewer({
                         return;
                       }
 
+                      // Empty composer + ArrowUp recalls the last queued message
+                      // for editing (further Up/Down browse the queue). Gated on
+                      // an empty draft so text nav and popovers aren't hijacked.
+                      if (
+                        event.key === "ArrowUp" &&
+                        input === "" &&
+                        !commandOpen && !atMentionOpen && editingQueuedId === null &&
+                        !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey &&
+                        recallQueuedMessage(null, "up")
+                      ) {
+                        event.preventDefault();
+                        return;
+                      }
+
                       if (atMentionOpen && event.key === "Escape") {
                         event.preventDefault();
                         event.stopPropagation();
@@ -1362,6 +1527,13 @@ export function SessionViewer({
                           }
                           return;
                         }
+                        // Nothing selectable (empty or error state) — swallow Enter
+                        // so the raw "@query" isn't sent, and close the picker so
+                        // the next Enter submits normally.
+                        event.preventDefault();
+                        event.stopPropagation();
+                        handleAtMentionClose();
+                        return;
                       }
 
                       if (commandOpen) {
@@ -1378,11 +1550,13 @@ export function SessionViewer({
                           event.preventDefault();
                           const totalItems = isResumeMode
                             ? resumeCandidates.length
-                            : isAgentMode
-                              ? agentCandidates.length
-                              : subCommandMode.active
-                                ? subCommandMode.filtered.length
-                                : commandSuggestions.length + extensionSuggestions.length + promptSuggestions.length + skillSuggestions.length;
+                            : isRewindMode
+                              ? rewindCandidates.length
+                              : isAgentMode
+                                ? agentCandidates.length
+                                : subCommandMode.active
+                                  ? subCommandMode.filtered.length
+                                  : commandSuggestions.length + extensionSuggestions.length + promptSuggestions.length + skillSuggestions.length;
                           if (totalItems === 0) return;
                           setCommandHighlightedIndex((prev) => {
                             if (event.key === "ArrowDown") return prev < totalItems - 1 ? prev + 1 : 0;
@@ -1424,6 +1598,14 @@ export function SessionViewer({
                               setInput("");
                               setCommandQuery("");
                               setCommandOpen(false);
+                              setCommandHighlightedIndex(0);
+                              return;
+                            }
+                          } else if (isRewindMode) {
+                            const highlighted = rewindCandidates[commandHighlightedIndex];
+                            if (highlighted) {
+                              event.preventDefault();
+                              rewindToMessage(highlighted);
                               setCommandHighlightedIndex(0);
                               return;
                             }
@@ -1567,7 +1749,7 @@ export function SessionViewer({
                       onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "compact" });
                     } : undefined}
                   />
-                  <ComposerAttachmentButton />
+                  <ComposerAttachmentButton disabled={!composerReady} />
                   <ComposerSubmitButton sessionId={sessionId} input={input} agentActive={agentActive} onExec={onExec} isTouchDevice={isTouchDevice} />
                 </div>
               </PromptInputFooter>

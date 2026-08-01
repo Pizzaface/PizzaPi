@@ -6,7 +6,8 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
-import { expandHome, expandVars, expandVarsDeep } from "../../config.js";
+import { expandHome, expandVars } from "../../config.js";
+import { buildSpawnInvocation } from "./windows-command.js";
 import {
   MCP_PROTOCOL_VERSION,
   MCP_SUPPORTED_VERSIONS,
@@ -23,12 +24,16 @@ export async function createStdioMcpClient(opts: {
   args?: string[];
   env?: Record<string, string>;
   cwd?: string;
+  /** Internal package-overlay metadata; never read from user config. */
+  packageRoot?: string;
 }): Promise<McpClient> {
-  // Expand @VARNAME@ tokens in command, args, cwd, and env values
-  const command = expandVars(expandHome(opts.command));
-  const args = (opts.args ?? []).map((a) => expandVars(expandHome(a)));
-  const cwd = opts.cwd ? expandVars(expandHome(opts.cwd)) : undefined;
-  const env = opts.env ? expandVarsDeep({ ...opts.env }) as Record<string, string> : undefined;
+  // Insert a package root after regular variables so literal @HOME@ etc. in
+  // the canonical installed path are not interpreted as configuration tokens.
+  const expandStdioValue = (value: string) => expandVars(expandHome(value)).replaceAll("@PACKAGE_ROOT@", opts.packageRoot ?? "@PACKAGE_ROOT@");
+  const command = expandStdioValue(opts.command);
+  const args = (opts.args ?? []).map(expandStdioValue);
+  const cwd = opts.cwd ? expandStdioValue(opts.cwd) : undefined;
+  const env = opts.env ? Object.fromEntries(Object.entries(opts.env).map(([key, value]) => [key, expandStdioValue(value)])) : undefined;
   const mergedEnv = { ...process.env, ...(env ?? {}) };
 
   // STDIO MCP servers are trusted local processes spawned from the user's
@@ -41,9 +46,13 @@ export async function createStdioMcpClient(opts: {
   // expansion doesn't occur.
 
 
-  const child: ChildProcessWithoutNullStreams = spawn(command, args, {
+  // On Windows, `.cmd`/`.bat` shims (npx, npm-installed servers) cannot be
+  // spawned directly — reroute through cmd.exe with PATHEXT resolution.
+  const invocation = buildSpawnInvocation(command, args);
+  const child: ChildProcessWithoutNullStreams = spawn(invocation.command, invocation.args, {
     stdio: "pipe",
     env: mergedEnv,
+    ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
     ...(cwd ? { cwd } : {}),
   });
 

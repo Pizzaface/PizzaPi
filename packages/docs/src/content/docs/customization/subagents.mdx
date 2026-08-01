@@ -5,7 +5,7 @@ description: Delegate tasks to specialized agents with isolated context windows
 
 import { Aside, Tabs, TabItem } from "@astrojs/starlight/components";
 
-Subagents let an agent delegate work to a **child agent with its own isolated context window**. The child runs as a separate `pi` process — it gets its own token budget, executes with a scoped set of tools, and returns a distilled result to the parent. The parent's conversation stays clean and focused.
+Subagents let an agent delegate work to a **child agent with its own isolated context window**. The child runs in-process with its own token budget, executes with a scoped set of tools, and sends a distilled result back to the parent. The parent's conversation stays clean and focused.
 
 ## How it works
 
@@ -13,10 +13,10 @@ When the agent calls the `subagent` tool, PizzaPi:
 
 1. Discovers available agent definitions from multiple directories (see [Agent discovery paths](#agent-discovery-paths))
 2. Creates an in-process `AgentSession` via the pi SDK (no child process, zero overhead)
-3. Streams progress updates through the relay server for real-time Web UI display
-4. Returns the child's final output as the tool result
+3. Returns immediately so the parent can continue working
+4. Runs the child behind the scenes and injects its final output as a follow-up message when done
 
-The key difference from [`spawn_session`](/PizzaPi/running/cli-reference/#spawn_session) is that subagents run **inline** — they block like any other tool call and return their output directly. No cross-session messaging needed.
+Unlike [`spawn_session`](/PizzaPi/running/cli-reference/#spawn_session), subagents stay inside the parent session rather than creating a separately visible child session. Result delivery is automatic; the parent should not poll or wait.
 
 ## Quick start
 
@@ -45,7 +45,7 @@ The agent can invoke the subagent tool like this:
 }
 ```
 
-The subagent runs in its own context, reads the relevant files, and returns a summary. Only the summary enters the parent's context window.
+The subagent starts in its own context and the tool returns immediately. When the work finishes, the summary arrives automatically as a follow-up that resumes the parent session. Only the summary enters the parent's context window.
 
 ## Agent definitions
 
@@ -72,7 +72,7 @@ When agents with the same name exist in multiple directories, the first-found wi
 | `description` | ✅ | Brief description (shown in agent listings) |
 | `tools` | | Comma-separated list of allowed tools (e.g., `read,grep,find`) |
 | `disallowedTools` | | Comma-separated tools to deny (removed from inherited list) |
-| `model` | | Model override (e.g., `claude-haiku-3`; `inherit` to use parent model) |
+| `model` | | Model override (e.g., `claude-haiku-4-5`, `haiku`, `anthropic/claude-haiku-4-5`). `inherit` or omit to auto-select the cheapest available model (not the parent's model). |
 | `maxTurns` | | Maximum agentic turns before the subagent stops |
 | `permissionMode` | | Permission mode: `default`, `acceptEdits`, `dontAsk`, `bypassPermissions`, `plan` |
 | `background` | | If `true`, hints the agent should run as a background task |
@@ -96,12 +96,13 @@ and style inconsistencies. Rate findings P0-P3 by severity.
 Output "LGTM" if the code looks good.
 ```
 
-## Built-in agents
+## Built-in `task` Agent
 
-PizzaPi ships with three default agents in `packages/cli/agents/`. Copy them to `~/.pizzapi/agents/` to use them:
+A general-purpose `task` agent is always available without any definition file. PizzaPi also ships bundled example agents (`researcher`, `reviewer`, `refactorer`) in `packages/cli/agents/` — copy them to `~/.pizzapi/agents/` to use them as custom agents.
 
 | Agent | Tools | Purpose |
 |-------|-------|---------|
+| **task** | built-in coding tools | General-purpose delegation |
 | **researcher** | read, grep, find, ls | Read-only codebase analysis and research |
 | **reviewer** | read, grep, find, ls | Code review with severity-rated findings |
 | **refactorer** | read, write, edit, bash, grep, find, ls | Safe incremental code transformations |
@@ -157,7 +158,7 @@ Use the `model` field in agent definitions to route cheap tasks to fast models:
 name: scout
 description: Quick file exploration
 tools: read,find,ls
-model: claude-haiku-3
+model: haiku
 ---
 Quickly scan files and report what you find. Be brief.
 ```
@@ -180,8 +181,9 @@ Control which agent directories are searched:
 
 Project-scope agents (`.pizzapi/agents/` and `.claude/agents/`) are loaded from the repository and could contain untrusted prompts. When `agentScope` includes project agents:
 
-- PizzaPi prompts for confirmation before running them (in TUI mode)
-- Set `confirmProjectAgents: false` to skip the prompt (only for trusted repos)
+- PizzaPi prompts for confirmation whenever a UI is available (TUI or Web UI).
+- In headless/runner contexts with no UI, the tool **fails closed** and refuses to run project agents.
+- Set `confirmProjectAgents: false` in the `subagent` tool parameters to skip the prompt (only for trusted repos).
 
 <Aside type="caution">
   Project-scope agents come from the repository's `.pizzapi/agents/` or `.claude/agents/` directory. Only use `agentScope: "both"` or `"project"` with repositories you trust.
@@ -202,37 +204,23 @@ Project-scope agents (`.pizzapi/agents/` and `.claude/agents/`) are loaded from 
 - **Keep prompts short** (< 500 words) — the agent's context should be spent on the task, not the prompt
 - **Use model routing** for simple tasks — Haiku/Flash for exploration, Sonnet/Opus for analysis
 
-## Real-time streaming
+## Background execution
 
-Subagent progress is streamed through the relay server to the Web UI in real-time:
-
-- **While running:** The Web UI shows a streaming card with the subagent's current output, including which agent is active and its progress
-- **When complete:** The card collapses to show the final result with usage statistics (tokens, cost, turns)
-- **Parallel mode:** Multiple progress indicators update simultaneously as each task completes
-
-The streaming uses pi's built-in `tool_execution_update` event pipeline:
-
-1. The subagent tool calls `onUpdate()` with partial results including structured `details`
-2. Pi core fires a `tool_execution_update` event with the partial
-3. The remote extension forwards it over WebSocket to the relay server
-4. The relay broadcasts to all connected Web UI viewers
-5. The UI buffers partials via RAF-based debouncing and renders live updates
-
-No additional configuration is needed — streaming works automatically when using PizzaPi's Web UI.
+The launch card records that the subagent started in the background. The parent session remains usable while it runs. On completion or failure, PizzaPi injects the result as a follow-up message and automatically resumes the parent agent. No polling is needed.
 
 ## Comparison with spawn_session
 
 | Feature | `subagent` | `spawn_session` |
 |---------|-----------|----------------|
-| **Communication** | Tool call → result (synchronous) | Triggers + `tell_child` |
+| **Communication** | Automatic follow-up result | Triggers + `tell_child` |
 | **Context** | Isolated in-process session | Fully independent session |
 | **UI** | Inline in parent session | Separate session view |
 | **Overhead** | Near-zero (in-process SDK) | Higher (relay round-trip, new PTY) |
-| **Best for** | Quick delegation, research, review | Long-running parallel work, cross-runner tasks |
+| **Best for** | Background delegation with automatic results | Interactive child workflows, cross-runner tasks |
 | **Model selection** | Via agent definition or parameter | Via spawn parameter |
 | **Agent definitions** | File-based (`~/.pizzapi/agents/`) | Prompt-based (inline in spawn call) |
 
-Use `subagent` for focused, quick tasks. Use `spawn_session` for independent, long-running work.
+Use `subagent` when you only need the result. Use `spawn_session` when you need an independent session, cross-runner execution, or interactive trigger communication.
 
 ## Linked Session Triggers
 
@@ -258,7 +246,7 @@ When a child calls `plan_mode` or `AskUserQuestion`, a trigger appears in the pa
 
 ### Push notification suppression
 
-Linked child sessions (spawned via `spawn_session`) **do not trigger push notifications**. Only top-level sessions — those started by a user or the runner daemon directly — send push notifications. This prevents notification spam when orchestrating multiple child sessions.
+Linked child sessions (spawned via `spawn_session`) can trigger push notifications by default. Child-session push suppression is opt-in per subscription (`suppressChildNotifications`), and the ntfy/native push path currently delivers all events regardless of `isChildSession`. If you are orchestrating many children and want fewer notifications, enable `suppressChildNotifications` on the relevant push subscriptions.
 
 ## Claude Code compatibility
 
@@ -276,7 +264,7 @@ PizzaPi subagents are designed to be compatible with [Claude Code agent files](h
 | Feature | Claude Code (`Task`) | PizzaPi (`subagent`) |
 |---------|---------------------|---------------------|
 | **Execution** | In-process | In-process via pi SDK (isolated session) |
-| **Built-in agents** | `general-purpose`, `Explore`, `Plan` | None (define your own) |
+| **Built-in agents** | `general-purpose`, `Explore`, `Plan` | `task` (general-purpose) |
 | **Skills** | `skills` frontmatter field | Not yet supported |
 | **MCP servers** | `mcpServers` frontmatter field | Not yet supported |
 | **Hooks** | `hooks` frontmatter field | Not yet supported |

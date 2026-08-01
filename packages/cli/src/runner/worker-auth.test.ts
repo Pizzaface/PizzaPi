@@ -3,8 +3,8 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync } from "node:
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-// We can't easily unit-test the full createAuthStorageWithRetry because it
-// depends on the AuthStorage class from pi-coding-agent which uses lockfile.
+// We can't easily unit-test the full createModelRuntimeWithRetry because it
+// depends on pi-coding-agent's ModelRuntime, which uses lockfile internally.
 // Instead, we test the lockless fallback logic and the retry detection.
 
 describe("worker auth resilience", () => {
@@ -54,10 +54,10 @@ describe("worker auth resilience", () => {
         expect(Object.keys(parsed).length).toBe(0);
     });
 
-    test("AuthStorage.create reads from correct path", async () => {
+    test("readStoredCredential reads from correct path", async () => {
         // This test verifies that when we pass an explicit authPath,
-        // AuthStorage reads from that path, not from ~/.pi/agent/auth.json
-        const { AuthStorage } = await import("@earendil-works/pi-coding-agent");
+        // readStoredCredential reads from that path, not from ~/.pi/agent/auth.json
+        const { readStoredCredential } = await import("@earendil-works/pi-coding-agent");
 
         const authPath = join(tmpDir, "auth.json");
         const authData = {
@@ -68,44 +68,23 @@ describe("worker auth resilience", () => {
         };
         writeFileSync(authPath, JSON.stringify(authData, null, 2));
 
-        const storage = AuthStorage.create(authPath);
-        expect(storage.has("test-provider")).toBe(true);
-        expect(storage.list()).toContain("test-provider");
+        const cred = readStoredCredential("test-provider", authPath);
+        expect(cred?.type).toBe("api_key");
+        expect(cred?.type === "api_key" ? cred.key : undefined).toBe("test-key-12345");
 
         // Should NOT have providers from the real ~/.pi/agent/auth.json
-        // (unless they happen to match, which "test-provider" won't)
-        const key = await storage.getApiKey("test-provider");
-        expect(key).toBe("test-key-12345");
+        expect(readStoredCredential("anthropic", authPath)).toBeUndefined();
     });
 
-    test("AuthStorage.inMemory creates storage from pre-loaded data", async () => {
-        // This tests the lockless fallback path: read file without lock,
-        // create in-memory storage
-        const { AuthStorage } = await import("@earendil-works/pi-coding-agent");
-
-        const authData = {
-            anthropic: {
-                type: "oauth" as const,
-                access: "test-access",
-                refresh: "test-refresh",
-                expires: Date.now() + 3600000,
-            },
-        };
-
-        const storage = AuthStorage.inMemory(authData);
-        expect(storage.has("anthropic")).toBe(true);
-        expect(storage.list()).toContain("anthropic");
-    });
-
-    test("AuthStorage.create with nonexistent path creates empty storage", async () => {
-        const { AuthStorage } = await import("@earendil-works/pi-coding-agent");
+    test("ModelRuntime.create with nonexistent path creates empty auth.json", async () => {
+        const { ModelRuntime } = await import("@earendil-works/pi-coding-agent");
 
         const authPath = join(tmpDir, "nonexistent", "auth.json");
-        // Ensure parent dir exists (AuthStorage.create tries to create it)
+        // Ensure parent dir exists (the underlying storage tries to create it)
         mkdirSync(join(tmpDir, "nonexistent"), { recursive: true });
 
-        const storage = AuthStorage.create(authPath);
-        expect(storage.list().length).toBe(0);
+        const runtime = await ModelRuntime.create({ authPath, modelsPath: null });
+        expect((await runtime.listCredentials()).length).toBe(0);
         // Verify it created the file
         expect(existsSync(authPath)).toBe(true);
     });

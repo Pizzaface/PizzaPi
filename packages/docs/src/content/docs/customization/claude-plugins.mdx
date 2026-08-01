@@ -16,10 +16,11 @@ PizzaPi includes a **Claude Code plugin adapter** that discovers plugins designe
 1. **Place a plugin** in one of the global plugin directories:
 
    ```bash
-   # Any of these work:
+   # These are scanned directly:
    ~/.pizzapi/plugins/my-plugin/
    ~/.agents/plugins/my-plugin/
-   ~/.claude/plugins/my-plugin/
+
+   # Claude Code marketplace plugins are loaded via installed_plugins.json — see below.
    ```
 
 2. **Check that it's detected:**
@@ -44,7 +45,8 @@ A Claude Code plugin is a directory with any combination of commands, hooks, ski
 
 <FileTree>
 - my-plugin/
-  - plugin.json *(optional — name, description, version)*
+  - .claude-plugin/plugin.json *(Claude Code standard location; takes precedence over root plugin.json)*
+  - plugin.json *(optional — name, description, version, author, homepage, repository, license, keywords)*
   - commands/
     - review.md
     - deploy.md
@@ -56,7 +58,7 @@ A Claude Code plugin is a directory with any combination of commands, hooks, ski
   - rules/
     - no-console-log.md
     - prefer-const.md
-  - mcp.json *(not adapted — shown as warning)*
+  - .mcp.json *(not adapted — shown as warning)*
 </FileTree>
 
 ### `plugin.json` (optional)
@@ -66,22 +68,29 @@ A Claude Code plugin is a directory with any combination of commands, hooks, ski
   "name": "my-plugin",
   "description": "A helpful plugin for code reviews",
   "version": "1.0.0",
-  "author": "Your Name"
+  "author": "Your Name",
+  "homepage": "https://example.com",
+  "repository": "https://github.com/example/my-plugin",
+  "license": "MIT",
+  "keywords": ["review", "lint"]
 }
 ```
 
-If `plugin.json` is missing, the plugin name is inferred from the directory name.
+If `plugin.json` is missing, the plugin name is inferred from the directory name. PizzaPi also checks `.claude-plugin/plugin.json` first (the Claude Code standard location); if that file exists it takes precedence over a root `plugin.json`.
 
 ---
 
 ## Commands
 
-Command files are Markdown files in the `commands/` directory. Each file becomes a pi slash command namespaced to the plugin:
+Command files are Markdown files in the `commands/` directory. Each file becomes a pi slash command with a flat name derived from its relative path:
 
 ```
-commands/review.md  →  /my-plugin:review
-commands/deploy.md  →  /my-plugin:deploy
+commands/review.md        →  /review
+commands/deploy.md        →  /deploy
+commands/a/b/c/deep.md    →  /a/b/c/deep
 ```
+
+Commands are registered by their file-derived name, not namespaced to the plugin. Two plugins that both ship `commands/review.md` will collide; the last-loaded plugin wins.
 
 ### Command file format
 
@@ -119,7 +128,7 @@ Current branch: !`git branch --show-current`
   Plugins can bundle hooks in `hooks/hooks.json`. For full hooks documentation — including standalone hooks outside plugins — see the [Hooks guide](/PizzaPi/customization/hooks/).
 </Aside>
 
-Hooks are shell commands that run at specific lifecycle events. They're defined in `hooks/hooks.json`:
+Hooks are shell commands that run at specific lifecycle events. They're defined in one or more `*.json` files inside the plugin's `hooks/` directory (commonly `hooks/hooks.json`):
 
 ```json
 {
@@ -278,7 +287,9 @@ PizzaPi searches for plugins in these directories:
 |-----------|--------|
 | `~/.pizzapi/plugins/` | PizzaPi's own plugin directory |
 | `~/.agents/plugins/` | Agent Skills standard directory |
-| `~/.claude/plugins/` | Claude Code's plugin directory |
+| `~/.claude/plugins/` | Claude Code marketplace cache — discovered via `installed_plugins.json` + `enabledPlugins` from Claude Code settings |
+
+A plugin folder placed directly in `~/.claude/plugins/` without a matching `installed_plugins.json` entry will **not** be discovered.
 
 ### Project-local (require trust)
 
@@ -314,7 +325,7 @@ Plugins under the project directory (`.pizzapi/plugins/` etc.) need explicit app
 
 2. **TUI** — interactive confirmation dialog at session start (when running `pizza` directly)
 
-3. **Web UI** — amber trust banner with Trust / Skip buttons (when running via the runner daemon)
+3. **Web UI** — amber trust banner with **Trust & Load** / Skip buttons (when running via the runner daemon)
 
 Once approved by any method, trust is persisted to `~/.pizzapi/config.json` (the `trustedPlugins` array). Future sessions auto-load without re-prompting.
 
@@ -343,9 +354,13 @@ Some Claude Code plugin features don't have direct pi equivalents:
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| **MCP servers** (`mcp.json`) | ⚠️ Shown as warning | Use pi's own MCP integration instead |
-| **Agents** (`agents/`) | ⚠️ Informational | Claude Code–specific agent definitions |
-| **LSP** (`lsp/`) | ⚠️ Informational | Language Server Protocol — Claude-specific |
+| **Commands** | ✅ Adapted | Become pi slash commands |
+| **Hooks** | ✅ Adapted | Merged into pi lifecycle events |
+| **Skills** | ✅ Adapted | Loaded via the Agent Skills standard |
+| **Rules** | ✅ Adapted | Injected into the system prompt |
+| **Agents** | ✅ Adapted | Loaded as subagent definitions |
+| **MCP servers** (`.mcp.json`) | ⚠️ Shown as warning | Use pi's own MCP integration instead |
+| **LSP** (`.lsp.json`) | ⚠️ Shown as warning | Language Server Protocol — Claude-specific |
 | **Prompt hooks** (`"type": "prompt"`) | Skipped | Claude-specific hook type |
 | **Agent hooks** (`"type": "agent"`) | Skipped | Claude-specific hook type |
 
@@ -357,7 +372,7 @@ These are surfaced in the web UI's plugin detail view so you know they exist but
 
 The PizzaPi web UI includes a **Plugins** panel in the runner manager that shows all discovered plugins:
 
-- Plugin names with capability badges (commands, hooks, skills, MCP)
+- Plugin names with capability badges (commands, hooks, skills, rules, MCP)
 - Click to expand and see full details
 - **Rescan** button to re-discover after adding new plugins
 - Empty state with instructions when no plugins are found
@@ -372,9 +387,9 @@ Anthropic publishes a collection of reference plugins at [`anthropics/claude-plu
 # Clone to a global plugin directory
 git clone https://github.com/anthropics/claude-plugins-official.git /tmp/claude-plugins
 
-# Symlink individual plugins you want
-ln -s /tmp/claude-plugins/plugins/code-review ~/.pizzapi/plugins/code-review
-ln -s /tmp/claude-plugins/plugins/testing ~/.pizzapi/plugins/testing
+# Copy individual plugins you want (symlinked plugin roots are ignored)
+cp -r /tmp/claude-plugins/plugins/code-review ~/.pizzapi/plugins/code-review
+cp -r /tmp/claude-plugins/plugins/testing ~/.pizzapi/plugins/testing
 
 # Verify they're discovered
 pizza plugins

@@ -52,6 +52,7 @@ import {
 import { parseGoalArgs } from "./parser.js";
 import {
     createLlmGoalEvaluator,
+    DEFAULT_EVALUATE_EVERY_N_TURNS,
     keywordGoalEvaluator,
     resolveEvaluatorModel,
 } from "./evaluator.js";
@@ -170,6 +171,42 @@ function buildEvaluationContext(
     };
 }
 
+/**
+ * How often (in turns) to invoke the LLM evaluator for this goal. The
+ * keyword evaluator is free/local and always runs every turn (rate 1).
+ * Resolution order: per-goal `--every` override, then
+ * `config.goal.evaluateEveryNTurns`, then the built-in default. Config load
+ * failures fall back to the default rather than surfacing an error here —
+ * evaluator-model resolution (below) is where config problems get reported.
+ */
+function resolveEvaluateRate(state: GoalState, ctx: ExtensionContext): number {
+    if (state.condition.evaluator === "keyword") return 1;
+    if (state.condition.evaluateEveryNTurns !== undefined) {
+        return Math.max(1, state.condition.evaluateEveryNTurns);
+    }
+    try {
+        const configured = loadConfig(ctx.cwd).goal?.evaluateEveryNTurns;
+        return configured !== undefined ? Math.max(1, configured) : DEFAULT_EVALUATE_EVERY_N_TURNS;
+    } catch {
+        return DEFAULT_EVALUATE_EVERY_N_TURNS;
+    }
+}
+
+function stopForBudget(
+    sessionId: string,
+    state: GoalState,
+    budgetReason: NonNullable<ReturnType<typeof checkBudget>>,
+    pi: Pick<ExtensionAPI, "appendEntry" | "sendMessage">,
+): void {
+    clearPendingGuidance(sessionId);
+    persist(state, pi);
+    pi.sendMessage({
+        customType: "goal_status",
+        content: `Goal budget reached: ${budgetReason}. The goal is now inactive; you may continue the session.`,
+        display: true,
+    });
+}
+
 async function runGoalStopCheck(
     event: TurnEndEvent,
     ctx: ExtensionContext,
@@ -180,7 +217,29 @@ async function runGoalStopCheck(
     if (!state || state.status !== "active") return;
 
     const usage = getAssistantUsage(event.message);
-    recordTurnSpend(sessionId, usage.tokens, usage.cost);
+    state = recordTurnSpend(sessionId, usage.tokens, usage.cost) ?? state;
+
+    // The LLM evaluator is a billed API call, so it's throttled to every
+    // `evaluateRate` turns instead of every turn. The first turn always
+    // evaluates so instantly-satisfied goals resolve right away; skipped
+    // turns still enforce budgets and keep the agent looping, they just
+    // don't spend a judge call.
+    const evaluateRate = resolveEvaluateRate(state, ctx);
+    if (state.turnCount > 1 && state.turnCount % evaluateRate !== 0) {
+        const budgetReason = checkBudget(state);
+        if (budgetReason) {
+            stopForBudget(sessionId, state, budgetReason, pi);
+            return;
+        }
+        const guidance = getPendingGuidance(sessionId);
+        pi.sendUserMessage(
+            guidance
+                ? `[Goal not met] ${guidance}\nContinue working toward the goal: ${state.condition.description}`
+                : `Work toward this goal until it is met: ${state.condition.description}`,
+            { deliverAs: "steer" },
+        );
+        return;
+    }
 
     const evalContext = buildEvaluationContext(state, event, ctx);
 
@@ -264,15 +323,9 @@ async function runGoalStopCheck(
     // budgeted turn reports "met" above instead of "budget reached".
     const budgetReason = checkBudget(state);
     if (budgetReason) {
-        clearPendingGuidance(sessionId);
-        persist(state, pi);
-        pi.sendMessage({
-            customType: "goal_status",
-            content: `Goal budget reached: ${budgetReason}. The goal is now inactive; you may continue the session.`,
-            display: true,
-        });
         // Do not shutdown the session; budget exhaustion only deactivates the
         // goal and lets the agent return control to the user naturally.
+        stopForBudget(sessionId, state, budgetReason, pi);
         return;
     }
 
@@ -282,10 +335,11 @@ async function runGoalStopCheck(
         // Goal loop: a "not met" verdict starts another turn instead of
         // returning control to the user (parity with Claude Code /goal).
         // "uncertain" verdicts do NOT auto-continue, so a broken evaluator
-        // can't spin the session forever.
+        // can't spin the session forever. Delivered as "steer" so the goal
+        // notification is never stuck behind the follow-up queue.
         pi.sendUserMessage(
             `[Goal not met] ${lastEval.reason}\nContinue working toward the goal: ${state.condition.description}`,
-            { deliverAs: "followUp" },
+            { deliverAs: "steer" },
         );
     } else {
         clearPendingGuidance(sessionId);
@@ -295,6 +349,15 @@ async function runGoalStopCheck(
 export const goalExtension: ExtensionFactory = (pi) => {
     pi.registerCommand("goal", {
         description: "Set a success condition and optional budget for the session",
+        getArgumentCompletions: (prefix: string) => {
+            const options = [
+                { value: "status", label: "status", description: "Show the active goal and budget" },
+                { value: "clear", label: "clear", description: "Clear the active goal" },
+            ];
+            const p = prefix.trim().toLowerCase();
+            const filtered = p ? options.filter((o) => o.value.startsWith(p)) : options;
+            return filtered.length ? filtered : null;
+        },
         handler: async (args, ctx) => {
             const result = handleGoalCommand(args, ctx, pi);
             pi.sendMessage({
@@ -308,7 +371,7 @@ export const goalExtension: ExtensionFactory = (pi) => {
                 // itself as the directive (parity with Claude Code /goal).
                 pi.sendUserMessage(
                     `Work toward this goal until it is met: ${result.state.condition.description}`,
-                    { deliverAs: "followUp" },
+                    { deliverAs: "steer" },
                 );
             }
         },

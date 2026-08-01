@@ -17,7 +17,9 @@ Use the `spawn_session` tool to spawn long-running agent sessions (e.g., tasks t
 <section name="subagent-tool">
 Use the `subagent` tool to delegate tasks to specialized agents with isolated context. A built-in `task` agent is always available for general-purpose work — use `subagent(agent: "task", task: "...")` to delegate any task without needing an agents folder. Additional agents are defined as markdown files in `~/.pizzapi/agents/` or `~/.claude/agents/` (user scope) and `.pizzapi/agents/` or `.claude/agents/` (project scope). Modes: single (`agent` + `task`), parallel (`tasks` array), chain (`chain` array with `\{{previous}}` placeholder). Set `agentScope: "both"` to include project-local agents.
 
-<important>Prefer `subagent` over `spawn_session` for delegating work. `subagent` is simpler, manages context isolation automatically, and returns results inline. Use `spawn_session` only when you need a long-running background session with independent lifecycle, or when you want to interact with the child session asynchronously via triggers. For most tasks — code changes, research, reviews, refactoring — `subagent` is the right choice.</important>
+<important>Subagents run in the background. The tool returns immediately so you can continue working. Their results arrive automatically as follow-up messages that resume your session — do not poll or wait for them.</important>
+
+<important>Prefer `subagent` over `spawn_session` for delegating work. `subagent` is simpler and manages context isolation and result delivery automatically. Use `spawn_session` only when you need an independently visible session, cross-runner execution, or interactive child communication through triggers.</important>
 
 <recommendation name="subagent-model-selection">
 When calling `subagent`, the tool automatically selects the most cost-effective available model when no `model` is specified. You can override this by setting `model: { provider, id }` explicitly — either at the top level (applies to all tasks) or per-task in parallel/chain mode.
@@ -52,7 +54,7 @@ Runner services can also advertise sigil types for inline references like `[[typ
 <section name="sigil-discovery">
 After naming the conversation with `set_session_name`, immediately call `list_available_sigils` to discover which sigil types (e.g. `[[type:id]]`) are available on this runner.
 
-Some sigils are **built-in** (action, file, status, error, cost, duration, session, model, cmd, tag, test, link, diff) and are always available. Others are provided by runner services (e.g. pr, issue, branch, commit, idea, epic). `list_available_sigils` returns both. Only use sigil types that were explicitly returned by the discovery call.
+Some sigils are **built-in** (action, file, status, error, cost, duration, session, model, cmd, tag, test, link, diff, skill, runner, service, trigger, tunnel, agent) and are always available. The `action` sigil is interactive — pick a variant via its id: `[[action:confirm ...]]`, `[[action:choose ...]]`, or `[[action:input ...]]`. Others are provided by runner services (e.g. pr, issue, branch, commit, idea, epic). `list_available_sigils` returns them all, including each type's variants. Only use sigil types that were explicitly returned by the discovery call.
 
 If sigils ARE available, follow these rules for the rest of the conversation:
 

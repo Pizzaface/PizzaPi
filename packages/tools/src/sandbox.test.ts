@@ -295,7 +295,9 @@ describe("sandbox", () => {
                 const tmpDir = mktmp(join(td(), "symlink-test-"));
                 const targetDir = mktmp(join(td(), "symlink-target-"));
                 const linkPath = join(tmpDir, "escape");
-                symlinkSync(targetDir, linkPath);
+                // "junction" so the test doesn't require symlink privileges on
+                // Windows; ignored on POSIX.
+                symlinkSync(targetDir, linkPath, "junction");
 
                 await initSandbox(makeConfig({
                     denyRead: [targetDir],
@@ -332,7 +334,7 @@ describe("sandbox", () => {
                 validatePath("/etc/secrets/key.pem", "read");
                 expect(getViolations().length).toBe(1);
                 expect(getViolations()[0].operation).toBe("read");
-                expect(getViolations()[0].target).toContain("etc/secrets/key.pem");
+                expect(getViolations()[0].target.replace(/\\/g, "/")).toContain("etc/secrets/key.pem");
             });
 
             test("records violations on denied writes", async () => {
@@ -457,7 +459,7 @@ describe("sandbox", () => {
 
             validatePath("/etc/secrets/test", "read");
             expect(received.length).toBe(1);
-            expect(received[0].target).toContain("etc/secrets/test");
+            expect(received[0].target.replace(/\\/g, "/")).toContain("etc/secrets/test");
             unsub();
         });
 

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   canSubmitSessionInput,
+  classifySessionInput,
   getSessionEmptyStateUi,
   isSessionHydrating,
   shouldShowSessionTranscript,
@@ -56,6 +57,24 @@ describe("canSubmitSessionInput", () => {
   test("allows submission once the session is connected and interactive", () => {
     expect(canSubmitSessionInput("sess-1", "Connected", false)).toBe(true);
     expect(canSubmitSessionInput("sess-1", "Waiting for session events", false)).toBe(true);
+  });
+});
+
+describe("classifySessionInput", () => {
+  test("rejects without a session or during compaction", () => {
+    expect(classifySessionInput(null, "Connected", false, false)).toBe("reject");
+    expect(classifySessionInput("sess-1", "Connected", true, false)).toBe("reject");
+  });
+
+  test("queues while hydrating or awaiting the snapshot", () => {
+    expect(classifySessionInput("sess-1", "Connecting…", false, false)).toBe("queue");
+    expect(classifySessionInput("sess-1", "Loading session (0 of 10 messages)…", false, false)).toBe("queue");
+    // Status says Connected but the snapshot hasn't arrived yet (slow MCP startup).
+    expect(classifySessionInput("sess-1", "Connected", false, true)).toBe("queue");
+  });
+
+  test("sends once live", () => {
+    expect(classifySessionInput("sess-1", "Connected", false, false)).toBe("send");
   });
 });
 

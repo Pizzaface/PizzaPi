@@ -11,6 +11,7 @@ export type { RegisterTuiSessionOpts, UpdateSessionStateOpts } from "./sessions.
 export {
     registerTuiSession,
     getLocalTuiSocket,
+    waitForLocalTuiSocket,
     removeLocalTuiSocket,
     getSessions,
     getSharedSession,
@@ -61,7 +62,7 @@ export type { TerminalSpawnOpts } from "./terminals.js";
 export {
     registerTerminal,
     setTerminalViewer,
-    markTerminalSpawned,
+    claimTerminalSpawn,
     removeTerminalViewer,
     getTerminalEntry,
     removeTerminal,

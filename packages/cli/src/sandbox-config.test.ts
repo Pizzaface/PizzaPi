@@ -7,7 +7,7 @@
  *   - mergeSandboxConfig() security invariants (deny=union, allow=intersection, mode escalation only)
  */
 import { describe, test, expect } from "bun:test";
-import { homedir } from "os";
+import { homedir, tmpdir } from "os";
 import { resolve } from "path";
 
 import {
@@ -66,10 +66,12 @@ describe("resolveSandboxConfig — basic mode (default)", () => {
         expect(denyRead).toContain(`${HOME}/.config/gcloud`);
     });
 
-    test("basic allows write to cwd and /tmp by default", () => {
+    test("basic allows write to cwd and the platform temp dir by default", () => {
         const r = resolveSandboxConfig(CWD, cfg({ mode: "basic" }));
         expect(r.srtConfig!.filesystem.allowWrite).toContain(CWD);
-        expect(r.srtConfig!.filesystem.allowWrite).toContain("/tmp");
+        // The default uses os.tmpdir(), not a literal "/tmp" — on macOS that's
+        // /var/folders/..., on Windows %LOCALAPPDATA%\Temp (see sandbox.ts TMP_DIR).
+        expect(r.srtConfig!.filesystem.allowWrite).toContain(tmpdir());
     });
 
     test("basic denies writes to .env files", () => {

@@ -1,19 +1,24 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import type { HooksConfig } from "../config.js";
-import { discordExtension } from "./discord.js";
 import { createHooksExtension } from "./hooks.js";
 import { initialPromptExtension } from "./initial-prompt.js";
 import { mcpExtension } from "./mcp-extension.js";
 import { remoteExtension } from "./remote.js";
 import { restartExtension } from "./restart.js";
+import { sessionProcessesExtension } from "./session-processes.js";
 
 import { setSessionNameExtension } from "./set-session-name.js";
+import { currentTimeExtension } from "./current-time.js";
+import { backgroundBashExtension } from "./background-bash.js";
+import { queueFlushExtension } from "./queue-flush.js";
 import { spawnSessionExtension } from "./spawn-session.js";
 import { updateTodoExtension } from "./update-todo.js";
+import { memoryExtension } from "./memory/index.js";
 import { goalExtension } from "./goal/index.js";
 import { createClaudePluginExtension } from "./claude-plugins.js";
 import { subagentExtension } from "./subagent.js";
 import { tunnelToolsExtension } from "./tunnel-tools.js";
+import { discordMirrorExtension } from "./discord-mirror.js";
 import { planModeToggleExtension } from "./plan-mode/index.js";
 import { triggersExtension } from "./triggers/extension.js";
 import { sandboxEventsExtension } from "./sandbox-events.js";
@@ -21,12 +26,18 @@ import { pizzapiTitleExtension } from "./pizzapi-title.js";
 import { pizzapiHeaderExtension } from "./pizzapi-header.js";
 import { toolSearchExtension } from "./tool-search.js";
 import { ollamaWebToolsExtension } from "./ollama-web-tools.js";
-import { providerExtension } from "./providers/extension.js";
+import { ollamaCloudProviderExtension } from "./ollama-cloud-provider.js";
 import { sessionAnalysisExtension } from "./session-analysis.js";
 import { providerRequestLogExtension } from "./provider-request-log.js";
+import { createResourcePathsExtension } from "./resource-paths.js";
+import { hostAnnounceExtension } from "./host-announce.js";
+import { createPackageOverlayRulesExtension } from "./package-overlay-rules.js";
+import { resolveAgentDir } from "../config.js";
 
 export interface BuildExtensionFactoriesOptions {
     cwd: string;
+    /** Resolved agent dir. Defaults to `resolveAgentDir(cwd)` when omitted. */
+    agentDir?: string;
     hooks?: HooksConfig;
     includeInitialPrompt?: boolean;
     /** Skip MCP server connections (safe mode). */
@@ -35,6 +46,16 @@ export interface BuildExtensionFactoriesOptions {
     skipPlugins?: boolean;
     /** Skip relay server connection (safe mode). */
     skipRelay?: boolean;
+    /** `config.skills` — extra skill directories from the resolved PizzaPi config. */
+    configSkills?: string[];
+    /**
+     * Explicit, persisted pi project-trust decision for `cwd` (see
+     * config/io.ts `resolveExplicitProjectTrust`). Gates project-scope
+     * `pi.pizzapi` overlay rules — defaults to `false` (untrusted) when
+     * omitted so a caller that forgets to thread trust fails closed instead
+     * of silently re-trusting an untrusted repo's project-scope packages.
+     */
+    projectTrusted?: boolean;
 }
 
 /** Tag a factory with a display name for the boot info listing. */
@@ -50,6 +71,17 @@ function named(factory: ExtensionFactory, displayName: string): ExtensionFactory
  */
 export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesOptions): ExtensionFactory[] {
     const factories: ExtensionFactory[] = [];
+    const agentDir = options.agentDir ?? resolveAgentDir(options.cwd);
+
+    // Host capability announcement — first among PizzaPi's own inline
+    // factories so package extensions subscribed via onPizzaPiHost() see
+    // pizzapi:host:ready as early as possible (§9.3).
+    factories.push(named(hostAnnounceExtension, "host-announce"));
+
+    // Static Ollama Cloud provider + fallback model catalog baseline — must
+    // run before other factories so --provider ollama-cloud and model listing
+    // see the provider immediately (see ollama-cloud-provider.ts).
+    factories.push(named(ollamaCloudProviderExtension, "ollama-cloud-provider"));
 
     // Diagnostic (off unless PIZZAPI_LOG_PROVIDER_REQUEST is set): log the
     // resolved provider/api and request shape for each outbound turn.
@@ -62,6 +94,7 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
     if (!options.skipRelay) {
         factories.push(named(remoteExtension, "relay"));
         factories.push(named(tunnelToolsExtension, "tunnel-tools"));
+        factories.push(named(discordMirrorExtension, "discord-mirror"));
     }
 
     if (!options.skipMcp) {
@@ -72,22 +105,39 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
 
     factories.push(named(ollamaWebToolsExtension, "ollama-web-tools"));
 
+    // resources_discover dual-path: supplies the same skill/prompt paths as
+    // DefaultResourceLoader's additionalSkillPaths/additionalPromptTemplatePaths
+    // constructor options (kept in place — see resource-paths.ts for why).
+    factories.push(
+        named(
+            createResourcePathsExtension({
+                configSkills: options.configSkills,
+                skipPlugins: options.skipPlugins,
+                cwd: options.cwd,
+            }),
+            "resource-paths",
+        ),
+    );
+
     factories.push(
         named(goalExtension, "goal"),
         named(restartExtension, "restart"),
+        named(sessionProcessesExtension, "session-processes"),
         named(setSessionNameExtension, "session-name"),
+        named(currentTimeExtension, "current-time"),
+        named(backgroundBashExtension, "background-bash"),
+        named(queueFlushExtension, "queue-flush"),
         named(updateTodoExtension, "todo"),
+        named(memoryExtension, "memory"),
         named(spawnSessionExtension, "spawn-session"),
         named(subagentExtension, "subagent"),
         named(planModeToggleExtension, "plan-mode"),
         named(sandboxEventsExtension, "sandbox"),
         named(pizzapiTitleExtension, "title"),
         named(pizzapiHeaderExtension, "header"),
-        named(discordExtension, "discord"),
     );
 
     // Provider interface — context injection + lifecycle hooks
-    factories.push(named(providerExtension, "providers"));
     factories.push(named(sessionAnalysisExtension, "session-analysis"));
 
     if (options.includeInitialPrompt) {
@@ -97,6 +147,14 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
     const hooksExtension = createHooksExtension(options.hooks, options.cwd);
     if (hooksExtension) {
         factories.push(named(hooksExtension, "hooks"));
+    }
+
+    // pi.pizzapi.rules from configured packages — registered BEFORE the
+    // legacy Claude-plugin rules adapter below so package rules land in the
+    // system prompt first ("package-before-legacy" ordering, §4.3).
+    const overlayRulesExtension = createPackageOverlayRulesExtension(options.cwd, agentDir, options.projectTrusted ?? false);
+    if (overlayRulesExtension) {
+        factories.push(named(overlayRulesExtension, "package-overlay-rules"));
     }
 
     // Claude Code plugin adapter — discovers and loads plugins from standard dirs

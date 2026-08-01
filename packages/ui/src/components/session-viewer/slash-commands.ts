@@ -2,7 +2,7 @@ import * as React from "react";
 import type { CmdEntry } from "./viewer-types";
 import type { CommandResultData } from "./rendering";
 import type { SandboxViolationEntry } from "./cards/CommandResultCard";
-import type { ResumeSessionOption } from "@/lib/types";
+import type { ResumeSessionOption, ForkMessageOption } from "@/lib/types";
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import {
   type IncompleteTriggerItem,
@@ -40,6 +40,8 @@ export interface SlashCommandDeps {
   ) => boolean | void | Promise<boolean | void>;
   resumeSessions?: ResumeSessionOption[];
   onRequestResumeSessions?: () => boolean | void;
+  forkMessages?: ForkMessageOption[];
+  onRequestForkMessages?: () => boolean | void;
   runnerId?: string;
   sessionCwd?: string;
   onAppendSystemMessage?: (content: string | CommandResultData) => void;
@@ -79,8 +81,12 @@ export interface SlashCommandState {
   promptSuggestions: CmdEntry[];
   isResumeMode: boolean;
   isAgentMode: boolean;
+  isRewindMode: boolean;
   resumeQuery: string;
   resumeCandidates: ResumeSessionOption[];
+  rewindCandidates: ForkMessageOption[];
+  /** Fork the session at the given user message and pre-fill the composer with its text. */
+  rewindToMessage: (message: ForkMessageOption) => void;
   /** Check for incomplete triggers, then run action (or invoke onIncompleteTriggers). */
   checkTriggersAndRun: (action: () => void) => Promise<void>;
   requestNewSession: () => void;
@@ -110,6 +116,8 @@ export function useSlashCommands(
     onSendInput,
     resumeSessions,
     onRequestResumeSessions,
+    forkMessages,
+    onRequestForkMessages,
     runnerId,
     sessionCwd,
     onAppendSystemMessage,
@@ -132,9 +140,9 @@ export function useSlashCommands(
   const webHandledCommands = React.useMemo(
     () =>
       new Set([
-        "new", "resume", "mcp", "plugins", "skills", "agents", "model",
+        "new", "resume", "rewind", "fork", "mcp", "plugins", "skills", "agents", "model",
         "cycle_model", "effort", "cycle_effort", "compact", "name", "copy",
-        "stop", "restart", "remote", "plan", "sandbox",
+        "stop", "restart", "remote", "plan", "sandbox", "goal", "background",
       ]),
     [],
   );
@@ -144,6 +152,7 @@ export function useSlashCommands(
     () => [
       { name: "new", description: "Start a new conversation" },
       { name: "resume", description: "Resume the previous session" },
+      { name: "rewind", description: "Rewind the conversation to a previous message" },
       {
         name: "mcp",
         description: "MCP server management",
@@ -158,16 +167,33 @@ export function useSlashCommands(
       { name: "skills", description: "Show available skills" },
       { name: "agents", description: "Start a new session as an agent" },
       { name: "model", description: "Select model" },
-      { name: "cycle_model", description: "Select model" },
+      { name: "cycle_model", description: "Select model (alias of /model)" },
       { name: "effort", description: "Cycle reasoning effort level" },
-      { name: "cycle_effort", description: "Cycle reasoning effort level" },
+      { name: "cycle_effort", description: "Cycle reasoning effort level (alias of /effort)" },
       { name: "compact", description: "Compact context" },
       { name: "name", description: "Set session name" },
       { name: "copy", description: "Copy last assistant message" },
       { name: "stop", description: "Abort current generation" },
+      { name: "background", description: "Send the running command to the background" },
       { name: "restart", description: "Restart the CLI process" },
       { name: "plan", description: "Toggle plan mode (read-only exploration)" },
-      { name: "sandbox", description: "Show sandbox status" },
+      {
+        name: "sandbox",
+        description: "Show sandbox status",
+        subCommands: [
+          { name: "status", description: "Show sandbox status (default)" },
+          { name: "violations", description: "List sandbox violations" },
+          { name: "config", description: "Show sandbox configuration" },
+        ],
+      },
+      {
+        name: "goal",
+        description: "Set a goal — /goal \"<condition>\" [--max-turns N] [--max-tokens N] [--max-cost N] [--every N]",
+        subCommands: [
+          { name: "status", description: "Show the active goal and budget" },
+          { name: "clear", description: "Clear the active goal" },
+        ],
+      },
     ],
     [],
   );
@@ -181,13 +207,32 @@ export function useSlashCommands(
     return names;
   }, [supportedWebCommands, extensionCommands, skillCommands, promptCommands]);
 
-  const keepPopoverOpenNames = React.useMemo(() => {
-    const names = new Set(["resume", "agents"]);
+  // Sub-command lists per command: static web entries plus runner-provided
+  // argument completions on extension/plugin commands (TUI autocomplete parity).
+  const subCommandsByName = React.useMemo(() => {
+    const map = new Map<string, SupportedSubCommand[]>();
     for (const c of supportedWebCommands) {
-      if (c.subCommands && c.subCommands.length > 0) names.add(c.name.toLowerCase());
+      if (c.subCommands && c.subCommands.length > 0) map.set(c.name.toLowerCase(), c.subCommands);
     }
+    for (const c of extensionCommands) {
+      const key = c.name.toLowerCase();
+      if (!c.completions?.length || map.has(key)) continue;
+      map.set(
+        key,
+        c.completions.map((i) => ({
+          name: i.value,
+          description:
+            i.description ?? (i.label && i.label !== i.value ? i.label : ""),
+        })),
+      );
+    }
+    return map;
+  }, [supportedWebCommands, extensionCommands]);
+
+  const keepPopoverOpenNames = React.useMemo(() => {
+    const names = new Set(["resume", "agents", "rewind", "fork", ...subCommandsByName.keys()]);
     return names;
-  }, [supportedWebCommands]);
+  }, [subCommandsByName]);
 
   // Reset all command picker state when the active session changes
   React.useEffect(() => {
@@ -240,6 +285,8 @@ export function useSlashCommands(
   const trimmedInput = input.trimStart();
   const isResumeMode = /^\/resume(?:\s|$)/i.test(trimmedInput);
   const isAgentMode = /^\/agents(?:\s|$)/i.test(trimmedInput);
+  // /fork is the TUI name for the same rewind flow (Esc-Esc selector)
+  const isRewindMode = /^\/(?:rewind|fork)(?:\s|$)/i.test(trimmedInput);
   const resumeQuery = isResumeMode
     ? trimmedInput.replace(/^\/resume\s*/i, "").trim().toLowerCase()
     : "";
@@ -261,31 +308,66 @@ export function useSlashCommands(
     });
   }, [resumeSessions, resumeQuery]);
 
+  const rewindQuery = isRewindMode
+    ? trimmedInput.replace(/^\/(?:rewind|fork)\s*/i, "").trim().toLowerCase()
+    : "";
+
+  // Newest first — rewinding to a recent message is the common case (TUI
+  // pre-selects the last user message for the same reason).
+  const rewindCandidates = React.useMemo(() => {
+    const list = [...(forkMessages ?? [])].reverse();
+    if (!rewindQuery) return list;
+    return list.filter((m) => m.text.toLowerCase().includes(rewindQuery));
+  }, [forkMessages, rewindQuery]);
+
+  const rewindToMessage = React.useCallback(
+    (message: ForkMessageOption) => {
+      setCommandOpen(false);
+      setCommandQuery("");
+      if (!onExec) {
+        setInput("");
+        return;
+      }
+      const dispatched = onExec({
+        type: "exec",
+        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        command: "fork",
+        entryId: message.entryId,
+      });
+      // Pre-fill the composer with the rewound message so it can be edited
+      // and resent — mirrors the TUI fork flow.
+      setInput(dispatched === false ? "" : message.text);
+      requestAnimationFrame(() => {
+        const ta = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+        if (ta) { const len = ta.value.length; ta.setSelectionRange(len, len); ta.focus(); }
+      });
+    },
+    [onExec, setInput],
+  );
+
   // Sub-command mode (e.g. "/mcp " shows mcp sub-commands)
   const subCommandMode = React.useMemo<SubCommandMode>(() => {
-    if (isResumeMode || isAgentMode)
+    if (isResumeMode || isAgentMode || isRewindMode)
       return { active: false, parentCommand: "", subCommands: [], query: "", filtered: [] };
     const match = trimmedInput.match(/^\/(\S+)(?:\s(.*))?$/i);
     if (!match)
       return { active: false, parentCommand: "", subCommands: [], query: "", filtered: [] };
     const cmdName = match[1]!.toLowerCase();
     const argText = (match[2] ?? "").trim().toLowerCase();
-    const cmd = supportedWebCommands.find(
-      (c) => c.name.toLowerCase() === cmdName && c.subCommands && c.subCommands.length > 0,
-    );
-    if (!cmd?.subCommands)
+    const subCommands = subCommandsByName.get(cmdName);
+    if (!subCommands)
       return { active: false, parentCommand: "", subCommands: [], query: "", filtered: [] };
     const filtered = argText
-      ? cmd.subCommands.filter((sc) => sc.name.toLowerCase().includes(argText))
-      : cmd.subCommands;
+      ? subCommands.filter((sc) => sc.name.toLowerCase().includes(argText))
+      : subCommands;
     return {
       active: true,
-      parentCommand: cmd.name,
-      subCommands: cmd.subCommands,
+      parentCommand: match[1]!,
+      subCommands,
       query: argText,
       filtered,
     };
-  }, [trimmedInput, isResumeMode, isAgentMode, supportedWebCommands]);
+  }, [trimmedInput, isResumeMode, isAgentMode, isRewindMode, subCommandsByName]);
 
   // Request resume sessions list when entering resume mode
   React.useEffect(() => {
@@ -303,6 +385,19 @@ export function useSlashCommands(
   React.useEffect(() => {
     if (!commandOpen || !isResumeMode) resumeRequestedRef.current = null;
   }, [commandOpen, isResumeMode]);
+
+  // Request rewindable messages when entering rewind mode
+  const rewindRequestedRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!sessionId || !commandOpen || !isRewindMode || !onRequestForkMessages) return;
+    if (rewindRequestedRef.current === sessionId) return;
+    rewindRequestedRef.current = sessionId;
+    onRequestForkMessages();
+  }, [sessionId, commandOpen, isRewindMode, onRequestForkMessages]);
+
+  React.useEffect(() => {
+    if (!commandOpen || !isRewindMode) rewindRequestedRef.current = null;
+  }, [commandOpen, isRewindMode]);
 
   /** Check for incomplete triggers, then run the action or invoke onIncompleteTriggers. */
   const checkTriggersAndRun = React.useCallback(
@@ -480,7 +575,16 @@ export function useSlashCommands(
       }
 
       if (rawCommand === "sandbox") {
-        if (args.trim()) return false;
+        if (args.trim()) {
+          // Sub-commands (violations/config) are handled by the runner's
+          // sandbox extension — forward as raw input.
+          if (!onSendInput) return false;
+          void onSendInput({ text: trimmed, files: [] });
+          setInput("");
+          setCommandOpen(false);
+          setCommandQuery("");
+          return true;
+        }
         if (!runnerId) {
           setInput("");
           setCommandOpen(false);
@@ -593,6 +697,34 @@ export function useSlashCommands(
         return true;
       }
 
+      // /remote manages the runner's relay connection — running it from the
+      // web UI (which is connected *through* that relay) would sever the
+      // session, so it is intentionally blocked here.
+      if (rawCommand === "remote") {
+        setInput("");
+        setCommandOpen(false);
+        setCommandQuery("");
+        onAppendSystemMessage?.(
+          "**/remote** manages the runner's relay connection and isn't available from the web UI.",
+        );
+        return true;
+      }
+
+      // Commands executed by runner extensions (/goal, /tool-search, plugin
+      // commands, …) — forward the raw text as input so sub-command clicks
+      // actually dispatch instead of being silently dropped.
+      const isExtensionCommand = extensionCommands.some(
+        (c) => c.name.toLowerCase() === rawCommand,
+      );
+      if (rawCommand === "goal" || isExtensionCommand) {
+        if (!onSendInput) return false;
+        void onSendInput({ text: trimmed, files: [] });
+        setInput("");
+        setCommandOpen(false);
+        setCommandQuery("");
+        return true;
+      }
+
       if (!onExec) return false;
 
       if (rawCommand === "mcp") {
@@ -628,6 +760,22 @@ export function useSlashCommands(
         setInput("");
         setCommandOpen(false);
         setCommandQuery("");
+        return true;
+      }
+
+      if (rawCommand === "rewind" || rawCommand === "fork") {
+        // Rewinding requires an explicit selection from the picker — an exact
+        // query match is the only safe way to dispatch from raw text.
+        const query = args.trim().toLowerCase();
+        const match = query
+          ? [...(forkMessages ?? [])].reverse().find((m) => m.text.toLowerCase().includes(query))
+          : undefined;
+        if (match) {
+          rewindToMessage(match);
+        } else {
+          // Keep the picker open so the user can choose a message.
+          setCommandOpen(true);
+        }
         return true;
       }
 
@@ -684,6 +832,14 @@ export function useSlashCommands(
         return true;
       }
 
+      if (rawCommand === "background") {
+        onExec({ type: "exec", id, command: "background_bash" });
+        setInput("");
+        setCommandOpen(false);
+        setCommandQuery("");
+        return true;
+      }
+
       if (rawCommand === "stop") {
         onExec({ type: "exec", id, command: "abort" });
         setInput("");
@@ -715,9 +871,12 @@ export function useSlashCommands(
       onExec,
       onSendInput,
       resumeSessions,
+      forkMessages,
+      rewindToMessage,
       runnerId,
       onAppendSystemMessage,
       skillCommands,
+      extensionCommands,
       sessionCwd,
       onShowModelSelector,
       isCompacting,
@@ -749,8 +908,11 @@ export function useSlashCommands(
     promptSuggestions,
     isResumeMode,
     isAgentMode,
+    isRewindMode,
     resumeQuery,
     resumeCandidates,
+    rewindCandidates,
+    rewindToMessage,
     checkTriggersAndRun,
     requestNewSession,
     resumeRequestedRef,

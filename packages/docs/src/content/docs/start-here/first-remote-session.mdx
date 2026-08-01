@@ -19,6 +19,7 @@ Before you start, make sure you have:
 
 - **PizzaPi CLI installed** — see [Installation](/PizzaPi/start-here/installation/)
 - **Docker and Docker Compose** — needed to run the relay server
+- **git** — `pizzapi web` clones the PizzaPi repo on first run
 - **An AI provider API key** — Anthropic, OpenAI, Google, Ollama Cloud, or a Claude Pro/Max subscription
 
 ---
@@ -40,13 +41,15 @@ Before you start, make sure you have:
    ✅ PizzaPi web is running at http://localhost:7492
    ```
 
-   This spins up a Docker Compose stack with Redis (event buffer) and the PizzaPi server (relay API + web UI).
+   This spins up a Docker Compose stack with Redis (relay state / pub-sub), the PizzaPi server (relay API + web UI), a UI sidecar for web assets, and an optional ntfy service for native Android push (configured separately in [Mobile Push](/PizzaPi/deployment/mobile-push/)).
+
+   The first run clones the repo and builds the Docker images, which usually takes a few minutes. Subsequent starts are much faster.
 
 2. ### Create your account
 
    Open **http://localhost:7492** in your browser. You'll see the PizzaPi web UI.
 
-   Click **Sign up** to create an account. This is a local account on your relay — no external service involved.
+   Switch to the **Sign up** tab to create an account. This is a local account on your relay — no external service involved.
 
 3. ### Connect the CLI
 
@@ -58,19 +61,23 @@ Before you start, make sure you have:
 
    The setup wizard will prompt for:
    - **Relay server URL** — enter `http://localhost:7492`
+   - **Your name** — leave blank if you already signed up in the browser
    - **Email and password** — use the account you just created
 
    ```
-   ┌─────────────────────────────────────────┐
-   │        PizzaPi — first-run setup        │
-   └─────────────────────────────────────────┘
+   ┌───────────────────────────────────────────┐
+   │     🍕 PizzaPi — first-run setup     │
+   └───────────────────────────────────────────┘
 
    Relay server URL [http://localhost:7492]: http://localhost:7492
+   Your name (leave blank if account already exists):
    Email: you@example.com
    Password: ••••••••
 
    Connecting to relay server… ✓
    ✓ API key saved to ~/.pizzapi/config.json
+   ✓ Relay: ws://localhost:7492
+   ✓ Theme set to pizzapi-dark
    ```
 
 4. ### Start a session
@@ -81,6 +88,10 @@ Before you start, make sure you have:
    cd /path/to/your/project
    pizzapi
    ```
+
+   <Aside type="note">
+   Running `pizzapi` with no saved config would auto-launch the setup wizard. Since you just ran `pizzapi setup`, that prompt is skipped.
+   </Aside>
 
 5. ### Watch it in the browser
 

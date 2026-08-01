@@ -5,7 +5,7 @@
 // loading the full namespace module or relying on global mock.module state.
 // ============================================================================
 
-import { getCachedRelayEventsAfterSeq, getLatestCachedSnapshotEvent } from "../../sessions/redis.js";
+import { getCachedRelayEventsAfterSeq, getLatestCachedSnapshotEvent, type LatestCachedSnapshot } from "../../sessions/redis.js";
 
 type ViewerEventEmitter = {
     emit: any;
@@ -18,7 +18,7 @@ export type CachedRelayEvent = {
 
 export interface ViewerCacheDeps {
     getCachedRelayEventsAfterSeq: (sessionId: string, afterSeq: number) => Promise<CachedRelayEvent[]>;
-    getLatestCachedSnapshotEvent: (sessionId: string) => Promise<Record<string, unknown> | null>;
+    getLatestCachedSnapshotEvent: (sessionId: string) => Promise<LatestCachedSnapshot | null>;
 }
 
 const defaultViewerCacheDeps: ViewerCacheDeps = {
@@ -32,10 +32,13 @@ export async function sendLatestSnapshotFromCache(
     generation: number | undefined,
     deps: ViewerCacheDeps = defaultViewerCacheDeps,
 ): Promise<boolean> {
-    const snapshotEvent = await deps.getLatestCachedSnapshotEvent(sessionId);
-    if (!snapshotEvent) return false;
+    const cached = await deps.getLatestCachedSnapshotEvent(sessionId);
+    if (!cached) return false;
 
-    socket.emit("event", { event: snapshotEvent, replay: true, generation });
+    socket.emit("event", { event: cached.event, replay: true, generation });
+    // Replay deltas cached after the snapshot so the viewer isn't left stale
+    // between the snapshot and the seq advertised in "connected".
+    sendCachedDeltaReplayEvents(socket, cached.eventsAfter, generation);
     return true;
 }
 

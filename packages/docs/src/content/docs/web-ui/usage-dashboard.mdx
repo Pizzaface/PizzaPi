@@ -82,7 +82,7 @@ The top 20 models by cost are shown.
 Two side-by-side **horizontal bar charts**:
 
 - **Sessions by Project** — which projects generated the most sessions
-- **Cost by Project** — which projects cost the most
+- **Cost by Project** — which projects cost the most. Note: both charts share the same session-sorted ordering; the membership is the top projects by cost, but the visual order is by session count.
 
 By default the top 8 projects are shown. Click **+N more** to expand the full list. Project names are shortened to the last path component (e.g. `/Users/jordan/Projects/PizzaPi` → `PizzaPi`).
 
@@ -155,7 +155,7 @@ pizza usage --json
 pizza usage anthropic --json
 ```
 
-For **Anthropic**, this shows your OAuth subscription rate-limit windows (5-hour, 7-day, Opus, Sonnet, co-work) with utilization bars and reset times. If extra usage is enabled, it also shows your monthly limit and credits used.
+For **Anthropic**, this shows your OAuth subscription rate-limit windows (5-hour, 7-day, Opus, Sonnet, co-work, and OAuth apps) with utilization bars and reset times. If extra usage is enabled, it also shows your monthly limit and credits used.
 
 For **Gemini** (Google Cloud Code Assist), this shows quota buckets with remaining fractions and reset times.
 
@@ -178,8 +178,8 @@ The database is created automatically on first use. You can safely delete `usage
 
 ## Limitations
 
-- **Runner-scoped data** — The dashboard only shows sessions that ran on the selected runner. If you have multiple runners, each has its own `usage.db` with only its own sessions.
+- **Runner-scoped data** — The dashboard shows sessions from the usage database on the machine that hosts the selected runner. Multiple runner processes on the same host share one `usage.db` and will return the same combined data.
 - **Accumulates from first run** — Data starts accumulating from the first time the scanner runs. There is no way to import historical data from before PizzaPi was installed.
-- **Cost data depends on the provider** — Not all providers return per-token cost breakdowns. Sessions without cost data are counted in session/token totals but excluded from cost averages and charts.
+- **Cost data depends on the provider** — Not all providers return per-token cost breakdowns. Sessions without cost data are excluded from session cost totals and averages; their events contribute 0 to the daily, model, and project cost charts.
 - **50-session cap on the recent table** — Only the 50 most recent sessions in the selected period are shown in the table. Aggregated charts and summaries include all sessions.
 - **Top 20 models/projects** — The model and project breakdowns are capped at the top 20 by cost.

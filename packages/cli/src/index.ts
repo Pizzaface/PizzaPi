@@ -1,27 +1,34 @@
 #!/usr/bin/env bun
 import {
-    AuthStorage,
     createAgentSession,
     createAgentSessionFromServices,
     createAgentSessionRuntime,
     createAgentSessionServices,
     DefaultResourceLoader,
     InteractiveMode,
+    readStoredCredential,
     SessionManager,
+    SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { join } from "path";
-import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "./config.js";
+import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv, resolveExplicitProjectTrust } from "./config.js";
 import { isPackageCommand, runPackageCommand } from "./package-commands.js";
-import { getOAuthAccessToken } from "./runner/usage-auth.js";
+import { getOAuthAccessToken, getAnthropicKeychainToken } from "./runner/usage-auth.js";
 import { c, usageBar, colorPct, colorRemaining } from "./cli-colors.js";
 import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride } from "./skills.js";
-import { getPluginSkillPaths } from "./extensions/claude-plugins.js";
+import { getPluginSkillPaths, getPluginPromptTemplatePaths } from "./extensions/claude-plugins.js";
 import { buildPizzaPiExtensionFactories } from "./extensions/factories.js";
+import { setRemoteSessionHost } from "./extensions/remote/session-host-ref.js";
+import { runtimeSessionHost } from "./runner/session-host.js";
 import { migrateAgentDir } from "./migrations.js";
 import { runSetup } from "./setup.js";
 import { createLogger, initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
 
 const log = createLogger("cli");
+
+// ponytail: standalone binaries can't resolve pi-ai's dynamic OAuth imports; register the statically bundled flows.
+registerBunOAuthFlows();
 
 async function main() {
     const args = process.argv.slice(2);
@@ -78,6 +85,12 @@ async function main() {
         return;
     }
 
+    if (args[0] === "local") {
+        const { runLocal } = await import("./local.js");
+        await runLocal(args.slice(1));
+        return;
+    }
+
     if (args[0] === "setup") {
         await runSetup({ force: true, scan: args.includes("--scan") });
         return;
@@ -86,7 +99,7 @@ async function main() {
     if (args[0] === "usage") {
         const config = loadConfig(cwd);
         const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
-        const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+        const authPath = join(agentDir, "auth.json");
         const showJson = args.includes("--json");
 
         // Determine which provider(s) to show
@@ -98,7 +111,10 @@ async function main() {
 
         // ── Anthropic ──────────────────────────────────────────────────────────
         if (showAnthropic) {
-            const accessToken = getOAuthAccessToken(authStorage.get("anthropic"));
+            // auth.json first, then fall back to Claude Code's own OAuth token
+            // (Keychain / ~/.claude/.credentials.json) for users who never ran
+            // /login inside pizzapi — read-only, never refreshed.
+            const accessToken = getOAuthAccessToken(readStoredCredential("anthropic", authPath)) ?? getAnthropicKeychainToken();
             if (!accessToken) {
                 if (providerArg === "anthropic") {
                     log.error("No Anthropic credentials found. Log in with /login inside pizzapi.");
@@ -187,7 +203,8 @@ async function main() {
 
         // ── Gemini (Google Cloud Code Assist, OAuth) ───────────────────────────
         if (showGemini) {
-            const rawCred = await authStorage.getApiKey("google-gemini-cli");
+            const geminiCred = readStoredCredential("google-gemini-cli", authPath);
+            const rawCred = geminiCred?.type === "api_key" ? geminiCred.key : undefined;
             if (!rawCred) {
                 if (providerArg === "gemini") {
                     log.error("No Gemini credentials found. Log in with /login inside pizzapi.");
@@ -308,6 +325,11 @@ async function main() {
         process.exit(code);
     }
 
+    if (args[0] === "config" && args[1] === "show") {
+        const { runConfigShowCommand } = await import("./config-show.js");
+        process.exit(runConfigShowCommand(cwd));
+    }
+
     if (isPackageCommand(args[0])) {
         const config = loadConfig(cwd);
         const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
@@ -329,6 +351,7 @@ async function main() {
         log.info("");
         log.info(c.label("Commands"));
         log.info(`  ${c.cmd("pizza")}                       Start an interactive agent session`);
+        log.info(`  ${c.cmd("pizza local")} ${c.dim("[flags]")}         Start local relay + runner in one command`);
         log.info(`  ${c.cmd("pizza web")} ${c.dim("[flags]")}           Manage the PizzaPi web hub (Docker)`);
         log.info(`  ${c.cmd("pizza runner")} ${c.dim("[args]")}         Manage the background runner daemon`);
         log.info(`  ${c.cmd("pizza runner stop")}           Stop the runner daemon`);
@@ -341,6 +364,7 @@ async function main() {
         log.info(`  ${c.cmd("pizza update")} ${c.dim("[source|self]")}   Update installed pi packages`);
         log.info(`  ${c.cmd("pizza list")}                    List installed pi packages`);
         log.info(`  ${c.cmd("pizza config")}                  Enable/disable package resources`);
+        log.info(`  ${c.cmd("pizza config show")}             Print resolved effective config (secrets redacted)`);
         log.info("");
         log.info(c.label("Flags"));
         log.info(`  ${c.flag("--cwd")} ${c.dim("<path>")}         Set working directory`);
@@ -466,24 +490,41 @@ async function main() {
         process.env.PIZZAPI_RELAY_URL = "off";
     }
 
+    // Explicit, persisted pi project-trust decision for the initial cwd — the
+    // single authority gating native pi project resources (extensions/
+    // skills/prompts) AND the session-side pi.pizzapi overlay (agents/rules/
+    // mcp from project-scope configured packages). Fails closed: an
+    // undecided or explicitly-untrusted repo never auto-executes project
+    // package code. No new trust UI here — pi's own persisted trust.json is
+    // the authority (see config/io.ts resolveExplicitProjectTrust).
+    const projectTrusted = resolveExplicitProjectTrust(cwd, agentDir);
+    const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted });
+
     // Build extension list — includes configured hooks when present.
     const extensionFactories = buildPizzaPiExtensionFactories({
         cwd,
+        agentDir,
         hooks: noHooks ? undefined : config.hooks,
         skipMcp: noMcp,
         skipPlugins: noPlugins,
         skipRelay: noRelay,
+        configSkills: config.skills,
+        projectTrusted,
     });
 
     const loader = new DefaultResourceLoader({
         cwd,
         agentDir,
+        settingsManager,
         extensionFactories,
         additionalSkillPaths: [
             ...buildSkillPaths(cwd, config.skills),
             ...(noPlugins ? [] : getPluginSkillPaths(cwd)),
         ],
-        additionalPromptTemplatePaths: buildPromptTemplatePaths(cwd),
+        additionalPromptTemplatePaths: [
+            ...buildPromptTemplatePaths(cwd),
+            ...(noPlugins ? [] : getPluginPromptTemplatePaths(cwd)),
+        ],
         ...(config.systemPrompt !== undefined
             ? { systemPromptOverride: () => config.systemPrompt }
             : {}
@@ -499,16 +540,27 @@ async function main() {
     const sessionManager = SessionManager.create(cwd, join(agentDir, "sessions"));
 
     const createRuntime = async (opts: { cwd: string; agentDir: string; sessionManager: SessionManager }) => {
+        // Re-resolve trust explicitly for THIS cwd/agentDir — createRuntime is
+        // reused across /new, /resume, /fork, and session switches, which can
+        // target a different cwd than the process started in, and pi's own
+        // trust.json can change between calls (e.g. the user trusts the repo
+        // via pi's own flow mid-process).
+        const rtProjectTrusted = resolveExplicitProjectTrust(opts.cwd, opts.agentDir);
+        const rtSettingsManager = SettingsManager.create(opts.cwd, opts.agentDir, { projectTrusted: rtProjectTrusted });
         const services = await createAgentSessionServices({
             cwd: opts.cwd,
             agentDir: opts.agentDir,
+            settingsManager: rtSettingsManager,
             resourceLoaderOptions: {
                 extensionFactories: extensionFactories as any,
                 additionalSkillPaths: [
                     ...buildSkillPaths(opts.cwd, config.skills),
                     ...(noPlugins ? [] : getPluginSkillPaths(opts.cwd)),
                 ],
-                additionalPromptTemplatePaths: buildPromptTemplatePaths(opts.cwd),
+                additionalPromptTemplatePaths: [
+                    ...buildPromptTemplatePaths(opts.cwd),
+                    ...(noPlugins ? [] : getPluginPromptTemplatePaths(opts.cwd)),
+                ],
                 ...(config.systemPrompt !== undefined && {
                     systemPromptOverride: () => config.systemPrompt,
                 }),
@@ -528,6 +580,17 @@ async function main() {
         agentDir,
         sessionManager,
     });
+
+    // Install the TUI-backed SessionHost so the remote extension can drive
+    // new/switch/fork + queue ops through `runtime` instead of the removed
+    // patched ExtensionAPI surface (mirrors worker.ts's SessionHost wiring).
+    setRemoteSessionHost(
+        runtimeSessionHost(runtime, (followUp) => {
+            const { steering } = runtime.session.clearQueue();
+            for (const text of steering) void (runtime.session as any)._queueSteer(text);
+            for (const text of followUp) void (runtime.session as any)._queueFollowUp(text);
+        }),
+    );
 
     const mode = new InteractiveMode(runtime, {
         modelFallbackMessage: runtime.modelFallbackMessage,

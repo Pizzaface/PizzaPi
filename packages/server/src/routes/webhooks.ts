@@ -51,6 +51,8 @@ import {
     deleteWebhook,
     toPublicWebhook,
 } from "../webhooks/store.js";
+import { getHiddenModels } from "../user-hidden-models.js";
+import { isHiddenModel } from "./model-guard.js";
 
 const log = createLogger("webhooks-api");
 
@@ -117,6 +119,16 @@ async function spawnSessionForWebhook(
         );
     }
 
+    // Re-check the stored model against the owner's *current* hidden list —
+    // it may have been hidden after the webhook was configured. Hidden model
+    // → spawn without it (runner default) rather than failing the delivery.
+    const hiddenModels = await getHiddenModels(webhookUserId).catch(() => [] as string[]);
+    let effectiveModel = model;
+    if (model && isHiddenModel(hiddenModels, model)) {
+        log.warn(`webhook spawn: dropping hidden model ${model.provider}/${model.id}, using runner default`);
+        effectiveModel = null;
+    }
+
     const sessionId = randomUUID();
     const ackPromise = waitForSpawnAck(sessionId, SPAWN_ACK_TIMEOUT_MS);
 
@@ -125,7 +137,8 @@ async function spawnSessionForWebhook(
             sessionId,
             ...(cwd ? { cwd } : {}),
             ...(prompt ? { prompt } : {}),
-            ...(model ? { model } : {}),
+            ...(effectiveModel ? { model: effectiveModel } : {}),
+            ...(hiddenModels.length > 0 ? { hiddenModels } : {}),
         });
     } catch {
         return Response.json(
@@ -314,6 +327,9 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
                 model = { provider: mp.trim(), id: mi.trim() };
             }
         }
+        if (model && isHiddenModel(await getHiddenModels(identity.userId).catch(() => []), model)) {
+            return Response.json({ error: "Model is hidden and cannot be used" }, { status: 403 });
+        }
 
         const webhook = await createWebhook({
             userId: identity.userId,
@@ -423,7 +439,11 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
                 const mp = (body.model as any).provider;
                 const mi = (body.model as any).id;
                 if (typeof mp === "string" && mp.trim() && typeof mi === "string" && mi.trim()) {
-                    updates.model = { provider: mp.trim(), id: mi.trim() };
+                    const candidate = { provider: mp.trim(), id: mi.trim() };
+                    if (isHiddenModel(await getHiddenModels(identity.userId).catch(() => []), candidate)) {
+                        return Response.json({ error: "Model is hidden and cannot be used" }, { status: 403 });
+                    }
+                    updates.model = candidate;
                 }
             }
         }

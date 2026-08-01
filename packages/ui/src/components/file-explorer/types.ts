@@ -35,4 +35,6 @@ export interface FileExplorerProps {
   onPositionChange?: (pos: "left" | "right" | "bottom") => void;
   /** Called when the user starts dragging the panel grip to reposition it. */
   onDragStart?: (e: React.PointerEvent) => void;
+  /** When set, opens this file in the viewer. New object identity re-triggers open. */
+  openFile?: { path: string } | null;
 }

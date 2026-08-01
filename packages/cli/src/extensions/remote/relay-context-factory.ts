@@ -11,11 +11,14 @@
 import { randomUUID } from "node:crypto";
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "../../config.js";
+import { normalizeLoopbackHost } from "../../relay-url.js";
 import { buildHeartbeat } from "../remote-heartbeat.js";
 import { getCurrentTodoList } from "../update-todo.js";
 import { isDisabled, toWebSocketBaseUrl } from "./connection.js";
+import { getRemoteSessionHost } from "./session-host-ref.js";
 import type { RelayContext, RelayModelInfo, TriggerResponse } from "../remote-types.js";
 import { getActiveGoalFromEntries, toMetaGoalStatus } from "../goal/state.js";
+import { getCommandIntrospection } from "../command-introspection.js";
 import type { RemoteExecResponse } from "../remote-commands.js";
 import type { ConversationTrigger } from "../triggers/types.js";
 import { isCancelTriggerAction } from "../remote-trigger-response.js";
@@ -23,6 +26,7 @@ import type { TriggerWaitManager } from "../trigger-wait-manager.js";
 import { emitSessionActive } from "./chunked-delivery.js";
 import { emitSessionTriggerWithAck } from "./session-complete-delivery.js";
 import { fetchOllamaCloudModels, getCachedOllamaCloudModels } from "../../ollama-cloud-models.js";
+import { writeSessionModelsCache } from "../../session-models-cache.js";
 
 const RELAY_DEFAULT = "ws://localhost:7492";
 const RELAY_STATUS_KEY = "relay";
@@ -47,6 +51,16 @@ export function createRelayContext(
 ): RelayContext {
     const rctx: RelayContext = {
         pi,
+        // Read live rather than snapshot: this factory runs during
+        // loader.reload() (worker.ts), before the worker constructs and
+        // installs its SessionHost via setRemoteSessionHost(). A one-time
+        // snapshot here would freeze sessionHost at null for the process
+        // lifetime. Reading through the module ref on every access keeps it
+        // in sync however the host's install ordering shakes out (worker or
+        // interactive CLI).
+        get sessionHost() {
+            return getRemoteSessionHost();
+        },
         relay: null,
         sioSocket: null,
         latestCtx: null,
@@ -96,7 +110,7 @@ export function createRelayContext(
                 process.env.PIZZAPI_RELAY_URL ??
                 loadConfig(process.cwd()).relayUrl ??
                 RELAY_DEFAULT;
-            return configured.replace(/\/$/, "");
+            return normalizeLoopbackHost(configured.replace(/\/$/, ""));
         },
 
         relayHttpBaseUrl(): string {
@@ -160,13 +174,27 @@ export function createRelayContext(
             return buildHeartbeat(rctx);
         },
 
-        getAvailableCommands(): Array<{ name: string; description?: string; source?: string }> {
+        getAvailableCommands(): Array<{
+            name: string;
+            description?: string;
+            source?: string;
+            argumentHint?: string;
+            completions?: Array<{ value: string; label?: string; description?: string }>;
+        }> {
             if (!rctx.latestCtx) return [];
-            return ((pi as any).getCommands?.() ?? []).map((c: any) => ({
-                name: c.name,
-                description: c.description,
-                source: c.source,
-            }));
+            // Argument hints + completions come from the resolved command registry
+            // (worker-provided) so the web UI popover matches TUI autocomplete.
+            const introspection = getCommandIntrospection();
+            return ((pi as any).getCommands?.() ?? []).map((c: any) => {
+                const extra = introspection.get(c.name);
+                return {
+                    name: c.name,
+                    description: c.description,
+                    source: c.source,
+                    ...(extra?.argumentHint ? { argumentHint: extra.argumentHint } : {}),
+                    ...(extra?.completions?.length ? { completions: extra.completions } : {}),
+                };
+            });
         },
 
         buildCapabilitiesState() {
@@ -216,10 +244,15 @@ export function createRelayContext(
                 ...staticModels,
                 ...liveOllama.filter((m) => !seen.has(`${m.provider}:${m.id}`)),
             ];
-            return all.sort((a, b) => {
+            const sorted = all.sort((a, b) => {
                 if (a.provider !== b.provider) return a.provider.localeCompare(b.provider);
                 return a.id.localeCompare(b.id);
             });
+            // Snapshot the live model list (includes extension-registered providers,
+            // e.g. pi packages calling registerProvider) so the daemon's model
+            // listing — which only sees disk state — can surface them too.
+            writeSessionModelsCache(sorted);
+            return sorted;
         },
 
         getCurrentSessionName(): string | null {
@@ -274,7 +307,7 @@ export function createRelayContext(
 
         waitForTriggerResponse(
             triggerId: string,
-            timeoutMs: number,
+            timeoutMs?: number,
             signal?: AbortSignal,
         ): Promise<TriggerResponse> {
             return new Promise<TriggerResponse>((resolve) => {
@@ -288,12 +321,19 @@ export function createRelayContext(
                     resolve(result);
                 };
 
-                const timeout = setTimeout(() => {
-                    finish({
-                        response: "Trigger timed out — no response from parent within 5 minutes.",
-                        cancelled: true,
-                    });
-                }, timeoutMs);
+                // ponytail: no default timeout — a session waiting on a parent's
+                // ack (plan review / question answer) waits until it gets a real
+                // response, an explicit cancel, a delivery failure, or its own
+                // connection/abort tears it down. Callers may still opt into a
+                // bounded wait by passing a positive timeoutMs.
+                const timeout = timeoutMs && timeoutMs > 0
+                    ? setTimeout(() => {
+                        finish({
+                            response: `Trigger timed out — no response from parent within ${Math.round(timeoutMs / 1000)}s.`,
+                            cancelled: true,
+                        });
+                    }, timeoutMs)
+                    : undefined;
 
                 const handler = (data: { triggerId: string; response: string; action?: string }) => {
                     if (data.triggerId === triggerId) {
@@ -319,7 +359,7 @@ export function createRelayContext(
                 };
 
                 const cleanup = () => {
-                    clearTimeout(timeout);
+                    if (timeout) clearTimeout(timeout);
                     unregisterWait();
                     rctx.sioSocket?.off("trigger_response" as any, handler);
                     rctx.sioSocket?.off("session_message_error" as any, errorHandler);

@@ -12,6 +12,7 @@ import {
 } from "./types.js";
 import { mergeSandboxConfig } from "./sandbox.js";
 import { createLogger } from "@pizzapi/tools";
+import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 
 const log = createLogger("hooks");
 const emittedLoadConfigWarnings = new Set<string>();
@@ -21,6 +22,41 @@ function warnLoadConfigOnce(projectPath: string, code: string, message: string):
     if (emittedLoadConfigWarnings.has(key)) return;
     emittedLoadConfigWarnings.add(key);
     log.warn(message);
+}
+
+/**
+ * Warn about `providers` / `allowProjectProviders`, which are inert since the
+ * extension-provider layer was removed. Named per source so the message points
+ * at the exact file to edit.
+ */
+function warnObsoleteProviderConfig(
+    projectPath: string,
+    global: Partial<PizzaPiConfig>,
+    project: Partial<PizzaPiConfig>,
+): void {
+    const MIGRATION =
+        "Extension providers were removed. For an external integration that owns a " +
+        "long-lived connection (Discord, Slack, a webhook source), declare a runner " +
+        "service under pi.pizzapi.services \u2014 it is daemon-scoped, so one connection is " +
+        "shared by every session. For per-session behaviour, use a plain pi extension.";
+
+    for (const [source, cfg] of [["~/.pizzapi/config.json", global], [".pizzapi/config.json", project]] as const) {
+        const ids = cfg.providers && typeof cfg.providers === "object" ? Object.keys(cfg.providers) : [];
+        if (ids.length > 0) {
+            warnLoadConfigOnce(
+                projectPath,
+                `obsolete-providers:${source}`,
+                `${source} still defines 'providers' (${ids.join(", ")}) — this key is obsolete and is ignored. ${MIGRATION}`,
+            );
+        }
+        if (cfg.allowProjectProviders !== undefined) {
+            warnLoadConfigOnce(
+                projectPath,
+                `obsolete-allowProjectProviders:${source}`,
+                `${source} still sets 'allowProjectProviders' — this key is obsolete and is ignored, as project-local .pizzapi/providers/ is no longer loaded.`,
+            );
+        }
+    }
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -155,6 +191,11 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
     if (hooks) config.hooks = hooks;
     else delete config.hooks;
 
+    // Obsolete extension-provider config (overlay spec §12.4). The provider
+    // layer is gone, so these keys now do nothing at all — say so explicitly
+    // rather than letting a configured-but-inert provider look healthy.
+    warnObsoleteProviderConfig(projectPath, global, project);
+
     // Transport/auth fields: global config always wins over project when both are set.
     // If only the project sets them, allow the value through but emit a warning —
     // per-project relay configs are legitimate, but users should be aware.
@@ -219,6 +260,19 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
         );
         if (global.discord !== undefined) config.discord = global.discord;
         else delete config.discord;
+    }
+
+    // Footgun guard: an apiKey with no relay to send it to means the user thinks
+    // they've "configured a relay" (they have an API key!) but sessions will
+    // never appear in the web UI because relayUrl is explicitly disabled.
+    if (config.apiKey && typeof config.relayUrl === "string" && config.relayUrl.trim().toLowerCase() === "off") {
+        warnLoadConfigOnce(
+            projectPath,
+            "relay-off-with-apikey",
+            'Relay is disabled ("relayUrl": "off") even though an apiKey is configured — ' +
+                "sessions will not appear in the web UI. Update relayUrl in ~/.pizzapi/config.json " +
+                "(or re-run `pizzapi setup`) to re-enable the relay.",
+        );
     }
 
     // Merge sandbox config securely — project cannot weaken global sandbox.
@@ -399,6 +453,35 @@ export function defaultAgentDir(): string {
     return join(homedir(), ".pizzapi");
 }
 
+/**
+ * Resolve the effective agent dir for `cwd`: `config.agentDir` (expanded)
+ * when set, else `defaultAgentDir()`. Mirrors the pattern already inlined
+ * at each entrypoint (index.ts, runner/worker.ts) — extracted so session
+ * extensions that need `agentDir` outside those entrypoints (overlay
+ * package resolution, MCP overlay merge) resolve it identically rather
+ * than re-deriving it.
+ */
+export function resolveAgentDir(cwd: string = process.cwd()): string {
+    const config = loadConfig(cwd);
+    return config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
+}
+
+/**
+ * Explicit, persisted pi project-trust decision for `cwd` — the single
+ * authority for gating native pi project resources (extensions/skills/
+ * prompts) AND the session-side `pi.pizzapi` overlay (which reuses the same
+ * pi `SettingsManager`/`DefaultPackageManager` resolution — see
+ * overlay/resolve.ts). Fails CLOSED: `null` (never decided) or `false`
+ * (explicitly untrusted) both resolve to untrusted. Mirrors pi's own
+ * `main.js` (`trustStore.get(cwd) === true`) — no PizzaPi-side default-trust
+ * shortcut and no new trust UI here; an already-untrusted repo simply stays
+ * untrusted until the user goes through pi's own trust flow (or trusts it
+ * via pi's CLI/TUI, which writes to the same `trust.json`).
+ */
+export function resolveExplicitProjectTrust(cwd: string, agentDir: string): boolean {
+    return new ProjectTrustStore(agentDir).get(cwd) === true;
+}
+
 // ── Session info variable substitution ─────────────────────────────────────────
 
 const VARIABLE_RE = /@(PWD|SESSION_ID|HOME|USER|PROJECT_DIR)@/g;
@@ -493,11 +576,29 @@ export function getTrustedPlugins(): string[] {
 }
 
 /**
+ * Canonicalize a plugin root for comparison: resolve to an absolute path and
+ * strip trailing separators of either flavor.
+ */
+function canonicalPluginPath(p: string): string {
+    return resolve(p).replace(/[\\/]+$/, "");
+}
+
+/**
+ * Compare plugin roots. Case-insensitive on Windows (NTFS is case-insensitive,
+ * and the same directory can legally arrive as `C:\Users\…` or `c:\users\…`) —
+ * a trust decision must not silently flip on casing or separator differences.
+ */
+function pluginPathsEqual(a: string, b: string): boolean {
+    const ca = canonicalPluginPath(a);
+    const cb = canonicalPluginPath(b);
+    return process.platform === "win32" ? ca.toLowerCase() === cb.toLowerCase() : ca === cb;
+}
+
+/**
  * Check whether a plugin at the given root path is in the trust list.
  */
 export function isPluginTrusted(pluginRootPath: string): boolean {
-    const resolved = pluginRootPath.replace(/\/+$/, ""); // strip trailing slashes
-    return getTrustedPlugins().some((p) => p.replace(/\/+$/, "") === resolved);
+    return getTrustedPlugins().some((p) => pluginPathsEqual(p, pluginRootPath));
 }
 
 /**
@@ -505,10 +606,9 @@ export function isPluginTrusted(pluginRootPath: string): boolean {
  * Returns true if it was added (false if already present).
  */
 export function trustPlugin(pluginRootPath: string): boolean {
-    const resolved = pluginRootPath.replace(/\/+$/, "");
     const list = getTrustedPlugins();
-    if (list.some((p) => p.replace(/\/+$/, "") === resolved)) return false;
-    list.push(resolved);
+    if (list.some((p) => pluginPathsEqual(p, pluginRootPath))) return false;
+    list.push(canonicalPluginPath(pluginRootPath));
     saveGlobalConfig({ trustedPlugins: list });
     return true;
 }
@@ -518,9 +618,8 @@ export function trustPlugin(pluginRootPath: string): boolean {
  * Returns true if it was removed (false if not found).
  */
 export function untrustPlugin(pluginRootPath: string): boolean {
-    const resolved = pluginRootPath.replace(/\/+$/, "");
     const list = getTrustedPlugins();
-    const filtered = list.filter((p) => p.replace(/\/+$/, "") !== resolved);
+    const filtered = list.filter((p) => !pluginPathsEqual(p, pluginRootPath));
     if (filtered.length === list.length) return false;
     saveGlobalConfig({ trustedPlugins: filtered });
     return true;

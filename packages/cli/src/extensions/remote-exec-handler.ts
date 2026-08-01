@@ -11,10 +11,13 @@ import { toggleMcpServer, saveGlobalConfig, loadConfig, loadGlobalConfig, resolv
 import { isPlanModeEnabled, togglePlanModeFromRemote, setPlanModeFromRemote } from "./plan-mode/index.js";
 import { isSandboxActive, getSandboxMode, getViolations, getResolvedConfig } from "@pizzapi/tools";
 import { refreshAllUsage, buildProviderUsage } from "./remote-provider-usage.js";
+import { backgroundPendingJobs } from "./background-bash.js";
+import { isModelHidden } from "../hidden-models.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
 import type { RelayContext, RelayModelInfo } from "./remote-types.js";
 import { emitThinkingLevelChanged, emitCompactStarted, emitCompactEnded, emitRetryStateChanged, emitPluginTrustResolved } from "./remote-meta-events.js";
 import { listSessionsCached } from "../runner/session-list-cache.js";
+import { extractUserMessageText } from "../runner/worker-fork.js";
 
 export interface ExecHandlerCallbacks {
     setModelFromWeb(provider: string, modelId: string): Promise<void>;
@@ -111,6 +114,16 @@ export async function handleExecFromWeb(
             return;
         }
 
+        if (req.command === "background_bash") {
+            const backgrounded = backgroundPendingJobs();
+            if (backgrounded.length === 0) {
+                replyErr("No bash command is running");
+                return;
+            }
+            replyOk({ backgrounded });
+            return;
+        }
+
         if (req.command === "abort") {
             if (!rctx.latestCtx) {
                 replyErr("No active session");
@@ -134,7 +147,8 @@ export async function handleExecFromWeb(
                 replyErr("No active session");
                 return;
             }
-            const models = rctx.getConfiguredModels();
+            // Cycle only through models the user hasn't hidden.
+            const models = rctx.getConfiguredModels().filter((m: RelayModelInfo) => !isModelHidden(m.provider, m.id));
             const state = rctx.buildSessionState();
             const currentKey = state?.model ? `${(state.model as any).provider}/${(state.model as any).id}` : null;
             const idx = currentKey ? models.findIndex((m: RelayModelInfo) => `${m.provider}/${m.id}` === currentKey) : -1;
@@ -215,6 +229,29 @@ export async function handleExecFromWeb(
 
         if (req.command === "set_follow_up_mode") {
             replyErr("set_follow_up_mode is not supported by the PizzaPi runner yet");
+            return;
+        }
+
+        if (req.command === "set_queued_messages") {
+            // Replace the pending follow-up queue (web UI queue edit/remove/clear).
+            if (!Array.isArray(req.messages)) {
+                replyErr("Missing messages");
+                return;
+            }
+            const messages = req.messages.filter((m): m is string => typeof m === "string" && m.trim().length > 0);
+            try {
+                if (!rctx.sessionHost) {
+                    replyErr("Session control is not available");
+                    return;
+                }
+                rctx.sessionHost.replaceQueuedMessages(messages);
+            } catch (err) {
+                replyErr(`Failed to update queued messages: ${err instanceof Error ? err.message : String(err)}`);
+                return;
+            }
+            replyOk({ queuedMessages: messages });
+            // Broadcast the new queue state so all viewers converge immediately.
+            rctx.forwardEvent(rctx.buildHeartbeat());
             return;
         }
 
@@ -328,6 +365,54 @@ export async function handleExecFromWeb(
             return;
         }
 
+        if (req.command === "get_fork_messages") {
+            if (!rctx.latestCtx) {
+                replyErr("No active session");
+                return;
+            }
+            // Mirrors pi's AgentSession.getUserMessagesForForking(): every user
+            // message in the session (including abandoned branches), append order.
+            const messages: Array<{ entryId: string; text: string }> = [];
+            for (const entry of rctx.latestCtx.sessionManager.getEntries()) {
+                if (entry.type !== "message") continue;
+                if ((entry as any).message?.role !== "user") continue;
+                const text = extractUserMessageText((entry as any).message.content);
+                if (text) messages.push({ entryId: entry.id, text });
+            }
+            replyOk({ messages });
+            return;
+        }
+
+        if (req.command === "fork") {
+            if (!rctx.latestCtx) {
+                replyErr("No active session");
+                return;
+            }
+            if (!rctx.sessionHost) {
+                replyErr("fork is not available (no session host)");
+                return;
+            }
+            const entryId = typeof req.entryId === "string" ? req.entryId.trim() : "";
+            if (!entryId) {
+                replyErr("Missing entryId");
+                return;
+            }
+            try {
+                const result = await rctx.sessionHost.fork(entryId);
+                if (result?.cancelled) {
+                    replyErr("Fork was cancelled");
+                    return;
+                }
+                replyOk({ text: typeof result?.selectedText === "string" ? result.selectedText : null });
+            } catch (e) {
+                replyErr(e instanceof Error ? e.message : String(e));
+                return;
+            }
+            rctx.emitSessionActive();
+            rctx.forwardEvent(rctx.buildHeartbeat());
+            return;
+        }
+
         if (req.command === "list_resume_sessions") {
             if (!rctx.latestCtx) {
                 replyErr("No active session");
@@ -378,8 +463,8 @@ export async function handleExecFromWeb(
                 replyErr("No active session");
                 return;
             }
-            if (typeof (rctx.pi as any).switchSession !== "function") {
-                replyErr("switchSession is not available in this pi version");
+            if (!rctx.sessionHost) {
+                replyErr("switchSession is not available (no session host)");
                 return;
             }
             const sessions = await listSessionsForResume(rctx.latestCtx);
@@ -393,7 +478,7 @@ export async function handleExecFromWeb(
                 return;
             }
             try {
-                const result = await (rctx.pi as any).switchSession(target.path);
+                const result = await rctx.sessionHost.switchSession(target.path);
                 if (result?.cancelled) {
                     replyErr("Resume was cancelled");
                     return;
@@ -413,8 +498,12 @@ export async function handleExecFromWeb(
                 replyErr("No active session");
                 return;
             }
+            if (!rctx.sessionHost) {
+                replyErr("New session is not available (no session host)");
+                return;
+            }
             try {
-                const result = await (rctx.pi as any).newSession();
+                const result = await rctx.sessionHost.newSession();
                 if (result?.cancelled) {
                     replyErr("New session was cancelled");
                     return;
@@ -460,8 +549,11 @@ export async function handleExecFromWeb(
                     process.exit(43);
                     return;
                 }
+                // detached:true on Windows allocates a new console for the child,
+                // popping a window — the inherited stdio is enough to keep the
+                // replacement attached to the current console there.
                 const child = spawn(process.execPath, process.argv.slice(1), {
-                    detached: true,
+                    detached: process.platform !== "win32",
                     stdio: "inherit",
                     env: process.env,
                 });

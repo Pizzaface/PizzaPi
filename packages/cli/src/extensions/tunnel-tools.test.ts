@@ -298,7 +298,7 @@ describe("buildPublicTunnelUrl", () => {
         const tool = pi.tools.get("create_tunnel")!;
         const result = await tool.execute("call-1", { port: 8080 });
 
-        expect(result.details.publicUrl).toBe("http://localhost:7492/api/tunnel/runner/runner-abc/8080/");
+        expect(result.details.publicUrl).toBe("http://127.0.0.1:7492/api/tunnel/runner/runner-abc/8080/");
 
         if (savedRelayUrl !== undefined) process.env.PIZZAPI_RELAY_URL = savedRelayUrl;
         else delete process.env.PIZZAPI_RELAY_URL;
@@ -333,7 +333,7 @@ describe("buildPublicTunnelUrl", () => {
         const result = await tool.execute("call-1", { port: 8080 });
 
         // No runner ID mocked, falls back to session-based URL
-        expect(result.details.publicUrl).toBe("http://localhost:7492/api/tunnel/abc-def-123/8080/");
+        expect(result.details.publicUrl).toBe("http://127.0.0.1:7492/api/tunnel/abc-def-123/8080/");
 
         // Restore
         if (savedRelayUrl !== undefined) process.env.PIZZAPI_RELAY_URL = savedRelayUrl;

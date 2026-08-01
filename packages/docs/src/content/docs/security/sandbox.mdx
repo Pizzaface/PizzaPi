@@ -5,7 +5,7 @@ description: OS-level sandboxing for agent tool execution, filesystem and networ
 
 import { Aside, Badge } from "@astrojs/starlight/components";
 
-PizzaPi can enforce OS-level sandboxing around every tool call the agent makes — bash commands, file reads/writes, and MCP server interactions. This prevents prompt injections or model hallucinations from accessing sensitive files, exfiltrating data, or damaging your system.
+PizzaPi can enforce OS-level sandboxing around agent tool execution — bash commands, file reads/writes, and MCP server network access (domain-filtered). This prevents prompt injections or model hallucinations from accessing sensitive files, exfiltrating data, or damaging your system.
 
 The sandbox is powered by [Anthropic's `sandbox-runtime`](https://github.com/anthropic-experimental/sandbox-runtime), which uses **macOS `sandbox-exec`** and **Linux `bubblewrap` + seccomp** to enforce restrictions at the kernel level.
 
@@ -38,6 +38,8 @@ pizza --sandbox full
 pizza --sandbox basic
 pizza --sandbox none
 ```
+
+`pizza --help` advertises the aliases `enforce`, `audit`, and `off`, which map to `full`, `basic`, and `none`. All six names are accepted.
 
 Or environment variable:
 
@@ -211,7 +213,7 @@ When the sandbox blocks an operation, it records a **violation event**:
 - Target path
 - Reason for denial
 
-Violations are stored in a ring buffer (100 entries max). In sessions connected to the PizzaPi relay, violations are forwarded as `sandbox:violation` events visible in the web UI.
+Violations are stored in a ring buffer (100 entries max) inside the worker process. They are **not** streamed to the relay or web UI in real time — they are visible only through the `/sandbox` slash command in an active session.
 
 Use the `/sandbox` slash command in a session to view status and recent violations:
 
@@ -235,30 +237,31 @@ Returns the current sandbox state for a runner. Requires an authenticated sessio
 
 ```json
 {
+  "ok": true,
   "mode": "basic",
   "active": true,
+  "configured": true,
   "platform": "darwin",
-  "violations": 3,
-  "recentViolations": [
-    {
-      "timestamp": "2026-03-29T14:22:01.000Z",
-      "operation": "read",
-      "target": "~/.ssh/id_ed25519",
-      "reason": "Path in denyRead"
-    }
-  ],
-  "config": { "mode": "basic", "filesystem": { "..." : "..." } }
+  "violations": 0,
+  "recentViolations": [],
+  "config": { "mode": "basic", "filesystem": { "..." : "..." } },
+  "rawConfig": { "mode": "basic" }
 }
 ```
 
 | Field | Description |
 |-------|-------------|
+| `ok` | `true` if the status query succeeded |
 | `mode` | Active sandbox mode (`none`, `basic`, `full`) |
-| `active` | Whether enforcement is actually running (may be `false` on unsupported platforms) |
+| `active` | `true` when a non-`none` mode is configured; this does **not** guarantee enforcement is currently running on the worker |
+| `configured` | Same as `active` — a non-`none` mode is configured |
 | `platform` | Runner's OS (`darwin`, `linux`, `win32`) |
-| `violations` | Total violation count since runner start |
-| `recentViolations` | Last 20 violations (newest first) |
-| `config` | Fully resolved sandbox config (global + project merged) |
+| `violations` | Always `0` from this REST endpoint (the daemon does not run inside a sandbox) |
+| `recentViolations` | Always empty from this REST endpoint |
+| `config` | Fully resolved **global** sandbox config (project-local overrides are excluded) |
+| `rawConfig` | The raw global sandbox config as stored in `~/.pizzapi/config.json` |
+
+Real-time violations and the fully resolved per-session config are only available via the in-session `/sandbox` slash command.
 
 ### `PUT /api/runners/{runnerId}/sandbox-config`
 
@@ -279,13 +282,15 @@ Update sandbox configuration at runtime without restarting the runner. The body 
 
 ```json
 {
+  "ok": true,
   "saved": true,
   "resolvedConfig": { "..." : "..." },
   "message": "Changes will apply on next session start."
 }
 ```
 
-- Send `null` for a key to remove it from the config (e.g., clearing stale network rules when downgrading from `full` to `basic`).
+- On the in-session `/sandbox config` path, sending `null` for a key removes it from the config (e.g., clearing stale network rules when downgrading from `full` to `basic`).
+- On the REST `PUT /api/runners/{runnerId}/sandbox-config` endpoint, `null` is currently written as a JSON `null` value rather than deleting the key. The effective sandbox value is still cleared, but the key remains in `~/.pizzapi/config.json`.
 - Nested objects are shallow-merged; arrays and scalars are replaced.
 - Validation rejects invalid modes and non-string array entries with a `400` status.
 
@@ -295,11 +300,7 @@ Update sandbox configuration at runtime without restarting the runner. The body 
 
 ### Violation events in the web UI
 
-When a runner is connected to the PizzaPi relay, every `sandbox:violation` event is forwarded in real time. In the web UI:
-
-- Violations appear as **warning badges** in the session timeline.
-- The **runner detail panel** shows a live violation counter and a filterable violation log.
-- Clicking a violation expands it to show the full operation, target path, and denial reason.
+Real-time `sandbox:violation` forwarding to the web UI is **not currently implemented**. Violations are logged in the worker and surfaced through the `/sandbox` slash command in an active session.
 
 ### `/sandbox` slash command
 
@@ -527,6 +528,7 @@ Slow servers:
   • tavily: 4.1s (timed out)
 
 Tip: Use --safe-mode or --no-mcp for instant startup.
+Disable this warning: set slowStartupWarning: false in config.
 ```
 
 Suppress this warning if you expect slow startup:

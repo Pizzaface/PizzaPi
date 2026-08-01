@@ -44,6 +44,9 @@ export function buildSnapshotPatchFromMetadata(meta: Record<string, unknown>): R
     if (Array.isArray(meta.todoList)) {
         patch.todoList = meta.todoList;
     }
+    if (Array.isArray(meta.queuedMessages)) {
+        patch.queuedMessages = meta.queuedMessages;
+    }
     if (Object.prototype.hasOwnProperty.call(meta, "goal")) {
         patch.goal = meta.goal && typeof meta.goal === "object" ? meta.goal : null;
     }

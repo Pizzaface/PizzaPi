@@ -1,4 +1,5 @@
 import * as React from "react";
+import { Suspense } from "react";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { initAnimationSync } from "@/lib/synced-animation";
 import { SessionSidebar, type DotState, type HubSession } from "@/components/SessionSidebar";
@@ -6,15 +7,7 @@ import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
 import type { CommandResultData } from "@/components/session-viewer/rendering";
 import { detectInFlightTools } from "@/components/session-viewer/utils";
 import { DesktopHeader, MobileHeader } from "@/components/AppHeaders";
-import { UserPreferencesPanel } from "@/components/UserPreferencesPanel";
 import { AuthPage } from "@/components/AuthPage";
-import { ApiKeyManager } from "@/components/ApiKeyManager";
-import { RunnerTokenManager } from "@/components/RunnerTokenManager";
-import { DeviceSetupScanner } from "@/components/DeviceSetupScanner";
-import { MobileSetupQR } from "@/components/MobileSetupQR";
-import { RunnerManager } from "@/components/RunnerManager";
-import { NewSessionWizardDialog } from "@/components/NewSessionWizardDialog";
-import { HistoryCommandPalette } from "@/components/HistoryCommandPalette";
 import { authClient, type BetterAuthSession } from "@/lib/auth-client";
 import { usePizzaPiSession } from "@/lib/use-pizzapi-session";
 import { useRunnersFeed } from "@/lib/useRunnersFeed";
@@ -30,7 +23,7 @@ import type {
   HubClientToServerEvents,
   SessionMetaState,
 } from "@pizzapi/protocol";
-import { isMetaRelayEvent, SOCKET_PROTOCOL_VERSION } from "@pizzapi/protocol";
+import { SOCKET_PROTOCOL_VERSION, parseViewerEventEnvelope, parseViewerConnectedEnvelope, parseHubStateSnapshot, parseHubMetaEvent, parseSpawnResponse } from "@pizzapi/protocol";
 import { cn } from "@/lib/utils";
 import { pulseStreamingHaptic, cancelHaptic, startToolHaptic, stopToolHaptic } from "@/lib/haptics";
 import { shouldCenterTopSpanFullWidth, shouldCenterBottomSpanFullWidth } from "@/utils/panelLayoutHelpers";
@@ -67,12 +60,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { X, TerminalIcon, FolderTree, GitBranch, EyeOff, Zap, BarChart3 } from "lucide-react";
-import { SessionAnalyzerBody } from "@/components/session-viewer/SessionAnalyzerPanel";
-import { TriggersPanel, type TriggerHistoryEntry } from "@/components/TriggersPanel";
+import type { TriggerHistoryEntry } from "@/components/TriggersPanel";
 import type { ProviderUsageMap } from "@/components/UsageIndicator";
-import { TerminalManager } from "@/components/TerminalManager";
-import { FileExplorer } from "@/components/FileExplorer";
-import { GitPanel } from "@/components/git";
 import { CombinedPanel, type CombinedPanelTab } from "@/components/CombinedPanel";
 import { DockedPanelGroup, TAB_BAR_HEIGHT } from "@/components/DockedPanelGroup";
 import type { PanelPosition } from "@/hooks/usePanelLayout";
@@ -80,17 +69,18 @@ import { ViewerSocketContext } from "@/lib/viewer-socket-context";
 import { HubSocketContext } from "@/lib/hub-socket-context";
 import { shouldStopViewerReconnect } from "@/lib/viewer-connection";
 import { mapUserError } from "@/lib/user-error-message";
-import { canSubmitSessionInput, isSessionHydrating } from "@/lib/session-empty-state";
+import { classifySessionInput } from "@/lib/session-empty-state";
 import { getConfirmedMetaSubscriptionTargets } from "@/lib/meta-subscriptions";
 import { evaluateVersionNegotiation } from "@/lib/version-negotiation";
 import { useRunnerServices, attachServiceAnnounceListener, seedServiceCache, setViewerSwitchGeneration } from "@/hooks/useRunnerServices";
 import { useRunnerData } from "@/hooks/useRunnerData";
 import { SigilProvider } from "@/components/sigils/SigilContext";
 import { PizzaPiNavProvider, type PizzaPiNavActions } from "@/components/sigils/PizzaPiNavContext";
-import { ServicePanelButtons, useServicePanelState } from "@/components/service-panels/ServicePanels";
+import { resolveFilePath } from "@/components/file-explorer/utils";
+import { ServicePanelButtons, ServicePanelOverflowItems, useServicePanelState, useVisibleServicePanels } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
-import { resolveNewPanelPosition, resolveActiveTabIdFromIds } from "@/utils/servicePanelUtils";
+import { resolveNewPanelPosition, resolveActiveTabIdFromIds, resolvePanelToggleAction } from "@/utils/servicePanelUtils";
 import { IframeServicePanel } from "@/components/service-panels/IframeServicePanel";
 import {
   ModelSelector,
@@ -105,11 +95,10 @@ import {
   ModelSelectorShortcut,
 } from "@/components/ai-elements/model-selector";
 import { HiddenModelsManager, loadHiddenModels, fetchHiddenModels, modelKey } from "@/components/HiddenModelsManager";
-import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import { DegradedBanner } from "@/components/DegradedBanner";
 import { RunnerWarningBanner } from "@/components/RunnerWarningBanner";
 import { VersionBanner } from "@/components/VersionBanner";
-import { ShortcutsDialog } from "@/components/ShortcutsDialog";
+import { ButtonRail, ButtonStrip } from "@/components/session-viewer/ButtonSidebar";
 import {
   beginInputAttempt,
   completeInputAttempt,
@@ -118,16 +107,20 @@ import {
   type InputDedupeState,
 } from "@/lib/input-dedupe";
 import { parsePendingQuestionDisplayMode, parsePendingQuestions, type QuestionDisplayMode, type QuestionType } from "@/lib/ask-user-questions";
-import type { TodoItem, TokenUsage, ConfiguredModelInfo, ResumeSessionOption, QueuedMessage, SessionUiCacheEntry } from "@/lib/types";
+import type { TodoItem, TokenUsage, ConfiguredModelInfo, ResumeSessionOption, ForkMessageOption, QueuedMessage, SessionUiCacheEntry } from "@/lib/types";
 import type { MetaGoalStatus } from "@pizzapi/protocol";
 import { metaEventToStatePatch, type MetaStatePatch } from "@/lib/meta-state-apply";
 import { deriveSessionMetadataUpdatePatch } from "@/lib/session-metadata-update";
+import { reconcileMessageQueue } from "@/lib/message-queue";
 import { usePanelLayout } from "@/hooks/usePanelLayout";
 import { useTriggerCount } from "@/hooks/useTriggerCount";
+import { useButtonPosition, type ToolbarButtonId, type ButtonSlot } from "@/hooks/useButtonPosition";
+import { exportToMarkdown } from "@/lib/export-markdown";
 // Attention store: AttentionProvider is mounted in main.ts around <App/>
 import { useAttentionIngestion } from "@/hooks/useAttentionIngestion";
 import { useMobileSidebar } from "@/hooks/useMobileSidebar";
 import { useBrowserNotifications } from "@/hooks/useBrowserNotifications";
+import { useMountOnFirstOpen } from "@/hooks/useMountOnFirstOpen";
 import {
   toRelayMessage,
   deduplicateMessages,
@@ -142,6 +135,9 @@ import {
 } from "@/lib/message-helpers";
 import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "@/lib/session-ui-cache";
 import { removeMessagesByStableKey, replaceMessageByStableKey } from "@/lib/mcp-auth-banners";
+import { useSessionLifecycle } from "@/lib/use-session-lifecycle";
+import { createWizardSpawnHandler } from "@/lib/wizard-spawn-handler";
+import { sessionLifecycleActions as lifecycleActions } from "@/lib/session-lifecycle";
 import {
   analyzeIncomingSeq,
   canFinalizeChunkHydration,
@@ -153,7 +149,41 @@ import {
 import { createLogger } from "@pizzapi/tools";
 import { isActiveViewerSessionPayload, matchesViewerGeneration } from "@/lib/viewer-switch";
 
+// Lazy-loaded low-frequency surfaces. Auth, session sidebar/viewer, banners,
+// and loading/error UI remain eager so critical paths stay fast.
+const LazyUserPreferencesPanel = React.lazy(() => import("@/components/UserPreferencesPanel").then((m) => ({ default: m.UserPreferencesPanel })));
+const LazyApiKeyManager = React.lazy(() => import("@/components/ApiKeyManager").then((m) => ({ default: m.ApiKeyManager })));
+const LazyRunnerTokenManager = React.lazy(() => import("@/components/RunnerTokenManager").then((m) => ({ default: m.RunnerTokenManager })));
+const LazyDeviceSetupScanner = React.lazy(() => import("@/components/DeviceSetupScanner").then((m) => ({ default: m.DeviceSetupScanner })));
+const LazyMobileSetupQR = React.lazy(() => import("@/components/MobileSetupQR").then((m) => ({ default: m.MobileSetupQR })));
+const LazyRunnerManager = React.lazy(() => import("@/components/RunnerManager").then((m) => ({ default: m.RunnerManager })));
+const LazyNewSessionWizardDialog = React.lazy(() => import("@/components/NewSessionWizardDialog").then((m) => ({ default: m.NewSessionWizardDialog })));
+const LazyHistoryCommandPalette = React.lazy(() => import("@/components/HistoryCommandPalette").then((m) => ({ default: m.HistoryCommandPalette })));
+const LazySessionAnalyzerBody = React.lazy(() => import("@/components/session-viewer/SessionAnalyzerPanel").then((m) => ({ default: m.SessionAnalyzerBody })));
+const LazyTriggersPanel = React.lazy(() => import("@/components/TriggersPanel").then((m) => ({ default: m.TriggersPanel })));
+const LazyTerminalManager = React.lazy(() => import("@/components/TerminalManager").then((m) => ({ default: m.TerminalManager })));
+const LazyFileExplorer = React.lazy(() => import("@/components/FileExplorer").then((m) => ({ default: m.FileExplorer })));
+const LazyGitPanel = React.lazy(() => import("@/components/git").then((m) => ({ default: m.GitPanel })));
+const LazyChangePasswordDialog = React.lazy(() => import("@/components/ChangePasswordDialog").then((m) => ({ default: m.ChangePasswordDialog })));
+const LazyShortcutsDialog = React.lazy(() => import("@/components/ShortcutsDialog").then((m) => ({ default: m.ShortcutsDialog })));
+
+/** Stable, accessible Suspense fallback for lazy panels. */
+function PanelFallback({ label }: { label?: string }) {
+  return (
+    <div className="flex h-full w-full min-h-[120px] items-center justify-center">
+      <div className="flex flex-col items-center gap-2 text-muted-foreground">
+        <Spinner className="size-5 text-primary/60" />
+        {label && <span className="text-xs">{label}</span>}
+      </div>
+    </div>
+  );
+}
+
 const log = createLogger("relay");
+
+function isPayloadObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
 
 // Sync all CSS animations (pulse, chase-spin, etc.) to the same phase globally.
 initAnimationSync();
@@ -175,9 +205,7 @@ const BUILD_TIMESTAMP =
 // — nothing can be accidentally left stale when switching sessions.
 interface SessionState {
   viewerSocket: Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> | null;
-  activeSessionId: string | null;
   messages: RelayMessage[];
-  viewerStatus: string;
   retryState: { errorMessage: string; detectedAt: number } | null;
   pendingQuestion: { toolCallId: string; questions: Array<{ question: string; options: string[]; type?: QuestionType }>; display: QuestionDisplayMode } | null;
   pendingPlan: { toolCallId: string; title: string; description: string | null; steps: Array<{ title: string; description?: string }> } | null;
@@ -201,15 +229,15 @@ interface SessionState {
   resumeSessions: ResumeSessionOption[];
   resumeSessionsLoading: boolean;
   resumeSessionsNextCursor: string | null;
+  forkMessages: ForkMessageOption[];
+  forkMessagesLoading: boolean;
   goal: MetaGoalStatus | null;
 }
 
 function createInitialSessionState(): SessionState {
   return {
     viewerSocket: null,
-    activeSessionId: null,
     messages: [],
-    viewerStatus: "Idle",
     retryState: null,
     pendingQuestion: null,
     pendingPlan: null,
@@ -233,6 +261,8 @@ function createInitialSessionState(): SessionState {
     resumeSessions: [],
     resumeSessionsLoading: false,
     resumeSessionsNextCursor: null,
+    forkMessages: [],
+    forkMessagesLoading: false,
     goal: null,
   };
 }
@@ -282,12 +312,13 @@ export function App() {
   // clearSelection() resets this entire object in a single atomic call.
   const [sessionState, setSessionState] = React.useState<SessionState>(createInitialSessionState);
   const {
-    viewerSocket, activeSessionId, messages, viewerStatus, retryState,
+    viewerSocket, messages, retryState,
     pendingQuestion, pendingPlan, pluginTrustPrompt, activeToolCalls,
     mcpOAuthPastes, messageQueue, activeModel, sessionName, availableModels,
     modelSelectorOpen, isChangingModel, agentActive, effortLevel, authSource,
     tokenUsage, providerUsage, usageRefreshing, lastHeartbeatAt,
     availableCommands, resumeSessions, resumeSessionsLoading, resumeSessionsNextCursor,
+    forkMessages, forkMessagesLoading,
     goal,
   } = sessionState;
 
@@ -299,19 +330,9 @@ export function App() {
       setSessionState((p: SessionState) => ({ ...p, viewerSocket: typeof v === "function" ? v(p.viewerSocket) : v })),
     []
   );
-  const setActiveSessionId = React.useCallback(
-    (v: React.SetStateAction<string | null>) =>
-      setSessionState((p: SessionState) => ({ ...p, activeSessionId: typeof v === "function" ? v(p.activeSessionId) : v })),
-    []
-  );
   const setMessages = React.useCallback(
     (v: React.SetStateAction<RelayMessage[]>) =>
       setSessionState((p: SessionState) => ({ ...p, messages: typeof v === "function" ? v(p.messages) : v })),
-    []
-  );
-  const setViewerStatus = React.useCallback(
-    (v: React.SetStateAction<string>) =>
-      setSessionState((p: SessionState) => ({ ...p, viewerStatus: typeof v === "function" ? v(p.viewerStatus) : v })),
     []
   );
   const setRetryState = React.useCallback(
@@ -438,8 +459,21 @@ export function App() {
       setSessionState((p: SessionState) => ({ ...p, goal: typeof v === "function" ? v(p.goal) : v })),
     []
   );
+  const setForkMessages = React.useCallback(
+    (v: React.SetStateAction<ForkMessageOption[]>) =>
+      setSessionState((p: SessionState) => ({ ...p, forkMessages: typeof v === "function" ? v(p.forkMessages) : v })),
+    []
+  );
+  const setForkMessagesLoading = React.useCallback(
+    (v: React.SetStateAction<boolean>) =>
+      setSessionState((p: SessionState) => ({ ...p, forkMessagesLoading: typeof v === "function" ? v(p.forkMessagesLoading) : v })),
+    []
+  );
   // Tracks whether the in-flight list_resume_sessions request is a "load more" (append) vs fresh load
   const resumeSessionsAppendRef = React.useRef(false);
+  // Fallback timer: if the runner never answers list_resume_sessions (stale or
+  // dead CLI), fall back to server-persisted sessions instead of spinning forever.
+  const resumeSessionsFallbackTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   // ────────────────────────────────────────────────────────────────────────────
   // Ref kept in sync with `messages` via useLayoutEffect so we can read the
   // latest committed value in event handlers without needing functional updaters.
@@ -456,11 +490,21 @@ export function App() {
   });
   const [showPreferences, setShowPreferences] = React.useState(false);
   const [showApiKeys, setShowApiKeys] = React.useState(false);
+  // The API-keys sheet is a hand-rolled overlay (not a Radix Dialog), so wire
+  // Escape-to-close at the document level while it's open — a container-scoped
+  // handler misses key events when focus is still on the trigger.
+  React.useEffect(() => {
+    if (!showApiKeys) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setShowApiKeys(false); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [showApiKeys]);
   const [apiKeyVersion, setApiKeyVersion] = React.useState(0);
   const [setupClaimOpen, setSetupClaimOpen] = React.useState(false);
   const [setupClaimToken, setSetupClaimToken] = React.useState<string | null>(null);
   const [showRunners, setShowRunners] = React.useState(false);
   const [historyOpen, setHistoryOpen] = React.useState(false);
+  const historyMounted = useMountOnFirstOpen(historyOpen);
   const [selectedRunnerId, setSelectedRunnerId] = React.useState<string | null>(null);
   const [runnersForSidebar, setRunnersForSidebar] = React.useState<Array<{
     runnerId: string;
@@ -514,6 +558,58 @@ export function App() {
     }
   }, []);
 
+  const [sessionsAwaitingInput, setSessionsAwaitingInput] = React.useState<Set<string>>(new Set());
+
+  /** Set of session IDs that are actively compacting their context window. */
+  const [sessionsCompacting, setSessionsCompacting] = React.useState<Set<string>>(new Set());
+
+  const [liveSessions, setLiveSessions] = React.useState<HubSession[]>([]);
+
+  // Ref kept in sync with liveSessions so openSession can look up runner IDs
+  // without including liveSessions in its dependency array.
+  const liveSessionsRef = React.useRef<HubSession[]>(liveSessions);
+  React.useLayoutEffect(() => { liveSessionsRef.current = liveSessions; }, [liveSessions]);
+
+  // Lifecycle hook: single owner of session phase/status/error/hydration/reconnect.
+  const lifecycle = useSessionLifecycle({ liveSessions });
+  const activeSessionId = lifecycle.state.activeSessionId;
+  const viewerStatus = lifecycle.viewerStatus;
+  const lifecycleIsHydrating = lifecycle.isHydrating;
+  const lifecycleState = lifecycle.state;
+  const lifecycleRefs = lifecycle.refs;
+  const lifecycleDispatch = lifecycle.dispatch;
+  const setLifecycleSpawnParams = lifecycle.setSpawnParams;
+  const setLifecycleStatus = lifecycle.setStatus;
+  const lifecycleOpenSession = lifecycle.openSession;
+  const lifecycleClearSelection = lifecycle.clearSelection;
+  const lifecycleSpawnSession = lifecycle.spawnSession;
+  const waitForSessionToGoLive = lifecycle.waitForSessionToGoLive;
+  const onViewerConnected = lifecycle.onViewerConnected;
+  const onViewerDisconnected = lifecycle.onViewerDisconnected;
+  const onViewerError = lifecycle.onViewerError;
+  const onSnapshotStarted = lifecycle.onSnapshotStarted;
+  const onChunkProgress = lifecycle.onChunkProgress;
+  const onSnapshotComplete = lifecycle.onSnapshotComplete;
+  const onReconnecting = lifecycle.onReconnecting;
+  const onRestartPendingCleared = lifecycle.onRestartPendingCleared;
+
+  // Derive a sessionId → sessionName map for browser notifications.
+  const sessionNamesMap = React.useMemo(() => {
+    const map = new Map<string, string | null>();
+    for (const s of liveSessions) {
+      map.set(s.sessionId, s.sessionName ?? null);
+    }
+    return map;
+  }, [liveSessions]);
+
+  // Fire browser Notification API alerts when a session is awaiting input
+  // and the tab is hidden or the user is viewing a different session.
+  useBrowserNotifications({
+    sessionsAwaitingInput,
+    activeSessionId,
+    sessionNames: sessionNamesMap,
+  });
+
   const panelLayout = usePanelLayout(activeSessionId);
   const {
     showTerminal, setShowTerminal,
@@ -546,19 +642,96 @@ export function App() {
     setAnalyzerPosition(pos);
   }, []);
 
+  const buttonPositions = useButtonPosition();
+
+  // ── Button drag state ───────────────────────────────────────────────────
+  const [draggingButton, setDraggingButton] = React.useState<ToolbarButtonId | null>(null);
+  const [buttonDragZone, setButtonDragZone] = React.useState<ButtonSlot | null>(null);
+  const draggingButtonRef = React.useRef<ToolbarButtonId | null>(null);
+  const buttonDragZoneRef = React.useRef<ButtonSlot | null>(null);
+
+  const handleButtonDragStart = React.useCallback((buttonId: ToolbarButtonId) => {
+    draggingButtonRef.current = buttonId;
+    buttonDragZoneRef.current = null;
+    setDraggingButton(buttonId);
+    setButtonDragZone(null);
+  }, []);
+
+  const openPanelFromDockedButton = React.useCallback(
+    (buttonId: ToolbarButtonId, isOpen: boolean, setOpen: (updater: (v: boolean) => boolean) => void, setPosition: (pos: PanelPosition) => void) => {
+      if (isOpen) {
+        // Already open: close only if this panel is the tab shown on top of its
+        // zone. If another tab is on top, bring this one forward instead of
+        // closing it (mirrors the service-panel toggle behavior).
+        const groups = panelGroupsRef.current;
+        const zone = groups && (Object.keys(groups) as PanelPosition[]).find(
+          (pos) => groups[pos].some((t) => t.id === buttonId),
+        );
+        const zoneTabIds = zone ? groups![zone].map((t) => t.id) : [buttonId];
+        if (resolvePanelToggleAction(zoneTabIds, combinedActiveTab, buttonId) === "focus") {
+          handleCombinedTabChange(buttonId);
+          return;
+        }
+        setOpen(() => false);
+        return;
+      }
+      // Opening: dock near the button if it lives in a rail/strip, then focus it.
+      const slot = buttonPositions.positions[buttonId];
+      if (slot !== "top") setPosition(slot);
+      setOpen(() => true);
+      handleCombinedTabChange(buttonId);
+    },
+    [buttonPositions.positions, combinedActiveTab, handleCombinedTabChange],
+  );
+
+  // Document-level listeners for button drag (can't use pointer capture from timer)
+  React.useEffect(() => {
+    if (!draggingButton) return;
+
+    const onMove = (e: PointerEvent) => {
+      if (!terminalColumnRef.current) return;
+      const rect = terminalColumnRef.current.getBoundingClientRect();
+      const pctX = (e.clientX - rect.left) / rect.width;
+      const pctY = (e.clientY - rect.top) / rect.height;
+      const col = pctX < 1 / 3 ? "left" : pctX > 2 / 3 ? "right" : "center";
+      const row = pctY < 1 / 3 ? "top" : pctY > 2 / 3 ? "bottom" : "middle";
+      let zone: ButtonSlot;
+      if (col === "left" && row === "top") zone = "left-top";
+      else if (col === "center" && row === "top") zone = "center-top";
+      else if (col === "right" && row === "top") zone = "right-top";
+      else if (col === "left" && row === "middle") zone = "left-middle";
+      else if (col === "center" && row === "middle") zone = "top";
+      else if (col === "right" && row === "middle") zone = "right-middle";
+      else if (col === "left" && row === "bottom") zone = "left-bottom";
+      else if (col === "center" && row === "bottom") zone = "center-bottom";
+      else zone = "right-bottom";
+      buttonDragZoneRef.current = zone;
+      setButtonDragZone(zone);
+    };
+
+    const onUp = () => {
+      const btn = draggingButtonRef.current;
+      const zone = buttonDragZoneRef.current;
+      if (btn && zone) {
+        buttonPositions.setButtonPosition(btn, zone);
+      }
+      draggingButtonRef.current = null;
+      buttonDragZoneRef.current = null;
+      setDraggingButton(null);
+      setButtonDragZone(null);
+    };
+
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    return () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+    };
+  }, [draggingButton, buttonPositions, terminalColumnRef]);
+
   const [newSessionOpen, setNewSessionOpen] = React.useState(false);
-  const [spawnRunnerId, setSpawnRunnerId] = React.useState<string | undefined>(undefined);
-  const [spawnCwd, setSpawnCwd] = React.useState<string>("");
-  const [spawnPreselectedRunnerId, setSpawnPreselectedRunnerId] = React.useState<string | null>(null);
-  const [spawningSession, setSpawningSession] = React.useState(false);
-  const [recentFolders, setRecentFolders] = React.useState<string[]>([]);
-  const [recentFoldersLoading, setRecentFoldersLoading] = React.useState(false);
+  const newSessionMounted = useMountOnFirstOpen(newSessionOpen);
 
-  /** Set of session IDs that currently have a pending AskUserQuestion. */
-  const [sessionsAwaitingInput, setSessionsAwaitingInput] = React.useState<Set<string>>(new Set());
-
-  /** Set of session IDs that are actively compacting their context window. */
-  const [sessionsCompacting, setSessionsCompacting] = React.useState<Set<string>>(new Set());
 
   // Cached fallback promptKey for when toolCallId is absent (legacy/compat).
   // Only changes when the question content changes, preventing heartbeat
@@ -580,6 +753,7 @@ export function App() {
   const [hiddenModels, setHiddenModels] = React.useState<Set<string>>(() => loadHiddenModels());
   const [hiddenModelsOpen, setHiddenModelsOpen] = React.useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = React.useState(false);
+  const changePasswordMounted = useMountOnFirstOpen(changePasswordOpen);
 
   // Live session status from heartbeats (isCompacting and planModeEnabled are intentionally
   // NOT part of SessionState because they are not reset by clearSelection)
@@ -594,6 +768,7 @@ export function App() {
     return /Mac|iPhone|iPad/i.test(platform);
   }, []);
   const [showShortcutsHelp, setShowShortcutsHelp] = React.useState(false);
+  const shortcutsMounted = useMountOnFirstOpen(showShortcutsHelp);
 
   // Sequence tracking for gap detection
   const lastSeqRef = React.useRef<number | null>(null);
@@ -625,12 +800,14 @@ export function App() {
   const staleCheckTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   const STALE_THRESHOLD_MS = 45_000; // ~4.5 × 10s heartbeat interval
   const STALE_CHECK_INTERVAL_MS = 15_000;
+  // How long to ignore runner queue syncs after a local queue mutation.
+  const QUEUE_SYNC_SUPPRESS_MS = 5_000;
 
   // Snapshot guard: when connecting to a session, ignore streaming deltas
   // until the initial snapshot (session_active / agent_end / heartbeat) arrives.
   // This prevents pre-snapshot live events from rendering and then being
   // replaced, which causes visible message "jumping".
-  const awaitingSnapshotRef = React.useRef(false);
+  // (Owned by lifecycleRefs.awaitingSnapshot in useSessionLifecycle.)
 
   // Track which MCP startup report timestamps have already been rendered
   // to avoid duplicates when heartbeats re-deliver the same report.
@@ -639,7 +816,7 @@ export function App() {
   // Whether session_active has been received for the current session.
   // Heartbeat MCP reports are deferred until after session_active hydrates
   // messages, otherwise the report gets appended then immediately replaced.
-  const sessionHydratedRef = React.useRef(false);
+  // (Owned by lifecycleRefs.hydrated in useSessionLifecycle.)
 
   // Holds an MCP startup report that arrived (via hub state_snapshot) before
   // session_active hydration completed. Flushed when hydration finishes.
@@ -667,19 +844,7 @@ export function App() {
   // The snapshotId ties chunks to their originating session_active so stale
   // chunks from a previous stream are discarded (e.g. if a new viewer
   // connects mid-stream and triggers a fresh emitSessionActive).
-  const chunkedDeliveryRef = React.useRef<{
-    snapshotId: string;
-    totalMessages: number;
-    totalChunks: number;
-    receivedChunkIndexes: Set<number>;
-    finalChunkSeen: boolean;
-    loadedMessages: number; // cumulative count for progress display
-    chunkBuffer: Map<number, unknown[]>; // raw messages buffered by chunkIndex for ordered assembly
-  } | null>(null);
-
-  // Track the last completed snapshot ID so we can reject stale chunks that
-  // arrive after the ref has been cleared (e.g. from a superseded sender).
-  const lastCompletedSnapshotRef = React.useRef<string | null>(null);
+  // (Owned by lifecycleRefs.chunked / lifecycleRefs.lastCompletedSnapshot.)
 
   // Mobile layout
   const {
@@ -687,28 +852,6 @@ export function App() {
     sidebarSwipeOffset, suppressOverlayClickRef,
     handleSidebarPointerDown, handleSidebarPointerMove, handleSidebarPointerUp,
   } = useMobileSidebar();
-  const [liveSessions, setLiveSessions] = React.useState<HubSession[]>([]);
-
-  // Derive a sessionId → sessionName map for browser notifications.
-  const sessionNamesMap = React.useMemo(() => {
-    const map = new Map<string, string | null>();
-    for (const s of liveSessions) {
-      map.set(s.sessionId, s.sessionName ?? null);
-    }
-    return map;
-  }, [liveSessions]);
-
-  // Fire browser Notification API alerts when a session is awaiting input
-  // and the tab is hidden or the user is viewing a different session.
-  useBrowserNotifications({
-    sessionsAwaitingInput,
-    activeSessionId,
-    sessionNames: sessionNamesMap,
-  });
-  // Ref kept in sync with liveSessions so openSession can look up runner IDs
-  // without including liveSessions in its dependency array.
-  const liveSessionsRef = React.useRef<HubSession[]>(liveSessions);
-  React.useLayoutEffect(() => { liveSessionsRef.current = liveSessions; }, [liveSessions]);
 
   React.useEffect(() => {
     confirmedMetaLiveSessionIdsRef.current = new Set(liveSessions.map((s) => s.sessionId));
@@ -756,40 +899,11 @@ export function App() {
 
   // Tracks a session that was restarted via the remote exec "restart" command.
   // When the session comes back live (hub sends session_added), we auto-reconnect.
-  const restartPendingSessionIdRef = React.useRef<string | null>(null);
-  const restartPendingTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  // (Owned by lifecycleRefs.restartPendingSessionId in useSessionLifecycle.)
 
 
 
-  // Fetch recent folders when a runner is selected in the new-session dialog.
-  React.useEffect(() => {
-    if (!newSessionOpen || !spawnRunnerId) {
-      setRecentFolders([]);
-      return;
-    }
 
-    let cancelled = false;
-    setRecentFoldersLoading(true);
-    void fetch(`/api/runners/${encodeURIComponent(spawnRunnerId)}/recent-folders`, { credentials: "include" })
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
-      .then((data) => {
-        if (cancelled) return;
-        const list = Array.isArray((data as any)?.folders) ? (data as any).folders as string[] : [];
-        setRecentFolders(list);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setRecentFolders([]);
-      })
-      .finally(() => {
-        if (cancelled) return;
-        setRecentFoldersLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [newSessionOpen, spawnRunnerId]);
 
   const viewerWsRef = React.useRef<Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> | null>(null);
   const paginationStateRef = React.useRef<{
@@ -802,9 +916,7 @@ export function App() {
   const hubSocketRef = React.useRef<Socket<HubServerToClientEvents, HubClientToServerEvents> | null>(null);
   // Tracked as state so HubSocketContext consumers re-render when the socket changes.
   const [hubSocket, setHubSocket] = React.useState<Socket<HubServerToClientEvents, HubClientToServerEvents> | null>(null);
-  const activeSessionRef = React.useRef<string | null>(null);
   const agentActiveRef = React.useRef(false);
-  const viewerSwitchGenerationRef = React.useRef(0);
 
   const checkVersionCompatibility = React.useCallback(async () => {
     try {
@@ -815,6 +927,7 @@ export function App() {
         uiVersion: UI_VERSION,
         clientSocketProtocol: SOCKET_PROTOCOL_VERSION,
         uiBuildTimestamp: BUILD_TIMESTAMP,
+        isMobileBundled,
       });
       setVersionBanner({
         message: negotiation.message,
@@ -823,13 +936,13 @@ export function App() {
     } catch {
       // Best effort only — do not surface transient fetch errors as hard failures.
     }
-  }, []);
+  }, [isMobileBundled]);
 
   // Cache last-known UI state per relay session so switching sessions feels instant.
   const sessionUiCacheRef = React.useRef<Map<string, SessionUiCacheEntry>>(new Map());
 
   const patchSessionCache = React.useCallback((patch: Partial<SessionUiCacheEntry>) => {
-    const sessionId = activeSessionRef.current;
+    const sessionId = lifecycleRefs.activeSessionId.current;
     if (!sessionId) return;
 
     const prev = sessionUiCacheRef.current.get(sessionId);
@@ -848,6 +961,7 @@ export function App() {
       providerUsage: prev?.providerUsage ?? null,
       lastHeartbeatAt: prev?.lastHeartbeatAt ?? null,
       todoList: prev?.todoList ?? [],
+      messageQueue: prev?.messageQueue ?? [],
       analysis: prev?.analysis ?? null,
       pendingQuestion: prev?.pendingQuestion ?? null,
       pendingPlan: prev?.pendingPlan ?? null,
@@ -857,7 +971,7 @@ export function App() {
     };
 
     // Evict the least-recently-accessed entry if we're over the size limit.
-    evictLruIfNeeded(sessionUiCacheRef.current, sessionId, MAX_SESSION_UI_CACHE_SIZE, activeSessionRef.current);
+    evictLruIfNeeded(sessionUiCacheRef.current, sessionId, MAX_SESSION_UI_CACHE_SIZE, lifecycleRefs.activeSessionId.current);
 
     sessionUiCacheRef.current.set(sessionId, next);
 
@@ -932,22 +1046,21 @@ export function App() {
     }
     viewerWsRef.current?.disconnect();
     viewerWsRef.current = null;
-    activeSessionRef.current = null;
     lastSeqRef.current = null;
-    awaitingSnapshotRef.current = false;
     renderedMcpReportTsRef.current = null;
     injectedMessagesRef.current = [];
     // Single atomic reset — all session-scoped fields defined in SessionState
     // are cleared together. New fields added to SessionState are automatically
     // included; nothing can be accidentally left stale between sessions.
     setSessionState(createInitialSessionState());
+    lifecycleClearSelection();
     // Reset live-status fields that are intentionally outside SessionState
     // (they are driven by heartbeats, not snapshots) but must still be cleared
     // when switching sessions so stale "compacting" / "plan mode" indicators
     // are not carried over until the next heartbeat arrives.
     setIsCompacting(false);
     setPlanModeEnabled(false);
-  }, []);
+  }, [lifecycleClearSelection]);
 
   // Full reset: cancel the RAF and wipe all pending streaming state. Use before
   // replacing the entire message list (session_active, agent_end) so a queued
@@ -1179,14 +1292,35 @@ export function App() {
     if (!text) return;
 
     const trimmed = text.trim();
+    let nextQueue: QueuedMessage[] | null = null;
     setMessageQueue((prev) => {
       if (prev.length === 0) return prev;
       // Find the first queued message whose text matches and remove it
       const idx = prev.findIndex((qm) => qm.text.trim() === trimmed);
       if (idx === -1) return prev;
-      return [...prev.slice(0, idx), ...prev.slice(idx + 1)];
+      nextQueue = [...prev.slice(0, idx), ...prev.slice(idx + 1)];
+      return nextQueue;
     });
-  }, []);
+    if (nextQueue) patchSessionCache({ messageQueue: nextQueue });
+  }, [patchSessionCache]);
+
+  // Ignore runner queue syncs briefly after a local mutation / optimistic add
+  // so a stale in-flight heartbeat can't clobber state the runner hasn't
+  // applied yet. The next heartbeat after the window restores authority.
+  const queueSyncSuppressUntilRef = React.useRef(0);
+
+  /** Apply the authoritative pending follow-up queue reported by the runner. */
+  const applyQueuedMessagesSync = React.useCallback((texts: string[]) => {
+    if (Date.now() < queueSyncSuppressUntilRef.current) return;
+    let changed = false;
+    let nextQueue: QueuedMessage[] = [];
+    setMessageQueue((prev) => {
+      nextQueue = reconcileMessageQueue(prev, texts);
+      changed = nextQueue !== prev;
+      return nextQueue;
+    });
+    if (changed) patchSessionCache({ messageQueue: nextQueue });
+  }, [patchSessionCache]);
 
   const applyMcpReport = React.useCallback((mcpReport: {
     slow?: boolean;
@@ -1197,7 +1331,7 @@ export function App() {
     ts?: number;
   }) => {
     const reportTs = typeof mcpReport.ts === "number" ? mcpReport.ts : 0;
-    if (reportTs <= 0 || reportTs === renderedMcpReportTsRef.current || !sessionHydratedRef.current) return;
+    if (reportTs <= 0 || reportTs === renderedMcpReportTsRef.current || !lifecycleRefs.hydrated.current) return;
     const hasErrors = Array.isArray(mcpReport.errors) && mcpReport.errors.length > 0;
     const showSlow = mcpReport.showSlowWarning !== false;
     const isSlow = mcpReport.slow === true && showSlow;
@@ -1265,7 +1399,7 @@ export function App() {
           };
           setPendingQuestion(resolved);
           cachePatch.pendingQuestion = resolved;
-          setViewerStatus("Waiting for answer…");
+          setLifecycleStatus("Waiting for answer…");
         } else {
           setPendingQuestion(null);
           cachePatch.pendingQuestion = null;
@@ -1292,7 +1426,7 @@ export function App() {
         };
         setPendingPlan(resolved);
         cachePatch.pendingPlan = resolved;
-        setViewerStatus("Waiting for plan review…");
+        setLifecycleStatus("Waiting for plan review…");
       } else {
         setPendingPlan(null);
         cachePatch.pendingPlan = null;
@@ -1308,9 +1442,9 @@ export function App() {
       setIsCompacting(state.isCompacting);
       cachePatch.isCompacting = state.isCompacting;
       if (state.isCompacting) {
-        setViewerStatus("Compacting…");
+        setLifecycleStatus("Compacting…");
       }
-      const snapSessionId = activeSessionRef.current;
+      const snapSessionId = lifecycleRefs.activeSessionId.current;
       if (snapSessionId) {
         setSessionsCompacting((prev) => {
           const next = new Set(prev);
@@ -1383,7 +1517,7 @@ export function App() {
     // the new slim-heartbeat CLI no longer retries in every heartbeat, so without this
     // the report would be permanently lost for any viewer connecting to an existing session.
     if (state.mcpStartupReport) {
-      if (sessionHydratedRef.current) {
+      if (lifecycleRefs.hydrated.current) {
         applyMcpReport(state.mcpStartupReport as Record<string, unknown>);
       } else {
         pendingMcpReportRef.current = state.mcpStartupReport as Record<string, unknown>;
@@ -1407,7 +1541,7 @@ export function App() {
       if (patch.pendingQuestion) {
         setPendingQuestion(patch.pendingQuestion);
         cachePatch.pendingQuestion = patch.pendingQuestion;
-        setViewerStatus("Waiting for answer…");
+        setLifecycleStatus("Waiting for answer…");
       } else {
         setPendingQuestion(null);
         cachePatch.pendingQuestion = null;
@@ -1431,7 +1565,7 @@ export function App() {
           };
           setPendingPlan(resolved);
           cachePatch.pendingPlan = resolved;
-          setViewerStatus("Waiting for plan review…");
+          setLifecycleStatus("Waiting for plan review…");
         }
       } else {
         setPendingPlan(null);
@@ -1447,7 +1581,7 @@ export function App() {
     if (patch.isCompacting !== undefined) {
       setIsCompacting(patch.isCompacting);
       cachePatch.isCompacting = patch.isCompacting;
-      const patchSessionId = activeSessionRef.current;
+      const patchSessionId = lifecycleRefs.activeSessionId.current;
       if (patchSessionId) {
         setSessionsCompacting((prev) => {
           const next = new Set(prev);
@@ -1456,12 +1590,12 @@ export function App() {
         });
       }
       if (patch.viewerStatusOverride) {
-        setViewerStatus(patch.viewerStatusOverride);
+        setLifecycleStatus(patch.viewerStatusOverride);
       } else if (!patch.isCompacting) {
-        setViewerStatus((prev) => (prev === "Compacting…" ? "Connected" : prev));
+        setLifecycleStatus((prev) => (prev === "Compacting…" ? "Connected" : prev));
       }
     } else if (patch.viewerStatusOverride) {
-      setViewerStatus(patch.viewerStatusOverride);
+      setLifecycleStatus(patch.viewerStatusOverride);
     }
 
     if ("retryState" in patch) {
@@ -1541,8 +1675,9 @@ export function App() {
     // would drop the guard before the viewer is in the room, allowing
     // in-flight chunks or deltas to be accepted and then overwritten by
     // the later snapshot header.
-    if (type === "session_active" || type === "agent_end") {
-      awaitingSnapshotRef.current = false;
+    // session_active handles its own snapshot start via onSnapshotStarted.
+    if (type === "agent_end") {
+      onSnapshotStarted({});
     }
 
     // While awaiting the initial snapshot OR during chunked hydration, skip
@@ -1553,7 +1688,7 @@ export function App() {
     // without this guard, tool_execution_update partials can write synthetic
     // toolResult messages into state before the snapshot hydrates the real
     // conversation, producing orphan/duplicate tool output on reconnect.
-    if (awaitingSnapshotRef.current || chunkedDeliveryRef.current) {
+    if (lifecycleRefs.awaitingSnapshot.current || lifecycleRefs.chunked.current) {
       if (
         type === "message_update" || type === "message_start" || type === "message_end" || type === "turn_end" ||
         type === "tool_execution_start" || type === "tool_execution_update" || type === "tool_execution_end"
@@ -1586,7 +1721,7 @@ export function App() {
       setAgentActive(nextAgentActive);
       setIsCompacting(nextIsCompacting);
 
-      const hbSessionId = activeSessionRef.current;
+      const hbSessionId = lifecycleRefs.activeSessionId.current;
       if (hbSessionId) {
         setSessionsCompacting((prev) => {
           const next = new Set(prev);
@@ -1596,14 +1731,22 @@ export function App() {
       }
 
       if (nextIsCompacting) {
-        setViewerStatus("Compacting…");
+        setLifecycleStatus("Compacting…");
       } else {
-        setViewerStatus((prev) => (prev === "Compacting…" ? "Connected" : prev));
+        setLifecycleStatus((prev) => (prev === "Compacting…" ? "Connected" : prev));
       }
 
       if (typeof hb.ts === "number") {
         setLastHeartbeatAt(hb.ts);
         cachePatch.lastHeartbeatAt = hb.ts;
+      }
+
+      // Sync the pending follow-up queue from the runner (authoritative).
+      // Skip liveness-only heartbeats — those replay the runner's last stored
+      // heartbeat on viewer switch and may carry stale queue state.
+      const hbQueue = (evt as { queuedMessages?: unknown }).queuedMessages;
+      if (!livenessOnly && Array.isArray(hbQueue)) {
+        applyQueuedMessagesSync(hbQueue.filter((m): m is string => typeof m === "string"));
       }
 
       if (!livenessOnly && !metaSourceHubRef.current) {
@@ -1699,6 +1842,10 @@ export function App() {
         cachePatch.goal = nextGoal;
       }
 
+      if (Object.prototype.hasOwnProperty.call(derived, "queuedMessages")) {
+        applyQueuedMessagesSync(derived.queuedMessages ?? []);
+      }
+
       if (Object.prototype.hasOwnProperty.call(meta, "analysis")) {
         const nextAnalysis = meta.analysis as SessionUiCacheEntry["analysis"];
         setAnalysis(nextAnalysis ?? null);
@@ -1715,6 +1862,10 @@ export function App() {
       const state = evt.state as Record<string, unknown> | undefined;
       const rawMessages = Array.isArray(state?.messages) ? (state?.messages as unknown[]) : [];
       const isChunked = !!state?.chunked;
+      const snapshotId = typeof state?.snapshotId === "string" ? state.snapshotId : "";
+      const totalMessages = typeof state?.totalMessages === "number" ? state.totalMessages : rawMessages.length;
+      onSnapshotStarted({ chunked: isChunked, snapshotId, totalMessages });
+
       const stateModel = normalizeModel(state?.model);
       const stateModels = Array.isArray(state?.availableModels)
         ? normalizeModelList(state.availableModels as unknown[])
@@ -1734,7 +1885,6 @@ export function App() {
       // aren't part of the server-side state snapshot.
       const injected = injectedMessagesRef.current;
       setMessages(injected.length > 0 ? [...normalizedMessages, ...injected] : normalizedMessages);
-      const totalMessages = typeof state?.totalMessages === "number" ? state.totalMessages : normalizedMessages.length;
       const serverHasMore = state?.hasMore === true;
       const oldestLoadedIndex = typeof state?.oldestLoadedIndex === "number" ? state.oldestLoadedIndex : 0;
       paginationStateRef.current = { totalMessages, hasMore: serverHasMore, oldestLoadedIndex };
@@ -1771,35 +1921,13 @@ export function App() {
       }
 
       // Track chunked delivery state — messages arrive as subsequent
-      // session_messages_chunk events when the session is large.
-      if (isChunked) {
-        const totalMessages = typeof state?.totalMessages === "number" ? state.totalMessages : 0;
-        const snapshotId = typeof state?.snapshotId === "string" ? state.snapshotId : "";
-        chunkedDeliveryRef.current = {
-          snapshotId,
-          totalMessages,
-          totalChunks: 0, // updated as chunks arrive
-          receivedChunkIndexes: new Set<number>(),
-          finalChunkSeen: false,
-          loadedMessages: 0,
-          chunkBuffer: new Map<number, unknown[]>(),
-        };
-        setViewerStatus(`Loading session (0 of ${totalMessages} messages)…`);
-      } else {
-        chunkedDeliveryRef.current = null;
-        // Mark that we have a complete non-chunked snapshot so any stale
-        // chunks from a superseded chunked sender are rejected.
-        lastCompletedSnapshotRef.current = "non-chunked";
-      }
+      // session_messages_chunk events when the session is large. Lifecycle
+      // state (chunked / lastCompletedSnapshot / hydrated) is owned by
+      // useSessionLifecycle via onSnapshotStarted / onSnapshotComplete.
 
       // Don't clobber transient statuses with a generic "Connected" when the
       // CLI sends a session_active snapshot right after a command.
-      if (!isChunked) {
-        setViewerStatus((prev) => {
-          if (prev === "Model set" || prev === "Compacting…" || prev.startsWith("Compacted")) return prev;
-          return "Connected";
-        });
-      }
+      // (Non-chunked completion is handled by onSnapshotComplete.)
 
       // Don't unconditionally clear pendingQuestion / pendingPlan here.
       // session_active is also emitted for non-session-switch actions (model
@@ -1821,16 +1949,22 @@ export function App() {
         setActiveToolCalls(new Map());
       }
       setIsChangingModel(false);
-      sessionHydratedRef.current = !isChunked; // defer until final chunk
       // For non-chunked sessions, flush any pending MCP report immediately
       if (!isChunked && pendingMcpReportRef.current) {
         applyMcpReport(pendingMcpReportRef.current);
         pendingMcpReportRef.current = null;
       }
 
-      // Clear queued messages — the snapshot contains the full conversation
-      // including any follow-ups that were consumed by the agent.
-      setMessageQueue([]);
+      // Sync queued follow-ups from the snapshot — the runner reports its
+      // pending queue so messages queued before a session switch survive.
+      // Old runners don't send the field: clear, as before (consumed
+      // follow-ups are part of the conversation snapshot).
+      if (Array.isArray(state?.queuedMessages)) {
+        applyQueuedMessagesSync((state.queuedMessages as unknown[]).filter((m): m is string => typeof m === "string"));
+      } else {
+        setMessageQueue([]);
+        patchSessionCache({ messageQueue: [] });
+      }
 
       if (!metaViaHub) {
         // Extract thinkingLevel from session snapshot too
@@ -1861,6 +1995,9 @@ export function App() {
           ...(hasStateGoal ? { goal: stateGoal ?? null } : {}),
         });
       }
+      if (!isChunked) {
+        onSnapshotComplete();
+      }
       return;
     }
 
@@ -1873,7 +2010,7 @@ export function App() {
       // delivers in-flight chunks before the viewer's initial snapshot replay.
       // Without this guard, chunks are appended to stale/empty state and then
       // the later metadata-only session_active clears them with setMessages([]).
-      if (awaitingSnapshotRef.current && !chunkedDeliveryRef.current) {
+      if (lifecycleRefs.awaitingSnapshot.current && !lifecycleRefs.chunked.current) {
         return;
       }
 
@@ -1890,15 +2027,15 @@ export function App() {
       //    the superseded sender are still draining — reject if the ID
       //    doesn't match the last completed snapshot.
       if (chunkSnapshotId) {
-        if (chunkedDeliveryRef.current && chunkedDeliveryRef.current.snapshotId !== chunkSnapshotId) {
+        if (lifecycleRefs.chunked.current && lifecycleRefs.chunked.current.snapshotId !== chunkSnapshotId) {
           return; // stale chunk — a newer snapshot is loading
         }
-        if (!chunkedDeliveryRef.current && lastCompletedSnapshotRef.current && lastCompletedSnapshotRef.current !== chunkSnapshotId) {
+        if (!lifecycleRefs.chunked.current && lifecycleRefs.lastCompletedSnapshot.current && lifecycleRefs.lastCompletedSnapshot.current !== chunkSnapshotId) {
           return; // stale chunk — arrived after a newer snapshot completed
         }
       }
 
-      const chunkState = chunkedDeliveryRef.current;
+      const chunkState = lifecycleRefs.chunked.current;
       if (!chunkState || chunkIndex < 0) {
         return;
       }
@@ -1925,7 +2062,7 @@ export function App() {
       // Update progress counter for status display.
       chunkState.loadedMessages += chunkMessages.length;
       const loaded = chunkState.loadedMessages;
-      setViewerStatus(`Loading session (${Math.min(loaded, totalMessages)} of ${totalMessages} messages)…`);
+      onChunkProgress(loaded, totalMessages);
 
       const readyToFinalize = canFinalizeChunkHydration(
         chunkState.finalChunkSeen,
@@ -1952,15 +2089,15 @@ export function App() {
           .filter((m): m is RelayMessage => m !== null);
         const finalMessages = deduplicateMessages(convertedOrdered);
 
-        lastCompletedSnapshotRef.current = chunkSnapshotId || null;
-        chunkedDeliveryRef.current = null;
-        sessionHydratedRef.current = true;
+        lifecycleRefs.lastCompletedSnapshot.current = chunkSnapshotId || null;
+        lifecycleRefs.chunked.current = null;
+        lifecycleRefs.hydrated.current = true;
         // Flush any MCP startup report that arrived before hydration completed
         if (pendingMcpReportRef.current) {
           applyMcpReport(pendingMcpReportRef.current);
           pendingMcpReportRef.current = null;
         }
-        setViewerStatus("Connected");
+        onSnapshotComplete();
 
         // Capture the merged result inside the updater so patchSessionCache
         // receives the same value that setMessages commits — including any
@@ -1991,8 +2128,11 @@ export function App() {
       setPendingPlan(null);
       setRetryState(null);
       setActiveToolCalls(new Map());
-      // Clear message queue — the agent processed any queued steer/followUp messages
+      // Clear message queue — the agent processed any queued steer/followUp
+      // messages. If any survived (e.g. abort), the next heartbeat re-syncs.
       setMessageQueue([]);
+      patchSessionCache({ messageQueue: [] });
+      onSnapshotComplete();
       return;
     }
 
@@ -2020,6 +2160,16 @@ export function App() {
         if (command === "list_resume_sessions") {
           setResumeSessionsLoading(false);
         }
+        if (command === "get_fork_messages") {
+          setForkMessagesLoading(false);
+        }
+        if (command === "fork") {
+          // A failed rewind leaves the transcript untouched — surface the error
+          // in the transcript itself, not just the easily-missed status line
+          // (e.g. "fork is not available in this pi version" from a runner
+          // that predates the rewind feature and needs a restart).
+          appendLocalSystemMessage(`**/rewind** failed: ${error}`);
+        }
         if (command === "refresh_usage") {
           setUsageRefreshing(false);
         }
@@ -2029,7 +2179,13 @@ export function App() {
           // (compaction is still running), and unconditionally clearing the
           // flag would re-enable input prematurely until the next heartbeat.
         }
-        setViewerStatus(`/${command}: ${error}`);
+        setLifecycleStatus(`/${command}: ${error}`);
+        return;
+      }
+
+      if (command === "background_bash") {
+        const list = Array.isArray(result?.backgrounded) ? (result.backgrounded as string[]) : [];
+        setLifecycleStatus(`Backgrounded: ${list.join(", ")}`);
         return;
       }
 
@@ -2042,11 +2198,15 @@ export function App() {
           setProviderUsage(nextUsage);
           patchSessionCache({ providerUsage: nextUsage });
         }
-        setViewerStatus("Usage refreshed");
+        setLifecycleStatus("Usage refreshed");
         return;
       }
 
       if (command === "list_resume_sessions") {
+        if (resumeSessionsFallbackTimerRef.current) {
+          clearTimeout(resumeSessionsFallbackTimerRef.current);
+          resumeSessionsFallbackTimerRef.current = null;
+        }
         const list: unknown[] = Array.isArray(result?.sessions) ? (result.sessions as unknown[]) : [];
         const normalized: ResumeSessionOption[] = [];
 
@@ -2083,8 +2243,33 @@ export function App() {
         setResumeSessionsNextCursor(nextCursor);
         setResumeSessionsLoading(false);
         if (!isAppend && normalized.length === 0) {
-          setViewerStatus("No resumable sessions");
+          setLifecycleStatus("No resumable sessions");
         }
+        return;
+      }
+
+      if (command === "get_fork_messages") {
+        const list: unknown[] = Array.isArray(result?.messages) ? (result.messages as unknown[]) : [];
+        const normalized: ForkMessageOption[] = [];
+        for (const item of list) {
+          if (!item || typeof item !== "object") continue;
+          const entry = item as Record<string, unknown>;
+          if (typeof entry.entryId !== "string" || typeof entry.text !== "string") continue;
+          normalized.push({ entryId: entry.entryId, text: entry.text });
+        }
+        setForkMessages(normalized);
+        setForkMessagesLoading(false);
+        if (normalized.length === 0) {
+          setLifecycleStatus("No messages to rewind to");
+        }
+        return;
+      }
+
+      if (command === "fork") {
+        // The runner emits a fresh session_active with the rewound transcript;
+        // stale fork candidates from the pre-fork session are cleared here.
+        setForkMessages([]);
+        setLifecycleStatus("Conversation rewound");
         return;
       }
 
@@ -2092,9 +2277,9 @@ export function App() {
         const text = typeof result?.text === "string" ? result.text : "";
         if (text) {
           void navigator.clipboard.writeText(text);
-          setViewerStatus("Copied");
+          setLifecycleStatus("Copied");
         } else {
-          setViewerStatus("Nothing to copy");
+          setLifecycleStatus("Nothing to copy");
         }
         return;
       }
@@ -2168,7 +2353,7 @@ export function App() {
         const summary = typeof result?.summary === "string"
           ? result.summary
           : `MCP tools loaded: ${toolCount}`;
-        setViewerStatus(summary);
+        setLifecycleStatus(summary);
         return;
       }
 
@@ -2238,7 +2423,7 @@ export function App() {
         });
 
         const verb = disabled ? "Disabled" : "Enabled";
-        setViewerStatus(`${verb} MCP server "${toggledServer}". ${toolCount} tools loaded.`);
+        setLifecycleStatus(`${verb} MCP server "${toggledServer}". ${toolCount} tools loaded.`);
         return;
       }
 
@@ -2246,7 +2431,7 @@ export function App() {
         const newLevel = typeof result?.thinkingLevel === "string" ? result.thinkingLevel : null;
         setEffortLevel(newLevel);
         patchSessionCache({ effortLevel: newLevel });
-        setViewerStatus(newLevel && newLevel !== "off" ? `Effort: ${newLevel}` : "Effort: off");
+        setLifecycleStatus(newLevel && newLevel !== "off" ? `Effort: ${newLevel}` : "Effort: off");
         return;
       }
 
@@ -2254,7 +2439,7 @@ export function App() {
         const enabled = !!result?.planModeEnabled;
         setPlanModeEnabled(enabled);
         patchSessionCache({ planModeEnabled: enabled });
-        setViewerStatus(enabled ? "⏸ Plan mode ON" : "▶ Plan mode OFF");
+        setLifecycleStatus(enabled ? "⏸ Plan mode ON" : "▶ Plan mode OFF");
         return;
       }
 
@@ -2262,12 +2447,12 @@ export function App() {
         const nextSessionName = normalizeSessionName(result?.sessionName);
         setSessionName(nextSessionName);
         patchSessionCache({ sessionName: nextSessionName });
-        setViewerStatus(nextSessionName ? "Session renamed" : "Session name cleared");
+        setLifecycleStatus(nextSessionName ? "Session renamed" : "Session name cleared");
         return;
       }
 
       if (command === "set_model" || command === "cycle_model") {
-        setViewerStatus("Model set");
+        setLifecycleStatus("Model set");
         // Runner should also emit session_active/model_select, but in case it doesn't,
         // opportunistically refresh capabilities by asking for commands again (cheap).
         return;
@@ -2275,7 +2460,7 @@ export function App() {
 
       if (command === "compact") {
         setIsCompacting(false);
-        const compactDoneId = activeSessionRef.current;
+        const compactDoneId = lifecycleRefs.activeSessionId.current;
         if (compactDoneId) {
           setSessionsCompacting((prev) => { const next = new Set(prev); next.delete(compactDoneId); return next; });
         }
@@ -2283,9 +2468,9 @@ export function App() {
         const summary = typeof result?.summary === "string"
           ? `Compacted (${tokensBefore > 0 ? `${Math.round(tokensBefore / 1000)}k tokens summarized` : "done"})`
           : "Compacted";
-        setViewerStatus(summary);
+        setLifecycleStatus(summary);
         // Clear the compact status after a few seconds so it doesn't stick forever
-        setTimeout(() => setViewerStatus((prev) => (prev === summary || prev.startsWith("Compacted") ? "Connected" : prev)), 5000);
+        setTimeout(() => setLifecycleStatus((prev) => (prev === summary || prev.startsWith("Compacted") ? "Connected" : prev)), 5000);
         return;
       }
 
@@ -2304,47 +2489,41 @@ export function App() {
           messages: [],
           sessionName: null,
           agentActive: false,
+          messageQueue: [],
         });
         // Clear trigger history so the Triggers panel starts fresh
-        const sid = activeSessionRef.current;
+        const sid = lifecycleRefs.activeSessionId.current;
         if (sid) {
           void fetch(`/api/sessions/${encodeURIComponent(sid)}/triggers`, {
             method: "DELETE",
             credentials: "include",
           }).catch(() => {});
         }
-        setViewerStatus("New session started");
+        setLifecycleStatus("New session started");
         return;
       }
 
       if (command === "restart") {
-        setViewerStatus("Restarting CLI…");
         // Remember which session is restarting so we can auto-reconnect when it
         // comes back live.  The session ID is stable across a restart (PIZZAPI_SESSION_ID).
-        const pendingId = activeSessionRef.current;
+        const pendingId = lifecycleRefs.activeSessionId.current;
         if (pendingId) {
-          restartPendingSessionIdRef.current = pendingId;
-          if (restartPendingTimerRef.current) clearTimeout(restartPendingTimerRef.current);
-          // Give up auto-reconnect after 60 s in case the CLI never comes back.
-          restartPendingTimerRef.current = setTimeout(() => {
-            restartPendingSessionIdRef.current = null;
-            restartPendingTimerRef.current = null;
-          }, 60_000);
+          onViewerDisconnected({ reason: "Session reconnected", isRestarting: true });
         }
         return;
       }
 
       if (command === "end_session") {
-        setViewerStatus("Ending session…");
+        setLifecycleStatus("Ending session…");
         return;
       }
 
       if (command === "resume_session") {
-        setViewerStatus("Session resumed");
+        setLifecycleStatus("Session resumed");
         return;
       }
 
-      setViewerStatus("OK");
+      setLifecycleStatus("OK");
       return;
     }
 
@@ -2479,10 +2658,10 @@ export function App() {
       setIsChangingModel(false);
       if (ok) {
         // Keep wording consistent with "model_select" and make it clear the change succeeded.
-        setViewerStatus("Model set");
+        setLifecycleStatus("Model set");
       } else {
         const message = typeof evt.message === "string" ? evt.message : "Failed to set model";
-        setViewerStatus(message);
+        setLifecycleStatus(message);
       }
       return;
     }
@@ -2581,7 +2760,7 @@ export function App() {
           questions,
           display: parsePendingQuestionDisplayMode(args, questions.length),
         });
-        setViewerStatus("Waiting for answer…");
+        setLifecycleStatus("Waiting for answer…");
       }
       return;
     }
@@ -2608,7 +2787,7 @@ export function App() {
 
     if (type === "tool_execution_end" && evt.toolName === "AskUserQuestion") {
       setPendingQuestion(null);
-      setViewerStatus("Connected");
+      setLifecycleStatus("Connected");
       return;
     }
 
@@ -2633,7 +2812,7 @@ export function App() {
           description: typeof args.description === "string" && args.description.trim() ? args.description.trim() : null,
           steps,
         });
-        setViewerStatus("Waiting for plan review…");
+        setLifecycleStatus("Waiting for plan review…");
       }
       return;
     }
@@ -2666,7 +2845,7 @@ export function App() {
 
     if (type === "tool_execution_end" && evt.toolName === "plan_mode") {
       setPendingPlan(null);
-      setViewerStatus("Connected");
+      setLifecycleStatus("Connected");
       return;
     }
 
@@ -2752,10 +2931,22 @@ export function App() {
     getFallbackPromptKey,
     patchSessionCache,
     removeQueuedMessageByContent,
+    applyQueuedMessagesSync,
     activeModel,
+    onSnapshotStarted,
+    onSnapshotComplete,
+    onChunkProgress,
   ]);
 
+  // Only connect once auth is confirmed — a pre-login handshake is rejected by
+  // the server middleware and socket.io never retries middleware denials, which
+  // left the hub socket permanently dead until a full page reload (stuck
+  // sidebar skeletons + "Connecting…"). Keyed on the user id so logout→login
+  // recreates the socket. Mirrors useRunnersFeed's `enabled` gating.
+  const hubAuthUserId = !isPending && session?.user?.id ? String(session.user.id) : null;
+
   React.useEffect(() => {
+    if (!hubAuthUserId) return;
     const socket = io(socketUrl("/hub"), {
       withCredentials: true,
       auth: buildSocketAuth({
@@ -2766,8 +2957,14 @@ export function App() {
     hubSocketRef.current = socket;
     setHubSocket(socket);
 
-    const handleStateSnapshot = ({ sessionId, state }: { sessionId: string; state: SessionMetaState }) => {
-      const currentSessionId = activeSessionRef.current;
+    const handleStateSnapshot = (raw: unknown) => {
+      const parsed = parseHubStateSnapshot(raw);
+      if (!parsed.ok) {
+        logFrontendEvent("hub", "warning", "Malformed state snapshot", parsed.error);
+        return;
+      }
+      const { sessionId, state } = parsed.value;
+      const currentSessionId = lifecycleRefs.activeSessionId.current;
 
       // For background sessions: extract pendingQuestion/pendingPlan from the
       // initial state_snapshot so badges are correct on load/reconnect even
@@ -2805,19 +3002,26 @@ export function App() {
       applyMetaStateSnapshot(state);
     };
 
-    const handleMetaEvent = (payload: { sessionId: string; version: number } & Record<string, unknown>) => {
+    const handleMetaEvent = (raw: unknown) => {
+      const parsed = parseHubMetaEvent(raw);
+      if (!parsed.ok) {
+        logFrontendEvent("hub", "warning", "Malformed meta event", parsed.error);
+        return;
+      }
+      const { sessionId, version, event } = parsed.value;
+
       // Update the sidebar pending-question badge for ANY session's meta event,
       // not just the active one.  Background sessions emit pendingQuestion
       // and pendingPlan updates into their own meta rooms; the badge must
       // reflect all of them.
-      if (Object.prototype.hasOwnProperty.call(payload, "pendingQuestion") ||
-          Object.prototype.hasOwnProperty.call(payload, "pendingPlan")) {
+      if (event.type === "question_pending" || event.type === "question_cleared" ||
+          event.type === "plan_pending" || event.type === "plan_cleared") {
         setSessionsAwaitingInput((prev) => {
           const next = new Set(prev);
-          if (payload.pendingQuestion || payload.pendingPlan) {
-            next.add(payload.sessionId);
+          if (event.type === "question_cleared" || event.type === "plan_cleared") {
+            next.delete(sessionId);
           } else {
-            next.delete(payload.sessionId);
+            next.add(sessionId);
           }
           return next;
         });
@@ -2826,35 +3030,32 @@ export function App() {
       // Track compaction state for ANY session's meta event (same pattern as
       // sessionsAwaitingInput above) so the sidebar shows the yellow chase
       // indicator even for background sessions.
-      if (payload.type === "compact_started" || payload.type === "compact_ended") {
+      if (event.type === "compact_started" || event.type === "compact_ended") {
         setSessionsCompacting((prev) => {
           const next = new Set(prev);
-          if (payload.type === "compact_started") {
-            next.add(payload.sessionId);
+          if (event.type === "compact_started") {
+            next.add(sessionId);
           } else {
-            next.delete(payload.sessionId);
+            next.delete(sessionId);
           }
           return next;
         });
       }
 
-      const currentSessionId = activeSessionRef.current;
-      if (payload.sessionId !== currentSessionId) return;
-      const { sessionId, version, ...event } = payload;
+      const currentSessionId = lifecycleRefs.activeSessionId.current;
+      if (sessionId !== currentSessionId) return;
       const seen = metaVersionsRef.current.get(sessionId) ?? 0;
       if (version <= seen) return;
       metaVersionsRef.current.set(sessionId, version);
-      if (isMetaRelayEvent(event)) {
-        applyMetaPatch(metaEventToStatePatch(event));
-        if (event.type === "mcp_startup_report" && event.report) {
-          // Buffer if session not yet hydrated — the new slim CLI no longer retries
-          // in heartbeats, so without this the report would be lost for live events
-          // that race session_active delivery.
-          if (sessionHydratedRef.current) {
-            applyMcpReport(event.report);
-          } else {
-            pendingMcpReportRef.current = event.report as Record<string, unknown>;
-          }
+      applyMetaPatch(metaEventToStatePatch(event));
+      if (event.type === "mcp_startup_report" && event.report) {
+        // Buffer if session not yet hydrated — the new slim CLI no longer retries
+        // in heartbeats, so without this the report would be lost for live events
+        // that race session_active delivery.
+        if (lifecycleRefs.hydrated.current) {
+          applyMcpReport(event.report);
+        } else {
+          pendingMcpReportRef.current = event.report as Record<string, unknown>;
         }
       }
     };
@@ -2904,7 +3105,7 @@ export function App() {
       hubSocketRef.current = null;
       setHubSocket(null);
     };
-  }, [applyMetaStateSnapshot, applyMetaPatch, applyMcpReport, checkVersionCompatibility]);
+  }, [hubAuthUserId, applyMetaStateSnapshot, applyMetaPatch, applyMcpReport, checkVersionCompatibility]);
 
   React.useEffect(() => {
     const hubSock = hubSocketRef.current;
@@ -2974,7 +3175,7 @@ export function App() {
 
   const openSession = React.useCallback((relaySessionId: string) => {
     // Already viewing this session — nothing to do.
-    if (relaySessionId === activeSessionRef.current) return;
+    if (relaySessionId === lifecycleRefs.activeSessionId.current) return;
 
     // Flush/cancel any pending RAF queues (streaming deltas & tool-stream
     // partials) from the previous session so they can't leak into the new one.
@@ -2989,7 +3190,7 @@ export function App() {
     // same-runner switches causes a flash to empty and unnecessary re-renders
     // in the header / model selector.
     const sessions = liveSessionsRef.current;
-    const prevSessionId = activeSessionRef.current;
+    const prevSessionId = lifecycleRefs.activeSessionId.current;
     const prevRunnerId = prevSessionId
       ? sessions.find((s) => s.sessionId === prevSessionId)?.runnerId ?? null
       : null;
@@ -2997,24 +3198,17 @@ export function App() {
     const nextRunnerId = nextLiveSession?.runnerId ?? null;
     const sameRunner = !!(prevRunnerId && nextRunnerId && prevRunnerId === nextRunnerId);
     const prevViewerSocket = viewerWsRef.current;
-    const nextGeneration = ++viewerSwitchGenerationRef.current;
+    const nextGeneration = lifecycleOpenSession(relaySessionId);
 
     localStorage.setItem("pp.lastSessionId", relaySessionId);
-    activeSessionRef.current = relaySessionId;
     lastSeqRef.current = null;
     lastViewerEventAtRef.current = Date.now(); // treat open as an "event" so we don't fire immediately
-    awaitingSnapshotRef.current = true;
     renderedMcpReportTsRef.current = null;
-    sessionHydratedRef.current = false;
     pendingMcpReportRef.current = null;
-    chunkedDeliveryRef.current = null;
-    lastCompletedSnapshotRef.current = null;
     injectedMessagesRef.current = [];
     metaSourceHubRef.current = false;
     paginationStateRef.current = null;
     setLoadingOlderMessages(false);
-    setActiveSessionId(relaySessionId);
-    setViewerStatus("Connecting…");
     setRetryState(null);
     setActiveToolCalls(new Map());
     setMcpOAuthPastes([]);
@@ -3038,6 +3232,10 @@ export function App() {
     setTokenUsage(cached?.tokenUsage ?? null);
     setLastHeartbeatAt(cached?.lastHeartbeatAt ?? null);
     setTodoList(cached?.todoList ?? []);
+    // Reset the queue-sync suppress window — it guards a mutation in the
+    // previous session and must not block this session's snapshot sync.
+    queueSyncSuppressUntilRef.current = 0;
+    setMessageQueue(cached?.messageQueue ?? []);
     setAnalysis(cached?.analysis ?? null);
     setGoal(cached?.goal ?? null);
 
@@ -3079,7 +3277,7 @@ export function App() {
       // Only armed when the agent is active — idle sessions produce no events,
       // so silence is expected and not a sign of a broken connection.
       staleCheckTimerRef.current = setInterval(() => {
-        if (!activeSessionRef.current) return;
+        if (!lifecycleRefs.activeSessionId.current) return;
         if (!nextSocket.connected) return;
         if (!agentActiveRef.current) return;
         const elapsed = Date.now() - lastViewerEventAtRef.current;
@@ -3091,43 +3289,52 @@ export function App() {
       }, STALE_CHECK_INTERVAL_MS);
 
       nextSocket.on("connect", () => {
-        const currentSessionId = activeSessionRef.current;
+        const currentSessionId = lifecycleRefs.activeSessionId.current;
         if (!currentSessionId) return;
-        setViewerStatus("Connecting…");
-        setViewerSwitchGeneration(nextSocket, viewerSwitchGenerationRef.current);
+        setLifecycleStatus("Connecting…");
+        setViewerSwitchGeneration(nextSocket, lifecycleRefs.generation.current);
         nextSocket.emit("switch_session", {
           sessionId: currentSessionId,
-          generation: viewerSwitchGenerationRef.current,
+          generation: lifecycleRefs.generation.current,
           lastSeq: lastSeqRef.current ?? undefined,
         });
       });
 
       nextSocket.on("connected", (data) => {
+        const envelope = parseViewerConnectedEnvelope(data);
+        if (!envelope.ok) {
+          logFrontendEvent("viewer", "warning", "Malformed viewer connected envelope", envelope.error);
+          return;
+        }
+        const payload = envelope.value;
         if (!isActiveViewerSessionPayload(
-          activeSessionRef.current,
-          data.sessionId,
-          viewerSwitchGenerationRef.current,
-          data.generation,
+          lifecycleRefs.activeSessionId.current,
+          payload.sessionId,
+          lifecycleRefs.generation.current,
+          payload.generation,
         )) {
           return;
         }
         lastViewerEventAtRef.current = Date.now();
 
-        metaSourceHubRef.current = data.meta_source === "hub";
-        const replayOnly = data.replayOnly === true;
-        setViewerStatus(replayOnly ? "Snapshot replay" : "Connected");
+        metaSourceHubRef.current = payload.meta_source === "hub";
+        onViewerConnected({
+          replayOnly: payload.replayOnly,
+          isActive: payload.isActive,
+          meta_source: payload.meta_source,
+        });
 
-        if (typeof data.lastSeq === "number") {
-          lastSeqRef.current = mergeConnectedSeq(lastSeqRef.current, data.lastSeq);
+        if (typeof payload.lastSeq === "number") {
+          lastSeqRef.current = mergeConnectedSeq(lastSeqRef.current, payload.lastSeq);
         }
 
-        if (typeof data.isActive === "boolean") {
-          setAgentActive(data.isActive);
-          patchSessionCache({ agentActive: data.isActive });
+        if (typeof payload.isActive === "boolean") {
+          setAgentActive(payload.isActive);
+          patchSessionCache({ agentActive: payload.isActive });
         }
 
-        if (Object.prototype.hasOwnProperty.call(data, "sessionName")) {
-          const nextName = normalizeSessionName(data.sessionName);
+        if (Object.prototype.hasOwnProperty.call(payload, "sessionName")) {
+          const nextName = normalizeSessionName(payload.sessionName);
           setSessionName(nextName);
           patchSessionCache({ sessionName: nextName });
         }
@@ -3136,20 +3343,26 @@ export function App() {
       });
 
       nextSocket.on("event", (data) => {
+        const envelope = parseViewerEventEnvelope(data);
+        if (!envelope.ok) {
+          logFrontendEvent("viewer", "warning", "Malformed viewer event envelope", envelope.error);
+          return;
+        }
+        const { event: rawEvent, seq: envelopeSeq, deltaReplay, generation } = envelope.value;
+
         // During session switch, only accept events that explicitly match our generation.
         // This prevents events without generation tags from old sessions being processed
         // while we're awaiting the snapshot for the new session.
-        if (awaitingSnapshotRef.current) {
-          if (data.generation !== viewerSwitchGenerationRef.current) {
+        if (lifecycleRefs.awaitingSnapshot.current) {
+          if (generation !== lifecycleRefs.generation.current) {
             return;
           }
-        } else if (!matchesViewerGeneration(viewerSwitchGenerationRef.current, data.generation)) {
+        } else if (!matchesViewerGeneration(lifecycleRefs.generation.current, generation)) {
           return;
         }
-        if (!activeSessionRef.current) return;
+        if (!lifecycleRefs.activeSessionId.current) return;
         lastViewerEventAtRef.current = Date.now();
 
-        const rawEvent = data.event;
         const eventType =
           rawEvent && typeof rawEvent === "object" && typeof (rawEvent as Record<string, unknown>).type === "string"
             ? (rawEvent as Record<string, unknown>).type as string
@@ -3157,20 +3370,20 @@ export function App() {
 
         if (shouldDeferEventForHydration(
           eventType,
-          awaitingSnapshotRef.current,
-          !!chunkedDeliveryRef.current,
+          lifecycleRefs.awaitingSnapshot.current,
+          !!lifecycleRefs.chunked.current,
         )) {
           return;
         }
 
-        const seq = typeof data.seq === "number" ? data.seq : null;
+        const seq = envelopeSeq ?? null;
         if (seq !== null) {
-          if (data.deltaReplay === true) {
+          if (deltaReplay === true) {
             lastSeqRef.current = seq;
           } else {
             const allowOutOfOrderHydrationSnapshot = shouldAllowOutOfOrderSnapshotDuringHydration(
               eventType,
-              awaitingSnapshotRef.current,
+              lifecycleRefs.awaitingSnapshot.current,
               lastSeqRef.current,
               seq,
             );
@@ -3190,12 +3403,12 @@ export function App() {
           }
         }
 
-        handleRelayEvent(data.event, seq ?? undefined);
+        handleRelayEvent(rawEvent, seq ?? undefined);
       });
 
       nextSocket.on("session_messages_page", (data) => {
-        if (data.sessionId !== activeSessionRef.current) return;
-        if (!matchesViewerGeneration(viewerSwitchGenerationRef.current, data.generation)) {
+        if (data.sessionId !== lifecycleRefs.activeSessionId.current) return;
+        if (!matchesViewerGeneration(lifecycleRefs.generation.current, data.generation)) {
           return;
         }
         lastViewerEventAtRef.current = Date.now();
@@ -3213,36 +3426,30 @@ export function App() {
         // Important: check generation to prevent exec_result events from old sessions
         // being processed after a session switch. Unlike other events, exec_result doesn't
         // always include generation data, so we also guard with a recent-switch check.
-        if (!activeSessionRef.current) return;
+        if (!lifecycleRefs.activeSessionId.current) return;
         // If we're in the initial phase of a session switch (awaiting snapshot), reject
         // any exec_results that might be from the old session. We'll start accepting them
         // once the "connected" event confirms we're synchronized with the new session.
-        if (awaitingSnapshotRef.current) return;
+        if (lifecycleRefs.awaitingSnapshot.current) return;
         lastViewerEventAtRef.current = Date.now();
         handleRelayEvent({ type: "exec_result", ...data });
       });
 
       nextSocket.on("disconnected", (data) => {
-        if (!matchesViewerGeneration(viewerSwitchGenerationRef.current, data.generation)) {
+        if (!matchesViewerGeneration(lifecycleRefs.generation.current, data.generation)) {
           return;
         }
-        const currentSessionId = activeSessionRef.current;
+        const currentSessionId = lifecycleRefs.activeSessionId.current;
         if (!currentSessionId) return;
         lastViewerEventAtRef.current = Date.now();
-        if (data.reason === "Session reconnected" && restartPendingSessionIdRef.current !== currentSessionId) {
-          restartPendingSessionIdRef.current = currentSessionId;
-          if (restartPendingTimerRef.current) clearTimeout(restartPendingTimerRef.current);
-          restartPendingTimerRef.current = setTimeout(() => {
-            restartPendingSessionIdRef.current = null;
-            restartPendingTimerRef.current = null;
-          }, 60_000);
-        }
-        const isRestarting = restartPendingSessionIdRef.current === currentSessionId;
-        if (!isRestarting) {
-          setViewerStatus(data.reason || "Disconnected");
-        } else {
-          setViewerStatus("Restarting CLI…");
-        }
+
+        const isRestarting = data.reason === "Session reconnected";
+        onViewerDisconnected({
+          reason: data.reason,
+          isRestarting,
+          stopReconnect: shouldStopViewerReconnect(data),
+        });
+
         setPendingQuestion(null);
         setPendingPlan(null);
         setIsChangingModel(false);
@@ -3253,10 +3460,10 @@ export function App() {
       });
 
       nextSocket.on("error", (data) => {
-        if (!matchesViewerGeneration(viewerSwitchGenerationRef.current, data.generation)) {
+        if (!matchesViewerGeneration(lifecycleRefs.generation.current, data.generation)) {
           return;
         }
-        if (!activeSessionRef.current) return;
+        if (!lifecycleRefs.activeSessionId.current) return;
         lastViewerEventAtRef.current = Date.now();
         const mapped = mapUserError({
           error: data.message,
@@ -3264,42 +3471,39 @@ export function App() {
           fallbackMessage: "Failed to load session.",
         });
         console.error("Viewer socket error:", mapped.technicalMessage, data);
-        setViewerStatus(mapped.userMessage);
+        onViewerError(mapped.userMessage);
       });
 
       nextSocket.on("connect_error", (err) => {
-        if (activeSessionRef.current) {
+        if (lifecycleRefs.activeSessionId.current) {
           const mapped = mapUserError({
             error: err,
             context: "viewer_connection",
           });
           console.error("Viewer socket connect_error:", err);
-          setViewerStatus(mapped.userMessage);
+          onViewerError(mapped.userMessage);
         }
       });
 
       nextSocket.on("disconnect", (reason) => {
-        if (activeSessionRef.current) {
-          const isRestarting = restartPendingSessionIdRef.current === activeSessionRef.current;
-          setViewerStatus((prev) =>
-            isRestarting
-              ? "Restarting CLI…"
-              : prev === "Connected" || prev === "Connecting…"
-                ? "Disconnected"
-                : prev,
-          );
-          setPendingQuestion(null);
-          setPendingPlan(null);
-          setIsChangingModel(false);
-          lastViewerEventAtRef.current = Date.now();
+        const sessionId = lifecycleRefs.activeSessionId.current;
+        if (!sessionId) return;
+        const isRestarting = lifecycleRefs.restartPendingSessionId.current === sessionId;
+        onViewerDisconnected({
+          reason: isRestarting ? "Session reconnected" : "Disconnected",
+          isRestarting,
+        });
+        setPendingQuestion(null);
+        setPendingPlan(null);
+        setIsChangingModel(false);
+        lastViewerEventAtRef.current = Date.now();
 
-          if (reason === "io server disconnect") {
-            setTimeout(() => {
-              if (activeSessionRef.current && !nextSocket.connected) {
-                nextSocket.connect();
-              }
-            }, 2000);
-          }
+        if (reason === "io server disconnect") {
+          setTimeout(() => {
+            if (lifecycleRefs.activeSessionId.current && !nextSocket.connected) {
+              nextSocket.connect();
+            }
+          }, 2000);
         }
       });
     }
@@ -3312,7 +3516,7 @@ export function App() {
     } else {
       socket.connect();
     }
-  }, [handleRelayEvent, patchSessionCache, cancelPendingDeltas]);
+  }, [handleRelayEvent, patchSessionCache, cancelPendingDeltas, lifecycleOpenSession, onViewerConnected, onViewerDisconnected, onViewerError]);
 
   // Auto-reopen the last viewed session once live sessions arrive.
   // Deep-links (/session/<id>) take priority over the stored lastSessionId.
@@ -3339,29 +3543,30 @@ export function App() {
 
   // When a restarted session comes back live, automatically reconnect to it.
   React.useEffect(() => {
-    const pendingId = restartPendingSessionIdRef.current;
+    const pendingId = lifecycleRefs.restartPendingSessionId.current;
     if (!pendingId) return;
     const isLive = liveSessions.some((s) => s.sessionId === pendingId);
     if (!isLive) return;
 
     // Clear the pending restart state before reconnecting.
-    restartPendingSessionIdRef.current = null;
-    if (restartPendingTimerRef.current) {
-      clearTimeout(restartPendingTimerRef.current);
-      restartPendingTimerRef.current = null;
-    }
-
+    lifecycleDispatch(lifecycleActions.restartPendingCleared());
     openSession(pendingId);
-  }, [liveSessions, openSession]);
+  }, [liveSessions, openSession, lifecycleDispatch]);
 
 
   // Dedup guard: prevent sending the exact same message text within a short window.
   const inputDedupeRef = React.useRef<InputDedupeState | null>(null);
   const inputAttemptIdRef = React.useRef(0);
 
+  type SessionInputMessage = { text: string; files?: Array<{ file?: File; mediaType?: string; filename?: string; url?: string }>; deliverAs?: "steer" | "followUp" } | string;
+
+  // Messages submitted while the session was still hydrating (e.g. the runner
+  // was loading MCP servers). Flushed once the snapshot completes.
+  const pendingHydrationInputsRef = React.useRef<Array<{ sessionId: string; message: SessionInputMessage }>>([]);
+
   const requestOlderMessages = React.useCallback(() => {
     const socket = viewerWsRef.current;
-    const sessionId = activeSessionRef.current;
+    const sessionId = lifecycleRefs.activeSessionId.current;
     const pagination = paginationStateRef.current;
     if (!socket || !socket.connected || !sessionId || !pagination?.hasMore || loadingOlderMessages) return;
     setLoadingOlderMessages(true);
@@ -3372,25 +3577,28 @@ export function App() {
     });
   }, [loadingOlderMessages]);
 
-  const sendSessionInput = React.useCallback(async (message: { text: string; files?: Array<{ file?: File; mediaType?: string; filename?: string; url?: string }>; deliverAs?: "steer" | "followUp" } | string) => {
+  const sendSessionInput = React.useCallback(async (message: SessionInputMessage) => {
     const socket = viewerWsRef.current;
-    const sessionId = activeSessionRef.current;
+    const sessionId = lifecycleRefs.activeSessionId.current;
     if (!sessionId) {
-      setViewerStatus("Not connected to a live session");
+      setLifecycleStatus("Not connected to a live session");
       return false;
     }
     if (isCompacting) {
-      setViewerStatus("Compacting…");
+      setLifecycleStatus("Compacting…");
       return false;
     }
-    if (awaitingSnapshotRef.current || !canSubmitSessionInput(sessionId, viewerStatus, isCompacting)) {
-      if (isSessionHydrating(viewerStatus) || awaitingSnapshotRef.current) {
-        setViewerStatus("Connecting…");
-      }
-      return false;
+    const gate = classifySessionInput(sessionId, viewerStatus, isCompacting, lifecycleRefs.awaitingSnapshot.current);
+    if (gate === "queue") {
+      // Session is still hydrating (usually MCP servers loading on the
+      // runner). Queue the message and flush it once the snapshot completes
+      // instead of rejecting and forcing the user to retry.
+      pendingHydrationInputsRef.current.push({ sessionId, message });
+      return true;
     }
+    if (gate === "reject") return false;
     if (!socket || !socket.connected) {
-      setViewerStatus("Not connected to a live session");
+      setLifecycleStatus("Not connected to a live session");
       return false;
     }
 
@@ -3430,7 +3638,7 @@ export function App() {
 
       for (const [index, file] of rawFiles.entries()) {
         const displayName = file.filename || `attachment-${index + 1}`;
-        setViewerStatus(`Uploading attachment ${index + 1}/${rawFiles.length}: ${displayName}`);
+        setLifecycleStatus(`Uploading attachment ${index + 1}/${rawFiles.length}: ${displayName}`);
 
         const formData = new FormData();
         try {
@@ -3448,7 +3656,7 @@ export function App() {
                 );
           formData.append("files", uploadFile);
         } catch {
-          setViewerStatus(`Failed to prepare attachment: ${displayName}`);
+          setLifecycleStatus(`Failed to prepare attachment: ${displayName}`);
           failCurrentAttempt();
           return false;
         }
@@ -3463,7 +3671,7 @@ export function App() {
           if (!uploadRes.ok) {
             const body = await uploadRes.json().catch(() => null);
             const message = body && typeof body.error === "string" ? body.error : `Upload failed for ${displayName}`;
-            setViewerStatus(message);
+            setLifecycleStatus(message);
             failCurrentAttempt();
             return false;
           }
@@ -3471,7 +3679,7 @@ export function App() {
           const body = await uploadRes.json().catch(() => null) as any;
           const first = Array.isArray(body?.attachments) ? body.attachments[0] : null;
           if (!first || typeof first.attachmentId !== "string") {
-            setViewerStatus(`Upload failed for ${displayName}`);
+            setLifecycleStatus(`Upload failed for ${displayName}`);
             failCurrentAttempt();
             return false;
           }
@@ -3484,14 +3692,14 @@ export function App() {
             expiresAt: typeof first.expiresAt === "string" ? first.expiresAt : undefined,
           });
         } catch {
-          setViewerStatus(`Upload failed for ${displayName}`);
+          setLifecycleStatus(`Upload failed for ${displayName}`);
           failCurrentAttempt();
           return false;
         }
       }
 
       attachments = uploaded;
-      setViewerStatus(`Uploaded ${attachments.length} attachment${attachments.length === 1 ? "" : "s"}. Sending…`);
+      setLifecycleStatus(`Uploaded ${attachments.length} attachment${attachments.length === 1 ? "" : "s"}. Sending…`);
     }
 
     const deliverAs = typeof message === "object" ? message.deliverAs : undefined;
@@ -3523,41 +3731,66 @@ export function App() {
           const next = [...messagesRef.current, optimisticSteerMessage];
           setMessages(next);
           patchSessionCache({ messages: next });
-          setViewerStatus("Steering message sent");
+          setLifecycleStatus("Steering message sent");
         } else {
-          setMessageQueue((prev) => [
-            ...prev,
-            {
-              id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-              text: trimmed,
-              deliverAs,
-              timestamp: Date.now(),
-            },
-          ]);
-          setViewerStatus("Follow-up queued");
+          // Suppress runner queue syncs briefly — a heartbeat built before
+          // the runner received this input would wipe the optimistic entry.
+          queueSyncSuppressUntilRef.current = Date.now() + QUEUE_SYNC_SUPPRESS_MS;
+          let nextQueue: QueuedMessage[] = [];
+          setMessageQueue((prev) => {
+            nextQueue = [
+              ...prev,
+              {
+                id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+                text: trimmed,
+                deliverAs,
+                timestamp: Date.now(),
+              },
+            ];
+            return nextQueue;
+          });
+          patchSessionCache({ messageQueue: nextQueue });
+          setLifecycleStatus("Follow-up queued");
         }
       } else {
-        setViewerStatus("Connected");
+        setLifecycleStatus("Connected");
       }
       return true;
     } catch {
-      setViewerStatus("Failed to send message");
+      setLifecycleStatus("Failed to send message");
       failCurrentAttempt();
       return false;
     }
   }, [isCompacting, patchSessionCache, viewerStatus]);
 
+  const sendSessionInputRef = React.useRef(sendSessionInput);
+  React.useEffect(() => { sendSessionInputRef.current = sendSessionInput; });
+
+  // Flush input queued during hydration once the session goes live. Entries
+  // for a session the user has since switched away from are dropped.
+  React.useEffect(() => {
+    if (!lifecycle.isLive) return;
+    const pending = pendingHydrationInputsRef.current;
+    if (pending.length === 0) return;
+    pendingHydrationInputsRef.current = [];
+    const activeId = lifecycleRefs.activeSessionId.current;
+    for (const item of pending) {
+      if (item.sessionId !== activeId) continue;
+      void sendSessionInputRef.current(item.message);
+    }
+  }, [lifecycle.isLive, lifecycleRefs]);
+
   const sendRemoteExec = React.useCallback((payload: any) => {
     const socket = viewerWsRef.current;
-    if (!socket || !socket.connected || !activeSessionRef.current) {
-      setViewerStatus("Not connected to a live session");
+    if (!socket || !socket.connected || !lifecycleRefs.activeSessionId.current) {
+      setLifecycleStatus("Not connected to a live session");
       return false;
     }
     const command = payload && typeof payload === "object" && typeof payload.command === "string" ? payload.command : null;
     if (command === "end_session") {
-      setViewerStatus("Ending session…");
+      setLifecycleStatus("Ending session…");
     } else if (command === "compact") {
-      setViewerStatus("Compacting…");
+      setLifecycleStatus("Compacting…");
     } else if (command === "abort") {
       // Optimistically mark as inactive so the UI updates immediately
       // instead of waiting for the next heartbeat cycle.
@@ -3566,7 +3799,7 @@ export function App() {
       // Also update the sidebar's live session list so the session row
       // transitions from "active" to "completed unread" without waiting
       // for the hub's next session_status heartbeat.
-      const sid = activeSessionRef.current;
+      const sid = lifecycleRefs.activeSessionId.current;
       if (sid) {
         setLiveSessions((prev) =>
           prev.map((s) => (s.sessionId === sid ? { ...s, isActive: false } : s)),
@@ -3578,7 +3811,7 @@ export function App() {
       socket.emit("exec", rest);
       return true;
     } catch {
-      setViewerStatus("Failed to send command");
+      setLifecycleStatus("Failed to send command");
       return false;
     }
   }, []);
@@ -3607,7 +3840,7 @@ export function App() {
    */
   const handleEndSession = React.useCallback((sessionId: string) => {
     // Active session: reuse the existing viewer socket
-    if (sessionId === activeSessionRef.current && viewerWsRef.current?.connected) {
+    if (sessionId === lifecycleRefs.activeSessionId.current && viewerWsRef.current?.connected) {
       sendRemoteExec({
         type: "exec",
         id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -3723,7 +3956,7 @@ export function App() {
 
   const requestResumeSessions = React.useCallback((cursor?: string) => {
     // If no active session, fall back to server-side persisted sessions
-    if (!activeSessionRef.current) {
+    if (!lifecycleRefs.activeSessionId.current) {
       void requestPersistedSessions(cursor);
       return true; // Signal that a request was initiated
     }
@@ -3739,14 +3972,34 @@ export function App() {
     if (!ok) {
       setResumeSessionsLoading(false);
       resumeSessionsAppendRef.current = false;
+      return ok;
     }
+    // Runner didn't answer within 5s (stale/dead CLI) — fall back to the
+    // server's persisted session list so history isn't stuck on a spinner.
+    if (resumeSessionsFallbackTimerRef.current) clearTimeout(resumeSessionsFallbackTimerRef.current);
+    resumeSessionsFallbackTimerRef.current = setTimeout(() => {
+      resumeSessionsFallbackTimerRef.current = null;
+      resumeSessionsAppendRef.current = false;
+      void requestPersistedSessions(cursor);
+    }, 5000);
     return ok;
   }, [sendRemoteExec, requestPersistedSessions]);
+
+  const requestForkMessages = React.useCallback(() => {
+    setForkMessagesLoading(true);
+    const ok = sendRemoteExec({
+      type: "exec",
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command: "get_fork_messages",
+    });
+    if (!ok) setForkMessagesLoading(false);
+    return ok;
+  }, [sendRemoteExec, setForkMessagesLoading]);
 
   const refreshUsage = React.useCallback(() => {
     if (usageRefreshing) return false;
     setUsageRefreshing(true);
-    setViewerStatus("Refreshing usage…");
+    setLifecycleStatus("Refreshing usage…");
     const ok = sendRemoteExec({
       type: "exec",
       id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -3758,33 +4011,51 @@ export function App() {
     return ok;
   }, [sendRemoteExec, usageRefreshing]);
 
+  /**
+   * Apply a local queue mutation and push the full replacement list to the
+   * runner (set_queued_messages) so pi's pending queue actually changes —
+   * without this, edits/removals were cosmetic and the runner still
+   * delivered the original messages.
+   */
+  const syncQueueToRunner = React.useCallback((next: QueuedMessage[]) => {
+    queueSyncSuppressUntilRef.current = Date.now() + QUEUE_SYNC_SUPPRESS_MS;
+    setMessageQueue(next);
+    patchSessionCache({ messageQueue: next });
+    sendRemoteExec({
+      type: "exec",
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command: "set_queued_messages",
+      messages: next.map((m) => m.text),
+    });
+  }, [patchSessionCache, sendRemoteExec]);
+
   const removeQueuedMessage = React.useCallback((id: string) => {
-    setMessageQueue((prev) => prev.filter((m) => m.id !== id));
-  }, []);
+    syncQueueToRunner(messageQueue.filter((m) => m.id !== id));
+  }, [messageQueue, syncQueueToRunner]);
 
   const editQueuedMessage = React.useCallback((id: string, newText: string) => {
-    setMessageQueue((prev) => prev.map((m) => m.id === id ? { ...m, text: newText } : m));
-  }, []);
+    syncQueueToRunner(messageQueue.map((m) => (m.id === id ? { ...m, text: newText } : m)));
+  }, [messageQueue, syncQueueToRunner]);
 
   const clearMessageQueue = React.useCallback(() => {
-    setMessageQueue([]);
-  }, []);
+    syncQueueToRunner([]);
+  }, [syncQueueToRunner]);
 
   const selectModel = React.useCallback((model: ConfiguredModelInfo) => {
     const socket = viewerWsRef.current;
-    if (!socket || !socket.connected || !activeSessionRef.current) {
-      setViewerStatus("Not connected to a live session");
+    if (!socket || !socket.connected || !lifecycleRefs.activeSessionId.current) {
+      setLifecycleStatus("Not connected to a live session");
       return;
     }
 
     try {
       setIsChangingModel(true);
-      setViewerStatus(`Switching model to ${model.provider}/${model.id}…`);
+      setLifecycleStatus(`Switching model to ${model.provider}/${model.id}…`);
       socket.emit("model_set", { provider: model.provider, modelId: model.id });
       setModelSelectorOpen(false);
     } catch {
       setIsChangingModel(false);
-      setViewerStatus("Failed to change model");
+      setLifecycleStatus("Failed to change model");
     }
   }, []);
 
@@ -3876,7 +4147,7 @@ export function App() {
       // Cmd/Ctrl + . — Abort the active agent
       if (meta && !e.shiftKey && !e.altKey && e.key === ".") {
         e.preventDefault();
-        if (agentActive && activeSessionRef.current) {
+        if (agentActive && lifecycleRefs.activeSessionId.current) {
           sendRemoteExec({
             type: "exec",
             id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -3892,179 +4163,44 @@ export function App() {
   }, [isMac, agentActive, sendRemoteExec]);
 
   const handleNewSession = React.useCallback(() => {
-    setSpawnRunnerId(undefined);
-    setSpawnPreselectedRunnerId(null);
-    setSpawnCwd("");
-    setRecentFolders([]);
+    setLifecycleSpawnParams({ runnerId: undefined, preselectedRunnerId: null, cwd: "" });
     setNewSessionOpen(true);
-  }, []);
+  }, [setLifecycleSpawnParams]);
 
   const handleDuplicateSession = React.useCallback((runnerId: string, cwd: string) => {
-    setSpawnRunnerId(runnerId);
-    setSpawnPreselectedRunnerId(runnerId);
-    setSpawnCwd(cwd);
-    setRecentFolders([]);
+    setLifecycleSpawnParams({ runnerId, preselectedRunnerId: runnerId, cwd });
     setNewSessionOpen(true);
-  }, []);
+  }, [setLifecycleSpawnParams]);
 
-  // ── Session live waiter — resolves via /hub feed, no polling ──────────────
-  const sessionWaitersRef = React.useRef<Map<string, {
-    resolve: (found: boolean) => void;
-    timer: ReturnType<typeof setTimeout>;
-  }>>(new Map());
+  const handleExport = React.useCallback(() => {
+    if (!messages.length) return;
+    const blob = new Blob([exportToMarkdown(messages)], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `session-${activeSessionId || "export"}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [messages, activeSessionId]);
 
-  // Resolve any pending waiters when liveSessions updates
-  React.useEffect(() => {
-    for (const [sessionId, waiter] of sessionWaitersRef.current) {
-      if (liveSessions.some(s => s.sessionId === sessionId)) {
-        clearTimeout(waiter.timer);
-        sessionWaitersRef.current.delete(sessionId);
-        waiter.resolve(true);
-      }
-    }
-  }, [liveSessions]);
-
-  const waitForSessionToGoLive = React.useCallback(
-    (sessionId: string, timeoutMs: number): Promise<boolean> => {
-      // Fast path: already live
-      if (liveSessions.some(s => s.sessionId === sessionId)) {
-        return Promise.resolve(true);
-      }
-      return new Promise((resolve) => {
-        const timer = setTimeout(() => {
-          sessionWaitersRef.current.delete(sessionId);
-          resolve(false);
-        }, timeoutMs);
-        sessionWaitersRef.current.set(sessionId, { resolve, timer });
-      });
-    },
-    [liveSessions],
-  );
-
-  const spawnNewRunnerSession = React.useCallback(async () => {
-    if (spawningSession) return;
-
-    setSpawningSession(true);
-    setViewerStatus("Spawning session…");
-
-    if (!spawnRunnerId) {
-      setViewerStatus("Pick a runner");
-      setSpawningSession(false);
-      return;
-    }
-
-    const payload: any = {
-      runnerId: spawnRunnerId,
-      ...(spawnCwd.trim() ? { cwd: spawnCwd.trim() } : {}),
-    };
-
-    let sessionId: string | null = null;
-    try {
-      const res = await fetch("/api/runners/spawn", {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      const body = await res.json().catch(() => null) as { error?: string; sessionId?: string } | null;
-      if (!res.ok) {
-        const mapped = mapUserError({
-          error: body?.error,
-          statusCode: res.status,
-          context: "session_spawn",
-        });
-        console.error("Failed to spawn session:", mapped.technicalMessage, body);
-        setViewerStatus(mapped.userMessage);
-        return;
-      }
-
-      sessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
-      if (!sessionId) {
-        const mapped = mapUserError({
-          error: "Spawn failed: missing sessionId",
-          context: "session_spawn",
-        });
-        console.error("Failed to spawn session:", mapped.technicalMessage, body);
-        setViewerStatus(mapped.userMessage);
-        return;
-      }
-
-      setNewSessionOpen(false);
-
-      // Wait until the worker actually registers with the relay, otherwise opening the
-      // viewer websocket would immediately fall back to snapshot replay and disconnect.
-      const live = await waitForSessionToGoLive(sessionId, 30_000);
-      if (!live) {
-        setViewerStatus("Session is starting… (it will appear in the sidebar soon)");
-        return;
-      }
-
-      handleOpenSession(sessionId);
-      setViewerStatus("Connecting…");
-    } catch (err) {
-      const mapped = mapUserError({
-        error: err,
-        context: "session_spawn",
-      });
-      console.error("Failed to spawn session:", err);
-      setViewerStatus(mapped.userMessage);
-    } finally {
-      setSpawningSession(false);
-    }
-  }, [spawningSession, spawnRunnerId, spawnCwd, handleOpenSession, waitForSessionToGoLive]);
+  // ── Session live waiter is now owned by useSessionLifecycle. ──────────
 
   /** Spawn handler for the new wizard dialog. */
-  const handleWizardSpawn = React.useCallback(async (runnerId: string, cwd: string | undefined) => {
-    setViewerStatus("Spawning session…");
-
-    const payload: any = { runnerId, ...(cwd ? { cwd } : {}) };
-    const res = await fetch("/api/runners/spawn", {
-      method: "POST",
-      credentials: "include",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    const body = await res.json().catch(() => null) as { error?: string; sessionId?: string } | null;
-    if (!res.ok) {
-      const mapped = mapUserError({
-        error: body?.error,
-        statusCode: res.status,
-        context: "session_spawn",
-      });
-      console.error("Failed to spawn session from wizard:", mapped.technicalMessage, body);
-      throw new Error(mapped.userMessage);
-    }
-
-    const sessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
-    if (!sessionId) {
-      const mapped = mapUserError({
-        error: "Spawn failed: missing sessionId",
-        context: "session_spawn",
-      });
-      console.error("Spawn response missing sessionId:", mapped.technicalMessage, body);
-      throw new Error(mapped.userMessage);
-    }
-
-    setNewSessionOpen(false);
-
-    const live = await waitForSessionToGoLive(sessionId, 30_000);
-    if (!live) {
-      setViewerStatus("Session is starting… (it will appear in the sidebar soon)");
-      return;
-    }
-
-    handleOpenSession(sessionId);
-    setViewerStatus("Connecting…");
-  }, [handleOpenSession, waitForSessionToGoLive]);
+  const handleWizardSpawn = React.useCallback(
+    createWizardSpawnHandler({
+      spawnSession: lifecycleSpawnSession,
+      openSession: handleOpenSession,
+      setOpen: setNewSessionOpen,
+    }),
+    [lifecycleSpawnSession, handleOpenSession, setNewSessionOpen],
+  );
 
   // ── Respond to a trigger from a child session ─────────────────────────────
   const handleTriggerResponse = React.useCallback((triggerId: string, response: string, action?: string, sourceSessionId?: string): Promise<boolean> => {
     const socket = viewerWsRef.current;
-    const sessionId = activeSessionRef.current;
+    const sessionId = lifecycleRefs.activeSessionId.current;
     if (!socket || !socket.connected || !sessionId) {
-      setViewerStatus("Not connected to a live session");
+      setLifecycleStatus("Not connected to a live session");
       return Promise.resolve(false);
     }
 
@@ -4078,7 +4214,7 @@ export function App() {
       const settle = (success: boolean, message?: string) => {
         if (resolved) return;
         resolved = true;
-        if (message) setViewerStatus(message);
+        if (message) setLifecycleStatus(message);
         errorCleanup();
         resolve(success);
       };
@@ -4128,70 +4264,27 @@ export function App() {
     const cwd = sessionInfo?.cwd;
 
     if (!runnerId) {
-      setViewerStatus("No runner available — open a session first");
+      setLifecycleStatus("No runner available — open a session first");
       return;
     }
 
-    setViewerStatus(`Spawning ${agent.name} agent session…`);
-
     try {
-      const res = await fetch("/api/runners/spawn", {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          runnerId,
-          ...(cwd ? { cwd } : {}),
-          agent: {
-            name: agent.name,
-            ...(agent.systemPrompt ? { systemPrompt: agent.systemPrompt } : {}),
-            ...(agent.tools ? { tools: agent.tools } : {}),
-            ...(agent.disallowedTools ? { disallowedTools: agent.disallowedTools } : {}),
-          },
-        }),
+      const sessionId = await lifecycleSpawnSession(runnerId, cwd, {
+        name: agent.name,
+        ...(agent.systemPrompt ? { systemPrompt: agent.systemPrompt } : {}),
+        ...(agent.tools ? { tools: agent.tools } : {}),
+        ...(agent.disallowedTools ? { disallowedTools: agent.disallowedTools } : {}),
       });
-
-      const body = await res.json().catch(() => null) as { error?: string; sessionId?: string } | null;
-      if (!res.ok) {
-        const mapped = mapUserError({
-          error: body?.error,
-          statusCode: res.status,
-          context: "session_spawn",
-        });
-        console.error("Failed to spawn agent session:", mapped.technicalMessage, body);
-        setViewerStatus(mapped.userMessage);
-        return;
-      }
-
-      const sessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
-      if (!sessionId) {
-        const mapped = mapUserError({
-          error: "Spawn failed: missing sessionId",
-          context: "session_spawn",
-        });
-        console.error("Agent spawn response missing sessionId:", mapped.technicalMessage, body);
-        setViewerStatus(mapped.userMessage);
-        return;
-      }
-
-      // Wait until the worker registers with the relay
-      const live = await waitForSessionToGoLive(sessionId, 30_000);
-      if (!live) {
-        setViewerStatus("Agent session is starting… (it will appear in the sidebar soon)");
-        return;
-      }
-
       handleOpenSession(sessionId);
-      setViewerStatus("Connecting…");
     } catch (err) {
       const mapped = mapUserError({
         error: err,
         context: "session_spawn",
       });
       console.error("Failed to spawn agent session:", err);
-      setViewerStatus(mapped.userMessage);
+      setLifecycleStatus(mapped.userMessage);
     }
-  }, [activeSessionId, liveSessions, handleOpenSession, waitForSessionToGoLive]);
+  }, [activeSessionId, liveSessions, lifecycleSpawnSession, handleOpenSession]);
 
   // Derive runner/cwd for the active session (used by File Explorer)
   const activeSessionInfo = React.useMemo(() => {
@@ -4301,14 +4394,31 @@ export function App() {
     return () => { viewerSocket.off("service_message", handler); };
   }, [viewerSocket, activeServicePanels, toggleServicePanel]);
 
-  const handleToggleServicePanel = React.useCallback((serviceId: string, query?: string, fragment?: string) => {
+  // Always-current ref to the computed panel groups (defined below) so the
+  // toggle handler can check zone contents without a dependency cycle.
+  const panelGroupsRef = React.useRef<Record<PanelPosition, CombinedPanelTab[]> | null>(null);
+
+  const handleToggleServicePanel = React.useCallback((serviceId: string, query?: string, fragment?: string, positionOverride?: PanelPosition) => {
     // When called with nav params on an already-open panel, update params
     // and re-navigate rather than closing.
     const hasNavParams = !!(query || fragment);
     if (activeServicePanels.has(serviceId) && !hasNavParams) {
-      closeServicePanelById(serviceId);
+      // Only close when the panel is the tab actually shown in its dock zone.
+      // If another tab is on top of the same zone, bring this panel forward
+      // instead of closing it.
+      const zoneTabs = panelGroupsRef.current?.[getServicePanelPosition(serviceId)] ?? [];
+      const action = resolvePanelToggleAction(zoneTabs.map(t => t.id), combinedActiveTab, serviceId);
+      if (action === "close") {
+        closeServicePanelById(serviceId);
+      } else {
+        handleCombinedTabChange(serviceId);
+      }
     } else {
-      if (!activeServicePanels.has(serviceId)) {
+      if (!activeServicePanels.has(serviceId) && positionOverride) {
+        // Opened from a docked button — the button's dock zone wins over
+        // auto-placement so the panel opens on the side the icon is on.
+        setServicePanelPosition(serviceId, positionOverride);
+      } else if (!activeServicePanels.has(serviceId)) {
         // Resolve the correct position for the new panel using the shared pure
         // helper (also tested in ServicePanels.test.ts).  When the currently-
         // active tab is a service panel, the new panel inherits that panel's
@@ -4333,12 +4443,36 @@ export function App() {
       toggleServicePanel(serviceId, query, fragment);
       handleCombinedTabChange(serviceId);
     }
-  }, [activeServicePanels, closeServicePanelById, toggleServicePanel, handleCombinedTabChange, combinedActiveTab, setEphemeralServicePanelPosition, getServicePanelPosition]);
+  }, [activeServicePanels, closeServicePanelById, toggleServicePanel, handleCombinedTabChange, combinedActiveTab, setEphemeralServicePanelPosition, getServicePanelPosition, setServicePanelPosition]);
+
+  // ── Service panel buttons in rails/strips ────────────────────────────
+  const visibleServicePanels = useVisibleServicePanels(availableServices, dynamicPanels);
+  const railServicePanels = React.useMemo(
+    () => visibleServicePanels.map((p) => ({ ...p, active: activeServicePanels.has(p.serviceId) })),
+    [visibleServicePanels, activeServicePanels],
+  );
+  const handleToggleServicePanelFromDock = React.useCallback((serviceId: string) => {
+    const slot = buttonPositions.positions[`service:${serviceId}`];
+    const override = !activeServicePanels.has(serviceId) && slot && slot !== "top" ? slot : undefined;
+    handleToggleServicePanel(serviceId, undefined, undefined, override);
+  }, [buttonPositions.positions, activeServicePanels, handleToggleServicePanel]);
+
+  // File sigils → open the file in the file explorer panel.
+  const [fileToOpen, setFileToOpen] = React.useState<{ path: string } | null>(null);
+  const handleOpenFileInExplorer = React.useCallback((path: string) => {
+    const cwd = activeSessionInfo?.cwd;
+    if (!cwd || !activeSessionInfo?.runnerId) return;
+    const abs = resolveFilePath(cwd, path);
+    setFileToOpen({ path: abs });
+    setShowFileExplorer(true);
+    handleCombinedTabChange("files");
+  }, [activeSessionInfo?.cwd, activeSessionInfo?.runnerId, setShowFileExplorer, handleCombinedTabChange]);
 
   const pizzaPiNavActions = React.useMemo<PizzaPiNavActions>(() => ({
     toggleServicePanel: handleToggleServicePanel,
-    setActiveSessionId,
-  }), [handleToggleServicePanel, setActiveSessionId]);
+    setActiveSessionId: (sessionId: string) => handleOpenSession(sessionId),
+    openFile: handleOpenFileInExplorer,
+  }), [handleToggleServicePanel, handleOpenSession, handleOpenFileInExplorer]);
 
   const terminalPanelTab = React.useMemo<CombinedPanelTab | null>(() => showTerminal ? {
     id: "terminal",
@@ -4348,25 +4482,27 @@ export function App() {
     onDragStart: (e) => startPanelDragWith(e, handleTerminalPositionChange),
     keepMountedWhenInactive: true,
     content: (
-      <TerminalManager
-        className="h-full"
-        embedded
-        sessionId={activeSessionId}
-        runnerId={activeSessionInfo?.runnerId ?? undefined}
-        defaultCwd={activeSessionInfo?.cwd || undefined}
-        runners={feedRunners.map(r => ({
-          runnerId: r.runnerId,
-          name: r.name,
-          roots: r.roots,
-          sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length,
-        }))}
-        runnersLoading={runnersStatus === "connecting"}
-        tabs={terminalTabs}
-        activeTabId={activeTerminalId}
-        onActiveTabChange={setActiveTerminalId}
-        onTabAdd={handleTerminalTabAdd}
-        onTabClose={handleTerminalTabClose}
-      />
+      <Suspense fallback={<PanelFallback label="Terminal" />}>
+        <LazyTerminalManager
+          className="h-full"
+          embedded
+          sessionId={activeSessionId}
+          runnerId={activeSessionInfo?.runnerId ?? undefined}
+          defaultCwd={activeSessionInfo?.cwd || undefined}
+          runners={feedRunners.map(r => ({
+            runnerId: r.runnerId,
+            name: r.name,
+            roots: r.roots,
+            sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length,
+          }))}
+          runnersLoading={runnersStatus === "connecting"}
+          tabs={terminalTabs}
+          activeTabId={activeTerminalId}
+          onActiveTabChange={setActiveTerminalId}
+          onTabAdd={handleTerminalTabAdd}
+          onTabClose={handleTerminalTabClose}
+        />
+      </Suspense>
     ),
   } : null, [showTerminal, activeSessionId, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, feedRunners, liveSessions, runnersStatus, terminalTabs, activeTerminalId, setActiveTerminalId, handleTerminalTabAdd, handleTerminalTabClose, startPanelDragWith, handleTerminalPositionChange]);
 
@@ -4377,13 +4513,16 @@ export function App() {
     onClose: () => setShowFileExplorer(false),
     onDragStart: (e) => startPanelDragWith(e, handleFilesPositionChange),
     content: (
-      <FileExplorer
-        runnerId={activeSessionInfo.runnerId}
-        cwd={activeSessionInfo.cwd}
-        className="h-full"
-      />
+      <Suspense fallback={<PanelFallback label="Files" />}>
+        <LazyFileExplorer
+          runnerId={activeSessionInfo.runnerId}
+          cwd={activeSessionInfo.cwd}
+          className="h-full"
+          openFile={fileToOpen}
+        />
+      </Suspense>
     ),
-  } : null, [showFileExplorer, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, startPanelDragWith, handleFilesPositionChange]);
+  } : null, [showFileExplorer, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, startPanelDragWith, handleFilesPositionChange, fileToOpen]);
 
   const gitPanelTab = React.useMemo<CombinedPanelTab | null>(() => (showGit && activeSessionInfo?.runnerId && activeSessionInfo?.cwd) ? {
     id: "git",
@@ -4392,9 +4531,11 @@ export function App() {
     onClose: () => setShowGit(false),
     onDragStart: (e) => startPanelDragWith(e, handleGitPositionChange),
     content: (
-      <GitPanel
-        cwd={activeSessionInfo.cwd}
-      />
+      <Suspense fallback={<PanelFallback label="Git" />}>
+        <LazyGitPanel
+          cwd={activeSessionInfo.cwd}
+        />
+      </Suspense>
     ),
   } : null, [showGit, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, startPanelDragWith, handleGitPositionChange]);
 
@@ -4405,7 +4546,9 @@ export function App() {
     onClose: () => setShowTriggers(false),
     onDragStart: (e) => startPanelDragWith(e, handleTriggersPositionChange),
     content: (
-      <TriggersPanel sessionId={activeSessionId} triggerDefs={runnerTriggerDefs} viewerSocket={viewerSocket} />
+      <Suspense fallback={<PanelFallback label="Triggers" />}>
+        <LazyTriggersPanel sessionId={activeSessionId} triggerDefs={runnerTriggerDefs} viewerSocket={viewerSocket} />
+      </Suspense>
     ),
   } : null, [showTriggers, activeSessionId, runnerTriggerDefs, viewerSocket, startPanelDragWith, handleTriggersPositionChange, setShowTriggers]);
 
@@ -4418,11 +4561,13 @@ export function App() {
       onClose: () => setShowAnalyzer(false),
       onDragStart: (e) => startPanelDragWith(e, handleAnalyzerPositionChange),
       content: (
-        <SessionAnalyzerBody
-          analysis={analysis}
-          runnerId={activeSessionInfo?.runnerId ?? null}
-          sessionId={activeSessionId}
-        />
+        <Suspense fallback={<PanelFallback label="Analysis" />}>
+          <LazySessionAnalyzerBody
+            analysis={analysis}
+            runnerId={activeSessionInfo?.runnerId ?? null}
+            sessionId={activeSessionId}
+          />
+        </Suspense>
       ),
     };
   }, [showAnalyzer, activeSessionId, activeSessionInfo?.runnerId, analysis, startPanelDragWith, handleAnalyzerPositionChange]);
@@ -4481,6 +4626,7 @@ export function App() {
     for (const tab of servicePanelTabs) groups[getServicePanelPosition(tab.id)].push(tab);
     return groups;
   }, [terminalPanelTab, terminalPosition, filesPanelTab, filesPosition, gitPanelTab, gitPosition, triggersPanelTab, triggersPosition, analyzerPanelTab, analyzerPosition, servicePanelTabs, getServicePanelPosition]);
+  panelGroupsRef.current = panelGroups;
 
   // ── Derived column zone arrays ─────────────────────────────────────────────
   // Each side column orders its zones top→middle→bottom. Middle zone fills the
@@ -4565,14 +4711,29 @@ export function App() {
 
   const handleShowPreferences = React.useCallback(() => setShowPreferences(true), []);
   const handleShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); }, []);
-  const handleShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); }, []);
+  const handleShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); lifecycleClearSelection(); }, [lifecycleClearSelection]);
   const handleShowShortcuts = React.useCallback(() => setShowShortcutsHelp(true), []);
   const handleChangePassword = React.useCallback(() => setChangePasswordOpen(true), []);
   const handleToggleSidebar = React.useCallback(() => setSidebarOpen((prev) => !prev), []);
+
+  // Escape closes the mobile sidebar drawer (keyboard/a11y parity with the
+  // backdrop tap). Only active while the drawer is open; a dialog open on top
+  // owns Escape first, so skip when one is present.
+  React.useEffect(() => {
+    if (!sidebarOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (document.querySelector('[role="dialog"],[role="alertdialog"]')) return;
+      setSidebarOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [sidebarOpen, setSidebarOpen]);
+
   // Mobile-specific variants that also close the sidebar
   const handleMobileShowPreferences = React.useCallback(() => { setShowPreferences(true); setSidebarOpen(false); }, []);
   const handleMobileShowApiKeys = React.useCallback(() => { setShowApiKeys(true); setShowRunners(false); setSidebarOpen(false); }, []);
-  const handleMobileShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); setSidebarOpen(false); }, []);
+  const handleMobileShowRunners = React.useCallback(() => { setShowRunners(true); setShowApiKeys(false); lifecycleClearSelection(); setSidebarOpen(false); }, [lifecycleClearSelection]);
   const handleMobileChangePassword = React.useCallback(() => { setChangePasswordOpen(true); setSidebarOpen(false); }, []);
   const handleSessionSwitcherOpenChange = React.useCallback((open: boolean) => setSessionSwitcherOpen(open), []);
 
@@ -4618,6 +4779,8 @@ export function App() {
       >
         Skip to content
       </a>
+      {/* Single page-level heading for screen-reader landmarks/outline. */}
+      <h1 className="sr-only">PizzaPi</h1>
       {/* ── Desktop header (memoized — skips re-render on same-runner session switch) ── */}
       <DesktopHeader
         relayStatus={relayStatus}
@@ -4687,7 +4850,7 @@ export function App() {
             <ModelSelectorEmpty>
               {availableModels.length > 0 && visibleModels.length === 0
                 ? "All models are hidden. Manage visibility in settings."
-                : "No configured models available."}
+                : "No models configured. Add provider credentials on the runner (API keys or provider login) to see models here."}
             </ModelSelectorEmpty>
             {Array.from(modelGroups.entries()).map(([provider, models]) => (
               <ModelSelectorGroup key={provider} heading={provider}>
@@ -4739,10 +4902,14 @@ export function App() {
         onHiddenModelsChange={setHiddenModels}
       />
 
-      <ChangePasswordDialog
-        open={changePasswordOpen}
-        onOpenChange={setChangePasswordOpen}
-      />
+      {changePasswordMounted && (
+        <Suspense fallback={<PanelFallback label="Password" />}>
+          <LazyChangePasswordDialog
+            open={changePasswordOpen}
+            onOpenChange={setChangePasswordOpen}
+          />
+        </Suspense>
+      )}
 
       <div className="pp-shell flex flex-1 min-h-0 overflow-hidden relative">
         <div
@@ -4758,7 +4925,7 @@ export function App() {
               onOpenSession={handleOpenSession}
               onNewSession={handleNewSession}
               onClearSelection={handleClearSelection}
-              onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); activeSessionRef.current = null; setActiveSessionId(null); }}
+              onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); lifecycleClearSelection(); }}
               activeSessionId={activeSessionId}
               showRunners={showRunners}
               activeModel={activeModel}
@@ -4804,8 +4971,9 @@ export function App() {
           onPointerCancel={hasPanels ? handleOuterPointerUp : undefined}
         >
           {/* center-top spans full width when no left/right top panels exist */}
+          {/* ponytail: no explicit height here — DockedPanelGroup already sizes its panel via inline style and appends a 5px resize handle; a fixed wrapper height clipped that handle under the session header */}
           {centerTopFullWidth && (
-            <div className="hidden md:flex flex-col shrink-0" style={{ height: centerTopCollapsed ? TAB_BAR_HEIGHT : centerTopHeight }}>
+            <div className="hidden md:flex flex-col shrink-0">
               <DockedPanelGroup
                 position="center-top"
                 size={centerTopHeight}
@@ -4823,10 +4991,33 @@ export function App() {
           )}
 
           <div className="flex flex-1 min-w-0 h-full overflow-hidden">
+            {/* ── LEFT ICON RAIL ──────────────────────────────────────────── */}
+            {/* ponytail: rail lives outside the panel column so it stays pinned next to the session list; the panel slides out between it and the chat */}
+            <ButtonRail
+              side="left"
+              groups={{ top: buttonPositions.slots["left-top"], middle: buttonPositions.slots["left-middle"], bottom: buttonPositions.slots["left-bottom"] }}
+              onDragStart={handleButtonDragStart}
+              servicePanels={railServicePanels}
+              onToggleServicePanel={handleToggleServicePanelFromDock}
+              onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
+              onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
+              onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
+              onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
+              onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
+              onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+              onExport={handleExport}
+              onExec={sendRemoteExec}
+              sessionId={activeSessionId}
+              effortLevel={effortLevel}
+              planModeEnabled={planModeEnabled}
+              tokenUsage={tokenUsage}
+            />
+
             {/* ── LEFT COLUMN ─────────────────────────────────────────────── */}
             {leftColZones.length > 0 && (
               <>
-                <div className="hidden md:flex flex-col shrink-0 min-h-0" style={{ width: leftColumnWidth }}>
+                {/* ponytail: 40vw cap keeps the chat visible when both columns are wide on small screens; smarter viewport-aware clamping if users complain */}
+                <div className="hidden md:flex flex-col shrink-0 min-h-0" style={{ width: leftColumnWidth, maxWidth: "40vw" }}>
                   {leftColZones.map((zone, i) => {
                     const nextZone = leftColZones[i + 1];
                     const handleZonePos = nextZone
@@ -4881,6 +5072,28 @@ export function App() {
 
             {/* ── CENTER COLUMN ───────────────────────────────────────────── */}
             <div className="flex flex-col flex-1 min-w-0 min-h-0">
+              {/* ── TOP ICON STRIP ───────────────────────────────────────── */}
+              {/* ponytail: strip lives outside the docked panel so it stays pinned to the top edge; the panel slides out beneath it */}
+              <ButtonStrip
+                position="center-top"
+                buttonIds={buttonPositions.slots["center-top"]}
+                onDragStart={handleButtonDragStart}
+                servicePanels={railServicePanels}
+                onToggleServicePanel={handleToggleServicePanelFromDock}
+                onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
+                onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
+                onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
+                onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
+                onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
+                onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+                onExport={handleExport}
+                onExec={sendRemoteExec}
+                sessionId={activeSessionId}
+                effortLevel={effortLevel}
+                planModeEnabled={planModeEnabled}
+                tokenUsage={tokenUsage}
+              />
+
               {/* center-top zone */}
               {!centerTopFullWidth && centerTopTabs.length > 0 && (
                 <DockedPanelGroup
@@ -4898,17 +5111,20 @@ export function App() {
                 />
               )}
 
-              <div id="main-content" tabIndex={-1} className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
+              {/* ── Center content ───────────────────────────────────────── */}
+              <div id="main-content" role="main" tabIndex={-1} className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
                   {showRunners ? (
                     <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
-                      <RunnerManager
-                        runners={feedRunners}
-                        runnersStatus={runnersStatus}
-                        sessions={liveSessions}
-                        onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }}
-                        selectedRunnerId={selectedRunnerId}
-                        onSelectRunner={setSelectedRunnerId}
-                      />
+                      <Suspense fallback={<PanelFallback label="Runners" />}>
+                        <LazyRunnerManager
+                          runners={feedRunners}
+                          runnersStatus={runnersStatus}
+                          sessions={liveSessions}
+                          onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }}
+                          selectedRunnerId={selectedRunnerId}
+                          onSelectRunner={setSelectedRunnerId}
+                        />
+                      </Suspense>
                     </ErrorBoundary>
                   ) : (
                     <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
@@ -4928,9 +5144,13 @@ export function App() {
                         resumeSessions={resumeSessions}
                         resumeSessionsLoading={resumeSessionsLoading}
                         onRequestResumeSessions={requestResumeSessions}
+                        forkMessages={forkMessages}
+                        forkMessagesLoading={forkMessagesLoading}
+                        onRequestForkMessages={requestForkMessages}
                         onSendInput={sendSessionInput}
                         onExec={sendRemoteExec}
                         onShowModelSelector={() => setModelSelectorOpen(true)}
+                        onNewSession={handleNewSession}
                         agentActive={agentActive}
                         isCompacting={isCompacting}
                         effortLevel={effortLevel}
@@ -4963,6 +5183,16 @@ export function App() {
                         loadingOlderMessages={loadingOlderMessages}
                         extraHeaderButtons={
                           <ServicePanelButtons
+                            availableServices={availableServices}
+                            dynamicPanels={dynamicPanels}
+                            activePanelIds={activeServicePanels}
+                            onTogglePanel={handleToggleServicePanel}
+                            onButtonDragStart={handleButtonDragStart}
+                            toolbarPositions={buttonPositions.positions}
+                          />
+                        }
+                        extraOverflowItems={
+                          <ServicePanelOverflowItems
                             availableServices={availableServices}
                             dynamicPanels={dynamicPanels}
                             activePanelIds={activeServicePanels}
@@ -5023,6 +5253,8 @@ export function App() {
                             });
                           }
                         }}
+                        onButtonDragStart={handleButtonDragStart}
+                        toolbarPositions={buttonPositions.positions}
                       />
                       </PizzaPiNavProvider>
                       </SigilProvider>
@@ -5046,6 +5278,7 @@ export function App() {
                   className="w-full"
                 />
               )}
+
             </div>{/* end center column */}
 
             {/* ── RIGHT COLUMN ────────────────────────────────────────────── */}
@@ -5057,7 +5290,7 @@ export function App() {
                 >
                   <div className="bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors h-full w-px" />
                 </div>
-                <div className="hidden md:flex flex-col shrink-0 min-h-0" style={{ width: rightColumnWidth }}>
+                <div className="hidden md:flex flex-col shrink-0 min-h-0" style={{ width: rightColumnWidth, maxWidth: "40vw" }}>
                   {rightColZones.map((zone, i) => {
                     const nextZone = rightColZones[i + 1];
                     const handleZonePos = nextZone
@@ -5103,10 +5336,33 @@ export function App() {
                 </div>
               </>
             )}
+
+            {/* ── RIGHT ICON RAIL ─────────────────────────────────────────── */}
+            {/* ponytail: rail lives outside the panel column so it stays pinned to the right edge; the panel slides out between the chat and it */}
+            <ButtonRail
+              side="right"
+              groups={{ top: buttonPositions.slots["right-top"], middle: buttonPositions.slots["right-middle"], bottom: buttonPositions.slots["right-bottom"] }}
+              onDragStart={handleButtonDragStart}
+              servicePanels={railServicePanels}
+              onToggleServicePanel={handleToggleServicePanelFromDock}
+              onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
+              onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
+              onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
+              onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
+              onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
+              onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+              onExport={handleExport}
+              onExec={sendRemoteExec}
+              sessionId={activeSessionId}
+              effortLevel={effortLevel}
+              planModeEnabled={planModeEnabled}
+              tokenUsage={tokenUsage}
+            />
           </div>
 
+          {/* ponytail: same fix as center-top — let the panel + handle define the wrapper's height */}
           {centerBottomFullWidth && (
-            <div className="hidden md:flex flex-col shrink-0" style={{ height: centerBottomCollapsed ? TAB_BAR_HEIGHT : centerBottomHeight }}>
+            <div className="hidden md:flex flex-col shrink-0">
               <DockedPanelGroup
                 position="center-bottom"
                 size={centerBottomHeight}
@@ -5123,6 +5379,28 @@ export function App() {
             </div>
           )}
 
+          {/* ── BOTTOM ICON STRIP ────────────────────────────────────── */}
+          {/* ponytail: render after the side rails so the strip owns the true bottom-left/right corners */}
+          <ButtonStrip
+            position="center-bottom"
+            buttonIds={buttonPositions.slots["center-bottom"]}
+            onDragStart={handleButtonDragStart}
+            servicePanels={railServicePanels}
+            onToggleServicePanel={handleToggleServicePanelFromDock}
+            onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
+            onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
+            onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
+            onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
+            onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
+            onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+            onExport={handleExport}
+            onExec={sendRemoteExec}
+            sessionId={activeSessionId}
+            effortLevel={effortLevel}
+            planModeEnabled={planModeEnabled}
+            tokenUsage={tokenUsage}
+          />
+
           {/* ── MOBILE OVERLAY ──────────────────────────────────────────── */}
           {mobilePanelTabs.length > 0 && (
             <div
@@ -5136,6 +5414,43 @@ export function App() {
                 className="h-full"
                 tabs={mobilePanelTabs}
               />
+            </div>
+          )}
+
+          {/* ── BUTTON DRAG OVERLAY (3×3) ──────────────────────── */}
+          {draggingButton && (
+            <div className="absolute inset-0 z-50 pointer-events-none grid grid-cols-3 grid-rows-3">
+              {([
+                { pos: "left-top",      label: "Left\ntop"    },
+                { pos: "center-top",    label: "Top"          },
+                { pos: "right-top",     label: "Right\ntop"   },
+                { pos: "left-middle",   label: "Left"         },
+                { pos: "top",           label: "Header"       },
+                { pos: "right-middle",  label: "Right"        },
+                { pos: "left-bottom",   label: "Left\nbottom" },
+                { pos: "center-bottom", label: "Bottom"       },
+                { pos: "right-bottom",  label: "Right\nbottom"},
+              ] as const).map((zone) => {
+                const isActive = buttonDragZone === zone.pos;
+                return (
+                  <div
+                    key={zone.pos}
+                    className={cn(
+                      "flex items-center justify-center border transition-colors duration-100",
+                      isActive
+                        ? "bg-blue-500/20 border-blue-500"
+                        : "bg-zinc-900/40 border-zinc-700/30",
+                    )}
+                  >
+                    <span className={cn(
+                      "text-[10px] font-medium text-center transition-colors whitespace-pre-line leading-tight",
+                      isActive ? "text-blue-300" : "text-zinc-600",
+                    )}>
+                      {zone.label}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           )}
 
@@ -5179,24 +5494,26 @@ export function App() {
             </div>
           )}
         </div>
-        <HistoryCommandPalette
-          open={historyOpen}
-          onOpenChange={setHistoryOpen}
-          sessions={resumeSessions}
-          loading={resumeSessionsLoading}
-          onRefresh={requestResumeSessions}
-          onResumeSession={async (sessionId) => {
-            const session = resumeSessions.find((s) => s.id === sessionId);
-            if (!session) return;
+        {historyMounted && (
+          <Suspense fallback={<PanelFallback label="History" />}>
+            <LazyHistoryCommandPalette
+              open={historyOpen}
+              onOpenChange={setHistoryOpen}
+              sessions={resumeSessions}
+              loading={resumeSessionsLoading}
+              onRefresh={requestResumeSessions}
+              onResumeSession={async (sessionId) => {
+              const session = resumeSessions.find((s) => s.id === sessionId);
+              if (!session) return;
 
             // Determine runnerId: prefer session-level (server-sourced), fall back to active session's runner
             const runnerId = session.runnerId || activeSessionInfo?.runnerId;
             if (!runnerId) {
-              setViewerStatus("No runner available for this session");
+              setLifecycleStatus("No runner available for this session");
               return;
             }
             setHistoryOpen(false);
-            setViewerStatus("Resuming session…");
+            setLifecycleStatus("Resuming session…");
             try {
               // Server-sourced sessions don't have the .jsonl path — send resumeId
               // so the runner daemon resolves the path from the session ID.
@@ -5213,52 +5530,66 @@ export function App() {
                 headers: { "content-type": "application/json" },
                 body: JSON.stringify(payload),
               });
-              const body = await res.json().catch(() => null) as { error?: string; sessionId?: string } | null;
+              const body: unknown = await res.json().catch(() => null);
               if (!res.ok) {
-                setViewerStatus(body?.error ?? "Failed to resume session");
+                const error = isPayloadObject(body) && typeof body.error === "string" ? body.error : undefined;
+                setLifecycleStatus(error ?? "Failed to resume session");
                 return;
               }
-              const newSessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
-              if (!newSessionId) {
-                setViewerStatus("Resume failed: missing sessionId");
+              const parsed = parseSpawnResponse(body);
+              if (!parsed.ok) {
+                setLifecycleStatus(parsed.error);
                 return;
               }
-              const live = await waitForSessionToGoLive(newSessionId, 30_000);
+              const live = await waitForSessionToGoLive(parsed.value.sessionId, 30_000);
               if (!live) {
-                setViewerStatus("Session is starting…");
+                setLifecycleStatus("Session is starting…");
                 return;
               }
-              handleOpenSession(newSessionId);
-              setViewerStatus("Connecting…");
+              handleOpenSession(parsed.value.sessionId);
+              setLifecycleStatus("Connecting…");
             } catch (err) {
-              setViewerStatus("Failed to resume session");
+              setLifecycleStatus("Failed to resume session");
               console.error("Resume session error:", err);
             }
           }}
           nextCursor={resumeSessionsNextCursor}
           onLoadMore={() => { if (resumeSessionsNextCursor) requestResumeSessions(resumeSessionsNextCursor); }}
         />
+          </Suspense>
+        )}
 
-        <NewSessionWizardDialog
-          open={newSessionOpen}
-          onOpenChange={(open) => { if (!spawningSession) setNewSessionOpen(open); }}
-          runners={feedRunners.map((r) => ({ ...r, name: r.name ?? null, isOnline: true, sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length }))}
-          runnersLoading={runnersStatus === "connecting"}
-          preselectedRunnerId={spawnPreselectedRunnerId}
-          initialCwd={spawnCwd}
-          onSpawn={handleWizardSpawn}
-        />
+        {newSessionMounted && (
+          <Suspense fallback={<PanelFallback label="New session" />}>
+            <LazyNewSessionWizardDialog
+              open={newSessionOpen}
+              onOpenChange={(open) => { if (lifecycleState.phase !== "spawning" && lifecycleState.phase !== "registering") setNewSessionOpen(open); }}
+              runners={feedRunners.map((r) => ({ ...r, name: r.name ?? null, isOnline: true, sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length }))}
+              runnersLoading={runnersStatus === "connecting"}
+              preselectedRunnerId={lifecycleState.spawn.preselectedRunnerId}
+              initialCwd={lifecycleState.spawn.cwd}
+              onSpawn={handleWizardSpawn}
+            />
+          </Suspense>
+        )}
 
         {showPreferences && (
-          <UserPreferencesPanel
-            onClose={() => setShowPreferences(false)}
-            onShowHiddenModels={() => setHiddenModelsOpen(true)}
-            hiddenModelCount={availableModels.filter(m => hiddenModels.has(modelKey(m.provider, m.id))).length}
-          />
+          <Suspense fallback={<PanelFallback label="Settings" />}>
+            <LazyUserPreferencesPanel
+              onClose={() => setShowPreferences(false)}
+              onShowHiddenModels={() => setHiddenModelsOpen(true)}
+              hiddenModelCount={availableModels.filter(m => hiddenModels.has(modelKey(m.provider, m.id))).length}
+            />
+          </Suspense>
         )}
 
         {showApiKeys && (
-          <div className="absolute inset-y-0 right-0 z-40 flex w-full max-w-md flex-col shadow-xl border-l bg-background">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="API Keys"
+            className="absolute inset-y-0 right-0 z-40 flex w-full max-w-md flex-col shadow-xl border-l bg-background"
+          >
             <div className="flex items-center justify-between px-4 py-3 border-b">
               <span className="font-semibold text-sm">API Keys</span>
               <Tooltip>
@@ -5277,32 +5608,48 @@ export function App() {
               </Tooltip>
             </div>
             <div className="flex-1 overflow-y-auto p-4">
-              <div className="flex flex-col gap-4">
-                <MobileSetupQR />
-                <ApiKeyManager refreshSignal={apiKeyVersion} onKeysChanged={() => setApiKeyVersion((v) => v + 1)} />
-                <RunnerTokenManager refreshSignal={apiKeyVersion} onKeysChanged={() => setApiKeyVersion((v) => v + 1)} />
-                <DeviceSetupScanner onClose={() => setShowApiKeys(false)} />
-              </div>
+              <Suspense fallback={<PanelFallback label="API keys" />}>
+                <div className="flex flex-col gap-4">
+                  <LazyMobileSetupQR />
+                  <LazyApiKeyManager refreshSignal={apiKeyVersion} onKeysChanged={() => setApiKeyVersion((v) => v + 1)} />
+                  <LazyRunnerTokenManager refreshSignal={apiKeyVersion} onKeysChanged={() => setApiKeyVersion((v) => v + 1)} />
+                  <LazyDeviceSetupScanner onClose={() => setShowApiKeys(false)} />
+                </div>
+              </Suspense>
             </div>
           </div>
         )}
 
-        <ShortcutsDialog open={showShortcutsHelp} onOpenChange={setShowShortcutsHelp} />
+        {shortcutsMounted && (
+          <Suspense fallback={<PanelFallback label="Shortcuts" />}>
+            <LazyShortcutsDialog open={showShortcutsHelp} onOpenChange={setShowShortcutsHelp} />
+          </Suspense>
+        )}
 
         <Dialog open={setupClaimOpen} onOpenChange={setSetupClaimOpen}>
           <DialogContent className="max-w-md p-0 overflow-hidden">
-            <DeviceSetupScanner
-              initialToken={setupClaimToken ?? undefined}
-              onClose={() => setSetupClaimOpen(false)}
-            />
+            <Suspense fallback={<PanelFallback label="Device setup" />}>
+              <LazyDeviceSetupScanner
+                initialToken={setupClaimToken ?? undefined}
+                onClose={() => setSetupClaimOpen(false)}
+              />
+            </Suspense>
           </DialogContent>
         </Dialog>
 
         {/* PATCH(pizzapi): Toast notifications for ctx.ui.notify() */}
-        <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+        {/* Live region so screen readers announce toasts (WCAG 4.1.3). The
+            container is always mounted so dynamically-added toasts are read;
+            error toasts use role=alert (assertive), others role=status. */}
+        <div
+          className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"
+          aria-live="polite"
+          aria-atomic="false"
+        >
           {toasts.map((toast) => (
             <div
               key={toast.id}
+              role={toast.type === "error" ? "alert" : "status"}
               className={cn(
                 "pointer-events-auto max-w-sm rounded-lg border p-4 shadow-lg backdrop-blur-sm animate-in slide-in-from-bottom-2 fade-in duration-200",
                 toast.type === "error"

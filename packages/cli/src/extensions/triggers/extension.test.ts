@@ -61,12 +61,6 @@ async function simulateRespondToTrigger(
         return { text: `Error: No pending trigger with ID ${params.triggerId}` };
     }
 
-    const TRIGGER_TTL_MS = 10 * 60 * 1000;
-    if (Date.now() - pending.trackedAt > TRIGGER_TTL_MS) {
-        receivedTriggers.delete(params.triggerId);
-        return { text: `Error: Trigger ${params.triggerId} has expired` };
-    }
-
     if (pending.type === "session_complete") {
         const action = params.action ?? "ack";
         if (action === "followUp") {
@@ -232,20 +226,20 @@ describe("respond_to_trigger handling for session_complete", () => {
         expect(receivedTriggers.has("trig_plan_fail")).toBe(true);
     });
 
-    it("expired triggers are rejected and removed", async () => {
+    it("triggers never expire — an old pending trigger can still be responded to", async () => {
         const conn = createMockSocket();
         trackReceivedTrigger("trig_old", "child-old", "session_complete");
         const pending = receivedTriggers.get("trig_old");
-        if (pending) pending.trackedAt = Date.now() - (11 * 60 * 1000);
+        if (pending) pending.trackedAt = Date.now() - 60 * 60 * 1000; // 1 hour ago
 
         const result = await simulateRespondToTrigger(
             { triggerId: "trig_old", response: "late ack", action: "ack" },
             conn,
         );
 
-        expect(result?.text).toContain("expired");
+        expect(result?.text).toBe("Acknowledged session completion from child-old");
         expect(receivedTriggers.has("trig_old")).toBe(false);
-        expect(conn.emitted.length).toBe(0);
+        expect(conn.emitted.some((e) => e.event === "cleanup_child_session")).toBe(true);
     });
 });
 
@@ -257,18 +251,24 @@ import { BUILTIN_SIGIL_DEFS, mergeWithBuiltinSigils } from "./extension.js";
 import type { ServiceSigilDef } from "@pizzapi/protocol";
 
 describe("BUILTIN_SIGIL_DEFS", () => {
-    it("contains the action sigil", () => {
+    it("contains the action sigil with confirm/choose/input variants", () => {
         const action = BUILTIN_SIGIL_DEFS.find((d) => d.type === "action");
         expect(action).toBeDefined();
         expect(action!.label).toBe("Action");
-        expect(action!.description).toContain("confirm");
-        expect(action!.description).toContain("choose");
-        expect(action!.description).toContain("input");
+        const variantNames = (action!.variants ?? []).map((v) => v.name);
+        expect(variantNames).toEqual(["confirm", "choose", "input"]);
     });
 
     it("contains file, status, error, and other utility sigils", () => {
         const types = BUILTIN_SIGIL_DEFS.map((d) => d.type);
         for (const expected of ["file", "status", "error", "cost", "duration", "session", "model", "cmd", "tag", "test", "link", "diff"]) {
+            expect(types).toContain(expected);
+        }
+    });
+
+    it("contains PizzaPi entity sigils (skill, runner, service, trigger, tunnel, agent)", () => {
+        const types = BUILTIN_SIGIL_DEFS.map((d) => d.type);
+        for (const expected of ["skill", "runner", "service", "trigger", "tunnel", "agent"]) {
             expect(types).toContain(expected);
         }
     });
@@ -325,7 +325,7 @@ describe("mergeWithBuiltinSigils", () => {
             { type: "idea", label: "Idea", serviceId: "godmother" },
         ];
         const result = mergeWithBuiltinSigils(serviceDefs);
-        // Total = 3 service + (13 built-in - 2 overridden) = 14
+        // Total = service defs + (built-ins minus any the services override)
         const expectedCount = serviceDefs.length + BUILTIN_SIGIL_DEFS.filter(
             (b) => !serviceDefs.some((s) => s.type === b.type),
         ).length;

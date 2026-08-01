@@ -1,6 +1,4 @@
-import { execSync } from "child_process";
-import { existsSync } from "fs";
-import { join } from "path";
+import { resolvePosixShell } from "@pizzapi/tools";
 import type { HookEntry } from "../../config.js";
 import { expandVars } from "../../config.js";
 import type { HookOutput, HookResult } from "./types.js";
@@ -25,43 +23,6 @@ export type SpawnLike = (
 // Hook runner
 // ---------------------------------------------------------------------------
 
-/**
- * Find Git for Windows' bundled bash.exe by checking well-known install
- * paths and falling back to `git --exec-path` to derive the Git root.
- * Returns the absolute path to bash.exe, or null if not found.
- */
-function findGitBashOnWindows(): string | null {
-    const programFiles = process.env.ProgramFiles || "C:\\Program Files";
-    const programFilesX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
-    const localAppData = process.env.LOCALAPPDATA || "";
-
-    const candidates = [
-        join(programFiles, "Git", "bin", "bash.exe"),
-        join(programFilesX86, "Git", "bin", "bash.exe"),
-        ...(localAppData ? [join(localAppData, "Programs", "Git", "bin", "bash.exe")] : []),
-    ];
-
-    for (const candidate of candidates) {
-        if (existsSync(candidate)) return candidate;
-    }
-
-    // Try to derive from `git --exec-path` (e.g. C:\Program Files\Git\mingw64\libexec\git-core)
-    try {
-        const execPath = execSync("git --exec-path", {
-            encoding: "utf-8",
-            stdio: ["ignore", "pipe", "ignore"],
-        }).trim();
-        // Walk up to the Git root: <root>/mingw64/libexec/git-core → <root>
-        const gitRoot = join(execPath, "..", "..", "..");
-        const bashFromGit = join(gitRoot, "bin", "bash.exe");
-        if (existsSync(bashFromGit)) return bashFromGit;
-    } catch {
-        // git not in PATH or other error — fall through
-    }
-
-    return null;
-}
-
 /** Cached result so we only probe the filesystem once per process. */
 let _cachedShell: { shell: string; flag: string } | undefined;
 
@@ -81,14 +42,10 @@ let _cachedShell: { shell: string; flag: string } | undefined;
 export function resolveShell(): { shell: string; flag: string } {
     if (_cachedShell) return _cachedShell;
 
-    if (process.platform !== "win32") {
-        _cachedShell = { shell: "/bin/sh", flag: "-c" };
-        return _cachedShell;
-    }
-
-    // Windows: prefer Git for Windows bash, fall back to bare `bash`
-    const gitBash = findGitBashOnWindows();
-    _cachedShell = { shell: gitBash ?? "bash", flag: "-c" };
+    // Windows: prefer Git for Windows bash, fall back to bare `bash` so the
+    // error message is clear ("bash not found") rather than an opaque cmd.exe
+    // syntax failure.
+    _cachedShell = resolvePosixShell() ?? { shell: "bash", flag: "-c" };
     return _cachedShell;
 }
 

@@ -7,8 +7,9 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { AuthStorage } from "@earendil-works/pi-coding-agent";
+import { readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { loadConfig, defaultAgentDir, expandHome } from "../config.js";
+import { getAnthropicKeychainToken, parseGeminiQuotaCredential } from "../runner/usage-auth.js";
 import type { UsageWindow, ProviderUsageData } from "./remote-types.js";
 
 const DEFAULT_USAGE_CACHE_TTL = 5 * 60 * 1000; // 5 min
@@ -46,9 +47,26 @@ function isCached(providerId: string, opts: { force?: boolean } = {}): boolean {
     return Date.now() - entry.fetchedAt < providerUsageTtl(providerId);
 }
 
+/**
+ * Drop windows whose `resets_at` has already passed — the window rolled over
+ * and the cached utilization is stale (Anthropic is cached for 15 min, and
+ * workers read a daemon-written snapshot that can be older still).
+ * An unparseable `resets_at` is kept, so a bad timestamp can't hide real usage.
+ */
+export function activeUsageWindows(windows: UsageWindow[], now = Date.now()): UsageWindow[] {
+    return windows.filter((w) => {
+        const resetsAt = Date.parse(w.resets_at);
+        return !Number.isFinite(resetsAt) || resetsAt > now;
+    });
+}
+
 export function buildProviderUsage(): Record<string, ProviderUsageData> {
     const out: Record<string, ProviderUsageData> = {};
-    for (const [id, { data }] of usageCache) out[id] = data;
+    const now = Date.now();
+    for (const [id, { data }] of usageCache) {
+        const windows = activeUsageWindows(data.windows, now);
+        out[id] = windows.length === data.windows.length ? data : { ...data, windows };
+    }
     return out;
 }
 
@@ -77,7 +95,10 @@ async function refreshFromRunnerCache(): Promise<void> {
 
 async function refreshAnthropicUsage(opts: { force?: boolean } = {}): Promise<void> {
     if (isCached("anthropic", opts)) return;
-    const token = getOAuthToken("anthropic");
+    // auth.json first, then Claude Code's own OAuth token (Keychain /
+    // ~/.claude/.credentials.json) for users who never ran /login inside
+    // pizzapi — read-only, never refreshed.
+    const token = getOAuthToken("anthropic") ?? getAnthropicKeychainToken();
     if (!token) return;
     try {
         const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
@@ -226,17 +247,16 @@ async function refreshCodexUsage(opts: { force?: boolean } = {}): Promise<void> 
 async function refreshGeminiUsage(opts: { force?: boolean } = {}): Promise<void> {
     if (isCached("google-gemini-cli", opts)) return;
     let token: string;
-    let projectId: string;
+    let projectId: string | null;
     try {
         const config = loadConfig(process.cwd());
         const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
-        const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-        const raw = await authStorage.getApiKey("google-gemini-cli");
-        if (!raw) return;
-        const parsed = JSON.parse(raw) as { token?: string; projectId?: string };
-        if (!parsed.token || !parsed.projectId) return;
-        token = parsed.token;
-        projectId = parsed.projectId;
+        // Accepts the oauth credential a real /login writes as well as the legacy
+        // api_key wrapper whose `key` is JSON.stringify({ token, projectId }).
+        const cred = parseGeminiQuotaCredential(readStoredCredential("google-gemini-cli", join(agentDir, "auth.json")));
+        if (!cred) return;
+        token = cred.token;
+        projectId = cred.projectId;
     } catch {
         return;
     }
@@ -250,12 +270,16 @@ async function refreshGeminiUsage(opts: { force?: boolean } = {}): Promise<void>
                 Authorization: `Bearer ${token}`,
                 "Content-Type": "application/json",
             },
-            body: JSON.stringify({ project: projectId }),
+            // `project` is optional — the endpoint resolves the caller's Code Assist
+            // project from the token, so no :loadCodeAssist round-trip is needed.
+            body: JSON.stringify(projectId ? { project: projectId } : {}),
         });
         if (!res.ok) {
-            if (res.status === 403) {
+            // 401 = expired/invalid token, 403 = no access. Report both rather than
+            // dropping Gemini from the usage list with no explanation.
+            if (res.status === 401 || res.status === 403) {
                 usageCache.set("google-gemini-cli", {
-                    data: { windows: [], status: "unknown", errorCode: 403 },
+                    data: { windows: [], status: "unknown", errorCode: res.status },
                     fetchedAt: Date.now(),
                 });
             }

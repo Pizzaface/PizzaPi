@@ -1,8 +1,46 @@
 /**
- * Tests for Claude Code Plugin adapter — template expansion.
+ * Tests for Claude Code Plugin adapter — template expansion and
+ * native-compatible command routing.
  */
 import { describe, test, expect } from "bun:test";
-import { expandArguments } from "./claude-plugins.js";
+import { expandArguments, isNativeCompatibleCommand } from "./claude-plugins.js";
+import type { PluginCommand } from "../plugins.js";
+
+function cmd(overrides: Partial<PluginCommand>): PluginCommand {
+    return {
+        name: "foo",
+        content: "Do the thing with $ARGUMENTS",
+        frontmatter: {},
+        filePath: "/plugin/commands/foo.md",
+        ...overrides,
+    };
+}
+
+describe("isNativeCompatibleCommand", () => {
+    test("a plain top-level .md command using $ARGUMENTS/$1 is native-compatible", () => {
+        expect(isNativeCompatibleCommand(cmd({ content: "Deploy $1 to $ARGUMENTS" }))).toBe(true);
+    });
+
+    test("nested command names (prefix/name) are NOT native-compatible (pi names by bare filename)", () => {
+        expect(isNativeCompatibleCommand(cmd({ name: "pm/epic-start" }))).toBe(false);
+    });
+
+    test(".toml-sourced commands are NOT native-compatible (pi's loader only reads .md)", () => {
+        expect(isNativeCompatibleCommand(cmd({ filePath: "/plugin/commands/foo.toml" }))).toBe(false);
+    });
+
+    test("PizzaPi's $ARGUMENTS[N] bracket-indexed syntax is NOT native-compatible", () => {
+        expect(isNativeCompatibleCommand(cmd({ content: "first: $ARGUMENTS[0]" }))).toBe(false);
+    });
+
+    test("inline shell expansion is NOT native-compatible", () => {
+        expect(isNativeCompatibleCommand(cmd({ content: "Current branch: !`git branch --show-current`" }))).toBe(false);
+    });
+
+    test("${CLAUDE_PLUGIN_ROOT} references are NOT native-compatible", () => {
+        expect(isNativeCompatibleCommand(cmd({ content: "Run ${CLAUDE_PLUGIN_ROOT}/script.sh" }))).toBe(false);
+    });
+});
 
 describe("expandArguments", () => {
     test("expands $ARGUMENTS with the full args string", () => {

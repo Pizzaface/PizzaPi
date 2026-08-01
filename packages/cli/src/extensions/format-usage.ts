@@ -24,6 +24,9 @@ export function formatProviderUsage(data: ProviderUsageData | undefined): string
  */
 const PROVIDER_USAGE_KEY_MAP: Record<string, string> = {
     anthropic: "anthropic",
+    // Extension-registered provider for Claude Code subscription models; it
+    // draws on the same Anthropic subscription quota.
+    "claude-subscription": "anthropic",
     "openai-codex": "openai-codex",
     openai: "openai-codex",
     "google-gemini-cli": "google-gemini-cli",

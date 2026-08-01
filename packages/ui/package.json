@@ -3,13 +3,15 @@
   "version": "0.1.32",
   "type": "module",
   "scripts": {
-    "build": "vite build",
+    "build": "vite build && bun run bundle-budget",
+    "bundle-budget": "bun scripts/bundle-budget.ts",
     "dev": "vite",
     "preview": "vite preview"
   },
   "dependencies": {
     "@aparajita/capacitor-secure-storage": "^8.0.0",
     "@capacitor/core": "^8.4.1",
+    "@capacitor/haptics": "^8.0.2",
     "@capacitor/local-notifications": "^8.2.0",
     "@capawesome/capacitor-badge": "^8.0.2",
     "@pizzapi/protocol": "workspace:*",

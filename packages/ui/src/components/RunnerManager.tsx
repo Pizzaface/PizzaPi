@@ -48,6 +48,7 @@ export function RunnerManager({
 
     // Stop confirmation dialog state
     const [stopConfirmRunnerId, setStopConfirmRunnerId] = React.useState<string | null>(null);
+    const [restartConfirmRunnerId, setRestartConfirmRunnerId] = React.useState<string | null>(null);
 
     // Fetch the latest available version from the server (used by RunnerDetailPanel for update-available badge)
     React.useEffect(() => {
@@ -295,7 +296,7 @@ export function RunnerManager({
                 isRestarting={restarting.has(selectedRunnerId ?? "")}
                 isStopping={stopping.has(selectedRunnerId ?? "")}
                 isOffline={!selectedRunner}
-                onRestart={() => selectedRunnerId && handleRestart(selectedRunnerId)}
+                onRestart={() => selectedRunnerId && setRestartConfirmRunnerId(selectedRunnerId)}
                 onStop={() => selectedRunnerId && handleStopRequest(selectedRunnerId)}
                 onNewSession={() => selectedRunnerId && handleOpenNewSession(selectedRunnerId)}
                 onOpenSession={onOpenSession}
@@ -319,6 +320,33 @@ export function RunnerManager({
                 preselectedRunnerId={spawnRunnerId}
                 onSpawn={handleWizardSpawn}
             />
+
+            {/* Restart runner confirmation dialog */}
+            <AlertDialog
+                open={restartConfirmRunnerId !== null}
+                onOpenChange={(open) => { if (!open) setRestartConfirmRunnerId(null); }}
+            >
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Restart runner?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            Active sessions on this runner will be interrupted while it restarts.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                            onClick={() => {
+                                const id = restartConfirmRunnerId;
+                                setRestartConfirmRunnerId(null);
+                                if (id) void handleRestart(id);
+                            }}
+                        >
+                            Restart runner
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
 
             {/* Stop runner confirmation dialog */}
             <AlertDialog

@@ -43,6 +43,8 @@ import { getPendingChunkedSnapshot } from "./relay/index.js";
 import { getLatestCachedSnapshotEvent } from "../../sessions/redis.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
 import { recordTriggerResponse } from "../../sessions/trigger-store.js";
+import { getHiddenModels } from "../../user-hidden-models.js";
+import { isHiddenModel } from "../../routes/model-guard.js";
 import { createLogger } from "@pizzapi/tools";
 import { hydrateViewerFromCache, sendCachedDeltaReplayEvents, sendLatestSnapshotFromCache } from "./viewer-cache.js";
 import { getBestSnapshot } from "./snapshot-provider.js";
@@ -211,8 +213,10 @@ export function forwardRecoveryConnectedSignal(
     sessionId: string,
     deps: RecoveryConnectedSignalDeps = defaultRecoveryConnectedSignalDeps,
 ): void {
-    deps.markPendingRecovery(sessionId);
-    deps.emitToRelaySession(sessionId, "connected" as string, {});
+    const recoveryNonce = deps.markPendingRecovery(sessionId);
+    // The runner echoes recoveryNonce on its recovery session_active so the
+    // event pipeline can distinguish it from real agent updates racing in.
+    deps.emitToRelaySession(sessionId, "connected" as string, { recoveryNonce });
 }
 
 /**
@@ -652,6 +656,18 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             const currentSession = await getSharedSession(currentSessionId);
             if (!currentSession?.collabMode) return;
 
+            // Hard-block hidden models by name (same rule as the spawn route).
+            // Fresh DB read — the worker's env copy may be stale.
+            try {
+                const hiddenModels = await getHiddenModels(viewerUserId);
+                if (isHiddenModel(hiddenModels, { provider: String(data?.provider ?? ""), id: String(data?.modelId ?? "") })) {
+                    log.warn(`blocked model_set of hidden model ${data.provider}/${data.modelId} on ${currentSessionId}`);
+                    return;
+                }
+            } catch {
+                // On lookup failure, fall through — the worker-side guard still applies.
+            }
+
             const tuiSocket = getLocalTuiSocket(currentSessionId);
             if (!tuiSocket) return;
 
@@ -733,7 +749,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             // If targetSessionId is explicitly provided, route to that child.
             // Validate ownership: the target session must belong to the same user.
             if (targetSessionId) {
-                const targetSession = await getSharedSession(targetSessionId);
+                const targetSession = await getSharedSessionSummary(targetSessionId);
                 if (!targetSession) {
                     // Target session no longer exists (child exited) — don't ack so the
                     // UI keeps retry controls visible, and emit trigger_error for feedback.
@@ -860,7 +876,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             }
 
             if (!fullState) {
-                const snapshotEvent = await getLatestCachedSnapshotEvent(currentSessionId);
+                const snapshotEvent = (await getLatestCachedSnapshotEvent(currentSessionId))?.event ?? null;
                 if (snapshotEvent?.type === "session_active") {
                     const snapshotState = snapshotEvent.state;
                     if (snapshotState && typeof snapshotState === "object" && !Array.isArray(snapshotState)) {
@@ -897,7 +913,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
 
         // ── Optional initial session bootstrap (backward compatibility) ─────
         if (initialSessionId) {
-            const initialSession = await getSharedSession(initialSessionId);
+            const initialSession = await getSharedSessionSummary(initialSessionId);
             if (!initialSession) {
                 // Session not live — try to replay a persisted snapshot for older
                 // clients that still bind the session in the handshake.

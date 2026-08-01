@@ -1,0 +1,320 @@
+---
+title: Overlay Packages & the Extension SDK
+description: Author a pi package that also ships PizzaPi runner services, agents, rules, and MCP servers — using the pi.pizzapi overlay and @pizzapi/extension-sdk.
+---
+
+import { Aside, FileTree, Steps } from "@astrojs/starlight/components";
+
+A **pi package** is the standard unit of distribution for pi extensions, skills, prompts, and themes. An **overlay package** is a normal pi package that *also* declares PizzaPi-specific capabilities — runner services, agents, rules, and MCP servers — under a `pi.pizzapi` key in its `package.json`.
+
+The point of the overlay is that it is **additive**. One package installs cleanly in vanilla pi *and* in PizzaPi; vanilla pi simply ignores the `pi.pizzapi` block, and PizzaPi mounts the extra capabilities on top.
+
+<Aside type="note">
+This page covers the PizzaPi overlay. For pi package basics — installing from npm/git/local paths, package filtering, and publishing — see [Pi Packages](/PizzaPi/features/pi-packages/). The normative specification is `docs/specs/pi-pizzapi-overlay.md` in the repository.
+</Aside>
+
+---
+
+## A complete example
+
+Everything PizzaPi-specific lives under `pi.pizzapi` in `package.json`:
+
+```json title="package.json"
+{
+  "name": "@example/my-tools",
+  "version": "1.0.0",
+  "type": "module",
+  "pi": {
+    "skills": ["./skills"],
+    "pizzapi": {
+      "schemaVersion": 1,
+      "agents": ["./agents"],
+      "rules": ["./rules"],
+      "mcp": "./.mcp.json",
+      "services": [
+        {
+          "id": "my-service",
+          "label": "My Service",
+          "icon": "activity",
+          "entry": "./service/index.ts",
+          "panel": { "dir": "./service/panel" },
+          "triggers": "./service/triggers.json",
+          "sigils": "./service/sigils.json"
+        }
+      ]
+    }
+  }
+}
+```
+
+<FileTree>
+- package.json
+- skills/
+- agents/
+- rules/
+- .mcp.json
+- service/
+  - index.ts
+  - triggers.json
+  - sigils.json
+  - panel/
+    - index.html
+</FileTree>
+
+---
+
+## Overlay fields
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `schemaVersion` | `1` | Required. Pins the overlay schema. |
+| `services` | `PizzaPiServiceDeclaration[]` | Runner services. Require a **separate trust grant** — see [Trust](#trust-and-grants). |
+| `agents` | `string[]` | Directories of [agent definitions](/PizzaPi/customization/agent-definitions/). |
+| `rules` | `string[]` | Directories of rules injected into session context. |
+| `mcp` | `string` | Path to an [MCP server](/PizzaPi/customization/mcp-servers/) definition file. |
+
+### Service declaration
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `id` | `string` | Unique service ID. Cannot collide with a built-in (`terminal`, `file-explorer`, `git`, `memory`, `process`, `time`, `tunnel`). |
+| `label` | `string` | Display name in the web UI. |
+| `entry` | `string` | Module exporting the service handler. |
+| `icon` | `string` | Optional Lucide icon name. |
+| `panel.dir` | `string` | Optional directory of static panel assets. |
+| `panel.requires` | `PanelVariable[]` | Optional. One or more of `PWD`, `SESSION_ID`, `HOME`, `USER`, `PROJECT_DIR`. |
+| `triggers` | `string \| ServiceTriggerDef[]` | Path to a JSON file **or** an inline array. |
+| `sigils` | `string \| ServiceSigilDef[]` | Path to a JSON file **or** an inline array. |
+
+`triggers` and `sigils` accept either form, so you can keep large definitions in their own file or inline a short list directly.
+
+### Path placeholders
+
+Values in an overlay MCP definition expand these tokens:
+
+| Token | Expands to |
+|-------|-----------|
+| `@PACKAGE_ROOT@` | The installed package's root directory |
+| `@HOME@` | The user's home directory |
+| `@PWD@` | Current working directory |
+| `@PROJECT_DIR@` | Project directory |
+| `@SESSION_ID@` | Active session ID |
+| `@USER@` | Current username |
+
+`@PACKAGE_ROOT@` is what makes a package relocatable — use it for binaries and scripts shipped inside the package:
+
+```json title=".mcp.json"
+{
+  "mcp": {
+    "servers": [
+      {
+        "name": "my-server",
+        "transport": "stdio",
+        "command": "@PACKAGE_ROOT@/bin/my-server",
+        "args": ["serve"],
+        "env": { "MY_CONFIG": "@HOME@/.config/my-tool.json" }
+      }
+    ]
+  }
+}
+```
+
+<Aside type="caution" title="Keep durable state out of the package root">
+Point configuration and databases at a stable location such as `@HOME@/...`, not at `@PACKAGE_ROOT@`. A package can be reinstalled, moved, or resolved from a different checkout, which would strand anything stored inside it.
+</Aside>
+
+---
+
+## The Extension SDK
+
+`@pizzapi/extension-sdk` is the **public authoring contract** — the TypeScript types and the host-detection helpers that overlay packages are written against.
+
+<Aside type="caution" title="Not yet published to npm">
+The SDK is not currently published to the npm registry. This does not block authoring: the overlay manifest is plain JSON and needs no dependency at all, and a service handler only has to match a structural interface. The SDK is what gives you *type checking* and the host-detection helpers today, so until it ships, treat the types below as the contract to match by hand.
+</Aside>
+
+### What it exports
+
+```ts
+import type {
+  // Overlay manifest
+  PizzaPiOverlayV1, PizzaPiServiceDeclaration, PanelVariable,
+  // Runner services
+  ServiceHandler, ServiceInitOptions, ServiceEnvelope, PizzaPiSocket,
+  ReconcileResult, ReconcileOptions,
+  TriggerSubscriptionEntry, TriggerSubscriptionDelta,
+  // Host detection
+  PizzaPiHostInfo, PizzaPiHostAPI,
+} from "@pizzapi/extension-sdk";
+
+import {
+  isPizzaPiHostInfo, detectPizzaPiHost, onPizzaPiHost,
+} from "@pizzapi/extension-sdk";
+```
+
+Types are erased at build time; only the three host-detection helpers are runtime code.
+
+---
+
+## Writing a service handler
+
+A service handler registers socket listeners in `init()` and tears them down in `dispose()`:
+
+```ts title="service/index.ts"
+import type { ServiceHandler, ServiceInitOptions, PizzaPiSocket } from "@pizzapi/extension-sdk";
+
+export default function createService(): ServiceHandler {
+  let server: ReturnType<typeof Bun.serve> | null = null;
+  let onMessage: ((envelope: unknown) => void) | null = null;
+
+  return {
+    id: "my-service",
+
+    init(socket: PizzaPiSocket, options: ServiceInitOptions) {
+      onMessage = (envelope: any) => {
+        if (options.isShuttingDown()) return;
+        if (envelope.serviceId !== "my-service") return;
+        // handle envelope.type / envelope.payload
+      };
+      socket.on("service_message", onMessage);
+
+      // Port 0 lets the OS pick a free port; announce it so the UI can reach the panel.
+      server = Bun.serve({ port: 0, fetch: () => new Response("ok") });
+      options.announcePanel?.(server.port);
+    },
+
+    dispose() {
+      server?.stop();
+      server = null;
+      onMessage = null;
+    },
+  };
+}
+```
+
+### `ServiceInitOptions`
+
+| Member | Purpose |
+|--------|---------|
+| `isShuttingDown()` | Returns `true` once the daemon is tearing down. Check it before doing work. |
+| `announcePanel(port)` | Announce a panel HTTP server. Only provided to services declaring a `panel`. |
+| `announceSigilServer(port)` | Announce a sigil-resolve HTTP server for services with **no** UI panel. |
+
+### Optional lifecycle hooks
+
+| Hook | When to implement |
+|------|-------------------|
+| `handleSessionEnded(sessionId)` | You hold per-session state (processes, buffers, temp files). |
+| `reconcileSubscriptions(subs, opts)` | You hold per-subscription runtime state such as timers or watchers. Called after runner reconnect with a `snapshot`, and on individual `delta` changes. |
+
+<Aside type="caution" title="Clean up on every path">
+`dispose()` must release everything the service owns — HTTP servers, listeners, child processes, timers. A handler that leaves a server running keeps its port bound after the service is disabled or its package is removed.
+</Aside>
+
+---
+
+## Graceful degradation
+
+The same package may be loaded by vanilla pi, where no runner daemon, relay, or web UI exists. Use host detection so PizzaPi-only code paths simply don't activate there.
+
+`detectPizzaPiHost()` is a **synchronous probe** — it returns host info only if a PizzaPi host answers on the same tick:
+
+```ts
+import { detectPizzaPiHost } from "@pizzapi/extension-sdk";
+
+export default function myExtension(pi) {
+  const host = detectPizzaPiHost(pi);
+  if (!host) return;               // vanilla pi — degrade quietly
+  // PizzaPi-only setup here
+}
+```
+
+Because packages can load before the host announces itself, prefer `onPizzaPiHost()`, which fires immediately if the host is already up and otherwise waits for its ready event. It delivers **at most once** and returns an unsubscribe function:
+
+```ts
+import { onPizzaPiHost } from "@pizzapi/extension-sdk";
+
+export default function myExtension(pi) {
+  const unsubscribe = onPizzaPiHost(pi, (host) => {
+    if (!host.capabilities.includes("services")) return;
+    // safe to use PizzaPi capabilities
+  });
+
+  return { dispose: unsubscribe };
+}
+```
+
+`PizzaPiHostInfo` carries `apiVersion: 1` and a `capabilities` string array. Check `capabilities` before relying on a feature rather than assuming a version implies it. `isPizzaPiHostInfo()` is exported for validating a payload you received yourself.
+
+<Aside type="note">
+Package load order is not guaranteed relative to host startup, which is exactly why `onPizzaPiHost()` exists. Reaching for `detectPizzaPiHost()` at module top level is the most common cause of a package that works intermittently.
+</Aside>
+
+---
+
+## Trust and grants
+
+Installing a package and letting it run **daemon services** are two separate decisions. Code in a runner service runs on the daemon, outside any session sandbox, so it always requires an explicit grant:
+
+```bash
+# Install and grant declared runner services in one step
+pizza install ./my-package --allow-daemon-services
+
+# Install now, decide later
+pizza install ./my-package --no-allow-daemon-services
+pizza config grant ./my-package
+pizza config grant ./my-package my-service   # grant one service
+pizza config revoke ./my-package my-service
+```
+
+Grants are recorded in `overlayServiceGrants` in `~/.pizzapi/config.json`.
+
+<Aside type="caution" title="Grants apply on daemon start">
+Granting or revoking a service does not hot-swap it into a running daemon. Restart the runner for the change to take effect.
+</Aside>
+
+### Scope
+
+| Scope | Agents / rules / MCP | Runner services |
+|-------|---------------------|-----------------|
+| **User** (`pizza install ...`) | Yes | Yes, with a grant |
+| **Project** (`pizza install ... -l`) | Yes, after pi project trust | **No** — not in schema version 1 |
+
+Project packages that declare services still install; PizzaPi warns that those services stay inactive. The daemon owns a single service registry shared by every workspace, so mounting a service found in one checkout would activate that project's code for unrelated sessions. See [Runner Services](/PizzaPi/customization/runner-services/) for the full scope rule.
+
+### Precedence
+
+Built-in service IDs (`terminal`, `file-explorer`, `git`, `memory`, `process`, `time`, `tunnel`) are reserved and always win. Between packages, the first to claim an ID in a discovery pass keeps it and later claimants are skipped with a warning.
+
+---
+
+## Verifying an install
+
+```bash
+pizza list
+```
+
+```text
+PizzaPi overlay:
+  ● local:/path/to/my-package (user) — agents:1  rules:1  mcp  services:[my-service:granted]
+```
+
+Confirm the daemon actually mounted it:
+
+```bash
+grep "loaded package service" ~/.pizzapi/logs/runner.log
+```
+
+```text
+[services] loaded package service "my-service" from local:/path/to/my-package
+```
+
+---
+
+## See also
+
+- [Pi Packages](/PizzaPi/features/pi-packages/) — installing, sources, publishing
+- [Runner Services](/PizzaPi/customization/runner-services/) — service internals, panels, triggers, sigils
+- [Connectivity Services](/PizzaPi/customization/runner-services/#connectivity-services) — packaging a service that owns a connection to Discord, Slack, MQTT, or any other external network
+- [MCP Servers](/PizzaPi/customization/mcp-servers/) — MCP configuration format
+- [Agent Definitions](/PizzaPi/customization/agent-definitions/) — authoring agents

@@ -27,6 +27,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveDefaultShell } from "./terminal-utils.js";
 import { logInfo, logWarn, logError } from "./logger.js";
+import { forceKillTree } from "./process-kill.js";
 
 export interface TerminalEntry {
     terminalId: string;
@@ -46,12 +47,31 @@ function escalateTerminalKill(worker: ChildProcess, terminalId: string, timeoutM
     const timer = setTimeout(() => {
         try {
             if (!worker.killed && worker.exitCode === null) {
-                logWarn(`[terminal] terminal ${terminalId} did not exit after ${timeoutMs}ms; force-killing with SIGKILL`);
-                worker.kill("SIGKILL");
+                logWarn(`[terminal] terminal ${terminalId} did not exit after ${timeoutMs}ms; force-killing`);
+                forceKillTree(worker);
             }
         } catch {}
     }, timeoutMs);
     worker.once("exit", () => clearTimeout(timer));
+}
+
+/**
+ * Stop a terminal worker: IPC "kill" first so it can dispose its PTY, then a
+ * SIGTERM on POSIX. On Windows the SIGTERM would TerminateProcess the worker
+ * before it reads the IPC message, so only the escalation timer backs it up.
+ */
+function stopTerminalWorker(worker: ChildProcess, terminalId: string): void {
+    try { worker.send({ type: "kill" }); } catch {}
+    if (process.platform === "win32" && worker.connected) {
+        escalateTerminalKill(worker, terminalId);
+        return;
+    }
+    try {
+        worker.kill("SIGTERM");
+        escalateTerminalKill(worker, terminalId);
+    } catch (err) {
+        logWarn(`[terminal] stopTerminalWorker: worker.kill() failed for terminalId=${terminalId}: ${err}`);
+    }
 }
 
 /** Is this process running inside a compiled Bun single-file binary? */
@@ -300,15 +320,7 @@ export function killTerminal(terminalId: string): boolean {
         return false;
     }
     runningTerminals.delete(terminalId);
-    try {
-        entry.worker.send({ type: "kill" });
-    } catch {}
-    try {
-        entry.worker.kill("SIGTERM");
-        escalateTerminalKill(entry.worker, terminalId);
-    } catch (err) {
-        logWarn(`[terminal] killTerminal: worker.kill() failed for terminalId=${terminalId}: ${err}`);
-    }
+    stopTerminalWorker(entry.worker, terminalId);
     return true;
 }
 
@@ -320,11 +332,7 @@ export function listTerminals(): string[] {
 /** Kill all running terminals (used on daemon shutdown). */
 export function killAllTerminals(): void {
     for (const [id, entry] of runningTerminals) {
-        try { entry.worker.send({ type: "kill" }); } catch {}
-        try {
-            entry.worker.kill("SIGTERM");
-            escalateTerminalKill(entry.worker, id);
-        } catch {}
+        stopTerminalWorker(entry.worker, id);
         runningTerminals.delete(id);
     }
 }

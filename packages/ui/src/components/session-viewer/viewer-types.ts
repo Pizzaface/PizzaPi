@@ -1,5 +1,5 @@
 import type { RelayMessage } from "@/components/session-viewer/types";
-import type { TodoItem, TokenUsage, QueuedMessage, ResumeSessionOption } from "@/lib/types";
+import type { TodoItem, TokenUsage, QueuedMessage, ResumeSessionOption, ForkMessageOption } from "@/lib/types";
 import type { SessionAnalysis } from "@/components/session-inspector/types";
 import type { TriggerCounts } from "@/hooks/useTriggerCount";
 import type { QuestionDisplayMode } from "@/lib/ask-user-questions";
@@ -7,10 +7,18 @@ import type { CommandResultData } from "@/components/session-viewer/rendering";
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import type { MetaGoalStatus } from "@pizzapi/protocol";
 
-export type { RelayMessage, TodoItem, TokenUsage, QueuedMessage, ResumeSessionOption };
+export type { RelayMessage, TodoItem, TokenUsage, QueuedMessage, ResumeSessionOption, ForkMessageOption };
 
 /** A command entry (from availableCommands prop or derived lists). */
-export type CmdEntry = { name: string; description?: string; source?: string };
+export type CmdEntry = {
+  name: string;
+  description?: string;
+  source?: string;
+  /** TUI-style argument hint, e.g. "[pr-number]" (from plugin frontmatter). */
+  argumentHint?: string;
+  /** Snapshot of the command's argument completions (TUI autocomplete parity). */
+  completions?: Array<{ value: string; label?: string; description?: string }>;
+};
 
 export interface SessionViewerProps {
   sessionId: string | null;
@@ -30,9 +38,15 @@ export interface SessionViewerProps {
   resumeSessions?: ResumeSessionOption[];
   resumeSessionsLoading?: boolean;
   onRequestResumeSessions?: () => boolean | void;
+  /** Prior user messages the conversation can be rewound (forked) to. */
+  forkMessages?: ForkMessageOption[];
+  forkMessagesLoading?: boolean;
+  onRequestForkMessages?: () => boolean | void;
   onSendInput?: (message: PromptInputMessage & { deliverAs?: "steer" | "followUp" } | string) => boolean | void | Promise<boolean | void>;
   onExec?: (payload: unknown) => boolean | void;
   onShowModelSelector?: () => void;
+  /** Opens the new-session wizard (renders a CTA in the empty state). */
+  onNewSession?: () => void;
   /** Whether the agent is currently processing a turn */
   agentActive?: boolean;
   /** Whether the session is currently being compacted */
@@ -90,6 +104,8 @@ export interface SessionViewerProps {
   triggerCount?: TriggerCounts;
   /** Extra buttons to render in the header bar (e.g. service panel toggles) */
   extraHeaderButtons?: React.ReactNode;
+  /** Extra items for the mobile "⋯" overflow menu (e.g. service panel toggles) */
+  extraOverflowItems?: React.ReactNode;
   /** Current agent todo list */
   todoList?: TodoItem[];
   /** Active /goal state for the session header indicator */
@@ -124,4 +140,8 @@ export interface SessionViewerProps {
   onMcpServerDisable?: (serverName: string) => void;
   /** Live session context & cache analysis data */
   analysis?: SessionAnalysis | null;
+  /** Called when the user click-and-holds a toolbar button to reposition it. */
+  onButtonDragStart?: (buttonId: import("@/hooks/useButtonPosition").ToolbarButtonId) => void;
+  /** Current slot of each toolbar button; header renders only buttons in the "top" slot. */
+  toolbarPositions?: Partial<Record<import("@/hooks/useButtonPosition").ToolbarButtonId, import("@/hooks/useButtonPosition").ButtonSlot>>;
 }

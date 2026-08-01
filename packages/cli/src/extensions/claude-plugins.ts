@@ -26,6 +26,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { createLogger } from "@pizzapi/tools";
+import { resolveShell } from "./hooks/index.js";
 
 const log = createLogger("claude-plugins");
 
@@ -38,11 +39,10 @@ interface HookExecResult {
 }
 
 /**
- * Execute a hook command via /bin/sh.
+ * Execute a hook command via the resolved POSIX shell.
  *
  * Platform note: Claude Code plugins assume a POSIX shell environment.
- * This adapter targets macOS and Linux only (matching pi's supported
- * platforms). Windows support would require a different shell strategy.
+ * On Windows this uses Git for Windows' bundled bash (see resolveShell).
  */
 async function execHookCommand(
     command: string,
@@ -52,10 +52,11 @@ async function execHookCommand(
 ): Promise<HookExecResult> {
     const resolved = resolvePluginRoot(command, pluginRoot);
 
+    const { shell, flag } = resolveShell();
     return new Promise((resolveP) => {
         const child = execFile(
-            "/bin/sh",
-            ["-c", resolved],
+            shell,
+            [flag, resolved],
             {
                 timeout: timeoutMs,
                 maxBuffer: 1024 * 256,
@@ -116,6 +117,33 @@ export function expandArguments(template: string, args: string | undefined): str
     return result;
 }
 
+// ── Native-compatible command routing ───────────────────────────────────────
+//
+// pi's own prompt-template loader (docs/prompt-templates.md) already
+// supports `$1`/`$@`/`$ARGUMENTS`/defaults/slicing and `argument-hint` —
+// the same argument syntax Claude Code plugin commands use. A command is
+// routed through pi's native loader instead of the bespoke
+// `pi.registerCommand()` adapter below when ALL of the following hold,
+// since none of these are things pi's loader can do:
+//   - top-level (no `prefix/name` nesting — pi names commands by bare
+//     filename only, so a nested command routed natively would lose its
+//     `pm/epic-start`-style name and collide with same-named siblings);
+//   - sourced from a `.md` file (pi's loader only reads `.md`, not `.toml`);
+//   - doesn't use PizzaPi's `$ARGUMENTS[N]` bracket-indexed extra syntax;
+//   - doesn't use inline shell `` !`cmd` `` expansion; and
+//   - doesn't reference `${CLAUDE_PLUGIN_ROOT}` (pi's loader reads the raw
+//     file verbatim — it has no notion of a plugin root to substitute).
+const INLINE_SHELL_RE = /!`[^`]+`/;
+
+export function isNativeCompatibleCommand(cmd: PluginCommand): boolean {
+    if (cmd.name.includes("/")) return false;
+    if (!cmd.filePath.toLowerCase().endsWith(".md")) return false;
+    if (cmd.content.includes("$ARGUMENTS[")) return false;
+    if (cmd.content.includes("${CLAUDE_PLUGIN_ROOT}")) return false;
+    if (INLINE_SHELL_RE.test(cmd.content)) return false;
+    return true;
+}
+
 // ── Command registration ──────────────────────────────────────────────────────
 
 function registerPluginCommand(
@@ -127,6 +155,12 @@ function registerPluginCommand(
 
     pi.registerCommand(cmd.name, {
         description: cmd.frontmatter.description ?? `[${plugin.name}] ${cmd.name}`,
+        // Not part of pi's RegisteredCommand type, but preserved by
+        // getRegisteredCommands() spread — surfaces the plugin's
+        // `argument-hint` frontmatter in the web UI command popover.
+        ...(cmd.frontmatter["argument-hint"]
+            ? { argumentHint: cmd.frontmatter["argument-hint"] }
+            : {}),
         handler: async (args, ctx) => {
             let prompt = expandArguments(templateContent, args);
 
@@ -136,8 +170,9 @@ function registerPluginCommand(
             for (const match of inlineMatches) {
                 const shellCmd = match[1];
                 try {
+                    const { shell, flag } = resolveShell();
                     const result = await new Promise<string>((res) => {
-                        execFile("/bin/sh", ["-c", shellCmd], {
+                        execFile(shell, [flag, shellCmd], {
                             timeout: 5000,
                             maxBuffer: 64 * 1024,
                             cwd: ctx.cwd,
@@ -346,6 +381,10 @@ function pluginSummary(p: DiscoveredPlugin): string {
 
 function registerPlugin(pi: ExtensionAPI, plugin: DiscoveredPlugin): void {
     for (const cmd of plugin.commands) {
+        // Native-compatible commands are routed through pi's own
+        // prompt-template loader instead (see getPluginPromptTemplatePaths()
+        // below) — registering both here and there would double-register.
+        if (isNativeCompatibleCommand(cmd)) continue;
         registerPluginCommand(pi, plugin, cmd);
     }
     registerPluginHooks(pi, plugin);
@@ -509,6 +548,29 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
         // picked up on the next session_start without re-registering ones
         // already loaded.
         const registeredLocalPaths = new Set<string>();
+        const localByRootPath = new Map(localOnly.map((p) => [p.rootPath, p]));
+
+        // Newly-trusted local plugins' native-compatible commands (see
+        // isNativeCompatibleCommand()) are only mounted here, via
+        // `resources_discover` — NOT through registerPlugin()/registerCommand()
+        // above (registerPlugin explicitly skips them, matching
+        // getPluginPromptTemplatePaths()'s startup-time list). pi fires
+        // `resources_discover` right after `session_start` handlers resolve
+        // (agent-session.js bindExtensions(): emit(session_start) THEN
+        // extendResourcesFromExtensions()), in the SAME bind cycle — so a
+        // plugin trusted via the trust prompt or a pre-trusted rescan just
+        // above becomes usable immediately, no process restart required.
+        pi.on("resources_discover", () => {
+            const promptPaths: string[] = [];
+            for (const rootPath of registeredLocalPaths) {
+                const plugin = localByRootPath.get(rootPath);
+                if (!plugin) continue;
+                for (const cmd of plugin.commands) {
+                    if (isNativeCompatibleCommand(cmd)) promptPaths.push(cmd.filePath);
+                }
+            }
+            return { promptPaths };
+        });
 
         pi.on("session_start", async (_event, ctx) => {
             // Notify about global plugins
@@ -682,6 +744,42 @@ export function getPluginSkillPaths(cwd: string): string[] {
     for (const plugin of [...globalPlugins, ...trustedLocal]) {
         if (plugin.skills.length > 0) {
             paths.push(join(plugin.rootPath, "skills"));
+        }
+    }
+    return paths;
+}
+
+/**
+ * Get individual `.md` file paths for every discovered plugin command that
+ * qualifies as native-compatible (see isNativeCompatibleCommand()) — these
+ * are fed into pi's own `additionalPromptTemplatePaths` instead of the
+ * bespoke `pi.registerCommand()` adapter. Includes global plugins and any
+ * project-local plugins that are already trusted, mirroring
+ * getPluginSkillPaths()/getPluginAgentPaths().
+ */
+export function getPluginPromptTemplatePaths(cwd: string): string[] {
+    const globalPlugins = discoverPlugins(cwd);
+    const globalNames = new Set(globalPlugins.map(p => p.name));
+
+    const localDirs = projectPluginDirs(cwd);
+    const localByName = new Map<string, DiscoveredPlugin>();
+    for (const dir of localDirs) {
+        for (const plugin of scanPluginsDir(dir)) {
+            if (globalNames.has(plugin.name)) continue;
+            const existing = localByName.get(plugin.name);
+            if (!existing) {
+                localByName.set(plugin.name, plugin);
+            } else if (!isPluginTrusted(existing.rootPath) && isPluginTrusted(plugin.rootPath)) {
+                localByName.set(plugin.name, plugin);
+            }
+        }
+    }
+    const trustedLocal = Array.from(localByName.values()).filter(p => isPluginTrusted(p.rootPath));
+
+    const paths: string[] = [];
+    for (const plugin of [...globalPlugins, ...trustedLocal]) {
+        for (const cmd of plugin.commands) {
+            if (isNativeCompatibleCommand(cmd)) paths.push(cmd.filePath);
         }
     }
     return paths;

@@ -28,6 +28,7 @@ import { emitSessionActive } from "./chunked-delivery.js";
 import { resetRelayRegistrationGate, signalRelayRegistered } from "./registration-gate.js";
 import { decideRegisteredParentState } from "../remote-registered-parent-state.js";
 import { waitForWorkerStartupComplete } from "../worker-startup-gate.js";
+import { setHiddenModelKeys } from "../../hidden-models.js";
 import { resolveInputDeliverAs } from "./deliver-as-default.js";
 import { sendSessionCompleteFollowUp } from "./session-complete-followup.js";
 
@@ -52,7 +53,7 @@ export interface ConnectionHandlers {
     /** Change the active model (called from exec and model_set handlers). */
     setModelFromWeb: (provider: string, modelId: string) => Promise<void>;
     /** Deliver a user message to the agent (called from input and session_trigger handlers). */
-    sendUserMessage: (message: unknown, options?: { deliverAs?: "followUp" | "steer"; expandPromptTemplates?: boolean }) => void;
+    sendUserMessage: (message: unknown, options?: { deliverAs?: "followUp" | "steer"; expandPromptTemplates?: boolean }) => Promise<void>;
 
     // ── Delink handlers (PR #176) ─────────────────────────────────────────
     /** Whether a delink_own_parent is pending (child did /new). */
@@ -218,15 +219,20 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         triggerBatchTimer = null;
         if (pendingTriggerBatch.length === 0) return;
         const batch = pendingTriggerBatch.splice(0);
-        // Prefer "followUp" delivery if any trigger requested it; otherwise "steer".
-        const deliverAs = batch.some((b) => b.deliverAs === "followUp") ? "followUp" as const : "steer" as const;
+        // If ANY trigger in the batch explicitly requested "steer", the batch
+        // interrupts: an explicit interrupt intent (e.g. a usage-limit
+        // session_error) must not be silently downgraded just because it was
+        // debounced alongside a "followUp" trigger like session_complete.
+        const deliverAs = batch.some((b) => b.deliverAs === "steer") ? "steer" as const : "followUp" as const;
         const rendered = renderTriggerBatch(batch.map((b) => b.trigger));
         void (async () => {
             try {
                 await waitForWorkerStartupComplete();
-                handlers.sendUserMessage(rendered, { deliverAs });
+                await handlers.sendUserMessage(rendered, { deliverAs });
             } catch (err) {
-                log.error(`pizzapi: failed to deliver trigger batch: ${err instanceof Error ? err.message : String(err)}`);
+                const message = err instanceof Error ? err.message : String(err);
+                log.error(`pizzapi: failed to deliver trigger batch: ${message}`);
+                rctx.forwardEvent({ type: "cli_error", message: `Failed to deliver trigger batch: ${message}`, source: "remote", ts: Date.now() });
             }
         })();
     };
@@ -361,9 +367,12 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         }
     });
 
-    sock.on("connected", () => {
+    sock.on("connected", (data?: { recoveryNonce?: unknown }) => {
         rctx.forwardEvent(rctx.buildCapabilitiesState());
-        emitSessionActive(rctx);
+        // Echo the server's recovery nonce so the relay can tell this
+        // recovery snapshot apart from real agent updates racing in.
+        const recoveryNonce = typeof data?.recoveryNonce === "string" ? data.recoveryNonce : undefined;
+        emitSessionActive(rctx, recoveryNonce);
     });
 
     sock.on("input", (data) => {
@@ -399,9 +408,11 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                 // started streaming by the time we resume here. See
                 // resolveInputDeliverAs for the rationale.
                 const effectiveDeliverAs = resolveInputDeliverAs(deliverAs, rctx.isAgentActive === true);
-                handlers.sendUserMessage(message, { expandPromptTemplates: true, ...(effectiveDeliverAs ? { deliverAs: effectiveDeliverAs } : {}) });
+                await handlers.sendUserMessage(message, { expandPromptTemplates: true, ...(effectiveDeliverAs ? { deliverAs: effectiveDeliverAs } : {}) });
             } catch (err) {
-                log.error(`pizzapi: failed to deliver remote input: ${err instanceof Error ? err.message : String(err)}`);
+                const errMessage = err instanceof Error ? err.message : String(err);
+                log.error(`pizzapi: failed to deliver remote input: ${errMessage}`);
+                rctx.forwardEvent({ type: "cli_error", message: `Failed to deliver remote input: ${errMessage}`, source: "remote", ts: Date.now() });
             }
         })();
     });
@@ -417,6 +428,10 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
 
     sock.on("model_set", (data) => {
         void handlers.setModelFromWeb(data.provider, data.modelId);
+    });
+
+    sock.on("hidden_models_update", (data) => {
+        setHiddenModelKeys(data?.hiddenModels);
     });
 
     sock.on("session_message", (data) => {

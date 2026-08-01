@@ -19,6 +19,16 @@ import type {
 
 export const GOAL_STATE_CUSTOM_TYPE = "goal_state";
 
+/**
+ * Custom entry type for a single evaluator API call's cost/tokens. Written
+ * as a delta (not cumulative) so the usage scanner can sum it directly —
+ * unlike `goal_state`, which persists a running total and would double-count
+ * if summed across entries. The evaluator call is a real, separate API
+ * request (not part of the normal turn), so without this the /goal LLM
+ * evaluator's spend is invisible to the Usage dashboard.
+ */
+export const GOAL_EVALUATOR_USAGE_CUSTOM_TYPE = "goal_evaluator_usage";
+
 /** In-memory goal state keyed by session id. */
 const goalsBySessionId = new Map<string, GoalState>();
 
@@ -146,6 +156,16 @@ export function recordEvaluation(
     }
     if (feedback.cost) state.costSpend += Math.max(0, feedback.cost);
     if (feedback.tokensUsed) state.tokenSpend += feedback.tokensUsed;
+
+    if (feedback.cost || feedback.tokensUsed) {
+        pi.appendEntry(GOAL_EVALUATOR_USAGE_CUSTOM_TYPE, {
+            provider: feedback.model?.provider ?? "unknown",
+            model: feedback.model?.id ?? "unknown",
+            tokens: feedback.tokensUsed ?? 0,
+            cost: feedback.cost ?? 0,
+            timestamp: feedback.timestamp,
+        });
+    }
 
     if (feedback.verdict === "met" && state.status === "active") {
         markStopped(state, "goal_met");

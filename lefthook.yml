@@ -1,21 +1,26 @@
+# NOTE: hook scripts must avoid double quotes. On Windows, lefthook's spawn
+# re-parses the script through MSVCRT command-line rules: embedded `"` chars
+# are stripped (so "$var" becomes bare $var) and double-quoted strings with
+# spaces split the script mid-line ("syntax error: unexpected end of file").
+# Single quotes pass through intact on both platforms — use those, and keep
+# test/[ operands single-word (e.g. grep -c counts, x-prefix comparisons).
 pre-commit:
   commands:
     no-direct-main:
       run: |
         branch=$(git rev-parse --abbrev-ref HEAD)
-        if [ "$branch" = "main" ]; then
-          echo "❌ Direct commits to main are not allowed."
-          echo "Create a feature branch and open a pull request instead:"
-          echo "  git checkout -b my-branch"
+        if [ x$branch = xmain ]; then
+          echo 'Direct commits to main are not allowed.'
+          echo 'Create a feature branch and open a pull request instead:'
+          echo '  git checkout -b my-branch'
           exit 1
         fi
     no-root-images:
       run: |
-        staged=$(git diff --cached --name-only --diff-filter=ACR)
-        bad=$(echo "$staged" | grep -E '^[^/]+\.(png|jpg|jpeg|gif|webp)$' || true)
-        if [ -n "$bad" ]; then
-          echo "❌ Image files are not allowed at the repository root:"
-          echo "$bad"
-          echo "Move them into the appropriate package (e.g. packages/ui/public/)."
+        count=$(git diff --cached --name-only --diff-filter=ACR | grep -cE '^[^/]+\.(png|jpg|jpeg|gif|webp)$' || true)
+        if [ x0 != x$count ]; then
+          echo 'Image files are not allowed at the repository root:'
+          git diff --cached --name-only --diff-filter=ACR | grep -E '^[^/]+\.(png|jpg|jpeg|gif|webp)$'
+          echo 'Move them into the appropriate package (e.g. packages/ui/public/).'
           exit 1
         fi

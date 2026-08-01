@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { AuthStorage, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { readStoredCredential, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import { defaultAgentDir, expandHome, loadConfig } from "../config.js";
@@ -198,20 +198,29 @@ export function createOllamaWebTools(deps: OllamaWebToolDeps = {}): { webSearch:
   return { webSearch, webFetch };
 }
 
-function createOllamaAuthStorage(): AuthStorage {
+function getOllamaAuthPath(): string {
   const config = loadConfig(process.cwd());
   const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
-  return AuthStorage.create(join(agentDir, "auth.json"));
+  return join(agentDir, "auth.json");
+}
+
+// ponytail: Ollama Cloud is api_key-only (no OAuth), so a stored-credential
+// read plus the OLLAMA_API_KEY env fallback covers it without spinning up a
+// full ModelRuntime just to read one key.
+function getOllamaApiKey(authPath: string): string | undefined {
+  const cred = readStoredCredential("ollama-cloud", authPath);
+  if (cred?.type === "api_key" && cred.key) return cred.key;
+  return process.env.OLLAMA_API_KEY;
 }
 
 export const ollamaWebToolsExtension: ExtensionFactory = (pi) => {
   if (!isOllamaWebSearchEnabled()) return;
-  const auth = createOllamaAuthStorage();
+  const authPath = getOllamaAuthPath();
   const tools = createOllamaWebTools({
     defaultMaxResults: envDefaultMaxResults(),
     maxContentChars: envMaxContentChars(),
     maxLinks: envMaxLinks(),
-    apiKeyProvider: () => auth.getApiKey("ollama-cloud"),
+    apiKeyProvider: () => getOllamaApiKey(authPath),
   });
   // Only skip registering web_search when the default provider is Anthropic
   // AND Anthropic server-side web search is enabled (PIZZAPI_WEB_SEARCH=1).

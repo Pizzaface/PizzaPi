@@ -275,6 +275,12 @@ export interface ServiceSigilDef {
    * e.g. ["pull-request", "mr"] for a "pr" sigil type.
    */
   aliases?: string[];
+  /**
+   * Interactive variants selected via the sigil id, e.g. the action sigil's
+   * confirm / choose / input. Surfaced by list_available_sigils so agents know
+   * which [[type:variant ...]] forms are valid.
+   */
+  variants?: Array<{ name: string; description: string }>;
 }
 
 /** Payload for the service_announce event. */

@@ -25,6 +25,7 @@ import { ErrorAlert } from "@/components/ui/error-alert";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { createLogger } from "@pizzapi/tools";
+import { showToast } from "@/lib/frontend-log";
 
 const log = createLogger("agents-ui");
 
@@ -220,6 +221,7 @@ function AgentEditorDialog({ runnerId, open, agent, onClose, onSaved }: AgentEdi
             }
 
             onSaved(Array.isArray(data?.agents) ? data.agents : []);
+            showToast(isEditing ? `Agent “${trimmedName}” saved` : `Agent “${trimmedName}” created`, "info");
             onClose();
         } catch (err) {
             setError(err instanceof Error ? err.message : String(err));
@@ -245,14 +247,14 @@ function AgentEditorDialog({ runnerId, open, agent, onClose, onSaved }: AgentEdi
                     {!isEditing && (
                         <div className="flex flex-col gap-1.5">
                             <Label htmlFor="agent-name" className="text-sm">
-                                Agent name
-                                <span className="ml-1 text-muted-foreground font-normal">(lowercase, hyphens)</span>
+                                Agent name{" "}
+                                <span className="text-muted-foreground font-normal">(lowercase, hyphens)</span>
                             </Label>
                             <Input
                                 id="agent-name"
                                 placeholder="my-agent"
                                 value={name}
-                                onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
+                                onChange={(e) => { setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "")); if (error) setError(null); }}
                                 className="font-mono text-sm"
                                 disabled={saving}
                             />
@@ -309,7 +311,7 @@ function AgentEditorDialog({ runnerId, open, agent, onClose, onSaved }: AgentEdi
                     <Button variant="ghost" onClick={onClose} disabled={saving}>
                         Cancel
                     </Button>
-                    <Button onClick={handleSave} disabled={saving || loadingContent}>
+                    <Button onClick={handleSave} disabled={saving || loadingContent || (!isEditing && !name.trim())}>
                         {saving ? (
                             <>
                                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -357,6 +359,7 @@ function DeleteAgentDialog({ runnerId, agent, onClose, onDeleted }: DeleteAgentD
                 return;
             }
             onDeleted(Array.isArray(data?.agents) ? data.agents : []);
+            showToast(`Agent “${agent.name}” deleted`, "info");
             onClose();
         } catch (err) {
             setError(err instanceof Error ? err.message : String(err));

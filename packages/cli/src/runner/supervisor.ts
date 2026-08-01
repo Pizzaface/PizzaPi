@@ -28,6 +28,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defaultStatePath } from "./runner-state.js";
 import { setLogComponent, logInfo, logError } from "./logger.js";
+import { forceKillTree, SHUTDOWN_MESSAGE } from "./process-kill.js";
 
 const RESTART_DELAY_BASE = 2_000;  // 2 s
 const RESTART_DELAY_MAX  = 60_000; // 60 s
@@ -68,12 +69,28 @@ export async function runSupervisor(_args: string[] = []): Promise<number> {
     let child: ChildProcess | null = null;
 
     // Forward SIGINT / SIGTERM to the child so it can release its lock file
-    // and close its WebSocket before we restart or exit.
+    // and close its WebSocket before we restart or exit. On Windows a signal
+    // would TerminateProcess the daemon before its cleanup runs, so the
+    // request goes over the IPC channel instead, with a delayed hard kill in
+    // case the daemon hangs.
     const forwardSignal = (sig: NodeJS.Signals) => {
         isShuttingDown = true;
-        if (child && !child.killed) {
-            try { child.kill(sig); } catch {}
+        if (!child || child.killed) return;
+        if (process.platform === "win32" && child.connected) {
+            const c = child;
+            try {
+                c.send(SHUTDOWN_MESSAGE);
+                const timer = setTimeout(() => {
+                    try { if (c.exitCode === null) forceKillTree(c); } catch {}
+                }, 10_000);
+                timer.unref?.();
+                c.once("exit", () => clearTimeout(timer));
+                return;
+            } catch {
+                // IPC channel already gone — fall through to kill
+            }
         }
+        try { child.kill(sig); } catch {}
     };
     process.on("SIGINT",  () => forwardSignal("SIGINT"));
     process.on("SIGTERM", () => forwardSignal("SIGTERM"));
@@ -99,7 +116,11 @@ export async function runSupervisor(_args: string[] = []): Promise<number> {
         const exitCode = await new Promise<number>((resolve) => {
             child = spawn(process.execPath, spawnArgs, {
                 env:   process.env as Record<string, string>,
-                stdio: ["ignore", "inherit", "inherit"],
+                // The IPC channel (Windows) carries graceful-shutdown requests,
+                // since signals there are an uncatchable TerminateProcess.
+                stdio: process.platform === "win32"
+                    ? ["ignore", "inherit", "inherit", "ipc"]
+                    : ["ignore", "inherit", "inherit"],
             });
 
             child.on("exit", (code, signal) => {

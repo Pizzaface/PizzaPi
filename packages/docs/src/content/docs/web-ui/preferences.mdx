@@ -5,9 +5,9 @@ description: Customize PizzaPi's appearance, notifications, and model visibility
 
 import { Aside } from "@astrojs/starlight/components";
 
-The **Preferences** panel centralizes your personal settings — appearance, notifications, and model visibility. Open it from the user menu (avatar icon) → **Preferences**, or from the ⚙️ icon in the toolbar on desktop.
+The **Preferences** panel centralizes your personal settings — appearance, notifications, and model visibility. Open it from the user menu (avatar icon) → **Preferences** on both desktop and mobile.
 
-All preferences are stored locally in your browser (`localStorage`) and persist across sessions. They are not tied to any specific runner.
+Most preferences are stored locally in your browser (`localStorage`) and persist across sessions. They are not tied to any specific runner. The exception is **model visibility**, which also syncs to your account on the server so hidden-model choices stay consistent across devices.
 
 ## Appearance
 
@@ -19,29 +19,36 @@ PizzaPi supports three theme modes:
 - **Light** — forces light mode regardless of system preference.
 - **Dark** — forces dark mode regardless of system preference.
 
-The theme toggle in the user dropdown menu provides a quick cycle through all three modes without opening Preferences.
+On desktop, the header toolbar has a dedicated theme button that cycles through all three modes without opening Preferences. On mobile, the same cycle lives inside the user dropdown menu.
 
 Theme switches use a smooth 200ms transition to avoid jarring color flashes. A blocking inline script prevents flash of unstyled content (FOUC) on page load — your theme is applied before React hydrates.
 
 ### Accent colors
 
-Choose from preset accent color palettes that override the primary and ring colors throughout the UI:
+Choose an accent color that overrides the primary and ring colors throughout the UI. The default is the built-in PizzaPi palette (no override). A **Reset color** button restores that default.
+
+The picker shows eight preset swatches:
 
 | Accent | Description |
 |--------|-------------|
-| **Default** | Blue — the standard PizzaPi palette |
+| **Blue** | Blue primary tones |
 | **Green** | Green primary tones |
 | **Orange** | Warm orange primary tones |
 | **Purple** | Purple primary tones |
+| **Red** | Red primary tones |
+| **Pink** | Pink primary tones |
+| **Teal** | Teal primary tones |
+| **Yellow** | Yellow primary tones |
 
-Accents compose with light/dark modes — every combination works. The selection is applied via a `data-accent` attribute on the root element.
+You can also pick any custom color with the native color picker. The selection is applied by setting `--primary` and `--ring` CSS variables on the `<html>` element; a `data-accent="custom"` marker is set for styling hooks. Accents compose with light/dark modes — every combination works.
 
 ### High contrast
 
 Enable **High contrast** mode for improved readability. This mode:
 
 - Increases all text/background contrast ratios to 7:1+ (WCAG AAA)
-- Uses thicker borders and larger focus indicators
+- Switches border colors to maximum-contrast black/white
+- Enlarges focus outlines (`3px` outline with `2px` offset)
 - Disables decorative animations when `prefers-reduced-motion` is active
 
 PizzaPi also respects the `prefers-contrast: more` media query — if your OS requests higher contrast, it's enabled automatically.
@@ -52,11 +59,11 @@ Adjust the chat message text size. Choose from **Small**, **Default**, or **Larg
 
 ### UI density
 
-Controls spacing and padding throughout the interface:
+Controls spacing and padding for message content and headers:
 
 - **Compact** — tighter padding on messages and headers, ideal for seeing more content
 - **Default** — standard spacing
-- **Comfortable** — more breathing room between elements
+- **Comfortable** — more breathing room between messages and headers
 
 ### Border radius
 

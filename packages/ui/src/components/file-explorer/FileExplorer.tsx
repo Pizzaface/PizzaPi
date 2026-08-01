@@ -137,7 +137,7 @@ const FileTreeRow = React.memo(function FileTreeRow({ node, isExpanded, isLoadin
 
 // ── Main File Explorer Component ──────────────────────────────────────────────
 
-export function FileExplorer({ runnerId, cwd, className, onClose, position = "left", onPositionChange, onDragStart }: FileExplorerProps) {
+export function FileExplorer({ runnerId, cwd, className, onClose, position = "left", onPositionChange, onDragStart, openFile }: FileExplorerProps) {
   const storageKey = `file-explorer:${runnerId}:${cwd}`;
   const git = useGitService(cwd);
   const canBlame = Boolean(git.available && git.status);
@@ -146,6 +146,12 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [viewingFile, setViewingFile] = React.useState<string | null>(null);
+
+  // Externally-requested file open (e.g. clicking a [[file:...]] sigil).
+  // Object identity re-triggers even when the same path is clicked twice.
+  React.useEffect(() => {
+    if (openFile?.path) setViewingFile(openFile.path);
+  }, [openFile]);
 
   // Lifted tree state
   const [expandedPaths, setExpandedPaths] = React.useState<Set<string>>(() => loadExpandedPaths(storageKey));
@@ -302,7 +308,7 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
 
   // File viewer routing
   if (viewingFile) {
-    const viewingFileName = viewingFile.split("/").pop() ?? viewingFile;
+    const viewingFileName = viewingFile.split(/[\\/]/).pop() ?? viewingFile;
     const isImage = isImageFile(viewingFileName);
     const isMarkdown = isMarkdownFile(viewingFileName);
 
@@ -401,7 +407,8 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
           </div>
         ) : error ? (
           <div className="p-4">
-            <p className="text-sm text-red-400 mb-3">{error}</p>
+            <p className="text-sm font-medium mb-1">Can't open this folder</p>
+            <p className="text-xs text-muted-foreground mb-3">{error}</p>
             <Button variant="outline" size="sm" onClick={() => void fetchFiles()}>
               <RefreshCw className="size-3 mr-1.5" /> Retry
             </Button>

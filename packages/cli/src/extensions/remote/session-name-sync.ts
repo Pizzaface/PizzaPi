@@ -8,7 +8,7 @@
  */
 
 import type { RelayContext } from "../remote-types.js";
-import { emitSessionActive } from "./chunked-delivery.js";
+import { emitSessionMetadataUpdate } from "./chunked-delivery.js";
 
 export interface SessionNameSyncState {
     sessionNameSyncTimer: ReturnType<typeof setInterval> | null;
@@ -40,7 +40,7 @@ export function createSessionNameSync(rctx: RelayContext, state: SessionNameSync
             if (currentSessionName === state.lastBroadcastSessionName) return;
 
             state.lastBroadcastSessionName = currentSessionName;
-            emitSessionActive(rctx);
+            emitSessionMetadataUpdate(rctx);
             rctx.forwardEvent(rctx.buildHeartbeat());
         }, 1_000);
     }

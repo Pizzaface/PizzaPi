@@ -379,14 +379,14 @@ function buildNtfyPublish(payload: PushPayload): Record<string, unknown> {
  * Never throws — failures are logged and stale registrations pruned. Caller
  * (sendPushToUser) treats this as best-effort alongside the Web Push fan-out.
  *
- * NOTE: native registrations have no per-subscription preference columns
- * (enabledEvents / suppressChildNotifications) today, so — unlike the Web Push
- * path — native currently delivers ALL events regardless of `isChildSession`.
- * The param is kept for signature parity; wire real suppression here once the
- * native registration schema grows those columns.
+ * Linked child sessions never send native push by default (docs: "only
+ * top-level sessions send push notifications") — native registrations have
+ * no per-subscription preference columns to offer a granular opt-out today,
+ * so this is unconditional. (Unlike the Web Push path below, there is no
+ * per-registration escape hatch yet — add one here if that's ever needed.)
  */
 async function sendNtfyToUser(userId: string, payload: PushPayload, isChildSession: boolean): Promise<void> {
-    void isChildSession; // see note above: native has no suppression columns yet
+    if (isChildSession) return;
     const cfg = ntfyConfig();
     if (!cfg.url) return;
     const registrations = await getNativeRegistrationsForUser(userId);
@@ -550,8 +550,13 @@ function isEventEnabled(enabledEvents: string, eventType: PushEventType): boolea
  * Send a push notification to all subscriptions for a given user.
  * Silently removes subscriptions that are no longer valid (410 Gone).
  *
- * @param isChildSession - When true, subscriptions with suppressChildNotifications
- *   enabled will not receive this notification.
+ * @param isChildSession - When true (linked child session), push is
+ *   suppressed unconditionally by default — docs: "only top-level sessions
+ *   send push notifications". The per-subscription `suppressChildNotifications`
+ *   column/API (PUT /api/push/child-notifications) predates this default and
+ *   only ever offered an opt-IN to further suppression, never a guaranteed
+ *   "receive despite being a child" opt-out, so there is nothing to preserve
+ *   here — it remains stored/toggleable but is now redundant.
  */
 export async function sendPushToUser(userId: string, payload: PushPayload, isChildSession = false): Promise<void> {
     const subscriptions = await getSubscriptionsForUser(userId);
@@ -571,7 +576,7 @@ export async function sendPushToUser(userId: string, payload: PushPayload, isChi
         ntfyPromise,
         ...subscriptions.map(async (sub) => {
             if (!isEventEnabled(sub.enabledEvents, payload.type)) return;
-            if (isChildSession && sub.suppressChildNotifications) return;
+            if (isChildSession) return;
 
             let keys: { p256dh: string; auth: string };
             try {

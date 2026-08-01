@@ -10,7 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Loader2, Check, X } from "lucide-react";
+import { Loader2, Check, X, Eye, EyeOff } from "lucide-react";
 import { validatePassword, type PasswordCheck } from "@pizzapi/protocol";
 import { authClient } from "@/lib/auth-client";
 
@@ -26,6 +26,8 @@ export function ChangePasswordDialog({ open, onOpenChange }: ChangePasswordDialo
     const [loading, setLoading] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
     const [success, setSuccess] = React.useState(false);
+    const [showPasswords, setShowPasswords] = React.useState(false);
+    const pwType = showPasswords ? "text" : "password";
 
     // Live validation for new password
     const passwordCheck: PasswordCheck | null =
@@ -102,10 +104,10 @@ export function ChangePasswordDialog({ open, onOpenChange }: ChangePasswordDialo
                     <form onSubmit={handleSubmit}>
                         <div className="flex flex-col gap-4 py-2">
                             <div className="flex flex-col gap-1.5">
-                                <Label htmlFor="cp-current">Current password</Label>
+                                <Label htmlFor="cp-current">Current password <span className="text-destructive" aria-hidden="true">*</span></Label>
                                 <Input
                                     id="cp-current"
-                                    type="password"
+                                    type={pwType}
                                     value={currentPassword}
                                     onChange={(e) => setCurrentPassword(e.target.value)}
                                     required
@@ -115,10 +117,10 @@ export function ChangePasswordDialog({ open, onOpenChange }: ChangePasswordDialo
                             </div>
 
                             <div className="flex flex-col gap-1.5">
-                                <Label htmlFor="cp-new">New password</Label>
+                                <Label htmlFor="cp-new">New password <span className="text-destructive" aria-hidden="true">*</span></Label>
                                 <Input
                                     id="cp-new"
-                                    type="password"
+                                    type={pwType}
                                     value={newPassword}
                                     onChange={(e) => setNewPassword(e.target.value)}
                                     required
@@ -140,21 +142,31 @@ export function ChangePasswordDialog({ open, onOpenChange }: ChangePasswordDialo
                             </div>
 
                             <div className="flex flex-col gap-1.5">
-                                <Label htmlFor="cp-confirm">Confirm new password</Label>
+                                <Label htmlFor="cp-confirm">Confirm new password <span className="text-destructive" aria-hidden="true">*</span></Label>
                                 <Input
                                     id="cp-confirm"
-                                    type="password"
+                                    type={pwType}
                                     value={confirmPassword}
                                     onChange={(e) => setConfirmPassword(e.target.value)}
                                     required
                                     autoComplete="new-password"
                                 />
                                 {confirmPassword.length > 0 && !passwordsMatch && (
-                                    <p className="text-xs text-destructive mt-0.5">Passwords do not match</p>
+                                    <p role="alert" className="text-xs text-destructive mt-0.5">Passwords do not match</p>
                                 )}
                             </div>
 
-                            {error && <p className="text-sm text-destructive">{error}</p>}
+                            <button
+                                type="button"
+                                onClick={() => setShowPasswords((v) => !v)}
+                                className="self-start inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                aria-pressed={showPasswords}
+                            >
+                                {showPasswords ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                                {showPasswords ? "Hide passwords" : "Show passwords"}
+                            </button>
+
+                            {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
                         </div>
 
                         <p className="text-xs text-muted-foreground mt-2">

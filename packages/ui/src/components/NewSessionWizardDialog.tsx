@@ -148,6 +148,13 @@ export function NewSessionWizardDialog({
     // ── Effects ──────────────────────────────────────────────────────────
 
     // Reset when dialog opens/closes
+    // Guards the single-runner auto-advance so it fires at most once per open —
+    // otherwise pressing Back on the folder step would immediately bounce
+    // forward again. `runnerStepSkipped` (state) hides the Back button, since
+    // there is no meaningful previous step to return to.
+    const autoAdvancedRef = React.useRef(false);
+    const [runnerStepSkipped, setRunnerStepSkipped] = React.useState(false);
+
     React.useEffect(() => {
         if (!open) return;
         setStep(isPreselected ? "folder" : "runner");
@@ -157,6 +164,8 @@ export function NewSessionWizardDialog({
         setDisconnectedMsg(null);
         setRecentFolders([]);
         setBrowsing(false);
+        autoAdvancedRef.current = false;
+        setRunnerStepSkipped(false);
     }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Fetch recent folders when entering Step 2
@@ -191,6 +200,21 @@ export function NewSessionWizardDialog({
             cancelled = true;
         };
     }, [open, step, selectedRunnerId]);
+
+    // Auto-advance past the runner picker when there is exactly one connected
+    // runner — selecting the only option is a wasted click. Back still returns
+    // to the picker (which shows the single runner) if the user wants it.
+    React.useEffect(() => {
+        if (!open || runnersLoading || step !== "runner" || isPreselected) return;
+        if (autoAdvancedRef.current) return;
+        const online = runners.filter((r) => r.isOnline);
+        if (online.length === 1) {
+            autoAdvancedRef.current = true;
+            setRunnerStepSkipped(true);
+            setSelectedRunnerId(online[0]!.runnerId);
+            setStep("folder");
+        }
+    }, [open, runnersLoading, step, isPreselected, runners]);
 
     // Watch for runner disconnect while wizard is open
     React.useEffect(() => {
@@ -289,7 +313,7 @@ export function NewSessionWizardDialog({
                         {step === "runner"
                             ? "Select a runner to start a session on."
                             : selectedRunner
-                                ? <>Starting session on <span className="font-medium text-foreground">{runnerLabel(selectedRunner)}</span>.</>
+                                ? <>Configure session on <span className="font-medium text-foreground">{runnerLabel(selectedRunner)}</span>.</>
                                 : "Choose a working directory."}
                     </DialogDescription>
                 </DialogHeader>
@@ -331,6 +355,7 @@ export function NewSessionWizardDialog({
                                             className={cn(
                                                 "flex flex-row items-center gap-3 rounded-lg border p-4 text-left transition-colors w-full",
                                                 "hover:bg-accent hover:border-accent-foreground/20",
+                                                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                                                 selectedRunnerId === r.runnerId
                                                     ? "border-primary bg-primary/5"
                                                     : "border-border bg-card",
@@ -394,7 +419,7 @@ export function NewSessionWizardDialog({
                                 </Button>
                             </div>
                             <p className="text-xs text-muted-foreground">
-                                This is the path on the runner machine.
+                                This is the path on the runner machine. Leave blank to use the runner's default directory.
                             </p>
                         </div>
 
@@ -520,7 +545,7 @@ export function NewSessionWizardDialog({
                 )}
 
                 <DialogFooter className="gap-2">
-                    {step === "folder" && !isPreselected && (
+                    {step === "folder" && !isPreselected && !runnerStepSkipped && (
                         <Button
                             variant="ghost"
                             size="sm"

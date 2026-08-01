@@ -14,10 +14,6 @@
 import { describe, test, expect } from "bun:test";
 import type { IncomingMessage } from "node:http";
 import { createTestServer } from "./server.js";
-
-// Skip in CI — createTestServer() uses module-level singletons that race
-// when Bun runs test files in parallel (single-threaded, shared process).
-const isCI = !!process.env.CI;
 import { createMockRunner } from "./mock-runner.js";
 import type { TestServer } from "./types.js";
 
@@ -66,7 +62,7 @@ async function cleanupServer(server: TestServer): Promise<void> {
 // 1. Basic connection and registration
 // ---------------------------------------------------------------------------
 
-(isCI ? describe.skip : describe)("createMockRunner — basic connection", () => {
+describe("createMockRunner — basic connection", () => {
     test("runner connects and registers without error", async () => {
         const server = await createTestServer();
         try {
@@ -114,7 +110,7 @@ async function cleanupServer(server: TestServer): Promise<void> {
 // 2. Runner appears in server's runner list (REST API)
 // ---------------------------------------------------------------------------
 
-(isCI ? describe.skip : describe)("createMockRunner — REST visibility", () => {
+describe("createMockRunner — REST visibility", () => {
     test("registered runner appears in GET /api/runners", async () => {
         const server = await createTestServer();
         try {
@@ -174,7 +170,7 @@ async function cleanupServer(server: TestServer): Promise<void> {
 // 3. emitSessionReady — session_ready propagates
 // ---------------------------------------------------------------------------
 
-(isCI ? describe.skip : describe)("createMockRunner — emitSessionReady", () => {
+describe("createMockRunner — emitSessionReady", () => {
     test("emitSessionReady sends session_ready to the server", async () => {
         const server = await createTestServer();
         try {
@@ -215,7 +211,7 @@ async function cleanupServer(server: TestServer): Promise<void> {
 // 4. Multiple runners on the same server
 // ---------------------------------------------------------------------------
 
-(isCI ? describe.skip : describe)("createMockRunner — multiple runners", () => {
+describe("createMockRunner — multiple runners", () => {
     test("two runners can register simultaneously", async () => {
         const server = await createTestServer();
         try {
@@ -271,7 +267,7 @@ async function cleanupServer(server: TestServer): Promise<void> {
 // 5. Clean disconnect — runner is removed after disconnect
 // ---------------------------------------------------------------------------
 
-(isCI ? describe.skip : describe)("createMockRunner — clean disconnect", () => {
+describe("createMockRunner — clean disconnect", () => {
     test("runner is removed from the list after disconnect", async () => {
         const server = await createTestServer();
         try {
@@ -322,7 +318,7 @@ async function cleanupServer(server: TestServer): Promise<void> {
 // 6. waitForEvent utility
 // ---------------------------------------------------------------------------
 
-(isCI ? describe.skip : describe)("createMockRunner — waitForEvent", () => {
+describe("createMockRunner — waitForEvent", () => {
     test("waitForEvent resolves when the server emits the named event", async () => {
         const server = await createTestServer();
         try {
@@ -372,7 +368,7 @@ async function cleanupServer(server: TestServer): Promise<void> {
 // 7. Emission helpers — emitSessionError, emitSessionEvent, emitSessionEnded
 // ---------------------------------------------------------------------------
 
-(isCI ? describe.skip : describe)("createMockRunner — emission helpers", () => {
+describe("createMockRunner — emission helpers", () => {
     test("emitSessionError sends session_error to the server", async () => {
         const server = await createTestServer();
         try {
@@ -474,7 +470,7 @@ async function cleanupServer(server: TestServer): Promise<void> {
 // 8. Auth failure — bad API key is rejected
 // ---------------------------------------------------------------------------
 
-(isCI ? describe.skip : describe)("createMockRunner — auth failure", () => {
+describe("createMockRunner — auth failure", () => {
     test("rejects with a bad API key", async () => {
         const server = await createTestServer();
         try {

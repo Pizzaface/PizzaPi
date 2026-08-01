@@ -7,6 +7,10 @@ import { Aside } from "@astrojs/starlight/components";
 
 PizzaPi sessions are powered by pi's session engine — a tree-structured conversation format that supports branching, forking, and automatic context compaction. This page covers how sessions work under the hood and the tools available for managing them.
 
+<Aside type="note">
+  Most of the slash commands below (`/tree`, `/fork`, `/resume`, `/compact`, etc.) run in pi's embedded TUI input loop. In the PizzaPi web UI, the equivalent actions are available as dedicated buttons and RPC commands — typing `/tree` in the web composer sends it as a user message rather than opening the navigator.
+</Aside>
+
 ---
 
 ## Session Basics
@@ -16,11 +20,11 @@ PizzaPi sessions are powered by pi's session engine — a tree-structured conver
 | Command | Description |
 |---------|-------------|
 | `/new` | Start a fresh session |
-| `/resume [query]` | Browse and resume a previous session — fuzzy-search by name, ID, or content |
+| `/resume` | Browse and resume a previous session — fuzzy-search by name, ID, or content in the picker |
 | `/name <name>` | Give the current session a display name |
 | `/session` | Show session info (path, tokens, cost) |
 
-Sessions auto-save as JSONL files under `~/.pi/agent/sessions/`, organized by working directory.
+Sessions auto-save as JSONL files under `~/.pizzapi/sessions/`, organized by working directory.
 
 ### Session Storage
 
@@ -59,14 +63,14 @@ When switching between branches, you'll be asked whether to **summarize** the br
 - **Summarize with custom prompt** — provide focus instructions for the summary
 
 <Aside type="tip">
-  Branch summaries are stored as separate entries in the session file. The full original messages are always preserved — summaries are additive, never destructive.
+  Branch summaries are stored as separate `branch_summary` entries in the session file, and compaction creates `compaction` entries. The full original messages are always preserved — summaries are additive, never destructive.
 </Aside>
 
 ---
 
 ## Forking with `/fork`
 
-While `/tree` branches within the same session file, `/fork` creates an **entirely new session** from any point in the current one.
+While `/tree` branches within the same session file, `/fork` creates an **entirely new session** from any previous user message in the current one.
 
 | Feature | `/tree` | `/fork` |
 |---------|---------|---------|
@@ -113,7 +117,7 @@ This is useful when you want to steer what the summary emphasizes before the con
 
 ### Compaction Settings
 
-Configure in `~/.pi/agent/settings.json` (global) or `.pi/settings.json` (project):
+Configure in `~/.pizzapi/settings.json` (global) or `.pizzapi/settings.json` (project):
 
 ```json
 {
@@ -161,7 +165,9 @@ Additional session-related settings:
     "enabled": true,
     "maxRetries": 3,
     "baseDelayMs": 2000,
-    "maxDelayMs": 60000
+    "provider": {
+      "maxRetryDelayMs": 60000
+    }
   }
 }
 ```
@@ -171,7 +177,9 @@ Additional session-related settings:
 | `retry.enabled` | `true` | Auto-retry on transient errors |
 | `retry.maxRetries` | `3` | Maximum retry attempts |
 | `retry.baseDelayMs` | `2000` | Base delay (exponential backoff: 2s, 4s, 8s) |
-| `retry.maxDelayMs` | `60000` | Max delay before failing (prevents multi-hour waits) |
+| `retry.provider.maxRetryDelayMs` | `60000` | Max delay before failing (prevents multi-hour waits) |
+
+`retry.maxDelayMs` is still accepted for backward compatibility and is migrated to `retry.provider.maxRetryDelayMs`.
 
 ### Custom Session Directory
 
@@ -181,7 +189,7 @@ Additional session-related settings:
 }
 ```
 
-Priority: `--session-dir` CLI flag → `sessionDir` in settings → default (`~/.pi/agent/sessions/`).
+Priority: `--session-dir` CLI flag → `PI_CODING_AGENT_SESSION_DIR` env var → `sessionDir` in settings → default (`~/.pizzapi/sessions/`).
 
 ---
 
@@ -189,7 +197,9 @@ Priority: `--session-dir` CLI flag → `sessionDir` in settings → default (`~/
 
 | Command | Description |
 |---------|-------------|
-| `/export [file]` | Export the current session to an HTML file |
+| `/export [file]` | Export the current session to an HTML file. If the path ends in `.jsonl`, the session is exported as JSONL instead. |
+| `/import <path.jsonl>` | Import a previously exported JSONL session |
+| `/clone` | Clone the current session into a new file |
 | `/share` | Upload as a private GitHub gist with a shareable HTML link |
 | `/copy` | Copy the last assistant message to your clipboard |
 
@@ -201,18 +211,17 @@ pi automatically loads **context files** at startup to give the agent project-sp
 
 | File | Location | Purpose |
 |------|----------|---------|
-| `AGENTS.md` or `CLAUDE.md` | `~/.pi/agent/`, parent directories, current directory | Project instructions, conventions, common commands |
-| `SYSTEM.md` | `.pi/SYSTEM.md` (project) or `~/.pi/agent/SYSTEM.md` (global) | Replace the default system prompt entirely |
+| `AGENTS.md` or `CLAUDE.md` | `~/.pizzapi/`, parent directories, current directory | Project instructions, conventions, common commands |
+| `SYSTEM.md` | `.pizzapi/SYSTEM.md` (project) or `~/.pizzapi/SYSTEM.md` (global) | Replace the default system prompt entirely |
 | `APPEND_SYSTEM.md` | Same locations | Append to the system prompt without replacing it |
 
 <Aside type="note">
-  PizzaPi uses `~/.pizzapi/` as its config directory, but pi's context file discovery still checks `~/.pi/agent/` and `.pi/` paths. Both conventions work — PizzaPi adds its own `AGENTS.md` at `~/.pizzapi/AGENTS.md` alongside the pi defaults.
+  PizzaPi uses `~/.pizzapi/` as its config directory. Global context files load from `~/.pizzapi/`; project context files load from `.pizzapi/` in the working directory. The old `~/.pi/agent/` and `.pi/` paths are no longer checked.
 </Aside>
 
 ### How Context Files Load
 
-1. Global `AGENTS.md` from `~/.pi/agent/` (or `~/.pizzapi/`)
-2. Walk up from the current working directory, loading each `AGENTS.md` or `CLAUDE.md` found
-3. Project-level `AGENTS.md` in the current directory
+1. Global `AGENTS.md` from `~/.pizzapi/`
+2. Walk up from the current working directory, loading each `AGENTS.md` or `CLAUDE.md` found (the current directory is included)
 
 All files are concatenated and included in the system prompt. This means you can have repository-wide instructions in the repo root and more specific instructions in subdirectories.

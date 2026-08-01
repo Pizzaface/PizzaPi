@@ -276,7 +276,13 @@ export function normalizeModelList(rawModels: unknown[]): ConfiguredModelInfo[] 
 /** Normalize a raw commands array from capabilities / session_active events. */
 export function normalizeCommandList(
   rawCommands: unknown[],
-): Array<{ name: string; description?: string; source?: string }> {
+): Array<{
+  name: string;
+  description?: string;
+  source?: string;
+  argumentHint?: string;
+  completions?: Array<{ value: string; label?: string; description?: string }>;
+}> {
   return rawCommands
     .filter(
       (c): c is Record<string, unknown> =>
@@ -288,6 +294,25 @@ export function normalizeCommandList(
       name: String(c.name),
       description: typeof c.description === "string" ? c.description : undefined,
       source: typeof c.source === "string" ? c.source : undefined,
+      argumentHint: typeof c.argumentHint === "string" ? c.argumentHint : undefined,
+      completions: normalizeCompletions(c.completions),
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function normalizeCompletions(
+  raw: unknown,
+): Array<{ value: string; label?: string; description?: string }> | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const items = raw
+    .filter(
+      (i): i is Record<string, unknown> =>
+        i !== null && typeof i === "object" && typeof (i as Record<string, unknown>).value === "string",
+    )
+    .map((i) => ({
+      value: String(i.value),
+      label: typeof i.label === "string" ? i.label : undefined,
+      description: typeof i.description === "string" ? i.description : undefined,
+    }));
+  return items.length ? items : undefined;
 }

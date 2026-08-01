@@ -24,7 +24,7 @@ All traffic flows through the relay server — the runner's local port is never 
 
 - **HTTP proxying** — `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `HEAD`, and `OPTIONS` requests are forwarded to the local service and streamed back.
 - **WebSocket proxying** — upgrade requests are tunneled through a second WebSocket channel, enabling live-reload, HMR, and real-time protocols.
-- **HTML/JS/CSS rewriting** — the proxy rewrites absolute paths in HTML responses, ES module imports, and CSS `url()` references so they route through the tunnel prefix. An injected interceptor script patches `fetch`, `XMLHttpRequest`, `EventSource`, `WebSocket`, `history.pushState`, and dynamic resource loading at runtime.
+- **HTML/JS/CSS rewriting** — the proxy rewrites absolute paths in HTML responses, ES module imports, and CSS `url()` references so they route through the tunnel prefix. An injected interceptor script patches `fetch`, `XMLHttpRequest`, `EventSource`, `WebSocket`, `history.pushState`, `history.replaceState`, `location.assign`, `location.replace`, `navigator.sendBeacon`, `window.open`, `Element.prototype.setAttribute`, and dynamic resource loading at runtime.
 
 ### URL Schemes
 
@@ -58,10 +58,12 @@ Expose a local port through the relay and get a public URL.
 {
   "port": 3000,
   "name": "dev-server",
-  "url": "http://127.0.0.1:3000",
+  "url": "/tunnel/3000",
   "publicUrl": "https://your-relay.example.com/api/tunnel/runner/abc123/3000/"
 }
 ```
+
+`url` is the internal relay path fragment for that port; `publicUrl` is the real externally accessible URL.
 
 **Example agent output:**
 
@@ -76,7 +78,7 @@ Tunnel created successfully.
 
 ### `list_tunnels`
 
-List all currently active tunnels for this runner.
+List all currently active tunnels for this session.
 
 **Parameters:** None.
 
@@ -101,6 +103,7 @@ List all currently active tunnels for this runner.
 ```
 1 active tunnel(s):
   :3000 (dev-server) → https://your-relay.example.com/api/tunnel/runner/abc123/3000/
+  :4173 (preview) [pinned] → https://your-relay.example.com/api/tunnel/runner/abc123/4173/
 ```
 
 ---
@@ -134,10 +137,10 @@ Close an active tunnel and stop proxying traffic to the local port.
 
 The relay enforces several security measures:
 
-- **Auth-only access** — every tunnel request requires a valid session cookie or API key.
+- **Auth-only access** — every tunnel request requires a valid session cookie or API key, or a short-lived signed path token minted by the runner/session owner for mobile/cross-origin iframe access.
 - **Owner verification** — the caller's user ID must match the session/runner owner.
-- **Header stripping** — `Cookie`, `Authorization`, and `X-API-Key` headers are never forwarded to the local service, preventing auth-leakage to tunneled apps.
-- **Query param sanitization** — `apiKey` query parameters are stripped before forwarding.
+- **Header stripping** — `Cookie`, `Authorization`, `X-API-Key`, and `Referer` headers are never forwarded to the local service, preventing auth-leakage to tunneled apps.
+- **Query param sanitization** — `apiKey` and `tunnelToken` query parameters are stripped before forwarding.
 - **Hop-by-hop header removal** — standard proxy headers (`Connection`, `Transfer-Encoding`, etc.) and `Accept-Encoding` are stripped so responses arrive uncompressed for rewriting.
 
 ---
@@ -173,7 +176,7 @@ Use `list_tunnels` to see all active tunnels at a glance.
 
 ### SSE and Streaming Endpoints
 
-Tunnels support Server-Sent Events (SSE) and chunked streaming responses. Non-HTML content types are streamed directly without buffering, so real-time data flows through with minimal latency.
+Tunnels support Server-Sent Events (SSE) and chunked streaming responses. Content types that need no rewriting — such as SSE, JSON, images, and binary — are streamed directly with minimal latency. Only HTML, JavaScript/TypeScript modules, and CSS are buffered (up to a generous limit) for rewriting.
 
 ---
 

@@ -185,6 +185,10 @@ export interface RelayContext {
     // Core references — the pi instance is typed loosely since the actual
     // PiInstance type is internal to the extension factory closure.
     readonly pi: any;
+    // Host-owned session-control handle (set by the worker before bindExtensions).
+    // Remote handlers drive new/switch/fork + queue ops through this instead of
+    // the patched ExtensionAPI surface. Null only if the host never set one.
+    readonly sessionHost: import("../runner/session-host.js").SessionHost | null;
     relay: RelayState | null;
     sioSocket: Socket<RelayServerToClientEvents, RelayClientToServerEvents> | null;
     latestCtx: ExtensionContext | null;
@@ -229,7 +233,13 @@ export interface RelayContext {
     buildHeartbeat(): any;
     buildCapabilitiesState(): any;
     getConfiguredModels(): RelayModelInfo[];
-    getAvailableCommands(): Array<{ name: string; description?: string; source?: string }>;
+    getAvailableCommands(): Array<{
+        name: string;
+        description?: string;
+        source?: string;
+        argumentHint?: string;
+        completions?: Array<{ value: string; label?: string; description?: string }>;
+    }>;
     getCurrentSessionName(): string | null;
     getCurrentThinkingLevel(): string | null;
 
@@ -239,7 +249,7 @@ export interface RelayContext {
     // Trigger helpers (for child session trigger pattern)
     emitTrigger(trigger: ConversationTrigger): void;
     emitTriggerWithAck(trigger: ConversationTrigger): Promise<{ ok: boolean; error?: string }>;
-    waitForTriggerResponse(triggerId: string, timeoutMs: number, signal?: AbortSignal): Promise<TriggerResponse>;
+    waitForTriggerResponse(triggerId: string, timeoutMs?: number, signal?: AbortSignal): Promise<TriggerResponse>;
 
     // Session name sync
     markSessionNameBroadcasted(): void;

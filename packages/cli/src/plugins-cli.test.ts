@@ -1,4 +1,5 @@
 import { describe, test, expect, afterAll } from "bun:test";
+import { resolve } from "path";
 import {
     getTrustedPlugins,
     isPluginTrusted,
@@ -44,7 +45,8 @@ describe("plugin trust config helpers", () => {
         const added = trustPlugin(p);
         expect(added).toBe(true);
         expect(isPluginTrusted(p)).toBe(true);
-        expect(getTrustedPlugins()).toContain(p);
+        // Stored form is the canonical (resolved) path.
+        expect(getTrustedPlugins()).toContain(resolve(p));
     });
 
     test("trustPlugin is idempotent", () => {
@@ -53,7 +55,7 @@ describe("plugin trust config helpers", () => {
         const added = trustPlugin(p);
         expect(added).toBe(false);
         // Should only appear once
-        expect(getTrustedPlugins().filter(x => x === p)).toHaveLength(1);
+        expect(getTrustedPlugins().filter(x => x === resolve(p))).toHaveLength(1);
     });
 
     test("isPluginTrusted handles trailing slashes", () => {
@@ -85,7 +87,7 @@ describe("plugin trust config helpers", () => {
         trustPlugin(p);
         // getTrustedPlugins reads from disk each time
         const list = getTrustedPlugins();
-        expect(list).toContain(p);
+        expect(list).toContain(resolve(p));
     });
 
     test("multiple plugins can be trusted independently", () => {

@@ -126,13 +126,23 @@ function formatTime(iso: string): string {
 function SessionsList({
     sessions,
     onOpenSession,
+    onNewSession,
 }: {
     sessions: LiveSession[];
     onOpenSession?: (sessionId: string) => void;
+    onNewSession?: () => void;
 }) {
     if (sessions.length === 0) {
         return (
-            <p className="text-center text-xs text-muted-foreground py-8">No sessions</p>
+            <div className="flex flex-col items-center gap-3 py-8">
+                <p className="text-center text-xs text-muted-foreground">No sessions on this runner yet</p>
+                {onNewSession && (
+                    <Button variant="outline" size="sm" onClick={onNewSession}>
+                        <Plus className="h-3.5 w-3.5 mr-1" />
+                        Start a session
+                    </Button>
+                )}
+            </div>
         );
     }
 
@@ -266,7 +276,11 @@ function TabBar({
     runner: RunnerInfo;
 }) {
     return (
-        <div className="overflow-x-auto -mx-4 sm:-mx-6 px-4 sm:px-6">
+        <div className="relative -mx-4 sm:-mx-6">
+            {/* Right-edge fade hints that the tab bar scrolls horizontally when
+                the tabs overflow (common on narrow/mobile viewports). */}
+            <div className="pointer-events-none absolute right-0 top-0 bottom-0 w-6 bg-gradient-to-l from-background to-transparent sm:hidden" aria-hidden="true" />
+            <div className="overflow-x-auto px-4 sm:px-6">
             <div className="flex gap-1 border-b border-border/40 min-w-max">
                 {TABS.map((tab) => {
                     const isActive = activeTab === tab.key;
@@ -293,6 +307,7 @@ function TabBar({
                         </button>
                     );
                 })}
+            </div>
             </div>
         </div>
     );
@@ -370,7 +385,7 @@ export function RunnerDetailPanel({
     let tabContent: React.ReactNode;
     switch (activeTab) {
         case "sessions":
-            tabContent = <SessionsList sessions={sessions} onOpenSession={onOpenSession} />;
+            tabContent = <SessionsList sessions={sessions} onOpenSession={onOpenSession} onNewSession={onNewSession} />;
             break;
         case "skills":
             tabContent = (

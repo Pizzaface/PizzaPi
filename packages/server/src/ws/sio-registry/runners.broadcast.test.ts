@@ -1,7 +1,5 @@
 import { afterAll, describe, it, expect, mock, beforeEach } from "bun:test";
 
-const isCI = !!process.env.CI;
-
 const store = new Map<string, string>();
 const setStore = new Map<string, Set<string>>();
 
@@ -150,7 +148,7 @@ const { registerRunner, removeRunner, updateRunnerSkills, updateRunnerAgents, up
 // ../sio-state/index.js mocks into this file, causing nondeterministic failures
 // in the broadcast-only assertions despite the underlying source tests passing
 // locally and under isolated execution.
-(isCI ? describe.skip : describe)("runners broadcast", () => {
+describe("runners broadcast", () => {
     beforeEach(async () => {
         store.clear();
         setStore.clear();

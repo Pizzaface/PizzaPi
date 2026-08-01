@@ -98,6 +98,8 @@ describe("pi-agent-core API compatibility", () => {
                 model,
                 tools: [],
             },
+            // Never actually invoked in these construction-only tests.
+            streamFn: () => { throw new Error("streamFn not implemented in test"); },
             getApiKey: async () => undefined,
         });
 
@@ -126,6 +128,8 @@ describe("pi-agent-core API compatibility", () => {
                 model,
                 tools: [],
             },
+            // Never actually invoked in these construction-only tests.
+            streamFn: () => { throw new Error("streamFn not implemented in test"); },
             getApiKey: async () => undefined,
         });
 

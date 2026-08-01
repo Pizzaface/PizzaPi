@@ -139,6 +139,46 @@ describe("evaluateVersionNegotiation", () => {
         expect(result.message).toBeNull();
     });
 
+    test("suppresses the deployed-update banner on the bundled mobile app", () => {
+        const result = evaluateVersionNegotiation(
+            {
+                version: {
+                    server: "0.1.32",
+                    socketProtocol: 1,
+                    buildTimestamp: "2024-06-02T10:00:00.000Z",
+                },
+            },
+            {
+                uiVersion: "0.1.32",
+                clientSocketProtocol: 1,
+                uiBuildTimestamp: "2024-06-01T10:00:00.000Z",
+                isMobileBundled: true,
+            },
+        );
+
+        expect(result.updateAvailable).toBe(false);
+        expect(result.message).toBeNull();
+    });
+
+    test("still reports a real semver update on the bundled mobile app", () => {
+        const result = evaluateVersionNegotiation(
+            {
+                version: {
+                    server: "0.2.0",
+                    socketProtocol: 1,
+                },
+            },
+            {
+                uiVersion: "0.1.32",
+                clientSocketProtocol: 1,
+                isMobileBundled: true,
+            },
+        );
+
+        expect(result.updateAvailable).toBe(true);
+        expect(result.message).toContain("newer than this UI");
+    });
+
     test("exposes serverBuildTimestamp from payload", () => {
         const ts = "2024-06-02T10:00:00.000Z";
         const result = evaluateVersionNegotiation(

@@ -1,8 +1,13 @@
 /**
- * Built-in Time service — timer triggers and adaptive time sigils.
+ * Built-in Time service — scheduled follow-ups and adaptive time sigils.
+ *
+ * The trigger types let an agent schedule a follow-up and end its turn instead
+ * of blocking on something like `sleep`. Fires are delivered only to the
+ * session that owns the subscription, and one-shot subscriptions
+ * (time:timer_fired, time:at) are automatically removed after delivery.
  *
  * Triggers:
- *   time:timer_fired  — one-shot delay timer
+ *   time:timer_fired  — one-shot delay timer ("check back in 10m")
  *   time:at            — fire at a specific absolute time
  *   time:cron          — periodic on a cron schedule
  *
@@ -30,16 +35,12 @@ import {
     nextCronTime,
 } from "./time-utils.js";
 import { logInfo, logWarn, logError } from "../logger.js";
+import { normalizeLoopbackHost } from "../../relay-url.js";
+
+/** Largest delay setTimeout honors; anything above overflows and fires immediately. */
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
 // ── Relay helpers ────────────────────────────────────────────────────────────
-
-function readRunnerId(): string | null {
-    try {
-        const home = process.env.HOME || homedir();
-        const raw = JSON.parse(readFileSync(join(home, ".pizzapi", "runner.json"), "utf-8"));
-        return typeof raw?.runnerId === "string" ? raw.runnerId : null;
-    } catch { return null; }
-}
 
 function resolveRelayUrl(): string {
     const home = process.env.HOME || homedir();
@@ -50,7 +51,7 @@ function resolveRelayUrl(): string {
             if (typeof cfg?.relayUrl === "string" && cfg.relayUrl !== "off") raw = cfg.relayUrl.trim();
         } catch { /* ignore */ }
     }
-    raw = raw || "http://localhost:7492";
+    raw = normalizeLoopbackHost(raw || "http://localhost:7492");
     if (raw.startsWith("ws://")) return raw.replace(/^ws:/, "http:").replace(/\/$/, "");
     if (raw.startsWith("wss://")) return raw.replace(/^wss:/, "https:").replace(/\/$/, "");
     return raw.replace(/\/$/, "");
@@ -98,8 +99,8 @@ interface CronEntry {
 export const TIME_TRIGGER_DEFS: ServiceTriggerDef[] = [
     {
         type: "time:timer_fired",
-        label: "Timer Fired",
-        description: "One-shot delay timer. Subscribe with a duration (e.g. \"10m\", \"1h30m\", \"30s\") and receive a trigger when it elapses.",
+        label: "Scheduled Follow-up",
+        description: "Schedule a follow-up instead of blocking with `sleep`. Subscribe with a duration (e.g. \"10m\", \"1h30m\", \"30s\") and a `message` describing what to do, then end your turn — the trigger wakes the session when the time elapses. Fires once and the subscription is removed automatically.",
         schema: {
             type: "object",
             properties: {
@@ -107,6 +108,7 @@ export const TIME_TRIGGER_DEFS: ServiceTriggerDef[] = [
                 durationMs: { type: "number", description: "Duration in milliseconds" },
                 firedAt: { type: "string", description: "ISO timestamp when the timer fired" },
                 label: { type: "string", description: "Optional label" },
+                message: { type: "string", description: "The follow-up note provided at subscribe time" },
             },
         },
         params: [
@@ -116,6 +118,13 @@ export const TIME_TRIGGER_DEFS: ServiceTriggerDef[] = [
                 type: "string",
                 description: "How long to wait (e.g. \"10m\", \"1h30m\", \"30s\")",
                 required: true,
+            },
+            {
+                name: "message",
+                label: "Message",
+                type: "string",
+                description: "Note to your future self — what to do when this fires (e.g. \"Check if the build finished and report results\")",
+                required: false,
             },
             {
                 name: "label",
@@ -128,14 +137,15 @@ export const TIME_TRIGGER_DEFS: ServiceTriggerDef[] = [
     },
     {
         type: "time:at",
-        label: "Fire At Time",
-        description: "Fire a trigger at a specific absolute time. Supports ISO 8601 (\"2026-03-30T08:00:00Z\") and HH:MMUTC (\"14:30UTC\").",
+        label: "Follow-up At Time",
+        description: "Schedule a follow-up at a specific absolute time instead of waiting/polling. Supports ISO 8601 (\"2026-03-30T08:00:00Z\") and HH:MMUTC (\"14:30UTC\"). Subscribe with a `message`, end your turn, and the trigger wakes the session at the target time. Fires once and the subscription is removed automatically.",
         schema: {
             type: "object",
             properties: {
                 at: { type: "string", description: "The target time (ISO 8601)" },
                 firedAt: { type: "string", description: "ISO timestamp when the trigger fired" },
                 label: { type: "string", description: "Optional label" },
+                message: { type: "string", description: "The follow-up note provided at subscribe time" },
             },
         },
         params: [
@@ -145,6 +155,13 @@ export const TIME_TRIGGER_DEFS: ServiceTriggerDef[] = [
                 type: "string",
                 description: "When to fire (ISO 8601 or HH:MMUTC)",
                 required: true,
+            },
+            {
+                name: "message",
+                label: "Message",
+                type: "string",
+                description: "Note to your future self — what to do when this fires",
+                required: false,
             },
             {
                 name: "label",
@@ -158,13 +175,14 @@ export const TIME_TRIGGER_DEFS: ServiceTriggerDef[] = [
     {
         type: "time:cron",
         label: "Cron Schedule",
-        description: "Periodic trigger on a cron schedule. Standard 5-field format: minute hour day-of-month month day-of-week.",
+        description: "Recurring follow-up on a cron schedule. Standard 5-field format: minute hour day-of-month month day-of-week. Delivered only to your session; unsubscribe when you no longer need it.",
         schema: {
             type: "object",
             properties: {
                 cron: { type: "string", description: "The cron expression" },
                 firedAt: { type: "string", description: "ISO timestamp when the trigger fired" },
                 label: { type: "string", description: "Optional label" },
+                message: { type: "string", description: "The follow-up note provided at subscribe time" },
                 iteration: { type: "number", description: "How many times this cron has fired" },
             },
         },
@@ -175,6 +193,13 @@ export const TIME_TRIGGER_DEFS: ServiceTriggerDef[] = [
                 type: "string",
                 description: "Standard 5-field cron (e.g. \"*/30 * * * *\" for every 30 minutes)",
                 required: true,
+            },
+            {
+                name: "message",
+                label: "Message",
+                type: "string",
+                description: "Note to your future self — what to do on each fire",
+                required: false,
             },
             {
                 name: "label",
@@ -463,19 +488,21 @@ export class TimeService implements ServiceHandler {
         }
 
         const label = typeof params?.label === "string" ? params.label : undefined;
+        const message = typeof params?.message === "string" ? params.message : undefined;
         const fireAt = Date.now() + durationMs;
 
         logInfo(`[time] starting timer for session ${sessionId}: ${durationStr} (${formatDuration(durationMs)})${label ? ` [${label}]` : ""}`);
 
-        const handle = setTimeout(() => {
+        const handle = this.#setTimeoutUntil(key, fireAt, () => {
             this.#timers.delete(key);
-            void this.#broadcastTrigger("time:timer_fired", {
+            void this.#fireOneShot(sessionId, subscriptionId, "time:timer_fired", {
                 duration: durationStr,
                 durationMs,
                 firedAt: new Date().toISOString(),
                 label,
-            }, label ? `Timer "${label}" fired after ${formatDuration(durationMs)}` : `Timer fired after ${formatDuration(durationMs)}`);
-        }, durationMs);
+                message,
+            }, message ?? (label ? `Timer "${label}" fired after ${formatDuration(durationMs)}` : `Timer fired after ${formatDuration(durationMs)}`));
+        });
 
         this.#timers.set(key, {
             subscriptionId,
@@ -485,6 +512,22 @@ export class TimeService implements ServiceHandler {
             triggerType: "time:timer_fired",
             label,
         });
+    }
+
+    /**
+     * setTimeout against an absolute deadline. Delays beyond 2^31-1 ms overflow
+     * setTimeout and fire immediately, so longer waits are chained in max-size
+     * hops; each hop refreshes the handle stored in #timers under `key` so
+     * clearTimeout on unsubscribe still cancels the live hop.
+     */
+    #setTimeoutUntil(key: string, fireAt: number, cb: () => void): ReturnType<typeof setTimeout> {
+        const remaining = fireAt - Date.now();
+        if (remaining <= MAX_TIMEOUT_MS) return setTimeout(cb, Math.max(0, remaining));
+        return setTimeout(() => {
+            const entry = this.#timers.get(key);
+            if (!entry) return; // unsubscribed while waiting
+            entry.handle = this.#setTimeoutUntil(key, fireAt, cb);
+        }, MAX_TIMEOUT_MS);
     }
 
     #handleAtSubscription(subscriptionId: string, sessionId: string, params: any, action: string): void {
@@ -510,30 +553,33 @@ export class TimeService implements ServiceHandler {
             return;
         }
 
+        const label = typeof params?.label === "string" ? params.label : undefined;
+        const message = typeof params?.message === "string" ? params.message : undefined;
+
         const delayMs = targetMs - Date.now();
         if (delayMs <= 0) {
             // Already past — fire immediately
             logInfo(`[time] at target "${atStr}" already passed, firing immediately for session ${sessionId}`);
-            void this.#broadcastTrigger("time:at", {
-                at: new Date(targetMs).toISOString(),
-                firedAt: new Date().toISOString(),
-                label: typeof params?.label === "string" ? params.label : undefined,
-            }, `Scheduled trigger fired (target: ${atStr})`);
-            return;
-        }
-
-        const label = typeof params?.label === "string" ? params.label : undefined;
-
-        logInfo(`[time] scheduling at-timer for session ${sessionId}: ${atStr} (in ${formatDuration(delayMs)})${label ? ` [${label}]` : ""}`);
-
-        const handle = setTimeout(() => {
-            this.#timers.delete(key);
-            void this.#broadcastTrigger("time:at", {
+            void this.#fireOneShot(sessionId, subscriptionId, "time:at", {
                 at: new Date(targetMs).toISOString(),
                 firedAt: new Date().toISOString(),
                 label,
-            }, label ? `Scheduled "${label}" fired` : `Scheduled trigger fired (target: ${atStr})`);
-        }, delayMs);
+                message,
+            }, message ?? `Scheduled trigger fired (target: ${atStr})`);
+            return;
+        }
+
+        logInfo(`[time] scheduling at-timer for session ${sessionId}: ${atStr} (in ${formatDuration(delayMs)})${label ? ` [${label}]` : ""}`);
+
+        const handle = this.#setTimeoutUntil(key, targetMs, () => {
+            this.#timers.delete(key);
+            void this.#fireOneShot(sessionId, subscriptionId, "time:at", {
+                at: new Date(targetMs).toISOString(),
+                firedAt: new Date().toISOString(),
+                label,
+                message,
+            }, message ?? (label ? `Scheduled "${label}" fired` : `Scheduled trigger fired (target: ${atStr})`));
+        });
 
         this.#timers.set(key, {
             subscriptionId,
@@ -570,6 +616,7 @@ export class TimeService implements ServiceHandler {
         }
 
         const label = typeof params?.label === "string" ? params.label : undefined;
+        const message = typeof params?.message === "string" ? params.message : undefined;
         const nextFire = nextCronTime(cron);
         if (!nextFire) {
             logWarn(`[time] cron "${cronStr}" has no next fire time`);
@@ -590,12 +637,13 @@ export class TimeService implements ServiceHandler {
                 const iteration = (this.#cronIterations.get(key) ?? 0) + 1;
                 this.#cronIterations.set(key, iteration);
 
-                void this.#broadcastTrigger("time:cron", {
+                void this.#deliverToSession(sessionId, "time:cron", {
                     cron: cronStr,
                     firedAt: new Date().toISOString(),
                     label,
+                    message,
                     iteration,
-                }, label ? `Cron "${label}" fired (#${iteration})` : `Cron "${cronStr}" fired (#${iteration})`);
+                }, message ?? (label ? `Cron "${label}" fired (#${iteration})` : `Cron "${cronStr}" fired (#${iteration})`));
 
                 // Schedule next
                 const nextTime = nextCronTime(cron, now);
@@ -620,22 +668,42 @@ export class TimeService implements ServiceHandler {
         });
     }
 
-    // ── Trigger broadcasting ─────────────────────────────────────────────
+    // ── Trigger delivery ─────────────────────────────────────────────
 
-    async #broadcastTrigger(
+    /**
+     * Fire a one-shot follow-up: deliver to the owning session, then remove
+     * the subscription so it doesn't re-arm and re-fire on runner restart.
+     * If delivery fails (e.g. session offline), the subscription is kept so
+     * the next reconcile retries it.
+     */
+    async #fireOneShot(
+        sessionId: string,
+        subscriptionId: string,
         type: string,
         payload: Record<string, unknown>,
         summary?: string,
     ): Promise<void> {
-        const runnerId = readRunnerId();
+        const delivered = await this.#deliverToSession(sessionId, type, payload, summary);
+        if (delivered) {
+            await this.#removeSubscription(sessionId, type, subscriptionId);
+        }
+    }
+
+    /** Deliver a trigger to the session that owns the subscription (not a broadcast). */
+    async #deliverToSession(
+        sessionId: string,
+        type: string,
+        payload: Record<string, unknown>,
+        summary?: string,
+    ): Promise<boolean> {
         const apiKey = getApiKey();
-        if (!runnerId || !apiKey) {
-            logWarn(`[time] cannot broadcast trigger — missing runnerId or apiKey`);
-            return;
+        if (!apiKey) {
+            logWarn(`[time] cannot deliver trigger — missing apiKey`);
+            return false;
         }
 
         try {
-            const res = await fetch(`${resolveRelayUrl()}/api/runners/${runnerId}/trigger-broadcast`, {
+            const res = await fetch(`${resolveRelayUrl()}/api/sessions/${encodeURIComponent(sessionId)}/trigger`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json", "x-api-key": apiKey },
                 body: JSON.stringify({
@@ -648,12 +716,36 @@ export class TimeService implements ServiceHandler {
             });
 
             if (!res.ok) {
-                logWarn(`[time] trigger broadcast failed: ${res.status} ${res.statusText}`);
-            } else {
-                logInfo(`[time] broadcast ${type}: ${summary ?? "(no summary)"}`);
+                logWarn(`[time] trigger delivery to ${sessionId} failed: ${res.status} ${res.statusText}`);
+                return false;
+            }
+            logInfo(`[time] delivered ${type} to ${sessionId}: ${summary ?? "(no summary)"}`);
+            return true;
+        } catch (err) {
+            logError(`[time] trigger delivery error: ${err}`);
+            return false;
+        }
+    }
+
+    /** Remove a fired one-shot subscription server-side. */
+    async #removeSubscription(sessionId: string, triggerType: string, subscriptionId: string): Promise<void> {
+        // Legacy entries without a real subscriptionId use a fabricated
+        // "<sessionId>\0<triggerType>" key — skip targeted deletion for those.
+        if (subscriptionId.includes("\0")) return;
+
+        const apiKey = getApiKey();
+        if (!apiKey) return;
+
+        try {
+            const res = await fetch(
+                `${resolveRelayUrl()}/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions/${encodeURIComponent(triggerType)}?subscriptionId=${encodeURIComponent(subscriptionId)}`,
+                { method: "DELETE", headers: { "x-api-key": apiKey } },
+            );
+            if (!res.ok) {
+                logWarn(`[time] failed to remove fired subscription ${subscriptionId}: ${res.status} ${res.statusText}`);
             }
         } catch (err) {
-            logError(`[time] trigger broadcast error: ${err}`);
+            logWarn(`[time] error removing fired subscription ${subscriptionId}: ${err}`);
         }
     }
 }

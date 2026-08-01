@@ -17,6 +17,8 @@ import type {
     RunnerPlugin,
     RunnerHook,
     ServicePanelInfo,
+    ServiceTriggerDef,
+    ServiceSigilDef,
 } from "@pizzapi/protocol";
 
 import type { TestServer } from "./types.js";
@@ -102,6 +104,10 @@ export interface MockRunnerOptions {
     serviceIds?: string[];
     /** Service panels to announce (dynamic iframe panels). */
     panels?: ServicePanelInfo[];
+    /** Trigger types declared by announced services (e.g. package-origin manifests). */
+    triggerDefs?: ServiceTriggerDef[];
+    /** Sigil types declared by announced services (e.g. package-origin manifests). */
+    sigilDefs?: ServiceSigilDef[];
 }
 
 export interface MockRunner {
@@ -131,7 +137,14 @@ export interface MockRunner {
     onFileRequest(handler: (data: unknown) => unknown): void;
 
     // Services
-    announceServices(serviceIds: string[], panels?: ServicePanelInfo[]): void;
+    announceServices(
+        serviceIds: string[],
+        panels?: ServicePanelInfo[],
+        triggerDefs?: ServiceTriggerDef[],
+        sigilDefs?: ServiceSigilDef[],
+    ): void;
+    /** Disabled service IDs currently applied (mutated by reconfigure_services, mirrors real daemon). */
+    readonly disabledServiceIds: ReadonlySet<string>;
 
     // Utilities
     waitForEvent(eventName: string, timeout?: number): Promise<unknown>;
@@ -194,8 +207,11 @@ function defaultGitStatus(): MockGitStatus {
     return {
         branch: "feat/test-harness",
         changes: [
-            { status: "M", path: "src/index.ts" },
-            { status: "M", path: "package.json" },
+            // Porcelain v1 XY codes — the UI partitions staged/unstaged on the
+            // 2-char status, so single-char codes render an empty Changes tab.
+            // "M " is a staged modification so the commit form is usable.
+            { status: "M ", path: "src/index.ts" },
+            { status: "??", path: "notes.md" },
         ],
         ahead: 1,
         behind: 0,
@@ -267,12 +283,38 @@ export async function createMockRunner(
     let pluginsList: RunnerPlugin[] = opts?.plugins ?? defaultPlugins();
     const mockFiles: Map<string, MockFileEntry[]> = opts?.mockFiles ?? defaultMockFiles();
     let gitStatus: MockGitStatus = opts?.mockGitStatus ?? defaultGitStatus();
+    // Mutable HEAD state so the mock can simulate commits moving HEAD.
+    let headShortHash = "abc1234";
+    let headSubject = "Add harness scaffolding";
     let sandboxConfig: MockSandboxConfig = defaultSandboxConfig();
     sandboxConfig.platform = opts?.platform ?? "linux";
     let usageData: MockUsageData = defaultUsageData();
     let restartRequested = false;
     let shutdownRequested = false;
     let isShuttingDown = false;
+    // Mutable service_announce state — mirrors the real daemon's panelEntries/
+    // disabledServices so announceServices() and reconfigure_services can both
+    // re-emit a consistent full announce.
+    let currentServiceIds: string[] = opts?.serviceIds ?? [];
+    let currentPanels: ServicePanelInfo[] = opts?.panels ?? [];
+    let currentTriggerDefs: ServiceTriggerDef[] = opts?.triggerDefs ?? [];
+    let currentSigilDefs: ServiceSigilDef[] = opts?.sigilDefs ?? [];
+    const disabledServiceIdsSet = new Set<string>();
+    // The daemon never unloads these runtime-pinned built-ins on reconfigure.
+    const nonDisableableServiceIds = new Set(["terminal", "file-explorer", "git", "time", "tunnel"]);
+
+    const emitServiceAnnounce = () => {
+        const activeServiceIds = new Set(currentServiceIds.filter(
+            (id) => !disabledServiceIdsSet.has(id) || nonDisableableServiceIds.has(id),
+        ));
+        (socket as any).emit("service_announce", {
+            serviceIds: Array.from(activeServiceIds),
+            ...(disabledServiceIdsSet.size > 0 ? { disabledServiceIds: Array.from(disabledServiceIdsSet) } : {}),
+            ...(currentPanels.length > 0 ? { panels: currentPanels.filter((panel) => activeServiceIds.has(panel.serviceId)) } : {}),
+            ...(currentTriggerDefs.length > 0 ? { triggerDefs: currentTriggerDefs.filter((trigger) => activeServiceIds.has(trigger.type.split(":")[0])) } : {}),
+            ...(currentSigilDefs.length > 0 ? { sigilDefs: currentSigilDefs.filter((sigil) => activeServiceIds.has(sigil.serviceId ?? sigil.type.split(":")[0])) } : {}),
+        });
+    };
 
     // Populate initial skills
     const initialSkills = opts?.skills ?? defaultSkills();
@@ -375,10 +417,12 @@ export async function createMockRunner(
                     }
                 }
                 // Announce services after registration (like real daemon)
-                if (opts?.serviceIds && opts.serviceIds.length > 0) {
+                if (currentServiceIds.length > 0) {
                     (socket as any).emit("service_announce", {
-                        serviceIds: opts.serviceIds,
-                        ...(opts.panels && opts.panels.length > 0 ? { panels: opts.panels } : {}),
+                        serviceIds: currentServiceIds,
+                        ...(currentPanels.length > 0 ? { panels: currentPanels } : {}),
+                        ...(currentTriggerDefs.length > 0 ? { triggerDefs: currentTriggerDefs } : {}),
+                        ...(currentSigilDefs.length > 0 ? { sigilDefs: currentSigilDefs } : {}),
                     });
                 }
                 resolve();
@@ -749,6 +793,17 @@ export async function createMockRunner(
         }
     });
 
+    // --- Services (reconfigure_services → re-announce, mirrors daemon.ts) ---
+
+    socket.on("reconfigure_services", (data: any) => {
+        if (isShuttingDown) return;
+        const incoming = Array.isArray(data?.disabledServiceIds) ? data.disabledServiceIds as string[] : [];
+        disabledServiceIdsSet.clear();
+        for (const id of incoming) disabledServiceIdsSet.add(id);
+        // Real daemon re-emits only active service metadata after reconfigure.
+        emitServiceAnnounce();
+    });
+
     // --- Plugins ---
 
     socket.on("list_plugins", (data: any) => {
@@ -894,7 +949,7 @@ export async function createMockRunner(
                     },
                     currentBranch: gitStatus.branch,
                     branches: [
-                        { name: gitStatus.branch, shortHash: "abc1234", lastCommit: "2 hours ago", isCurrent: true, isRemote: false },
+                        { name: gitStatus.branch, shortHash: headShortHash, lastCommit: "2 hours ago", isCurrent: true, isRemote: false },
                         { name: "main", shortHash: "def5678", lastCommit: "1 day ago", isCurrent: false, isRemote: false },
                     ],
                     worktrees: [
@@ -902,7 +957,7 @@ export async function createMockRunner(
                             path: cwd,
                             displayPath: ".",
                             branch: gitStatus.branch,
-                            shortHash: "abc1234",
+                            shortHash: headShortHash,
                             isDetached: false,
                             isMain: true,
                             changeCount: gitStatus.changes.length,
@@ -927,12 +982,63 @@ export async function createMockRunner(
                 emitGit("git_diff_result", { ok: true, diff });
                 break;
             }
+            case "git_log": {
+                emitGit("git_log_result", {
+                    ok: true,
+                    entries: [
+                        {
+                            hash: `${headShortHash}${headShortHash.padEnd(40 - headShortHash.length, "0")}`,
+                            shortHash: headShortHash,
+                            author: "Mock Author",
+                            authorDate: new Date().toISOString(),
+                            commitDate: new Date().toISOString(),
+                            subject: headSubject,
+                            body: "",
+                            refs: ["HEAD", gitStatus.branch],
+                        },
+                        {
+                            hash: "def4567890abcdef1234567890abcdef123456789",
+                            shortHash: "def4567",
+                            author: "Mock Author",
+                            authorDate: "2026-07-04T10:00:00Z",
+                            commitDate: "2026-07-04T10:00:00Z",
+                            subject: "Initial commit",
+                            body: "",
+                            refs: ["main"],
+                        },
+                    ],
+                });
+                break;
+            }
+            case "git_stash_list": {
+                emitGit("git_stash_list_result", { ok: true, stashes: [] });
+                break;
+            }
+            case "git_worktrees": {
+                emitGit("git_worktrees_result", {
+                    ok: true,
+                    worktrees: [
+                        {
+                            path: (payload.cwd as string) ?? "/mock",
+                            displayPath: ".",
+                            branch: gitStatus.branch,
+                            shortHash: headShortHash,
+                            isDetached: false,
+                            isMain: true,
+                            changeCount: gitStatus.changes.length,
+                            ahead: gitStatus.ahead,
+                            behind: gitStatus.behind,
+                        },
+                    ],
+                });
+                break;
+            }
             case "git_branches": {
                 emitGit("git_branches_result", {
                     ok: true,
                     currentBranch: gitStatus.branch,
                     branches: [
-                        { name: gitStatus.branch, shortHash: "abc1234", lastCommit: "2 hours ago", isCurrent: true, isRemote: false },
+                        { name: gitStatus.branch, shortHash: headShortHash, lastCommit: "2 hours ago", isCurrent: true, isRemote: false },
                         { name: "main", shortHash: "def5678", lastCommit: "1 day ago", isCurrent: false, isRemote: false },
                     ],
                 });
@@ -954,9 +1060,14 @@ export async function createMockRunner(
             case "git_unstage":
                 emitGit("git_unstage_result", { ok: true });
                 break;
-            case "git_commit":
-                emitGit("git_commit_result", { ok: true, summary: "[main abc1234] Mock commit" });
+            case "git_commit": {
+                const message = (payload.message as string) ?? "Mock commit";
+                // Simulate HEAD moving to a new commit.
+                headShortHash = Math.random().toString(16).slice(2, 9);
+                headSubject = message;
+                emitGit("git_commit_result", { ok: true, summary: `[${gitStatus.branch} ${headShortHash}] ${message}` });
                 break;
+            }
             case "git_push":
                 emitGit("git_push_result", { ok: true, output: "Everything up-to-date" });
                 break;
@@ -1120,11 +1231,21 @@ export async function createMockRunner(
             return shutdownRequested;
         },
 
-        announceServices(serviceIds: string[], panels?: ServicePanelInfo[]): void {
-            (socket as any).emit("service_announce", {
-                serviceIds,
-                ...(panels && panels.length > 0 ? { panels } : {}),
-            });
+        get disabledServiceIds(): ReadonlySet<string> {
+            return disabledServiceIdsSet;
+        },
+
+        announceServices(
+            serviceIds: string[],
+            panels?: ServicePanelInfo[],
+            triggerDefs?: ServiceTriggerDef[],
+            sigilDefs?: ServiceSigilDef[],
+        ): void {
+            currentServiceIds = serviceIds;
+            currentPanels = panels ?? [];
+            currentTriggerDefs = triggerDefs ?? [];
+            currentSigilDefs = sigilDefs ?? [];
+            emitServiceAnnounce();
         },
 
         onSkillRequest(handler: (data: unknown) => unknown): void {

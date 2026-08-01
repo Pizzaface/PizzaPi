@@ -62,7 +62,7 @@ const COLUMNS: Column[] = [
     key: "model",
     label: "Model",
     align: "left",
-    render: (s) => s.primaryModel,
+    render: (s) => <span title={s.primaryModel}>{s.primaryModel}</span>,
     sortValue: (s) => s.primaryModel.toLowerCase(),
   },
   {

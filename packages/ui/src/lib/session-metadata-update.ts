@@ -15,6 +15,8 @@ export interface SessionMetadataUpdatePatch {
   thinkingLevel?: string | null;
   todoList?: TodoItem[];
   goal?: MetaGoalStatus | null;
+  /** Pending follow-up texts reported by the runner (authoritative queue). */
+  queuedMessages?: string[];
 }
 
 export function deriveSessionMetadataUpdatePatch(input: {
@@ -60,6 +62,12 @@ export function deriveSessionMetadataUpdatePatch(input: {
 
   if (Array.isArray(metadata.todoList)) {
     patch.todoList = metadata.todoList as TodoItem[];
+  }
+
+  if (Array.isArray(metadata.queuedMessages)) {
+    patch.queuedMessages = (metadata.queuedMessages as unknown[]).filter(
+      (m): m is string => typeof m === "string",
+    );
   }
 
   if (Object.prototype.hasOwnProperty.call(metadata, "goal")) {

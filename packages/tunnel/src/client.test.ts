@@ -246,6 +246,43 @@ describe("TunnelClient", () => {
     }
   });
 
+  test("preserves multiple Set-Cookie headers as an array instead of joining them", async () => {
+    const { server, port } = await startHttpServer((_req, res) => {
+      res.setHeader("set-cookie", [
+        "a=1; Path=/; Expires=Wed, 21 Oct 2026 07:28:00 GMT",
+        "b=2; Path=/; HttpOnly",
+      ]);
+      res.writeHead(200);
+      res.end("ok");
+    });
+
+    try {
+      const client = new TunnelClient({
+        runnerId: "r1",
+        apiKey: "key1",
+        relayUrl: "ws://localhost:9999/_tunnel",
+        autoReconnect: false,
+      });
+      client.exposePort(port);
+      const sent = attachMockRelay(client);
+
+      (client as any).handleMessage(
+        JSON.stringify({ type: "request-start", id: "req-cookie", port, method: "GET", url: "/", headers: {} }),
+      );
+      (client as any).handleMessage(JSON.stringify({ type: "request-data-end", id: "req-cookie" }));
+
+      await waitUntil(() => decodeSent(sent).some((message) => message.type === "response-data-end"));
+
+      const start = decodeSent(sent).find((message) => message.type === "response-start");
+      expect(start.headers["set-cookie"]).toEqual([
+        "a=1; Path=/; Expires=Wed, 21 Oct 2026 07:28:00 GMT",
+        "b=2; Path=/; HttpOnly",
+      ]);
+    } finally {
+      await stopHttpServer(server);
+    }
+  });
+
   test("request-start plus request-data chunks proxy POST bodies to the local service", async () => {
     let receivedBody = "";
 
@@ -339,6 +376,73 @@ describe("TunnelClient", () => {
 
     expect(Buffer.isBuffer(sentFrames[0])).toBe(true);
     expect((sentFrames[0] as Buffer).toString("utf-8")).toBe("hello");
+  });
+});
+
+describe("TunnelClient loopback fallback", () => {
+  test("retries [::1] and replays the body when 127.0.0.1 is refused (IPv6-only local server)", async () => {
+    let received = "";
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        received = body;
+        res.writeHead(200);
+        res.end("v6ok");
+      });
+    });
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "::1", () => {
+          server.off("error", reject);
+          resolve();
+        });
+      });
+    } catch {
+      return; // no IPv6 loopback on this machine — nothing to test
+    }
+
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Failed to bind test server");
+    const port = address.port;
+
+    try {
+      const client = new TunnelClient({
+        runnerId: "r1",
+        apiKey: "key1",
+        relayUrl: "ws://localhost:9999/_tunnel",
+        autoReconnect: false,
+      });
+      client.exposePort(port);
+      const sent = attachMockRelay(client);
+
+      (client as any).handleMessage(
+        JSON.stringify({ type: "request-start", id: "req-v6", port, method: "POST", url: "/", headers: {} }),
+      );
+      (client as any).handleMessage(JSON.stringify({ type: "request-data", id: "req-v6", data: "payload" }));
+      (client as any).handleMessage(JSON.stringify({ type: "request-data-end", id: "req-v6" }));
+
+      await waitUntil(() => decodeSent(sent).some((message) => message.type === "response-data-end"));
+
+      const messages = decodeSent(sent);
+      expect(messages.find((message) => message.type === "response-start")).toMatchObject({
+        id: "req-v6",
+        statusCode: 200,
+      });
+      const body = messages
+        .filter((message) => message.type === "response-data")
+        .map((message) => Buffer.from(message.data, "binary"))
+        .reduce((all, chunk) => Buffer.concat([all, chunk]), Buffer.alloc(0))
+        .toString("utf-8");
+      expect(body).toBe("v6ok");
+      expect(received).toBe("payload");
+      // Working family is cached so the next request skips the failed attempt.
+      expect((client as any).loopbackHost.get(port)).toBe("[::1]");
+    } finally {
+      await stopHttpServer(server);
+    }
   });
 });
 

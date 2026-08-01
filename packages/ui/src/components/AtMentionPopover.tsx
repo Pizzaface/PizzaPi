@@ -370,8 +370,9 @@ export function AtMentionPopover({
 
           {/* Error state */}
           {error && !loading && (
-            <div className="py-4 px-3 text-sm text-destructive">
-              {error}
+            <div className="py-4 px-3 text-sm">
+              <p className="mb-0.5">Can't browse files right now</p>
+              <p className="text-xs text-muted-foreground">{error}</p>
             </div>
           )}
 

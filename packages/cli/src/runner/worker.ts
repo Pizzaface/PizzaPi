@@ -1,38 +1,71 @@
-import { createAgentSession, DefaultResourceLoader, AuthStorage } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, DefaultResourceLoader, ModelRuntime, readStoredCredential, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { SHELL_PROC_CAPTURE_PREFIX } from "./session-procs.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "../config.js";
+import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv, resolveExplicitProjectTrust } from "../config.js";
 import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride } from "../skills.js";
-import { getPluginSkillPaths } from "../extensions/claude-plugins.js";
+import { getPluginSkillPaths, getPluginPromptTemplatePaths } from "../extensions/claude-plugins.js";
+import { setRegisteredCommandsProvider } from "../extensions/command-introspection.js";
 import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
 import { createBootTimer } from "./boot-timing.js";
+import { headlessFork } from "./worker-fork.js";
+import { SessionHost } from "./session-host.js";
+import { setRemoteSessionHost } from "../extensions/remote/session-host-ref.js";
+import { applySettingsDefaultModel, flushPendingExtensionProviders } from "./apply-default-model.js";
+import { findCachedOllamaCloudModel } from "../ollama-cloud-models.js";
 import { setLogComponent, setLogSessionId, logInfo, logWarn, logError, logAuth } from "./logger.js";
 
 /**
- * Create an AuthStorage instance with retried file locking.
+ * Minimal in-memory credential store for the lockless fallback tier below.
+ * Structurally matches pi-ai's `CredentialStore` interface (read/list/modify/
+ * delete); that type isn't part of pi-ai's public export surface, so we
+ * match its shape rather than importing/implementing it by name.
+ */
+class InMemoryCredentialsFallback {
+    constructor(private data: Record<string, any>) {}
+    async read(providerId: string) {
+        return this.data[providerId];
+    }
+    async list() {
+        return Object.entries(this.data).map(([providerId, credential]) => ({
+            providerId,
+            type: (credential as { type: string }).type,
+        }));
+    }
+    async modify(providerId: string, fn: (current: any) => Promise<any>) {
+        const next = await fn(this.data[providerId]);
+        if (next !== undefined) this.data[providerId] = next;
+        return this.data[providerId];
+    }
+    async delete(providerId: string) {
+        delete this.data[providerId];
+    }
+}
+
+/**
+ * Create a ModelRuntime with retried file locking on auth.json.
  *
  * When many worker processes spawn simultaneously (e.g. 6 sub-sessions in
- * parallel), the upstream AuthStorage constructor acquires a synchronous
- * file lock on auth.json during its `reload()` call. The sync lock uses
- * only 10 retries × 20ms = ~200ms window, which is too short when another
- * process is doing an async OAuth token refresh (seconds). Workers that
- * lose the lock race silently start with empty credentials → "No API key
- * found" errors.
+ * parallel), the underlying auth-storage backend acquires a synchronous
+ * file lock on auth.json while loading. The sync lock uses only 10 retries
+ * × 20ms = ~200ms window, which is too short when another process is doing
+ * an async OAuth token refresh (seconds). Workers that lose the lock race
+ * silently start with empty credentials → "No API key found" errors.
  *
- * This helper retries AuthStorage creation with increasing delays,
+ * This helper retries ModelRuntime creation with increasing delays,
  * and if all retries fail, falls back to a lockless read so the worker
  * at least has stale-but-valid credentials rather than none.
  */
-async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Promise<AuthStorage> {
+async function createModelRuntimeWithRetry(authPath: string, modelsPath: string, maxAttempts = 5): Promise<ModelRuntime> {
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-            const storage = AuthStorage.create(authPath);
+            const runtime = await ModelRuntime.create({ authPath, modelsPath });
             // Verify it actually loaded credentials (not silently empty due to lock failure)
-            const providers = storage.list();
+            const providers = await runtime.listCredentials();
             if (providers.length > 0) {
-                return storage;
+                return runtime;
             }
             // If the file exists but we got zero providers, it could be a lock failure
             // that was silently swallowed. Check if the file actually has data.
@@ -41,12 +74,12 @@ async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Pr
                     const raw = readFileSync(authPath, "utf-8");
                     const data = JSON.parse(raw);
                     if (Object.keys(data).length > 0) {
-                        // File has data but AuthStorage didn't load it — lock contention.
+                        // File has data but the runtime didn't load it — lock contention.
                         // Wait and retry.
                         logWarn(
-                            `pizzapi worker: auth.json has ${Object.keys(data).length} provider(s) but AuthStorage loaded 0 (attempt ${attempt}/${maxAttempts}, likely lock contention)`,
+                            `pizzapi worker: auth.json has ${Object.keys(data).length} provider(s) but ModelRuntime loaded 0 (attempt ${attempt}/${maxAttempts}, likely lock contention)`,
                         );
-                        lastError = new Error("Lock contention: auth.json has data but AuthStorage loaded empty");
+                        lastError = new Error("Lock contention: auth.json has data but ModelRuntime loaded empty");
                         if (attempt < maxAttempts) {
                             // Exponential backoff: 100ms, 200ms, 400ms, 800ms
                             await Bun.sleep(100 * Math.pow(2, attempt - 1));
@@ -54,12 +87,12 @@ async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Pr
                         }
                         // Final attempt still hit lock contention — break out of the
                         // loop so we fall through to the lockless fallback below
-                        // instead of returning the empty storage.
+                        // instead of returning the empty runtime.
                         break;
                     }
                 } catch {
                     // Partial/empty JSON during a concurrent token refresh —
-                    // retry instead of returning the empty storage (P1 fix).
+                    // retry instead of returning the empty runtime (P1 fix).
                     lastError = new Error("Lockless auth.json probe got unreadable/partial JSON");
                     if (attempt < maxAttempts) {
                         await Bun.sleep(100 * Math.pow(2, attempt - 1));
@@ -69,7 +102,7 @@ async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Pr
                 }
             }
             // File genuinely empty or doesn't exist — return as-is
-            return storage;
+            return runtime;
         } catch (err) {
             lastError = err;
             if (attempt < maxAttempts) {
@@ -83,7 +116,7 @@ async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Pr
     // Retry the lockless read a few times with short delays because a
     // concurrent writeFileSync can produce empty/partial JSON momentarily.
     logWarn(
-        `pizzapi worker: AuthStorage lock retries exhausted (${maxAttempts} attempts), falling back to lockless read`,
+        `pizzapi worker: ModelRuntime lock retries exhausted (${maxAttempts} attempts), falling back to lockless read`,
     );
     const locklessRetries = 3;
     for (let lr = 1; lr <= locklessRetries; lr++) {
@@ -100,15 +133,16 @@ async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Pr
             const data = JSON.parse(raw);
             if (Object.keys(data).length > 0) {
                 // The lock holder may have finished by now — try one final
-                // AuthStorage.create() so we get a file-backed instance that
+                // ModelRuntime.create() so we get a file-backed instance that
                 // can persist token refreshes and see future credential updates.
                 try {
-                    const fileStorage = AuthStorage.create(authPath);
-                    if (fileStorage.list().length > 0) {
+                    const fileRuntime = await ModelRuntime.create({ authPath, modelsPath });
+                    const fileCreds = await fileRuntime.listCredentials();
+                    if (fileCreds.length > 0) {
                         logInfo(
-                            `pizzapi worker: lock released — file-backed AuthStorage loaded ${fileStorage.list().length} provider(s) on final retry`,
+                            `pizzapi worker: lock released — file-backed ModelRuntime loaded ${fileCreds.length} provider(s) on final retry`,
                         );
-                        return fileStorage;
+                        return fileRuntime;
                     }
                 } catch {
                     // Still can't acquire lock — fall through to in-memory
@@ -116,11 +150,15 @@ async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Pr
                 // Use in-memory as last resort (read-only snapshot — token
                 // refreshes won't be persisted and credential updates won't
                 // be visible, but at least the worker can start).
-                const storage = AuthStorage.inMemory(data);
+                const runtime = await ModelRuntime.create({
+                    authPath,
+                    modelsPath,
+                    credentials: new InMemoryCredentialsFallback(data) as any,
+                });
                 logWarn(
                     `pizzapi worker: lockless fallback loaded ${Object.keys(data).length} provider(s) from ${authPath} (in-memory snapshot — token refreshes will not persist)`,
                 );
-                return storage;
+                return runtime;
             }
             // Parsed OK but empty object — file genuinely has no providers
             break;
@@ -143,13 +181,14 @@ async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Pr
     logError(
         `pizzapi worker: failed to load auth credentials after ${maxAttempts} attempts: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
     );
-    return AuthStorage.create(authPath);
+    return ModelRuntime.create({ authPath, modelsPath });
 }
 
 // buildPromptPaths moved to ../skills.ts as buildPromptTemplatePaths
 import { forwardCliError } from "../extensions/remote.js";
 import { buildPizzaPiExtensionFactories } from "../extensions/factories.js";
 import { armWorkerStartupGate, markWorkerStartupComplete } from "../extensions/worker-startup-gate.js";
+import { runWorkerShutdownHooks } from "../extensions/shutdown-hooks.js";
 
 // ── Session metadata / context tracking ──────────────────────────────────
 
@@ -321,23 +360,40 @@ async function main(): Promise<void> {
         sendAgentsMd: config.sendAgentsMd !== false,
     });
 
+    // Explicit, persisted pi project-trust decision for this worker's cwd —
+    // the single authority gating native pi project resources AND the
+    // session-side pi.pizzapi overlay (see index.ts / config/io.ts
+    // resolveExplicitProjectTrust). Built once and reused for both the
+    // resource loader and session creation below so trust can't drift
+    // between the two (previously the loader used an implicitly-trusted
+    // default SettingsManager while session creation built a separate one).
+    const projectTrusted = resolveExplicitProjectTrust(cwd, agentDir);
+    const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted });
+
     bootTimer.start("[boot] resource-loader");
     const loader = new DefaultResourceLoader({
         cwd,
         agentDir,
+        settingsManager,
         extensionFactories: buildPizzaPiExtensionFactories({
             cwd,
+            agentDir,
             hooks: process.env.PIZZAPI_NO_HOOKS === "1" ? undefined : config.hooks,
             includeInitialPrompt: true,
             skipMcp: process.env.PIZZAPI_NO_MCP === "1",
             skipPlugins,
             skipRelay: process.env.PIZZAPI_NO_RELAY === "1",
+            configSkills: config.skills,
+            projectTrusted,
         }),
         additionalSkillPaths: [
             ...buildSkillPaths(cwd, config.skills),
             ...(skipPlugins ? [] : getPluginSkillPaths(cwd)),
         ],
-        additionalPromptTemplatePaths: buildPromptTemplatePaths(cwd),
+        additionalPromptTemplatePaths: [
+            ...buildPromptTemplatePaths(cwd),
+            ...(skipPlugins ? [] : getPluginPromptTemplatePaths(cwd)),
+        ],
         ...(config.systemPrompt !== undefined
             ? { systemPromptOverride: () => config.systemPrompt }
             : {}
@@ -351,17 +407,26 @@ async function main(): Promise<void> {
     await loader.reload();
     bootTimer.end("[boot] resource-loader");
 
-    // Create AuthStorage with retry logic to handle lock contention when
+    // Create a ModelRuntime with retry logic to handle lock contention when
     // multiple workers spawn simultaneously (common with parallel sub-sessions).
     const authPath = join(agentDir, "auth.json");
-    const authStorage = await createAuthStorageWithRetry(authPath);
+    const modelsPath = join(agentDir, "models.json");
+    const modelRuntime = await createModelRuntimeWithRetry(authPath, modelsPath);
+
+    // pi 0.82 moved the extension-provider flush out of the AgentSession
+    // constructor into createAgentSessionServices(), which this worker bypasses
+    // (it builds its own loader + ModelRuntime). Flush here so findInitialModel
+    // inside createAgentSession can resolve extension providers (e.g.
+    // claude-subscription) instead of falling back to openai-codex/gpt-5.5.
+    const flushed = flushPendingExtensionProviders({ loader, modelRuntime, warn: logWarn });
+    if (flushed > 0) logInfo(`registered ${flushed} extension provider(s) before session creation`);
 
     // ── Auth diagnostics — log credential state before first API call ────
     // This helps diagnose intermittent "No API key found" failures in
     // concurrent worker sessions (see Godmother idea fIUvBDLZ).
     try {
         for (const provider of ["anthropic", "google-gemini-cli", "openai-codex"]) {
-            const raw = authStorage.get(provider);
+            const raw = readStoredCredential(provider, authPath);
             if (raw && typeof raw === "object" && "type" in raw) {
                 const cred = raw as { type: string; expires?: number };
                 if (cred.type === "oauth" && cred.expires) {
@@ -384,14 +449,54 @@ async function main(): Promise<void> {
         // Non-fatal — diagnostic only
     }
 
+    // Install a shell command prefix that records each bash command's detached
+    // group-leader PID into $PIZZAPI_SESSION_PROC_FILE, so the daemon's process
+    // service can enumerate and kill background processes that escape the
+    // worker's own process group. Wrapping getShellCommandPrefix (rather than
+    // applyOverrides, which settingsManager.reload() would wipe) survives
+    // reloads and is baked into the bash tool at build time. Unix-only: the
+    // prefix uses POSIX shell + $$ and group tracking needs pgrep/ps.
+    // Reuses the SAME settingsManager the resource loader was built with
+    // (see above) so project trust can't diverge between the two.
+    if (process.platform !== "win32") {
+        const origGetPrefix = settingsManager.getShellCommandPrefix.bind(settingsManager);
+        settingsManager.getShellCommandPrefix = () =>
+            [origGetPrefix(), SHELL_PROC_CAPTURE_PREFIX].filter(Boolean).join("\n");
+    }
+
     bootTimer.start("[boot] create-session");
     const { session } = await createAgentSession({
         cwd,
         agentDir,
-        authStorage,
+        modelRuntime,
         resourceLoader: loader,
+        settingsManager,
     });
     bootTimer.end("[boot] create-session");
+
+    // Re-resolve the settings default model now that extension-registered
+    // providers (e.g. minimalcc-pi's claude-subscription) are in the registry.
+    // Without this, a default pointing at such a provider silently falls back
+    // to a built-in provider default (openai/gpt-5.5). See apply-default-model.ts.
+    try {
+        if (await applySettingsDefaultModel(session as any)) {
+            logInfo(`applied settings default model ${session.model?.provider}/${session.model?.id} (provider registered by extension after initial resolution)`);
+        }
+    } catch (e) {
+        logWarn(`failed to apply settings default model: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // Deliver ALL queued follow-up messages at once when a turn ends, instead
+    // of pi's default one-at-a-time (which strands later follow-ups until the
+    // next turn ends). Set on the agent directly (not setFollowUpMode) so the
+    // user's global settings.json is left untouched.
+    session.agent.followUpMode = "all";
+
+    // Expose resolved commands (argument hints + completions) so the remote
+    // extension can forward them to the web UI command popover (TUI parity).
+    setRegisteredCommandsProvider(
+        () => (session.extensionRunner as any)?.getRegisteredCommands?.() ?? [],
+    );
 
     // ── Inject context tracking entries ───────────────────────────────────
     // Emit non-context custom entries for each identifiable piece of context
@@ -416,161 +521,213 @@ async function main(): Promise<void> {
     publishSessionMetadata(session);
     bootTimer.start("[boot] bind-extensions");
     try {
-    await session.bindExtensions({
-        commandContextActions: {
-            waitForIdle: () => session.agent.waitForIdle(),
+    const sessionControlActions = {
+        waitForIdle: () => session.agent.waitForIdle(),
 
-            newSession: async () => {
-                const extensionRunner = session.extensionRunner;
-                const previousSessionFile = session.sessionFile;
+        newSession: async () => {
+            const extensionRunner = session.extensionRunner;
+            const previousSessionFile = session.sessionFile;
 
-                // Let extensions cancel the switch (e.g. unsaved work)
-                if (extensionRunner?.hasHandlers("session_before_switch")) {
-                    const result = await extensionRunner.emit({
-                        type: "session_before_switch",
-                        reason: "new",
-                    });
-                    if ((result as any)?.cancel) {
-                        return { cancelled: true };
-                    }
+            // Let extensions cancel the switch (e.g. unsaved work)
+            if (extensionRunner?.hasHandlers("session_before_switch")) {
+                const result = await extensionRunner.emit({
+                    type: "session_before_switch",
+                    reason: "new",
+                });
+                if ((result as any)?.cancel) {
+                    return { cancelled: true };
                 }
+            }
 
-                // Stop any running agent turn
-                await session.abort();
+            // Stop any running agent turn
+            await session.abort();
 
-                // Reset agent transcript, queues, and runtime flags
-                session.agent.reset();
+            // Reset agent transcript, queues, and runtime flags
+            session.agent.reset();
 
-                // Create a fresh session file
-                session.sessionManager.newSession();
-                session.agent.sessionId = session.sessionManager.getSessionId();
-                publishSessionMetadata(session);
+            // Create a fresh session file
+            session.sessionManager.newSession();
+            session.agent.sessionId = session.sessionManager.getSessionId();
+            publishSessionMetadata(session);
 
-                // Clear AgentSession's private tracking queues so stale steering/
-                // follow-up messages from the old conversation don't leak through.
-                (session as any)._steeringMessages = [];
-                (session as any)._followUpMessages = [];
-                (session as any)._pendingNextTurnMessages = [];
-                (session as any)._lastAssistantMessage = undefined;
-                (session as any)._overflowRecoveryAttempted = false;
+            // Clear AgentSession's private tracking queues so stale steering/
+            // follow-up messages from the old conversation don't leak through.
+            (session as any)._steeringMessages = [];
+            (session as any)._followUpMessages = [];
+            (session as any)._pendingNextTurnMessages = [];
+            (session as any)._lastAssistantMessage = undefined;
+            (session as any)._overflowRecoveryAttempted = false;
 
-                // Persist the current thinking level in the new session header
-                session.sessionManager.appendThinkingLevelChange(session.thinkingLevel);
+            // Persist the current thinking level in the new session header
+            session.sessionManager.appendThinkingLevelChange(session.thinkingLevel);
 
-                // Re-inject context tracking entries for the new session
-                try {
-                    injectContextTrackingEntries(session, cwd, agentDir, config);
-                } catch { /* non-fatal */ }
+            // Re-inject context tracking entries for the new session
+            try {
+                injectContextTrackingEntries(session, cwd, agentDir, config);
+            } catch { /* non-fatal */ }
 
-                // Notify extensions — the remote extension's session_switch handler
-                // cancels pending triggers, delinks children, and pushes the new
-                // (empty) conversation to the web UI via session_active.
-                // NOTE: "session_switch" was removed from the upstream type union in
-                // 0.66.1, but PizzaPi's remote extension still registers a runtime
-                // handler for it. The cast is safe — emit() dispatches by string key.
-                if (extensionRunner) {
-                    await extensionRunner.emit({
-                        type: "session_switch" as any,
-                        reason: "new",
-                        previousSessionFile,
-                    });
+            // Notify extensions — the remote extension's session_switch handler
+            // cancels pending triggers, delinks children, and pushes the new
+            // (empty) conversation to the web UI via session_active.
+            // NOTE: "session_switch" was removed from the upstream type union in
+            // 0.66.1, but PizzaPi's remote extension still registers a runtime
+            // handler for it. The cast is safe — emit() dispatches by string key.
+            if (extensionRunner) {
+                await extensionRunner.emit({
+                    type: "session_switch" as any,
+                    reason: "new",
+                    previousSessionFile,
+                });
+            }
+
+            logInfo("new session created (in-place)");
+            return { cancelled: false };
+        },
+
+        switchSession: async (sessionPath: string) => {
+            const extensionRunner = session.extensionRunner;
+            const previousSessionFile = session.sessionFile;
+
+            // Let extensions cancel
+            if (extensionRunner?.hasHandlers("session_before_switch")) {
+                const result = await extensionRunner.emit({
+                    type: "session_before_switch",
+                    reason: "resume",
+                    targetSessionFile: sessionPath,
+                });
+                if ((result as any)?.cancel) {
+                    return { cancelled: true };
                 }
+            }
 
-                logInfo("new session created (in-place)");
-                return { cancelled: false };
-            },
+            await session.abort();
 
-            switchSession: async (sessionPath: string) => {
-                const extensionRunner = session.extensionRunner;
-                const previousSessionFile = session.sessionFile;
+            // Clear AgentSession queues
+            (session as any)._steeringMessages = [];
+            (session as any)._followUpMessages = [];
+            (session as any)._pendingNextTurnMessages = [];
+            (session as any)._lastAssistantMessage = undefined;
+            (session as any)._overflowRecoveryAttempted = false;
 
-                // Let extensions cancel
-                if (extensionRunner?.hasHandlers("session_before_switch")) {
-                    const result = await extensionRunner.emit({
-                        type: "session_before_switch",
-                        reason: "resume",
-                        targetSessionFile: sessionPath,
-                    });
-                    if ((result as any)?.cancel) {
-                        return { cancelled: true };
-                    }
-                }
+            // Load the target session file into the existing SessionManager
+            session.sessionManager.setSessionFile(sessionPath);
+            session.agent.sessionId = session.sessionManager.getSessionId();
+            publishSessionMetadata(session);
 
-                await session.abort();
+            // Rebuild messages from the target session
+            const sessionContext = session.sessionManager.buildSessionContext();
 
-                // Clear AgentSession queues
-                (session as any)._steeringMessages = [];
-                (session as any)._followUpMessages = [];
-                (session as any)._pendingNextTurnMessages = [];
-                (session as any)._lastAssistantMessage = undefined;
-                (session as any)._overflowRecoveryAttempted = false;
+            // Notify extensions before we replace messages — the remote
+            // extension's session_switch handler emits session_active which
+            // reads from the (now updated) sessionManager.
+            // NOTE: see newSession comment for why this uses `as any`.
+            if (extensionRunner) {
+                await extensionRunner.emit({
+                    type: "session_switch" as any,
+                    reason: "resume",
+                    previousSessionFile,
+                });
+            }
 
-                // Load the target session file into the existing SessionManager
-                session.sessionManager.setSessionFile(sessionPath);
-                session.agent.sessionId = session.sessionManager.getSessionId();
-                publishSessionMetadata(session);
+            // Restore the conversation transcript
+            session.agent.state.messages = sessionContext.messages;
 
-                // Rebuild messages from the target session
-                const sessionContext = session.sessionManager.buildSessionContext();
-
-                // Notify extensions before we replace messages — the remote
-                // extension's session_switch handler emits session_active which
-                // reads from the (now updated) sessionManager.
-                // NOTE: see newSession comment for why this uses `as any`.
-                if (extensionRunner) {
-                    await extensionRunner.emit({
-                        type: "session_switch" as any,
-                        reason: "resume",
-                        previousSessionFile,
-                    });
-                }
-
-                // Restore the conversation transcript
-                session.agent.state.messages = sessionContext.messages;
-
-                // Restore model if the session had one saved
-                if (sessionContext.model) {
-                    const modelRegistry = (session as any)._modelRegistry;
-                    if (modelRegistry) {
-                        try {
-                            const available = await modelRegistry.getAvailable();
-                            const match = available.find(
+            // Restore model if the session had one saved
+            if (sessionContext.model) {
+                const modelRegistry = (session as any)._modelRegistry;
+                if (modelRegistry) {
+                    try {
+                        const available = await modelRegistry.getAvailable();
+                        // Ollama Cloud models are discovered dynamically and
+                        // aren't in getAvailable() — fall back to the cached
+                        // catalog so a resumed ollama-cloud model is restored.
+                        const match =
+                            available.find(
                                 (m: any) =>
                                     m.provider === sessionContext.model!.provider &&
                                     m.id === sessionContext.model!.modelId,
+                            ) ??
+                            findCachedOllamaCloudModel(
+                                sessionContext.model!.provider,
+                                sessionContext.model!.modelId,
                             );
-                            if (match) {
-                                await session.setModel(match);
-                            }
-                        } catch {
-                            // Model restore is best-effort
+                        if (match) {
+                            await session.setModel(match);
                         }
+                    } catch {
+                        // Model restore is best-effort
                     }
                 }
-
-                // Restore thinking level if saved
-                if (sessionContext.thinkingLevel) {
-                    session.setThinkingLevel(sessionContext.thinkingLevel as any);
-                }
-
-                logInfo(`switched to session ${sessionPath}`);
-                return { cancelled: false };
-            },
-
-            // Fork and tree navigation are not supported in headless mode
-            fork: async () => ({ cancelled: true }),
-            navigateTree: async () => ({ cancelled: true }),
-
-            reload: async () => {
-                await session.reload();
-            },
-        },
-        shutdownHandler: () => {
-            try {
-                session.dispose();
-            } finally {
-                process.exit(0);
             }
+
+            // Restore thinking level if saved
+            if (sessionContext.thinkingLevel) {
+                session.setThinkingLevel(sessionContext.thinkingLevel as any);
+            }
+
+            logInfo(`switched to session ${sessionPath}`);
+            return { cancelled: false };
+        },
+
+        fork: async (entryId: string, options?: { position?: "before" | "at" }) => {
+            const result = await headlessFork(session, entryId, options, () => {
+                publishSessionMetadata(session);
+            });
+            if (!result.cancelled) {
+                logInfo(`forked session at entry ${entryId} → ${session.sessionManager.getSessionFile()}`);
+            }
+            return result;
+        },
+
+        // Tree navigation is not supported in headless mode
+        navigateTree: async () => ({ cancelled: true }),
+
+        reload: async () => {
+            await session.reload();
+            // reload() re-syncs queue modes from settings — re-apply.
+            session.agent.followUpMode = "all";
+        },
+    };
+
+    // Phase 1: route remote session control through a host-owned SessionHost
+    // backed by these same in-place actions. Behavior-preserving — the handlers
+    // call the identical closures pi.newSession()/switchSession()/fork() route to
+    // today — but via a direct handle, removing the remote extension's need for
+    // the patched ExtensionAPI control surface.
+    const workerSessionHost = new SessionHost(
+        () => session,
+        {
+            newSession: () => sessionControlActions.newSession(),
+            switchSession: (path) => sessionControlActions.switchSession(path),
+            fork: (entryId, o) => sessionControlActions.fork(entryId, o),
+        },
+        // replaceQueuedMessages: repopulate the queue with already-expanded text.
+        // Uses pi's private raw-enqueue directly (as the worker already does for
+        // queue clearing) to avoid the double-expansion that steer()/followUp() cause.
+        (followUp) => {
+            const { steering } = session.clearQueue();
+            for (const text of steering) void (session as any)._queueSteer(text);
+            for (const text of followUp) void (session as any)._queueFollowUp(text);
+        },
+    );
+    setRemoteSessionHost(workerSessionHost);
+
+    await session.bindExtensions({
+        commandContextActions: sessionControlActions,
+        shutdownHandler: () => {
+            // Extension-initiated shutdown (e.g. auto-close after session
+            // completion) — run the pre-exit window with "complete" semantics.
+            // ponytail: reason is a heuristic (any ctx.shutdown() maps to
+            // "complete"); plumb an explicit reason if a second caller appears.
+            void runWorkerShutdownHooks("complete")
+                .catch(() => {})
+                .finally(() => {
+                    try {
+                        session.dispose();
+                    } finally {
+                        process.exit(0);
+                    }
+                });
         },
         onError: (err) => {
             logError(`[extension] ${err.extensionPath}: ${err.error}`);
@@ -648,6 +805,14 @@ async function main(): Promise<void> {
             logWarn("[worker] cleanup did not finish in time; forcing process exit");
             process.exit(0);
         }, hardExitTimeoutMs);
+        // Pre-exit hooks run first (data flush/archival is the most valuable
+        // cleanup) and in-process — the daemon cannot reach worker-registered
+        // hooks across the process boundary, and pi's session_shutdown does not
+        // fire for a daemon SIGTERM. Bounded overall so hooks + sandbox cleanup
+        // stay inside the daemon's SIGKILL escalation.
+        try {
+            await runWorkerShutdownHooks("close");
+        } catch {}
         try {
             await Promise.race([
                 cleanupSandbox(),
@@ -663,6 +828,28 @@ async function main(): Promise<void> {
 
     process.on("SIGTERM", shutdown);
     process.on("SIGINT", shutdown);
+    // Set when the daemon is restarting intentionally: the IPC channel closes but
+    // the next daemon re-adopts us, so we must NOT exit.
+    let detached = false;
+    // Windows: the daemon can't deliver a catchable SIGTERM (kill() there is an
+    // immediate TerminateProcess) — it sends a shutdown request over IPC instead.
+    process.on("message", (msg: unknown) => {
+        if (typeof msg !== "object" || msg === null) return;
+        const type = (msg as Record<string, unknown>).type;
+        if (type === "shutdown") void shutdown();
+        if (type === "detach") detached = true;
+    });
+
+    // Daemon died (crash, SIGKILL, or clean exit) — the IPC channel closes.
+    // Sessions do not outlive their runner unless it told us it's coming back.
+    process.on("disconnect", () => {
+        if (detached) {
+            logInfo("[worker] daemon detached for restart; staying alive");
+            return;
+        }
+        logInfo("[worker] daemon gone; shutting down");
+        void shutdown();
+    });
 
     // Keep the process alive; work happens via relay/websocket events.
     await new Promise<void>(() => {});

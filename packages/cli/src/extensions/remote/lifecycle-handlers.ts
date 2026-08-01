@@ -48,6 +48,7 @@ import { registerPlanModeTool } from "../remote-plan-mode.js";
 import { isDisabled } from "./connection.js";
 import { emitSessionActive, emitSessionMetadataUpdate } from "./chunked-delivery.js";
 import { shouldAutoClose } from "./auto-close.js";
+import { hasActiveSubagents, noteSubagentSettlementDeferred, onSubagentsIdle } from "../subagent/background-state.js";
 import type { RelayContext } from "../remote-types.js";
 import type { TriggerWaitManager } from "../trigger-wait-manager.js";
 import type { DelinkManager } from "./delink-management.js";
@@ -149,6 +150,21 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
 
     // Session-local error-fired flag (not shared — only used inside agent_end/turn_start).
     let sessionErrorFired = false;
+    // Messages from the last agent_end, consumed by agent_settled. agent_end
+    // fires after every attempt (including ones pi will auto-retry); completion
+    // and error reporting must wait for agent_settled.
+    let settledMessages: any[] | null = null;
+    let deferredSettlementCtx: any | null = null;
+    const stopWatchingSubagents = onSubagentsIdle((followUpStarted) => {
+        if (followUpStarted) {
+            deferredSettlementCtx = null;
+            return;
+        }
+        if (!deferredSettlementCtx) return;
+        const ctx = deferredSettlementCtx;
+        deferredSettlementCtx = null;
+        handleAgentSettled({}, ctx);
+    });
 
     // ── Register tools ────────────────────────────────────────────────────────
     registerAskUserTool(rctx);
@@ -336,6 +352,7 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         followUpGrace.clearFollowUpGrace();
         stopHeartbeat();
         stopSessionNameSync();
+        stopWatchingSubagents();
         clearCtx();
         const shutdownExitReason = rctx.wasAborted ? "killed" : rctx.lastRetryableError ? "error" : "completed";
         await followUpGrace.fireSessionComplete(undefined, undefined, shutdownExitReason);
@@ -364,16 +381,40 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
 
     pi.on("agent_end", (event: any, ctx: any) => {
         rctx.isAgentActive = false;
+        // pi's agent_end.messages contains only THIS run's messages (prompts +
+        // new assistant/tool messages), not the full transcript. The web UI and
+        // the server's snapshot cache both treat agent_end.messages as a full
+        // snapshot, so forwarding it wholesale truncates the visible transcript
+        // to the latest run. Strip messages and emit a real full snapshot
+        // (chunk-aware) instead — both consumers skip message-less agent_end.
+        const { messages: runMessages, ...eventWithoutMessages } = event;
+        rctx.forwardEvent(eventWithoutMessages);
+        emitSessionActive(rctx);
+        rctx.forwardEvent(rctx.buildHeartbeat());
+        // Defer completion/error reporting to agent_settled: pi fires agent_end
+        // after every attempt, including ones it will auto-retry. agent_settled
+        // fires once, only after retries/compaction/continuations are exhausted.
+        settledMessages = runMessages ?? [];
+    });
+
+    function handleAgentSettled(_event: any, ctx: any) {
+        if (settledMessages === null) return; // settled without a preceding agent_end
+        if (hasActiveSubagents()) {
+            deferredSettlementCtx = ctx;
+            noteSubagentSettlementDeferred();
+            return;
+        }
+
+        deferredSettlementCtx = null;
+        const messages = settledMessages;
+        settledMessages = null;
         const lastError = rctx.lastRetryableError;
         rctx.lastRetryableError = null;
         emitRetryStateChanged(rctx, null);
-        rctx.forwardEvent(event);
-        rctx.forwardEvent(rctx.buildHeartbeat());
 
-        if (!ctx.hasPendingMessages()) {
+        if (!ctx.hasPendingMessages() && !rctx.isAgentActive) {
             let summary = "Session completed";
             let fullOutputPath: string | undefined;
-            const messages = (event as any).messages;
             if (Array.isArray(messages)) {
                 for (let i = messages.length - 1; i >= 0; i--) {
                     const msg = messages[i];
@@ -414,14 +455,11 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
             // Keep it alive for steering instead. session_shutdown still reports
             // "killed" when the session is actually ending (end_session sets
             // shuttingDown before shutdown()).
-            const manualAbort = isManualAbort(rctx);
-            if (rctx.isChildSession && manualAbort) {
-                log.info("pizzapi: turn aborted manually — keeping child session alive");
-            } else {
-                void followUpGrace.fireSessionComplete(summary, fullOutputPath, exitReason);
-            }
-
-            // Fire session_error for terminal usage-limit errors (one-shot, only at agent_end).
+            // Fire session_error BEFORE session_complete so the parent sees the
+            // error as an early signal. maybeFireSessionError emits synchronously
+            // (direct socket.emit); fireSessionComplete's ack-wrapped emit also
+            // fires synchronously on invocation, so ordering these two calls
+            // determines wire order. Must run first.
             if (
                 maybeFireSessionError({
                     sessionErrorFired,
@@ -437,6 +475,13 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
                 })
             ) {
                 sessionErrorFired = true;
+            }
+
+            const manualAbort = isManualAbort(rctx);
+            if (rctx.isChildSession && manualAbort) {
+                log.info("pizzapi: turn aborted manually — keeping child session alive");
+            } else {
+                void followUpGrace.fireSessionComplete(summary, fullOutputPath, exitReason);
             }
 
             if (rctx.isChildSession) {
@@ -491,7 +536,8 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
                 })();
             }
         }
-    });
+    }
+    pi.on("agent_settled", handleAgentSettled);
 
     pi.on("turn_end", (event: any) => {
         rctx.forwardEvent(event);

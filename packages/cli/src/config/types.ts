@@ -326,6 +326,10 @@ export interface ToolSearchConfig {
     keepLoadedTools?: boolean;
 }
 
+/**
+ * @deprecated Obsolete. Shape of a legacy `providers` config entry, kept only
+ * so the obsolete-config warning can type its input.
+ */
 export interface ProviderConfig {
   enabled?: boolean;
   [key: string]: unknown;
@@ -351,6 +355,20 @@ export interface DiscordConfig {
     allowedUserIds?: string[];
     /** Connect and create the session thread automatically on session start. Default: false (use /discord start). */
     autoStart?: boolean;
+}
+
+/**
+ * A daemon-service trust grant for one `pi.pizzapi` overlay package.
+ *
+ * Distinct from pi's project trust, `trustedPlugins` (legacy plugin-path
+ * allowlist), and `disabledRunnerServices` (on/off switch *after* trust).
+ * See docs/specs/pi-pizzapi-overlay.md §7.2.
+ */
+export interface OverlayServiceGrant {
+    /** Normalized package identity, e.g. "npm:@acme/pi-github", "local:/abs/path". */
+    package: string;
+    /** Exact granted service IDs. A package update that adds a service does not auto-grant it. */
+    services: string[];
 }
 
 export interface PizzaPiConfig {
@@ -390,7 +408,11 @@ export interface PizzaPiConfig {
      */
     allowProjectHooks?: boolean;
 
-    /** Allow loading providers from project-local .pizzapi/providers/ directories. Default: false. */
+    /**
+     * @deprecated Obsolete. The extension-provider layer was removed; nothing
+     * reads this. Retained only so loadConfig() can still recognise the key and
+     * emit a targeted migration warning (overlay spec §12.4).
+     */
     allowProjectProviders?: boolean;
 
     /**
@@ -467,9 +489,9 @@ export interface PizzaPiConfig {
 
     /** Subagent execution settings */
     subagent?: {
-        /** Max number of parallel tasks in a single subagent call. Default: 8. */
+        /** Max parallel tasks per call and active agent slots across background calls. Default: 8. */
         maxParallelTasks?: number;
-        /** Max concurrent agent sessions running simultaneously. Default: 4. */
+        /** Max concurrent agent sessions within one parallel call. Default: 4. */
         maxConcurrency?: number;
     };
 
@@ -555,6 +577,18 @@ export interface PizzaPiConfig {
      * Also supports per-server `deferLoading: true` in mcpServers entries.
      */
     toolSearch?: ToolSearchConfig;
+
+    /** Bash tool configuration. */
+    bash?: {
+        /**
+         * Seconds a bash command streams output in the foreground before it is
+         * auto-backgrounded (output redirected to a log file, completion message
+         * delivered on exit). Default: 15. 0 = background immediately.
+         * Overridden by PIZZAPI_BASH_BACKGROUND_SECONDS.
+         */
+        backgroundAfterSeconds?: number;
+    };
+
     /**
      * `/goal` command configuration.
      */
@@ -563,8 +597,30 @@ export interface PizzaPiConfig {
         evaluatorModel?: string;
         /** Maximum output tokens for the evaluator LLM call. Default: 512. */
         evaluatorMaxTokens?: number;
+        /**
+         * Default cadence (in turns) for the LLM evaluator across all goals
+         * that don't set `/goal --every`. 1 = every turn. Default: 3.
+         * Ignored by the keyword evaluator (free/local, always runs).
+         */
+        evaluateEveryNTurns?: number;
     };
 
-    /** Extension provider configurations, keyed by provider ID. */
+    /**
+     * @deprecated Obsolete. Extension providers were removed — build a runner
+     * service (daemon-scoped, for external connectivity) or a plain pi
+     * ExtensionFactory (session-scoped) instead. Retained so loadConfig() can
+     * recognise the key and warn (overlay spec §12.4); no code consumes it.
+     */
     providers?: Record<string, ProviderConfig>;
+
+    /**
+     * Explicit per-package, per-service daemon trust grants for `pi.pizzapi`
+     * overlay packages. Keyed by normalized package identity — separate from
+     * pi project trust, `trustedPlugins`, and `disabledRunnerServices`.
+     *
+     * Always stored in the GLOBAL ~/.pizzapi/config.json. Project packages
+     * never receive grants here in schema v1 (see docs/specs/pi-pizzapi-overlay.md §6.3).
+     * Managed via `pizza install --allow-daemon-services` / `pizza config grant|revoke`.
+     */
+    overlayServiceGrants?: OverlayServiceGrant[];
 }

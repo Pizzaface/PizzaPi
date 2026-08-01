@@ -77,7 +77,9 @@ export function SigilPill({ type, id, params, raw }: SigilPillProps) {
   const displayText = resolved.data?.title ?? params.label ?? (id || canonicalType);
   const statusParam = resolved.data?.status ?? params.status ?? params.conclusion;
   const statusColor = statusParam ? getStatusColor(statusParam) : undefined;
-  const rawHref = params.link ?? params.href ?? (resolved.data?.url ? String(resolved.data.url) : undefined);
+  // File sigils get an in-app link that opens the file in the file explorer.
+  const fileHref = canonicalType === "file" && id ? `pizzapi://file/${encodeURIComponent(id)}` : undefined;
+  const rawHref = params.link ?? params.href ?? (resolved.data?.url ? String(resolved.data.url) : undefined) ?? fileHref;
   const href = rawHref && isSafeUrl(rawHref) ? rawHref : undefined;
   const author = resolved.data?.author ? String(resolved.data.author) : undefined;
   const description = resolved.data?.description

@@ -169,6 +169,14 @@ export function NotificationToggle() {
             ? "Notifications enabled"
             : "Enable notifications";
 
+    // When the browser/OS has denied permission, the button is disabled — so
+    // tell the user how to re-enable it rather than leaving a dead end.
+    const blockedHint = permissionDenied
+        ? native
+            ? "Turn on notifications for PizzaPi in your system settings, then reload."
+            : "Allow notifications for this site in your browser's address-bar/site settings, then reload."
+        : null;
+
     const bellIcon = subscribed ? (
         <Bell className="h-4 w-4 text-foreground" />
     ) : (
@@ -261,8 +269,9 @@ export function NotificationToggle() {
                         {bellIcon}
                     </Button>
                 </TooltipTrigger>
-                <TooltipContent>
+                <TooltipContent className="max-w-[16rem]">
                     <p>{label}</p>
+                    {blockedHint && <p className="mt-1 text-muted-foreground">{blockedHint}</p>}
                 </TooltipContent>
             </Tooltip>
         </TooltipProvider>

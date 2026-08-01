@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
 import { getOAuthAccessToken, parseGeminiQuotaCredential } from "./usage-auth.js";
 
 describe("getOAuthAccessToken", () => {
@@ -13,6 +13,44 @@ describe("getOAuthAccessToken", () => {
     test("returns null for invalid payload", () => {
         expect(getOAuthAccessToken({})).toBeNull();
         expect(getOAuthAccessToken("token")).toBeNull();
+    });
+});
+
+describe("getAnthropicKeychainToken", () => {
+    afterEach(() => {
+        mock.restore();
+    });
+
+    test("returns the keychain access token when unexpired", async () => {
+        mock.module("./keychain-auth.js", () => ({
+            readBestExternalCredential: () => ({
+                credentials: { claudeAiOauth: { accessToken: "kc-token", refreshToken: "r", expiresAt: Date.now() + 60_000 } },
+                source: "keychain",
+                sourceLabel: "Claude Code-credentials",
+            }),
+        }));
+        const { getAnthropicKeychainToken } = await import("./usage-auth.js");
+        expect(getAnthropicKeychainToken()).toBe("kc-token");
+    });
+
+    test("returns null when the keychain token is expired (never refreshes)", async () => {
+        mock.module("./keychain-auth.js", () => ({
+            readBestExternalCredential: () => ({
+                credentials: { claudeAiOauth: { accessToken: "kc-token", refreshToken: "r", expiresAt: Date.now() - 1_000 } },
+                source: "keychain",
+                sourceLabel: "Claude Code-credentials",
+            }),
+        }));
+        const { getAnthropicKeychainToken } = await import("./usage-auth.js");
+        expect(getAnthropicKeychainToken()).toBeNull();
+    });
+
+    test("returns null when no external credential is found", async () => {
+        mock.module("./keychain-auth.js", () => ({
+            readBestExternalCredential: () => null,
+        }));
+        const { getAnthropicKeychainToken } = await import("./usage-auth.js");
+        expect(getAnthropicKeychainToken()).toBeNull();
     });
 });
 
@@ -31,12 +69,35 @@ describe("parseGeminiQuotaCredential", () => {
         });
     });
 
-    test("ignores api_key credentials", () => {
+    test("unwraps the legacy api_key wrapper around a quota payload", () => {
+        expect(
+            parseGeminiQuotaCredential({ type: "api_key", key: '{"token":"tok","projectId":"proj"}' }),
+        ).toEqual({ token: "tok", projectId: "proj" });
+    });
+
+    test("ignores a real api_key credential", () => {
         expect(parseGeminiQuotaCredential({ type: "api_key", key: "AIza..." })).toBeNull();
+    });
+
+    test("accepts the oauth credential a real /login writes", () => {
+        expect(
+            parseGeminiQuotaCredential({ type: "oauth", access: "ya29.token", refresh: "1//r", expires: 123 }),
+        ).toEqual({ token: "ya29.token", projectId: null });
+    });
+
+    test("keeps a projectId alongside an oauth credential when present", () => {
+        expect(
+            parseGeminiQuotaCredential({ type: "oauth", access: "ya29.token", projectId: "proj" }),
+        ).toEqual({ token: "ya29.token", projectId: "proj" });
+    });
+
+    test("returns null for a blank oauth access token", () => {
+        expect(parseGeminiQuotaCredential({ type: "oauth", access: "   " })).toBeNull();
     });
 
     test("returns null for invalid values", () => {
         expect(parseGeminiQuotaCredential("AIza-api-key")).toBeNull();
         expect(parseGeminiQuotaCredential('{"token":"tok"}')).toBeNull();
+        expect(parseGeminiQuotaCredential(null)).toBeNull();
     });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, mock, spyOn, test } from "bun:test";
 import { ServiceRegistry } from "./service-handler.js";
-import type { ServiceHandler, ServiceInitOptions } from "./service-handler.js";
+import type { ServiceHandler, ServiceInitOptions, PizzaPiSocket } from "./service-handler.js";
 import type { Socket } from "socket.io-client";
 
 function makeMockSocket(): Socket {
@@ -16,7 +16,7 @@ describe("ServiceRegistry", () => {
         const registry = new ServiceRegistry();
         const socket = makeMockSocket();
         const options: ServiceInitOptions = { isShuttingDown: () => false };
-        const initCalls: Array<{ id: string; socket: Socket; options: ServiceInitOptions }> = [];
+        const initCalls: Array<{ id: string; socket: PizzaPiSocket; options: ServiceInitOptions }> = [];
 
         const makeHandler = (id: string): ServiceHandler => ({
             id,

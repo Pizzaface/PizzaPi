@@ -35,15 +35,9 @@ describe("runner-usage-cache child", () => {
         const projectAgentDirByCwd = new Map([[projectCwd, "~/custom-agent-dir"]]);
 
         mock.module("@earendil-works/pi-coding-agent", () => ({
-            AuthStorage: {
-                create: (authPath: string) => {
-                    authCreateCalls.push(authPath);
-                    return {
-                        authPath,
-                        get: () => ({ type: "oauth", access: authPath }),
-                        getApiKey: async () => undefined,
-                    };
-                },
+            readStoredCredential: (_providerId: string, authPath: string) => {
+                authCreateCalls.push(authPath);
+                return { type: "oauth", access: authPath };
             },
         }));
 
@@ -59,6 +53,7 @@ describe("runner-usage-cache child", () => {
                 if (!raw || raw.type !== "oauth") return null;
                 return "token:" + raw.access;
             },
+            getAnthropicKeychainToken: () => null,
             parseGeminiQuotaCredential: () => null,
         }));
 

@@ -1,0 +1,212 @@
+/**
+ * Regression test for the session_error / session_complete emit ordering.
+ *
+ * Docs promise session_error is an "early signal" delivered before
+ * session_complete. Both are emitted synchronously (direct socket.emit calls)
+ * from the agent_end handler, so which call comes first in the source
+ * determines wire order. This exercises the real registerLifecycleHandlers
+ * agent_end handler end-to-end (not a reimplementation) so a future accidental
+ * reordering fails the test.
+ */
+import { describe, test, expect, mock } from "bun:test";
+import { registerLifecycleHandlers, type LifecycleHandlerState } from "./lifecycle-handlers.js";
+import { createFollowUpGrace } from "./followup-grace.js";
+import type { RelayContext } from "../remote-types.js";
+import { reserveSubagentSlots } from "../subagent/background-state.js";
+
+function makeState(): LifecycleHandlerState {
+    return {
+        staleChildIds: new Set(),
+        pendingDelink: false,
+        pendingDelinkEpoch: null,
+        pendingDelinkOwnParent: false,
+        stalePrimaryParentId: null,
+        pendingCancellations: [],
+        sessionCompleteFired: false,
+        sessionCompleteGeneration: 0,
+        sessionCompleteTransportGeneration: 0,
+        sessionCompleteRetryTimer: null,
+        pendingSessionCompleteDelivery: null,
+        pendingSessionCompleteSocket: null,
+        pendingSessionCompleteTransportGeneration: null,
+        lastSessionCompletePayload: null,
+    };
+}
+
+/** Builds a minimal harness: real registerLifecycleHandlers + real followup-grace,
+ * with a fake pi/socket capturing emitted trigger types in call order. */
+function setup(lastRetryableError: { errorMessage: string; detectedAt: number } | null) {
+    const handlers = new Map<string, (event: any, ctx: any) => void>();
+    const emitted: string[] = [];
+
+    const pi: any = {
+        on: (name: string, fn: any) => handlers.set(name, fn),
+        events: { on: () => {} },
+        registerTool: () => {},
+        registerCommand: () => {},
+    };
+
+    const socket: any = {
+        connected: true,
+        emit: mock((_event: string, payload: any) => {
+            emitted.push(payload?.trigger?.type ?? "unknown");
+        }),
+        on: () => {},
+        off: () => {},
+    };
+
+    const rctx = {
+        pi,
+        isChildSession: true,
+        parentSessionId: "parent-session-1",
+        relay: { sessionId: "child-session-1", token: "relay-token" },
+        sioSocket: socket,
+        lastRetryableError,
+        wasAborted: false,
+        shuttingDown: false,
+        supportsSessionTriggerAck: true,
+        forwardEvent: mock(() => {}),
+        buildHeartbeat: () => ({ type: "heartbeat", ts: Date.now() }),
+    } as unknown as RelayContext;
+
+    const state = makeState();
+    const followUpGrace = createFollowUpGrace(rctx, state as any);
+
+    registerLifecycleHandlers({
+        pi,
+        rctx,
+        state,
+        triggerWaits: { cancelAll: () => 0 } as any,
+        delinkManager: {} as any,
+        cancellationManager: {} as any,
+        followUpGrace,
+        startSessionNameSync: () => {},
+        stopSessionNameSync: () => {},
+        doConnect: () => {},
+        doDisconnect: () => {},
+        clearCtx: () => {},
+    });
+
+    const agentEnd = handlers.get("agent_end")!;
+    const agentSettled = handlers.get("agent_settled")!;
+    return { agentEnd, agentSettled, emitted, rctx };
+}
+
+const agentEndCtx = { hasPendingMessages: () => false, shutdown: () => {} };
+
+describe("agent_end — session_error / session_complete ordering", () => {
+    test("emits session_error before session_complete for a child session usage-limit error", () => {
+        const { agentEnd, agentSettled, emitted } = setup({
+            errorMessage: "You have exceeded your usage limit",
+            detectedAt: Date.now(),
+        });
+
+        agentEnd({ messages: [] }, agentEndCtx);
+        agentSettled({}, agentEndCtx);
+
+        // Both are emitted synchronously within the handler call (before any
+        // await/microtask), so capturing immediately after invocation is safe.
+        expect(emitted).toEqual(["session_error", "session_complete"]);
+    });
+
+    test("emits only session_complete when there is no usage-limit error", () => {
+        const { agentEnd, agentSettled, emitted } = setup(null);
+
+        agentEnd({ messages: [] }, agentEndCtx);
+        agentSettled({}, agentEndCtx);
+
+        expect(emitted).toEqual(["session_complete"]);
+    });
+
+    test("defers session_complete until background subagents settle", () => {
+        const release = reserveSubagentSlots(1, 1)!;
+        const { agentEnd, agentSettled, emitted } = setup(null);
+
+        agentEnd({ messages: [] }, agentEndCtx);
+        agentSettled({}, agentEndCtx);
+        expect(emitted).toEqual([]);
+
+        release();
+        expect(emitted).toEqual(["session_complete"]);
+    });
+
+    test("does not report deferred completion after a result starts a follow-up turn", () => {
+        const release = reserveSubagentSlots(1, 1)!;
+        const { agentEnd, agentSettled, emitted } = setup(null);
+
+        agentEnd({ messages: [] }, agentEndCtx);
+        agentSettled({}, agentEndCtx);
+        release(true);
+        expect(emitted).toEqual([]);
+
+        agentEnd({ messages: [] }, agentEndCtx);
+        agentSettled({}, agentEndCtx);
+        expect(emitted).toEqual(["session_complete"]);
+    });
+
+    test("replays settlement when the last of concurrent subagents does not deliver", () => {
+        const releaseA = reserveSubagentSlots(1, 2)!;
+        const releaseB = reserveSubagentSlots(1, 2)!;
+        const { agentEnd, agentSettled, emitted } = setup(null);
+
+        agentEnd({ messages: [] }, agentEndCtx);
+        agentSettled({}, agentEndCtx);
+        releaseA(true);
+
+        agentEnd({ messages: [] }, agentEndCtx);
+        agentSettled({}, agentEndCtx);
+        releaseB(false);
+
+        expect(emitted).toEqual(["session_complete"]);
+    });
+
+    test("agent_end alone emits nothing — reporting waits for agent_settled (auto-retry pending)", () => {
+        const { agentEnd, emitted } = setup({
+            errorMessage: "You have exceeded your usage limit",
+            detectedAt: Date.now(),
+        });
+
+        agentEnd({ messages: [] }, agentEndCtx);
+
+        expect(emitted).toEqual([]);
+    });
+
+    test("no session_error when a retry recovers before settling", () => {
+        const { agentEnd, agentSettled, emitted, rctx } = setup({
+            errorMessage: "You have exceeded your usage limit",
+            detectedAt: Date.now(),
+        });
+
+        // Attempt 1 errors, pi auto-retries.
+        agentEnd({ messages: [] }, agentEndCtx);
+        // Retry succeeds: message_end (non-error) clears the latch.
+        (rctx as any).lastRetryableError = null;
+        agentEnd({ messages: [] }, agentEndCtx);
+        agentSettled({}, agentEndCtx);
+
+        expect(emitted).toEqual(["session_complete"]);
+    });
+});
+
+describe("agent_end — forwarded event must not carry run-scoped messages", () => {
+    // pi's agent_end.messages contains only the current run's messages. The web
+    // UI and server snapshot cache treat agent_end.messages as a full-transcript
+    // snapshot, so forwarding them truncates the visible transcript to the last
+    // run. The handler must strip messages before forwarding.
+    test("forwards agent_end without messages, keeps them for the settled summary", () => {
+        const { agentEnd, agentSettled, emitted, rctx } = setup(null);
+        const runMessages = [{ role: "assistant", content: [{ type: "text", text: "turn 2 only" }] }];
+
+        agentEnd({ type: "agent_end", messages: runMessages }, agentEndCtx);
+
+        const forwarded = (rctx.forwardEvent as any).mock.calls
+            .map((c: any[]) => c[0])
+            .find((e: any) => e?.type === "agent_end");
+        expect(forwarded).toBeDefined();
+        expect("messages" in forwarded).toBe(false);
+
+        // Summary reporting still sees the run messages via agent_settled.
+        agentSettled({}, agentEndCtx);
+        expect(emitted).toEqual(["session_complete"]);
+    });
+});

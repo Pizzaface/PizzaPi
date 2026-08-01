@@ -119,7 +119,7 @@ src/config.ts:8:    trustedOrigins: ["http://localhost:5173"],`)],
 
     // Assistant: conclusion
     events.push(buildAssistantMessage(
-        "Good news — CSRF protection is handled in the middleware layer at `src/middleware.ts:12`. The `trustedOrigins` are configured in `src/config.ts`.\n\n### Summary\n\n| Check | Status |\n|-------|--------|\n| Rate limiting | ✅ Configured |\n| Session expiry | ✅ 7 days |\n| CSRF protection | ✅ In middleware |\n| Trusted origins | ✅ Configured |\n| Password hashing | ✅ better-auth default (argon2) |\n\nThe auth module looks secure. No P0-P2 issues found. **LGTM** 🎉",
+        "Good news — CSRF protection is handled in the middleware layer at `src/middleware.ts:12`. The `trustedOrigins` are configured in `src/config.ts`.\n\n### Summary\n\n| Check | Status |\n|-------|--------|\n| Rate limiting | ✅ Configured |\n| Session expiry | ✅ 7 days |\n| CSRF protection | ✅ In middleware |\n| Trusted origins | ✅ Configured |\n| Password hashing | ✅ better-auth default (argon2) |\n\nThe auth module looks secure. No P0-P2 issues found. **LGTM** 🎉\n\nLogged as [[gm-idea:GM-42]] — package-origin sigil smoke test.",
     ));
 
     return events;
@@ -572,6 +572,69 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
     return { port: server.port!, stop: () => server.stop(true) };
 }
 
+// ── Mock package-origin service (panel + trigger + sigil) ──────────────────────────
+// Mirrors what a real package (installed via `pizza install`, declaring a
+// `pi.pizzapi` overlay with services[]) would mount: an iframe panel, a
+// namespaced trigger, and a resolvable sigil type. The wire protocol
+// (service_announce) carries no origin discriminator, so this mock is
+// indistinguishable — by design — from the folder-based system-monitor mock
+// above. See packages/cli/src/runner/package-service-loader.ts.
+
+const GODMOTHER_LITE_SERVICE_ID = "godmother-lite";
+const GODMOTHER_LITE_IDEAS: Record<string, { title: string; status: string }> = {
+    "GM-42": { title: "Ship the overlay verification suite", status: "execute" },
+};
+
+function startMockGodmotherLitePackageService(): { port: number; stop: () => void } {
+    const PANEL_HTML = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Godmother Lite</title><style>
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#0a0a0b;color:#e4e4e7;font-size:12px;padding:12px}
+h1{font-size:13px;margin-bottom:8px}
+ul{list-style:none;padding:0;margin:0}
+li{padding:6px 8px;border:1px solid #27272a;border-radius:6px;margin-bottom:6px;background:#131316}
+.status{color:#22c55e;font-size:10px;text-transform:uppercase;letter-spacing:.05em}
+</style></head><body>
+<h1>🧚 Godmother Lite (package-origin mock service)</h1>
+<ul id="list"></ul>
+<script>
+fetch('./api/ideas').then(r=>r.json()).then(function(ideas){
+  var ul=document.getElementById('list');
+  Object.keys(ideas).forEach(function(id){
+    var li=document.createElement('li');
+    li.innerHTML='<div>'+id+' — '+ideas[id].title+'</div><div class="status">'+ideas[id].status+'</div>';
+    ul.appendChild(li);
+  });
+});
+</script></body></html>`;
+
+    const server = Bun.serve({
+        port: 0,
+        fetch(req) {
+            const url = new URL(req.url);
+            // Sigil resolve endpoint — mirrors a package service's HTTP resolve
+            // server (announceSigilServer), used by SigilPill to enrich [[gm-idea:ID]].
+            const resolveMatch = url.pathname.match(/\/api\/resolve\/gm-idea\/([^/]+)$/);
+            if (resolveMatch) {
+                const id = decodeURIComponent(resolveMatch[1]);
+                const idea = GODMOTHER_LITE_IDEAS[id];
+                if (!idea) return new Response(JSON.stringify({ error: "not found" }), { status: 404, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+                return new Response(JSON.stringify({ id, ...idea }), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+            }
+            if (url.pathname === "/api/ideas" || url.pathname.endsWith("/api/ideas")) {
+                return new Response(JSON.stringify(GODMOTHER_LITE_IDEAS), {
+                    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                });
+            }
+            return new Response(PANEL_HTML, {
+                headers: { "Content-Type": "text/html; charset=utf-8" },
+            });
+        },
+    });
+
+    return { port: server.port!, stop: () => server.stop(true) };
+}
+
 async function main() {
     const opts = parseCliOptions(process.argv.slice(2));
 
@@ -612,15 +675,42 @@ async function main() {
     const monitorPort = monitorServer.port;
     console.log(`  📊 Mock system monitor panel on port ${monitorPort}`);
 
+    // Start mock package-origin service (panel + trigger + sigil) — exercises
+    // the same wire-compatible service_announce path as any other service.
+    const godmotherLiteServer = startMockGodmotherLitePackageService();
+    const godmotherLitePort = godmotherLiteServer.port;
+    console.log(`  Mock package-origin service (godmother-lite) on port ${godmotherLitePort}`);
+
     // Create a default mock runner so sessions have a runner association
     // and service_announce reaches viewers.
     const defaultRunner = await createMockRunner(server, {
         name: "sandbox-runner",
         roots: ["/Users/jordan/Documents/Projects/PizzaPi"],
         platform: "darwin",
-        serviceIds: ["terminal", "file-explorer", "git", "tunnel", "system-monitor"],
+        serviceIds: ["terminal", "file-explorer", "git", "tunnel", "system-monitor", GODMOTHER_LITE_SERVICE_ID],
         panels: [
             { serviceId: "system-monitor", port: monitorPort, label: "System Monitor", icon: "activity" },
+            { serviceId: GODMOTHER_LITE_SERVICE_ID, port: godmotherLitePort, label: "Godmother Lite", icon: "sparkles" },
+        ],
+        triggerDefs: [
+            {
+                type: "godmother-lite:idea_moved",
+                label: "Idea Status Changed",
+                description: "Fires when a Godmother Lite idea's status changes",
+                schema: { type: "object", properties: { id: { type: "string" }, status: { type: "string" } } },
+                params: [{ name: "project", label: "Project", type: "string", required: false }],
+            },
+        ],
+        sigilDefs: [
+            {
+                type: "gm-idea",
+                label: "Godmother Idea",
+                serviceId: GODMOTHER_LITE_SERVICE_ID,
+                description: "Reference to a Godmother Lite idea",
+                icon: "lightbulb",
+                resolve: "/api/resolve/gm-idea/{id}",
+                resolvePort: godmotherLitePort,
+            },
         ],
         skills: [
             { name: "code-review", description: "Code review", filePath: "/skills/code-review/SKILL.md" },
@@ -713,7 +803,7 @@ async function main() {
             // so headless browsers and curl work without cert gymnastics.
             env: { ...process.env, PORT: serverPort, PIZZAPI_SANDBOX_NO_TLS: "1" },
             stdout: "ignore",
-            stderr: "ignore",
+            stderr: opts.headless ? "inherit" : "ignore",
         },
     );
     // Wait for Vite to be ready (HTTP — TLS is disabled for sandbox)
@@ -1080,6 +1170,7 @@ async function main() {
     }
 
     // Handle Ctrl+C for graceful shutdown
+    let shuttingDown = false;
     process.on("SIGINT", () => {
         console.log("");
         doShutdown();
@@ -1102,7 +1193,17 @@ async function main() {
     }
 
     async function doShutdown() {
+        if (shuttingDown) return;
+        shuttingDown = true;
         console.log("🧹 Shutting down...");
+
+        // Kill Vite immediately before any slow awaited teardown so it is not
+        // orphaned if the parent force-kills the sandbox process.
+        try {
+            viteProc.kill("SIGKILL");
+            await viteProc.exited;
+        } catch {}
+
         // Disconnect runners
         for (const r of runners) {
             try { await r.disconnect(); } catch {}
@@ -1113,11 +1214,10 @@ async function main() {
         } else {
             process.env.PIZZAPI_BASE_URL = savedBaseUrl;
         }
-        sandboxApi.stop();
-        monitorServer.stop();
-        await scenario.teardown();
-        viteProc.kill();
-        await stopRedis();
+        try { sandboxApi.stop(); } catch {}
+        try { monitorServer.stop(); } catch {}
+        try { await scenario.teardown(); } catch {}
+        try { await stopRedis(); } catch {}
         console.log("👋 Goodbye!\n");
         process.exit(0);
     }

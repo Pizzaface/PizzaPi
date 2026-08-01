@@ -16,6 +16,15 @@ export function evaluateVersionNegotiation(
         clientSocketProtocol: number;
         /** Build timestamp baked into this UI bundle at compile time. */
         uiBuildTimestamp?: string | null;
+        /**
+         * True when running inside the bundled Capacitor mobile app. The mobile
+         * bundle's build timestamp comes from a separate build pipeline than the
+         * relay server's web UI, so comparing them produces a permanent false
+         * positive ("update deployed") that "Refresh" can't fix anyway — the
+         * native shell doesn't pull fresh assets from the network. Skip that
+         * check on mobile; semver/protocol mismatches (real signals) still fire.
+         */
+        isMobileBundled?: boolean;
     },
 ): VersionNegotiationResult {
     const rawVersion =
@@ -50,6 +59,7 @@ export function evaluateVersionNegotiation(
     // this UI bundle, a new image was deployed after the user loaded the page.
     const buildTimestampMismatch =
         !semverNewer &&
+        !opts.isMobileBundled &&
         typeof serverBuildTimestamp === "string" &&
         serverBuildTimestamp !== null &&
         typeof opts.uiBuildTimestamp === "string" &&

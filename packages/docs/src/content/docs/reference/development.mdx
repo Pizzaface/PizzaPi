@@ -15,7 +15,7 @@ You'll need these installed before you start:
 
 | Tool | Why |
 |------|-----|
-| **[Bun](https://bun.sh)** ≥ 1.1 | Runtime, package manager, test runner, and bundler. PizzaPi uses Bun exclusively — not Node, npm, yarn, or pnpm. |
+| **[Bun](https://bun.sh)** ≥ 1.1 recommended | Runtime, package manager, test runner, and bundler. PizzaPi uses Bun exclusively — not Node, npm, yarn, or pnpm. |
 | **[Redis](https://redis.io)** | The relay server buffers session events in Redis. Run it locally or via Docker. |
 | **[Docker](https://www.docker.com)** *(optional)* | Only needed if you prefer the containerized dev setup, or want to test production builds. |
 | **[Git](https://git-scm.com)** | Version control. You know this one. |
@@ -65,6 +65,12 @@ Start Redis in one terminal:
 redis-server
 ```
 
+The repo also provides a helper that starts its own Redis instance:
+
+```bash
+bun run dev:redis
+```
+
 Then start the dev servers:
 
 ```bash
@@ -97,13 +103,15 @@ This starts Redis, the API server, and the Vite UI server in containers with the
 ```
 packages/
   protocol/   Shared TypeScript types for the relay wire protocol
+  tunnel/     Bun-based HTTP tunnel/proxy package
   tools/      Shared agent tools (bash, read-file, write-file, search)
   server/     Bun HTTP + WebSocket relay server (auth, sessions, push notifications)
   ui/         React 19 PWA web interface (Vite, TailwindCSS v4, Radix UI / shadcn)
-  cli/        CLI wrapper — launches pi with PizzaPi extensions and the runner daemon
+  cli/        CLI wrapper — launches pi with PizzaPi extensions, the runner daemon
   docs/       This documentation site (Astro Starlight)
-  npm/        npm distribution — builds & publishes @pizzapi packages
+  npm/        Build scripts for the `npx pizzapi` npm packages (not a workspace)
 
+mobile/       Capacitor Android/iOS wrapper around the bundled PWA
 docker/       Docker Compose (redis + server services)
 patches/      Bun patches for upstream pi packages (auto-applied on bun install)
 ```
@@ -115,7 +123,7 @@ patches/      Bun patches for upstream pi packages (auto-applied on bun install)
 PizzaPi is a monorepo with ordered package dependencies. The build must follow this sequence:
 
 ```
-protocol → tools → server → ui → cli
+protocol → tunnel → tools → server → ui → cli
 ```
 
 `docs` and `npm` are independent and can be built separately.
@@ -128,6 +136,7 @@ bun run build
 
 # Build individual packages
 bun run build:protocol
+bun run build:tunnel
 bun run build:tools
 bun run build:server
 bun run build:ui
@@ -193,10 +202,13 @@ bun test packages/cli
 
 | Package | What's tested |
 |---------|---------------|
+| **protocol** | Shared relay types and pure helpers |
+| **tunnel** | HTTP/WebSocket tunnel client and relay helpers |
 | **server** | Validation, security, sessions store, attachments, API routes, pruning |
 | **ui** | Message grouping, session viewer utils, path utilities |
 | **tools** | Toolkit helpers, pi compatibility layer |
 | **cli** | Patch application and runtime behavior |
+| **mobile** | Capacitor bootstrap logic |
 
 <Aside type="note">
   All new code should include tests. Run `bun run test` before committing — tests are part of the quality gate.
@@ -219,7 +231,7 @@ The database file lives at `packages/server/auth.db`. After schema changes, alwa
 
 ## Patches
 
-PizzaPi patches some upstream `pi` packages to add relay streaming and other features. Patches live in the `patches/` directory and are **applied automatically** during `bun install`.
+PizzaPi patches some upstream `pi` packages to add dynamic tool refresh, Windows console support, Anthropic web search, and PizzaPi config/session wiring. Patches live in the `patches/` directory and are **applied automatically** during `bun install`. See `patches/README.md` for the per-package details.
 
 **Never edit files in `node_modules` directly.** If you need to change upstream behavior:
 
@@ -250,7 +262,7 @@ PizzaPi patches some upstream `pi` packages to add relay streaming and other fea
 - **Redis** must be running for the server to start. If you see connection errors, check that `redis-server` is up (or `docker compose up redis`).
 - **TypeScript** errors? Run `bun run typecheck` to get a full picture across all packages at once.
 - **Docs changes** are previewed with `bun run dev:docs` at `http://localhost:4321/PizzaPi/`.
-- **Build order matters.** If you change `protocol` or `tools`, rebuild those before building downstream packages.
+- **Build order matters.** If you change `protocol`, `tunnel`, or `tools`, rebuild those before building downstream packages.
 
 ---
 

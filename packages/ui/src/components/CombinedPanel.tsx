@@ -271,7 +271,10 @@ export function CombinedPanel({
   const mountedTabs = tabs.filter((tab) => tab.id === activeTab?.id || tab.keepMountedWhenInactive);
 
   return (
-    <div className={cn("flex flex-col bg-background text-foreground", className)}>
+    // @container: panel content below keys responsive layout off the actual
+    // dock width, not the viewport — panels are resized independently of
+    // the browser window in the 9-zone dock layout.
+    <div className={cn("@container flex flex-col bg-background text-foreground", className)}>
       {/* Tab bar */}
       <div className="flex items-center border-b border-border bg-muted/50 shrink-0 min-h-[32px] overflow-hidden">
         <div className="flex items-center flex-1 min-w-0 overflow-x-auto gap-0.5 px-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">

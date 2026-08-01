@@ -21,6 +21,9 @@ const win = new Window({ url: "http://localhost/" });
 (globalThis as any).Node = win.Node;
 (globalThis as any).SVGElement = win.SVGElement;
 (globalThis as any).MutationObserver = win.MutationObserver;
+// Own localStorage: without this the panel inherits another file's storage and
+// a stray pizzapi.serverUrl flips useTunnelSrc into mobile (token-fetch) mode.
+(globalThis as any).localStorage = win.localStorage;
 (globalThis as any).getComputedStyle = win.getComputedStyle.bind(win);
 // ResizeObserver stub — guards against transitive deps that use it
 (globalThis as any).ResizeObserver = class {

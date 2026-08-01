@@ -17,7 +17,7 @@ function DeleteKeyButton({ onDelete, isDeleting }: { onDelete: () => void; isDel
 
     React.useEffect(() => {
         if (!confirming) return;
-        const timer = setTimeout(() => setConfirming(false), 3000);
+        const timer = setTimeout(() => setConfirming(false), 5000);
         return () => clearTimeout(timer);
     }, [confirming]);
 

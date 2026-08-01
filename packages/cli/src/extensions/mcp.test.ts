@@ -321,6 +321,41 @@ describe("MCP HTTP smoke test", () => {
 });
 
 describe("MCP config compatibility", () => {
+    test("URL takes precedence over incidental stdio fields", async () => {
+        let requestCount = 0;
+        const server = Bun.serve({
+            port: 0,
+            async fetch(req) {
+                requestCount++;
+                const body = await req.json() as any;
+                if (!("id" in body)) return new Response(null, { status: 202 });
+                if (body.method === "initialize") {
+                    return Response.json({ jsonrpc: "2.0", id: body.id, result: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, serverInfo: { name: "remote", version: "1" } } });
+                }
+                if (body.method === "tools/list") return Response.json({ jsonrpc: "2.0", id: body.id, result: { tools: [] } });
+                return Response.json({ jsonrpc: "2.0", id: body.id, result: {} });
+            },
+        });
+        try {
+            const clients = await createMcpClientsFromConfig({
+                mcpServers: {
+                    remote: {
+                        url: `http://localhost:${server.port}`,
+                        command: "definitely-not-a-command",
+                        args: ["ignored"],
+                        env: { ROOT: "ignored" },
+                    },
+                },
+            } as any);
+            expect(clients).toHaveLength(1);
+            await clients[0].listTools();
+            expect(requestCount).toBeGreaterThan(0);
+            clients[0].close();
+        } finally {
+            server.stop(true);
+        }
+    });
+
     test("type: 'http' in mcpServers uses streamable transport", async () => {
         // When type: "http" is used (Claude Code / VS Code format), it should
         // create a streamable client, not a plain HTTP client. We verify this by

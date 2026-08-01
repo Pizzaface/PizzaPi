@@ -2,6 +2,7 @@ export type RemoteExecRequest =
     | { type: "exec"; id: string; command: "get_commands" }
     | { type: "exec"; id: string; command: "mcp"; action?: "status" | "reload" }
     | { type: "exec"; id: string; command: "abort" }
+    | { type: "exec"; id: string; command: "background_bash" }
     | { type: "exec"; id: string; command: "set_model"; provider: string; modelId: string }
     | { type: "exec"; id: string; command: "cycle_model" }
     | { type: "exec"; id: string; command: "get_available_models" }
@@ -13,6 +14,8 @@ export type RemoteExecRequest =
     | { type: "exec"; id: string; command: "compact"; customInstructions?: string }
     | { type: "exec"; id: string; command: "set_session_name"; name: string }
     | { type: "exec"; id: string; command: "get_last_assistant_text" }
+    | { type: "exec"; id: string; command: "get_fork_messages" }
+    | { type: "exec"; id: string; command: "fork"; entryId: string }
     | { type: "exec"; id: string; command: "list_resume_sessions"; limit?: number; cursor?: string }
     | { type: "exec"; id: string; command: "resume_session"; query?: string; sessionPath?: string }
     | { type: "exec"; id: string; command: "export_html"; outputPath?: string }
@@ -22,6 +25,7 @@ export type RemoteExecRequest =
     | { type: "exec"; id: string; command: "plugin_trust_response"; promptId: string; trusted: boolean }
     | { type: "exec"; id: string; command: "mcp_toggle_server"; serverName: string; disabled: boolean }
     | { type: "exec"; id: string; command: "set_plan_mode"; enabled?: boolean }
+    | { type: "exec"; id: string; command: "set_queued_messages"; messages: string[] }
     | { type: "exec"; id: string; command: "sandbox_get_status" }
     | { type: "exec"; id: string; command: "sandbox_update_config"; config: any };
 

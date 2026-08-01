@@ -15,7 +15,7 @@ Push notifications fire for three event types:
 
 | Event | Trigger | Notification |
 |---|---|---|
-| **Agent finished** (`agent_finished`) | Agent reaches the end of its task (`agent_end`) | _"Your agent in \{session\} has finished its task."_ |
+| **Agent finished** (`agent_finished`) | Agent reaches the end of its task (`agent_end`) | The agent's final reply text when available; otherwise _"Your agent in \{session\} has finished its task."_ |
 | **Input needed** (`agent_needs_input`) | Agent calls `AskUserQuestion` | _"Agent in \{session\} asks: \{question\}"_ |
 | **Agent error** (`agent_error`) | A `cli_error` event is emitted | _"Error in \{session\}: \{message\}"_ |
 
@@ -25,7 +25,7 @@ Push notifications fire for three event types:
 
 ### Quick Reply from Notifications
 
-When the agent asks a single question with multiple-choice options, the push notification includes **action buttons** so you can reply directly — no need to open the browser. Up to two option buttons plus an inline text reply are shown. Quick reply requires [collab mode](/PizzaPi/web-ui/terminal/) to be enabled on the session.
+When the agent asks a single question with multiple-choice options, the push notification includes **action buttons** so you can reply directly — no need to open the browser. Up to two option buttons plus an inline text reply are shown. Quick reply is available on linked remote sessions by default.
 
 ---
 
@@ -66,7 +66,7 @@ Set `enabledEvents` to `"*"` to re-enable all events.
 
 When an agent spawns sub-agents, each child session can generate its own notifications — potentially creating a storm of alerts. To prevent this, toggle **Suppress child session notifications** in the bell dropdown menu.
 
-When enabled, notifications from linked child sessions are silently skipped. The parent session's notifications still come through normally. This setting is per-subscription (per-device), so you can suppress on your phone but keep them on desktop.
+When enabled, notifications from linked child sessions are silently skipped. The parent session's notifications still come through normally. This setting is per-subscription (per-device), so you can suppress on your phone but keep them on desktop. The toggle appears in the notifications dropdown on desktop, or in the mobile header menu on small screens. Suppression applies to browser Web Push subscriptions only — it is not currently enforced for native app push (ntfy).
 
 Under the hood this calls `PUT /api/push/child-notifications` with `{ "endpoint": "...", "suppress": true }`.
 
@@ -148,7 +148,7 @@ Common causes:
 
 ### VAPID key mismatch after rotation
 
-If you change VAPID keys, all existing subscriptions become invalid. The server automatically cleans up stale subscriptions (410 Gone responses from push services), but users need to re-subscribe.
+If you change VAPID keys, all existing subscriptions become invalid. The server automatically cleans up stale subscriptions (410 Gone or 404 Not Found responses from push services), but users need to re-subscribe.
 
 **Fix:** After rotating keys, notify users to toggle notifications off and back on.
 

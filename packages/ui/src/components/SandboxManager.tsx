@@ -399,7 +399,7 @@ export function SandboxManager({ runnerId, bare }: SandboxManagerProps) {
                             <div className="flex items-center gap-2 flex-wrap px-2 py-2 rounded-lg border border-border/40 bg-muted/20">
                                 <ModeBadge mode={form.mode} />
                                 <span className="text-xs text-muted-foreground">
-                                    {status.active ? "✅ Configured" : "❌ Not configured"}
+                                    {status.active ? "✅ Configured" : "❌ Not active — settings below apply after saving"}
                                 </span>
                                 <span className="text-xs text-muted-foreground">·</span>
                                 <span className="text-xs text-muted-foreground">{status.platform}</span>
@@ -539,22 +539,31 @@ export function SandboxManager({ runnerId, bare }: SandboxManagerProps) {
                                         <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Advanced</span>
                                     </CollapsibleTrigger>
                                     <CollapsibleContent className="mt-2 flex flex-col gap-2.5 pl-1">
-                                        <div className="flex items-center justify-between">
-                                            <Label className="text-[11px] text-muted-foreground">Allow PTY</Label>
+                                        <div className="flex items-center justify-between gap-3">
+                                            <div className="min-w-0">
+                                                <Label className="text-[11px] text-muted-foreground">Allow PTY</Label>
+                                                <p className="text-[10px] text-muted-foreground/60">Allow pseudo-terminal allocation inside the sandbox (needed by interactive CLIs).</p>
+                                            </div>
                                             <Switch
                                                 checked={form.allowPty}
                                                 onCheckedChange={(checked) => setForm((prev) => ({ ...prev, allowPty: checked }))}
                                             />
                                         </div>
-                                        <div className="flex items-center justify-between">
-                                            <Label className="text-[11px] text-muted-foreground">Weaker Network Isolation</Label>
+                                        <div className="flex items-center justify-between gap-3">
+                                            <div className="min-w-0">
+                                                <Label className="text-[11px] text-muted-foreground">Weaker Network Isolation</Label>
+                                                <p className="text-[10px] text-muted-foreground/60">Keeps the network namespace on Linux. Fixes tools that need networking, but weakens isolation.</p>
+                                            </div>
                                             <Switch
                                                 checked={form.enableWeakerNetworkIsolation}
                                                 onCheckedChange={(checked) => setForm((prev) => ({ ...prev, enableWeakerNetworkIsolation: checked }))}
                                             />
                                         </div>
-                                        <div className="flex items-center justify-between">
-                                            <Label className="text-[11px] text-muted-foreground">Weaker Nested Sandbox</Label>
+                                        <div className="flex items-center justify-between gap-3">
+                                            <div className="min-w-0">
+                                                <Label className="text-[11px] text-muted-foreground">Weaker Nested Sandbox</Label>
+                                                <p className="text-[10px] text-muted-foreground/60">Allow nested sandbox-exec / bubblewrap with a weaker profile. Weakens isolation.</p>
+                                            </div>
                                             <Switch
                                                 checked={form.enableWeakerNestedSandbox}
                                                 onCheckedChange={(checked) => setForm((prev) => ({ ...prev, enableWeakerNestedSandbox: checked }))}

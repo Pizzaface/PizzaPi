@@ -184,6 +184,123 @@ describe("Scanner", () => {
     db.close();
   });
 
+  test("processFile includes /goal evaluator spend (goal_evaluator_usage custom entries) in usage totals", () => {
+    const tmpDir = mkdtempSync("/tmp/usage-scanner-test-");
+    const dbPath = join(tmpDir, "test.db");
+    const filePath = join(tmpDir, "session.jsonl");
+
+    const sessionHeader = {
+      type: "session",
+      version: 1,
+      id: "session-goal",
+      timestamp: "2026-03-23T12:00:00Z",
+      cwd: "/project/test",
+    } as const;
+
+    const usageMessage = {
+      type: "message",
+      id: "msg-001",
+      timestamp: "2026-03-23T12:05:00Z",
+      message: {
+        role: "assistant",
+        provider: "anthropic",
+        model: "claude-opus",
+        usage: {
+          input: 100,
+          output: 50,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 150,
+          cost: { total: 0.01, input: 0.006, output: 0.004, cacheRead: 0, cacheWrite: 0 },
+        },
+      },
+    };
+
+    // The /goal LLM evaluator makes a separate API call outside the normal
+    // turn pipeline; its spend is persisted as a goal_evaluator_usage custom
+    // entry (see extensions/goal/state.ts) rather than an assistant message.
+    const evaluatorUsage = {
+      type: "custom",
+      id: "entry-001",
+      customType: "goal_evaluator_usage",
+      timestamp: "2026-03-23T12:06:00Z",
+      data: {
+        provider: "anthropic",
+        model: "claude-haiku",
+        tokens: 60,
+        cost: 0.0002,
+        timestamp: new Date("2026-03-23T12:06:00Z").getTime(),
+      },
+    };
+
+    const content = `${JSON.stringify(sessionHeader)}\n${JSON.stringify(usageMessage)}\n${JSON.stringify(evaluatorUsage)}\n`;
+    writeFileSync(filePath, content);
+
+    const db = new Database(dbPath);
+    db.run("PRAGMA journal_mode=WAL");
+    db.run(`
+      CREATE TABLE usage_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        input_tokens INTEGER DEFAULT 0,
+        output_tokens INTEGER DEFAULT 0,
+        cache_read_tokens INTEGER DEFAULT 0,
+        cache_write_tokens INTEGER DEFAULT 0,
+        cost_usd REAL,
+        cost_input REAL,
+        cost_output REAL,
+        cost_cache_read REAL,
+        cost_cache_write REAL,
+        UNIQUE(session_id, timestamp, model)
+      )
+    `);
+    db.run(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        project TEXT NOT NULL,
+        session_name TEXT,
+        started_at INTEGER NOT NULL,
+        ended_at INTEGER,
+        message_count INTEGER DEFAULT 0,
+        total_input INTEGER DEFAULT 0,
+        total_output INTEGER DEFAULT 0,
+        total_cache_read INTEGER DEFAULT 0,
+        total_cache_write INTEGER DEFAULT 0,
+        total_cost REAL,
+        primary_model TEXT,
+        primary_provider TEXT
+      )
+    `);
+    db.run(`
+      CREATE TABLE processing_state (
+        file_path TEXT PRIMARY KEY,
+        last_offset INTEGER DEFAULT 0,
+        last_modified INTEGER
+      )
+    `);
+
+    processFile(db, filePath, "session.jsonl", sessionHeader, content);
+
+    const events = db.query<any, []>("SELECT * FROM usage_events ORDER BY timestamp").all();
+    expect(events.length).toBe(2);
+    expect(events[1].model).toBe("claude-haiku");
+    expect(events[1].output_tokens).toBe(60);
+    expect(events[1].cost_usd).toBeCloseTo(0.0002, 6);
+
+    const sessions = db.query<any, []>("SELECT * FROM sessions").all();
+    expect(sessions.length).toBe(1);
+    // Evaluator spend must be folded into the session total, not silently
+    // dropped — this is the whole point of the fix.
+    expect(sessions[0].total_cost).toBeCloseTo(0.01 + 0.0002, 6);
+    expect(sessions[0].total_output).toBe(50 + 60);
+
+    db.close();
+  });
+
   test("processFile skips malformed JSON lines without crashing", () => {
     const tmpDir = mkdtempSync("/tmp/usage-scanner-test-");
     const dbPath = join(tmpDir, "test.db");

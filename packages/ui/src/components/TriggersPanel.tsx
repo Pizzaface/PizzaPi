@@ -46,6 +46,7 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { cronFromSchedule, scheduleFromCron, type RecurringSchedule } from "@/lib/cron-schedule";
 import type { JsonValue, ServiceTriggerDef, ServiceTriggerParamDef } from "@pizzapi/protocol";
 
 // ── Shared trigger utilities (re-exported for backward compat) ─────────────
@@ -116,11 +117,10 @@ export interface LinkedSessionGroup {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function formatRelativeTime(isoTs: string): string {
-  const now = Date.now();
+function formatRelativeTime(isoTs: string, nowMs: number): string {
   const then = new Date(isoTs).getTime();
   if (isNaN(then)) return isoTs;
-  const diffMs = now - then;
+  const diffMs = nowMs - then;
   const diffSec = Math.floor(diffMs / 1000);
   if (diffSec < 5) return "just now";
   if (diffSec < 60) return `${diffSec}s ago`;
@@ -130,6 +130,18 @@ function formatRelativeTime(isoTs: string): string {
   if (diffHr < 24) return `${diffHr}h ago`;
   const diffDay = Math.floor(diffHr / 24);
   return `${diffDay}d ago`;
+}
+
+/** Renders a relative timestamp that ticks internally every 5s. */
+function RelativeTime({ isoTs }: { isoTs: string }) {
+  const [now, setNow] = React.useState(Date.now);
+
+  React.useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 5_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  return <>{formatRelativeTime(isoTs, now)}</>;
 }
 
 /** Returns a lucide icon for the trigger source */
@@ -589,7 +601,7 @@ function EventRow({ entry }: { entry: TriggerHistoryEntry }) {
         )}
 
         <span className="text-[10px] text-muted-foreground/50 ml-auto shrink-0">
-          {formatRelativeTime(entry.ts)}
+          <RelativeTime isoTs={entry.ts} />
         </span>
 
         {entry.response && (
@@ -621,11 +633,9 @@ function EventRow({ entry }: { entry: TriggerHistoryEntry }) {
 interface LinkedSessionCardProps {
   group: LinkedSessionGroup;
   statusUpdates: Map<string, TriggerStatusUpdate>;
-  /** Force relative times to re-render */
-  tick: number;
 }
 
-function LinkedSessionCard({ group, statusUpdates, tick: _tick }: LinkedSessionCardProps) {
+function LinkedSessionCard({ group, statusUpdates }: LinkedSessionCardProps) {
   const [expanded, setExpanded] = React.useState(false);
   const status = deriveSessionStatus(group);
   const isPending = !!group.pendingTrigger;
@@ -733,7 +743,7 @@ function LinkedSessionCard({ group, statusUpdates, tick: _tick }: LinkedSessionC
                 {!["ask_user_question", "plan_review", "session_complete", "escalate"].includes(group.pendingTrigger!.type) && `Awaiting response to ${group.pendingTrigger!.type}`}
               </span>
               <span className="text-[10px] text-muted-foreground/60 ml-2">
-                {formatRelativeTime(group.pendingTrigger!.ts)}
+                <RelativeTime isoTs={group.pendingTrigger!.ts} />
               </span>
             </div>
           )}
@@ -755,7 +765,7 @@ function LinkedSessionCard({ group, statusUpdates, tick: _tick }: LinkedSessionC
                 Last: <span className="text-muted-foreground/80">{group.lastType}</span>
               </span>
               <span className="text-[10px] text-muted-foreground/40">
-                {formatRelativeTime(group.lastTs)}
+                <RelativeTime isoTs={group.lastTs} />
               </span>
             </div>
           )}
@@ -1475,6 +1485,16 @@ function ServiceCatalogAccordion({
                               <option value="false">false</option>
                             </select>
 
+                          /* Cron expression: friendly recurring-schedule builder */
+                          ) : p.name === "cron" ? (
+                            <CronScheduleBuilder
+                              value={typeof currentVal === "string" ? currentVal : ""}
+                              onChange={(v) => onParamValuesChange((prev) => ({
+                                ...prev,
+                                [def.type]: { ...prev[def.type], [p.name]: v },
+                              }))}
+                            />
+
                           /* Default: text/number input */
                           ) : (
                             <input
@@ -1729,7 +1749,7 @@ function OtherTriggerRow({ entry }: { entry: TriggerHistoryEntry }) {
             )}
           </div>
           <div className="flex items-center gap-2 mt-0.5">
-            <span className="text-[10px] text-muted-foreground/70">{formatRelativeTime(entry.ts)}</span>
+            <span className="text-[10px] text-muted-foreground/70"><RelativeTime isoTs={entry.ts} /></span>
             {entry.response && (
               <span className="text-[10px] text-emerald-500">
                 ✓ {entry.response.action ?? "responded"}
@@ -1803,10 +1823,9 @@ function OtherSourceGroup({ group }: OtherSourceGroupProps) {
 interface SourceAccordionProps {
   group: SourceGroup;
   statusUpdates: Map<string, TriggerStatusUpdate>;
-  tick: number;
 }
 
-function SourceAccordion({ group, statusUpdates, tick: _tick }: SourceAccordionProps) {
+function SourceAccordion({ group, statusUpdates }: SourceAccordionProps) {
   const [expanded, setExpanded] = React.useState(false);
   const isPending = !!group.pendingTrigger;
 
@@ -1881,7 +1900,7 @@ function SourceAccordion({ group, statusUpdates, tick: _tick }: SourceAccordionP
                 {!["ask_user_question", "plan_review", "session_complete", "escalate"].includes(group.pendingTrigger!.type) && `Awaiting response to ${group.pendingTrigger!.type}`}
               </span>
               <span className="text-[10px] text-muted-foreground/60 ml-2">
-                {formatRelativeTime(group.pendingTrigger!.ts)}
+                <RelativeTime isoTs={group.pendingTrigger!.ts} />
               </span>
             </div>
           )}
@@ -1903,7 +1922,7 @@ function SourceAccordion({ group, statusUpdates, tick: _tick }: SourceAccordionP
                 Last: <span className="text-muted-foreground/80">{group.events[0]?.type}</span>
               </span>
               <span className="text-[10px] text-muted-foreground/40">
-                {formatRelativeTime(group.lastTs)}
+                <RelativeTime isoTs={group.lastTs} />
               </span>
             </div>
           )}
@@ -1960,9 +1979,6 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
   // Ephemeral status updates keyed by triggerId
   const [statusUpdates, setStatusUpdates] = React.useState<Map<string, TriggerStatusUpdate>>(new Map());
 
-  // Tick counter for re-rendering relative times
-  const [tick, setTick] = React.useState(0);
-
   const fetchSubscriptions = React.useCallback(async () => {
     try {
       const res = await fetch(
@@ -2014,12 +2030,6 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
     const timer = setInterval(() => { void fetchTriggers(true); }, 10_000);
     return () => clearInterval(timer);
   }, [fetchTriggers]);
-
-  // Tick timer for relative time updates (every 5s)
-  React.useEffect(() => {
-    const timer = setInterval(() => { setTick((t) => t + 1); }, 5_000);
-    return () => clearInterval(timer);
-  }, []);
 
   // Instant refresh on trigger_delivered event
   React.useEffect(() => {
@@ -2179,7 +2189,6 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
                     key={group.source}
                     group={group}
                     statusUpdates={statusUpdates}
-                    tick={tick}
                   />
                 ))}
               </div>
@@ -2225,6 +2234,116 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
         triggerDefs={triggerDefs}
         onSent={() => { void fetchTriggers(true); }}
       />
+    </div>
+  );
+}
+
+// ── Cron schedule builder ───────────────────────────────────────────────────
+
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const DEFAULT_SCHEDULE: RecurringSchedule = { freq: "daily", hour: 9, minute: 0, day: 1 };
+
+const cronInputCls = "rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring";
+
+/**
+ * Friendly Daily/Weekly/Monthly builder for cron params. The user picks a
+ * local time; the stored param value is the equivalent UTC cron expression
+ * (the runner evaluates cron in UTC). Unrepresentable expressions (steps,
+ * ranges, lists) fall back to a raw "Custom" input.
+ */
+function CronScheduleBuilder({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const parsed = React.useMemo(() => scheduleFromCron(value), [value]);
+  const [customMode, setCustomMode] = React.useState(() => value.trim() !== "" && !parsed);
+
+  // Seed the default schedule so subscribing without touching the form works.
+  React.useEffect(() => {
+    if (!customMode && value.trim() === "") onChange(cronFromSchedule(DEFAULT_SCHEDULE));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const sched = parsed ?? DEFAULT_SCHEDULE;
+  const set = (patch: Partial<RecurringSchedule>) => onChange(cronFromSchedule({ ...sched, ...patch }));
+
+  return (
+    <div className="flex-1 space-y-1">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <select
+          value={customMode ? "custom" : sched.freq}
+          onChange={(e) => {
+            const freq = e.target.value;
+            if (freq === "custom") {
+              setCustomMode(true);
+            } else {
+              setCustomMode(false);
+              set({ freq: freq as RecurringSchedule["freq"], day: 1 });
+            }
+          }}
+          className={cronInputCls}
+        >
+          <option value="daily">Daily</option>
+          <option value="weekly">Weekly</option>
+          <option value="monthly">Monthly</option>
+          <option value="custom">Custom (cron)</option>
+        </select>
+
+        {!customMode && sched.freq === "weekly" && (
+          <select
+            value={String(sched.day)}
+            onChange={(e) => set({ day: Number(e.target.value) })}
+            className={cronInputCls}
+          >
+            {WEEKDAYS.map((name, i) => (
+              <option key={name} value={String(i)}>{name}</option>
+            ))}
+          </select>
+        )}
+
+        {!customMode && sched.freq === "monthly" && (
+          <label className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
+            day
+            <input
+              type="number"
+              min={1}
+              max={31}
+              value={sched.day}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                if (Number.isInteger(n) && n >= 1 && n <= 31) set({ day: n });
+              }}
+              className={cn(cronInputCls, "w-12")}
+            />
+          </label>
+        )}
+
+        {!customMode && (
+          <label className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
+            at
+            <input
+              type="time"
+              value={`${String(sched.hour).padStart(2, "0")}:${String(sched.minute).padStart(2, "0")}`}
+              onChange={(e) => {
+                const [h, m] = e.target.value.split(":").map(Number);
+                if (Number.isInteger(h) && Number.isInteger(m)) set({ hour: h, minute: m });
+              }}
+              className={cronInputCls}
+            />
+          </label>
+        )}
+      </div>
+
+      {customMode ? (
+        <input
+          type="text"
+          placeholder="*/30 * * * * (UTC)"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className={cn(cronInputCls, "w-full font-mono")}
+        />
+      ) : (
+        <p className="text-[9px] text-muted-foreground/60">
+          <span className="font-mono">{value || cronFromSchedule(sched)}</span> — local time, stored as UTC cron
+        </p>
+      )}
     </div>
   );
 }

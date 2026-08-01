@@ -22,6 +22,7 @@ export function ErrorAlert({
 }) {
   return (
     <div
+      role="alert"
       className={cn(
         "flex items-center gap-2 text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md",
         className,

@@ -164,8 +164,10 @@ describe("ErrorBoundary render: custom fallback prop", () => {
 
 describe("ErrorBoundary render: dev vs prod message display", () => {
 	test("prod mode (DEV=false): shows generic 'Render error' for widget level", () => {
-		// Ensure DEV is falsy (default in bun test environment)
-		(import.meta.env as Record<string, unknown>).DEV = false;
+		// Ensure DEV is falsy. Must delete rather than assign false: on Windows
+		// bun's import.meta.env IS process.env, which coerces false to the
+		// truthy string "false".
+		delete (import.meta.env as Record<string, unknown>).DEV;
 		const { container } = renderCrashed("Secret internal message", { level: "widget" });
 		expect(container.innerHTML).toContain("Render error");
 		expect(container.innerHTML).not.toContain("Secret internal message");
@@ -181,7 +183,8 @@ describe("ErrorBoundary render: dev vs prod message display", () => {
 	});
 
 	test("prod mode: section/root level does NOT show error message", () => {
-		(import.meta.env as Record<string, unknown>).DEV = false;
+		// delete, not `= false` — see the widget-level prod test above.
+		delete (import.meta.env as Record<string, unknown>).DEV;
 		const { container } = renderCrashed("Hidden error text", { level: "section" });
 		expect(container.innerHTML).not.toContain("Hidden error text");
 		delete (import.meta.env as Record<string, unknown>).DEV;

@@ -2,18 +2,26 @@ import { exec, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
-import { hostname, homedir } from "node:os";
-import { join } from "node:path";
+import { hostname } from "node:os";
+import { dirname, join } from "node:path";
+import { existsSync, rmSync } from "node:fs";
+import { forceKillTree, isShutdownMessage, requestChildShutdown, STOP_FILE_NAME } from "./process-kill.js";
 import { ServiceRegistry, type ServiceHandler, type ServiceInitOptions } from "./service-handler.js";
+import type { PizzaPiSocket } from "@pizzapi/extension-sdk";
 import { TerminalService } from "./services/terminal-service.js";
 import { FileExplorerService } from "./services/file-explorer-service.js";
-import { GitService } from "./services/git-service.js";
+import { GitService, GIT_SIGIL_DEFS } from "./services/git-service.js";
 // Resolves @VARIABLE@ tokens used in service panel requires
 import { resolvePizzaPiVar } from "../config/io.js";
+import { mergeModelLists, readSessionModelsCache, type SessionModelEntry } from "../session-models-cache.js";
+import { getCachedOllamaCloudModels, registerOllamaCloudProvider } from "../ollama-cloud-models.js";
 import { TunnelService } from "./services/tunnel-service.js";
+import { ProcessService } from "./services/process-service.js";
+import { MemoryService } from "./services/memory-service.js";
 import { TimeService, TIME_TRIGGER_DEFS, TIME_SIGIL_DEFS } from "./services/time-service.js";
-import { discoverServices } from "./service-loader.js";
-import { globalPluginDirs } from "../plugins/discover.js";
+import type { ServiceManifest, ServicePluginResult } from "./service-loader.js";
+import { discoverPackageServices, type DiscoverPackageServicesResult } from "./package-service-loader.js";
+import { BUILTIN_SERVICE_IDS, NON_DISABLEABLE_SERVICE_IDS } from "./services/builtin-service-ids.js";
 import { io, type Socket } from "socket.io-client";
 import {
     SOCKET_PROTOCOL_VERSION,
@@ -25,46 +33,36 @@ import { loadGlobalConfig, saveGlobalConfig, defaultAgentDir, expandHome, loadCo
 import type { PizzaPiConfig } from "../config.js";
 import { findSessionPathById } from "./session-list-cache.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
-import { triggerSessionClose } from "../extensions/providers/extension.js";
-import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } from "@pizzapi/protocol";
 import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
 import { extractHookSummary } from "./hook-summary.js";
-import { sanitizeConfigForUI, restoreMaskedServerEntry, findRenamedServerMatch, MASK_SENTINEL, validateProviderOverridesSection, mergeProviderOverridesSection } from "./daemon-config-sanitize.js";
 import { defaultStatePath, acquireStateAndIdentity, releaseStateLock } from "./runner-state.js";
+import { normalizeLoopbackHost } from "../relay-url.js";
 import { startUsageRefreshLoop, stopUsageRefreshLoop } from "./runner-usage-cache.js";
-import { getWorkspaceRoots, isCwdAllowed } from "./workspace.js";
-import { type RunnerSession, spawnSession } from "./session-spawner.js";
+import { startOllamaModelsRefreshLoop, stopOllamaModelsRefreshLoop } from "./runner-ollama-models-cache.js";
+import { getWorkspaceRoots } from "./workspace.js";
+import { type RunnerSession, spawnSession, killSessionProcessGroup, notifyWorkersOfRestart } from "./session-spawner.js";
 import { pruneSessionCloseMetadata, type SessionCloseMetadata } from "./session-close-metadata.js";
 
-import {
-    scanGlobalSkills,
-    readSkillContent,
-    writeSkill,
-    deleteSkill,
-} from "../skills.js";
+import { scanGlobalSkills } from "../skills.js";
+import { scanGlobalAgents, readAgentContent } from "../agents.js";
+import { scanAllPluginInfo } from "../plugins.js";
+import { initUsage, triggerScan, closeUsage } from "../usage/index.js";
 
-import {
-    scanGlobalAgents,
-    readAgentContent,
-    writeAgent,
-    deleteAgent,
-} from "../agents.js";
-
-import {
-    scanAllPluginInfo,
-} from "../plugins.js";
-
-import {
-    initUsage,
-    triggerScan,
-    getData as getUsageData,
-    closeUsage,
-} from "../usage/index.js";
-import type { UsageRange } from "../usage/types.js";
+import { registerSkillsHandlers } from "./daemon-handlers/skills.js";
+import { registerAgentsHandlers } from "./daemon-handlers/agents.js";
+import { registerPluginsHandlers } from "./daemon-handlers/plugins.js";
+import { registerSandboxHandlers } from "./daemon-handlers/sandbox.js";
+import { registerModelsHandlers } from "./daemon-handlers/models.js";
+import { registerUsageHandlers } from "./daemon-handlers/usage.js";
+import { registerSessionAnalysisHandlers } from "./daemon-handlers/session-analysis.js";
+import { registerSettingsHandlers } from "./daemon-handlers/settings.js";
+import { registerPackagesHandlers } from "./daemon-handlers/packages.js";
 
 // Re-export migration from shared module — used on daemon startup
 import { migrateAgentDir } from "../migrations.js";
+import { buildConfiguredGrantIdentities, reconcileGrants } from "../overlay/grants.js";
 
 /** Map variable name (e.g. "PROJECT_DIR") to camelCase query param key. */
 const VAR_TO_PARAM: Record<string, string> = {
@@ -83,6 +81,242 @@ function resolveRequires(requires: string[]): Record<string, string> {
         if (key) params[key] = resolvePizzaPiVar(name);
     }
     return params;
+}
+
+/** Panel/trigger/sigil metadata tracked per active service, keyed by service id. */
+export type PanelEntry = {
+    serviceId: string;
+    label: string;
+    icon: string;
+    port?: number;
+    /** Trigger types declared in this service's manifest */
+    triggers?: ServiceTriggerDef[];
+    /** Sigil types declared in this service's manifest */
+    sigils?: ServiceSigilDef[];
+    /**
+     * Whether this service has a UI panel shown to users.
+     * false = service has trigger/sigil defs but no panel (e.g. the time service).
+     */
+    hasPanel?: boolean;
+    /**
+     * Variable names the panel requires. The UI resolves these and appends
+     * them as query params to the iframe src.
+     */
+    requires?: string[];
+};
+
+export interface TimeoutRaceResult<T> {
+    value: T;
+    timedOut: boolean;
+}
+
+/**
+ * Race `promise` against `timeoutMs`. On timeout, resolves immediately with
+ * `fallback()` and `timedOut: true` so a stalled discovery pass (e.g. a
+ * hung dynamic `import()`) can never strand the rest of startup/reconfigure.
+ * The original promise keeps running in the background; if/when it settles
+ * after the timeout already fired, `onLate` is called with its value so the
+ * caller can dispose it instead of silently mutating shared state (registry,
+ * panel entries, etc.) out from under an already-completed pass.
+ *
+ * Pure/host-independent — exported for direct regression coverage with a
+ * never-resolving promise, without real services or timers.
+ */
+export function raceWithTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+    fallback: () => T,
+    onLate?: (value: T) => void,
+): Promise<TimeoutRaceResult<T>> {
+    return new Promise((resolve) => {
+        let settled = false;
+        const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            resolve({ value: fallback(), timedOut: true });
+        }, timeoutMs);
+        promise.then(
+            (value) => {
+                clearTimeout(timer);
+                if (settled) {
+                    onLate?.(value);
+                    return;
+                }
+                settled = true;
+                resolve({ value, timedOut: false });
+            },
+            () => {
+                clearTimeout(timer);
+                if (!settled) {
+                    settled = true;
+                    resolve({ value: fallback(), timedOut: true });
+                }
+            },
+        );
+    });
+}
+
+/**
+ * Bound on a single discoverPackageServices() pass (dynamic `import()` of a
+ * package's service entry can hang indefinitely on a bad/malicious module).
+ * Shorter than PLUGIN_DISCOVERY_TIMEOUT_MS (the outer runner_registered
+ * race) so a package timeout still leaves headroom for legacy discovery to
+ * run and for registration to proceed on schedule.
+ */
+export const PACKAGE_DISCOVERY_TIMEOUT_MS = 20_000;
+
+/** Fallback result used when a discoverPackageServices() pass times out — deliberately non-authoritative (see DiscoverPackageServicesResult). */
+export function timedOutPackageDiscoveryResult(agentDir: string): DiscoverPackageServicesResult {
+    return {
+        services: [],
+        errors: [{ path: agentDir, error: `package service discovery timed out after ${PACKAGE_DISCOVERY_TIMEOUT_MS}ms — treating as unknown, not "no packages"` }],
+        authoritative: false,
+    };
+}
+
+/** Best-effort disposal of a late (post-timeout) discoverPackageServices() result — never initialized, so dispose() is cleanup-only. */
+function disposeLatePackageDiscovery(result: DiscoverPackageServicesResult): void {
+    if (result.services.length === 0) return;
+    logWarn(`[services] package service discovery finished after its timeout — discarding ${result.services.length} late result(s): ${result.services.map((s) => s.handler.id).join(", ")}`);
+    for (const { handler } of result.services) {
+        try {
+            handler.dispose();
+        } catch {
+            // Never initialized — best-effort cleanup only.
+        }
+    }
+}
+
+export interface PackageServiceReconcilePlan {
+    /** Ids that were package-mounted before but are no longer declared/granted this pass — dispose+unregister, drop all tracking. */
+    revoke: string[];
+    /** Ids whose winning identity is unchanged and still registered — preserve the running handler, only refresh panel/trigger/sigil metadata. */
+    preserveRefreshMetadata: string[];
+    /** Ids whose winning package identity changed since the last pass — dispose the old handler, then register the fresh one. */
+    replaceIdentitySwap: string[];
+    /** Ids with no incumbent at all — just register + init. */
+    registerNew: string[];
+}
+
+/**
+ * Decide what to do with each freshly-discovered package service against
+ * the currently mounted state, without touching the registry/sockets/panel
+ * map itself — the daemon executes the plan against real state; this
+ * function is the actual decision logic reconfigure_services runs, exported
+ * so every reconfigure lifecycle edge case (revocation/identity-swap/
+ * unchanged-preserve) has direct regression coverage without spinning up
+ * sockets.
+ */
+export function planPackageServiceReconcile(
+    freshPackageServices: ReadonlyArray<{ id: string; identity: string }>,
+    packageServiceIds: ReadonlyMap<string, { identity: string }>,
+    isRegistered: (id: string) => boolean,
+): PackageServiceReconcilePlan {
+    const freshIds = new Set(freshPackageServices.map((s) => s.id));
+    const revoke = [...packageServiceIds.keys()].filter((id) => !freshIds.has(id));
+
+    const preserveRefreshMetadata: string[] = [];
+    const replaceIdentitySwap: string[] = [];
+    const registerNew: string[] = [];
+
+    for (const { id, identity } of freshPackageServices) {
+        const existing = packageServiceIds.get(id);
+        if (existing && existing.identity === identity && isRegistered(id)) {
+            preserveRefreshMetadata.push(id);
+        } else if (existing) {
+            replaceIdentitySwap.push(id);
+        } else {
+            registerNew.push(id);
+        }
+    }
+
+    return { revoke, preserveRefreshMetadata, replaceIdentitySwap, registerNew };
+}
+
+export type DiscoveredServiceRejectReason = "builtin" | "collision";
+
+/**
+ * The has()-before-register collision guard registerDiscoveredService() runs
+ * before mounting any discovered (non-built-in) service. Built-ins always
+ * win; otherwise the FIRST caller to reach this check for a given id wins —
+ * which is what makes package-before-legacy precedence (§8) fall out of
+ * simply awaiting/registering the package discovery pass before the legacy
+ * pass, rather than depending on ServiceRegistry.register() throwing.
+ *
+ * Pure/host-independent — exported for direct regression coverage of
+ * registration-order precedence with a real ServiceRegistry, without
+ * spinning up sockets.
+ */
+export function canRegisterDiscoveredService(
+    isBuiltinReserved: boolean,
+    isAlreadyRegistered: boolean,
+): { register: true } | { register: false; reason: DiscoveredServiceRejectReason } {
+    if (isBuiltinReserved) return { register: false, reason: "builtin" };
+    if (isAlreadyRegistered) return { register: false, reason: "collision" };
+    return { register: true };
+}
+
+/**
+ * Derive the panelEntries value for a service from its manifest, preserving
+ * an already-announced port across re-registration/metadata refresh.
+ * Returns null when the manifest declares no panel/triggers/sigils (nothing
+ * worth tracking). `hasPanel` prefers the manifest's explicit value (set by
+ * package discovery) and falls back to inferring from `panel` presence for
+ * legacy folder-based manifests that never set it explicitly — this is what
+ * routes a trigger/sigil-only service to `announceSigilServer` instead of
+ * `announcePanel` at init time.
+ *
+ * Pure and host-independent — exported for direct regression coverage
+ * without spinning up the daemon/socket.
+ */
+export function panelEntryFromManifest(
+    serviceId: string,
+    manifest: ServiceManifest | undefined,
+    existingPort?: number,
+): PanelEntry | null {
+    if (!manifest) return null;
+    const hasTriggers = !!(manifest.triggers && manifest.triggers.length > 0);
+    const hasSigils = !!(manifest.sigils && manifest.sigils.length > 0);
+    if (!manifest.panel && !hasTriggers && !hasSigils) return null;
+    return {
+        serviceId,
+        label: manifest.label,
+        icon: manifest.icon,
+        hasPanel: manifest.hasPanel ?? !!manifest.panel,
+        ...(existingPort !== undefined ? { port: existingPort } : {}),
+        ...(hasTriggers ? { triggers: manifest.triggers } : {}),
+        ...(hasSigils ? { sigils: manifest.sigils } : {}),
+        ...(manifest.panel?.requires ? { requires: manifest.panel.requires } : {}),
+    };
+}
+
+/**
+ * Remove ports owned by a stopped handler; optionally retain its disabled-state metadata.
+ *
+ * `releasePort` hands each port back to the tunnel (TunnelService.unregisterPort).
+ * Dropping the port from these maps only stops it being *announced*; without the
+ * release the runner keeps proxying traffic to a port the dead service no longer
+ * owns. Optional so the pure map-hygiene behaviour stays unit-testable.
+ */
+export function clearServiceRuntimePorts(
+    serviceId: string,
+    panelEntries: Map<string, PanelEntry>,
+    sigilServerPorts: Map<string, number>,
+    keepMetadata: boolean,
+    releasePort?: (port: number) => void,
+): void {
+    const sigilPort = sigilServerPorts.get(serviceId);
+    if (sigilPort !== undefined) releasePort?.(sigilPort);
+    sigilServerPorts.delete(serviceId);
+    const entry = panelEntries.get(serviceId);
+    if (!entry) return;
+    if (entry.port !== undefined) releasePort?.(entry.port);
+    if (!keepMetadata) {
+        panelEntries.delete(serviceId);
+        return;
+    }
+    const { port: _stalePort, ...metadata } = entry;
+    panelEntries.set(serviceId, metadata);
 }
 
 /**
@@ -144,7 +378,7 @@ export function initServiceHandlers(
     for (const handler of handlers) {
         if (initializedIds.has(handler.id)) continue;
         try {
-            handler.init(socket, makeOpts(handler));
+            handler.init(socket as unknown as PizzaPiSocket, makeOpts(handler));
             initializedIds.add(handler.id);
             initialized.push(handler.id);
         } catch (err) {
@@ -157,17 +391,28 @@ export function initServiceHandlers(
 }
 
 /**
+ * Grace window for a worker's graceful shutdown before SIGKILL, on every
+ * escalation path (process-group signal, single-child SIGTERM/message
+ * fallback). Must cover the worker's own shutdown budget: pre-exit hooks
+ * (<=2.5s, one overall deadline — see extensions/shutdown-hooks.ts) + sandbox
+ * cleanup (<=5s) = 7.5s worst case.
+ */
+const SESSION_SHUTDOWN_GRACE_MS = 8_000;
+
+/**
  * Escalate a SIGTERM to SIGKILL after `timeoutMs` if the child has not exited.
  * The timer is cleared automatically when the child exits.
  * ponytail: child-process escalation is hard to unit-test without real spawned
  * processes; covered by the real SIGTERM/SIGKILL behavior in session-spawner.
  */
-function escalateToSigkill(child: ChildProcess, label: string, timeoutMs = 5_000): void {
+function escalateToSigkill(child: ChildProcess, label: string, timeoutMs = SESSION_SHUTDOWN_GRACE_MS): void {
     const timer = setTimeout(() => {
         try {
             if (!child.killed && child.exitCode === null) {
-                logWarn(`[daemon] ${label} did not exit after ${timeoutMs}ms; force-killing with SIGKILL`);
-                child.kill("SIGKILL");
+                logWarn(`[daemon] ${label} did not exit after ${timeoutMs}ms; force-killing`);
+                // Kill the whole process group (worker + descendants); fall back
+                // to tree-kill (Windows) / plain kill if group signaling isn't possible.
+                if (!killSessionProcessGroup(child.pid, "SIGKILL")) forceKillTree(child);
             }
         } catch {
             // Process already exited; ignore.
@@ -282,6 +527,87 @@ export function reconcileSnapshotSubscriptions(
  * Relay URL:      PIZZAPI_RELAY_URL env var, or `relayUrl` in ~/.pizzapi/config.json (default: ws://localhost:7492).
  * State file:     PIZZAPI_RUNNER_STATE_PATH env var (default: ~/.pizzapi/runner.json).
  */
+export function resolveConfiguredAgentDir(cwd = process.cwd()): string {
+    const config = loadConfig(cwd);
+    return config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
+}
+
+/**
+ * Reconcile overlayServiceGrants against currently configured USER packages
+ * and their currently declared manifest service IDs (§7.2). Call at daemon
+ * startup and on `reconfigure_services` — this only edits
+ * ~/.pizzapi/config.json, it never mounts/unmounts services (that's driven
+ * separately by discoverPackageServices()). Exported standalone (rather than an
+ * inline closure) so the startup/reconfigure call path has direct
+ * regression coverage without spinning up the full socket.io daemon.
+ */
+export function reconcileOverlayGrants(cwd = process.cwd()): void {
+    try {
+        const agentDir = resolveConfiguredAgentDir(cwd);
+        const configured = buildConfiguredGrantIdentities(cwd, agentDir);
+        const removals = reconcileGrants(configured);
+        for (const removal of removals) {
+            logInfo(
+                `[grants] reconciliation removed [${removal.removedServiceIds.join(", ")}] for ${removal.package}` +
+                    `${removal.fullyRemoved ? " (grant cleared)" : " (grant trimmed)"}`,
+            );
+        }
+    } catch (err) {
+        logWarn(`[grants] reconciliation failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+}
+
+/**
+ * Model discovery for the daemon's `list_models` socket event and context-window
+ * lookups. Builds a bare ModelRuntime (no extension loading), so ollama-cloud
+ * needs an explicit registerOllamaCloudProvider() call to be recognized at all —
+ * see ollama-cloud-models.ts. Exported standalone (rather than an inline closure)
+ * so this real discovery path has direct regression coverage.
+ */
+export async function listConfiguredModels(cwd = process.cwd()): Promise<SessionModelEntry[]> {
+    const agentDir = resolveConfiguredAgentDir(cwd);
+    const runtime = await ModelRuntime.create({
+        authPath: join(agentDir, "auth.json"),
+        modelsPath: join(agentDir, "models.json"),
+    });
+    // This runtime never loads extensions, so "ollama-cloud" is otherwise an
+    // unknown provider here: no offline fallback catalog and stored/env
+    // credentials go unrecognized. Mirrors ollamaCloudProviderExtension.
+    registerOllamaCloudProvider(runtime);
+    const modelRegistry = new ModelRegistry(runtime);
+    const diskModels = modelRegistry
+        .getAvailable()
+        .map((model: any) => ({
+            provider: model.provider,
+            id: model.id,
+            name: model.name,
+            reasoning: model.reasoning,
+            contextWindow: model.contextWindow,
+        }));
+    // Ollama Cloud models are discovered dynamically and are NOT in the
+    // static disk registry. Surface the cached list directly so newer
+    // models (e.g. glm-5.2) appear even when no live session has warmed
+    // the session snapshot yet. Gated on Ollama credentials so we don't
+    // advertise models the runner can't actually use.
+    let ollamaModels: SessionModelEntry[] = [];
+    if (runtime.hasConfiguredAuth("ollama-cloud") || process.env.OLLAMA_API_KEY) {
+        ollamaModels = (getCachedOllamaCloudModels() ?? []).map((model) => ({
+            provider: model.provider,
+            id: model.id,
+            name: model.name,
+            reasoning: model.reasoning,
+            contextWindow: model.contextWindow,
+        }));
+    }
+    // Extension-registered providers (pi packages calling registerProvider)
+    // only exist inside live sessions — merge the latest session snapshot so
+    // Web UI model selectors (Runner Settings, Fast Model) show them too.
+    return mergeModelLists(
+        mergeModelLists(diskModels, ollamaModels),
+        readSessionModelsCache() ?? [],
+    );
+}
+
 export async function runDaemon(_args: string[] = []): Promise<number> {
     setLogComponent("daemon");
     const statePath = defaultStatePath();
@@ -289,6 +615,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
     // Migrate session storage from legacy locations into flat ~/.pizzapi/
     migrateAgentDir();
+
+    // Reconcile overlayServiceGrants against currently configured USER
+    // packages before anything else touches trust state (§7.2). No service
+    // mounting happens here — grants-only bookkeeping.
+    reconcileOverlayGrants();
 
     // Initialize usage tracking
     initUsage();
@@ -309,6 +640,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
     // Start fetching provider usage immediately so workers have cached data from
     // the moment they are spawned.  One daemon refresh covers all sessions on this node.
     startUsageRefreshLoop();
+    startOllamaModelsRefreshLoop();
 
     // Load global config so relayUrl and apiKey can be read from
     // ~/.pizzapi/config.json (important for LaunchAgent contexts where
@@ -319,6 +651,12 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
     // Use let instead of const to allow mutation during reconfiguration.
     let disabledServices = resolveDisabledRunnerServices(daemonConfig);
     const isServiceDisabled = (id: string) => disabledServices.has(id);
+
+    // Package-origin service discovery is runner-global (grants are user-scope
+    // only, §7.2) — resolve once, reused by startup discovery and every
+    // reconfigure_services pass.
+    const packageDiscoveryCwd = process.cwd();
+    const packageDiscoveryAgentDir = resolveConfiguredAgentDir(packageDiscoveryCwd);
 
     // Priority: env var > config.json > default
     const apiKey =
@@ -339,9 +677,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Socket.IO connection setup ────────────────────────────────────
         // Priority: env var > config.json > default
-        const relayRaw = (process.env.PIZZAPI_RELAY_URL ?? resolveConfigRelayUrl() ?? "ws://localhost:7492")
-            .trim()
-            .replace(/\/$/, "");
+        const relayRaw = normalizeLoopbackHost(
+            (process.env.PIZZAPI_RELAY_URL ?? resolveConfigRelayUrl() ?? "ws://localhost:7492")
+                .trim()
+                .replace(/\/$/, ""),
+        );
 
         // Normalise the relay URL for socket.io-client (needs http(s)://).
         // If the user supplies a bare hostname (no scheme), default to https://.
@@ -424,11 +764,15 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         } else {
             registry.register(new GitService());
         }
-        const cleanupGitSessionState = (sessionId: string) => {
-            const gitService = registry.get("git");
-            if (!gitService) return;
-            const maybeGitService = gitService as GitService & { handleSessionEnded?: (id: string) => void };
-            maybeGitService.handleSessionEnded?.(sessionId);
+        if (isServiceDisabled("process")) {
+            logInfo('[services] built-in service "process" disabled by config');
+        } else {
+            registry.register(new ProcessService((sessionId) => runningSessions.get(sessionId)?.child?.pid ?? null));
+        }
+        const cleanupSessionServices = (sessionId: string) => {
+            for (const handler of registry.getAll()) {
+                handler.handleSessionEnded?.(sessionId);
+            }
         };
         const sessionCloseMetadata = new Map<string, SessionCloseMetadata>();
         const setSessionCloseMetadata = (sessionId: string, metadata: Omit<SessionCloseMetadata, "updatedAt">) => {
@@ -438,32 +782,15 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         const sessionCloseMetadataSweep = setInterval(() => {
             pruneSessionCloseMetadata(sessionCloseMetadata, runningSessions);
         }, 5 * 60_000);
-        const resolveConfiguredAgentDir = (cwd = process.cwd()) => {
-            const config = loadConfig(cwd);
-            return config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
-        };
-        const listConfiguredModels = (cwd = process.cwd()) => {
-            const agentDir = resolveConfiguredAgentDir(cwd);
-            const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-            const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
-            return modelRegistry
-                .getAvailable()
-                .map((model: any) => ({
-                    provider: model.provider,
-                    id: model.id,
-                    name: model.name,
-                    reasoning: model.reasoning,
-                    contextWindow: model.contextWindow,
-                }))
-                .sort((a: any, b: any) => {
-                    if (a.provider !== b.provider) return a.provider.localeCompare(b.provider);
-                    return a.id.localeCompare(b.id);
-                });
-        };
-        const getContextWindowsForAnalysis = (cwd = process.cwd()): Map<string, number> => {
+        if (isServiceDisabled("memory")) {
+            logInfo('[services] built-in service "memory" disabled by config');
+        } else {
+            registry.register(new MemoryService((sessionId) => sessionCloseMetadata.get(sessionId)?.cwd ?? null));
+        }
+        const getContextWindowsForAnalysis = async (cwd = process.cwd()): Promise<Map<string, number>> => {
             const windows = new Map<string, number>();
             try {
-                for (const model of listConfiguredModels(cwd)) {
+                for (const model of await listConfiguredModels(cwd)) {
                     if (typeof model.contextWindow !== "number") continue;
                     windows.set(`${model.provider}:${model.id}`, model.contextWindow);
                 }
@@ -472,55 +799,23 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
             return windows;
         };
-        const normalizeSessionCloseReason = (reason: unknown): "close" | "error" | "complete" => {
-            const text = typeof reason === "string" ? reason.toLowerCase() : "";
-            if (text.includes("error") || text.includes("crash") || text.includes("orphan")) return "error";
-            if (text.includes("complete")) return "complete";
-            return "close";
-        };
-        const resolveSessionFileForClose = async (sessionId: string, explicitSessionFile?: string): Promise<string> => {
-            if (explicitSessionFile) return explicitSessionFile;
-            const remembered = sessionCloseMetadata.get(sessionId)?.sessionFile;
-            if (remembered) return remembered;
-
-            try {
-                const sessionsRootDir = join(resolveConfiguredAgentDir(sessionCloseMetadata.get(sessionId)?.cwd), "sessions");
-                const found = await findSessionPathById(sessionsRootDir, sessionId);
-                if (found) return found;
-            } catch {
-                // Best-effort only — providers may still be able to use the relay session id.
-            }
-
-            return sessionId;
-        };
-        const notifyProviderSessionClose = async (
-            sessionId: string,
-            reason: unknown,
-            explicitSessionFile?: string,
-        ) => {
-            const metadata = sessionCloseMetadata.get(sessionId);
-            const cwd = metadata?.cwd ?? process.cwd();
-            const sessionFile = await resolveSessionFileForClose(sessionId, explicitSessionFile);
-            try {
-                const closeResult = await triggerSessionClose(
-                    sessionId,
-                    sessionFile,
-                    normalizeSessionCloseReason(reason),
-                    cwd,
-                );
-                if (closeResult) {
-                    logInfo(`[daemon] Provider close: ${closeResult.label}`);
-                }
-            } catch (err) {
-                logWarn(`[daemon] Provider close failed for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`);
-            }
-        };
+        // NOTE: pre-exit cleanup runs IN THE WORKER PROCESS during its
+        // SIGTERM/shutdownHandler paths (see extensions/shutdown-hooks.ts).
+        // The daemon previously imported triggerSessionClose here, but that was
+        // a guaranteed no-op: hooks are module-globals registered only in the
+        // worker. Daemon-side crash finalization (worker died without running
+        // its hooks) is tracked as the Phase 3 finalizer contract (idea jg017xa4).
         const tunnelService = new TunnelService();
         if (isServiceDisabled("tunnel")) {
             logInfo('[services] built-in service "tunnel" disabled by config');
         } else {
             registry.register(tunnelService);
         }
+
+        /** Hand a dead service's pinned port back to the tunnel (see clearServiceRuntimePorts). */
+        const releaseServicePort = (port: number): void => {
+            tunnelService.unregisterPort(port);
+        };
 
         const timeService = isServiceDisabled("time") ? null : new TimeService();
         if (timeService) {
@@ -552,30 +847,42 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         tunnelService.setTunnelClient(tunnelClient);
 
         // Panel tracking — manifests from folder-based services, ports from announcePanel()
-        type PanelEntry = {
-            serviceId: string;
-            label: string;
-            icon: string;
-            port?: number;
-            /** Trigger types declared in this service's manifest */
-            triggers?: ServiceTriggerDef[];
-            /** Sigil types declared in this service's manifest */
-            sigils?: ServiceSigilDef[];
-            /**
-             * Whether this service has a UI panel shown to users.
-             * false = service has trigger/sigil defs but no panel (e.g. the time service).
-             * Defaults to true for plugin-provided services with a panel manifest.
-             */
-            hasPanel?: boolean;
-            /**
-             * Variable names the panel requires. The UI resolves these and appends
-             * them as query params to the iframe src.
-             */
-            requires?: string[];
-        };
         const panelEntries = new Map<string, PanelEntry>();
         // Track ALL discovered service IDs (including disabled ones) so the UI can show them.
         const allDiscoveredServiceIds = new Set<string>();
+        // Package-origin service ids currently mounted, keyed by their normalized
+        // package identity (§7.2/§9.2 provenance). Reconfiguration diffs this
+        // against a fresh discoverPackageServices() pass to dispose/unregister
+        // services whose grant/package/declaration was revoked or removed.
+        const packageServiceIds = new Map<string, { identity: string }>();
+        /**
+         * Register a discovered (non-built-in) service if its id isn't reserved
+         * by a built-in or already claimed by an earlier registration this pass.
+         * Shared by the startup and reconfigure loops so the has()-before-register
+         * collision rule (§8) — built-ins always win, never rely on
+         * ServiceRegistry.register() throwing for duplicates — lives in exactly
+         * one place.
+         */
+        const registerDiscoveredService = (
+            handler: ServiceHandler,
+            source: ServicePluginResult["source"],
+            manifest: ServiceManifest | undefined,
+        ): boolean => {
+            const from = source.pluginName ?? source.path;
+            const decision = canRegisterDiscoveredService(BUILTIN_SERVICE_IDS.has(handler.id), registry.has(handler.id));
+            if (!decision.register) {
+                const why = decision.reason === "builtin" ? "collides with a reserved built-in service id" : "collides with an already-registered service";
+                logWarn(`[services] package service "${handler.id}" from ${from} ${why} — skipped`);
+                return false;
+            }
+            registry.register(handler);
+            allDiscoveredServiceIds.add(handler.id);
+            logInfo(`[services] loaded package service "${handler.id}" from ${from}`);
+            const entry = panelEntryFromManifest(handler.id, manifest, panelEntries.get(handler.id)?.port);
+            if (entry) panelEntries.set(handler.id, entry);
+            packageServiceIds.set(handler.id, { identity: source.pluginName ?? handler.id });
+            return true;
+        };
 
         // Register built-in Time service trigger/sigil defs so they flow through service_announce.
         // The Time service has no panel — it only runs an HTTP server for sigil resolve calls.
@@ -590,6 +897,19 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 hasPanel: false,
                 triggers: TIME_TRIGGER_DEFS,
                 sigils: TIME_SIGIL_DEFS,
+            });
+        }
+
+        // Register built-in Git service sigil defs so they flow through service_announce.
+        // The git panel is a native UI component (not an iframe), so hasPanel:false — this
+        // entry exists only to advertise git-domain sigils; they render client-side (no resolve).
+        if (!isServiceDisabled("git")) {
+            panelEntries.set("git", {
+                serviceId: "git",
+                label: "Git",
+                icon: "git-branch",
+                hasPanel: false,
+                sigils: GIT_SIGIL_DEFS,
             });
         }
 
@@ -642,48 +962,42 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             });
         };
 
-        // Discover and register plugin-provided services.
-        // pluginServicesReady resolves once discovery + registration is complete.
+        // Discover and register package-origin and legacy plugin-provided
+        // services. pluginServicesReady resolves once both passes are complete.
         // The runner_registered handler awaits this before announcing services.
+        //
+        // Package discovery (§6/§7/§9.2) is AWAITED and registered before legacy
+        // discovery (§8) — this is what makes package-over-legacy precedence
+        // deterministic rather than dependent on async completion order.
         let resolvePluginServices: () => void;
         const pluginServicesReady = new Promise<void>(r => { resolvePluginServices = r; });
-        discoverServices({ pluginDirs: globalPluginDirs(), disabledIds: disabledServices }).then(({ services, errors }) => {
-            for (const { handler, source, manifest } of services) {
-                try {
-                    registry.register(handler);
-                    allDiscoveredServiceIds.add(handler.id);
-                    logInfo(`[services] loaded plugin service "${handler.id}" from ${source.pluginName ?? source.path}`);
-                    // Track panel metadata and trigger defs from folder-based services
-                    if (manifest?.panel || (manifest?.triggers && manifest.triggers.length > 0) || (manifest?.sigils && manifest.sigils.length > 0)) {
-                        const existing = panelEntries.get(handler.id);
-                        panelEntries.set(handler.id, {
-                            serviceId: handler.id,
-                            label: manifest.label,
-                            icon: manifest.icon,
-                            ...(existing?.port !== undefined ? { port: existing.port } : {}),
-                            ...(manifest.triggers && manifest.triggers.length > 0
-                                ? { triggers: manifest.triggers }
-                                : {}),
-                            ...(manifest.sigils && manifest.sigils.length > 0
-                                ? { sigils: manifest.sigils }
-                                : {}),
-                            ...(manifest.panel?.requires
-                                ? { requires: manifest.panel.requires }
-                                : {}),
-                        });
-                    }
-                } catch (err) {
-                    logWarn(`[services] failed to register plugin service "${handler.id}": ${err}`);
+        (async () => {
+            try {
+                // Bounded so a stalled package import can never strand legacy
+                // discovery below (§C) — late results are discarded, not mutated in.
+                const { value: { services, errors }, timedOut } = await raceWithTimeout(
+                    discoverPackageServices({
+                        cwd: packageDiscoveryCwd,
+                        agentDir: packageDiscoveryAgentDir,
+                        disabledIds: disabledServices,
+                    }),
+                    PACKAGE_DISCOVERY_TIMEOUT_MS,
+                    () => timedOutPackageDiscoveryResult(packageDiscoveryAgentDir),
+                    disposeLatePackageDiscovery,
+                );
+                if (timedOut) logWarn(`[services] package service discovery did not complete within ${PACKAGE_DISCOVERY_TIMEOUT_MS}ms; proceeding without package services this pass`);
+                for (const { handler, source, manifest } of services) {
+                    registerDiscoveredService(handler, source, manifest);
                 }
+                for (const { path, error } of errors) {
+                    logWarn(`[services] package service discovery: ${error} (${path})`);
+                }
+            } catch (err) {
+                logWarn(`[services] package service discovery failed: ${err}`);
             }
-            for (const { path, error } of errors) {
-                logWarn(`[services] plugin service load error at ${path}: ${error}`);
-            }
-        }).catch(err => {
-            logWarn(`[services] plugin service discovery failed: ${err}`);
-        }).finally(() => {
+
             resolvePluginServices!();
-        });
+        })();
 
         const socket: Socket<RunnerServerToClientEvents, RunnerClientToServerEvents> = io(
             sioUrl + "/runner",
@@ -751,15 +1065,34 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             triggerScan();
         }, 5 * 60 * 1000);
 
+        // Windows `runner stop` cannot deliver a catchable signal — it drops a
+        // stop file next to the state file instead; poll for it. A stale file
+        // from an earlier unclean exit is cleared before polling starts.
+        const stopFilePath = join(dirname(statePath), STOP_FILE_NAME);
+        try { rmSync(stopFilePath, { force: true }); } catch {}
+        const stopFilePoll = setInterval(() => {
+            if (existsSync(stopFilePath)) {
+                try { rmSync(stopFilePath, { force: true }); } catch {}
+                logInfo("stop requested via stop file — shutting down");
+                void shutdown(0);
+            }
+        }, 1_000);
+
         const shutdown = async (code: number) => {
             if (isShuttingDown) return;
             isShuttingDown = true;
+            // Workers exit when our IPC channel closes (see worker.ts "disconnect").
+            // On an intentional restart (42) tell them to stay alive so the next
+            // daemon re-adopts them; every other exit takes its sessions with it.
+            if (code === 42) await notifyWorkersOfRestart(runningSessions);
+            clearInterval(stopFilePoll);
             clearInterval(endedSessionSweep);
             clearInterval(sessionCloseMetadataSweep);
             clearInterval(usageScanInterval);
             void tunnelClient?.dispose();
             registry.disposeAll();
             stopUsageRefreshLoop();
+            stopOllamaModelsRefreshLoop();
             await closeUsage().catch((err) =>
                 logError("closeUsage failed during shutdown: " + (err instanceof Error ? err.message : String(err))),
             );
@@ -770,6 +1103,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         process.on("SIGINT", () => shutdown(0));
         process.on("SIGTERM", () => shutdown(0));
+        // Windows: the supervisor requests shutdown over IPC because a signal
+        // would TerminateProcess us before any of the cleanup above could run.
+        process.on("message", (msg: unknown) => {
+            if (isShutdownMessage(msg)) void shutdown(0);
+        });
 
         // ── Helper: emit registration ─────────────────────────────────────
         const emitRegister = () => {
@@ -966,6 +1304,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
                 logInfo(`[services] reconfiguring: disabling ${Array.from(newDisabledServices).join(", ") || "none"}`);
 
+                // Reconcile overlayServiceGrants against currently configured
+                // USER packages (§7.2) — grants-only bookkeeping, no service
+                // (un)mounting here.
+                reconcileOverlayGrants();
+
                 // Update config on disk
                 const currentConfig = loadGlobalConfig();
                 saveGlobalConfig({ ...currentConfig, disabledRunnerServices: Array.from(newDisabledServices) });
@@ -996,12 +1339,16 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     return opts;
                 };
 
-                // Disable plugin services that are now in the disabled set
-                const BUILTIN_IDS = new Set(["terminal", "file-explorer", "git", "tunnel", "time"]);
-                const pluginsToDisable = registry.getAll()
-                    .filter(s => !BUILTIN_IDS.has(s.id) && newDisabledServices.has(s.id));
-                for (const svc of pluginsToDisable) {
-                    logInfo(`[services] disabling plugin service "${svc.id}"`);
+                // Disable any non-permanently-pinned service (package-,
+                // legacy-, or the memory/process built-ins) that is now in
+                // the disabled set. NON_DISABLEABLE_SERVICE_IDS (not the
+                // broader BUILTIN_SERVICE_IDS collision-reservation set) is
+                // the runtime-disable gate — memory/process must stay
+                // disableable at runtime like every other built-in used to be.
+                const servicesToDisable = registry.getAll()
+                    .filter(s => !NON_DISABLEABLE_SERVICE_IDS.has(s.id) && newDisabledServices.has(s.id));
+                for (const svc of servicesToDisable) {
+                    logInfo(`[services] disabling service "${svc.id}"`);
                     try {
                         svc.dispose();
                     } catch (err) {
@@ -1009,43 +1356,28 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     }
                     registry.unregister(svc.id);
                     initializedServiceIds.delete(svc.id);
-                    // Keep panel entry for disabled services so they still appear in service_announce
-                    sigilServerPorts.delete(svc.id);
+                    packageServiceIds.delete(svc.id);
+                    // Keep disabled-service metadata visible, but never re-announce its dead ports.
+                    clearServiceRuntimePorts(svc.id, panelEntries, sigilServerPorts, true, releaseServicePort);
                 }
 
-                // Re-discover plugin services with new disabled list
-                const { services: discoveredServices, errors } = await discoverServices(
-                    { pluginDirs: globalPluginDirs(), disabledIds: newDisabledServices },
-                );
-
-                // Remove services that are no longer discoverable (plugin deleted) and not disabled
-                for (const id of allDiscoveredServiceIds) {
-                    if (newDisabledServices.has(id)) continue; // Keep disabled services
-                    if (discoveredServices.some(s => s.handler.id === id)) continue; // Still exists
-                    // Plugin was removed and is not disabled - clean up
-                    allDiscoveredServiceIds.delete(id);
-                    panelEntries.delete(id);
-                    sigilServerPorts.delete(id);
-                }
-
-                // Register any newly enabled plugin services
-                for (const { handler, source, manifest } of discoveredServices) {
-                    if (registry.has(handler.id)) continue;
-                    allDiscoveredServiceIds.add(handler.id);
+                /** Dispose + unregister a running handler so no timers/sockets outlive it. */
+                const disposeIncumbent = (id: string, reason: string) => {
+                    const oldSvc = registry.get(id);
+                    if (!oldSvc) return;
+                    logInfo(`[services] ${reason}`);
                     try {
-                        registry.register(handler);
-                        logInfo(`[services] loaded plugin service "${handler.id}" from ${source.pluginName ?? source.path}`);
-                        if (manifest?.panel || (manifest?.triggers && manifest.triggers.length > 0) || (manifest?.sigils && manifest.sigils.length > 0)) {
-                            panelEntries.set(handler.id, {
-                                serviceId: handler.id,
-                                label: manifest.label,
-                                icon: manifest.icon,
-                                ...(manifest.triggers && manifest.triggers.length > 0 ? { triggers: manifest.triggers } : {}),
-                                ...(manifest.sigils && manifest.sigils.length > 0 ? { sigils: manifest.sigils } : {}),
-                                ...(manifest.panel?.requires ? { requires: manifest.panel.requires } : {}),
-                            });
-                        }
-                        handler.init(socket, optsForInit(handler.id));
+                        oldSvc.dispose();
+                    } catch (err) {
+                        logWarn(`[services] dispose failed for "${id}": ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+                    }
+                    registry.unregister(id);
+                    initializedServiceIds.delete(id);
+                };
+
+                const initAndTrack = (handler: ServiceHandler) => {
+                    try {
+                        handler.init(socket as unknown as PizzaPiSocket, optsForInit(handler.id));
                         initializedServiceIds.add(handler.id);
                         if (typeof handler.reconcileSubscriptions === "function") {
                             const subs = cachedTriggerSubscriptions.filter((sub) => sub.triggerType?.split(":")[0] === handler.id);
@@ -1053,12 +1385,99 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                             logInfo(`[trigger-reconciliation] service "${handler.id}" hot-reload applied ${result.applied}/${subs.length} cached subscriptions${result.errors?.length ? `, errors=${result.errors.length}` : ""}`);
                         }
                     } catch (err) {
-                        logWarn(`[services] failed to register plugin service "${handler.id}": ${err}`);
+                        logWarn(`[services] failed to init package service "${handler.id}": ${err}`);
                     }
+                };
+
+                // ── Package-origin services ──
+                // Bounded so a stalled package import can never hang reconfigure
+                // indefinitely (§C); a timeout also forces authoritative=false below.
+                const {
+                    value: { services: freshPackageServices, errors: packageErrors, authoritative: packageDiscoveryAuthoritative },
+                    timedOut: packageDiscoveryTimedOut,
+                } = await raceWithTimeout(
+                    discoverPackageServices({
+                        cwd: packageDiscoveryCwd,
+                        agentDir: packageDiscoveryAgentDir,
+                        disabledIds: newDisabledServices,
+                    }),
+                    PACKAGE_DISCOVERY_TIMEOUT_MS,
+                    () => timedOutPackageDiscoveryResult(packageDiscoveryAgentDir),
+                    disposeLatePackageDiscovery,
+                );
+                if (packageDiscoveryTimedOut) {
+                    logWarn(`[services] package service discovery did not complete within ${PACKAGE_DISCOVERY_TIMEOUT_MS}ms during reconfigure`);
                 }
 
-                for (const { path, error } of errors) {
-                    logWarn(`[services] plugin service load error at ${path}: ${error}`);
+                if (!packageDiscoveryAuthoritative) {
+                    // Corrupt/unreadable GLOBAL settings, or a discovery timeout: the
+                    // fresh result is not a trustworthy "no packages" answer. Never
+                    // treat it as authorization to dispose currently running package
+                    // services — skip the reconcile/register diff entirely and just
+                    // surface whatever per-package errors did come through.
+                    logWarn(`[services] package service discovery is not authoritative this pass — preserving ${packageServiceIds.size} currently active package service(s) untouched`);
+                    for (const { path, error } of packageErrors) {
+                        logWarn(`[services] package service discovery: ${error} (${path})`);
+                    }
+                } else {
+                    const freshById = new Map(freshPackageServices.map((s) => [s.handler.id, s] as const));
+                    const plan = planPackageServiceReconcile(
+                        freshPackageServices.map((s) => ({ id: s.handler.id, identity: s.source.pluginName ?? s.handler.id })),
+                        packageServiceIds,
+                        (id) => registry.has(id),
+                    );
+
+                    // Ids that were package-mounted before but are no longer
+                    // declared/granted this pass (distinct from the disable-set
+                    // handling above).
+                    for (const id of plan.revoke) {
+                        const svc = registry.get(id);
+                        if (svc) {
+                            logInfo(`[services] unregistering package service "${id}" (revoked or no longer declared)`);
+                            try {
+                                svc.dispose();
+                            } catch (err) {
+                                logWarn(`[services] dispose failed for "${id}": ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+                            }
+                            registry.unregister(id);
+                            initializedServiceIds.delete(id);
+                        }
+                        packageServiceIds.delete(id);
+                        allDiscoveredServiceIds.delete(id);
+                        clearServiceRuntimePorts(id, panelEntries, sigilServerPorts, false, releaseServicePort);
+                    }
+
+                    // Unchanged winning identity — preserve the running lifecycle,
+                    // but refresh panel/trigger/sigil metadata from the fresh
+                    // manifest (the package could have been reinstalled/updated
+                    // without its identity changing).
+                    for (const id of plan.preserveRefreshMetadata) {
+                        const manifest = freshById.get(id)?.manifest;
+                        const entry = panelEntryFromManifest(id, manifest, panelEntries.get(id)?.port);
+                        if (entry) panelEntries.set(id, entry);
+                        else panelEntries.delete(id);
+                    }
+
+                    // Same service id, but the package identity that won it changed
+                    // underneath it — dispose the incumbent before mounting the new
+                    // one so stale handler state/timers never linger alongside it.
+                    for (const id of plan.replaceIdentitySwap) {
+                        const existing = packageServiceIds.get(id);
+                        const freshIdentity = freshById.get(id)?.source.pluginName ?? id;
+                        disposeIncumbent(id, `package service "${id}" identity changed (${existing?.identity} → ${freshIdentity}) — disposing old handler`);
+                        packageServiceIds.delete(id);
+                        clearServiceRuntimePorts(id, panelEntries, sigilServerPorts, false, releaseServicePort);
+                    }
+
+                    for (const id of [...plan.replaceIdentitySwap, ...plan.registerNew]) {
+                        const fresh = freshById.get(id);
+                        if (!fresh) continue;
+                        if (!registerDiscoveredService(fresh.handler, fresh.source, fresh.manifest)) continue;
+                        initAndTrack(fresh.handler);
+                    }
+                    for (const { path, error } of packageErrors) {
+                        logWarn(`[services] package service discovery: ${error} (${path})`);
+                    }
                 }
 
                 // Re-announce services
@@ -1297,12 +1716,29 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             if (entry) {
                 if (entry.child) {
                     try {
-                        // Mark as killed BEFORE sending SIGTERM so the child's
+                        // Mark as killed BEFORE requesting shutdown so the child's
                         // exit handler sees it even if exit code 43 (restart-in-place)
-                        // arrives before SIGTERM is delivered.
+                        // arrives before the shutdown request is delivered.
                         killedSessions.add(sessionId);
-                        entry.child.kill("SIGTERM");
-                        escalateToSigkill(entry.child, `session ${sessionId}`);
+                        // Signal the whole process group so background processes
+                        // spawned by the session die too. Falls back to the
+                        // standard graceful path (IPC shutdown message on Windows,
+                        // where kill() would TerminateProcess and skip cleanup;
+                        // plain SIGTERM elsewhere) if group signaling fails.
+                        const child = entry.child;
+                        if (!killSessionProcessGroup(child.pid)) {
+                            // Same grace window as the process-group path below —
+                            // the default 5s in process-kill.ts's signature is too
+                            // short for provider close + sandbox cleanup.
+                            requestChildShutdown(
+                                child,
+                                (timeoutMs) =>
+                                    logWarn(`[daemon] session ${sessionId} did not exit after ${timeoutMs}ms; force-killing`),
+                                SESSION_SHUTDOWN_GRACE_MS,
+                            );
+                        } else {
+                            escalateToSigkill(child, `session ${sessionId}`, SESSION_SHUTDOWN_GRACE_MS);
+                        }
                     } catch {}
                 } else if (entry.adopted) {
                     // No child handle — ask the relay to disconnect the worker's
@@ -1311,8 +1747,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 }
                 runningSessions.delete(sessionId);
                 endedSessionIds.set(sessionId, Date.now());
-                await notifyProviderSessionClose(sessionId, "close", entry.sessionFile);
-                cleanupGitSessionState(sessionId);
+                cleanupSessionServices(sessionId);
                 sessionCloseMetadata.delete(sessionId);
                 logInfo(`killed session ${sessionId}${entry.adopted ? " (adopted)" : ""}`);
                 socket.emit("session_killed", { sessionId });
@@ -1345,7 +1780,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
 
             const entry = runningSessions.get(sessionId);
-            let shouldNotifyProviderClose = false;
+            let sessionFullyEnded = false;
             if (entry) {
                 // If the child process is still alive AND this is a transient
                 // relay disconnect (not an expiry/orphan sweep), keep the entry
@@ -1361,26 +1796,18 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 runningSessions.delete(sessionId);
                 killedSessions.delete(sessionId);
                 endedSessionIds.set(sessionId, Date.now());
-                shouldNotifyProviderClose = true;
+                sessionFullyEnded = true;
                 logInfo(`session ${sessionId} ended on relay${entry.adopted ? " (adopted)" : ""}${reason ? ` (${reason})` : ""}`);
             } else if (!endedSessionIds.has(sessionId)) {
                 // First duplicate — log once then suppress subsequent copies
                 endedSessionIds.set(sessionId, Date.now());
-                shouldNotifyProviderClose = true;
+                sessionFullyEnded = true;
                 logInfo(`session_ended for unknown/already-removed session ${sessionId}`);
             }
             // else: duplicate session_ended for a session we already handled — silently ignore
 
-            if (shouldNotifyProviderClose) {
-                await notifyProviderSessionClose(
-                    sessionId,
-                    reason,
-                    typeof sessionFile === "string" ? sessionFile : entry?.sessionFile,
-                );
-            }
-
-            cleanupGitSessionState(sessionId);
-            if (shouldNotifyProviderClose) sessionCloseMetadata.delete(sessionId);
+            cleanupSessionServices(sessionId);
+            if (sessionFullyEnded) sessionCloseMetadata.delete(sessionId);
 
             // Clean up persisted attachments.  For spawned sessions child.on("exit")
             // already ran cleanup, so this is a no-op (idempotent).  For adopted sessions
@@ -1419,932 +1846,25 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             (socket as any).emit("pong", { now: Date.now() });
         });
 
-        // ── Skills management ─────────────────────────────────────────────
-
-        socket.on("list_skills", (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data.requestId;
-            const skills = scanGlobalSkills();
-            socket.emit("skills_list", { skills, requestId });
-        });
-
-        socket.on("create_skill", async (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data.requestId;
-            const skillName = (data.name ?? "").trim();
-            const skillContent = data.content ?? "";
-
-            if (!skillName) {
-                socket.emit("skill_result", { requestId, ok: false, message: "Missing skill name" });
-                return;
-            }
-
-            if (!/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(skillName) && !/^[a-z0-9]$/.test(skillName)) {
-                socket.emit("skill_result", {
-                    requestId,
-                    ok: false,
-                    message: "Invalid skill name: must be lowercase letters, numbers, and hyphens only",
-                });
-                return;
-            }
-
-            try {
-                await writeSkill(skillName, skillContent);
-                const skills = scanGlobalSkills();
-                socket.emit("skill_result", { requestId, ok: true, skills });
-            } catch (err) {
-                socket.emit("skill_result", {
-                    requestId,
-                    ok: false,
-                    message: err instanceof Error ? err.message : String(err),
-                });
-            }
-        });
-
-        socket.on("update_skill", async (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data.requestId;
-            const skillName = (data.name ?? "").trim();
-            const skillContent = data.content ?? "";
-
-            if (!skillName) {
-                socket.emit("skill_result", { requestId, ok: false, message: "Missing skill name" });
-                return;
-            }
-
-            if (!/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(skillName) && !/^[a-z0-9]$/.test(skillName)) {
-                socket.emit("skill_result", {
-                    requestId,
-                    ok: false,
-                    message: "Invalid skill name: must be lowercase letters, numbers, and hyphens only",
-                });
-                return;
-            }
-
-            try {
-                await writeSkill(skillName, skillContent);
-                const skills = scanGlobalSkills();
-                socket.emit("skill_result", { requestId, ok: true, skills });
-            } catch (err) {
-                socket.emit("skill_result", {
-                    requestId,
-                    ok: false,
-                    message: err instanceof Error ? err.message : String(err),
-                });
-            }
-        });
-
-        socket.on("delete_skill", (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data.requestId;
-            const skillName = (data.name ?? "").trim();
-
-            if (!skillName) {
-                socket.emit("skill_result", { requestId, ok: false, message: "Missing skill name" });
-                return;
-            }
-
-            const deleted = deleteSkill(skillName);
-            const skills = scanGlobalSkills();
-            socket.emit("skill_result", {
-                requestId,
-                ok: deleted,
-                message: deleted ? undefined : "Skill not found",
-                skills,
-            });
-        });
-
-        socket.on("get_skill", (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data.requestId;
-            const skillName = (data.name ?? "").trim();
-            const content = skillName ? readSkillContent(skillName) : null;
-            if (content === null) {
-                socket.emit("skill_result", { requestId, ok: false, message: "Skill not found" });
-            } else {
-                socket.emit("skill_result", { requestId, ok: true, name: skillName, content });
-            }
-        });
-
-        // ── Agents management ──────────────────────────────────────────────
-
-        socket.on("list_agents", (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data.requestId;
-            const agents = scanGlobalAgents();
-            socket.emit("agents_list", { agents, requestId });
-        });
-
-        socket.on("create_agent", async (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data.requestId;
-            const agentName = (data.name ?? "").trim();
-            const agentContent = data.content ?? "";
-
-            if (!agentName) {
-                socket.emit("agent_result", { requestId, ok: false, message: "Missing agent name" });
-                return;
-            }
-
-            if (!/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(agentName) && !/^[a-z0-9]$/.test(agentName)) {
-                socket.emit("agent_result", {
-                    requestId,
-                    ok: false,
-                    message: "Invalid agent name: must be lowercase letters, numbers, and hyphens only",
-                });
-                return;
-            }
-
-            try {
-                await writeAgent(agentName, agentContent);
-                const agents = scanGlobalAgents();
-                socket.emit("agent_result", { requestId, ok: true, agents });
-            } catch (err) {
-                socket.emit("agent_result", {
-                    requestId,
-                    ok: false,
-                    message: err instanceof Error ? err.message : String(err),
-                });
-            }
-        });
-
-        socket.on("update_agent", async (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data.requestId;
-            const agentName = (data.name ?? "").trim();
-            const agentContent = data.content ?? "";
-
-            if (!agentName) {
-                socket.emit("agent_result", { requestId, ok: false, message: "Missing agent name" });
-                return;
-            }
-
-            // Relaxed validation for updates: accept any name the scanner
-            // can discover (letters, digits, hyphens, underscores, dots)
-            // but reject path separators to prevent directory traversal.
-            if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(agentName)) {
-                socket.emit("agent_result", {
-                    requestId,
-                    ok: false,
-                    message: "Invalid agent name: must start with a letter or digit and contain only letters, digits, hyphens, underscores, or dots",
-                });
-                return;
-            }
-
-            try {
-                await writeAgent(agentName, agentContent);
-                const agents = scanGlobalAgents();
-                socket.emit("agent_result", { requestId, ok: true, agents });
-            } catch (err) {
-                socket.emit("agent_result", {
-                    requestId,
-                    ok: false,
-                    message: err instanceof Error ? err.message : String(err),
-                });
-            }
-        });
-
-        socket.on("delete_agent", (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data.requestId;
-            const agentName = (data.name ?? "").trim();
-
-            if (!agentName) {
-                socket.emit("agent_result", { requestId, ok: false, message: "Missing agent name" });
-                return;
-            }
-
-            const deleted = deleteAgent(agentName);
-            const agents = scanGlobalAgents();
-            socket.emit("agent_result", {
-                requestId,
-                ok: deleted,
-                message: deleted ? undefined : "Agent not found",
-                agents,
-            });
-        });
-
-        socket.on("get_agent", (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data.requestId;
-            const agentName = (data.name ?? "").trim();
-            const content = agentName ? readAgentContent(agentName) : null;
-            if (content === null) {
-                socket.emit("agent_result", { requestId, ok: false, message: "Agent not found" });
-            } else {
-                socket.emit("agent_result", { requestId, ok: true, name: agentName, content });
-            }
-        });
-
-        // ── Plugins management ─────────────────────────────────────────────
-
-        socket.on("list_plugins", (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data?.requestId;
-            // Use the provided cwd (e.g. session's working directory) if
-            // available, otherwise fall back to the daemon's own cwd.
-            // Validate against workspace roots to prevent arbitrary path scanning.
-            const rawCwd = (typeof data?.cwd === "string" && data.cwd) ? data.cwd : undefined;
-            if (rawCwd && !isCwdAllowed(rawCwd)) {
-                socket.emit("plugins_list", { plugins: [], requestId, ok: false, message: "cwd outside allowed workspace roots" });
-                return;
-            }
-            // Only include project-local plugins when an explicit session cwd
-            // was provided AND it's within allowed workspace roots. Without an
-            // explicit cwd this is a runner-level query — only global plugins.
-            // When rawCwd is absent, pass undefined so marketplace discovery
-            // skips project-scoped plugins and respects only user-level settings.
-            const scanCwd = rawCwd ?? undefined;
-            const includeLocal = !!rawCwd && isCwdAllowed(rawCwd);
-            const plugins = scanAllPluginInfo(scanCwd, { includeProjectLocal: includeLocal });
-            // Echo scoped flag so the server can skip cache updates for per-session scans
-            socket.emit("plugins_list", { plugins, requestId, ...(rawCwd ? { scoped: true } : {}) });
-        });
-
-        // ── Sandbox ────────────────────────────────────────────────────────
-
-        socket.on("sandbox_get_status", async (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data.requestId;
-            try {
-                // Read sandbox config from disk — the daemon process does NOT
-                // run inside a sandbox itself, so process-local sandbox state
-                // (getSandboxMode, isSandboxActive, getViolations) would always
-                // return defaults.  The persisted config is the source of truth
-                // for what workers will use.
-                const { loadConfig, resolveSandboxConfig, loadGlobalConfig } = await import("../config.js");
-                // Use only the global config for resolution — the daemon
-                // process CWD may contain project-local overrides that
-                // should not influence the global settings editor.
-                const globalCfg = loadGlobalConfig();
-                const globalOnlyConfig = loadConfig(process.cwd());
-                // Override sandbox with global-only to prevent project-local
-                // settings from leaking into the status response.
-                globalOnlyConfig.sandbox = globalCfg.sandbox ?? {};
-                const resolvedConfig = resolveSandboxConfig(process.cwd(), globalOnlyConfig);
-                const mode = resolvedConfig.mode ?? "none";
-                // The daemon can't know if a worker sandbox is actively
-                // enforcing right now — report that a non-"none" mode is
-                // *configured*, not that enforcement is proven active.
-                const configured = mode !== "none";
-                socket.emit("file_result", {
-                    requestId,
-                    ok: true,
-                    mode,
-                    active: configured,
-                    configured,
-                    platform: process.platform,
-                    violations: 0,
-                    recentViolations: [],
-                    config: resolvedConfig,
-                    // Send only the *global* raw config so the UI editor
-                    // doesn't leak project-local overrides into global config
-                    // when saving.
-                    rawConfig: loadGlobalConfig().sandbox ?? {},
-                });
-            } catch (err) {
-                socket.emit("file_result", {
-                    requestId,
-                    ok: false,
-                    message: err instanceof Error ? err.message : String(err),
-                });
-            }
-        });
-
-        socket.on("sandbox_update_config", async (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data.requestId;
-            const body = data.config;
-            try {
-                if (!body || typeof body !== "object") {
-                    socket.emit("file_result", { requestId, ok: false, message: "Invalid sandbox config body" });
-                    return;
-                }
-                const validModes = ["none", "basic", "full"];
-                if (body.mode !== undefined && !validModes.includes(body.mode)) {
-                    socket.emit("file_result", { requestId, ok: false, message: `Invalid mode "${body.mode}"` });
-                    return;
-                }
-                const { saveGlobalConfig, loadConfig, resolveSandboxConfig, loadGlobalConfig } = await import("../config.js");
-                // Merge with existing global sandbox config so UI-unmanaged
-                // fields (ignoreViolations, allowUnixSockets, proxy ports,
-                // allowGitConfig, etc.) are preserved across saves.
-                const existingSandbox = loadGlobalConfig().sandbox ?? {} as Record<string, any>;
-                // Deep-merge nested objects (filesystem, network) so that
-                // sub-fields not managed by the UI (e.g. allowGitConfig,
-                // allowUnixSockets, proxy ports) are preserved.
-                const merged: Record<string, any> = { ...existingSandbox };
-                for (const [key, value] of Object.entries(body)) {
-                    if (value && typeof value === "object" && !Array.isArray(value)
-                        && merged[key] && typeof merged[key] === "object" && !Array.isArray(merged[key])) {
-                        merged[key] = { ...merged[key], ...value };
-                    } else {
-                        merged[key] = value;
-                    }
-                }
-                saveGlobalConfig({ sandbox: merged });
-                const newConfig = loadConfig(process.cwd());
-                const resolved = resolveSandboxConfig(process.cwd(), newConfig);
-                socket.emit("file_result", {
-                    requestId,
-                    ok: true,
-                    saved: true,
-                    resolvedConfig: resolved,
-                    message: "Changes will apply on next session start.",
-                });
-            } catch (err) {
-                socket.emit("file_result", {
-                    requestId,
-                    ok: false,
-                    message: err instanceof Error ? err.message : String(err),
-                });
-            }
-        });
-
-        // ── Usage dashboard ───────────────────────────────────────────────
-
-        // ── Models ──────────────────────────────────────────────────────
-
-        socket.on("list_models", (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data?.requestId;
-            try {
-                const models = listConfiguredModels(process.cwd());
-                socket.emit("models_list", { requestId, models });
-            } catch (e: any) {
-                socket.emit("models_list", { requestId, models: [], error: e.message ?? "Failed to list models" });
-            }
-        });
-
-        // ── Usage ─────────────────────────────────────────────────────────
-
-        socket.on("get_usage", (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data.requestId ?? "";
-            try {
-                const range = (data.range as UsageRange) || "90d";
-                const usageData = getUsageData(range);
-                if (!usageData) {
-                    socket.emit("usage_error", {
-                        requestId,
-                        error: "Usage data not available yet — initial scan in progress",
-                    });
-                    return;
-                }
-                socket.emit("usage_data", { requestId, data: usageData });
-            } catch (e: any) {
-                socket.emit("usage_error", {
-                    requestId,
-                    error: e.message ?? "Unknown error",
-                });
-            }
-        });
-
-        // ── Session Analysis ──────────────────────────────────────────
-
-        socket.on("analyze_session", async (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data.requestId ?? "";
-            try {
-                const sessionId = data.sessionId;
-                if (!sessionId || typeof sessionId !== "string") {
-                    socket.emit("analyze_session_error", {
-                        requestId,
-                        error: "Missing sessionId parameter",
-                    });
-                    return;
-                }
-                const sessionMetadata = sessionCloseMetadata.get(sessionId);
-                const sessionsRootDir = join(resolveConfiguredAgentDir(sessionMetadata?.cwd), "sessions");
-                const sessionFile = runningSessions.get(sessionId)?.sessionFile
-                    ?? sessionMetadata?.sessionFile
-                    ?? await findSessionPathById(sessionsRootDir, sessionId);
-                if (!sessionFile) {
-                    socket.emit("analyze_session_error", {
-                        requestId,
-                        error: "Session file not found for " + sessionId,
-                    });
-                    return;
-                }
-                const MAX_ANALYSIS_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
-                const transcriptFile = Bun.file(sessionFile);
-                if (!await transcriptFile.exists()) {
-                    socket.emit("analyze_session_error", {
-                        requestId,
-                        error: "Session file does not exist: " + sessionFile,
-                    });
-                    return;
-                }
-                if (transcriptFile.size > MAX_ANALYSIS_FILE_SIZE) {
-                    socket.emit("analyze_session_error", {
-                        requestId,
-                        error: `Session file too large for analysis (${Math.round(transcriptFile.size / 1024 / 1024)} MB, max ${MAX_ANALYSIS_FILE_SIZE / 1024 / 1024} MB)`,
-                    });
-                    return;
-                }
-                const { parseJsonlEntries } = await import("../session-analysis/parser.js");
-                const { reconstructContext } = await import("../session-analysis/analyzer.js");
-                const content = await transcriptFile.text();
-                const { entries } = parseJsonlEntries(content);
-                const leafId = entries.findLast((e: any) => e.id)?.id ?? "root";
-                const analysis = reconstructContext(
-                    entries,
-                    leafId,
-                    getContextWindowsForAnalysis(sessionMetadata?.cwd),
-                );
-                socket.emit("analyze_session_data", { requestId, data: analysis });
-            } catch (e: any) {
-                socket.emit("analyze_session_error", {
-                    requestId,
-                    error: e.message ?? "Unknown error",
-                });
-            }
-        });
-
-        // ── Settings ───────────────────────────────────────────────────────
-
-        // sanitizeConfigForUI is imported from ./daemon-config-sanitize.js
-
-        socket.on("settings_get_config", async (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data?.requestId;
-            try {
-                const { loadGlobalConfig: loadGlobal } = await import("../config.js");
-                const globalConfig = loadGlobal();
-
-                // Also read settings.json (TUI preferences)
-                const settingsPath = join(homedir(), ".pizzapi", "settings.json");
-                let tuiSettings: Record<string, unknown> = {};
-                try {
-                    const { readFileSync, existsSync } = await import("fs");
-                    if (existsSync(settingsPath)) {
-                        tuiSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-                    }
-                } catch {
-                    // settings.json may not exist yet
-                }
-
-                // Also read ~/.pizzapi/AGENTS.md
-                const agentsMdPath = join(homedir(), ".pizzapi", "AGENTS.md");
-                let agentsMd = "";
-                try {
-                    const { readFileSync, existsSync } = await import("fs");
-                    if (existsSync(agentsMdPath)) {
-                        agentsMd = readFileSync(agentsMdPath, "utf-8");
-                    }
-                } catch {
-                    // AGENTS.md may not exist yet
-                }
-
-                // Strip sensitive fields before sending to UI
-                const sanitizedConfig = sanitizeConfigForUI(globalConfig as Record<string, unknown>);
-                socket.emit("file_result", {
-                    requestId,
-                    ok: true,
-                    config: sanitizedConfig,
-                    tuiSettings,
-                    agentsMd,
-                });
-            } catch (err) {
-                socket.emit("file_result", {
-                    requestId,
-                    ok: false,
-                    message: err instanceof Error ? err.message : String(err),
-                });
-            }
-        });
-
-        socket.on("settings_update_section", async (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data?.requestId;
-            const section = data?.section;
-            const value = data?.value;
-            try {
-                if (!section || typeof section !== "string") {
-                    socket.emit("file_result", { requestId, ok: false, message: "Missing section name" });
-                    return;
-                }
-
-                // Handle AGENTS.md separately — it's a standalone file, not JSON config
-                if (section === "agentsMd") {
-                    const agentsMdPath = join(homedir(), ".pizzapi", "AGENTS.md");
-                    const { writeFileSync, chmodSync: chmodSyncAgents, mkdirSync, existsSync } = await import("fs");
-                    const dir = join(homedir(), ".pizzapi");
-                    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-                    const content = typeof value === "string" ? value : "";
-                    writeFileSync(agentsMdPath, content, { encoding: "utf-8", mode: 0o600 });
-                    chmodSyncAgents(agentsMdPath, 0o600); // tighten permissions on pre-existing files
-                    socket.emit("file_result", {
-                        requestId,
-                        ok: true,
-                        saved: true,
-                        message: "AGENTS.md saved. Changes apply on next session start.",
-                    });
-                    return;
-                }
-
-                // Sections that go into settings.json (TUI preferences)
-                const tuiSections = new Set(["tuiPreferences", "models"]);
-
-                if (tuiSections.has(section)) {
-                    // Read/merge/write settings.json
-                    const settingsPath = join(homedir(), ".pizzapi", "settings.json");
-                    const { readFileSync, writeFileSync, chmodSync: chmodSyncSettings, existsSync, mkdirSync } = await import("fs");
-                    const dir = join(homedir(), ".pizzapi");
-                    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-                    let existing: Record<string, unknown> = {};
-                    try {
-                        if (existsSync(settingsPath)) {
-                            existing = JSON.parse(readFileSync(settingsPath, "utf-8"));
-                        }
-                    } catch { /* start fresh */ }
-
-                    // Merge TUI settings at top level
-                    if (value && typeof value === "object" && !Array.isArray(value)) {
-                        Object.assign(existing, value);
-                    }
-                    writeFileSync(settingsPath, JSON.stringify(existing, null, 2), { encoding: "utf-8", mode: 0o600 });
-                    chmodSyncSettings(settingsPath, 0o600); // tighten permissions on pre-existing files
-                    socket.emit("file_result", {
-                        requestId,
-                        ok: true,
-                        saved: true,
-                        message: "TUI settings saved. Changes apply on next session start.",
-                    });
-                } else {
-                    // All other sections go into config.json
-                    const { saveGlobalConfig: saveGlobal, loadGlobalConfig: loadGlobal } = await import("../config.js");
-
-                    // Map section names to config.json keys
-                    const sectionToConfigKey: Record<string, string> = {
-                        mcpServers: "mcpServers",
-                        hooks: "hooks",
-                        sandbox: "sandbox",
-                        webSearch: "providerSettings",
-                        toolSearch: "toolSearch",
-                        security: "_security",        // virtual — handled specially
-                        envVars: "_envVars",          // virtual — handled specially
-                        systemPrompt: "_systemPrompt", // virtual — handled specially
-                    };
-
-                    const configKey = sectionToConfigKey[section] ?? section;
-                    const existing = loadGlobal();
-
-                    if (section === "security") {
-                        const v = value as any;
-                        const updates: Record<string, any> = {};
-                        if (v?.allowProjectHooks !== undefined) updates.allowProjectHooks = v.allowProjectHooks;
-                        if (v?.trustedPlugins !== undefined) updates.trustedPlugins = v.trustedPlugins;
-                        saveGlobal(updates);
-                    } else if (section === "systemPrompt") {
-                        const v = value as any;
-                        const updates: Record<string, any> = {};
-                        if (v?.appendSystemPrompt !== undefined) updates.appendSystemPrompt = v.appendSystemPrompt;
-                        if (v?.builtinSystemPrompt !== undefined) updates.builtinSystemPrompt = v.builtinSystemPrompt;
-                        if (v?.sendAgentsMd !== undefined) updates.sendAgentsMd = v.sendAgentsMd;
-                        if (v?.skills !== undefined) updates.skills = v.skills;
-                        saveGlobal(updates);
-                    } else if (section === "envVars") {
-                        // Env vars are stored in a custom key in config.json.
-                        // Restore any masked ("***") sentinel values from the on-disk config
-                        // so we don't overwrite real secrets with the placeholder.
-                        const MASK_SENTINEL = "***";
-                        const existingOverrides = ((existing as any).envOverrides ?? {}) as Record<string, string>;
-                        const incomingOverrides = (value ?? {}) as Record<string, string>;
-                        const restoredOverrides: Record<string, string> = { ...incomingOverrides };
-                        for (const [k, v] of Object.entries(incomingOverrides)) {
-                            if (v === MASK_SENTINEL && typeof existingOverrides[k] === "string") {
-                                restoredOverrides[k] = existingOverrides[k];
-                            }
-                        }
-                        const updates: Record<string, any> = { envOverrides: restoredOverrides };
-                        saveGlobal(updates);
-                    } else if (section === "providerOverrides") {
-                        // Per-provider overrides (system prompt, AGENTS.md, MCP disable
-                        // list) go into providerSettings.<provider>.overrides.
-                        const validationErrors = validateProviderOverridesSection(value);
-                        if (validationErrors.length > 0) {
-                            socket.emit("file_result", {
-                                requestId,
-                                ok: false,
-                                message: `Invalid provider overrides:\n${validationErrors.join("\n")}`,
-                            });
-                            return;
-                        }
-                        const ps = mergeProviderOverridesSection(
-                            (existing as any).providerSettings,
-                            (value ?? {}) as Record<string, unknown>,
-                        );
-                        saveGlobal({ providerSettings: ps } as any);
-                    } else if (section === "webSearch") {
-                        // Web search config goes into providerSettings
-                        const v = value as any;
-                        const ps = (existing as any).providerSettings ?? {};
-                        if (v?.anthropic?.webSearch) {
-                            ps.anthropic = { ...ps.anthropic, webSearch: v.anthropic.webSearch };
-                        }
-                        if (v?.["ollama-cloud"]?.webSearch) {
-                            ps["ollama-cloud"] = { ...ps["ollama-cloud"], webSearch: v["ollama-cloud"].webSearch };
-                        }
-                        saveGlobal({ providerSettings: ps } as any);
-                    } else if (section === "toolSearch") {
-                        if (value != null && (typeof value !== "object" || Array.isArray(value))) {
-                            socket.emit("file_result", {
-                                requestId,
-                                ok: false,
-                                message: "toolSearch must be a JSON object",
-                            });
-                            return;
-                        }
-
-                        const toolSearch = (value ?? {}) as Record<string, unknown>;
-                        const errors: string[] = [];
-                        const enabled = toolSearch.enabled;
-                        const tokenThreshold = toolSearch.tokenThreshold;
-                        const maxResults = toolSearch.maxResults;
-                        const keepLoadedTools = toolSearch.keepLoadedTools;
-
-                        if (enabled !== undefined && typeof enabled !== "boolean") {
-                            errors.push('"enabled" must be a boolean');
-                        }
-                        if (
-                            tokenThreshold !== undefined &&
-                            (typeof tokenThreshold !== "number" || !Number.isFinite(tokenThreshold) || tokenThreshold < 0)
-                        ) {
-                            errors.push('"tokenThreshold" must be a finite number >= 0');
-                        }
-                        if (
-                            maxResults !== undefined &&
-                            (typeof maxResults !== "number" || !Number.isFinite(maxResults) || maxResults < 1)
-                        ) {
-                            errors.push('"maxResults" must be a finite number >= 1');
-                        }
-                        if (keepLoadedTools !== undefined && typeof keepLoadedTools !== "boolean") {
-                            errors.push('"keepLoadedTools" must be a boolean');
-                        }
-                        if (errors.length > 0) {
-                            socket.emit("file_result", {
-                                requestId,
-                                ok: false,
-                                message: `Invalid Tool Search config:\n${errors.join("\n")}`,
-                            });
-                            return;
-                        }
-
-                        saveGlobal({ toolSearch: value as any });
-                    } else if (section === "mcpServers") {
-                        // Validate MCP server config before saving
-                        if (value != null && (typeof value !== "object" || Array.isArray(value))) {
-                            socket.emit("file_result", {
-                                requestId,
-                                ok: false,
-                                message: "mcpServers must be a JSON object (Record<string, ServerEntry>)",
-                            });
-                            return;
-                        }
-                        const servers = (value ?? {}) as Record<string, any>;
-                        const errors: string[] = [];
-                        for (const [name, entry] of Object.entries(servers)) {
-                            if (entry == null || typeof entry !== "object" || Array.isArray(entry)) {
-                                errors.push(`"${name}": must be an object`);
-                                continue;
-                            }
-                            const hasCommand = typeof entry.command === "string" && entry.command.trim() !== "";
-                            const hasUrl = typeof entry.url === "string" && entry.url.trim() !== "";
-                            if (!hasCommand && !hasUrl) {
-                                errors.push(`"${name}": must have a "command" (stdio) or "url" (http) field`);
-                            }
-                        }
-                        if (errors.length > 0) {
-                            socket.emit("file_result", {
-                                requestId,
-                                ok: false,
-                                message: `Invalid MCP server config:\n${errors.join("\n")}`,
-                            });
-                            return;
-                        }
-
-                        // The settings API masks sensitive env var and header values (e.g. tokens/keys)
-                        // with MASK_SENTINEL ("***") before sending them to the UI so they aren't
-                        // exposed in transit.  When the UI sends the config back on save, those
-                        // masked values must NOT be written to disk — restoreMaskedServerEntry()
-                        // substitutes the original on-disk secret for each key still carrying the
-                        // sentinel.
-                        //
-                        // Renames are handled heuristically by findRenamedServerMatch() below:
-                        // when an incoming entry has masked secrets but no on-disk entry under its
-                        // name, we look for a deleted entry whose env/header keys would supply the
-                        // sentinels.  This survives the user editing command/url/args in the same
-                        // save.  Truly ambiguous cases (multiple plausible renames) still fall back
-                        // to writing the sentinel — visible and recoverable.
-                        const existingMcpServers = ((existing as any).mcpServers ?? {}) as Record<string, any>;
-
-                        // Identify deleted servers to heuristically match renames
-                        const incomingNames = new Set(Object.keys(servers));
-                        const deletedServers = Object.entries(existingMcpServers)
-                            .filter(([name]) => !incomingNames.has(name))
-                            .map(([_name, srv]) => srv)
-                            .filter((srv) => srv && typeof srv === "object");
-
-                        const mergedServers: Record<string, any> = {};
-                        for (const [name, entry] of Object.entries(servers)) {
-                            if (entry && typeof entry === "object") {
-                                let existingEntry = existingMcpServers[name];
-                                if (!existingEntry) {
-                                    existingEntry = findRenamedServerMatch(entry as Record<string, unknown>, deletedServers);
-                                }
-
-                                mergedServers[name] = restoreMaskedServerEntry(
-                                    entry as Record<string, unknown>,
-                                    existingEntry,
-                                );
-                            } else {
-                                mergedServers[name] = entry;
-                            }
-                        }
-                        saveGlobal({ mcpServers: mergedServers } as any);
-                    } else if (section === "mcp") {
-                        // mcp.servers[] (preferred array format) — restore masked sentinel values
-                        // before writing to disk.  We look up each server by its `name` field in
-                        // the on-disk array so we can restore the original secret.
-                        //
-                        // Renames in the array format are likewise resolved via
-                        // findRenamedServerMatch() against deleted entries.
-                        const incomingMcp = (value ?? {}) as { servers?: any[] };
-                        const existingMcp = ((existing as any).mcp ?? {}) as { servers?: any[] };
-
-                        // Build name → entry map for O(1) lookup against the on-disk array.
-                        const existingByName = new Map<string, Record<string, unknown>>();
-                        if (Array.isArray(existingMcp.servers)) {
-                            for (const s of existingMcp.servers) {
-                                if (s && typeof s === "object" && typeof (s as any).name === "string") {
-                                    existingByName.set((s as any).name as string, s as Record<string, unknown>);
-                                }
-                            }
-                        }
-
-                        // Identify deleted servers to heuristically match renames
-                        const incomingNamesArray = new Set(
-                            Array.isArray(incomingMcp.servers)
-                                ? incomingMcp.servers
-                                      .map((s: any) => s && typeof s === "object" ? s.name : undefined)
-                                      .filter((n): n is string => typeof n === "string")
-                                : []
-                        );
-
-                        const deletedServersArray: Record<string, unknown>[] = [];
-                        if (Array.isArray(existingMcp.servers)) {
-                            for (const srv of existingMcp.servers) {
-                                if (srv && typeof srv === "object" && typeof (srv as any).name === "string") {
-                                    if (!incomingNamesArray.has((srv as any).name)) {
-                                        deletedServersArray.push(srv as Record<string, unknown>);
-                                    }
-                                }
-                            }
-                        }
-
-                        const mergedMcpServers: any[] = Array.isArray(incomingMcp.servers)
-                            ? incomingMcp.servers.map((entry: any) => {
-                                  if (!entry || typeof entry !== "object") return entry;
-
-                                  let existingEntry: Record<string, unknown> | undefined = undefined;
-                                  if (typeof entry.name === "string") {
-                                      existingEntry = existingByName.get(entry.name);
-                                      if (!existingEntry) {
-                                          existingEntry = findRenamedServerMatch(entry as Record<string, unknown>, deletedServersArray);
-                                      }
-                                  }
-
-                                  return restoreMaskedServerEntry(
-                                      entry as Record<string, unknown>,
-                                      existingEntry,
-                                  );
-                              })
-                            : [];
-
-                        saveGlobal({ mcp: { ...incomingMcp, servers: mergedMcpServers } } as any);
-                    } else {
-                        // Direct key mapping
-                        saveGlobal({ [configKey]: value } as any);
-                    }
-
-                    // Reload and return the updated config — mask secrets before sending to browser
-                    const updatedConfig = sanitizeConfigForUI(loadGlobal() as Record<string, unknown>);
-                    const isMcpSection = section === "mcpServers" || section === "mcp" || section === "toolSearch";
-                    const reloadHint = isMcpSection
-                        ? "MCP server config saved. Active sessions can run /mcp reload to pick up changes."
-                        : "Settings saved. Changes apply on next session start.";
-                    socket.emit("file_result", {
-                        requestId,
-                        ok: true,
-                        saved: true,
-                        config: updatedConfig,
-                        message: reloadHint,
-                        reloadHint: isMcpSection,
-                    });
-                }
-            } catch (err) {
-                socket.emit("file_result", {
-                    requestId,
-                    ok: false,
-                    message: err instanceof Error ? err.message : String(err),
-                });
-            }
-        });
-
-        // ── Package management ────────────────────────────────────────────────
-
-        async function withPackageManager<T extends Record<string, unknown>>(
-            socket: any,
-            requestId: string,
-            fn: (pm: any) => Promise<T>,
-        ): Promise<void> {
-            try {
-                const { DefaultPackageManager, SettingsManager, getAgentDir } = await import("@earendil-works/pi-coding-agent");
-                const agentDir = getAgentDir();
-                const cwd = process.cwd();
-                const settingsManager = SettingsManager.create(cwd, agentDir);
-                const packageManager = new DefaultPackageManager({ cwd, agentDir, settingsManager });
-                const result = await fn(packageManager);
-                socket.emit("file_result", { requestId, ok: true, ...result });
-            } catch (err) {
-                socket.emit("file_result", { requestId, ok: false, message: err instanceof Error ? err.message : String(err) });
-            }
-        }
-
-        socket.on("packages_list", async (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data?.requestId;
-            await withPackageManager(socket, requestId, async (packageManager) => {
-                const packages = packageManager.listConfiguredPackages();
-                return { packages, message: `Found ${packages.length} package(s)` };
-            });
-        });
-
-        socket.on("packages_install", async (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data?.requestId;
-            const source = data?.source;
-            const isLocal = data?.local === true;
-
-            if (!source || typeof source !== "string") {
-                socket.emit("file_result", {
-                    requestId,
-                    ok: false,
-                    message: "Missing or invalid package source",
-                });
-                return;
-            }
-
-            await withPackageManager(socket, requestId, async (packageManager) => {
-                await packageManager.install(source, { local: isLocal });
-                const added = packageManager.addSourceToSettings(source, { local: isLocal });
-                if (!added) {
-                    throw new Error(`Failed to add package ${source} to settings`);
-                }
-                return { message: `Package ${source} installed successfully` };
-            });
-        });
-
-        socket.on("packages_remove", async (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data?.requestId;
-            const source = data?.source;
-            const isLocal = data?.local === true;
-
-            if (!source || typeof source !== "string") {
-                socket.emit("file_result", {
-                    requestId,
-                    ok: false,
-                    message: "Missing or invalid package source",
-                });
-                return;
-            }
-
-            await withPackageManager(socket, requestId, async (packageManager) => {
-                await packageManager.remove(source, { local: isLocal });
-                const removed = packageManager.removeSourceFromSettings(source, { local: isLocal });
-                if (!removed) {
-                    throw new Error(`Package ${source} not found in settings`);
-                }
-                return { message: `Package ${source} removed successfully` };
-            });
-        });
-
-        socket.on("packages_update", async (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data?.requestId;
-            const source = data?.source; // Optional: update specific package
-
-            await withPackageManager(socket, requestId, async (packageManager) => {
-                await packageManager.update(source);
-                return {
-                    message: source
-                        ? `Package ${source} updated successfully`
-                        : "All packages updated successfully",
-                };
-            });
-        });
+        // ── Skills / agents / plugins / sandbox / models / usage handlers ──
+        registerSkillsHandlers(socket, () => isShuttingDown);
+        registerAgentsHandlers(socket, () => isShuttingDown);
+        registerPluginsHandlers(socket, () => isShuttingDown);
+        registerSandboxHandlers(socket, () => isShuttingDown);
+        registerModelsHandlers(socket, () => isShuttingDown, listConfiguredModels);
+        registerUsageHandlers(socket, () => isShuttingDown);
+
+        // ── Session analysis / settings / packages handlers ────────────────
+        registerSessionAnalysisHandlers(
+            socket,
+            () => isShuttingDown,
+            runningSessions,
+            sessionCloseMetadata,
+            resolveConfiguredAgentDir,
+            getContextWindowsForAnalysis,
+        );
+        registerSettingsHandlers(socket, () => isShuttingDown);
+        registerPackagesHandlers(socket, () => isShuttingDown);
 
         // ── Error handling ────────────────────────────────────────────────
 

@@ -72,9 +72,7 @@ afterAll(() => {
     rmSync(tmpDir, { recursive: true, force: true });
 });
 
-const isCI = !!process.env.CI;
-
-(isCI ? describe.skip : describe)("pinRelaySession", () => {
+describe("pinRelaySession", () => {
     authIt("pins an existing session owned by the user", async () => {
         await insertSession({ sessionId: "s1" });
 
@@ -119,7 +117,7 @@ const isCI = !!process.env.CI;
     });
 });
 
-(isCI ? describe.skip : describe)("unpinRelaySession", () => {
+describe("unpinRelaySession", () => {
     authIt("unpins a pinned session", async () => {
         await insertSession({ sessionId: "s4", isPinned: 1 });
 
@@ -147,7 +145,7 @@ const isCI = !!process.env.CI;
     });
 });
 
-(isCI ? describe.skip : describe)("listPersistedRelaySessionsForUser", () => {
+describe("listPersistedRelaySessionsForUser", () => {
     authIt("includes isPinned field in results", async () => {
         await insertSession({ sessionId: "s6", isPinned: 1, isEphemeral: false });
         await insertSession({ sessionId: "s7", isPinned: 0, isEphemeral: false });
@@ -203,7 +201,7 @@ const isCI = !!process.env.CI;
     });
 });
 
-(isCI ? describe.skip : describe)("listPinnedRelaySessionsForUser", () => {
+describe("listPinnedRelaySessionsForUser", () => {
     authIt("returns only pinned sessions", async () => {
         await insertSession({ sessionId: "s-only-pinned", isPinned: 1, isEphemeral: false });
         await insertSession({ sessionId: "s-only-unpinned", isPinned: 0, isEphemeral: false });

@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { isAbsolute, join, normalize, resolve } from "node:path";
 import type { Socket } from "socket.io-client";
 import type { ServiceHandler, ServiceInitOptions, ServiceEnvelope } from "../service-handler.js";
+import type { ServiceSigilDef } from "@pizzapi/protocol";
 import { isCwdAllowed } from "../workspace.js";
 
 const execFileAsync = promisify(execFile);
@@ -155,6 +156,43 @@ function isValidPath(p: string): boolean {
     if (segments.some((s) => s === "..")) return false;
     return true;
 }
+
+// ── Sigils ──────────────────────────────────────────────────────────────────
+
+/**
+ * Git-domain sigil definitions advertised to agents (via list_available_sigils)
+ * and to the UI (for render config). Rendered client-side — no resolve endpoint.
+ * Icons match the UI's built-in registry so rendering is unchanged; `stash` is new.
+ */
+export const GIT_SIGIL_DEFS: ServiceSigilDef[] = [
+    {
+        type: "commit",
+        label: "Commit",
+        icon: "git-commit-horizontal",
+        description: "A git commit reference. Use the short or full SHA, e.g. [[commit:a1b2c3d]].",
+        aliases: ["sha", "git-commit"],
+    },
+    {
+        type: "branch",
+        label: "Branch",
+        icon: "git-branch",
+        description: "A git branch reference, e.g. [[branch:main]].",
+        aliases: ["ref", "git-branch"],
+    },
+    {
+        type: "repo",
+        label: "Repo",
+        icon: "book-marked",
+        description: "A git repository reference, e.g. [[repo:owner/name]].",
+        aliases: ["repository"],
+    },
+    {
+        type: "stash",
+        label: "Stash",
+        icon: "archive",
+        description: "A git stash entry, referenced by index, e.g. [[stash:0]].",
+    },
+];
 
 // ── GitService ──────────────────────────────────────────────────────────────
 

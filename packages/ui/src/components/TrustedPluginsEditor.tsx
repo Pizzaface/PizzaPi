@@ -5,7 +5,7 @@
  * Used in the top-level Plugins tab.
  */
 import { useState, useEffect, useCallback, type KeyboardEvent } from "react";
-import { Plus, X, Save, Shield, Loader2 } from "lucide-react";
+import { Plus, X, Save, Shield, Loader2, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -107,7 +107,15 @@ export function TrustedPluginsEditor({ runnerId }: TrustedPluginsEditorProps) {
 
     return (
         <div className="flex flex-col gap-4">
-            {error && <ErrorAlert>{error}</ErrorAlert>}
+            {error && (
+                <div className="flex flex-col gap-2">
+                    <ErrorAlert>Couldn't load trusted plugins from the runner. {error}</ErrorAlert>
+                    <Button variant="outline" size="sm" className="self-start" onClick={() => void fetchConfig()}>
+                        <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                        Retry
+                    </Button>
+                </div>
+            )}
 
             <div className="flex flex-col gap-3">
                 <Label className="flex items-center gap-2">
@@ -154,7 +162,7 @@ export function TrustedPluginsEditor({ runnerId }: TrustedPluginsEditorProps) {
                         value={pluginInput}
                         onChange={(e) => setPluginInput(e.target.value)}
                         onKeyDown={handleKeyDown}
-                        placeholder="/path/to/plugin"
+                        placeholder="~/.pizzapi/plugins/my-plugin"
                         className="flex-1 font-mono text-xs"
                     />
                     <Button
@@ -163,6 +171,7 @@ export function TrustedPluginsEditor({ runnerId }: TrustedPluginsEditorProps) {
                         size="sm"
                         onClick={addPlugin}
                         disabled={!pluginInput.trim()}
+                        aria-label="Add trusted plugin path"
                     >
                         <Plus className="h-4 w-4" />
                     </Button>

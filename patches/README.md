@@ -4,329 +4,168 @@ Patches in this directory are applied automatically by Bun via the
 `patchedDependencies` field in the root `package.json`. They are reapplied on
 every `bun install` — no postinstall script is needed.
 
-## @earendil-works/pi-agent-core@0.80.3
+## @earendil-works/pi-agent-core@0.82.1
 
-Adds one PizzaPi-specific runtime fix:
+Refreshes the agent's system prompt and tool list before every assistant
+response, not just at loop start. `dist/agent.js` exposes the current
+`systemPrompt`/`tools` off the context snapshot (`__getLatestSystemPrompt`,
+`__getLatestTools`); `dist/agent-loop.js` calls them right before each
+`streamAssistantResponse`. Without this, a tool that loads a deferred tool or
+updates the prompt mid-turn (e.g. `search_tools`) wouldn't take effect until
+the *next* user turn. See the "pi-agent-core dynamic tool refresh" tests in
+`packages/cli/src/patches.test.ts`.
 
-- **Dynamic tool refresh between assistant responses:** when a tool changes the
-  active tool set mid-run (for example `search_tools` loading deferred tools),
-  the next assistant response now sees the refreshed tools and system prompt
-  instead of the stale turn-start snapshot. This fixes same-turn Tool Deferral
-  flows where the model successfully loads a tool and then immediately gets
-  `Unknown tool` / `tool isn't loaded` errors trying to call it.
+## @earendil-works/pi-tui@0.82.1
 
-**What it changes:**
+Adds a Windows console lifecycle to `dist/terminal.js`:
+`createWindowsConsoleLifecycle()` enables VT output processing and switches
+the input/output code pages to UTF-8 (via `koffi` calls into
+`kernel32.dll`) when `ProcessTerminal.start()` runs, publishes the result as
+`globalThis.__PI_WINDOWS_CONSOLE_CAPS__`, and restores the original console
+mode/code pages on `stop()`. This fixes garbled Unicode/ANSI rendering in
+Windows terminals; it's a no-op (best-effort, swallows failures) on other
+platforms. See `packages/cli/src/patches.test.ts`.
 
-| File | Change |
-|------|--------|
-| `dist/agent.js` — `createContextSnapshot()` | Exposes internal callbacks that return the latest tool set and system prompt |
-| `dist/agent-loop.js` — `runLoop()` | Refreshes `currentContext.tools` and `currentContext.systemPrompt` before each assistant response |
+## @earendil-works/pi-ai@0.82.1
 
-**Tests:** `packages/cli/src/patches.test.ts` verifies the regression behavior with a live `Agent` instance.
+Same intent as 0.80.6 (Anthropic web-search passthrough, Claude Code
+credentials fallback, retryable-JSON-parse patterns), ported to upstream's
+restructured 0.82.0 layout:
 
-## @earendil-works/pi-coding-agent@0.80.3
+- The Anthropic OAuth module moved from `dist/utils/oauth/anthropic.js` to
+  `dist/auth/oauth/anthropic.js`, and its shape changed: the old
+  `anthropicOAuthProvider.refreshToken(credentials)` object is gone, replaced
+  by `anthropicOAuth.refresh(credential)` on the same `anthropicOAuth` object
+  used for login. The Claude Code Keychain/file fallback now lives inside
+  that `refresh()` method.
 
-PizzaPi integration changes ported forward to the 0.80.x upstream layout.
-Upstream provides session-control actions for command contexts; PizzaPi also
-exposes those actions on the general extension API so remote event handlers can
-trigger `/new` and `/resume`. The retryable-JSON-parse hunk that lived here in
-0.79.x moved with upstream into `@earendil-works/pi-ai` (see the pi-ai patch
-below).
-
-**What it changes:**
-
-| File | Change |
-|------|--------|
-| `dist/config.js` | Hardcodes `".pizzapi"`, flattens `getAgentDir()`, and honors `PIZZAPI_CHANGELOG_PATH` |
-| `dist/core/agent-session.js` | Extension `sendUserMessage` path accepts an `expandPromptTemplates` opt-in (default `false`) so web UI input can opt into slash-command/template expansion |
-| `dist/core/extensions/loader.js` / `dist/core/extensions/runner.js` | Exposes `newSession()` and `switchSession()` on the general extension API for remote exec handlers |
-| `dist/core/extensions/types.d.ts` | Types `newSession`/`switchSession` on `ExtensionAPI`, `expandPromptTemplates` on `sendUserMessage`/`SendUserMessageHandler`, and `newSession`/`switchSession` on `ExtensionActions` |
-| `dist/core/model-resolver.js` | Adds built-in default model selection for `ollama-cloud` (`glm-5.1`) |
-| `dist/core/provider-display-names.js` | Exposes `Ollama Cloud` as a built-in provider display name |
-| `dist/modes/interactive/interactive-mode.js` | Removes upstream version-notification UI (import, `run()` call, and `showNewVersionNotification()` method) |
-| `dist/index.js` / `dist/index.d.ts` | Re-exports `handlePackageCommand` and `handleConfigCommand` so the `pizza` CLI can inherit `install`/`remove`/`update`/`list`/`config` without a subpath import |
-
-## @earendil-works/pi-ai@0.80.3
-
-Same Anthropic web-search and Claude Code credential fallback changes as 0.79.3,
-ported to the 0.80.x upstream layout (the Anthropic streaming implementation
-moved from `dist/providers/anthropic.js` into `dist/api/anthropic-messages.js`),
-plus built-in **Ollama Cloud** provider support and the retryable-JSON-parse
-patterns that upstream relocated into `dist/utils/retry.js`.
-
-**What it changes:**
-
-| File | Change |
-|------|--------|
-| `dist/api/anthropic-messages.js` | Preserves PizzaPi's Anthropic web-search patch (server-tool-use / web-search-result block handling, `PIZZAPI_WEB_SEARCH` injection, message round-tripping, server-side tool passthrough) |
-| `dist/utils/oauth/anthropic.js` | Preserves Claude Code Keychain / credential-file fallback in `anthropicOAuthProvider.refreshToken()` |
-| `dist/env-api-keys.js` | Recognizes `OLLAMA_API_KEY` for provider `ollama-cloud` |
-| `dist/utils/retry.js` | Adds `json.?parse.?error` / `unexpected.?end.?of.?json` to `RETRYABLE_PROVIDER_ERROR_PATTERN` (moved here from `pi-coding-agent` in 0.80.x) |
-| `dist/models.generated.js` | Inlines `createOllamaModel()` helper and `OLLAMA_CLOUD_MODELS` catalog, registers the `ollama-cloud` key in `MODELS` (inlined rather than a separate file to work around [oven-sh/bun#13330](https://github.com/oven-sh/bun/issues/13330) — `bun patch` fails on `new file` in nested dirs) |
-| `dist/models.generated.d.ts` / `dist/types.d.ts` | Adds `ollama-cloud` model typing to `MODELS` and `KnownProvider` |
-
-## @mariozechner/pi-coding-agent@0.70.6 (replaced by 0.79.3 patch)
-
-Same PizzaPi integration changes as 0.67.5, ported forward to the 0.70.x
-upstream layout, plus one Ollama-first-party addition.
-
-## @mariozechner/pi-coding-agent@0.66.1 (replaced by 0.67.5 patch)
-
-Same changes as 0.63.1 (see below), ported forward to the 0.66.1 refactor.
-
-Notable upstream changes in 0.66.1:
-- `ModelRegistry` constructor is now private — use `ModelRegistry.create()`.
-- `AgentSession.newSession()`/`switchSession()`/`fork()` moved to a new
-  `AgentSessionRuntime` class. `InteractiveMode` now takes
-  `AgentSessionRuntime` instead of `AgentSession`.
-- The `session_switch` extension event was removed; `session_before_switch`
-  and `session_start` remain.
-- New `SessionManager.create()` replaces `SessionManager.persistent()`.
-- Upstream retryable error regex added `ended without`; our `json.?parse`
-  addition is appended on top.
+**Ollama Cloud is no longer part of this patch (Task 0.2, Godmother idea
+Uq2WsWiW).** Earlier revisions inlined an `ollamaCloudProvider()` factory
+into `dist/providers/all.js`, an `OLLAMA_CLOUD_MODELS` catalog into
+`dist/models.generated.js`, an `OLLAMA_API_KEY` mapping into
+`dist/env-api-keys.js`, and an `ollama-cloud` `KnownProvider` entry into
+`dist/types.d.ts`. All four hunks were fully replaceable by pi's public
+`pi.registerProvider()` extension API, so they were dropped from the patch
+and replaced with a bundled PizzaPi extension
+(`packages/cli/src/extensions/ollama-cloud-provider.ts`) that registers the
+same provider (baseUrl, `apiKey: "$OLLAMA_API_KEY"`, `api:
+"openai-completions"`) plus a static fallback model catalog
+(`packages/cli/src/ollama-cloud-fallback-models.ts`, same data the patch used
+to inline) at extension-load time — before pi's `bindCore()` flushes queued
+provider registrations, so `--provider ollama-cloud`, `pizza models`, and the
+web model selector see the provider and models with zero network. Live
+discovery (`packages/cli/src/ollama-cloud-models.ts`, 24h cache) then
+refreshes the catalog as before. See `packages/cli/src/ollama-provider.test.ts`
+for the functional tests and `packages/cli/src/patches.test.ts` for the
+assertions that the pi-ai patch no longer carries any ollama-cloud hunks.
 
 **What it changes:**
 
 | File | Change |
 |------|--------|
-| `dist/config.js` — `CONFIG_DIR_NAME` | Hardcodes `".pizzapi"` |
-| `dist/config.js` — `getAgentDir()` | Returns `~/.pizzapi/` instead of `~/.pizzapi/agent/` — PizzaPi uses a flat directory structure |
-| `dist/config.js` — `getChangelogPath()` | Checks `PIZZAPI_CHANGELOG_PATH` env var first |
-| `dist/core/agent-session.js` — `_isRetryableError()` | Adds `json.?parse.?error\|unexpected.?end.?of.?json` |
-| `dist/core/extensions/loader.js` — `createExtensionRuntime()` | Adds `newSession`/`switchSession` stubs |
-| `dist/core/extensions/loader.js` — `createExtensionAPI()` | Adds `newSession`/`switchSession` wrappers |
-| `dist/core/extensions/runner.js` — `bindCommandContext()` | Copies real handlers onto the runtime |
-| `dist/core/resource-loader.js` | Uses factory `displayName`/`name` for inline extension paths |
-| `dist/modes/interactive/interactive-mode.js` — `run()` | Removes `checkForNewVersion()` call |
-| `dist/modes/interactive/interactive-mode.js` | Removes `checkForNewVersion()` and `showNewVersionNotification()` methods |
-| `dist/modes/interactive/interactive-mode.js` — login flow | Uses `authStorage.storage?.authPath` instead of `getAuthPath()` |
-| `dist/modes/interactive/interactive-mode.js` — section headers | Box-drawing themed headers, compact extension table |
-| `dist/modes/interactive/interactive-mode.js` — diagnostics | Uses themed section headers for skill/prompt/extension/theme issues |
+| `dist/api/anthropic-messages.js` | Same Anthropic web-search patch as 0.80.6 (unchanged file) |
+| `dist/auth/oauth/anthropic.js` | Claude Code Keychain/file credentials fallback, now inside `anthropicOAuth.refresh()` |
+| `dist/utils/retry.js` | Same retryable-JSON-parse patterns as 0.80.6 (unchanged file) |
 
-## @earendil-works/pi-tui@0.80.3
+## @earendil-works/pi-coding-agent@0.82.1
 
-Adds Windows console output lifecycle management so Unicode glyphs render
-reliably on Windows terminals.
+Same PizzaPi integration changes as 0.80.6, ported forward, with two upstream
+removals absorbed elsewhere rather than restored:
 
-**What it changes:**
-
-| File | Change |
-|------|--------|
-| `dist/terminal.js` — `ProcessTerminal.start()` | Calls `setupWindowsConsole()` after VT-input setup to enable VT output and UTF-8 code pages |
-| `dist/terminal.js` — `setupWindowsConsole()` | Creates and activates a Windows console lifecycle that configures stdout/stderr for VT processing and UTF-8 |
-| `dist/terminal.js` — `ProcessTerminal.stop()` | Restores saved console modes and code pages, then clears the global capability signal |
-| `dist/terminal.js` — `createWindowsConsoleLifecycle()` | Exported helper that returns `{ activate, restore }`; publishes `globalThis.__PI_WINDOWS_CONSOLE_CAPS__` with `stdoutMode`/`stderrMode` classification |
-
-**Tests:** `packages/cli/src/patches.test.ts` verifies patch markers, source wiring,
-behavioral contract, and cross-platform safety.
-
-## @mariozechner/pi-ai@0.66.1 (replaced by 0.67.5 patch)
-
-Same changes as 0.63.1 (see below), ported forward.
+- **`dist/core/provider-display-names.js` was deleted upstream.** Provider
+  display names now come from each provider's own `name` field (set at
+  registration in pi-ai's `builtinProviders()`) via
+  `ModelRegistry.getProviderDisplayName()` → `runtime.getProvider(id)?.name`.
+  Ollama Cloud's display name now comes from the `name` field on
+  `ollamaCloudProviderExtension`'s `pi.registerProvider()` call
+  (`packages/cli/src/extensions/ollama-cloud-provider.ts`) instead of any
+  pi-ai or pi-coding-agent patch.
+- **`AuthStorage` (and its associated types) is no longer exported from the
+  package root**, and the class itself was rewritten to a plain
+  `CredentialStore` (read/list/modify/delete) with all OAuth-refresh/env-
+  fallback/runtime-override orchestration moved into `ModelRuntime`. Only
+  `readStoredCredential(providerId, authPath)` (a stateless raw JSON read,
+  unchanged in shape) remains exported. This patch does **not** try to
+  restore the old export — the class it pointed to doesn't exist in the old
+  shape anymore. Instead, `packages/cli` callers were migrated to
+  `ModelRuntime`/`ModelRegistry`/`readStoredCredential` (see below).
 
 **What it changes:**
 
 | File | Change |
 |------|--------|
-| `dist/providers/anthropic.js` — `convertTools()` | Pass through server-side tools as-is |
-| `dist/providers/anthropic.js` — `buildParams()` | Inject `web_search_20250305` tool when `PIZZAPI_WEB_SEARCH` env var is set |
-| `dist/providers/anthropic.js` — stream handler | Handle `server_tool_use` and `web_search_tool_result` blocks |
-| `dist/providers/anthropic.js` — `convertMessages()` | Round-trip `_serverToolUse` and `_webSearchResult` blocks |
-| `dist/utils/oauth/anthropic.js` — `anthropicOAuthProvider.refreshToken()` | Try Claude Code Keychain (`security find-generic-password`) first, then `~/.claude/.credentials.json`, before API refresh |
+| `dist/config.js` | Same `.pizzapi` config-dir / flat-directory / `PIZZAPI_CHANGELOG_PATH` overrides as 0.80.6 |
+| `dist/core/model-resolver.js` | Same `ollama-cloud` default model (`glm-5.1`) as 0.80.6 |
+| `dist/modes/interactive/interactive-mode.js` | Same version-notification-UI removal as 0.80.6 (upstream shifted a few lines; hunk re-applied manually) |
+| `dist/index.js` / `dist/index.d.ts` | Same `handlePackageCommand`/`handleConfigCommand` re-export as 0.80.6 |
 
-## @mariozechner/pi-coding-agent@0.63.1 (replaced by 0.66.1 patch)
+**No longer present (see above for why):** `dist/core/provider-display-names.js`. **Also no longer present (Phase 2, below):** `dist/core/agent-session.js`'s `sendUserMessage({ expandPromptTemplates })` opt-in and both `dist/core/extensions/types.d.ts` hunks that typed it.
 
-Same changes as 0.58.3 (see below), ported forward, plus one new patch:
+### Phase 1: control-plane exposure removed (was `loader.js` / `runner.js` / `types.d.ts`)
 
-- **Flat agent directory:** `getAgentDir()` now returns `~/.pizzapi/` instead of
-  `~/.pizzapi/agent/`. PizzaPi uses a flat directory structure where sessions,
-  auth, models, bin, etc. all live directly under `~/.pizzapi/`. A startup
-  migration in the daemon consolidates any data from `~/.pizzapi/agent/`.
+Earlier revisions copied session-control capabilities onto `ExtensionAPI` so
+PizzaPi's remote extension (which runs in event handlers and only sees
+`ExtensionAPI`) could reach them: `newSession`/`switchSession`/`fork` and
+`getQueuedMessages`/`replaceQueuedMessages`. These were **pure surface-widening**
+— the capabilities are already native on `AgentSessionRuntime` (new/switch/fork)
+and `AgentSession` (`getSteeringMessages`/`getFollowUpMessages`/`clearQueue`).
 
-## @mariozechner/pi-ai@0.63.1 (replaced by 0.66.1 patch)
+They were removed from the patch once PizzaPi's remote extension was rewired to
+drive control through a host-owned **SessionHost**
+(`packages/cli/src/runner/session-host.ts`), threaded into the relay context via
+`packages/cli/src/extensions/remote/session-host-ref.ts`. The worker backs the
+host with its existing headless in-place lifecycle actions; the local TUI backs
+it with the runtime. `replaceQueuedMessages` has no clean public native path (it
+needs pi's private raw-enqueue to avoid double-expanding already-expanded queued
+text), so the worker's SessionHost reaches those private methods directly — as
+it already does for queue clearing — rather than via a patch. `patches.test.ts`
+has regression guards asserting the removed hunks do not silently return on a
+version bump.
 
-Same web search changes as 0.58.3 (see below), ported forward, plus one new
-patch:
+### Phase 2: `sendUserMessage({ expandPromptTemplates })` hunk removed
 
-- **Claude Code credentials fallback (Keychain-first):** When refreshing an
-  expired Anthropic OAuth token, the patch first reads the macOS Keychain
-  item `Claude Code-credentials` via `security find-generic-password`. If
-  the token is valid (and not expiring within 60 seconds), it's returned
-  directly — avoiding an API round-trip to `platform.claude.com/v1/oauth/token`.
-  If the Keychain entry is unavailable (non-macOS, locked keychain, missing
-  entry), the patch falls back to reading `~/.claude/.credentials.json`.
+The last remaining reason for the patch's `ExtensionAPI.sendUserMessage`
+surface — the `expandPromptTemplates` opt-in used by the web UI input path —
+was removed once `connection-handlers-factory.ts`'s `ConnectionHandlers.sendUserMessage`
+was rewired to call `rctx.sessionHost.sendUserMessage()` directly instead of
+`(pi as any).sendUserMessage()`. `SessionHost.sendUserMessage` already called
+`session.prompt()` with `expandPromptTemplates` natively supported (unpatched
+`PromptOptions` field) — the patched `AgentSession.sendUserMessage()` method
+and its `ExtensionAPI`/`SendUserMessageHandler` typings in `types.d.ts` were
+never reached anymore. Both hunks (`dist/core/agent-session.js` and the two
+`dist/core/extensions/types.d.ts` hunks) were dropped from the patch.
+`patches.test.ts` has negative-guard tests asserting they do not silently
+reappear on a version bump.
 
-## @mariozechner/pi-coding-agent@0.58.3
+### packages/cli auth call-site migration (not a patch — our own source)
 
-**Purpose:** Five changes:
+Because `AuthStorage` and `ModelRegistry.create()`/`.authStorage` are gone,
+every `packages/cli` call site that constructed or read through them was
+updated to the new API:
 
-1. **Session control on extension API:** Expose `newSession()` and
-   `switchSession()` on the extension runtime so the PizzaPi remote extension
-   can trigger `/new` and `/resume` flows from the web UI.
+| Old | New |
+|-----|-----|
+| `AuthStorage.create(authPath)` + `ModelRegistry.create(authStorage, modelsPath)` | `await ModelRuntime.create({ authPath, modelsPath })` + `new ModelRegistry(runtime)` |
+| `authStorage.get(provider)` (raw credential read) | `readStoredCredential(provider, authPath)` (same shape, now a plain exported function) |
+| `authStorage.hasAuth(provider)` | `modelRegistry.getProviderAuthStatus(provider).configured` (or `runtime.hasConfiguredAuth(provider)` where only the runtime is in scope) |
+| `ctx.modelRegistry.authStorage.get(provider)` (extension auth-source detection) | `ctx.modelRegistry.isUsingOAuth(ctx.model)` + `ctx.modelRegistry.getProviderAuthStatus(provider)` |
+| `authStorage.getApiKey("google-gemini-cli")` (a synthetic, non-model-registry credential slot used only for usage reporting) | `readStoredCredential("google-gemini-cli", authPath)` — this slot is api_key-only in practice (no real OAuth provider registered for it), so the raw `.key` read is behavior-preserving |
+| `worker.ts`'s `createAuthStorageWithRetry()` (lock-contention retry wrapper around `AuthStorage.create()`, feeding `createAgentSession({ authStorage })`) | `createModelRuntimeWithRetry()`, same retry/backoff/lockless-fallback structure around `ModelRuntime.create()` + `runtime.listCredentials()`, feeding `createAgentSession({ modelRuntime })`. The last-resort in-memory snapshot tier uses a small local class structurally matching pi-ai's (unexported) `CredentialStore` interface, since there's no public in-memory credential store constructor anymore. |
 
-2. **Remove version check:** Disable the npm registry version check and
-   "Update Available" notification on startup (not relevant for PizzaPi's
-   headless runner mode).
+Affected files: `models-command.ts`, `index.ts`, `runner/daemon.ts`,
+`runner/runner-ollama-models-cache.ts`, `runner/runner-usage-cache.ts`,
+`runner/worker.ts`, `extensions/ollama-web-tools.ts`,
+`extensions/remote-auth-source.ts`, `extensions/remote-provider-usage.ts`,
+`extensions/spawn-session.ts`, plus their tests.
 
-3. **Auth path display:** Show the actual auth path from the model registry
-   instead of the hardcoded default, so the login message is accurate when
-   PizzaPi overrides the auth file location.
+## Historical patches (older versions & the retired `@mariozechner/*` scope)
 
-4. **Override configDir to `.pizzapi`:** Hardcode `CONFIG_DIR_NAME` to
-   `".pizzapi"` so that all session storage, auth, settings, and agent data
-   lives under `~/.pizzapi/` instead of the upstream default `~/.pi/`. The
-   upstream code reads `configDir` from its own `package.json` (which has
-   `".pi"`), not the consuming CLI's `package.json`.
+Patch files and docs for superseded versions (pre-0.82.1 `@earendil-works/*`
+and the old `@mariozechner/*` scope) were removed once they stopped being
+referenced by `patchedDependencies`. Their lineage — including the recurring
+"same as 0.80.6" notes above — lives in git history if you need to diff a
+port forward:
 
-5. **Retryable JSON parse errors:** Add `json.?parse.?error` and
-   `unexpected.?end.?of.?json` to the retryable error regex so transient
-   Anthropic SSE stream truncations are automatically retried instead of
-   showing an opaque ERROR badge to the user.
-
-**Why this is needed:** Upstream `ExtensionAPI` only exposes session control
-methods on `ExtensionCommandContext`, which is only available inside registered
-command handlers. Regular event handlers and remote exec handlers only receive
-`ExtensionContext`, which lacks session-control methods. This patch adds a thin
-forwarding layer so `(pi as any).newSession()` and `(pi as any).switchSession()`
-work from anywhere in the extension.
-
-**What it changes:**
-
-| File | Change |
-|------|--------|
-| `dist/config.js` — `CONFIG_DIR_NAME` | Hardcodes `".pizzapi"` instead of reading `pkg.piConfig?.configDir` (which resolves to `".pi"` from the upstream package.json) |
-| `dist/core/extensions/loader.js` — `createExtensionRuntime()` | Adds `newSession` and `switchSession` stubs (reject before init) |
-| `dist/core/extensions/loader.js` — `createExtensionAPI()` | Adds `newSession(options)` and `switchSession(sessionPath)` wrappers delegating to the runtime |
-| `dist/core/extensions/runner.js` — `bindCommandContext()` | Copies real `newSessionHandler` / `switchSessionHandler` onto the runtime object |
-| `dist/modes/interactive/interactive-mode.js` — `run()` | Removes `checkForNewVersion()` call |
-| `dist/modes/interactive/interactive-mode.js` | Removes `checkForNewVersion()` and `showNewVersionNotification()` methods |
-| `dist/modes/interactive/interactive-mode.js` — login flow | Uses `authStorage.storage?.authPath` instead of `getAuthPath()` |
-| `dist/core/agent-session.js` — `_isRetryableError()` | Adds `json.?parse.?error\|unexpected.?end.?of.?json` to the retryable error regex |
-
-**Tests:** `packages/cli/src/patches.test.ts` verifies both patch application
-(source inspection) and functional behavior (runtime method stubs, assignment,
-rejection before init). Run with `bun test packages/cli/src/patches.test.ts`.
-
-**Removing this patch:** If `newSession` and `switchSession` are added to
-`ExtensionContextActions` (or `ExtensionAPI`) upstream, this patch can be
-deleted and the `patchedDependencies` entry removed from `package.json`. The
-call sites in `packages/cli/src/extensions/remote.ts` should then be updated to
-use the typed API.
-
-## @mariozechner/pi-ai@0.58.3
-
-**Purpose:** Add support for Anthropic's native web search tool
-(`web_search_20250305`), which is a server-side tool that lets Claude search
-the web during conversations without requiring an MCP server or external search
-tool.
-
-**Why this is needed:** The upstream `anthropic.js` provider only handles three
-content block types: `text`, `thinking`, and `tool_use`. The web search API
-returns `server_tool_use` and `web_search_tool_result` content blocks that are
-silently dropped. Additionally, `convertTools()` assumes all tools follow the
-standard `{name, description, input_schema}` shape, but server-side tools like
-web search use a different format with a `type` field.
-
-**What it changes:**
-
-| File | Change |
-|------|--------|
-| `dist/providers/anthropic.js` — `convertTools()` | Pass through objects that already have a `type` field (server-side tools) instead of converting them |
-| `dist/providers/anthropic.js` — `buildParams()` | Inject web search tool definition when `PIZZAPI_WEB_SEARCH` env var is set |
-| `dist/providers/anthropic.js` — stream handler | Handle `server_tool_use` blocks (search queries) → emit as text blocks with `_serverToolUse` metadata; accumulate input via `input_json_delta` events and finalize at `content_block_stop` |
-| `dist/providers/anthropic.js` — stream handler | Handle `web_search_tool_result` blocks → emit as text blocks with `_webSearchResult` metadata; safely handle both array results and `WebSearchToolResultError` objects |
-| `dist/providers/anthropic.js` — `convertMessages()` | Round-trip `_serverToolUse` and `_webSearchResult` blocks back to the API format on subsequent turns |
-
-**Configuration (preferred):**
-
-Add to `~/.pizzapi/config.json`:
-
-```json
-{
-  "providerSettings": {
-    "anthropic": {
-      "webSearch": {
-        "enabled": true,
-        "maxUses": 5,
-        "allowedDomains": ["docs.python.org", "stackoverflow.com"],
-        "blockedDomains": ["example.com"]
-      }
-    }
-  }
-}
+```bash
+git log --oneline -- 'patches/*.patch'
 ```
-
-| Field | Description | Default |
-|-------|-------------|---------|
-| `enabled` | Enable web search | `false` |
-| `maxUses` | Maximum searches per request | `5` |
-| `allowedDomains` | Only include results from these domains | (all) |
-| `blockedDomains` | Never include results from these domains | (none) |
-
-**Environment variable override:**
-
-Env vars take precedence over config.json if both are set:
-
-| Variable | Description |
-|----------|-------------|
-| `PIZZAPI_WEB_SEARCH` | Set to any truthy value to enable |
-| `PIZZAPI_WEB_SEARCH_MAX_USES` | Max searches per request |
-| `PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS` | Comma-separated domain whitelist |
-| `PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS` | Comma-separated domain blacklist |
-
-**How it works:**
-
-1. When `PIZZAPI_WEB_SEARCH` is set, `buildParams()` appends a `web_search_20250305`
-   tool definition to the tools array.
-2. Claude decides when to search. The API returns `server_tool_use` (the query)
-   and `web_search_tool_result` (the results) content blocks.
-3. These blocks are mapped to `text` content blocks with hidden metadata
-   (`_serverToolUse`, `_webSearchResult`). The text is left empty — the UI
-   renderer is responsible for presenting web-search blocks using the
-   structured metadata.
-4. For `server_tool_use`, the search query input arrives via `input_json_delta`
-   streaming events (just like regular tool calls). The patch accumulates the
-   partial JSON and finalizes it at `content_block_stop`.
-5. On subsequent turns, `convertMessages()` converts them back to the proper
-   API format for context continuity.
-
-**Limitations:**
-
-- The `web_search_tool_result` content blocks may contain encrypted search
-  result data; the UI renderer must decide how to present them.
-
-**Tests:** `packages/cli/src/patches.test.ts` verifies patch presence and
-syntactic validity. Run with `bun test packages/cli/src/patches.test.ts`.
-
-**Removing this patch:** If upstream pi-ai adds native web search support,
-this patch can be deleted.
-
-## Previously patched (no longer needed)
-
-### @earendil-works/*@0.79.3 (replaced by 0.80.3 patches)
-
-The 0.79.3 patch files are retained in this directory for history but are no
-longer referenced by `patchedDependencies`. The 0.80.3 patches port the same
-intent forward; note that the retryable-JSON-parse hunk moved with upstream from
-`pi-coding-agent` (`dist/core/agent-session.js`) to `pi-ai` (`dist/utils/retry.js`),
-and the Anthropic streaming implementation moved from `pi-ai`
-`dist/providers/anthropic.js` to `dist/api/anthropic-messages.js`.
-
-### @mariozechner/pi-coding-agent@0.58.3 (replaced by 0.63.1 patch)
-
-Same purpose as the current patch, just targeting an older version.
-
-### @mariozechner/pi-coding-agent@0.55.4 (replaced by 0.58.3 patch)
-
-Same purpose as the current patch, just targeting an older version.
-
-### @mariozechner/pi-ai@0.58.3 (replaced by 0.63.1 patch)
-
-Same purpose as the current patch, just targeting an older version.
-
-### @mariozechner/pi-ai (removed in 0.55.1 upgrade)
-
-The pi-ai patch normalized image content blocks in `transform-messages.js` to
-handle various formats (OpenAI-style `source.type: "base64"`, `image_url` data
-URIs, etc.). This normalization now happens inside each provider's message
-converter upstream, so the patch is no longer needed.

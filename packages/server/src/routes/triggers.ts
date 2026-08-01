@@ -5,6 +5,11 @@
  *   Fires a trigger into a connected session. Supports both session-cookie
  *   auth and API key auth (x-api-key header) for external integrations.
  *
+ * POST /api/sessions/:id/model
+ *   Switches a live session's model. HTTP equivalent of the viewer's
+ *   `model_set` socket event, so runner services can drive it with an API key.
+ *   Body: { provider, modelId }. Requires collab mode; hidden models are blocked.
+ *
  * GET /api/sessions/:id/triggers
  *   Lists recent triggers for a session (from Redis trigger history).
  *
@@ -29,13 +34,17 @@
  *   Broadcast a trigger by type to all sessions subscribed to that type on
  *   this runner. API key auth only (called by runner services).
  *   Body: { type, payload, deliverAs?, source?, summary? }
+ *   deliverAs defaults to "followUp" (queued, non-interruptive) when omitted.
  *   Returns: { ok, delivered: number, triggerId }
  */
 
 import { requireSession, validateApiKey } from "../middleware.js";
+import { getHiddenModels } from "../user-hidden-models.js";
+import { isHiddenModel } from "./model-guard.js";
 import {
     getSharedSession,
     getLocalTuiSocket,
+    waitForLocalTuiSocket,
     broadcastToSessionViewers,
     emitToRelaySessionVerified,
     getLocalRunnerSocket,
@@ -186,18 +195,15 @@ function inferUnsubscribeTarget(target: string, subscriptionIdParam?: string): {
     return { triggerType: target, mode: "triggerType" };
 }
 
-/** Poll for a session socket to appear after spawn (same pattern as webhooks). */
+/**
+ * Wait for a session socket to appear after spawn. Event-driven: resolves as
+ * soon as the TUI socket registers instead of polling.
+ * Only the TUI socket counts as ready — the Redis session record
+ * (getSharedSession) is created before the socket connects, so checking it
+ * would cause premature return and dropped triggers.
+ */
 async function waitForSessionSocket(sessionId: string, timeoutMs: number): Promise<boolean> {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-        // Only consider the session ready when its TUI socket is actually connected.
-        // The Redis session record (getSharedSession) is created before the socket
-        // connects, so checking it would cause premature return and dropped triggers.
-        const local = getLocalTuiSocket(sessionId);
-        if (local?.connected) return true;
-        await new Promise((r) => setTimeout(r, 200));
-    }
-    return false;
+    return waitForLocalTuiSocket(sessionId, timeoutMs);
 }
 
 /** Shape of the POST /api/sessions/:id/trigger request body. */
@@ -227,6 +233,66 @@ async function authenticate(req: Request): Promise<{ userId: string; userName: s
 }
 
 export const handleTriggersRoute: RouteHandler = async (req, url) => {
+    // ── POST /api/sessions/:id/model ──────────────────────────────────
+    // Switch a live session's model. Same effect as the viewer's `model_set`
+    // socket event, but reachable with an API key so runner services (the
+    // Discord bridge's /models command) can drive it.
+    const modelMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/model$/);
+    if (modelMatch && req.method === "POST") {
+        const identity = await authenticate(req);
+        if (identity instanceof Response) return identity;
+
+        const sessionId = decodeURIComponent(modelMatch[1]);
+        const targetSession = await getSharedSession(sessionId);
+        // Same 404-for-forbidden shape as the trigger route — do not leak
+        // whether a session exists under another account.
+        if (!targetSession || targetSession.userId !== identity.userId) {
+            return Response.json({ error: "Session not found or not connected" }, { status: 404 });
+        }
+        if (!targetSession.collabMode) {
+            return Response.json({ error: "Session is not in collab mode" }, { status: 409 });
+        }
+
+        let body: { provider?: unknown; modelId?: unknown };
+        try {
+            body = await req.json() as typeof body;
+        } catch {
+            return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+        }
+
+        const provider = typeof body.provider === "string" ? body.provider.trim() : "";
+        const modelId = typeof body.modelId === "string" ? body.modelId.trim() : "";
+        if (!provider || !modelId) {
+            return Response.json({ error: "Missing 'provider' or 'modelId'" }, { status: 400 });
+        }
+
+        // Hard-block hidden models, same rule as the spawn route and the
+        // viewer's model_set handler. Fresh DB read — env copies go stale.
+        try {
+            const hiddenModels = await getHiddenModels(identity.userId);
+            if (isHiddenModel(hiddenModels, { provider, id: modelId })) {
+                log.warn(`blocked model switch to hidden model ${provider}/${modelId} on ${sessionId}`);
+                return Response.json({ error: "Model not available" }, { status: 403 });
+            }
+        } catch {
+            // Lookup failure falls through — the worker-side guard still applies.
+        }
+
+        const targetSocket = getLocalTuiSocket(sessionId);
+        if (targetSocket?.connected) {
+            targetSocket.emit("model_set", { provider, modelId });
+            return Response.json({ ok: true, provider, modelId });
+        }
+
+        const delivered = await emitToRelaySessionVerified(sessionId, "model_set", { provider, modelId });
+        if (delivered) return Response.json({ ok: true, provider, modelId });
+
+        return Response.json(
+            { error: "Session is registered but not currently connected" },
+            { status: 503 },
+        );
+    }
+
     // ── POST /api/sessions/:id/trigger ────────────────────────────────
     const postMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/trigger$/);
     if (postMatch && req.method === "POST") {
@@ -938,7 +1004,11 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Missing or invalid 'payload' field — must be an object" }, { status: 400 });
         }
 
-        const deliverAs = body.deliverAs ?? "steer";
+        // Default to "followUp" (non-interruptive) when omitted — matches the
+        // documented default and the runner-services example template. A
+        // service that wants to interrupt the current turn must opt in
+        // explicitly with deliverAs: "steer".
+        const deliverAs = body.deliverAs ?? "followUp";
         if (deliverAs !== "steer" && deliverAs !== "followUp") {
             return Response.json({ error: "Invalid 'deliverAs' — must be 'steer' or 'followUp'" }, { status: 400 });
         }
@@ -959,64 +1029,69 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             ts,
         };
 
-        let delivered = 0;
-        for (const targetSessionId of subscriberIds) {
-            const targetSession = await getSharedSession(targetSessionId);
-            // Only deliver to sessions belonging to the same user (ownership check)
-            // and sessions that are actually connected.
-            if (!targetSession || targetSession.userId !== identity.userId) continue;
+        // Process all subscribers concurrently. Each subscriber's filtering,
+        // ownership check, and delivery are independent; the only shared result
+        // is the delivered count, which is summed from per-subscriber booleans.
+        const deliveredResults = await Promise.all(
+            subscriberIds.map(async (targetSessionId) => {
+                const targetSession = await getSharedSession(targetSessionId);
+                // Only deliver to sessions belonging to the same user (ownership check)
+                // and sessions that are actually connected.
+                if (!targetSession || targetSession.userId !== identity.userId) return false;
 
-            // Filter by subscription filters (based on output schema fields).
-            // New subscriptions always have a filterData result (even with filters=[]).
-            // Legacy subscriptions return undefined and fall back to param matching.
-            const filterData = normalizeFilterRecords(await getSubscriptionFilters(targetSessionId, body.type));
-            if (filterData) {
-                const matchedAny = filterData.length === 0 || filterData.some((record) => filterRecordMatchesPayload(body.payload, record));
-                if (!matchedAny) continue;
-            } else {
-                const subParams = await getSubscriptionParams(targetSessionId, body.type);
-                if (subParams) {
-                    const legacyFilters = legacyParamsToFilters(subParams);
-                    if (!payloadMatchesFilters(body.payload, legacyFilters, "and")) continue;
+                // Filter by subscription filters (based on output schema fields).
+                // New subscriptions always have a filterData result (even with filters=[]).
+                // Legacy subscriptions return undefined and fall back to param matching.
+                const filterData = normalizeFilterRecords(await getSubscriptionFilters(targetSessionId, body.type));
+                if (filterData) {
+                    const matchedAny = filterData.length === 0 || filterData.some((record) => filterRecordMatchesPayload(body.payload, record));
+                    if (!matchedAny) return false;
+                } else {
+                    const subParams = await getSubscriptionParams(targetSessionId, body.type);
+                    if (subParams) {
+                        const legacyFilters = legacyParamsToFilters(subParams);
+                        if (!payloadMatchesFilters(body.payload, legacyFilters, "and")) return false;
+                    }
                 }
-            }
 
-            const historyEntry = {
-                triggerId: `${triggerId}_${targetSessionId.slice(0, 8)}`,
-                type: body.type,
-                // Prefix with "external:" so deriveLinkedSessions() in the UI
-                // doesn't misclassify service sources as child sessions.
-                source: `external:${body.source ?? "service"}`,
-                summary: body.summary,
-                payload: body.payload,
-                deliverAs,
-                ts,
-                direction: "inbound" as const,
-            };
+                const historyEntry = {
+                    triggerId: `${triggerId}_${targetSessionId.slice(0, 8)}`,
+                    type: body.type,
+                    // Prefix with "external:" so deriveLinkedSessions() in the UI
+                    // doesn't misclassify service sources as child sessions.
+                    source: `external:${body.source ?? "service"}`,
+                    summary: body.summary,
+                    payload: body.payload,
+                    deliverAs,
+                    ts,
+                    direction: "inbound" as const,
+                };
 
-            // Write history only after confirmed delivery so the log reflects
-            // what the session actually received (not optimistically before delivery).
-            const localSocket = getLocalTuiSocket(targetSessionId);
-            if (localSocket?.connected) {
-                try {
-                    localSocket.emit("session_trigger", { trigger: { ...trigger, targetSessionId } });
+                // Write history only after confirmed delivery so the log reflects
+                // what the session actually received (not optimistically before delivery).
+                const localSocket = getLocalTuiSocket(targetSessionId);
+                if (localSocket?.connected) {
+                    try {
+                        localSocket.emit("session_trigger", { trigger: { ...trigger, targetSessionId } });
+                        void Promise.resolve(pushTriggerHistory(targetSessionId, historyEntry)).catch(() => {});
+                        broadcastToSessionViewers(targetSessionId, "trigger_delivered", { triggerId: historyEntry.triggerId });
+                        return true;
+                    } catch {
+                        // fall through to cross-node
+                    }
+                }
+                const crossNode = await emitToRelaySessionVerified(
+                    targetSessionId, "session_trigger", { trigger: { ...trigger, targetSessionId } },
+                );
+                if (crossNode) {
                     void Promise.resolve(pushTriggerHistory(targetSessionId, historyEntry)).catch(() => {});
                     broadcastToSessionViewers(targetSessionId, "trigger_delivered", { triggerId: historyEntry.triggerId });
-                    delivered++;
-                    continue;
-                } catch {
-                    // fall through to cross-node
+                    return true;
                 }
-            }
-            const crossNode = await emitToRelaySessionVerified(
-                targetSessionId, "session_trigger", { trigger: { ...trigger, targetSessionId } },
-            );
-            if (crossNode) {
-                void Promise.resolve(pushTriggerHistory(targetSessionId, historyEntry)).catch(() => {});
-                broadcastToSessionViewers(targetSessionId, "trigger_delivered", { triggerId: historyEntry.triggerId });
-                delivered++;
-            }
-        }
+                return false;
+            }),
+        );
+        const delivered = deliveredResults.reduce((sum, didDeliver) => sum + (didDeliver ? 1 : 0), 0);
 
         // ── Runner-level auto-spawn listeners ──────────────────────────
         let spawned = 0;
@@ -1037,9 +1112,21 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             });
             const runnerSocket = getLocalRunnerSocket(runnerId);
             if (runnerSocket) {
+                // Fire-time hidden-model recheck: the listener's model was
+                // validated at create/update time, but may have been hidden
+                // since. Drop it (runner default) rather than failing the spawn.
+                const hiddenModels = runnerData.userId
+                    ? await getHiddenModels(runnerData.userId).catch(() => [] as string[])
+                    : [];
                 for (const listener of matchingListeners) {
                     const spawnedSessionId = randomUUID();
                     const ackPromise = waitForSpawnAck(spawnedSessionId, 10_000);
+                    const listenerModel = listener.model && !isHiddenModel(hiddenModels, listener.model)
+                        ? listener.model
+                        : undefined;
+                    if (listener.model && !listenerModel) {
+                        log.warn(`trigger auto-spawn: dropping hidden model ${listener.model.provider}/${listener.model.id}, using runner default`);
+                    }
                     try {
                         // Don't pass the listener prompt as the initial prompt —
                         // it's already merged into the trigger payload below.
@@ -1048,7 +1135,8 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                         runnerSocket.emit("new_session", {
                             sessionId: spawnedSessionId,
                             ...(listener.cwd ? { cwd: listener.cwd } : {}),
-                            ...(listener.model ? { model: listener.model } : {}),
+                            ...(listenerModel ? { model: listenerModel } : {}),
+                            ...(hiddenModels.length > 0 ? { hiddenModels } : {}),
                             ...(listener.autoClose ? { autoClose: true } : {}),
                         });
                         const ack = await ackPromise;

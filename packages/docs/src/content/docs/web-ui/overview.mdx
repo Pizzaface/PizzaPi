@@ -21,7 +21,7 @@ Once installed, PizzaPi opens in its own window without browser chrome. The app 
 
 On devices that support the [Vibration API](https://developer.mozilla.org/en-US/docs/Web/API/Vibration_API) (primarily Android), PizzaPi can provide haptic feedback as agent text streams in. The vibration pulse scales with the length of each text chunk — short tokens get a light tap, longer chunks get a bigger buzz.
 
-Toggle haptics from **Preferences → Notifications**, or with the vibration icon button in the toolbar. A quick test buzz fires when you enable it. The preference is saved in `localStorage` and persists across sessions.
+Toggle haptics from **Preferences → Notifications**, or with the vibration icon button in the toolbar. A quick test buzz fires when you enable it. The preference is saved in `localStorage` and persists across sessions. See [Preferences](/web-ui/preferences/) for full details.
 
 <Aside type="note">
 iOS Safari ignores `navigator.vibrate()` silently, so the haptics toggle won't appear on iPhones or iPads.
@@ -29,13 +29,14 @@ iOS Safari ignores `navigator.vibrate()` silently, so the haptics toggle won't a
 
 ## Keyboard shortcuts
 
-Press **<kbd>?</kbd>** anywhere in the UI to open the keyboard shortcuts dialog. The dialog automatically shows the correct modifier keys for your platform (⌘ on Mac, Ctrl on Windows/Linux).
+Press **<kbd>?</kbd>** outside of text inputs and dialogs to open the keyboard shortcuts dialog. The dialog automatically shows the correct modifier keys for your platform (⌘ on Mac, Ctrl on Windows/Linux).
 
 | Shortcut | Action |
 |----------|--------|
 | <kbd>⌘K</kbd> / <kbd>Ctrl+K</kbd> | Focus the prompt input |
 | <kbd>Ctrl+`</kbd> | Toggle the terminal panel |
 | <kbd>⌘⇧E</kbd> / <kbd>Ctrl+Shift+E</kbd> | Toggle the file explorer |
+| <kbd>⌘⇧H</kbd> / <kbd>Ctrl+Shift+H</kbd> | Toggle session history |
 | <kbd>⌘.</kbd> / <kbd>Ctrl+.</kbd> | Abort the active agent |
 | <kbd>?</kbd> | Show the shortcuts dialog |
 
@@ -65,7 +66,7 @@ There are three ways to reposition a panel:
 
 1. **Position picker** — Click the mini 3×3 grid icon in the panel toolbar. A dropdown shows all 8 available zones with the current one highlighted. Click a zone to move the panel there.
 2. **Drag handle** — Grab the grip handle (⠿) in the panel toolbar and drag the panel to a new zone.
-3. **Tab dragging** — Drag an individual tab out of a panel to detach it to a different zone.
+3. **Tab dragging** — Drag a tab to reposition the whole panel into a new zone. Individual tabs cannot be detached; the tab gesture moves the entire panel group that shares the zone.
 
 ### Collapsing & resizing
 
@@ -88,7 +89,7 @@ Long-press a session card (500ms) to open the **End Session** confirmation dialo
 
 ## Context window donut
 
-The **context donut** is a small ring indicator that shows how much of the model's context window the current session has consumed. It appears in the session toolbar whenever context token data is available.
+The **context donut** is a small ring indicator that shows how much of the model's context window the current session has consumed. It appears in the prompt composer footer next to the send button whenever context token data is available.
 
 ### Color coding
 
@@ -130,7 +131,7 @@ When an agent uses the `update_todo` tool, PizzaPi renders an animated **pizza**
 
 The pizza scales its stages to match the total number of tasks. A 2-item todo gets "dough → bake"; a 3-item todo gets "crust → sauce & cheese → bake"; larger lists add individual toppings between the base layers and the final bake/serve stages.
 
-Each topping type has a distinct SVG rendering — red circles for pepperoni, tan ovals for mushrooms, dark rings for olives, green crescents for peppers, leaf shapes for basil, and purple rings for onions.
+Each topping type has a distinct SVG rendering — red circles for pepperoni, tan ovals for mushrooms, dark discs for olives, green crescents for peppers, leaf shapes for basil, and purple rings for onions.
 
 ## Web search results card
 
@@ -190,7 +191,7 @@ The **API Keys** card manages personal access tokens for programmatic access to 
 - Create a new key with an optional name. Keys are generated with a `pzpe` prefix.
 - The full key value is shown **once** immediately after creation in a highlighted banner — copy it before dismissing, as it cannot be retrieved again.
 - Existing keys show their name, key prefix (first few characters), and expiry status.
-- Revoke a key with the trash icon — a "Sure?" confirmation appears for 3 seconds before auto-dismissing.
+- Revoke a key with the trash icon — a "Sure?" confirmation appears for 5 seconds before auto-dismissing.
 - Pass API keys in the `x-api-key` HTTP header for authenticated requests.
 
 ### Runner tokens

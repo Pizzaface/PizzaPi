@@ -14,6 +14,7 @@ import {
     setTerminal,
     getTerminal as getTerminalState,
     updateTerminalFields,
+    claimTerminalSpawn as claimTerminalSpawnState,
     deleteTerminal as deleteTerminalState,
     getTerminalsForRunner as getTerminalsForRunnerState,
 } from "../sio-state/index.js";
@@ -127,9 +128,9 @@ export async function setTerminalViewer(terminalId: string, socket: Socket): Pro
     return true;
 }
 
-/** Mark terminal as spawned in Redis. */
-export async function markTerminalSpawned(terminalId: string): Promise<void> {
-    await updateTerminalFields(terminalId, { spawned: true });
+/** Atomically claim the right to spawn a terminal exactly once. */
+export async function claimTerminalSpawn(terminalId: string): Promise<boolean> {
+    return claimTerminalSpawnState(terminalId);
 }
 
 /** Remove a terminal viewer socket. */

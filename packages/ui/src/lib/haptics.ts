@@ -140,3 +140,16 @@ export function cancelHaptic(): void {
     navigator.vibrate(0);
   }
 }
+
+/** Short impact when a button drag arms. Native Capacitor haptics on iOS/Android, vibration API fallback on web. */
+export async function dragArmHaptic(): Promise<void> {
+  try {
+    const { Capacitor } = await import("@capacitor/core");
+    if (Capacitor.isNativePlatform()) {
+      const { Haptics, ImpactStyle } = await import("@capacitor/haptics");
+      await Haptics.impact({ style: ImpactStyle.Medium });
+      return;
+    }
+  } catch { /* plugin unavailable — fall through to web vibration */ }
+  if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") navigator.vibrate(10);
+}

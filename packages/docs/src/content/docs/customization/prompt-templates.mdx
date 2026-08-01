@@ -27,21 +27,17 @@ PizzaPi discovers prompt templates from several directories. **All** matching te
 
 | Path | Scope |
 |------|-------|
-| `~/.pizzapi/prompts/` | Global — available in all projects |
-| `~/.pizzapi/commands/` | Global — Claude Code naming convention |
 | `<cwd>/.pizzapi/prompts/` | Project-local — scoped to this repo |
+| `~/.pizzapi/commands/` | Global — Claude Code naming convention |
 | `<cwd>/.pizzapi/commands/` | Project-local — Claude Code naming convention |
 | `<cwd>/.agents/commands/` | Project-local — Claude Code / agents compatibility |
 
-<Aside type="note">
-  The `~/.pizzapi/prompts/` directory is discovered automatically as part of the PizzaPi agent directory. The other paths (`commands/`, `.agents/commands/`) are added for compatibility with Claude Code conventions.
-</Aside>
+:::caution
+Discovery within prompt template directories is **non-recursive** — only `.md` files directly inside the directory are loaded. Subdirectories are not scanned.
+:::
 
 <FileTree>
 - ~/.pizzapi/
-  - prompts/
-    - review.md
-    - explain.md
   - commands/
     - deploy-checklist.md
 - my-project/
@@ -77,7 +73,8 @@ Review the staged changes (`git diff --cached`). Focus on:
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `description` | No | Short description shown in the slash command picker. If omitted, the first non-empty line of the body is used. |
+| `description` | No | Short description shown in the slash command picker. If omitted, the first non-empty line of the body is used (truncated to 60 characters). |
+| `argument-hint` | No | Hint shown next to the command name in the **Plugin Commands** picker (e.g. `\u003cbranch\u003e`). |
 
 The body of the file is the prompt text that gets expanded when the command is invoked.
 
@@ -93,6 +90,7 @@ Templates support positional arguments and argument slicing. When a user types `
 | `$@` or `$ARGUMENTS` | All arguments joined together |
 | `${@:N}` | All arguments from the Nth position onward (1-indexed) |
 | `${@:N:L}` | `L` arguments starting at position N |
+| `${N:-default}` | Positional argument N, with a fallback when missing or empty |
 
 ### Example Template with Arguments
 
@@ -157,8 +155,8 @@ This expands `$1` to `Button` and `${@:2}` to `"onClick handler" "disabled state
 
 When you type `/` in the session input, the slash command picker groups available commands into sections:
 
-- **Built-in commands** — `/new`, `/resume`, `/compact`, etc.
-- **Extension commands** — commands from plugins and extensions
+- **Commands** — `/new`, `/resume`, `/compact`, etc.
+- **Plugin Commands** — commands from plugins and extensions
 - **Prompt Templates** — your custom prompt templates
 - **Skills** — skill invocations like `/skill:name`
 
@@ -172,21 +170,15 @@ Prompt templates show the command name (e.g., `/review`) and the description fro
 
 ## Claude Code Compatibility
 
-PizzaPi supports the Claude Code `commands/` directory convention alongside its own `prompts/` directories. This means:
+PizzaPi supports the Claude Code `commands/` directory convention alongside its own project-local `prompts/` directories. This means:
 
 - Templates in `~/.claude/commands/` work if you symlink or copy them to `~/.pizzapi/commands/`
 - The `.agents/commands/` directory in your project root is discovered automatically
 - The file format (Markdown with optional frontmatter and `$ARGUMENTS` substitution) is the same
 
-If you're migrating from Claude Code, you can symlink your existing commands directory:
-
-```bash
-ln -s ~/.claude/commands ~/.pizzapi/commands
-```
-
-<Aside type="caution">
-  Discovery within prompt template directories is **non-recursive** — only `.md` files directly inside the directory are loaded. Subdirectories are not scanned.
-</Aside>
+:::caution
+Discovery within prompt template directories is **non-recursive** — only `.md` files directly inside the directory are loaded. Subdirectories are not scanned.
+:::
 
 ---
 

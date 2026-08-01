@@ -7,6 +7,7 @@ import {
     extractContextLength,
     capabilitiesInclude,
     getCachedOllamaCloudModels,
+    findCachedOllamaCloudModel,
 } from "../ollama-cloud-models.js";
 
 const originalHome = process.env.HOME;
@@ -74,5 +75,82 @@ describe("ollama-cloud dynamic model discovery", () => {
 
         const result = await fetchOllamaCloudModels();
         expect(result).toEqual(expected);
+    });
+
+    test("findCachedOllamaCloudModel resolves a cached id, ignores other providers", () => {
+        const dir = join(tempHome, ".pizzapi");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(
+            join(dir, "ollama-cloud-models-cache.json"),
+            JSON.stringify({
+                models: [
+                    {
+                        id: "glm-5.2",
+                        name: "glm-5.2",
+                        provider: "ollama-cloud",
+                        api: "openai-completions",
+                        baseUrl: "https://ollama.com/v1",
+                        reasoning: true,
+                        input: ["text"],
+                        contextWindow: 1000000,
+                        maxTokens: 32768,
+                    },
+                ],
+                fetchedAt: Date.now(),
+            }),
+        );
+
+        const model = findCachedOllamaCloudModel("ollama-cloud", "glm-5.2");
+        expect(model?.id).toBe("glm-5.2");
+        expect(model?.api).toBe("openai-completions");
+        expect(findCachedOllamaCloudModel("ollama-cloud", "nope")).toBeUndefined();
+        expect(findCachedOllamaCloudModel("anthropic", "glm-5.2")).toBeUndefined();
+    });
+
+    test("force refetches even when cache is fresh", async () => {
+        const dir = join(tempHome, ".pizzapi");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(
+            join(dir, "ollama-cloud-models-cache.json"),
+            JSON.stringify({
+                models: [
+                    {
+                        id: "stale-model",
+                        name: "stale-model",
+                        provider: "ollama-cloud",
+                        api: "openai-completions",
+                        baseUrl: "https://ollama.com/v1",
+                        reasoning: false,
+                        input: ["text"],
+                        contextWindow: 1234,
+                        maxTokens: 32768,
+                    },
+                ],
+                fetchedAt: Date.now(),
+            }),
+        );
+
+        let calls = 0;
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = (async (url: string | URL) => {
+            calls++;
+            const u = String(url);
+            if (u.includes("/v1/models")) {
+                return new Response(JSON.stringify({ data: [{ id: "new-model" }] }), { status: 200 });
+            }
+            return new Response(
+                JSON.stringify({ capabilities: ["thinking"], model_info: { "new.context_length": 4096 } }),
+                { status: 200 },
+            );
+        }) as typeof globalThis.fetch;
+
+        try {
+            const result = await fetchOllamaCloudModels({ force: true });
+            expect(calls).toBeGreaterThan(0);
+            expect(result.some((m) => m.id === "new-model")).toBe(true);
+            expect(result.some((m) => m.id === "stale-model")).toBe(false);
+        } finally {
+            globalThis.fetch = originalFetch;
+        }
     });
 });

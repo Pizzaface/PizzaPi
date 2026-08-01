@@ -1,7 +1,9 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "@pizzapi/tools";
 import { waitForRelayRegistration } from "./remote.js";
+import { getRemoteSessionHost } from "./remote/session-host-ref.js";
 import { waitForWorkerStartupComplete } from "./worker-startup-gate.js";
+import { findCachedOllamaCloudModel } from "../ollama-cloud-models.js";
 
 const log = createLogger("worker");
 
@@ -52,7 +54,12 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
 
         // Set the model first if requested.
         if (initialModelProvider && initialModelId) {
-            const model = ctx.modelRegistry.find(initialModelProvider, initialModelId);
+            // Ollama Cloud models are discovered dynamically and aren't in the
+            // static registry — fall back to the cached catalog so spawns pinned
+            // to e.g. ollama-cloud/glm-5.2 resolve instead of using the default.
+            const model =
+                ctx.modelRegistry.find(initialModelProvider, initialModelId) ??
+                findCachedOllamaCloudModel(initialModelProvider, initialModelId);
             if (model) {
                 try {
                     const ok = await pi.setModel(model);
@@ -170,8 +177,9 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
         // This loads the previous conversation into this new worker session.
         if (resumePath) {
             try {
-                if (typeof (pi as any).switchSession === "function") {
-                    const result = await (pi as any).switchSession(resumePath);
+                const sessionHost = getRemoteSessionHost();
+                if (sessionHost) {
+                    const result = await sessionHost.switchSession(resumePath);
                     if (result?.cancelled) {
                         log.warn(`pizzapi worker: resume of ${resumePath} was cancelled`);
                     } else {

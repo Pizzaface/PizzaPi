@@ -181,7 +181,7 @@ export function getUsageData(db: Database, range: UsageRange = "90d"): UsageData
 
   const byProject = byProjectRaw.map((p: (typeof byProjectRaw)[number]) => ({
     project: p.project,
-    projectShort: p.project.split("/").pop() || p.project,
+    projectShort: p.project.split(/[\\/]/).pop() || p.project,
     sessions: p.sessions,
     cost: p.cost,
     inputTokens: p.inputTokens,
@@ -222,7 +222,7 @@ export function getUsageData(db: Database, range: UsageRange = "90d"): UsageData
   const recentSessions = recentSessionsRaw.map((s: (typeof recentSessionsRaw)[number]) => ({
     id: s.id,
     project: s.project,
-    projectShort: s.project.split("/").pop() || s.project,
+    projectShort: s.project.split(/[\\/]/).pop() || s.project,
     sessionName: s.sessionName,
     startedAt: new Date(s.startedAt).toISOString(),
     endedAt: s.endedAt ? new Date(s.endedAt).toISOString() : null,
