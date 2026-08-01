@@ -19,6 +19,7 @@ import {
     getRelaySocket as getRelaySocketDefault,
     getRelaySessionId as getRelaySessionIdDefault,
 } from "./remote.js";
+import { sanitizeQuestions } from "./remote-ask-user.js";
 
 /** Discord's hard limit is 2000 chars; the service re-chunks, this just bounds the payload. */
 const MAX_MIRROR_CHARS = 8_000;
@@ -105,9 +106,40 @@ export function createDiscordMirrorExtension(deps: DiscordMirrorDeps = defaultDe
         };
 
         // Stream tool activity so the thread shows work-in-progress, not just the
-        // final turn. The service coalesces these into batched messages.
+        // final turn. The service coalesces these into ONE edited status message.
+        //
+        // AskUserQuestion and plan_mode block the turn waiting on the human, so
+        // they get first-class treatment (a poll / a plan card) instead of a
+        // terse activity line — the service turns these envelopes into an
+        // interactive prompt and routes the reply back as the tool's answer.
         pi.on("tool_call" as any, (event: any) => {
-            emit("discord_activity", { line: renderToolCallLine(event?.toolName, event?.input) });
+            const name = event?.toolName;
+            if (name === "AskUserQuestion") {
+                emit("discord_ask", {
+                    toolCallId: event?.toolCallId,
+                    questions: sanitizeQuestions((event?.input ?? {}) as any),
+                });
+                return;
+            }
+            if (name === "plan_mode") {
+                const input = (event?.input ?? {}) as Record<string, unknown>;
+                emit("discord_plan", {
+                    toolCallId: event?.toolCallId,
+                    title: typeof input.title === "string" ? input.title : "",
+                    description: typeof input.description === "string" ? input.description : null,
+                    steps: Array.isArray(input.steps) ? input.steps : [],
+                });
+                return;
+            }
+            emit("discord_activity", { line: renderToolCallLine(name, event?.input) });
+        });
+
+        // set_session_name -> Discord thread title. session_info_changed fires
+        // whenever the session's display name changes; the service renames the
+        // bound thread to match.
+        pi.on("session_info_changed" as any, (event: any) => {
+            const name = typeof event?.name === "string" ? event.name.trim() : "";
+            if (name) emit("discord_rename", { name });
         });
         pi.on("tool_result" as any, (event: any) => {
             if (!event?.isError) return; // successes are implied by the next step; only surface failures

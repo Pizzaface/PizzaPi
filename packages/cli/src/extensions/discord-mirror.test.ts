@@ -168,6 +168,43 @@ describe("discordMirrorExtension", () => {
         expect(emitted).toHaveLength(1);
         expect(emitted[0].payload.payload.line).toContain("failed");
     });
+
+    test("routes AskUserQuestion to a discord_ask envelope, not activity", () => {
+        pi.fire("tool_call", {
+            toolCallId: "tc-1",
+            toolName: "AskUserQuestion",
+            input: { questions: [{ question: "Ship?", options: ["Yes", "No"], type: "radio" }] },
+        });
+        expect(emitted).toHaveLength(1);
+        expect(emitted[0].payload.type).toBe("discord_ask");
+        expect(emitted[0].payload.payload.toolCallId).toBe("tc-1");
+        expect(emitted[0].payload.payload.questions[0]).toMatchObject({ question: "Ship?", options: ["Yes", "No"], type: "radio" });
+    });
+
+    test("routes plan_mode to a discord_plan envelope with title and steps", () => {
+        pi.fire("tool_call", {
+            toolCallId: "tc-2",
+            toolName: "plan_mode",
+            input: { title: "My plan", description: "why", steps: [{ title: "one" }] },
+        });
+        expect(emitted).toHaveLength(1);
+        expect(emitted[0].payload.type).toBe("discord_plan");
+        expect(emitted[0].payload.payload).toMatchObject({ toolCallId: "tc-2", title: "My plan", description: "why" });
+        expect(emitted[0].payload.payload.steps).toEqual([{ title: "one" }]);
+    });
+
+    test("emits discord_rename when the session name changes", () => {
+        pi.fire("session_info_changed", { name: "  Relay prompts through Discord  " });
+        expect(emitted).toHaveLength(1);
+        expect(emitted[0].payload.type).toBe("discord_rename");
+        expect(emitted[0].payload.payload.name).toBe("Relay prompts through Discord");
+    });
+
+    test("ignores a cleared session name", () => {
+        pi.fire("session_info_changed", { name: "" });
+        pi.fire("session_info_changed", {});
+        expect(emitted).toHaveLength(0);
+    });
 });
 
 describe("renderToolCallLine", () => {

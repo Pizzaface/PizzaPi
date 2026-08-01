@@ -41,6 +41,61 @@ let connectFailureNotified = false;
 const oauthPendingCallbacks = new Map<string, (result: { code: string; state?: string }) => void>();
 const log = createLogger("relay");
 
+/**
+ * Map a plain-text Discord reply to a pending plan_mode into the JSON action
+ * consumePendingPlanModeFromWeb expects. Approve/cancel words become explicit
+ * actions; anything else is treated as edit feedback (its default for raw text).
+ */
+export function mapDiscordPlanReply(text: string): string {
+    const lower = text.toLowerCase().trim().replace(/[!.]+$/, "");
+    const approve = ["begin", "approve", "approved", "lgtm", "looks good", "proceed", "go", "yes", "ship it"];
+    const cancel = ["cancel", "stop", "reject", "no", "abort"];
+    if (approve.some((w) => lower === w || lower.startsWith(`${w} `))) return JSON.stringify({ action: "execute" });
+    if (cancel.some((w) => lower === w || lower.startsWith(`${w} `))) return JSON.stringify({ action: "cancel" });
+    return text;
+}
+
+/** Fetch one Discord CDN image URL into an inline image content part. */
+async function fetchImagePart(url: string): Promise<{ type: "image"; mimeType: string; data: string } | null> {
+    try {
+        const res = await fetch(url);
+        if (!res.ok) return null;
+        const mimeType = (res.headers.get("content-type") || "image/png").split(";")[0].trim();
+        if (!mimeType.startsWith("image/")) return null;
+        const data = Buffer.from(await res.arrayBuffer()).toString("base64");
+        return { type: "image", mimeType, data };
+    } catch {
+        return null;
+    }
+}
+
+/** Build a user message from a Discord message's text + image attachments and deliver it. */
+async function deliverDiscordImages(
+    rctx: RelayContext,
+    handlers: ConnectionHandlers,
+    text: string,
+    imageUrls: string[],
+): Promise<void> {
+    try {
+        const parts: unknown[] = [];
+        if (text) parts.push({ type: "text", text });
+        for (const url of imageUrls.slice(0, 8)) {
+            const img = await fetchImagePart(url);
+            if (img) parts.push(img);
+        }
+        if (parts.length === 0) return;
+        await waitForWorkerStartupComplete();
+        const effectiveDeliverAs = resolveInputDeliverAs("steer", rctx.isAgentActive === true);
+        await handlers.sendUserMessage(parts, {
+            expandPromptTemplates: true,
+            ...(effectiveDeliverAs ? { deliverAs: effectiveDeliverAs } : {}),
+        });
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log.error(`pizzapi: failed to deliver Discord image message: ${message}`);
+    }
+}
+
 // ── Dependency injection for factory-closure callbacks ────────────────────────
 
 /**
@@ -460,6 +515,27 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         if (handlers.isStaleChild(trigger.sourceSessionId)) {
             log.info(`dropping stale session_trigger (${trigger.type}) from ${trigger.sourceSessionId} — sender is a pre-/new child`);
             return;
+        }
+
+        // Discord messages (poll votes, plan buttons, or plain replies) can
+        // answer a pending AskUserQuestion / plan_mode, or carry images. Route
+        // those here rather than steering a fresh turn that would strand the
+        // blocked tool. Falls through to the normal render path otherwise.
+        if (trigger.type === "discord:message") {
+            const p = (trigger.payload ?? {}) as Record<string, unknown>;
+            const text = typeof p.text === "string" ? p.text : "";
+            const imageUrls = Array.isArray(p.imageUrls)
+                ? (p.imageUrls.filter((u): u is string => typeof u === "string"))
+                : [];
+            if (text && consumePendingAskUserQuestionFromWeb(rctx, text)) return;
+            if (text && rctx.pendingPlanMode) {
+                consumePendingPlanModeFromWeb(rctx, mapDiscordPlanReply(text));
+                return;
+            }
+            if (imageUrls.length > 0) {
+                void deliverDiscordImages(rctx, handlers, text, imageUrls);
+                return;
+            }
         }
 
         // NOTE: We no longer auto-suppress session_complete triggers when
