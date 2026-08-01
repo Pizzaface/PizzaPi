@@ -80,11 +80,34 @@ export class TunnelService implements ServiceHandler {
             url: `/tunnel/${port}`,
             pinned: true,
         };
+        // Services re-invoke announcePanel/announceSigilServer every time they
+        // (re)start their HTTP server, so the same pinned port can be registered
+        // more than once. Only the first registration takes a ref — otherwise the
+        // count never drains and unregisterPort() can't actually unexpose.
+        const alreadyPinned = this.pinnedTunnels.has(port);
         this.pinnedTunnels.set(port, info);
-        this.incRef(port);
+        if (!alreadyPinned) this.incRef(port);
         this.tunnelClient?.exposePort(port);
         logInfo(`[tunnel] auto-registered panel port ${port}${name ? ` (${name})` : ""}`);
         this.emitTunnelRegistered(info);
+    }
+
+    /**
+     * Release a pinned port previously taken by {@link registerPort}.
+     *
+     * Counterpart to registerPort: without this, a service that is disabled,
+     * revoked, superseded, or whose plugin was deleted leaves the runner routing
+     * traffic to a port it no longer owns. Session-scoped exposures of the same
+     * port survive — decRef only unexposes once the last owner releases it.
+     *
+     * @returns true if the port was pinned and has now been released.
+     */
+    unregisterPort(port: number): boolean {
+        if (!this.pinnedTunnels.has(port)) return false;
+        this.pinnedTunnels.delete(port);
+        this.decRef(port);
+        logInfo(`[tunnel] released pinned port ${port}`);
+        return true;
     }
 
     /**

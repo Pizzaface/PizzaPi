@@ -298,22 +298,68 @@ export function panelEntryFromManifest(
     };
 }
 
-/** Remove ports owned by a stopped handler; optionally retain its disabled-state metadata. */
+/**
+ * Remove ports owned by a stopped handler; optionally retain its disabled-state metadata.
+ *
+ * `releasePort` hands each port back to the tunnel (TunnelService.unregisterPort).
+ * Dropping the port from these maps only stops it being *announced*; without the
+ * release the runner keeps proxying traffic to a port the dead service no longer
+ * owns. Optional so the pure map-hygiene behaviour stays unit-testable.
+ */
 export function clearServiceRuntimePorts(
     serviceId: string,
     panelEntries: Map<string, PanelEntry>,
     sigilServerPorts: Map<string, number>,
     keepMetadata: boolean,
+    releasePort?: (port: number) => void,
 ): void {
+    const sigilPort = sigilServerPorts.get(serviceId);
+    if (sigilPort !== undefined) releasePort?.(sigilPort);
     sigilServerPorts.delete(serviceId);
     const entry = panelEntries.get(serviceId);
     if (!entry) return;
+    if (entry.port !== undefined) releasePort?.(entry.port);
     if (!keepMetadata) {
         panelEntries.delete(serviceId);
         return;
     }
     const { port: _stalePort, ...metadata } = entry;
     panelEntries.set(serviceId, metadata);
+}
+
+/**
+ * Retire legacy (plugin-dir) services that vanished between rediscovery passes.
+ *
+ * A deleted plugin used to have only its *metadata* forgotten, which left the
+ * handler registered, initialized and still serving on its announced port.
+ * Exported so the reconfigure lifecycle is covered by a live-registry test
+ * rather than a mirrored re-implementation of this loop.
+ *
+ * @returns the ids that were retired.
+ */
+export function removeVanishedLegacyServices(opts: {
+    tracked: Set<string>;
+    legacyServiceIds: Set<string>;
+    packageServiceIds: ReadonlySet<string>;
+    disabledIds: ReadonlySet<string>;
+    stillDiscovered: ReadonlySet<string>;
+    panelEntries: Map<string, PanelEntry>;
+    sigilServerPorts: Map<string, number>;
+    disposeIncumbent: (id: string, reason: string) => void;
+    releasePort?: (port: number) => void;
+}): string[] {
+    const removed: string[] = [];
+    for (const id of [...opts.tracked]) {
+        if (opts.packageServiceIds.has(id)) continue; // Package-origin ids reconcile separately
+        if (opts.disabledIds.has(id)) continue;       // Keep disabled services
+        if (opts.stillDiscovered.has(id)) continue;   // Still on disk
+        opts.disposeIncumbent(id, `legacy service "${id}" is no longer discoverable (plugin deleted) — disposing handler`);
+        opts.tracked.delete(id);
+        opts.legacyServiceIds.delete(id);
+        clearServiceRuntimePorts(id, opts.panelEntries, opts.sigilServerPorts, false, opts.releasePort);
+        removed.push(id);
+    }
+    return removed;
 }
 
 /**
@@ -809,6 +855,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         } else {
             registry.register(tunnelService);
         }
+
+        /** Hand a dead service's pinned port back to the tunnel (see clearServiceRuntimePorts). */
+        const releaseServicePort = (port: number): void => {
+            tunnelService.unregisterPort(port);
+        };
 
         const timeService = isServiceDisabled("time") ? null : new TimeService();
         if (timeService) {
@@ -1374,8 +1425,22 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     packageServiceIds.delete(svc.id);
                     legacyServiceIds.delete(svc.id);
                     // Keep disabled-service metadata visible, but never re-announce its dead ports.
-                    clearServiceRuntimePorts(svc.id, panelEntries, sigilServerPorts, true);
+                    clearServiceRuntimePorts(svc.id, panelEntries, sigilServerPorts, true, releaseServicePort);
                 }
+
+                /** Dispose + unregister a running handler so no timers/sockets outlive it. */
+                const disposeIncumbent = (id: string, reason: string) => {
+                    const oldSvc = registry.get(id);
+                    if (!oldSvc) return;
+                    logInfo(`[services] ${reason}`);
+                    try {
+                        oldSvc.dispose();
+                    } catch (err) {
+                        logWarn(`[services] dispose failed for "${id}": ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+                    }
+                    registry.unregister(id);
+                    initializedServiceIds.delete(id);
+                };
 
                 const initAndTrack = (handler: ServiceHandler, kind: "package" | "legacy") => {
                     try {
@@ -1447,8 +1512,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         }
                         packageServiceIds.delete(id);
                         allDiscoveredServiceIds.delete(id);
-                        panelEntries.delete(id);
-                        sigilServerPorts.delete(id);
+                        clearServiceRuntimePorts(id, panelEntries, sigilServerPorts, false, releaseServicePort);
                     }
 
                     // Unchanged winning identity — preserve the running lifecycle,
@@ -1462,19 +1526,6 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         else panelEntries.delete(id);
                     }
 
-                    const disposeIncumbent = (id: string, reason: string) => {
-                        const oldSvc = registry.get(id);
-                        if (!oldSvc) return;
-                        logInfo(`[services] ${reason}`);
-                        try {
-                            oldSvc.dispose();
-                        } catch (err) {
-                            logWarn(`[services] dispose failed for "${id}": ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
-                        }
-                        registry.unregister(id);
-                        initializedServiceIds.delete(id);
-                    };
-
                     // Same service id, but the package identity that won it changed
                     // underneath it — dispose the incumbent before mounting the new
                     // one so stale handler state/timers never linger alongside it.
@@ -1483,7 +1534,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         const freshIdentity = freshById.get(id)?.source.pluginName ?? id;
                         disposeIncumbent(id, `package service "${id}" identity changed (${existing?.identity} → ${freshIdentity}) — disposing old handler`);
                         packageServiceIds.delete(id);
-                        clearServiceRuntimePorts(id, panelEntries, sigilServerPorts, false);
+                        clearServiceRuntimePorts(id, panelEntries, sigilServerPorts, false, releaseServicePort);
                     }
 
                     // A legacy-origin service currently holds this id from an
@@ -1494,7 +1545,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         disposeIncumbent(id, `package service "${id}" supersedes legacy incumbent — disposing legacy handler`);
                         legacyServiceIds.delete(id);
                         allDiscoveredServiceIds.delete(id);
-                        clearServiceRuntimePorts(id, panelEntries, sigilServerPorts, false);
+                        clearServiceRuntimePorts(id, panelEntries, sigilServerPorts, false, releaseServicePort);
                     }
 
                     for (const id of [...plan.replaceIdentitySwap, ...plan.evictLegacyThenRegister, ...plan.registerNew]) {
@@ -1515,15 +1566,17 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
                 // Remove legacy services that are no longer discoverable (plugin
                 // deleted) and not disabled. Package-origin ids are reconciled above.
-                for (const id of [...allDiscoveredServiceIds]) {
-                    if (packageServiceIds.has(id)) continue;
-                    if (newDisabledServices.has(id)) continue; // Keep disabled services
-                    if (discoveredServices.some(s => s.handler.id === id)) continue; // Still exists
-                    allDiscoveredServiceIds.delete(id);
-                    legacyServiceIds.delete(id);
-                    panelEntries.delete(id);
-                    sigilServerPorts.delete(id);
-                }
+                removeVanishedLegacyServices({
+                    tracked: allDiscoveredServiceIds,
+                    legacyServiceIds,
+                    packageServiceIds: new Set(packageServiceIds.keys()),
+                    disabledIds: newDisabledServices,
+                    stillDiscovered: new Set(discoveredServices.map(s => s.handler.id)),
+                    panelEntries,
+                    sigilServerPorts,
+                    disposeIncumbent,
+                    releasePort: releaseServicePort,
+                });
 
                 for (const { handler, source, manifest } of discoveredServices) {
                     if (legacyServiceIds.has(handler.id) && registry.has(handler.id)) continue; // unchanged — preserve lifecycle
