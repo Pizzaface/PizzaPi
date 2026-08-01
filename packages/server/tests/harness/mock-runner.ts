@@ -17,6 +17,8 @@ import type {
     RunnerPlugin,
     RunnerHook,
     ServicePanelInfo,
+    ServiceTriggerDef,
+    ServiceSigilDef,
 } from "@pizzapi/protocol";
 
 import type { TestServer } from "./types.js";
@@ -102,6 +104,10 @@ export interface MockRunnerOptions {
     serviceIds?: string[];
     /** Service panels to announce (dynamic iframe panels). */
     panels?: ServicePanelInfo[];
+    /** Trigger types declared by announced services (e.g. package-origin manifests). */
+    triggerDefs?: ServiceTriggerDef[];
+    /** Sigil types declared by announced services (e.g. package-origin manifests). */
+    sigilDefs?: ServiceSigilDef[];
 }
 
 export interface MockRunner {
@@ -131,7 +137,14 @@ export interface MockRunner {
     onFileRequest(handler: (data: unknown) => unknown): void;
 
     // Services
-    announceServices(serviceIds: string[], panels?: ServicePanelInfo[]): void;
+    announceServices(
+        serviceIds: string[],
+        panels?: ServicePanelInfo[],
+        triggerDefs?: ServiceTriggerDef[],
+        sigilDefs?: ServiceSigilDef[],
+    ): void;
+    /** Disabled service IDs currently applied (mutated by reconfigure_services, mirrors real daemon). */
+    readonly disabledServiceIds: ReadonlySet<string>;
 
     // Utilities
     waitForEvent(eventName: string, timeout?: number): Promise<unknown>;
@@ -279,6 +292,29 @@ export async function createMockRunner(
     let restartRequested = false;
     let shutdownRequested = false;
     let isShuttingDown = false;
+    // Mutable service_announce state — mirrors the real daemon's panelEntries/
+    // disabledServices so announceServices() and reconfigure_services can both
+    // re-emit a consistent full announce.
+    let currentServiceIds: string[] = opts?.serviceIds ?? [];
+    let currentPanels: ServicePanelInfo[] = opts?.panels ?? [];
+    let currentTriggerDefs: ServiceTriggerDef[] = opts?.triggerDefs ?? [];
+    let currentSigilDefs: ServiceSigilDef[] = opts?.sigilDefs ?? [];
+    const disabledServiceIdsSet = new Set<string>();
+    // The daemon never unloads these runtime-pinned built-ins on reconfigure.
+    const nonDisableableServiceIds = new Set(["terminal", "file-explorer", "git", "time", "tunnel"]);
+
+    const emitServiceAnnounce = () => {
+        const activeServiceIds = new Set(currentServiceIds.filter(
+            (id) => !disabledServiceIdsSet.has(id) || nonDisableableServiceIds.has(id),
+        ));
+        (socket as any).emit("service_announce", {
+            serviceIds: Array.from(activeServiceIds),
+            ...(disabledServiceIdsSet.size > 0 ? { disabledServiceIds: Array.from(disabledServiceIdsSet) } : {}),
+            ...(currentPanels.length > 0 ? { panels: currentPanels.filter((panel) => activeServiceIds.has(panel.serviceId)) } : {}),
+            ...(currentTriggerDefs.length > 0 ? { triggerDefs: currentTriggerDefs.filter((trigger) => activeServiceIds.has(trigger.type.split(":")[0])) } : {}),
+            ...(currentSigilDefs.length > 0 ? { sigilDefs: currentSigilDefs.filter((sigil) => activeServiceIds.has(sigil.serviceId ?? sigil.type.split(":")[0])) } : {}),
+        });
+    };
 
     // Populate initial skills
     const initialSkills = opts?.skills ?? defaultSkills();
@@ -381,10 +417,12 @@ export async function createMockRunner(
                     }
                 }
                 // Announce services after registration (like real daemon)
-                if (opts?.serviceIds && opts.serviceIds.length > 0) {
+                if (currentServiceIds.length > 0) {
                     (socket as any).emit("service_announce", {
-                        serviceIds: opts.serviceIds,
-                        ...(opts.panels && opts.panels.length > 0 ? { panels: opts.panels } : {}),
+                        serviceIds: currentServiceIds,
+                        ...(currentPanels.length > 0 ? { panels: currentPanels } : {}),
+                        ...(currentTriggerDefs.length > 0 ? { triggerDefs: currentTriggerDefs } : {}),
+                        ...(currentSigilDefs.length > 0 ? { sigilDefs: currentSigilDefs } : {}),
                     });
                 }
                 resolve();
@@ -753,6 +791,17 @@ export async function createMockRunner(
                 content: agent.content ?? `# ${agentName}\n\nAgent definition placeholder.`,
             });
         }
+    });
+
+    // --- Services (reconfigure_services → re-announce, mirrors daemon.ts) ---
+
+    socket.on("reconfigure_services", (data: any) => {
+        if (isShuttingDown) return;
+        const incoming = Array.isArray(data?.disabledServiceIds) ? data.disabledServiceIds as string[] : [];
+        disabledServiceIdsSet.clear();
+        for (const id of incoming) disabledServiceIdsSet.add(id);
+        // Real daemon re-emits only active service metadata after reconfigure.
+        emitServiceAnnounce();
     });
 
     // --- Plugins ---
@@ -1182,11 +1231,21 @@ export async function createMockRunner(
             return shutdownRequested;
         },
 
-        announceServices(serviceIds: string[], panels?: ServicePanelInfo[]): void {
-            (socket as any).emit("service_announce", {
-                serviceIds,
-                ...(panels && panels.length > 0 ? { panels } : {}),
-            });
+        get disabledServiceIds(): ReadonlySet<string> {
+            return disabledServiceIdsSet;
+        },
+
+        announceServices(
+            serviceIds: string[],
+            panels?: ServicePanelInfo[],
+            triggerDefs?: ServiceTriggerDef[],
+            sigilDefs?: ServiceSigilDef[],
+        ): void {
+            currentServiceIds = serviceIds;
+            currentPanels = panels ?? [];
+            currentTriggerDefs = triggerDefs ?? [];
+            currentSigilDefs = sigilDefs ?? [];
+            emitServiceAnnounce();
         },
 
         onSkillRequest(handler: (data: unknown) => unknown): void {

@@ -103,4 +103,33 @@ describe("RunnerServicesPanel", () => {
       expect(container.textContent).toContain('Service "demo" disabled. Change applied immediately.');
     });
   });
+
+  test("renders a disabled-only service without stale metadata", async () => {
+    const disabledFetchSpy = mock(async () => ({
+      ok: true,
+      json: async () => ({
+        serviceIds: ["demo"],
+        disabledServiceIds: ["godmother-lite"],
+        panels: [{ serviceId: "demo", port: 1234, label: "Demo", icon: "server" }],
+        triggerDefs: [],
+        sigilDefs: [],
+      }),
+    } as unknown as Response));
+    (globalThis as any).fetch = disabledFetchSpy;
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(
+        <actualTooltip.TooltipProvider>
+          <RunnerServicesPanel runnerId="runner-1" />
+        </actualTooltip.TooltipProvider>,
+      ));
+    });
+
+    await waitFor(() => expect(container.textContent).toContain("godmother-lite"));
+    expect(container.textContent).toContain("Disabled");
+    expect(container.textContent).not.toContain("Godmother Lite");
+
+    (globalThis as any).fetch = fetchSpy;
+  });
 });
