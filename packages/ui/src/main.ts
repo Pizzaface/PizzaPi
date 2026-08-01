@@ -6,7 +6,11 @@ import { AttentionProvider } from "./attention/index.js";
 import { installMobileFetchPatch } from "./lib/mobile-fetch.js";
 import { initMobileRuntime } from "./lib/mobile-runtime.js";
 import { notifyOtaReady, checkAndApplyOtaUpdate } from "./lib/mobile-ota.js";
+import { installChunkReloadHandler } from "./lib/chunk-reload.js";
 import "./style.css";
+
+// Recover from stale lazy-chunk URLs after a redeploy (see chunk-reload.ts).
+installChunkReloadHandler();
 
 // Apply dark mode before first render to avoid flash
 const savedTheme = localStorage.getItem("theme");
