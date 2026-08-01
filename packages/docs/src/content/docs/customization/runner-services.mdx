@@ -5,12 +5,14 @@ description: Create custom runner services with UI panels, custom triggers, and 
 
 import { Aside, FileTree, Steps } from "@astrojs/starlight/components";
 
-Runner services are background processes on the runner daemon. They can expose interactive **UI panels** in the PizzaPi web interface and advertise **custom triggers** that agent sessions can subscribe to. Each service is discovered automatically from `~/.pizzapi/services/` on startup.
+Runner services are background processes on the runner daemon. They can expose interactive **UI panels** in the PizzaPi web interface and advertise **custom triggers** that agent sessions can subscribe to.
+
+A service ships inside a **[pi package](/PizzaPi/customization/overlay-packages/)** that declares it under `pi.pizzapi.services`. That is the only way to load one — a service runs on the daemon, outside any session sandbox, so it needs an explicit trust grant that a package install can carry and a loose file cannot.
 
 ![Service panel showing a System Monitor with CPU, memory, disk, and process information](../../../assets/service-panel-screenshot.png)
 
 <Aside type="caution" title="Runner services are runner-global">
-Services are always runner-wide. A project-local `.pizzapi/services/` directory is **not** loaded, and a package configured at project scope does not mount its services.
+Services are always runner-wide. A package configured at project scope does **not** mount its services.
 
 The daemon keeps a single service registry shared by every workspace on the machine. Mounting a service found in one checkout would silently activate that project's code for unrelated sessions, so PizzaPi does not do it. Overlay packages that declare services are still installable at project scope — PizzaPi warns that the services stay inactive.
 
@@ -23,80 +25,94 @@ Supporting genuinely project-scoped services needs scoped registry instances and
 
 <Steps>
 
-1. **Create the service directory:**
+1. **Create the package:**
 
    ```bash
-   mkdir -p ~/.pizzapi/services/my-service/panel
+   mkdir -p ~/my-service/service/panel
+   cd ~/my-service
    ```
 
-2. **Add `manifest.json`:**
+2. **Declare the service in `package.json`:**
 
-   ```json
+   ```json title="package.json"
    {
-     "id": "my-service",
-     "label": "My Service",
-     "icon": "activity",
-     "entry": "./index.ts",
-     "panel": {
-       "dir": "./panel"
-     },
-     "triggers": [
-       {
-         "type": "my-service:something_happened",
-         "label": "Something Happened",
-         "description": "Emitted when something noteworthy occurs"
+     "name": "@me/my-service",
+     "version": "1.0.0",
+     "private": true,
+     "type": "module",
+     "pi": {
+       "pizzapi": {
+         "schemaVersion": 1,
+         "services": [
+           {
+             "id": "my-service",
+             "label": "My Service",
+             "icon": "activity",
+             "entry": "./service/index.ts",
+             "panel": { "dir": "./service/panel" },
+             "triggers": [
+               {
+                 "type": "my-service:something_happened",
+                 "label": "Something Happened",
+                 "description": "Emitted when something noteworthy occurs"
+               }
+             ]
+           }
+         ]
        }
-     ]
+     }
    }
    ```
 
-3. **Add `index.ts`** with a ServiceHandler class (see [ServiceHandler API](#servicehandler-api) below).
+3. **Add `service/index.ts`** with a ServiceHandler class (see [ServiceHandler API](#servicehandler-api) below).
 
-4. **Add `panel/index.html`** with self-contained HTML/CSS/JS (see [Panel Guidelines](#panel-guidelines) below).
+4. **Add `service/panel/index.html`** with self-contained HTML/CSS/JS (see [Panel Guidelines](#panel-guidelines) below).
 
-5. **Restart the runner** — the panel button appears in the session toolbar header, and triggers become discoverable by agents.
+5. **Install and grant the service:**
+
+   ```bash
+   pizza install ~/my-service --allow-daemon-services
+   ```
+
+6. **Restart the runner** — the panel button appears in the session toolbar header, and triggers become discoverable by agents.
 
 </Steps>
+
+<Aside type="tip">
+The grant is per package and per service ID. Installing without `--allow-daemon-services` still installs agents, rules, skills and MCP servers — the services just stay inactive until granted.
+</Aside>
 
 ---
 
 ## Folder Structure
 
 <FileTree>
-- ~/.pizzapi/services/my-service/
-  - manifest.json — metadata, panel config, and trigger definitions
-  - index.ts — ServiceHandler module (default export)
-  - panel/
-    - index.html — self-contained UI (HTML/CSS/JS)
-    - … — additional static assets
+- my-service/
+  - package.json — the `pi.pizzapi.services` declaration
+  - service/
+    - index.ts — ServiceHandler module (default export)
+    - triggers.json — trigger definitions (optional)
+    - sigils.json — sigil type definitions (optional)
+    - panel/
+      - index.html — self-contained UI (HTML/CSS/JS)
+      - … — additional static assets
 </FileTree>
 
-Services can also be bundled inside Claude Code plugins:
-
-<FileTree>
-- ~/.pizzapi/plugins/my-plugin/
-  - plugin.json
-  - services/
-    - my-service/
-      - manifest.json
-      - index.ts
-      - panel/
-        - index.html
-</FileTree>
+Layout inside the package is up to you — only the paths named in the declaration matter, and they are confined to the package root.
 
 ---
 
-## manifest.json
+## Service declaration
 
-```json
+Each entry in `pi.pizzapi.services` describes one service:
+
+```json title="package.json"
 {
   "id": "my-service",
   "label": "My Service",
   "icon": "activity",
-  "entry": "./index.ts",
-  "panel": {
-    "dir": "./panel"
-  },
+  "entry": "./service/index.ts",
+  "panel": { "dir": "./service/panel" },
   "triggers": [
     {
       "type": "my-service:something_happened",
@@ -119,25 +135,40 @@ Services can also be bundled inside Claude Code plugins:
 | `id` | Yes | — | Unique service ID (must match `ServiceHandler.id`) |
 | `label` | Yes | — | Button label shown in the PizzaPi header bar |
 | `icon` | No | `"square"` | [Lucide](https://lucide.dev/icons) icon name (kebab-case) |
-| `entry` | No | `"./index.ts"` | Service module path relative to the service folder |
-| `panel.dir` | No | `"./panel"` | Panel static files directory (omit if no panel) |
-| `triggers` | No | `[]` | Trigger type definitions (see [Custom Triggers](#custom-triggers) below, or use `triggers.json`) |
-| `sigils` | No | `[]` | Sigil type definitions (see [Custom Sigils](#custom-sigils) below, or use `sigils.json`) |
+| `entry` | No | `"./index.ts"` | Service module path, relative to the package root |
+| `panel.dir` | No | — | Panel static files directory (omit if no panel) |
+| `triggers` | No | `[]` | Inline definitions, or a path to a JSON file (see [Custom Triggers](#custom-triggers)) |
+| `sigils` | No | `[]` | Inline definitions, or a path to a JSON file (see [Custom Sigils](#custom-sigils)) |
+
+<Aside type="caution" title="The handler id must match the declaration">
+The `id` your module's handler exposes must equal the declared `id`, or the loader rejects the service outright. Trigger types must also be namespaced by the service id (`my-service:thing`) — the daemon routes on `triggerType.split(":")[0]`, so an unnamespaced trigger is silently dropped.
+</Aside>
 
 ---
 
 ## Split Configuration Files
 
-For services with many triggers or sigils, you can split configuration into separate files. Split files take precedence over inline arrays in `manifest.json`.
+For services with many triggers or sigils, point `triggers` and `sigils` at their own JSON files instead of inlining the arrays in `package.json`.
+
+```json title="package.json"
+{
+  "id": "my-service",
+  "label": "My Service",
+  "entry": "./service/index.ts",
+  "triggers": "./service/triggers.json",
+  "sigils": "./service/sigils.json"
+}
+```
 
 <FileTree>
-- ~/.pizzapi/services/my-service/
-  - manifest.json — core identity (id, label, icon, entry, panel)
-  - triggers.json — trigger definitions (optional, overrides manifest triggers)
-  - sigils.json — sigil type definitions (optional, overrides manifest sigils)
-  - index.ts — ServiceHandler module
-  - panel/
-    - index.html — self-contained UI (HTML/CSS/JS)
+- my-service/
+  - package.json — core identity (id, label, icon, entry, panel)
+  - service/
+    - triggers.json — trigger definitions (optional)
+    - sigils.json — sigil type definitions (optional)
+    - index.ts — ServiceHandler module
+    - panel/
+      - index.html — self-contained UI (HTML/CSS/JS)
 </FileTree>
 
 ### triggers.json
@@ -204,35 +235,32 @@ Defines sigil types this service teaches the UI to render. Can be a bare array o
 | `aliases` | No | Alternative type names that resolve to this sigil |
 
 <Aside type="tip">
-  Split files are optional — inline `triggers` and `sigils` arrays in `manifest.json` continue to work. Use split files when your trigger or sigil definitions are large enough to make `manifest.json` hard to read.
+  Split files are optional — inline `triggers` and `sigils` arrays work exactly the same. Use split files when the definitions are large enough to make `package.json` hard to read.
 </Aside>
 
 ### Migrating to Split Files
 
-To split an existing `manifest.json`:
-
 <Steps>
 
-1. **Copy the `triggers` array** from `manifest.json` into a new `triggers.json` file (as a bare JSON array).
+1. **Copy the `triggers` array** out of the service declaration into a new `triggers.json` file (as a bare JSON array).
 
-2. **Remove the `triggers` key** from `manifest.json`.
+2. **Replace the `triggers` value** with the path to that file.
 
-3. **(Optional)** Create `sigils.json` with any sigil definitions.
+3. **(Optional)** Do the same for `sigils`.
 
-4. **Restart the runner** — the daemon will load split files automatically.
+4. **Restart the runner** — the daemon resolves the paths automatically.
 
 </Steps>
 
-**Before** — everything in one file:
+**Before** — everything inline:
 
-```json
-// manifest.json
+```json title="package.json"
 {
   "id": "my-service",
   "label": "My Service",
   "icon": "activity",
-  "entry": "./index.ts",
-  "panel": { "dir": "./panel" },
+  "entry": "./service/index.ts",
+  "panel": { "dir": "./service/panel" },
   "triggers": [
     { "type": "my-service:event_a", "label": "Event A" },
     { "type": "my-service:event_b", "label": "Event B" }
@@ -242,14 +270,14 @@ To split an existing `manifest.json`:
 
 **After** — split into focused files:
 
-```json
-// manifest.json
+```json title="package.json"
 {
   "id": "my-service",
   "label": "My Service",
   "icon": "activity",
-  "entry": "./index.ts",
-  "panel": { "dir": "./panel" }
+  "entry": "./service/index.ts",
+  "panel": { "dir": "./service/panel" },
+  "triggers": "./service/triggers.json"
 }
 ```
 
@@ -269,7 +297,7 @@ Services can advertise custom trigger types that agent sessions subscribe to at 
 
 ### Declaring Triggers
 
-Add a `triggers` array to `manifest.json`. Each entry describes a trigger type:
+Add a `triggers` array to the service declaration. Each entry describes a trigger type:
 
 | Field | Required | Description |
 |-------|----------|-------------|
@@ -557,7 +585,7 @@ Sigils are `[[type:id]]` tokens in agent output that render as interactive UI el
 
 ### Declaring Sigils
 
-Add a `sigils` array to `manifest.json`, or create a standalone `sigils.json` file (see [Split Configuration Files](#split-configuration-files)).
+Add a `sigils` array to the service declaration, or point it at a standalone `sigils.json` file (see [Split Configuration Files](#split-configuration-files)).
 
 Each entry describes a sigil type using the `ServiceSigilDef` schema:
 
@@ -959,8 +987,8 @@ Panels render inside an iframe in the PizzaPi web interface. The bottom dock is 
 
 ## How It Works
 
-1. The runner daemon discovers service folders in `~/.pizzapi/services/`, plus plugin and package service declarations
-2. It reads `manifest.json` for panel metadata and trigger definitions
+1. The runner daemon reads `pi.pizzapi.services` from every configured package that holds a daemon-service grant
+2. It resolves panel metadata and trigger definitions from the declaration (or the split JSON files it points at)
 3. It loads the service module and calls `init(socket, { announcePanel })`
 4. The service starts `Bun.serve()` on port 0 and calls `announcePanel(port)`
 5. The daemon aggregates all trigger defs and sigil defs from all loaded services
@@ -974,8 +1002,8 @@ Panels render inside an iframe in the PizzaPi web interface. The bottom dock is 
 
 | Task | How |
 |------|-----|
-| Declare triggers | Add `triggers[]` to `manifest.json` or `triggers.json` |
-| Declare sigils | Add `sigils[]` to `manifest.json` or `sigils.json` |
+| Declare triggers | Add `triggers[]` to the service declaration, or point it at `triggers.json` |
+| Declare sigils | Add `sigils[]` to the service declaration, or point it at `sigils.json` |
 | Fire a trigger | `POST /api/runners/{runnerId}/trigger-broadcast` with API key |
 | Serve static files | `Bun.serve()` with `readFileSync` for `index.html` |
 | Expose an API | Add route checks in the `fetch` handler |

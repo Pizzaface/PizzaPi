@@ -159,7 +159,6 @@ describe("planPackageServiceReconcile (fix #4 + addendum B: reconfigure lifecycl
         const plan = planPackageServiceReconcile(
             [],
             new Map([["gone", { identity: "npm:gone" }]]),
-            new Set(),
             () => true,
         );
         expect(plan.revoke).toEqual(["gone"]);
@@ -170,8 +169,7 @@ describe("planPackageServiceReconcile (fix #4 + addendum B: reconfigure lifecycl
         const plan = planPackageServiceReconcile(
             [{ id: "svc", identity: "npm:pkg" }],
             new Map([["svc", { identity: "npm:pkg" }]]),
-            new Set(),
-            (id) => id === "svc",
+            (id: string) => id === "svc",
         );
         expect(plan.preserveRefreshMetadata).toEqual(["svc"]);
         expect(plan.replaceIdentitySwap).toEqual([]);
@@ -182,8 +180,7 @@ describe("planPackageServiceReconcile (fix #4 + addendum B: reconfigure lifecycl
         const plan = planPackageServiceReconcile(
             [{ id: "svc", identity: "npm:new-pkg" }],
             new Map([["svc", { identity: "npm:old-pkg" }]]),
-            new Set(),
-            (id) => id === "svc",
+            (id: string) => id === "svc",
         );
         expect(plan.replaceIdentitySwap).toEqual(["svc"]);
         expect(plan.preserveRefreshMetadata).toEqual([]);
@@ -193,21 +190,21 @@ describe("planPackageServiceReconcile (fix #4 + addendum B: reconfigure lifecycl
         const plan = planPackageServiceReconcile(
             [{ id: "svc", identity: "npm:pkg" }],
             new Map(), // dropped from tracking when disabled
-            new Set(),
             () => false, // unregistered while disabled
         );
         expect(plan.registerNew).toEqual(["svc"]);
     });
 
-    test("legacy eviction: a legacy-origin incumbent yields to a newly-declaring package (§8 dynamically)", () => {
+    // An id held by a still-registered handler that package discovery has never
+    // mounted can only be a built-in now that legacy origins are gone;
+    // registerDiscoveredService()'s built-in guard rejects it downstream.
+    test("unknown incumbent: still planned as a fresh registration, guarded downstream", () => {
         const plan = planPackageServiceReconcile(
             [{ id: "svc", identity: "npm:pkg" }],
-            new Map(), // never package-mounted before
-            new Set(["svc"]), // currently held by a legacy-origin handler
-            (id) => id === "svc", // legacy handler is registered
+            new Map(),
+            (id: string) => id === "svc",
         );
-        expect(plan.evictLegacyThenRegister).toEqual(["svc"]);
-        expect(plan.registerNew).toEqual([]);
+        expect(plan.registerNew).toEqual(["svc"]);
         expect(plan.replaceIdentitySwap).toEqual([]);
     });
 
@@ -215,7 +212,6 @@ describe("planPackageServiceReconcile (fix #4 + addendum B: reconfigure lifecycl
         const plan = planPackageServiceReconcile(
             [{ id: "svc", identity: "npm:pkg" }],
             new Map(),
-            new Set(),
             () => false,
         );
         expect(plan.registerNew).toEqual(["svc"]);

@@ -284,7 +284,7 @@ Project packages that declare services still install; PizzaPi warns that those s
 
 ### Precedence
 
-When a package service and a legacy `~/.pizzapi/services/` service declare the same ID, the **package wins**. Built-in service IDs are reserved and always win.
+Built-in service IDs (`terminal`, `file-explorer`, `git`, `memory`, `process`, `time`, `tunnel`) are reserved and always win. Between packages, the first to claim an ID in a discovery pass keeps it and later claimants are skipped with a warning.
 
 ---
 

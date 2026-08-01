@@ -19,11 +19,9 @@ import { TunnelService } from "./services/tunnel-service.js";
 import { ProcessService } from "./services/process-service.js";
 import { MemoryService } from "./services/memory-service.js";
 import { TimeService, TIME_TRIGGER_DEFS, TIME_SIGIL_DEFS } from "./services/time-service.js";
-import { discoverServices } from "./service-loader.js";
 import type { ServiceManifest, ServicePluginResult } from "./service-loader.js";
 import { discoverPackageServices, type DiscoverPackageServicesResult } from "./package-service-loader.js";
 import { BUILTIN_SERVICE_IDS, NON_DISABLEABLE_SERVICE_IDS } from "./services/builtin-service-ids.js";
-import { globalPluginDirs } from "../plugins/discover.js";
 import { io, type Socket } from "socket.io-client";
 import {
     SOCKET_PROTOCOL_VERSION,
@@ -196,8 +194,6 @@ export interface PackageServiceReconcilePlan {
     preserveRefreshMetadata: string[];
     /** Ids whose winning package identity changed since the last pass — dispose the old handler, then register the fresh one. */
     replaceIdentitySwap: string[];
-    /** Ids currently held by a legacy-origin handler that package discovery now claims — dispose the legacy incumbent, then register the package handler. */
-    evictLegacyThenRegister: string[];
     /** Ids with no incumbent at all — just register + init. */
     registerNew: string[];
 }
@@ -207,14 +203,13 @@ export interface PackageServiceReconcilePlan {
  * the currently mounted state, without touching the registry/sockets/panel
  * map itself — the daemon executes the plan against real state; this
  * function is the actual decision logic reconfigure_services runs, exported
- * so package-before-legacy precedence and every reconfigure lifecycle edge
- * case (revocation/identity-swap/legacy-eviction/unchanged-preserve) has
- * direct regression coverage without spinning up sockets.
+ * so every reconfigure lifecycle edge case (revocation/identity-swap/
+ * unchanged-preserve) has direct regression coverage without spinning up
+ * sockets.
  */
 export function planPackageServiceReconcile(
     freshPackageServices: ReadonlyArray<{ id: string; identity: string }>,
     packageServiceIds: ReadonlyMap<string, { identity: string }>,
-    legacyServiceIds: ReadonlySet<string>,
     isRegistered: (id: string) => boolean,
 ): PackageServiceReconcilePlan {
     const freshIds = new Set(freshPackageServices.map((s) => s.id));
@@ -222,7 +217,6 @@ export function planPackageServiceReconcile(
 
     const preserveRefreshMetadata: string[] = [];
     const replaceIdentitySwap: string[] = [];
-    const evictLegacyThenRegister: string[] = [];
     const registerNew: string[] = [];
 
     for (const { id, identity } of freshPackageServices) {
@@ -231,14 +225,12 @@ export function planPackageServiceReconcile(
             preserveRefreshMetadata.push(id);
         } else if (existing) {
             replaceIdentitySwap.push(id);
-        } else if (legacyServiceIds.has(id) && isRegistered(id)) {
-            evictLegacyThenRegister.push(id);
         } else {
             registerNew.push(id);
         }
     }
 
-    return { revoke, preserveRefreshMetadata, replaceIdentitySwap, evictLegacyThenRegister, registerNew };
+    return { revoke, preserveRefreshMetadata, replaceIdentitySwap, registerNew };
 }
 
 export type DiscoveredServiceRejectReason = "builtin" | "collision";
@@ -325,41 +317,6 @@ export function clearServiceRuntimePorts(
     }
     const { port: _stalePort, ...metadata } = entry;
     panelEntries.set(serviceId, metadata);
-}
-
-/**
- * Retire legacy (plugin-dir) services that vanished between rediscovery passes.
- *
- * A deleted plugin used to have only its *metadata* forgotten, which left the
- * handler registered, initialized and still serving on its announced port.
- * Exported so the reconfigure lifecycle is covered by a live-registry test
- * rather than a mirrored re-implementation of this loop.
- *
- * @returns the ids that were retired.
- */
-export function removeVanishedLegacyServices(opts: {
-    tracked: Set<string>;
-    legacyServiceIds: Set<string>;
-    packageServiceIds: ReadonlySet<string>;
-    disabledIds: ReadonlySet<string>;
-    stillDiscovered: ReadonlySet<string>;
-    panelEntries: Map<string, PanelEntry>;
-    sigilServerPorts: Map<string, number>;
-    disposeIncumbent: (id: string, reason: string) => void;
-    releasePort?: (port: number) => void;
-}): string[] {
-    const removed: string[] = [];
-    for (const id of [...opts.tracked]) {
-        if (opts.packageServiceIds.has(id)) continue; // Package-origin ids reconcile separately
-        if (opts.disabledIds.has(id)) continue;       // Keep disabled services
-        if (opts.stillDiscovered.has(id)) continue;   // Still on disk
-        opts.disposeIncumbent(id, `legacy service "${id}" is no longer discoverable (plugin deleted) — disposing handler`);
-        opts.tracked.delete(id);
-        opts.legacyServiceIds.delete(id);
-        clearServiceRuntimePorts(id, opts.panelEntries, opts.sigilServerPorts, false, opts.releasePort);
-        removed.push(id);
-    }
-    return removed;
 }
 
 /**
@@ -580,7 +537,7 @@ export function resolveConfiguredAgentDir(cwd = process.cwd()): string {
  * and their currently declared manifest service IDs (§7.2). Call at daemon
  * startup and on `reconfigure_services` — this only edits
  * ~/.pizzapi/config.json, it never mounts/unmounts services (that's driven
- * separately by discoverServices()). Exported standalone (rather than an
+ * separately by discoverPackageServices()). Exported standalone (rather than an
  * inline closure) so the startup/reconfigure call path has direct
  * regression coverage without spinning up the full socket.io daemon.
  */
@@ -898,42 +855,32 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         // against a fresh discoverPackageServices() pass to dispose/unregister
         // services whose grant/package/declaration was revoked or removed.
         const packageServiceIds = new Map<string, { identity: string }>();
-        // Legacy-origin (global-dir/project-dir/plugin-manifest) service ids
-        // currently mounted — lets reconfigure distinguish "this id is already
-        // active from an earlier pass of the SAME origin, leave it running" from
-        // "this id now collides with a different origin," without relying on
-        // ServiceRegistry.register() throwing.
-        const legacyServiceIds = new Set<string>();
-
         /**
          * Register a discovered (non-built-in) service if its id isn't reserved
          * by a built-in or already claimed by an earlier registration this pass.
-         * Shared by the package/legacy startup and reconfigure loops so the
-         * has()-before-register collision rule (§8) — built-ins always win, never
-         * rely on ServiceRegistry.register() throwing for duplicates — lives in
-         * exactly one place, and package-before-legacy precedence falls out of
-         * simply awaiting the package loop before the legacy loop.
+         * Shared by the startup and reconfigure loops so the has()-before-register
+         * collision rule (§8) — built-ins always win, never rely on
+         * ServiceRegistry.register() throwing for duplicates — lives in exactly
+         * one place.
          */
         const registerDiscoveredService = (
             handler: ServiceHandler,
             source: ServicePluginResult["source"],
             manifest: ServiceManifest | undefined,
-            kind: "package" | "legacy",
         ): boolean => {
             const from = source.pluginName ?? source.path;
             const decision = canRegisterDiscoveredService(BUILTIN_SERVICE_IDS.has(handler.id), registry.has(handler.id));
             if (!decision.register) {
                 const why = decision.reason === "builtin" ? "collides with a reserved built-in service id" : "collides with an already-registered service";
-                logWarn(`[services] ${kind} service "${handler.id}" from ${from} ${why} — skipped`);
+                logWarn(`[services] package service "${handler.id}" from ${from} ${why} — skipped`);
                 return false;
             }
             registry.register(handler);
             allDiscoveredServiceIds.add(handler.id);
-            logInfo(`[services] loaded ${kind} service "${handler.id}" from ${from}`);
+            logInfo(`[services] loaded package service "${handler.id}" from ${from}`);
             const entry = panelEntryFromManifest(handler.id, manifest, panelEntries.get(handler.id)?.port);
             if (entry) panelEntries.set(handler.id, entry);
-            if (kind === "package") packageServiceIds.set(handler.id, { identity: source.pluginName ?? handler.id });
-            else legacyServiceIds.add(handler.id);
+            packageServiceIds.set(handler.id, { identity: source.pluginName ?? handler.id });
             return true;
         };
 
@@ -1040,25 +987,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 );
                 if (timedOut) logWarn(`[services] package service discovery did not complete within ${PACKAGE_DISCOVERY_TIMEOUT_MS}ms; proceeding without package services this pass`);
                 for (const { handler, source, manifest } of services) {
-                    registerDiscoveredService(handler, source, manifest, "package");
+                    registerDiscoveredService(handler, source, manifest);
                 }
                 for (const { path, error } of errors) {
                     logWarn(`[services] package service discovery: ${error} (${path})`);
                 }
             } catch (err) {
                 logWarn(`[services] package service discovery failed: ${err}`);
-            }
-
-            try {
-                const { services, errors } = await discoverServices({ pluginDirs: globalPluginDirs(), disabledIds: disabledServices });
-                for (const { handler, source, manifest } of services) {
-                    registerDiscoveredService(handler, source, manifest, "legacy");
-                }
-                for (const { path, error } of errors) {
-                    logWarn(`[services] plugin service load error at ${path}: ${error}`);
-                }
-            } catch (err) {
-                logWarn(`[services] plugin service discovery failed: ${err}`);
             }
 
             resolvePluginServices!();
@@ -1422,7 +1357,6 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     registry.unregister(svc.id);
                     initializedServiceIds.delete(svc.id);
                     packageServiceIds.delete(svc.id);
-                    legacyServiceIds.delete(svc.id);
                     // Keep disabled-service metadata visible, but never re-announce its dead ports.
                     clearServiceRuntimePorts(svc.id, panelEntries, sigilServerPorts, true, releaseServicePort);
                 }
@@ -1441,7 +1375,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     initializedServiceIds.delete(id);
                 };
 
-                const initAndTrack = (handler: ServiceHandler, kind: "package" | "legacy") => {
+                const initAndTrack = (handler: ServiceHandler) => {
                     try {
                         handler.init(socket as unknown as PizzaPiSocket, optsForInit(handler.id));
                         initializedServiceIds.add(handler.id);
@@ -1451,11 +1385,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                             logInfo(`[trigger-reconciliation] service "${handler.id}" hot-reload applied ${result.applied}/${subs.length} cached subscriptions${result.errors?.length ? `, errors=${result.errors.length}` : ""}`);
                         }
                     } catch (err) {
-                        logWarn(`[services] failed to init ${kind} service "${handler.id}": ${err}`);
+                        logWarn(`[services] failed to init package service "${handler.id}": ${err}`);
                     }
                 };
 
-                // ── Package-origin services: awaited + registered before legacy (§8) ──
+                // ── Package-origin services ──
                 // Bounded so a stalled package import can never hang reconfigure
                 // indefinitely (§C); a timeout also forces authoritative=false below.
                 const {
@@ -1490,7 +1424,6 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     const plan = planPackageServiceReconcile(
                         freshPackageServices.map((s) => ({ id: s.handler.id, identity: s.source.pluginName ?? s.handler.id })),
                         packageServiceIds,
-                        legacyServiceIds,
                         (id) => registry.has(id),
                     );
 
@@ -1536,54 +1469,15 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         clearServiceRuntimePorts(id, panelEntries, sigilServerPorts, false, releaseServicePort);
                     }
 
-                    // A legacy-origin service currently holds this id from an
-                    // earlier pass, but package discovery now declares it — evict
-                    // the legacy incumbent so package-over-legacy precedence (§8)
-                    // holds dynamically, without requiring a daemon restart.
-                    for (const id of plan.evictLegacyThenRegister) {
-                        disposeIncumbent(id, `package service "${id}" supersedes legacy incumbent — disposing legacy handler`);
-                        legacyServiceIds.delete(id);
-                        allDiscoveredServiceIds.delete(id);
-                        clearServiceRuntimePorts(id, panelEntries, sigilServerPorts, false, releaseServicePort);
-                    }
-
-                    for (const id of [...plan.replaceIdentitySwap, ...plan.evictLegacyThenRegister, ...plan.registerNew]) {
+                    for (const id of [...plan.replaceIdentitySwap, ...plan.registerNew]) {
                         const fresh = freshById.get(id);
                         if (!fresh) continue;
-                        if (!registerDiscoveredService(fresh.handler, fresh.source, fresh.manifest, "package")) continue;
-                        initAndTrack(fresh.handler, "package");
+                        if (!registerDiscoveredService(fresh.handler, fresh.source, fresh.manifest)) continue;
+                        initAndTrack(fresh.handler);
                     }
                     for (const { path, error } of packageErrors) {
                         logWarn(`[services] package service discovery: ${error} (${path})`);
                     }
-                }
-
-                // ── Legacy plugin-provided services ────────────────────────────────
-                const { services: discoveredServices, errors } = await discoverServices(
-                    { pluginDirs: globalPluginDirs(), disabledIds: newDisabledServices },
-                );
-
-                // Remove legacy services that are no longer discoverable (plugin
-                // deleted) and not disabled. Package-origin ids are reconciled above.
-                removeVanishedLegacyServices({
-                    tracked: allDiscoveredServiceIds,
-                    legacyServiceIds,
-                    packageServiceIds: new Set(packageServiceIds.keys()),
-                    disabledIds: newDisabledServices,
-                    stillDiscovered: new Set(discoveredServices.map(s => s.handler.id)),
-                    panelEntries,
-                    sigilServerPorts,
-                    disposeIncumbent,
-                    releasePort: releaseServicePort,
-                });
-
-                for (const { handler, source, manifest } of discoveredServices) {
-                    if (legacyServiceIds.has(handler.id) && registry.has(handler.id)) continue; // unchanged — preserve lifecycle
-                    if (!registerDiscoveredService(handler, source, manifest, "legacy")) continue;
-                    initAndTrack(handler, "legacy");
-                }
-                for (const { path, error } of errors) {
-                    logWarn(`[services] plugin service load error at ${path}: ${error}`);
                 }
 
                 // Re-announce services
