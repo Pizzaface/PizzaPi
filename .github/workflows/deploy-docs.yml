@@ -36,7 +36,10 @@ jobs:
 
       - name: Install docs dependencies
         working-directory: packages/docs
-        run: bun install
+        # ponytail: --ignore-scripts skips redis-memory-server's postinstall (compiles
+        # Redis from source, fails on ubuntu-latest). Docs only need astro + sharp,
+        # neither of which has an install script. Drop it if docs ever gain one.
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Build docs
         working-directory: packages/docs
