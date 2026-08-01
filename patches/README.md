@@ -18,8 +18,8 @@ Same Windows console lifecycle patch as 0.80.6, ported forward unchanged —
 ## @earendil-works/pi-ai@0.82.1
 
 Same intent as 0.80.6 (Anthropic web-search passthrough, Claude Code
-credentials fallback, Ollama Cloud support, retryable-JSON-parse patterns),
-ported to upstream's restructured 0.82.0 layout:
+credentials fallback, retryable-JSON-parse patterns), ported to upstream's
+restructured 0.82.0 layout:
 
 - The Anthropic OAuth module moved from `dist/utils/oauth/anthropic.js` to
   `dist/auth/oauth/anthropic.js`, and its shape changed: the old
@@ -27,22 +27,26 @@ ported to upstream's restructured 0.82.0 layout:
   by `anthropicOAuth.refresh(credential)` on the same `anthropicOAuth` object
   used for login. The Claude Code Keychain/file fallback now lives inside
   that `refresh()` method.
-- `dist/models.generated.js`'s `OLLAMA_CLOUD_MODELS` constant is now exported
-  (it was module-private in 0.80.6) so the new provider factory below can
-  import it.
-- **New in 0.82.0:** upstream restructured how built-in providers register —
-  `dist/providers/all.js`'s `builtinProviders()` now assembles one `Provider`
-  object (id, name, baseUrl, auth, models, api) per provider, rather than
-  coding-agent statically listing provider display names
-  (`provider-display-names.js`, removed upstream — see the pi-coding-agent
-  entry below). This patch adds an `ollamaCloudProvider()` factory function to
-  `dist/providers/all.js` (and its `.d.ts`) following the same pattern as
-  `openrouterProvider()`/`togetherProvider()`, registers it in
-  `builtinProviders()`, and exports `OLLAMA_CLOUD_MODELS`/adds an
-  `ollama-cloud` entry to `models.generated.d.ts` so the factory type-checks.
-  It's inlined into the existing `all.js` file rather than a new
-  `providers/ollama-cloud.js` file for the same `bun patch`-can't-add-nested-
-  files reason as `OLLAMA_CLOUD_MODELS` itself (see the 0.80.6 note below).
+
+**Ollama Cloud is no longer part of this patch (Task 0.2, Godmother idea
+Uq2WsWiW).** Earlier revisions inlined an `ollamaCloudProvider()` factory
+into `dist/providers/all.js`, an `OLLAMA_CLOUD_MODELS` catalog into
+`dist/models.generated.js`, an `OLLAMA_API_KEY` mapping into
+`dist/env-api-keys.js`, and an `ollama-cloud` `KnownProvider` entry into
+`dist/types.d.ts`. All four hunks were fully replaceable by pi's public
+`pi.registerProvider()` extension API, so they were dropped from the patch
+and replaced with a bundled PizzaPi extension
+(`packages/cli/src/extensions/ollama-cloud-provider.ts`) that registers the
+same provider (baseUrl, `apiKey: "$OLLAMA_API_KEY"`, `api:
+"openai-completions"`) plus a static fallback model catalog
+(`packages/cli/src/ollama-cloud-fallback-models.ts`, same data the patch used
+to inline) at extension-load time — before pi's `bindCore()` flushes queued
+provider registrations, so `--provider ollama-cloud`, `pizza models`, and the
+web model selector see the provider and models with zero network. Live
+discovery (`packages/cli/src/ollama-cloud-models.ts`, 24h cache) then
+refreshes the catalog as before. See `packages/cli/src/ollama-provider.test.ts`
+for the functional tests and `packages/cli/src/patches.test.ts` for the
+assertions that the pi-ai patch no longer carries any ollama-cloud hunks.
 
 **What it changes:**
 
@@ -50,11 +54,6 @@ ported to upstream's restructured 0.82.0 layout:
 |------|--------|
 | `dist/api/anthropic-messages.js` | Same Anthropic web-search patch as 0.80.6 (unchanged file) |
 | `dist/auth/oauth/anthropic.js` | Claude Code Keychain/file credentials fallback, now inside `anthropicOAuth.refresh()` |
-| `dist/env-api-keys.js` | Same `OLLAMA_API_KEY` recognition as 0.80.6 (unchanged file) |
-| `dist/models.generated.js` | Same `OLLAMA_CLOUD_MODELS` catalog as 0.80.6, now exported |
-| `dist/models.generated.d.ts` | Same `ollama-cloud` typing as 0.80.6 (unchanged file) |
-| `dist/providers/all.js` / `.d.ts` | **New**: `ollamaCloudProvider()` factory, registered in `builtinProviders()` |
-| `dist/types.d.ts` | Same `ollama-cloud` `KnownProvider` addition as 0.80.6 (unchanged file) |
 | `dist/utils/retry.js` | Same retryable-JSON-parse patterns as 0.80.6 (unchanged file) |
 
 ## @earendil-works/pi-coding-agent@0.82.1
@@ -66,8 +65,10 @@ removals absorbed elsewhere rather than restored:
   display names now come from each provider's own `name` field (set at
   registration in pi-ai's `builtinProviders()`) via
   `ModelRegistry.getProviderDisplayName()` → `runtime.getProvider(id)?.name`.
-  The `Ollama Cloud` display name patch moved to the pi-ai `all.js` patch
-  above (`ollamaCloudProvider()`'s `name` field) instead of living here.
+  Ollama Cloud's display name now comes from the `name` field on
+  `ollamaCloudProviderExtension`'s `pi.registerProvider()` call
+  (`packages/cli/src/extensions/ollama-cloud-provider.ts`) instead of any
+  pi-ai or pi-coding-agent patch.
 - **`AuthStorage` (and its associated types) is no longer exported from the
   package root**, and the class itself was rewritten to a plain
   `CredentialStore` (read/list/modify/delete) with all OAuth-refresh/env-

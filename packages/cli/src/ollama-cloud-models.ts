@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
+import { OLLAMA_CLOUD_FALLBACK_MODELS } from "./ollama-cloud-fallback-models.js";
 
 const OLLAMA_CLOUD_MODELS_URL = "https://ollama.com/v1/models";
 const OLLAMA_CLOUD_SHOW_URL = "https://ollama.com/api/show";
@@ -161,6 +162,35 @@ export function toOllamaCloudRuntimeModel(model: OllamaCloudModel): Model<"opena
             maxTokensField: "max_tokens",
         },
     };
+}
+
+/**
+ * The provider config ollamaCloudProviderExtension registers via
+ * pi.registerProvider() inside a live session. Bare ModelRuntime consumers
+ * that never load extensions (models-command.ts, daemon.ts's
+ * listConfiguredModels) call registerOllamaCloudProvider() below with this
+ * same object so they see the same offline fallback catalog and recognize
+ * ollama-cloud credentials (env var or stored) — single source, not a
+ * second copy of the catalog.
+ */
+export const OLLAMA_CLOUD_PROVIDER_CONFIG = {
+    name: "Ollama Cloud",
+    baseUrl: "https://ollama.com/v1",
+    apiKey: "$OLLAMA_API_KEY",
+    api: "openai-completions" as const,
+    models: OLLAMA_CLOUD_FALLBACK_MODELS.map(toOllamaCloudRuntimeModel),
+};
+
+/**
+ * Register the ollama-cloud provider on a bare ModelRuntime/ModelRegistry
+ * (one that didn't go through extension loading). Without this, those
+ * runtimes never learn "ollama-cloud" is a provider at all, so
+ * hasConfiguredAuth() ignores env/stored credentials and getAvailable() has
+ * no offline fallback models — see ollamaCloudProviderExtension for the
+ * live-session equivalent.
+ */
+export function registerOllamaCloudProvider(runtime: { registerProvider(providerId: string, config: unknown): void }): void {
+    runtime.registerProvider("ollama-cloud", OLLAMA_CLOUD_PROVIDER_CONFIG);
 }
 
 export async function fetchOllamaCloudModels(
