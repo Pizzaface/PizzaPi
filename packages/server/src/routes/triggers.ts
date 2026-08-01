@@ -5,6 +5,11 @@
  *   Fires a trigger into a connected session. Supports both session-cookie
  *   auth and API key auth (x-api-key header) for external integrations.
  *
+ * POST /api/sessions/:id/model
+ *   Switches a live session's model. HTTP equivalent of the viewer's
+ *   `model_set` socket event, so runner services can drive it with an API key.
+ *   Body: { provider, modelId }. Requires collab mode; hidden models are blocked.
+ *
  * GET /api/sessions/:id/triggers
  *   Lists recent triggers for a session (from Redis trigger history).
  *
@@ -228,6 +233,66 @@ async function authenticate(req: Request): Promise<{ userId: string; userName: s
 }
 
 export const handleTriggersRoute: RouteHandler = async (req, url) => {
+    // ── POST /api/sessions/:id/model ──────────────────────────────────
+    // Switch a live session's model. Same effect as the viewer's `model_set`
+    // socket event, but reachable with an API key so runner services (the
+    // Discord bridge's /models command) can drive it.
+    const modelMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/model$/);
+    if (modelMatch && req.method === "POST") {
+        const identity = await authenticate(req);
+        if (identity instanceof Response) return identity;
+
+        const sessionId = decodeURIComponent(modelMatch[1]);
+        const targetSession = await getSharedSession(sessionId);
+        // Same 404-for-forbidden shape as the trigger route — do not leak
+        // whether a session exists under another account.
+        if (!targetSession || targetSession.userId !== identity.userId) {
+            return Response.json({ error: "Session not found or not connected" }, { status: 404 });
+        }
+        if (!targetSession.collabMode) {
+            return Response.json({ error: "Session is not in collab mode" }, { status: 409 });
+        }
+
+        let body: { provider?: unknown; modelId?: unknown };
+        try {
+            body = await req.json() as typeof body;
+        } catch {
+            return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+        }
+
+        const provider = typeof body.provider === "string" ? body.provider.trim() : "";
+        const modelId = typeof body.modelId === "string" ? body.modelId.trim() : "";
+        if (!provider || !modelId) {
+            return Response.json({ error: "Missing 'provider' or 'modelId'" }, { status: 400 });
+        }
+
+        // Hard-block hidden models, same rule as the spawn route and the
+        // viewer's model_set handler. Fresh DB read — env copies go stale.
+        try {
+            const hiddenModels = await getHiddenModels(identity.userId);
+            if (isHiddenModel(hiddenModels, { provider, id: modelId })) {
+                log.warn(`blocked model switch to hidden model ${provider}/${modelId} on ${sessionId}`);
+                return Response.json({ error: "Model not available" }, { status: 403 });
+            }
+        } catch {
+            // Lookup failure falls through — the worker-side guard still applies.
+        }
+
+        const targetSocket = getLocalTuiSocket(sessionId);
+        if (targetSocket?.connected) {
+            targetSocket.emit("model_set", { provider, modelId });
+            return Response.json({ ok: true, provider, modelId });
+        }
+
+        const delivered = await emitToRelaySessionVerified(sessionId, "model_set", { provider, modelId });
+        if (delivered) return Response.json({ ok: true, provider, modelId });
+
+        return Response.json(
+            { error: "Session is registered but not currently connected" },
+            { status: 503 },
+        );
+    }
+
     // ── POST /api/sessions/:id/trigger ────────────────────────────────
     const postMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/trigger$/);
     if (postMatch && req.method === "POST") {

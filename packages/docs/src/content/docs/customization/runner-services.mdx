@@ -764,13 +764,48 @@ The service owns the mapping and is responsible for its whole lifecycle:
   session is gone. Drop the binding rather than silently swallowing every
   subsequent message.
 
+### Driving the session from the far side
+
+A connectivity service usually wants to *control* the session, not just relay
+text. Most of that already exists over HTTP with API-key auth:
+
+| Action | Endpoint |
+|--------|----------|
+| Spawn a session | `POST /api/runners/:runnerId/spawn` |
+| Send input to a session | `POST /api/sessions/:id/trigger` |
+| List sessions | `GET /api/sessions` |
+| List models | `GET /api/runners/:runnerId/models` |
+| Switch a session's model | `POST /api/sessions/:id/model` |
+
+<Aside type="note" title="requireSession() accepts API keys">
+Despite the name, `requireSession()` falls back to `validateApiKey()`, so routes
+using it are already reachable from a runner service. Check before adding an
+auth shim — the endpoint you want probably works with `x-api-key` today.
+</Aside>
+
+Anything a *viewer* drives over a socket event has no HTTP equivalent unless one
+is added. `POST /api/sessions/:id/model` exists precisely because switching a
+live model was viewer-only (`model_set`), and a runner service is not a viewer.
+There is still no HTTP route to stop a session — `kill_session` is
+server→runner only.
+
 ### Worked example
 
 The Discord bridge implements exactly this pattern — one gateway connection for
-the runner, thread-per-session bindings, session spawning from a mention, and a
-panel for status and controls. Its session-side half is
+the runner, thread-per-session bindings, session spawning from a mention, native
+slash commands, and a panel for status and controls. Its session-side half is
 `packages/cli/src/extensions/discord-mirror.ts`, which forwards each settled
 assistant turn and nothing else.
+
+Commands that pick from a list render a **select menu** rather than asking the
+user to type an exact id — `/models` shows the available models with the current
+one preselected, `/sessions` binds the thread to a running session. Two details
+worth copying:
+
+- **Defer before any network call.** Discord expires an interaction after 3
+  seconds, so `deferReply()` first and `editReply()` once the data arrives.
+- **Encode the target in `custom_id`.** The menu carries the thread it was built
+  for, so a stale menu left open elsewhere cannot retarget a different binding.
 
 ---
 
