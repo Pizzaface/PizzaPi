@@ -78,12 +78,15 @@ async function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function createSetupClaim(relayUrl: string): Promise<{ token: string; expiresAt: string } | { error: string }> {
+async function createSetupClaim(relayUrl: string, label?: string): Promise<{ token: string; expiresAt: string } | { error: string }> {
     try {
         const res = await fetch(`${relayUrl}/api/setup-claim`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ relayUrl }),
+            // `label` is a newer field (identifies the runner on the approval page
+            // and the minted key) — omit it when unset so older relays that don't
+            // know about it still get the exact same request body as before.
+            body: JSON.stringify(label ? { relayUrl, label } : { relayUrl }),
         });
         const json = (await res.json()) as { token?: string; expiresAt?: string; error?: string };
         if (!res.ok || !json.token) return { error: json.error ?? `HTTP ${res.status}` };
@@ -173,6 +176,82 @@ export async function runQrSetup(relayUrl: string, pollIntervalMs = 2000): Promi
     log.info("");
     log.error("Setup claim expired before approval. Please try again.\n");
     return false;
+}
+
+/**
+ * Non-interactive claim + poll flow, for contexts where readline prompts
+ * aren't usable (e.g. `pizza runner` auto-pairing in a container). Reuses
+ * the same `/api/setup-claim` endpoints as the interactive QR flow but
+ * never touches stdin, and leaves persistence to the caller — unlike
+ * `runQrSetup`, which saves straight to ~/.pizzapi/config.json, a headless
+ * runner may need to save into a different (configured) agent dir.
+ *
+ * Prints the QR code once and the approval URL immediately, then re-prints
+ * just the URL every `reprintIntervalMs` (~1 min) so it's visible again to
+ * an operator who runs `docker logs --tail` after the fact.
+ */
+export async function requestHeadlessPairing(
+    relayUrl: string,
+    opts: {
+        label?: string;
+        pollIntervalMs?: number;
+        maxWaitMs?: number;
+        reprintIntervalMs?: number;
+        /** Fired once the claim exists, before the wait loop starts. */
+        onClaim?: (info: { claimUrl: string; expiresAt: string }) => void;
+    } = {},
+): Promise<{ apiKey: string; relayUrl: string } | { error: string }> {
+    const claim = await createSetupClaim(relayUrl, opts.label);
+    if ("error" in claim) {
+        return { error: `Could not create setup claim: ${claim.error}` };
+    }
+
+    const claimUrl = qrCodeUrl(relayUrl, claim.token);
+    const wsRelayUrl = relayUrl.replace(/^http/, "ws");
+    opts.onClaim?.({ claimUrl, expiresAt: claim.expiresAt });
+
+    const printUrl = () => {
+        log.info(`${c.dim("Approve this runner at:")} ${c.accent(claimUrl)}`);
+    };
+
+    log.info("Scan this QR code with an authenticated PizzaPi web browser, or open the URL below:");
+    log.info("");
+    try {
+        const qr = await qrcode.toString(claimUrl, { type: "terminal", small: true });
+        log.info(qr);
+    } catch (err) {
+        log.warn("Could not render QR code; use the URL below.", err instanceof Error ? err.message : String(err));
+    }
+    printUrl();
+    log.info(c.dim("Waiting for approval\u2026 (expires in 10 minutes)"));
+
+    const pollIntervalMs = opts.pollIntervalMs ?? 2000;
+    const maxWaitMs = opts.maxWaitMs ?? 10 * 60 * 1000;
+    const reprintIntervalMs = opts.reprintIntervalMs ?? 60_000;
+    const startedAt = Date.now();
+    let lastPrint = startedAt;
+
+    while (Date.now() - startedAt < maxWaitMs) {
+        await sleep(pollIntervalMs);
+        if (Date.now() - lastPrint >= reprintIntervalMs) {
+            printUrl();
+            lastPrint = Date.now();
+        }
+        const result = await pollSetupClaim(relayUrl, claim.token);
+        if ("error" in result) {
+            log.warn(`Poll failed: ${result.error}`);
+            continue;
+        }
+        if (result.status === "approved" && result.apiKey) {
+            log.info(`${c.success("\u2713")} Device approved\n`);
+            return { apiKey: result.apiKey, relayUrl: wsRelayUrl };
+        }
+        if (result.status === "expired" || result.status === "redeemed") {
+            return { error: `Setup claim ${result.status}` };
+        }
+    }
+
+    return { error: "Setup claim expired before approval" };
 }
 
 /**

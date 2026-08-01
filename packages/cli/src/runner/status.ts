@@ -12,7 +12,9 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { c } from "../cli-colors.js";
+import { resolveAgentDir } from "../config.js";
 import { defaultStatePath, isPidRunning, type RunnerState } from "./runner-state.js";
+import { pairingStatusPath, readPairingStatus, type PairingStatus } from "./pairing.js";
 import { formatDuration } from "./services/time-utils.js";
 
 export interface RunnerStatusResult {
@@ -25,6 +27,8 @@ export interface RunnerStatusResult {
     pid?: number;
     startedAt?: string;
     cliVersion?: string;
+    /** Set only while an auto-pairing claim is pending approval. */
+    pairingUrl?: string;
 }
 
 /**
@@ -34,8 +38,20 @@ export interface RunnerStatusResult {
 export function evaluateRunnerStatus(
     state: Partial<RunnerState> | null,
     isAlive: (pid: number) => boolean,
+    pairing?: PairingStatus | null,
 ): RunnerStatusResult {
     if (!state) {
+        // Auto-pairing runs before the daemon (and its state file) exist, so a
+        // pending claim is the only thing that can explain "no state" without
+        // it just meaning "never started".
+        if (pairing) {
+            return {
+                healthy: false,
+                reason: `pairing pending — approve at ${pairing.claimUrl}`,
+                connected: false,
+                pairingUrl: pairing.claimUrl,
+            };
+        }
         return { healthy: false, reason: "no runner state file found", connected: false };
     }
 
@@ -73,7 +89,8 @@ export async function runStatus(args: string[] = []): Promise<number> {
     const asJson = args.includes("--json");
     const statePath = defaultStatePath();
     const state = readState(statePath);
-    const result = evaluateRunnerStatus(state, isPidRunning);
+    const pairing = state ? null : readPairingStatus(pairingStatusPath(resolveAgentDir()));
+    const result = evaluateRunnerStatus(state, isPidRunning, pairing);
 
     if (asJson) {
         console.log(JSON.stringify(result, null, 2));

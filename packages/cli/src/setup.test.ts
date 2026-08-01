@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { runQrSetup, qrCodeUrl } from "./setup.js";
+import { runQrSetup, qrCodeUrl, requestHeadlessPairing } from "./setup.js";
 import qrcode from "qrcode";
 import { _setGlobalConfigDir } from "./config/io.js";
 
@@ -100,6 +100,72 @@ describe("QR setup", () => {
         try {
             const ok = await runQrSetup(relayUrl, 10);
             expect(ok).toBe(false);
+        } finally {
+            globalThis.fetch = originalFetch;
+        }
+    });
+
+    test("requestHeadlessPairing sends the label, reports the claim URL, and resolves on approval", async () => {
+        const relayUrl = "http://localhost:7999";
+        const token = "headless-token";
+        const apiKey = "1".repeat(64);
+        let sentBody: any = null;
+        let pollCount = 0;
+
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = input.toString();
+            if (url === `${relayUrl}/api/setup-claim`) {
+                sentBody = JSON.parse(init?.body as string);
+                return new Response(JSON.stringify({ token, expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString() }), {
+                    status: 200,
+                    headers: { "content-type": "application/json" },
+                });
+            }
+            if (url === `${relayUrl}/api/setup-claim/${token}`) {
+                pollCount++;
+                if (pollCount < 2) return new Response(JSON.stringify({ status: "pending" }), { status: 200 });
+                return new Response(JSON.stringify({ status: "approved", apiKey }), { status: 200 });
+            }
+            return originalFetch(input, init);
+        }) as typeof fetch;
+
+        try {
+            let claimSeen: { claimUrl: string; expiresAt: string } | null = null;
+            const result = await requestHeadlessPairing(relayUrl, {
+                label: "my-runner",
+                pollIntervalMs: 5,
+                onClaim: (info) => { claimSeen = info; },
+            });
+            expect(sentBody).toEqual({ relayUrl, label: "my-runner" });
+            expect(claimSeen).not.toBeNull();
+            expect(claimSeen!.claimUrl).toBe(`${relayUrl}/setup-claim?t=${token}`);
+            expect(result).toEqual({ apiKey, relayUrl: "ws://localhost:7999" });
+        } finally {
+            globalThis.fetch = originalFetch;
+        }
+    });
+
+    test("requestHeadlessPairing never touches saveGlobalConfig or process.env — persistence is the caller's job", async () => {
+        const relayUrl = "http://localhost:7999";
+        const token = "headless-token-2";
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = (async (input: RequestInfo | URL) => {
+            const url = input.toString();
+            if (url === `${relayUrl}/api/setup-claim`) {
+                return new Response(JSON.stringify({ token, expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString() }), { status: 200 });
+            }
+            if (url === `${relayUrl}/api/setup-claim/${token}`) {
+                return new Response(JSON.stringify({ status: "expired" }), { status: 200 });
+            }
+            return originalFetch(input);
+        }) as typeof fetch;
+
+        try {
+            delete process.env.PIZZAPI_API_KEY;
+            const result = await requestHeadlessPairing(relayUrl, { pollIntervalMs: 5 });
+            expect("error" in result).toBe(true);
+            expect(process.env.PIZZAPI_API_KEY).toBeUndefined();
         } finally {
             globalThis.fetch = originalFetch;
         }

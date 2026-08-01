@@ -48,6 +48,23 @@ describe("evaluateRunnerStatus", () => {
         expect(result.healthy).toBe(false);
         expect(result.reason).toBe("process not running");
     });
+
+    test("unhealthy: pairing pending (no state file yet)", () => {
+        const result = evaluateRunnerStatus(null, alive, {
+            claimUrl: "http://relay/setup-claim?t=abc",
+            relayUrl: "http://relay",
+            startedAt: "2024-01-01T00:00:00.000Z",
+        });
+        expect(result.healthy).toBe(false);
+        expect(result.reason).toContain("pairing pending");
+        expect(result.pairingUrl).toBe("http://relay/setup-claim?t=abc");
+    });
+
+    test("no state and no pairing file: unchanged generic reason", () => {
+        const result = evaluateRunnerStatus(null, alive, null);
+        expect(result.reason).toBe("no runner state file found");
+        expect(result.pairingUrl).toBeUndefined();
+    });
 });
 
 describe("patchRunnerState", () => {
