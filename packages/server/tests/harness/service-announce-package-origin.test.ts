@@ -119,28 +119,23 @@ describe("package-origin service_announce integration", () => {
                     triggerDefs: [PACKAGE_TRIGGER],
                     sigilDefs: [PACKAGE_SIGIL],
                 });
-                const session = await scenario.addSession({ cwd: "/tmp/test" });
-                runner.emitSessionReady(session.sessionId);
-                // Attach a viewer solely to know the announce has round-tripped
-                // through the server (and therefore been persisted) before we GET.
-                const viewer = await scenario.addViewer(session.sessionId);
-                await new Promise<void>((resolve, reject) => {
-                    const timer = setTimeout(() => reject(new Error("timed out waiting for service_announce")), 8000);
-                    viewer.socket.on("service_announce", (data) => {
-                        if ((data as ServiceAnnounceData).serviceIds.includes(PACKAGE_SERVICE_ID)) {
-                            clearTimeout(timer);
-                            resolve();
+                let body: ServiceAnnounceData | undefined;
+                for (let attempt = 0; attempt < 80; attempt++) {
+                    const res = await server.fetch(`/api/runners/${encodeURIComponent(runner.runnerId)}/services`);
+                    if (res.status === 200) {
+                        const candidate = await res.json() as ServiceAnnounceData;
+                        if (candidate.serviceIds.includes(PACKAGE_SERVICE_ID)) {
+                            body = candidate;
+                            break;
                         }
-                    });
-                });
+                    }
+                    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+                }
 
-                const res = await server.fetch(`/api/runners/${encodeURIComponent(runner.runnerId)}/services`);
-                expect(res.status).toBe(200);
-                const body = await res.json() as ServiceAnnounceData;
-                expect(body.serviceIds).toContain(PACKAGE_SERVICE_ID);
-                expect(body.panels).toContainEqual(PACKAGE_PANEL);
-                expect(body.triggerDefs).toContainEqual(PACKAGE_TRIGGER);
-                expect(body.sigilDefs).toContainEqual(PACKAGE_SIGIL);
+                expect(body).toBeDefined();
+                expect(body!.panels).toContainEqual(PACKAGE_PANEL);
+                expect(body!.triggerDefs).toContainEqual(PACKAGE_TRIGGER);
+                expect(body!.sigilDefs).toContainEqual(PACKAGE_SIGIL);
             } finally {
                 await scenario.teardown();
                 await cleanupServer(server);

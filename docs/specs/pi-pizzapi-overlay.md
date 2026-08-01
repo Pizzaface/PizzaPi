@@ -190,11 +190,12 @@ Pi 0.82.1 has no native `pi.agents` package resource, while PizzaPi's subagent r
 #### `mcp`
 
 - One explicit package-relative JSON path.
-- The file uses PizzaPi's existing preferred `mcp.servers` array or compatibility `mcpServers` object format.
+- The file uses PizzaPi's existing preferred `mcp.servers` array or compatibility `mcpServers` object format. Preferred entries MUST explicitly set `transport` to `stdio`, `http`, or `streamable`: `stdio` requires `command`; `http`/`streamable` require `url`; command and URL fields cannot be mixed. Compatibility entries retain URL-first transport inference.
 - One file can declare multiple servers; an array of config paths is unnecessary in version 1.
 - Explicit user/project PizzaPi config wins a server-name collision over package MCP config.
 - Between packages, project scope wins user scope, then settings order wins; later duplicates are warned and skipped.
 - Existing `disabledMcpServers` behavior applies by server name.
+- In a `pi.pizzapi.mcp` sidecar only, `@PACKAGE_ROOT@` is replaced with the host-resolved, package-confined installed root after ordinary config-variable expansion. It is supported only in definitions the registry selects as stdio: `command`, `cwd`, string `args` entries, and string `env` values. URL definitions take precedence over incidental stdio fields and remain untouched. It is not available to explicit PizzaPi config or legacy Claude-plugin `.mcp.json` files, and does not apply to URLs, headers, or arbitrary nested values.
 
 A package extension already has arbitrary session-process execution rights. Package agents, MCP, and rules therefore remain session-side capabilities and do not require the separate daemon-service grant described below; agent scope/confirmation rules still apply.
 
@@ -694,3 +695,4 @@ The spec is satisfied when:
 | Service trust | separate global per-package/per-service grants |
 | Compat shim | one release after Godmother and Nightshift migrations, then removal |
 | MCP shape | one explicit config path containing one or more servers |
+| Package MCP root | `@PACKAGE_ROOT@` only in package-sidecar stdio command/cwd/string args/env values; host resolves it after confinement |

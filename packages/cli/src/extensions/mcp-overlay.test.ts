@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createMcpClientsFromConfig } from "./mcp.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runPackageCommand } from "../package-commands.js";
@@ -64,6 +65,143 @@ describe("mergeOverlayMcpServers", () => {
 
         const { config } = mergeOverlayMcpServers({}, cwd, agentDir, true);
         expect(config.mcpServers?.fromPkg).toBeDefined();
+    });
+
+    test("defers @PACKAGE_ROOT@ only for package stdio definitions", async () => {
+        const pkgDir = join(tmpDir, "mcp package root $literal");
+        writeFixturePackage(pkgDir, { schemaVersion: 1, mcp: "./.mcp.json" }, {
+            ".mcp.json": JSON.stringify({
+                mcp: {
+                    servers: [{
+                        name: "preferred",
+                        transport: "stdio",
+                        command: "@PACKAGE_ROOT@/gm",
+                        cwd: "@PACKAGE_ROOT@/work dir",
+                        args: ["--config", "@PACKAGE_ROOT@/config.json", "7"],
+                        env: { CONFIG: "@PACKAGE_ROOT@/config.json", COUNT: "1" },
+                    }],
+                },
+                mcpServers: {
+                    compat: {
+                        command: "@PACKAGE_ROOT@/bin/gm",
+                        cwd: "@PACKAGE_ROOT@/work dir",
+                        args: ["--config=@PACKAGE_ROOT@/config.json", false],
+                        env: { CONFIG: "@PACKAGE_ROOT@/config.json", ENABLED: true },
+                    },
+                    remote: { url: "https://example.test/@PACKAGE_ROOT@", headers: { Path: "@PACKAGE_ROOT@" } },
+                },
+            }),
+        });
+        await install("../mcp package root $literal");
+
+        const { config, serverProvenance } = mergeOverlayMcpServers({}, cwd, agentDir, true);
+        const packageRoot = realpathSync(serverProvenance.find((p) => p.name === "compat")!.sourcePath);
+        expect(packageRoot).toContain("mcp package root $literal");
+        expect((config.mcp?.servers?.[0] as any)).toMatchObject({
+            command: "@PACKAGE_ROOT@/gm",
+            cwd: "@PACKAGE_ROOT@/work dir",
+            args: ["--config", "@PACKAGE_ROOT@/config.json", "7"],
+            env: { CONFIG: "@PACKAGE_ROOT@/config.json", COUNT: "1" },
+        });
+        expect(config.mcpServers?.compat).toMatchObject({
+            command: "@PACKAGE_ROOT@/bin/gm",
+            cwd: "@PACKAGE_ROOT@/work dir",
+            args: ["--config=@PACKAGE_ROOT@/config.json", false],
+            env: { CONFIG: "@PACKAGE_ROOT@/config.json", ENABLED: true },
+        });
+        expect(config.mcpServers?.remote).toEqual({ url: "https://example.test/@PACKAGE_ROOT@", headers: { Path: "@PACKAGE_ROOT@" } });
+    });
+
+    test("does not materialize package roots in URL definitions with incidental stdio fields", async () => {
+        const pkgDir = join(tmpDir, "mcp-http-with-stdio");
+        writeFixturePackage(pkgDir, { schemaVersion: 1, mcp: "./.mcp.json" }, {
+            ".mcp.json": JSON.stringify({
+                mcpServers: {
+                    remote: {
+                        url: "https://example.test/@PACKAGE_ROOT@",
+                        type: "sse",
+                        command: "@PACKAGE_ROOT@/must-not-run",
+                        args: ["@PACKAGE_ROOT@/arg"],
+                        cwd: "@PACKAGE_ROOT@/cwd",
+                        env: { ROOT: "@PACKAGE_ROOT@" },
+                    },
+                },
+            }),
+        });
+        await install("../mcp-http-with-stdio");
+
+        const { config } = mergeOverlayMcpServers({}, cwd, agentDir, true);
+        expect(config.mcpServers?.remote).toEqual({
+            url: "https://example.test/@PACKAGE_ROOT@",
+            type: "sse",
+            command: "@PACKAGE_ROOT@/must-not-run",
+            args: ["@PACKAGE_ROOT@/arg"],
+            cwd: "@PACKAGE_ROOT@/cwd",
+            env: { ROOT: "@PACKAGE_ROOT@" },
+        });
+    });
+
+    test("preserves literal config tokens in the installed root through stdio construction", async () => {
+        const pkgDir = join(tmpDir, "mcp-@HOME@-@PROJECT_DIR@");
+        const server = `#!${process.execPath}\nconst snapshot = () => ({ command: process.argv[1], args: process.argv.slice(2), cwd: process.cwd(), root: process.env.ROOT });\nlet buffer = \"\";\nprocess.stdin.on(\"data\", (chunk) => { buffer += chunk; for (;;) { const end = buffer.indexOf(\"\\n\"); if (end < 0) return; const line = buffer.slice(0, end); buffer = buffer.slice(end + 1); const message = JSON.parse(line); if (message.method === \"initialize\") process.stdout.write(JSON.stringify({ jsonrpc: \"2.0\", id: message.id, result: { protocolVersion: \"2025-03-26\", capabilities: {}, serverInfo: { name: \"fixture\", version: \"1\" } } }) + \"\\n\"); else if (message.method === \"tools/list\") process.stdout.write(JSON.stringify({ jsonrpc: \"2.0\", id: message.id, result: { tools: [{ name: \"details\", description: JSON.stringify(snapshot()) }] } }) + \"\\n\"); } });\n`;
+        writeFixturePackage(pkgDir, { schemaVersion: 1, mcp: "./.mcp.json" }, {
+            ".mcp.json": JSON.stringify({
+                mcpServers: {
+                    fixture: {
+                        command: "@PACKAGE_ROOT@/stdio-server.js",
+                        args: ["@PACKAGE_ROOT@/argument"],
+                        cwd: "@PACKAGE_ROOT@",
+                        env: { ROOT: "@PACKAGE_ROOT@" },
+                    },
+                },
+            }),
+            "stdio-server.js": server,
+        });
+        chmodSync(join(pkgDir, "stdio-server.js"), 0o755);
+        await install("../mcp-@HOME@-@PROJECT_DIR@");
+
+        const { config, serverProvenance } = mergeOverlayMcpServers({}, cwd, agentDir, true);
+        const packageRoot = realpathSync(serverProvenance.find((p) => p.name === "fixture")!.sourcePath);
+        const clients = await createMcpClientsFromConfig(config as any);
+        try {
+            const [tool] = await clients[0].listTools();
+            expect(JSON.parse(tool.description!)).toEqual({
+                command: `${packageRoot}/stdio-server.js`,
+                args: [`${packageRoot}/argument`],
+                cwd: packageRoot,
+                root: packageRoot,
+            });
+        } finally {
+            clients[0].close();
+        }
+    });
+
+    test("leaves @PACKAGE_ROOT@ untouched in explicit config and legacy plugin MCP definitions", async () => {
+        installLegacyPlugin("package-root-legacy", { legacy: { command: "@PACKAGE_ROOT@/legacy", args: ["@PACKAGE_ROOT@"] } });
+        const base = { mcpServers: { explicit: { command: "@PACKAGE_ROOT@/explicit", env: { ROOT: "@PACKAGE_ROOT@" } } } };
+
+        const { config } = mergeOverlayMcpServers(base, cwd, agentDir, true);
+        expect(config.mcpServers?.explicit).toEqual(base.mcpServers.explicit);
+        expect(config.mcpServers?.legacy).toEqual({ command: "@PACKAGE_ROOT@/legacy", args: ["@PACKAGE_ROOT@"] });
+    });
+
+    test("collision winner alone materializes its package root", async () => {
+        const userPkg = join(tmpDir, "mcp-root-user");
+        writeFixturePackage(userPkg, { schemaVersion: 1, mcp: "./.mcp.json" }, {
+            ".mcp.json": JSON.stringify({ mcpServers: { shared: { command: "@PACKAGE_ROOT@/user" } } }),
+        });
+        await install("../mcp-root-user");
+
+        const projectPkg = join(tmpDir, "mcp-root-project");
+        writeFixturePackage(projectPkg, { schemaVersion: 1, mcp: "./.mcp.json" }, {
+            ".mcp.json": JSON.stringify({ mcpServers: { shared: { command: "@PACKAGE_ROOT@/project" } } }),
+        });
+        await install("../mcp-root-project", { project: true });
+
+        const { config, serverProvenance } = mergeOverlayMcpServers({}, cwd, agentDir, true);
+        expect((config.mcpServers?.shared as any).command).toEndWith("/project");
+        expect((config.mcpServers?.shared as any).command).not.toContain("mcp-root-user");
+        expect(serverProvenance.find((p) => p.name === "shared")?.identity).toContain("mcp-root-project");
     });
 
     test("explicit PizzaPi config always wins a server-name collision over package overlay", async () => {

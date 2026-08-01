@@ -90,6 +90,34 @@ function isValidMcpSidecarShape(parsed: unknown): parsed is Record<string, unkno
 }
 
 /** Extract `{ preferred, compat }` server entries from a parsed mcp sidecar/`.mcp.json` value. */
+const packageMcpRoots = new WeakMap<Record<string, unknown>, string>();
+
+/** Match the registry's URL-first compatibility transport selection. */
+export function resolveMcpCompatTransport(value: Record<string, unknown>): "stdio" | "http" | "streamable" | "unknown" {
+    if (typeof value.url === "string") {
+        return value.transport === "streamable" || (value.type === "http" && value.transport === undefined)
+            ? "streamable"
+            : "http";
+    }
+    return typeof value.command === "string" ? "stdio" : "unknown";
+}
+
+/** Package roots are internal metadata, not a config field. */
+export function getPackageMcpRoot(server: unknown): string | undefined {
+    return isRecord(server) ? packageMcpRoots.get(server) : undefined;
+}
+
+/**
+ * Preserve @PACKAGE_ROOT@ until the stdio transport expands the definition.
+ * That inserts the canonical root after ordinary variables, so literal tokens
+ * in an installed path cannot be expanded accidentally.
+ */
+function materializePackageMcpServer(server: Record<string, unknown>, packageRoot: string, isStdio: boolean): Record<string, unknown> {
+    const materialized = { ...server };
+    if (isStdio) packageMcpRoots.set(materialized, packageRoot);
+    return materialized;
+}
+
 function extractServers(parsed: unknown): { preferred: Record<string, unknown>[]; compat: Record<string, Record<string, unknown>> } {
     const preferred: Record<string, unknown>[] = [];
     const compat: Record<string, Record<string, unknown>> = {};
@@ -113,16 +141,7 @@ function extractServers(parsed: unknown): { preferred: Record<string, unknown>[]
  * from an explicit config file or an overlay/legacy sidecar.
  */
 export function inferMcpCompatTransport(value: Record<string, unknown>): string {
-    if (typeof value.command === "string") return "stdio";
-    if (typeof value.url === "string") {
-        // "transport" is our field; "type" is Claude Code / VS Code format.
-        // In the standard MCP ecosystem, type "http" = streamable HTTP.
-        if (typeof value.transport === "string") return value.transport;
-        if (value.type === "http") return "streamable";
-        if (typeof value.type === "string") return value.type;
-        return "http";
-    }
-    return "unknown";
+    return resolveMcpCompatTransport(value);
 }
 
 export function mergeOverlayMcpServers(
@@ -195,8 +214,13 @@ export function mergeOverlayMcpServers(
         for (const pkg of packages.filter((p) => p.scope === scope)) {
             if (!pkg.overlay.mcp) continue;
             const resolved = resolveConfinedPath(pkg.installedPath, pkg.overlay.mcp);
+            const packageRoot = resolveConfinedPath(pkg.installedPath, ".");
             if (!resolved.ok) {
                 log.warn(`[${pkg.identity}] mcp sidecar failed re-validation: ${resolved.message}`);
+                continue;
+            }
+            if (!packageRoot.ok) {
+                log.warn(`[${pkg.identity}] package root failed re-validation: ${packageRoot.message}`);
                 continue;
             }
             const parsed = readJsonCapped(resolved.absolutePath);
@@ -209,7 +233,13 @@ export function mergeOverlayMcpServers(
                 continue;
             }
             const { preferred, compat } = extractServers(parsed);
-            addPass(scope, pkg.identity, pkg.installedPath, preferred, compat);
+            addPass(
+                scope,
+                pkg.identity,
+                pkg.installedPath,
+                preferred.map((server) => materializePackageMcpServer(server, packageRoot.absolutePath, server.transport === "stdio")),
+                Object.fromEntries(Object.entries(compat).map(([name, server]) => [name, materializePackageMcpServer(server, packageRoot.absolutePath, resolveMcpCompatTransport(server) === "stdio")])),
+            );
         }
     }
 
