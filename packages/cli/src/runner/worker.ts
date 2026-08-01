@@ -827,12 +827,27 @@ async function main(): Promise<void> {
 
     process.on("SIGTERM", shutdown);
     process.on("SIGINT", shutdown);
+    // Set when the daemon is restarting intentionally: the IPC channel closes but
+    // the next daemon re-adopts us, so we must NOT exit.
+    let detached = false;
     // Windows: the daemon can't deliver a catchable SIGTERM (kill() there is an
     // immediate TerminateProcess) — it sends a shutdown request over IPC instead.
     process.on("message", (msg: unknown) => {
-        if (typeof msg === "object" && msg !== null && (msg as Record<string, unknown>).type === "shutdown") {
-            void shutdown();
+        if (typeof msg !== "object" || msg === null) return;
+        const type = (msg as Record<string, unknown>).type;
+        if (type === "shutdown") void shutdown();
+        if (type === "detach") detached = true;
+    });
+
+    // Daemon died (crash, SIGKILL, or clean exit) — the IPC channel closes.
+    // Sessions do not outlive their runner unless it told us it's coming back.
+    process.on("disconnect", () => {
+        if (detached) {
+            logInfo("[worker] daemon detached for restart; staying alive");
+            return;
         }
+        logInfo("[worker] daemon gone; shutting down");
+        void shutdown();
     });
 
     // Keep the process alive; work happens via relay/websocket events.
