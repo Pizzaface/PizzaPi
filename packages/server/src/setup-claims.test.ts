@@ -9,6 +9,7 @@ import {
     pollSetupClaim,
     approveSetupClaim,
     sweepExpiredSetupClaims,
+    getSetupClaimInfo,
 } from "./setup-claims.js";
 import { runWithAuthContext } from "./auth.js";
 
@@ -211,6 +212,57 @@ describe("setup-claims store", () => {
             const second = await pollSetupClaim(token);
             expect(second!.status).toBe("redeemed");
             expect(second!.label).toBe("docker-demo-runner");
+        });
+    });
+
+    // Regression: the web UI reads label/status via getSetupClaimInfo (the
+    // /info route), which must be safe to call after approval without
+    // disturbing the CLI's one-shot redeem via pollSetupClaim.
+    test("getSetupClaimInfo never leaks the key and never redeems an approved claim", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492", "docker-demo-runner");
+            const approve = await approveSetupClaim(token, "user-info", "Info");
+            expect(approve).not.toBeNull();
+
+            const info = await getSetupClaimInfo(token);
+            expect(info).not.toBeNull();
+            expect(info!.status).toBe("approved");
+            expect(info!.label).toBe("docker-demo-runner");
+            expect((info as unknown as { apiKey?: string }).apiKey).toBeUndefined();
+
+            // The CLI's poll must still work: first call redeems and returns the key,
+            // second call reports redeemed. getSetupClaimInfo must not have consumed it.
+            const firstPoll = await pollSetupClaim(token);
+            expect(firstPoll!.status).toBe("approved");
+            expect(firstPoll!.apiKey).toBe(approve!.apiKey);
+
+            const secondPoll = await pollSetupClaim(token);
+            expect(secondPoll!.status).toBe("redeemed");
+            expect(secondPoll!.apiKey).toBeUndefined();
+        });
+    });
+
+    test("repeated getSetupClaimInfo reads on an approved claim never redeem it", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492");
+            await approveSetupClaim(token, "user-repeat", "Repeat");
+
+            for (let i = 0; i < 5; i++) {
+                const info = await getSetupClaimInfo(token);
+                expect(info!.status).toBe("approved");
+            }
+
+            // Still approved (not redeemed) after all those reads — the CLI poll
+            // is the only thing allowed to consume it.
+            const info = await getSetupClaimInfo(token);
+            expect(info!.status).toBe("approved");
+        });
+    });
+
+    test("getSetupClaimInfo returns null for an unknown token", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const info = await getSetupClaimInfo("definitely-not-a-token");
+            expect(info).toBeNull();
         });
     });
 });

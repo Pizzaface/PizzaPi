@@ -146,6 +146,31 @@ export async function pollSetupClaim(token: string): Promise<SetupClaimStatus | 
     return { status: row.status, relayUrl: row.relayUrl, label: row.label ?? undefined };
 }
 
+export interface SetupClaimInfo {
+    status: SetupClaimTable["status"] | "expired";
+    label?: string;
+}
+
+/**
+ * Non-consuming read of a claim's status/label, for the web approval UI to
+ * show "what am I approving" before the user clicks. Unlike `pollSetupClaim`
+ * (the CLI's one-shot redeem), this NEVER mutates the row and NEVER returns
+ * the API key — it's safe to call any number of times, including after the
+ * claim has been approved, without disturbing the CLI's pending redemption.
+ */
+export async function getSetupClaimInfo(token: string): Promise<SetupClaimInfo | null> {
+    const row = await getKysely()
+        .selectFrom("setup_claim")
+        .select(["status", "expiresAt", "label"])
+        .where("id", "=", token)
+        .executeTakeFirst();
+
+    if (!row) return null;
+
+    const expired = row.status !== "redeemed" && new Date(row.expiresAt) < new Date();
+    return { status: expired ? "expired" : row.status, label: row.label ?? undefined };
+}
+
 /**
  * Approve a pending claim. Creates an API key for the approving user and stores
  * it on the claim so the polling CLI can redeem it.

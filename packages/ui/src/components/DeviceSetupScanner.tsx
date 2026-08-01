@@ -31,10 +31,15 @@ function extractToken(decodedText: string): string | null {
     return null;
 }
 
-/** Best-effort label lookup for the confirmation screen; never blocks approval. */
+/**
+ * Best-effort label lookup for the confirmation screen; never blocks approval.
+ * Hits the non-consuming /info route — the plain /api/setup-claim/:token route
+ * is a one-shot redeem for the CLI and must never be called from here (doing
+ * so would silently burn the approved key out from under the CLI's poll).
+ */
 async function fetchClaimLabel(token: string): Promise<string | undefined> {
     try {
-        const res = await fetch(`/api/setup-claim/${token}`);
+        const res = await fetch(`/api/setup-claim/${token}/info`);
         if (!res.ok) return undefined;
         const data = (await res.json()) as { label?: string };
         return typeof data.label === "string" && data.label ? data.label : undefined;
