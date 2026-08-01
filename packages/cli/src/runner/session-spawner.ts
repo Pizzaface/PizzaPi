@@ -113,6 +113,7 @@ export function spawnSession(
     onRestartRequested?: () => void,
     options?: {
         prompt?: string;
+        imageUrls?: string[];
         model?: { provider: string; id: string };
         hiddenModels?: string[];
         agent?: { name: string; systemPrompt?: string; tools?: string; disallowedTools?: string };
@@ -211,6 +212,9 @@ export function spawnSession(
         ...(requestedCwd ? { PIZZAPI_WORKER_CWD: requestedCwd } : {}),
         // Initial prompt and model for the new session (set by spawn_session tool).
         ...(options?.prompt ? { PIZZAPI_WORKER_INITIAL_PROMPT: options.prompt } : {}),
+        ...(options?.imageUrls && options.imageUrls.length > 0
+            ? { PIZZAPI_WORKER_INITIAL_IMAGE_URLS: JSON.stringify(options.imageUrls) }
+            : {}),
         ...(options?.model ? {
             PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER: options.model.provider,
             PIZZAPI_WORKER_INITIAL_MODEL_ID: options.model.id,

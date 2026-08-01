@@ -56,7 +56,7 @@ export function mapDiscordPlanReply(text: string): string {
 }
 
 /** Fetch one Discord CDN image URL into an inline image content part. */
-async function fetchImagePart(url: string): Promise<{ type: "image"; mimeType: string; data: string } | null> {
+export async function fetchImagePart(url: string): Promise<{ type: "image"; mimeType: string; data: string } | null> {
     try {
         const res = await fetch(url);
         if (!res.ok) return null;

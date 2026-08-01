@@ -1,7 +1,9 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai/compat";
 import { createLogger } from "@pizzapi/tools";
 import { waitForRelayRegistration } from "./remote.js";
 import { getRemoteSessionHost } from "./remote/session-host-ref.js";
+import { fetchImagePart } from "./remote/connection.js";
 import { waitForWorkerStartupComplete } from "./worker-startup-gate.js";
 import { findCachedOllamaCloudModel } from "../ollama-cloud-models.js";
 
@@ -13,6 +15,7 @@ const log = createLogger("worker");
  *
  * Environment variables:
  *   PIZZAPI_WORKER_INITIAL_PROMPT           — initial user message to send
+ *   PIZZAPI_WORKER_INITIAL_IMAGE_URLS       — JSON array of image URLs to attach to the initial message
  *   PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER   — model provider override
  *   PIZZAPI_WORKER_INITIAL_MODEL_ID         — model ID override
  *   PIZZAPI_WORKER_AGENT_NAME               — agent name (sets session name)
@@ -29,19 +32,31 @@ const log = createLogger("worker");
  */
 export const initialPromptExtension: ExtensionFactory = (pi) => {
     const initialPrompt = process.env.PIZZAPI_WORKER_INITIAL_PROMPT?.trim();
+    const initialImageUrls = ((): string[] => {
+        const raw = process.env.PIZZAPI_WORKER_INITIAL_IMAGE_URLS?.trim();
+        if (!raw) return [];
+        try {
+            const parsed = JSON.parse(raw);
+            return Array.isArray(parsed) ? parsed.filter((u): u is string => typeof u === "string") : [];
+        } catch {
+            return [];
+        }
+    })();
     const initialModelProvider = process.env.PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER?.trim();
     const initialModelId = process.env.PIZZAPI_WORKER_INITIAL_MODEL_ID?.trim();
     const agentName = process.env.PIZZAPI_WORKER_AGENT_NAME?.trim();
     const agentTools = process.env.PIZZAPI_WORKER_AGENT_TOOLS?.trim();
     const agentDisallowedTools = process.env.PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS?.trim();
     const resumePath = process.env.PIZZAPI_WORKER_RESUME_PATH?.trim();
+    const hasInitialContent = Boolean(initialPrompt) || initialImageUrls.length > 0;
 
-    // Nothing to do if no initial prompt, initial model, agent, or resume path was set.
-    if (!initialPrompt && !agentName && !resumePath && !(initialModelProvider && initialModelId)) return;
+    // Nothing to do if no initial prompt/images, initial model, agent, or resume path was set.
+    if (!hasInitialContent && !agentName && !resumePath && !(initialModelProvider && initialModelId)) return;
 
     // Clear prompt/model/resume env vars immediately so restarts don't re-trigger.
     // Agent name is NOT cleared — it should persist across restarts.
     delete process.env.PIZZAPI_WORKER_INITIAL_PROMPT;
+    delete process.env.PIZZAPI_WORKER_INITIAL_IMAGE_URLS;
     delete process.env.PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER;
     delete process.env.PIZZAPI_WORKER_INITIAL_MODEL_ID;
     delete process.env.PIZZAPI_WORKER_RESUME_PATH;
@@ -207,15 +222,29 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
         // start streaming before the startup gate releases, then the buffered
         // user message hits an already-streaming agent with no deliverAs and
         // is silently dropped. See fix/mcp-startup-session-limbo for context.
-        if (initialPrompt) {
+        if (hasInitialContent) {
             void (async () => {
                 try {
                     await Promise.all([
                         waitForRelayRegistration(10_000),
                         waitForWorkerStartupComplete(),
                     ]);
-                    log.info(`pizzapi worker: sending initial prompt (${initialPrompt.length} chars)`);
-                    pi.sendUserMessage(initialPrompt);
+                    if (initialImageUrls.length === 0) {
+                        log.info(`pizzapi worker: sending initial prompt (${initialPrompt!.length} chars)`);
+                        pi.sendUserMessage(initialPrompt!);
+                        return;
+                    }
+                    // Images ride alongside text as content parts — same shape the
+                    // Discord relay uses for mid-conversation image messages.
+                    const parts: (TextContent | ImageContent)[] = [];
+                    if (initialPrompt) parts.push({ type: "text", text: initialPrompt });
+                    for (const url of initialImageUrls.slice(0, 8)) {
+                        const img = await fetchImagePart(url);
+                        if (img) parts.push(img);
+                    }
+                    if (parts.length === 0) return;
+                    log.info(`pizzapi worker: sending initial prompt (${initialPrompt?.length ?? 0} chars, ${initialImageUrls.length} image(s))`);
+                    pi.sendUserMessage(parts);
                 } catch (err) {
                     log.warn(
                         `pizzapi worker: failed to dispatch initial prompt: ${err instanceof Error ? err.message : String(err)}`,
