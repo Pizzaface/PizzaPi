@@ -49,6 +49,17 @@ describe("evaluateRunnerStatus", () => {
         expect(result.reason).toBe("process not running");
     });
 
+    test("unhealthy: relay rejected credentials", () => {
+        const result = evaluateRunnerStatus({ pid: 123, connected: false, authRejected: true }, alive);
+        expect(result.healthy).toBe(false);
+        expect(result.reason).toBe("relay rejected credentials — check PIZZAPI_API_KEY / re-pair");
+    });
+
+    test("authRejected is ignored once actually connected", () => {
+        const result = evaluateRunnerStatus({ pid: 123, connected: true, authRejected: true }, alive);
+        expect(result.healthy).toBe(true);
+    });
+
     test("unhealthy: pairing pending (no state file yet)", () => {
         const result = evaluateRunnerStatus(null, alive, {
             claimUrl: "http://relay/setup-claim?t=abc",

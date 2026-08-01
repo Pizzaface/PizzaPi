@@ -71,6 +71,9 @@ export function evaluateRunnerStatus(
         return { ...base, reason: "process not running" };
     }
     if (state.connected !== true) {
+        if (state.authRejected) {
+            return { ...base, reason: "relay rejected credentials — check PIZZAPI_API_KEY / re-pair" };
+        }
         return { ...base, reason: "not registered with relay" };
     }
     return { ...base, healthy: true };

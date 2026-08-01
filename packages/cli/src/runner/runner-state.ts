@@ -24,7 +24,8 @@ import { logInfo, logError, logWarn } from "./logger.js";
 //     "disconnectedAt": "<iso>", // when the socket last dropped
 //     "relayUrl": "...",       // relay URL the daemon is registered against
 //     "runnerName": "...",     // display name reported at registration
-//     "cliVersion": "..."      // CLI version reported at registration
+//     "cliVersion": "...",     // CLI version reported at registration
+//     "authRejected": false    // true when the relay's last connect attempt rejected our API key
 //   }
 
 export interface RunnerState {
@@ -40,6 +41,8 @@ export interface RunnerState {
     relayUrl?: string;
     runnerName?: string;
     cliVersion?: string;
+    /** True when the relay's last connect attempt rejected our API key (vs. an ordinary network failure). */
+    authRejected?: boolean;
 }
 
 export function defaultStatePath(): string {
