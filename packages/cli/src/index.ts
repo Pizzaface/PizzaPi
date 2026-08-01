@@ -8,15 +8,16 @@ import {
     InteractiveMode,
     readStoredCredential,
     SessionManager,
+    SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { join } from "path";
-import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "./config.js";
+import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv, resolveExplicitProjectTrust } from "./config.js";
 import { isPackageCommand, runPackageCommand } from "./package-commands.js";
 import { getOAuthAccessToken, getAnthropicKeychainToken } from "./runner/usage-auth.js";
 import { c, usageBar, colorPct, colorRemaining } from "./cli-colors.js";
 import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride } from "./skills.js";
-import { getPluginSkillPaths } from "./extensions/claude-plugins.js";
+import { getPluginSkillPaths, getPluginPromptTemplatePaths } from "./extensions/claude-plugins.js";
 import { buildPizzaPiExtensionFactories } from "./extensions/factories.js";
 import { setRemoteSessionHost } from "./extensions/remote/session-host-ref.js";
 import { runtimeSessionHost } from "./runner/session-host.js";
@@ -489,25 +490,41 @@ async function main() {
         process.env.PIZZAPI_RELAY_URL = "off";
     }
 
+    // Explicit, persisted pi project-trust decision for the initial cwd — the
+    // single authority gating native pi project resources (extensions/
+    // skills/prompts) AND the session-side pi.pizzapi overlay (agents/rules/
+    // mcp from project-scope configured packages). Fails closed: an
+    // undecided or explicitly-untrusted repo never auto-executes project
+    // package code. No new trust UI here — pi's own persisted trust.json is
+    // the authority (see config/io.ts resolveExplicitProjectTrust).
+    const projectTrusted = resolveExplicitProjectTrust(cwd, agentDir);
+    const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted });
+
     // Build extension list — includes configured hooks when present.
     const extensionFactories = buildPizzaPiExtensionFactories({
         cwd,
+        agentDir,
         hooks: noHooks ? undefined : config.hooks,
         skipMcp: noMcp,
         skipPlugins: noPlugins,
         skipRelay: noRelay,
         configSkills: config.skills,
+        projectTrusted,
     });
 
     const loader = new DefaultResourceLoader({
         cwd,
         agentDir,
+        settingsManager,
         extensionFactories,
         additionalSkillPaths: [
             ...buildSkillPaths(cwd, config.skills),
             ...(noPlugins ? [] : getPluginSkillPaths(cwd)),
         ],
-        additionalPromptTemplatePaths: buildPromptTemplatePaths(cwd),
+        additionalPromptTemplatePaths: [
+            ...buildPromptTemplatePaths(cwd),
+            ...(noPlugins ? [] : getPluginPromptTemplatePaths(cwd)),
+        ],
         ...(config.systemPrompt !== undefined
             ? { systemPromptOverride: () => config.systemPrompt }
             : {}
@@ -523,16 +540,27 @@ async function main() {
     const sessionManager = SessionManager.create(cwd, join(agentDir, "sessions"));
 
     const createRuntime = async (opts: { cwd: string; agentDir: string; sessionManager: SessionManager }) => {
+        // Re-resolve trust explicitly for THIS cwd/agentDir — createRuntime is
+        // reused across /new, /resume, /fork, and session switches, which can
+        // target a different cwd than the process started in, and pi's own
+        // trust.json can change between calls (e.g. the user trusts the repo
+        // via pi's own flow mid-process).
+        const rtProjectTrusted = resolveExplicitProjectTrust(opts.cwd, opts.agentDir);
+        const rtSettingsManager = SettingsManager.create(opts.cwd, opts.agentDir, { projectTrusted: rtProjectTrusted });
         const services = await createAgentSessionServices({
             cwd: opts.cwd,
             agentDir: opts.agentDir,
+            settingsManager: rtSettingsManager,
             resourceLoaderOptions: {
                 extensionFactories: extensionFactories as any,
                 additionalSkillPaths: [
                     ...buildSkillPaths(opts.cwd, config.skills),
                     ...(noPlugins ? [] : getPluginSkillPaths(opts.cwd)),
                 ],
-                additionalPromptTemplatePaths: buildPromptTemplatePaths(opts.cwd),
+                additionalPromptTemplatePaths: [
+                    ...buildPromptTemplatePaths(opts.cwd),
+                    ...(noPlugins ? [] : getPluginPromptTemplatePaths(opts.cwd)),
+                ],
                 ...(config.systemPrompt !== undefined && {
                     systemPromptOverride: () => config.systemPrompt,
                 }),

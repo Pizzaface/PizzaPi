@@ -381,6 +381,46 @@ describe("built-in agents", () => {
         // No tools restriction — inherits all coding tools
         expect(task!.tools).toBeUndefined();
     });
+
+    test("extraProjectDirs contributes project-scope agents, mirroring extraUserDirs", () => {
+        const overlayAgentsDir = mkdtempSync(join(tmpdir(), "overlay-agents-"));
+        createAgentFile(overlayAgentsDir, "pkg-agent.md", {
+            name: "pkg-agent",
+            description: "From a project-scope package overlay",
+        }, "Body");
+
+        const result = discoverAgents(tmpDir, "project", { extraProjectDirs: [overlayAgentsDir] });
+        const pkgAgent = result.agents.find(a => a.name === "pkg-agent");
+        expect(pkgAgent).toBeDefined();
+        expect(pkgAgent!.source).toBe("project");
+
+        rmSync(overlayAgentsDir, { recursive: true, force: true });
+    });
+
+    test("extraProjectDirs agents are absent under the default agentScope: \"user\"", () => {
+        const overlayAgentsDir = mkdtempSync(join(tmpdir(), "overlay-agents-"));
+        createAgentFile(overlayAgentsDir, "pkg-agent.md", { name: "pkg-agent", description: "desc" }, "Body");
+
+        const result = discoverAgents(tmpDir, "user", { extraProjectDirs: [overlayAgentsDir] });
+        expect(result.agents.find(a => a.name === "pkg-agent")).toBeUndefined();
+
+        rmSync(overlayAgentsDir, { recursive: true, force: true });
+    });
+
+    test("local .pizzapi/agents/ takes precedence over extraProjectDirs on name collision", () => {
+        const agentsDir = join(tmpDir, ".pizzapi", "agents");
+        mkdirSync(agentsDir, { recursive: true });
+        createAgentFile(agentsDir, "dup.md", { name: "dup", description: "Local wins" }, "Body");
+
+        const overlayAgentsDir = mkdtempSync(join(tmpdir(), "overlay-agents-"));
+        createAgentFile(overlayAgentsDir, "dup.md", { name: "dup", description: "Package loses" }, "Body");
+
+        const result = discoverAgents(tmpDir, "project", { extraProjectDirs: [overlayAgentsDir] });
+        const dup = result.agents.find(a => a.name === "dup");
+        expect(dup!.description).toBe("Local wins");
+
+        rmSync(overlayAgentsDir, { recursive: true, force: true });
+    });
 });
 
 describe("formatAgentList", () => {

@@ -12,6 +12,7 @@ import {
 } from "./types.js";
 import { mergeSandboxConfig } from "./sandbox.js";
 import { createLogger } from "@pizzapi/tools";
+import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 
 const log = createLogger("hooks");
 const emittedLoadConfigWarnings = new Set<string>();
@@ -397,6 +398,35 @@ export function expandHome(path: string): string {
 
 export function defaultAgentDir(): string {
     return join(homedir(), ".pizzapi");
+}
+
+/**
+ * Resolve the effective agent dir for `cwd`: `config.agentDir` (expanded)
+ * when set, else `defaultAgentDir()`. Mirrors the pattern already inlined
+ * at each entrypoint (index.ts, runner/worker.ts) — extracted so session
+ * extensions that need `agentDir` outside those entrypoints (overlay
+ * package resolution, MCP overlay merge) resolve it identically rather
+ * than re-deriving it.
+ */
+export function resolveAgentDir(cwd: string = process.cwd()): string {
+    const config = loadConfig(cwd);
+    return config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
+}
+
+/**
+ * Explicit, persisted pi project-trust decision for `cwd` — the single
+ * authority for gating native pi project resources (extensions/skills/
+ * prompts) AND the session-side `pi.pizzapi` overlay (which reuses the same
+ * pi `SettingsManager`/`DefaultPackageManager` resolution — see
+ * overlay/resolve.ts). Fails CLOSED: `null` (never decided) or `false`
+ * (explicitly untrusted) both resolve to untrusted. Mirrors pi's own
+ * `main.js` (`trustStore.get(cwd) === true`) — no PizzaPi-side default-trust
+ * shortcut and no new trust UI here; an already-untrusted repo simply stays
+ * untrusted until the user goes through pi's own trust flow (or trusts it
+ * via pi's CLI/TUI, which writes to the same `trust.json`).
+ */
+export function resolveExplicitProjectTrust(cwd: string, agentDir: string): boolean {
+    return new ProjectTrustStore(agentDir).get(cwd) === true;
 }
 
 // ── Session info variable substitution ─────────────────────────────────────────

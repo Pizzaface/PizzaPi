@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { buildPromptTemplatePaths, buildSkillPaths } from "../skills.js";
-import { getPluginSkillPaths } from "./claude-plugins.js";
+import { getPluginSkillPaths, getPluginPromptTemplatePaths } from "./claude-plugins.js";
 
 /**
  * Resource-paths extension — supplies skill and prompt-template paths via
@@ -50,7 +50,10 @@ export function createResourcePathsExtension(options: {
                     ...buildSkillPaths(cwd, options.configSkills),
                     ...(options.skipPlugins ? [] : getPluginSkillPaths(cwd)),
                 ],
-                promptPaths: buildPromptTemplatePaths(cwd),
+                promptPaths: [
+                    ...buildPromptTemplatePaths(cwd),
+                    ...(options.skipPlugins ? [] : getPluginPromptTemplatePaths(cwd)),
+                ],
             };
         });
     };

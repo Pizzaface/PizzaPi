@@ -1,3 +1,23 @@
+/**
+ * Legacy ExtensionProvider contract — Stage 0 coexistence compatibility
+ * shim (docs/specs/pi-pizzapi-overlay.md §9.1, §12.2). `context` and
+ * `lifecycle` already map 1:1 onto plain pi extension events
+ * (`before_agent_start`, `session_start`/`turn_end`/`session_shutdown` —
+ * see extensions/providers/extension.ts, the thin adapter that already
+ * bridges those events into `ProviderBridge`). `ui-panel` maps onto
+ * `pi.pizzapi.services[].panel` and `metadata` onto ordinary extension
+ * events or a declared service, once a provider migrates to a package.
+ *
+ * There has never been a "custom model provider" capability here — that
+ * always went through `pi.registerProvider()` directly, unaffected by this
+ * migration.
+ *
+ * Full retirement (removing `~/.pizzapi/providers` discovery and this
+ * bridge) waits for Stage 2 (§12.4): one release of deprecation warnings
+ * after installed providers have had a chance to migrate to overlay
+ * packages. This module is the compatibility shim to keep during that
+ * window, not dead code to delete early.
+ */
 export const PROVIDER_CAPABILITIES = [
   "context",
   "lifecycle",

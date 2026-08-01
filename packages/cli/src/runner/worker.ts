@@ -2,9 +2,9 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, readStoredCred
 import { SHELL_PROC_CAPTURE_PREFIX } from "./session-procs.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "../config.js";
+import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv, resolveExplicitProjectTrust } from "../config.js";
 import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride } from "../skills.js";
-import { getPluginSkillPaths } from "../extensions/claude-plugins.js";
+import { getPluginSkillPaths, getPluginPromptTemplatePaths } from "../extensions/claude-plugins.js";
 import { setRegisteredCommandsProvider } from "../extensions/command-introspection.js";
 import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
 import { createBootTimer } from "./boot-timing.js";
@@ -360,24 +360,40 @@ async function main(): Promise<void> {
         sendAgentsMd: config.sendAgentsMd !== false,
     });
 
+    // Explicit, persisted pi project-trust decision for this worker's cwd —
+    // the single authority gating native pi project resources AND the
+    // session-side pi.pizzapi overlay (see index.ts / config/io.ts
+    // resolveExplicitProjectTrust). Built once and reused for both the
+    // resource loader and session creation below so trust can't drift
+    // between the two (previously the loader used an implicitly-trusted
+    // default SettingsManager while session creation built a separate one).
+    const projectTrusted = resolveExplicitProjectTrust(cwd, agentDir);
+    const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted });
+
     bootTimer.start("[boot] resource-loader");
     const loader = new DefaultResourceLoader({
         cwd,
         agentDir,
+        settingsManager,
         extensionFactories: buildPizzaPiExtensionFactories({
             cwd,
+            agentDir,
             hooks: process.env.PIZZAPI_NO_HOOKS === "1" ? undefined : config.hooks,
             includeInitialPrompt: true,
             skipMcp: process.env.PIZZAPI_NO_MCP === "1",
             skipPlugins,
             skipRelay: process.env.PIZZAPI_NO_RELAY === "1",
             configSkills: config.skills,
+            projectTrusted,
         }),
         additionalSkillPaths: [
             ...buildSkillPaths(cwd, config.skills),
             ...(skipPlugins ? [] : getPluginSkillPaths(cwd)),
         ],
-        additionalPromptTemplatePaths: buildPromptTemplatePaths(cwd),
+        additionalPromptTemplatePaths: [
+            ...buildPromptTemplatePaths(cwd),
+            ...(skipPlugins ? [] : getPluginPromptTemplatePaths(cwd)),
+        ],
         ...(config.systemPrompt !== undefined
             ? { systemPromptOverride: () => config.systemPrompt }
             : {}
@@ -440,7 +456,8 @@ async function main(): Promise<void> {
     // applyOverrides, which settingsManager.reload() would wipe) survives
     // reloads and is baked into the bash tool at build time. Unix-only: the
     // prefix uses POSIX shell + $$ and group tracking needs pgrep/ps.
-    const settingsManager = SettingsManager.create(cwd, agentDir);
+    // Reuses the SAME settingsManager the resource loader was built with
+    // (see above) so project trust can't diverge between the two.
     if (process.platform !== "win32") {
         const origGetPrefix = settingsManager.getShellCommandPrefix.bind(settingsManager);
         settingsManager.getShellCommandPrefix = () =>
