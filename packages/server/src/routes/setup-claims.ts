@@ -14,9 +14,11 @@ export const handleSetupClaimsRoute: RouteHandler = async (req, url) => {
     // Create a pending claim (called by the CLI during `pizzapi setup --scan`).
     if (url.pathname === "/api/setup-claim" && req.method === "POST") {
         let relayUrl = "";
+        let label: string | undefined;
         try {
-            const body = (await req.json()) as { relayUrl?: string };
+            const body = (await req.json()) as { relayUrl?: string; label?: string };
             relayUrl = typeof body.relayUrl === "string" ? body.relayUrl.trim() : "";
+            label = typeof body.label === "string" ? body.label : undefined;
         } catch {
             relayUrl = "";
         }
@@ -24,7 +26,7 @@ export const handleSetupClaimsRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Missing required field: relayUrl" }, { status: 400 });
         }
 
-        const { token, expiresAt } = await createSetupClaim(relayUrl);
+        const { token, expiresAt } = await createSetupClaim(relayUrl, label);
         return Response.json({ token, expiresAt });
     }
 

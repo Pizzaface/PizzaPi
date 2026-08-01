@@ -176,6 +176,8 @@ export interface SetupClaimTable {
     expiresAt: string;
     approvedAt: string | null;
     redeemedAt: string | null;
+    /** Operator-facing name for the device/runner being paired (e.g. "docker-demo-runner"). */
+    label: string | null;
 }
 
 export interface MobileLinkTable {

@@ -14,6 +14,8 @@ interface ScannerState {
     message?: string;
     /** Decoded token awaiting explicit user confirmation (kind === "confirm"). */
     token?: string;
+    /** Operator-facing name of the device/runner asking for approval, if the claim has one. */
+    label?: string;
 }
 
 function extractToken(decodedText: string): string | null {
@@ -27,6 +29,18 @@ function extractToken(decodedText: string): string | null {
     const raw = decodedText.trim();
     if (/^[0-9a-f]{64}$/i.test(raw)) return raw;
     return null;
+}
+
+/** Best-effort label lookup for the confirmation screen; never blocks approval. */
+async function fetchClaimLabel(token: string): Promise<string | undefined> {
+    try {
+        const res = await fetch(`/api/setup-claim/${token}`);
+        if (!res.ok) return undefined;
+        const data = (await res.json()) as { label?: string };
+        return typeof data.label === "string" && data.label ? data.label : undefined;
+    } catch {
+        return undefined;
+    }
 }
 
 async function approveClaim(token: string): Promise<{ ok: boolean; error?: string }> {
@@ -75,6 +89,16 @@ export function DeviceSetupScanner({ initialToken, onClose }: { initialToken?: s
         } else {
             setState({ kind: "error", message: result.error });
         }
+    }, []);
+
+    // Show the confirm screen immediately, then fill in the label once it
+    // arrives — never block or fail the confirmation on the label lookup.
+    const requestConfirmation = React.useCallback((token: string) => {
+        setState({ kind: "confirm", token });
+        void fetchClaimLabel(token).then((label) => {
+            if (!label) return;
+            setState((prev) => (prev.kind === "confirm" && prev.token === token ? { ...prev, label } : prev));
+        });
     }, []);
 
     const startScanning = React.useCallback(async () => {
@@ -130,7 +154,7 @@ export function DeviceSetupScanner({ initialToken, onClose }: { initialToken?: s
                     }
                     // Require an explicit confirmation click before approving — a QR
                     // that merely lands in frame must not auto-approve a device.
-                    setState({ kind: "confirm", token });
+                    requestConfirmation(token);
                 },
                 () => {
                     // Scan failures are frequent and noisy; ignore them.
@@ -142,7 +166,7 @@ export function DeviceSetupScanner({ initialToken, onClose }: { initialToken?: s
             setCameraError(`Could not start camera: ${detail}`);
             setState({ kind: "idle" });
         }
-    }, [handleApprove]);
+    }, [requestConfirmation]);
 
     const handleManualSubmit = React.useCallback(
         async (e: React.FormEvent) => {
@@ -176,6 +200,9 @@ export function DeviceSetupScanner({ initialToken, onClose }: { initialToken?: s
                         <p className="text-center text-xs text-muted-foreground">
                             Only approve if you started this setup. Approving grants the device an API key for your account.
                         </p>
+                        {state.label && (
+                            <p className="text-center text-sm font-semibold">{state.label}</p>
+                        )}
                         <code className="max-w-full break-all rounded bg-muted px-2 py-1 text-xs font-mono">{state.token}</code>
                         <div className="mt-2 flex gap-2">
                             <Button variant="outline" onClick={() => setState({ kind: "idle" })}>

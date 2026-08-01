@@ -127,4 +127,90 @@ describe("setup-claims store", () => {
             expect(second).toBeNull();
         });
     });
+
+    test("label is trimmed, persisted, and returned on poll", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492", "  docker-demo-runner  ");
+            const status = await pollSetupClaim(token);
+            expect(status!.label).toBe("docker-demo-runner");
+        });
+    });
+
+    test("hostile label input is stripped to a safe charset and truncated", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const hostile = "<script>alert(1)</script>\x00\x07" + "a".repeat(100);
+            const { token } = await createSetupClaim("http://localhost:7492", hostile);
+            const status = await pollSetupClaim(token);
+            expect(status!.label).toBeDefined();
+            expect(status!.label!.length).toBeLessThanOrEqual(64);
+            // Only letters, digits, space, -, _, . may survive.
+            expect(status!.label!).toMatch(/^[a-zA-Z0-9 _.-]*$/);
+        });
+    });
+
+    test("whitespace-only label is treated as no label", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492", "   ");
+            const status = await pollSetupClaim(token);
+            expect(status!.label).toBeUndefined();
+        });
+    });
+
+    test("no label still behaves exactly as before (relayUrl-only call)", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token, expiresAt } = await createSetupClaim("http://localhost:7492");
+            expect(new Date(expiresAt).getTime()).toBeGreaterThan(Date.now());
+            const status = await pollSetupClaim(token);
+            expect(status!.label).toBeUndefined();
+
+            const approve = await approveSetupClaim(token, "user-nolabel", "NoLabel");
+            expect(approve).not.toBeNull();
+
+            const { getKysely } = await import("./auth.js");
+            const row = await getKysely()
+                .selectFrom("apikey")
+                .select(["name"])
+                .where("name", "=", `setup-claim-${token.slice(0, 8)}`)
+                .executeTakeFirst();
+            expect(row).toBeTruthy();
+
+            const firstPoll = await pollSetupClaim(token);
+            expect(firstPoll!.status).toBe("approved");
+            expect(firstPoll!.apiKey).toBe(approve!.apiKey);
+
+            const redeemed = await pollSetupClaim(token);
+            expect(redeemed!.status).toBe("redeemed");
+        });
+    });
+
+    test("approving a labeled claim names the minted key after the label", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492", "docker-demo-runner");
+            const approve = await approveSetupClaim(token, "user-label", "Labelled");
+            expect(approve).not.toBeNull();
+
+            const { getKysely } = await import("./auth.js");
+            const row = await getKysely()
+                .selectFrom("apikey")
+                .select(["name"])
+                .where("name", "=", "runner-docker-demo-runner")
+                .executeTakeFirst();
+            expect(row).toBeTruthy();
+        });
+    });
+
+    test("label survives the approve -> poll -> redeem cycle", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492", "docker-demo-runner");
+            await approveSetupClaim(token, "user-cycle", "Cycle");
+
+            const first = await pollSetupClaim(token);
+            expect(first!.status).toBe("approved");
+            expect(first!.label).toBe("docker-demo-runner");
+
+            const second = await pollSetupClaim(token);
+            expect(second!.status).toBe("redeemed");
+            expect(second!.label).toBe("docker-demo-runner");
+        });
+    });
 });

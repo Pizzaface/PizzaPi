@@ -52,6 +52,8 @@ beforeAll(() => {
     /* eslint-enable @typescript-eslint/no-explicit-any */
 });
 
+const originalFetch = globalThis.fetch;
+
 afterEach(() => {
     cleanup();
     decodeCallback = null;
@@ -60,6 +62,7 @@ afterEach(() => {
     stopMock.mockClear();
     clearMock.mockClear();
     getCamerasMock.mockClear();
+    globalThis.fetch = originalFetch;
 });
 
 describe("DeviceSetupScanner", () => {
@@ -91,6 +94,39 @@ describe("DeviceSetupScanner", () => {
         await waitFor(() => expect(approveMock).toHaveBeenCalledTimes(1));
         expect(approveMock.mock.calls[0][0]).toContain(`/api/setup-claim/${token}/approve`);
         expect(queryByText("Cancel")).toBeNull();
+    });
+
+    test("shows the claim's label on the confirmation screen when present", async () => {
+        globalThis.fetch = mock().mockResolvedValue(
+            new Response(JSON.stringify({ status: "pending", relayUrl: "http://x", label: "docker-demo-runner" }), { status: 200 }),
+        ) as unknown as typeof fetch;
+
+        const token = "c".repeat(64);
+        const { getByText } = render(<DeviceSetupScanner onClose={() => {}} />);
+
+        fireEvent.click(getByText("Allow Camera & Scan"));
+        await waitFor(() => expect(startMock).toHaveBeenCalledTimes(1));
+
+        decodeCallback!(`http://localhost/?t=${token}`);
+        await waitFor(() => expect(getByText("Approve this device")).toBeDefined());
+        await waitFor(() => expect(getByText("docker-demo-runner")).toBeDefined());
+    });
+
+    test("confirmation screen is unaffected when the claim has no label", async () => {
+        globalThis.fetch = mock().mockResolvedValue(
+            new Response(JSON.stringify({ status: "pending", relayUrl: "http://x" }), { status: 200 }),
+        ) as unknown as typeof fetch;
+
+        const token = "d".repeat(64);
+        const { getByText, queryByText, container } = render(<DeviceSetupScanner onClose={() => {}} />);
+
+        fireEvent.click(getByText("Allow Camera & Scan"));
+        await waitFor(() => expect(startMock).toHaveBeenCalledTimes(1));
+
+        decodeCallback!(`http://localhost/?t=${token}`);
+        await waitFor(() => expect(getByText("Approve this device")).toBeDefined());
+        expect(queryByText("undefined")).toBeNull();
+        expect(container.textContent).not.toContain("undefined");
     });
 
     test("initialToken pre-fills the manual approve input", () => {
