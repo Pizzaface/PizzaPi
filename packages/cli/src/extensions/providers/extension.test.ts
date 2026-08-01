@@ -19,6 +19,37 @@ function writeProvider(homeDir: string, id: string): void {
   `);
 }
 
+function lifecycleProviderSource(id: string, opts: { failDispose?: boolean; deferDispose?: boolean } = {}): string {
+  const { failDispose = false, deferDispose = false } = opts;
+  const deferBlock = deferDispose
+    ? `
+    return new Promise((resolve) => {
+      globalThis.__disposeDeferred = globalThis.__disposeDeferred || {};
+      globalThis.__disposeDeferred[${JSON.stringify(id)}] = resolve;
+    });`
+    : "";
+  const failLine = failDispose ? `throw new Error(${JSON.stringify(`dispose failed: ${id}`)});` : "";
+  // No lifecycle capability declared: these providers only exercise
+  // init()/dispose() tracking, not bridge hooks, so an empty capabilities
+  // array keeps loader validation happy without a throwaway hook method.
+  return `
+export default {
+  id: ${JSON.stringify(id)},
+  capabilities: [],
+  init() {
+    globalThis.__initCalls = globalThis.__initCalls || [];
+    globalThis.__initCalls.push(${JSON.stringify(id)});
+  },
+  dispose() {
+    globalThis.__disposeCalls = globalThis.__disposeCalls || [];
+    globalThis.__disposeCalls.push(${JSON.stringify(id)});
+    ${deferBlock}
+    ${failLine}
+  },
+};
+`;
+}
+
 function writeProviderSource(homeDir: string, id: string, source: string): void {
   const providerDir = join(homeDir, ".pizzapi", "providers", id);
   mkdirSync(providerDir, { recursive: true });
@@ -58,11 +89,17 @@ describe("provider extension", () => {
     process.env.HOME = tmpHome;
     (globalThis as any).__providerInitCalls = [];
     (globalThis as any).__providerExtensionCalls = [];
+    (globalThis as any).__initCalls = [];
+    (globalThis as any).__disposeCalls = [];
+    (globalThis as any).__disposeDeferred = {};
   });
 
   afterEach(() => {
     delete (globalThis as any).__providerInitCalls;
     delete (globalThis as any).__providerExtensionCalls;
+    delete (globalThis as any).__initCalls;
+    delete (globalThis as any).__disposeCalls;
+    delete (globalThis as any).__disposeDeferred;
     process.env.HOME = origHome;
     if (existsSync(tmpHome)) rmSync(tmpHome, { recursive: true, force: true });
   });
@@ -338,6 +375,241 @@ describe("provider extension", () => {
     expect(second?.systemPrompt).not.toContain("Memory for first");
 
     await handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx(cwd));
+  });
+
+  test("forced onSessionShutdown rejection still disposes all providers and resets state", async () => {
+    const cwd = join(tmpHome, "project");
+    mkdirSync(cwd, { recursive: true });
+    writeProviderSource(tmpHome, "shutdown-a", lifecycleProviderSource("shutdown-a"));
+    writeProviderSource(tmpHome, "shutdown-b", lifecycleProviderSource("shutdown-b"));
+    const handlers = await startProviderExtension(cwd);
+
+    const mod = await import("./extension");
+    // ProviderBridge already swallows per-provider onSessionShutdown hook
+    // errors internally, so to exercise the extension's own defensive catch
+    // we swap in a bridge whose onSessionShutdown itself rejects.
+    mod.__setBridgeForTest({
+      onSessionShutdown: async () => {
+        throw new Error("boom");
+      },
+    } as any);
+
+    await handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx(cwd));
+
+    expect(((globalThis as any).__disposeCalls as string[]).sort()).toEqual(["shutdown-a", "shutdown-b"]);
+
+    // bridge/providerInstances were reset despite the rejection.
+    const result = await handlers.get("before_agent_start")?.(
+      { prompt: "hi", images: [], systemPrompt: "line1\nline2\nline3\nline4" },
+      makeCtx(cwd),
+    );
+    expect(result).toBeUndefined();
+  });
+
+  test("a later session initializes cleanly after a failed shutdown", async () => {
+    const cwd = join(tmpHome, "project");
+    mkdirSync(cwd, { recursive: true });
+    writeProviderSource(tmpHome, "shutdown-a", lifecycleProviderSource("shutdown-a"));
+    const handlers = await startProviderExtension(cwd);
+
+    const mod = await import("./extension");
+    mod.__setBridgeForTest({
+      onSessionShutdown: async () => {
+        throw new Error("boom");
+      },
+    } as any);
+    await handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx(cwd));
+
+    (globalThis as any).__initCalls = [];
+    (globalThis as any).__disposeCalls = [];
+
+    // Must not throw, and must not re-dispose an already-cleared instance
+    // from the failed shutdown (session_start's defensive re-init loop runs
+    // over providerInstances, which was already reset to []).
+    await expect(
+      handlers.get("session_start")?.({ reason: "startup" }, makeCtx(cwd)) as Promise<unknown>,
+    ).resolves.toBeUndefined();
+
+    expect((globalThis as any).__initCalls).toEqual(["shutdown-a"]);
+    expect((globalThis as any).__disposeCalls).toEqual([]);
+
+    await handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx(cwd));
+  });
+
+  test("currentSessionInfo does not leak into a subsequent close after a failed shutdown", async () => {
+    const cwd = join(tmpHome, "project");
+    mkdirSync(cwd, { recursive: true });
+    writeProviderSource(tmpHome, "shutdown-a", lifecycleProviderSource("shutdown-a"));
+    const handlers = await startProviderExtension(cwd);
+
+    const mod = await import("./extension");
+    const { ProviderBridge } = await import("../../providers/bridge");
+
+    // Shutdown fails partway through — the claim/reset block must still
+    // clear currentSessionInfo synchronously (before the first await) so a
+    // subsequent close never sees this session's sessionFile/cwd.
+    mod.__setBridgeForTest({
+      onSessionShutdown: async () => {
+        throw new Error("boom");
+      },
+    } as any);
+    await handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx(cwd));
+
+    let seenCtx: { sessionFile?: string; cwd?: string } | undefined;
+    mod.__setBridgeForTest(
+      new ProviderBridge([
+        {
+          id: "close-after-shutdown",
+          capabilities: ["lifecycle"],
+          init: async () => {},
+          dispose: () => {},
+          onSessionClose: async (_event: unknown, ctx: any) => {
+            seenCtx = { sessionFile: ctx.sessionFile, cwd: ctx.cwd };
+            return null;
+          },
+        } as any,
+      ]),
+    );
+
+    // Control env explicitly so the fallback assertion below is
+    // deterministic — PIZZAPI_SESSION_ID/SESSION_ID are commonly set in the
+    // ambient environment (e.g. this suite running inside a real pi
+    // session), which would otherwise leak into the "unknown" fallback.
+    const origPizzapiSessionId = process.env.PIZZAPI_SESSION_ID;
+    const origSessionId = process.env.SESSION_ID;
+    delete process.env.PIZZAPI_SESSION_ID;
+    delete process.env.SESSION_ID;
+    try {
+      await mod.runProviderSessionClose("close");
+    } finally {
+      if (origPizzapiSessionId !== undefined) process.env.PIZZAPI_SESSION_ID = origPizzapiSessionId;
+      if (origSessionId !== undefined) process.env.SESSION_ID = origSessionId;
+    }
+
+    // makeCtx()'s sessionManager.getSessionFile() always returns
+    // "test-session.json" and cwd is always the fixture project dir — if
+    // currentSessionInfo had leaked, ctx would show those stale values here
+    // instead of falling back to sessionId/process.cwd(). Pin the exact
+    // fallback values rather than only asserting the negative.
+    expect(seenCtx?.sessionFile).toBe("unknown");
+    expect(seenCtx?.cwd).toBe(process.cwd());
+
+    mod.__setBridgeForTest(null);
+  });
+
+  test("concurrent session_shutdown events do not double-dispose the same provider instances", async () => {
+    const cwd = join(tmpHome, "project");
+    mkdirSync(cwd, { recursive: true });
+    writeProviderSource(tmpHome, "slow-dispose", lifecycleProviderSource("slow-dispose", { deferDispose: true }));
+    const handlers = await startProviderExtension(cwd);
+
+    const mod = await import("./extension");
+    mod.__setBridgeForTest(null); // isolate dispose-claiming from bridge notification timing
+
+    const first = handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx(cwd)) as Promise<unknown>;
+    const second = handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx(cwd)) as Promise<unknown>;
+
+    const resolveDispose = (globalThis as any).__disposeDeferred["slow-dispose"];
+    expect(typeof resolveDispose).toBe("function");
+    resolveDispose();
+
+    await Promise.all([first, second]);
+
+    expect((globalThis as any).__disposeCalls).toEqual(["slow-dispose"]);
+  });
+
+  test("session_shutdown joins an in-flight close instead of racing a second hook, and waits for it before disposing", async () => {
+    const cwd = join(tmpHome, "project");
+    mkdirSync(cwd, { recursive: true });
+    writeProviderSource(tmpHome, "flush-provider", lifecycleProviderSource("flush-provider"));
+    const handlers = await startProviderExtension(cwd);
+
+    const mod = await import("./extension");
+    const { ProviderBridge } = await import("../../providers/bridge");
+
+    let hookCalls = 0;
+    let resolveClose: ((v: { label: string } | null) => void) | undefined;
+    mod.__setBridgeForTest(
+      new ProviderBridge([
+        {
+          id: "flush-provider",
+          capabilities: ["lifecycle"],
+          init: async () => {},
+          dispose: () => {},
+          onSessionClose: async () => {
+            hookCalls++;
+            return new Promise((resolve) => {
+              resolveClose = resolve;
+            });
+          },
+          onSessionShutdown: async () => {},
+        } as any,
+      ]),
+    );
+
+    // A: an in-flight close (e.g. an extension-initiated shutdownHandler
+    // flush) is already running when session_shutdown fires.
+    const closeA = mod.runProviderSessionClose("complete");
+    await Promise.resolve(); // let A reach the in-flight provider hook
+
+    // session_shutdown claims lifecycle state synchronously but must not
+    // resolve until A settles.
+    const shutdown = handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx(cwd)) as Promise<unknown>;
+    let shutdownDone = false;
+    shutdown.then(() => {
+      shutdownDone = true;
+    });
+
+    // B: a later caller during this same shutdown window (e.g. the worker's
+    // SIGTERM path) must join A's promise, not start a second hook call.
+    const closeB = mod.runProviderSessionClose("close");
+    let bResolved = false;
+    closeB.then(() => {
+      bResolved = true;
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(bResolved).toBe(false);
+    expect(shutdownDone).toBe(false);
+    expect(hookCalls).toBe(1);
+
+    resolveClose!({ label: "flushed" });
+
+    const [a, b] = await Promise.all([closeA, closeB]);
+    expect(a?.label).toBe("flushed");
+    expect(b?.label).toBe("flushed");
+    expect(hookCalls).toBe(1);
+
+    await shutdown;
+    expect(shutdownDone).toBe(true);
+    expect((globalThis as any).__disposeCalls).toEqual(["flush-provider"]);
+
+    // Later session gets fresh close tracking: this session's bridge is now
+    // null (claimed/disposed above), so a fresh runProviderSessionClose call
+    // must resolve to null immediately rather than replaying A's cached
+    // "flushed" result from the stale sessionClosePromise.
+    const later = await mod.runProviderSessionClose("close");
+    expect(later).toBeNull();
+
+    mod.__setBridgeForTest(null);
+  });
+
+  test("if one provider's dispose rejects, remaining providers are still disposed and state resets", async () => {
+    const cwd = join(tmpHome, "project");
+    mkdirSync(cwd, { recursive: true });
+    writeProviderSource(tmpHome, "dispose-fail", lifecycleProviderSource("dispose-fail", { failDispose: true }));
+    writeProviderSource(tmpHome, "dispose-ok", lifecycleProviderSource("dispose-ok"));
+    const handlers = await startProviderExtension(cwd);
+
+    await handlers.get("session_shutdown")?.({ reason: "quit" }, makeCtx(cwd));
+
+    expect(((globalThis as any).__disposeCalls as string[]).sort()).toEqual(["dispose-fail", "dispose-ok"]);
+
+    const result = await handlers.get("before_agent_start")?.(
+      { prompt: "hi", images: [], systemPrompt: "line1\nline2\nline3\nline4" },
+      makeCtx(cwd),
+    );
+    expect(result).toBeUndefined();
   });
 });
 

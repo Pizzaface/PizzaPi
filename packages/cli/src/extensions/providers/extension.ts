@@ -277,27 +277,66 @@ export async function providerExtension(pi: ExtensionAPI) {
 
   // ── Session Shutdown: dispose providers ───────────────────────
   pi.on("session_shutdown", async (event, ctx) => {
-    if (bridge) {
-      // SessionClose runs from the worker's process shutdown paths (see
-      // runProviderSessionClose). Here we only notify shutdown and dispose.
-      await bridge.onSessionShutdown(
-        { reason: event.reason as "quit", targetSessionFile: event.targetSessionFile },
-        makeProviderContext(ctx),
-      );
+    // Claim the lifecycle state synchronously, before the first await, so
+    // repeated/overlapping session_shutdown events can't both see the same
+    // bridge/instances and double-dispose (mirrors pi-bridge-adapter.ts).
+    // Reset unconditionally up front — a later onSessionShutdown/dispose
+    // rejection must never leave stale module-global state behind for the
+    // next session_start to trip over.
+    const activeBridge = bridge;
+    const instances = providerInstances;
+    bridge = null;
+    providerInstances = [];
+    currentSessionInfo = null;
+    currentPromptId = null;
+    currentTurnId = 0;
+
+    // sessionClosePromise is deliberately NOT cleared above: if a close
+    // (e.g. an extension-initiated shutdownHandler flush) is already
+    // in-flight, runProviderSessionClose's own idempotency check
+    // (`if (sessionClosePromise) return sessionClosePromise;`) is what lets
+    // a later caller during this same shutdown (e.g. the worker's SIGTERM
+    // path) join that SAME promise instead of racing a second hook. Nulling
+    // it here would make that later caller start a fresh call, see the
+    // `bridge = null` claimed just above, and resolve to null immediately —
+    // letting the caller reach process.exit() before the real flush settles.
+    const inFlightClose = sessionClosePromise;
+
+    try {
+      if (activeBridge) {
+        // SessionClose runs from the worker's process shutdown paths (see
+        // runProviderSessionClose). Here we only notify shutdown and dispose.
+        await activeBridge.onSessionShutdown(
+          { reason: event.reason as "quit", targetSessionFile: event.targetSessionFile },
+          makeProviderContext(ctx),
+        );
+      }
+    } catch (err) {
+      log.error("Error in provider onSessionShutdown:", err);
     }
 
-    for (const instance of providerInstances) {
+    if (inFlightClose) {
+      // Bounded by doRunProviderSessionClose's own timeout — don't dispose
+      // provider instances out from under a close that's still writing.
+      await inFlightClose;
+    }
+    // Reset close tracking now so a later session gets a fresh close
+    // lifecycle — but only if nothing newer (a racing session_start, or a
+    // fresh close request for this same session) already replaced it.
+    if (sessionClosePromise === inFlightClose) {
+      sessionClosePromise = null;
+    }
+
+    // Dispose every claimed instance regardless of shutdown-hook or sibling
+    // dispose failures — a stuck/errored provider must not block cleanup of
+    // the rest.
+    for (const instance of instances) {
       try {
         await instance.dispose();
       } catch (err) {
         log.error(`Error disposing ${instance.id}:`, err);
       }
     }
-
-    bridge = null;
-    providerInstances = [];
-    currentPromptId = null;
-    currentTurnId = 0;
   });
 }
 
