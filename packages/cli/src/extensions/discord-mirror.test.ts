@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from "bun:test";
-import { createDiscordMirrorExtension, lastAssistantText } from "./discord-mirror.js";
+import { createDiscordMirrorExtension, lastAssistantText, renderToolCallLine } from "./discord-mirror.js";
 
 function createMockPi() {
     const handlers = new Map<string, Function[]>();
@@ -152,5 +152,30 @@ describe("discordMirrorExtension", () => {
         build({ throwOnEmit: true });
         pi.fire("agent_end", { messages: [assistantMsg("hi")] });
         expect(() => pi.fire("agent_settled")).not.toThrow();
+    });
+
+    test("emits a discord_activity envelope for each tool call", () => {
+        pi.fire("tool_call", { toolName: "bash", input: { command: "ls -la" } });
+        expect(emitted).toHaveLength(1);
+        expect(emitted[0].payload.type).toBe("discord_activity");
+        expect(emitted[0].payload.payload).toMatchObject({ sessionId: "sess-1", line: expect.stringContaining("bash") });
+    });
+
+    test("surfaces tool errors but stays quiet on successes", () => {
+        pi.fire("tool_result", { toolName: "bash", isError: false });
+        expect(emitted).toHaveLength(0);
+        pi.fire("tool_result", { toolName: "bash", isError: true });
+        expect(emitted).toHaveLength(1);
+        expect(emitted[0].payload.payload.line).toContain("failed");
+    });
+});
+
+describe("renderToolCallLine", () => {
+    test("summarizes common tools with their key input", () => {
+        expect(renderToolCallLine("read", { path: "src/x.ts" })).toContain("src/x.ts");
+        expect(renderToolCallLine("bash", { command: "echo hi\nsecond line" })).toContain("echo hi");
+        expect(renderToolCallLine("bash", { command: "echo hi\nsecond line" })).not.toContain("second line");
+        expect(renderToolCallLine("mystery-tool", {})).toContain("mystery-tool");
+        expect(renderToolCallLine(undefined, undefined)).toContain("tool");
     });
 });
