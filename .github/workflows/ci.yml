@@ -309,8 +309,8 @@ jobs:
           build-args: |
             VERSION=ci
             GIT_SHA=${{ github.sha }}
-          cache-from: type=gha,scope=runner-image
-          cache-to: type=gha,mode=max,scope=runner-image
+          cache-from: type=gha,scope=runner-image-ci
+          cache-to: type=gha,mode=max,scope=runner-image-ci
 
       - name: Assert — CLI works and image is non-root
         run: |

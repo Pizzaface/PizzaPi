@@ -521,15 +521,15 @@ jobs:
         id: tags
         run: |
           set -euo pipefail
-          TAGS="ghcr.io/pizzaface/pizzapi-runner:${{ needs.compute-version.outputs.version }}
-          ghcr.io/pizzaface/pizzapi-runner:${{ github.sha }}"
-          if [ "${{ inputs.action }}" = "latest" ]; then
-            TAGS="${TAGS}
-          ghcr.io/pizzaface/pizzapi-runner:latest"
-          fi
+          # One tag per line, no leading whitespace — don't rely on the
+          # build-push-action trimming indentation off each entry.
           {
             echo "value<<EOF"
-            echo "$TAGS"
+            echo "ghcr.io/pizzaface/pizzapi-runner:${{ needs.compute-version.outputs.version }}"
+            echo "ghcr.io/pizzaface/pizzapi-runner:${{ github.sha }}"
+            if [ "${{ inputs.action }}" = "latest" ]; then
+              echo "ghcr.io/pizzaface/pizzapi-runner:latest"
+            fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
