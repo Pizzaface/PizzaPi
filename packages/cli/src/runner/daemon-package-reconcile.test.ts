@@ -120,6 +120,38 @@ describe("clearServiceRuntimePorts (final-review port hygiene)", () => {
         expect(panels.get("svc")).toEqual({ serviceId: "svc", label: "Svc", icon: "square" });
         expect(sigilPorts.has("svc")).toBe(false);
     });
+
+    test("releases both the panel port and the sigil-server port back to the tunnel", () => {
+        // Forgetting the port only stops it being announced; the runner keeps
+        // proxying to it unless it is handed back to the tunnel.
+        const panels = new Map<string, PanelEntry>([["svc", { serviceId: "svc", label: "Svc", icon: "square", port: 4321 }]]);
+        const sigilPorts = new Map([["svc", 8765]]);
+        const released: number[] = [];
+
+        clearServiceRuntimePorts("svc", panels, sigilPorts, false, (port) => released.push(port));
+
+        expect(released.sort()).toEqual([4321, 8765]);
+    });
+
+    test("releases ports even when disabled-state metadata is retained", () => {
+        const panels = new Map<string, PanelEntry>([["svc", { serviceId: "svc", label: "Svc", icon: "square", port: 4321 }]]);
+        const sigilPorts = new Map([["svc", 8765]]);
+        const released: number[] = [];
+
+        clearServiceRuntimePorts("svc", panels, sigilPorts, true, (port) => released.push(port));
+
+        expect(released.sort()).toEqual([4321, 8765]);
+        expect(panels.get("svc")?.port).toBeUndefined();
+    });
+
+    test("does not invent a port release for a service that never announced one", () => {
+        const panels = new Map<string, PanelEntry>([["svc", { serviceId: "svc", label: "Svc", icon: "square" }]]);
+        const released: number[] = [];
+
+        clearServiceRuntimePorts("svc", panels, new Map(), false, (port) => released.push(port));
+
+        expect(released).toEqual([]);
+    });
 });
 
 describe("planPackageServiceReconcile (fix #4 + addendum B: reconfigure lifecycle)", () => {

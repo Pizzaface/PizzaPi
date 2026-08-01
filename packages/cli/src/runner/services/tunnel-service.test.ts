@@ -96,6 +96,83 @@ describe("TunnelService", () => {
         ]);
     });
 
+    test("unregisterPort releases a pinned port and unexposes it", () => {
+        const service = new TunnelService();
+        const socket = createMockSocket();
+        const tunnelClient = createMockTunnelClient();
+
+        service.setTunnelClient(tunnelClient as any);
+        service.init(socket as any, { isShuttingDown: () => false });
+        service.registerPort(3000, "Panel");
+        socket.emitted.length = 0;
+
+        expect(service.unregisterPort(3000)).toBe(true);
+        expect(tunnelClient.unexposePort).toHaveBeenCalledWith(3000);
+        expect(socket.emitted).toEqual([
+            ["service_message", { serviceId: "tunnel", type: "tunnel_removed", payload: { port: 3000 } }],
+        ]);
+    });
+
+    test("unregisterPort is a no-op for a port that was never pinned", () => {
+        const service = new TunnelService();
+        const socket = createMockSocket();
+        const tunnelClient = createMockTunnelClient();
+
+        service.setTunnelClient(tunnelClient as any);
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        expect(service.unregisterPort(9999)).toBe(false);
+        expect(tunnelClient.unexposePort).not.toHaveBeenCalled();
+    });
+
+    test("double unregisterPort cannot drive the refcount below zero", () => {
+        const service = new TunnelService();
+        const socket = createMockSocket();
+        const tunnelClient = createMockTunnelClient();
+
+        service.setTunnelClient(tunnelClient as any);
+        service.init(socket as any, { isShuttingDown: () => false });
+        service.registerPort(3000, "Panel");
+
+        expect(service.unregisterPort(3000)).toBe(true);
+        expect(service.unregisterPort(3000)).toBe(false);
+        expect(tunnelClient.unexposePort).toHaveBeenCalledTimes(1);
+    });
+
+    test("re-registering the same pinned port does not leak a refcount", () => {
+        // Services re-invoke announcePanel on every restart; if that double-counted,
+        // a later unregisterPort would decrement to 1 and never actually unexpose.
+        const service = new TunnelService();
+        const socket = createMockSocket();
+        const tunnelClient = createMockTunnelClient();
+
+        service.setTunnelClient(tunnelClient as any);
+        service.init(socket as any, { isShuttingDown: () => false });
+        service.registerPort(3000, "Panel");
+        service.registerPort(3000, "Panel (restarted)");
+
+        expect(service.unregisterPort(3000)).toBe(true);
+        expect(tunnelClient.unexposePort).toHaveBeenCalledWith(3000);
+    });
+
+    test("releasing a pinned port keeps a session-scoped exposure of the same port alive", () => {
+        const service = new TunnelService();
+        const socket = createMockSocket();
+        const tunnelClient = createMockTunnelClient();
+
+        service.setTunnelClient(tunnelClient as any);
+        service.init(socket as any, { isShuttingDown: () => false });
+        service.registerPort(3000, "Panel");
+        exposeViaMessage(socket, "sess-a", 3000);
+
+        expect(service.unregisterPort(3000)).toBe(true);
+        // The session still owns a ref, so the port must stay exposed.
+        expect(tunnelClient.unexposePort).not.toHaveBeenCalled();
+
+        unexposeViaMessage(socket, "sess-a", 3000);
+        expect(tunnelClient.unexposePort).toHaveBeenCalledWith(3000);
+    });
+
     test("service_message tunnel_expose and tunnel_unexpose sync the tunnel client", () => {
         const service = new TunnelService();
         const socket = createMockSocket();
