@@ -13,6 +13,7 @@
  * of duplicating it into every session.
  */
 
+import { randomUUID } from "node:crypto";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import {
     getRelaySocket as getRelaySocketDefault,
@@ -25,11 +26,13 @@ const MAX_MIRROR_CHARS = 8_000;
 export interface DiscordMirrorDeps {
     getRelaySocket: typeof getRelaySocketDefault;
     getRelaySessionId: typeof getRelaySessionIdDefault;
+    newId: () => string;
 }
 
 const defaultDeps: DiscordMirrorDeps = {
     getRelaySocket: getRelaySocketDefault,
     getRelaySessionId: getRelaySessionIdDefault,
+    newId: randomUUID,
 };
 
 /**
@@ -73,11 +76,16 @@ export function createDiscordMirrorExtension(deps: DiscordMirrorDeps = defaultDe
 
             // ponytail: fire-and-forget, no requestId round-trip. A dropped mirror
             // is cosmetic; blocking the turn on Discord's availability is not.
+            //
+            // `id` exists because relay delivery to the runner is at-least-once:
+            // emitToRunner() emits to the runner room AND to the local socket, and
+            // a local runner is in both, so every envelope arrives twice. The
+            // service dedupes on this id.
             try {
                 conn.socket.emit("service_message" as any, {
                     serviceId: "discord",
                     type: "discord_post",
-                    payload: { sessionId, content },
+                    payload: { id: deps.newId(), sessionId, content },
                 });
             } catch {
                 // Relay socket mid-reconnect — skip this turn's mirror.

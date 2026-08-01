@@ -719,6 +719,37 @@ Omit it for notifications, so a slow or disconnected external service can never
 stall an agent turn.
 </Aside>
 
+<Aside type="caution" title="service_message delivery is at-least-once">
+The relay's `emitToRunner()` emits to the per-runner room **and** to the local
+runner socket as a rolling-deploy fallback. A local runner is in both, so in
+practice **every envelope arrives twice**.
+
+This is invisible for idempotent operations — exposing an already-exposed port
+is a no-op, and request/response pairs are matched by `requestId`, so the first
+reply wins. It is *not* invisible for side effects: an un-deduped handler posts
+every chat message twice.
+
+Stamp each envelope with a unique id and skip ids you have already handled:
+
+```typescript
+#seen = new Set<string>();
+
+#isDuplicate(id: unknown): boolean {
+    if (typeof id !== "string" || !id) return false;   // no id — process it
+    if (this.#seen.has(id)) return true;
+    this.#seen.add(id);
+    if (this.#seen.size > 500) {
+        const oldest = this.#seen.values().next().value; // insertion-ordered
+        if (oldest !== undefined) this.#seen.delete(oldest);
+    }
+    return false;
+}
+```
+
+Treat any handler with an external side effect — posting a message, sending an
+email, charging something — as needing this.
+</Aside>
+
 ### Mapping sessions to conversations
 
 The service owns the mapping and is responsible for its whole lifecycle:

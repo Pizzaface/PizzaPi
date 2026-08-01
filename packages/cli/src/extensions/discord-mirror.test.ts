@@ -68,6 +68,7 @@ describe("discordMirrorExtension", () => {
     function build(opts: { socket?: boolean; sessionId?: string | null; throwOnEmit?: boolean } = {}) {
         emitted = [];
         pi = createMockPi();
+        let n = 0;
         const socket = {
             emit: (event: string, payload: unknown) => {
                 if (opts.throwOnEmit) throw new Error("socket closed");
@@ -77,6 +78,7 @@ describe("discordMirrorExtension", () => {
         createDiscordMirrorExtension({
             getRelaySocket: (() => (opts.socket === false ? null : { socket })) as any,
             getRelaySessionId: (() => (opts.sessionId === undefined ? "sess-1" : opts.sessionId)) as any,
+            newId: () => `id-${++n}`,
         })(pi as any);
     }
 
@@ -91,8 +93,22 @@ describe("discordMirrorExtension", () => {
         expect(emitted[0].payload).toEqual({
             serviceId: "discord",
             type: "discord_post",
-            payload: { sessionId: "sess-1", content: "hello world" },
+            payload: { id: "id-1", sessionId: "sess-1", content: "hello world" },
         });
+    });
+
+    // Relay delivery to the runner is at-least-once (emitToRunner hits both the
+    // runner room and the local socket), so the service dedupes on this id.
+    // A repeated id across turns would silently swallow a real message.
+    test("stamps a distinct id on every envelope", () => {
+        pi.fire("agent_end", { messages: [assistantMsg("one")] });
+        pi.fire("agent_settled");
+        pi.fire("agent_end", { messages: [assistantMsg("two")] });
+        pi.fire("agent_settled");
+
+        const ids = emitted.map((e) => e.payload.payload.id);
+        expect(ids).toEqual(["id-1", "id-2"]);
+        expect(new Set(ids).size).toBe(2);
     });
 
     test("does not emit on agent_end alone — only after settling", () => {
