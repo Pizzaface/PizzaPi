@@ -25,6 +25,13 @@ interface SkillMeta {
     name: string;
     description: string;
     commandId?: string;
+    parameters?: Array<{
+        name: string;
+        type: 'string' | 'number' | 'boolean' | 'choice';
+        description?: string;
+        required?: boolean;
+        choices?: string[];
+    }>;
 }
 
 const log = createLogger("discord");
@@ -108,12 +115,25 @@ interface DiscordBridge {
     threadId: string;
     threadUrl: string;
     post(text: string): Promise<void>;
-    postEmbed(title: string, fields: Array<{ name: string; value: string; inline?: boolean }>, color?: number): Promise<void>;
+    postEmbed(title: string, fields: Array<{ name: string; value: string; inline?: boolean }>, color?: number): Promise<string>;
+    editEmbed(messageId: string, title: string, fields: Array<{ name: string; value: string; inline?: boolean }>, color?: number): Promise<void>;
+    postArtifact(name: string, data: Buffer, mimeType: string): Promise<void>;
     rename(name: string): Promise<void>;
     /** Fire-and-forget typing indicator. */
     typing(): void;
     stop(): Promise<void>;
 }
+
+
+// ── Message tracking for real-time updates ────────────────────────────────────
+
+interface MessageTracker {
+    messageId: string;
+    timestamp: number;
+    type: 'tool-call' | 'progress' | 'artifact';
+    toolName?: string;
+}
+
 
 interface StartBridgeOptions {
     settings: ResolvedDiscordSettings;
@@ -127,6 +147,77 @@ interface StartBridgeOptions {
     onAgentStart(): void;
     onAgentEnd(): void;
 }
+
+
+// ── Skill parameter extraction from frontmatter ────────────────────────────────────
+
+/**
+ * Extract parameters from skill frontmatter (YAML format).
+ * Expected structure:
+ *   ---
+ *   description: "..."
+ *   parameters:
+ *     - name: "param1"
+ *       type: "string"
+ *       description: "..."
+ *       required: true
+ *       choices: ["a", "b"]
+ *   ---
+ */
+function parseSkillParameters(content: string): Array<{
+    name: string;
+    type: 'string' | 'number' | 'boolean' | 'choice';
+    description?: string;
+    required?: boolean;
+    choices?: string[];
+}> {
+    if (!content.startsWith("---")) return [];
+    const end = content.indexOf("\n---", 3);
+    if (end === -1) return [];
+
+    const block = content.slice(3, end);
+    
+    // Simple YAML-like parsing for parameters
+    const paramMatch = block.match(/^parameters:\s*$/m);
+    if (!paramMatch) return [];
+    
+    const paramSection = block.slice(paramMatch.index! + paramMatch[0].length);
+    const lines = paramSection.split('\n').filter(l => l.trim());
+    
+    const params: Array<{
+        name: string;
+        type: 'string' | 'number' | 'boolean' | 'choice';
+        description?: string;
+        required?: boolean;
+        choices?: string[];
+    }> = [];
+    
+    let currentParam: any = null;
+    
+    for (const line of lines) {
+        if (line.startsWith('  - name:')) {
+            if (currentParam) params.push(currentParam);
+            currentParam = { name: line.split(':')[1].trim().replace(/^["']|["']$/g, ''), type: 'string' };
+        } else if (line.startsWith('    type:')) {
+            if (currentParam) currentParam.type = line.split(':')[1].trim().replace(/^["']|["']$/g, '');
+        } else if (line.startsWith('    description:')) {
+            if (currentParam) currentParam.description = line.split(':').slice(1).join(':').trim().replace(/^["']|["']$/g, '');
+        } else if (line.startsWith('    required:')) {
+            if (currentParam) currentParam.required = line.includes('true');
+        } else if (line.startsWith('    choices:')) {
+            if (currentParam) {
+                const choiceStr = line.split(':')[1].trim();
+                try {
+                    currentParam.choices = JSON.parse(choiceStr);
+                } catch { }
+            }
+        }
+    }
+    if (currentParam) params.push(currentParam);
+    
+    return params;
+}
+
 
 async function startBridge({ settings, initialThreadName, cwd, onMessage, onToolCall, onToolResult, onArtifact, onMessageStart, onAgentStart, onAgentEnd }: StartBridgeOptions): Promise<DiscordBridge> {
     // Lazy import: unconfigured sessions never pay the discord.js load cost.
@@ -153,22 +244,57 @@ async function startBridge({ settings, initialThreadName, cwd, onMessage, onTool
     });
 
     // ── Skill enumeration & slash command registration ──
+    const { readFileSync } = await import('node:fs');
     const skillPaths = buildSkillPaths(cwd);
     for (const skillPath of skillPaths) {
         const skillsInDir = scanSkillsDir(skillPath);
         for (const skillMeta of skillsInDir) {
             if (skills.find(s => s.name === skillMeta.name)) continue;
-            skills.push({ name: skillMeta.name, description: skillMeta.description });
+            
+            // Extract parameters from skill file
+            let parameters = undefined;
+            try {
+                const skillContent = readFileSync(skillMeta.filePath, 'utf-8');
+                parameters = parseSkillParameters(skillContent);
+            } catch (err) {
+                log.info(`failed to parse skill parameters for ${skillMeta.name}: ${err}`);
+            }
+            
+            skills.push({ name: skillMeta.name, description: skillMeta.description, parameters });
         }
     }
 
     if (client.application) {
         for (const skill of skills) {
             try {
+                const options: any[] = [];
+                
+                // Build options from parameters if available, else fallback to args
+                if (skill.parameters && skill.parameters.length > 0) {
+                    for (const param of skill.parameters) {
+                        const typeMap: Record<string, number> = {
+                            string: 3, number: 4, boolean: 5, choice: 3
+                        };
+                        const option: any = {
+                            name: param.name,
+                            description: param.description || param.name,
+                            type: typeMap[param.type] ?? 3,
+                            required: param.required ?? false,
+                        };
+                        if (param.choices && param.choices.length > 0) {
+                            option.choices = param.choices.map(c => ({ name: c, value: c }));
+                        }
+                        options.push(option);
+                    }
+                } else {
+                    // Fallback: free-form args if no parameters defined
+                    options.push({ name: 'args', description: 'Arguments for the skill', type: 3, required: false });
+                }
+                
                 const cmd = await client.application.commands.create({
                     name: skill.name.toLowerCase().replace(/[^a-z0-9-_]/g, '-'),
                     description: skill.description || `Run ${skill.name}`,
-                    options: [{ name: 'args', description: 'Arguments for the skill', type: 3, required: false }],
+                    options,
                 });
                 skill.commandId = cmd.id;
             } catch (err) {
@@ -198,8 +324,28 @@ async function startBridge({ settings, initialThreadName, cwd, onMessage, onTool
             const skill = skills.find(s => s.name.toLowerCase().replace(/[^a-z0-9-_]/g, '-') === interaction.commandName);
             if (!skill) return;
             await interaction.deferReply?.();
-            const args = interaction.options?.getString?.('args')?.trim() || '';
-            const cmdStr = args ? `/run-skill ${skill.name} ${args}` : `/run-skill ${skill.name}`;
+            
+            // Build skill invocation from typed parameters or fallback to args
+            let cmdStr = `/run-skill ${skill.name}`;
+            
+            if (skill.parameters && skill.parameters.length > 0) {
+                // Typed parameters: collect from individual options
+                const args: string[] = [];
+                for (const param of skill.parameters) {
+                    const value = interaction.options?.getString?.(param.name) ||
+                                 interaction.options?.getNumber?.(param.name) ||
+                                 interaction.options?.getBoolean?.(param.name);
+                    if (value !== undefined && value !== null) {
+                        args.push(`--${param.name} ${JSON.stringify(value)}`);
+                    }
+                }
+                if (args.length > 0) cmdStr += ` ${args.join(' ')}`;
+            } else {
+                // Fallback: free-form args
+                const args = interaction.options?.getString?.('args')?.trim() || '';
+                if (args) cmdStr += ` ${args}`;
+            }
+            
             onMessage(cmdStr);
         } catch (err) {
             log.warn(`discord interactionCreate handler failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -229,7 +375,33 @@ async function startBridge({ settings, initialThreadName, cwd, onMessage, onTool
             for (const field of fields) {
                 embed.addFields({ name: field.name, value: field.value, inline: field.inline ?? false });
             }
-            await thread.send({ embeds: [embed] });
+            const msg = await thread.send({ embeds: [embed] });
+            return msg.id;
+        },
+        async editEmbed(messageId: string, title: string, fields: Array<{ name: string; value: string; inline?: boolean }>, color?: number) {
+            try {
+                const { EmbedBuilder } = await import("discord.js");
+                const msg = await thread.messages.fetch(messageId);
+                const embed = new EmbedBuilder()
+                    .setTitle(title)
+                    .setColor(color ?? 0x5865F2)
+                    .setTimestamp();
+                for (const field of fields) {
+                    embed.addFields({ name: field.name, value: field.value, inline: field.inline ?? false });
+                }
+                await msg.edit({ embeds: [embed] });
+            } catch (err) {
+                log.warn(`failed to edit embed ${messageId}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+        },
+        async postArtifact(name: string, data: Buffer, mimeType: string) {
+            try {
+                const { AttachmentBuilder } = await import("discord.js");
+                const attachment = new AttachmentBuilder(data, { name });
+                await thread.send({ content: `📎 **${name}** (${mimeType})`, files: [attachment] });
+            } catch (err) {
+                log.warn(`failed to post artifact ${name}: ${err instanceof Error ? err.message : String(err)}`);
+            }
         },
         async stop() {
             await client.destroy();
@@ -296,7 +468,11 @@ export function createDiscordExtension(
                             const argsStr = JSON.stringify(args, null, 2).slice(0, 1000);
                             bridge?.postEmbed(`🔧 Tool Call: ${name}`, [
                                 { name: 'Arguments', value: `\`\`\`json\n${argsStr}\n\`\`\`` },
-                            ], 0xFFA500).catch(err => log.warn(`discord postEmbed failed: ${err?.message ?? err}`));
+                                { name: 'Status', value: 'Executing...' },
+                            ], 0xFFA500).then(msgId => {
+                                // Store message ID for later editing with results
+                                (bridge as any)._lastToolMessageId = msgId;
+                            }).catch(err => log.warn(`discord postEmbed failed: ${err?.message ?? err}`));
                         } catch (err) {
                             log.warn(`discord onToolCall handler failed: ${err instanceof Error ? err.message : String(err)}`);
                         }
@@ -305,17 +481,64 @@ export function createDiscordExtension(
                         try {
                             const resultStr = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
                             const chunks = chunkDiscordMessage(resultStr, 1024);
-                            for (const chunk of chunks) {
-                                bridge?.postEmbed(`✅ Tool Result`, [
-                                    { name: 'Output', value: `\`\`\`\n${chunk}\n\`\`\`` },
-                                ], 0x57F287).catch(err => log.warn(`discord postEmbed failed: ${err?.message ?? err}`));
+                            const firstChunk = chunks[0] || '';
+                            
+                            // Edit the tool call message with result (if we have the ID)
+                            const msgId = (bridge as any)._lastToolMessageId;
+                            if (msgId) {
+                                bridge?.editEmbed(msgId, `✅ Tool Completed`, [
+                                    { name: 'Result', value: `\`\`\`\n${firstChunk}\n\`\`\`` },
+                                ], 0x57F287).catch(err => log.warn(`discord editEmbed failed: ${err?.message ?? err}`));
+                                (bridge as any)._lastToolMessageId = undefined;
+                                
+                                // Post additional chunks if result was large
+                                for (let i = 1; i < chunks.length; i++) {
+                                    bridge?.post(`\`\`\`\n${chunks[i]}\n\`\`\``).catch(err => log.warn(`discord post failed: ${err?.message ?? err}`));
+                                }
                             }
                         } catch (err) {
                             log.warn(`discord onToolResult handler failed: ${err instanceof Error ? err.message : String(err)}`);
                         }
                     },
-                    onArtifact(type, data) {
-                        log.info(`discord: artifact ${type} received (buffering for v2 implementation)`);
+                    onArtifact(type, data: any) {
+                        try {
+                            // Handle image artifacts
+                            if (type === 'image' && data) {
+                                let buffer: Buffer | undefined;
+                                let mimeType = 'image/png';
+                                let filename = 'artifact.png';
+                                
+                                // Extract buffer from various formats
+                                if (data instanceof Buffer) {
+                                    buffer = data;
+                                } else if (typeof data === 'string') {
+                                    // Could be base64 or data URL
+                                    let base64 = data;
+                                    if (data.startsWith('data:')) {
+                                        const match = data.match(/^data:([^;]+);base64,(.+)$/);
+                                        if (match) {
+                                            mimeType = match[1];
+                                            base64 = match[2];
+                                            filename = `artifact.${mimeType.split('/')[1] || 'png'}`;
+                                        }
+                                    }
+                                    buffer = Buffer.from(base64, 'base64');
+                                } else if (typeof data === 'object' && data.data instanceof Uint8Array) {
+                                    buffer = Buffer.from(data.data);
+                                    if (data.mimeType) mimeType = data.mimeType;
+                                    if (data.filename) filename = data.filename;
+                                }
+                                
+                                if (buffer) {
+                                    bridge?.postArtifact(filename, buffer, mimeType)
+                                        .catch(err => log.warn(`discord postArtifact failed: ${err?.message ?? err}`));
+                                }
+                            } else {
+                                log.info(`discord: artifact type ${type} not yet supported`);
+                            }
+                        } catch (err) {
+                            log.warn(`discord onArtifact handler failed: ${err instanceof Error ? err.message : String(err)}`);
+                        }
                     },
                     onMessageStart() {
                         try {
@@ -383,17 +606,23 @@ export function createDiscordExtension(
             if (!bridge) return;
             const toolName = event.toolUseBlock?.name ?? event.name ?? "unknown";
             const toolInput = event.toolUseBlock?.input ?? event.input ?? {};
+            // Bridge doesn't expose onToolCall callback from here; it's handled via startBridge args
+            // This placeholder is for future event processing if needed
         });
 
         pi.on("tool_result", async (event: any) => {
             if (!bridge) return;
             const result = event.result ?? event.content ?? "(no result)";
+            // Bridge doesn't expose onToolResult callback from here; it's handled via startBridge args
+            // This placeholder is for future event processing if needed
         });
 
         pi.on("message_start", async () => {
             if (!bridge) return;
+            // Message start events handled via startBridge onMessageStart callback
         });
 
+        
         pi.on("message_end", async (event) => {
             if (!bridge || event.message.role !== "assistant") return;
             const text = extractAssistantText((event.message as any).content);
