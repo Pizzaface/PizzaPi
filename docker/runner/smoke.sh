@@ -24,6 +24,11 @@ TMPDIR_ROOT="$(mktemp -d)"
 WORKSPACE_DIR="$TMPDIR_ROOT/workspace"
 
 RESULTS=()
+# Extra containers/volumes created by the auth checks below — cleaned up
+# alongside the main $CONTAINER/$VOLUME, keyed by suffix off $RUN_ID so
+# nothing collides with a concurrent run.
+EXTRA_CONTAINERS=()
+EXTRA_VOLUMES=()
 
 record() {
     # record STATUS "check name" "detail"
@@ -34,8 +39,10 @@ record() {
 cleanup() {
     local ec=$?
     docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+    for c in "${EXTRA_CONTAINERS[@]:-}"; do [ -n "$c" ] && docker rm -f "$c" >/dev/null 2>&1 || true; done
     docker rmi "${SMOKE_IMAGE}-other" >/dev/null 2>&1 || true
     docker volume rm -f "$VOLUME" >/dev/null 2>&1 || true
+    for v in "${EXTRA_VOLUMES[@]:-}"; do [ -n "$v" ] && docker volume rm -f "$v" >/dev/null 2>&1 || true; done
     rm -rf "$TMPDIR_ROOT"
 
     echo
@@ -104,6 +111,20 @@ wait_healthy() {
 
 runner_id_of() {
     docker exec "$1" pizza runner status --json 2>/dev/null | { command -v jq >/dev/null 2>&1 && jq -r '.runnerId // empty' || grep -o '"runnerId":"[^"]*"' | head -1 | cut -d'"' -f4; }
+}
+
+status_reason_of() {
+    docker exec "$1" pizza runner status --json 2>/dev/null | { command -v jq >/dev/null 2>&1 && jq -r '.reason // empty' || grep -o '"reason":"[^"]*"' | head -1 | cut -d'"' -f4; }
+}
+
+wait_for_log_pattern() {
+    # wait_for_log_pattern CONTAINER FIXED_STRING TIMEOUT_SECONDS(1s each) -> 0 if seen
+    local c="$1" pattern="$2" tries="$3" i
+    for i in $(seq 1 "$tries"); do
+        docker logs "$c" 2>&1 | grep -qF "$pattern" && return 0
+        sleep 1
+    done
+    return 1
 }
 
 spawn_status_code() {
@@ -264,3 +285,184 @@ if docker run --rm --security-opt seccomp=unconfined -e PIZZAPI_SANDBOX=basic --
 else
     record FAIL "opt-in sandbox works (seccomp=unconfined)" "bwrap failed even with the opt-in flag"
 fi
+
+# ── 11. Headless auto-pairing end to end ────────────────────────────────
+PAIR_CONTAINER="$CONTAINER-pair"
+PAIR_VOLUME="$VOLUME-pair"
+EXTRA_CONTAINERS+=("$PAIR_CONTAINER")
+EXTRA_VOLUMES+=("$PAIR_VOLUME")
+
+docker run -d --name "$PAIR_CONTAINER" --network "$SMOKE_NETWORK" \
+    -e PIZZAPI_RELAY_URL="$SMOKE_RELAY_URL" \
+    -e PIZZAPI_RUNNER_NAME="$RUN_ID-pair" \
+    -v "$PAIR_VOLUME:/home/pizza/.pizzapi" \
+    "$SMOKE_IMAGE" >/dev/null
+
+if wait_for_log_pattern "$PAIR_CONTAINER" 'setup-claim?t=' 30; then
+    record PASS "auto-pairing prints an approval URL (no credential, fresh volume)" ""
+    PAIR_TOKEN="$(docker logs "$PAIR_CONTAINER" 2>&1 | grep -o 'setup-claim?t=[a-f0-9]*' | tail -1 | sed 's/.*t=//')"
+    APPROVE_CODE="$(docker run --rm --network "$SMOKE_NETWORK" curlimages/curl:latest -sS -o /dev/null -w '%{http_code}' \
+        -X POST -H "x-api-key: $API_KEY" "$SMOKE_RELAY_URL/api/setup-claim/$PAIR_TOKEN/approve" 2>/dev/null || echo "000")"
+    [ "$APPROVE_CODE" = "200" ] && record PASS "approve pending claim via x-api-key (requireEnrollmentAuth)" "http=$APPROVE_CODE" \
+        || record FAIL "approve pending claim via x-api-key (requireEnrollmentAuth)" "http=$APPROVE_CODE"
+
+    record SKIP "pairing label round-trips via /api/setup-claim-info" "live relay ($SMOKE_RELAY_URL) is a released build without label/setup-claim-info support (confirmed: that route 404s there) — pairing itself still works"
+
+    if wait_healthy "$PAIR_CONTAINER" 60; then
+        record PASS "runner reaches healthy after approval" "healthy after ~${HEALTH_ELAPSED}s"
+
+        CONFIG_MODE="$(docker exec "$PAIR_CONTAINER" stat -c '%a' /home/pizza/.pizzapi/config.json 2>/dev/null || echo '?')"
+        [ "$CONFIG_MODE" = "600" ] && record PASS "config.json is 0600 after pairing" "mode=$CONFIG_MODE" \
+            || record FAIL "config.json is 0600 after pairing" "mode=$CONFIG_MODE"
+
+        CONFIG_HAS_KEY="$(docker exec "$PAIR_CONTAINER" sh -c "grep -c apiKey /home/pizza/.pizzapi/config.json" 2>/dev/null || echo 0)"
+        [ "${CONFIG_HAS_KEY:-0}" -gt 0 ] 2>/dev/null && record PASS "config.json contains the minted apiKey" "" \
+            || record FAIL "config.json contains the minted apiKey" "grep -c apiKey = ${CONFIG_HAS_KEY:-0}"
+
+        RESTART_MARK="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        docker restart "$PAIR_CONTAINER" >/dev/null
+        if wait_healthy "$PAIR_CONTAINER" 60; then
+            REPAIR_LOG="$(docker logs --since "$RESTART_MARK" "$PAIR_CONTAINER" 2>&1 | grep -iE 'no credentials found|Approve this runner at' || true)"
+            [ -z "$REPAIR_LOG" ] && record PASS "restart does not re-pair (config.json apiKey already satisfies it)" "healthy again after ~${HEALTH_ELAPSED}s" \
+                || record FAIL "restart does not re-pair (config.json apiKey already satisfies it)" "$REPAIR_LOG"
+        else
+            record FAIL "restart does not re-pair (config.json apiKey already satisfies it)" "container never became healthy again"
+            docker logs "$PAIR_CONTAINER" 2>&1 | tail -50
+        fi
+    else
+        record FAIL "runner reaches healthy after approval" "status=$HEALTH_STATUS after ${HEALTH_ELAPSED}s"
+        docker logs "$PAIR_CONTAINER" 2>&1 | tail -50
+    fi
+else
+    record FAIL "auto-pairing prints an approval URL (no credential, fresh volume)" "no setup-claim URL in logs after 30s"
+    docker logs "$PAIR_CONTAINER" 2>&1 | tail -50
+fi
+
+# ── 12. PIZZAPI_PAIRING=0 fails fast instead of hanging ─────────────────
+NOPAIR_CONTAINER="$CONTAINER-nopair"
+EXTRA_CONTAINERS+=("$NOPAIR_CONTAINER")
+docker run -d --name "$NOPAIR_CONTAINER" --network "$SMOKE_NETWORK" \
+    -e PIZZAPI_RELAY_URL="$SMOKE_RELAY_URL" \
+    -e PIZZAPI_PAIRING=0 \
+    "$SMOKE_IMAGE" >/dev/null
+
+if wait_for_log_pattern "$NOPAIR_CONTAINER" 'Set PIZZAPI_API_KEY' 15; then
+    if docker logs "$NOPAIR_CONTAINER" 2>&1 | grep -qF 'setup-claim?t='; then
+        record FAIL "PIZZAPI_PAIRING=0 fails fast, no auto-pair" "unexpectedly printed a pairing URL despite the opt-out"
+    else
+        record PASS "PIZZAPI_PAIRING=0 fails fast, no auto-pair" "clear error within 15s, no pairing URL printed"
+    fi
+else
+    record FAIL "PIZZAPI_PAIRING=0 fails fast, no auto-pair" "no clear error message within 15s (looks like a hang)"
+    docker logs "$NOPAIR_CONTAINER" 2>&1 | tail -30
+fi
+
+# ── 13. PIZZAPI_API_KEY_FILE registers without the key in docker inspect ─
+APIKEY_FILE_HOST="$TMPDIR_ROOT/api-key-secret.txt"
+printf '%s' "$API_KEY" > "$APIKEY_FILE_HOST"
+FILECRED_CONTAINER="$CONTAINER-filecred"
+FILECRED_VOLUME="$VOLUME-filecred"
+EXTRA_CONTAINERS+=("$FILECRED_CONTAINER")
+EXTRA_VOLUMES+=("$FILECRED_VOLUME")
+
+docker run -d --name "$FILECRED_CONTAINER" --network "$SMOKE_NETWORK" \
+    -e PIZZAPI_RELAY_URL="$SMOKE_RELAY_URL" \
+    -e PIZZAPI_API_KEY_FILE=/run/secrets/pizzapi_api_key \
+    -e PIZZAPI_RUNNER_NAME="$RUN_ID-filecred" \
+    -v "$FILECRED_VOLUME:/home/pizza/.pizzapi" \
+    -v "$APIKEY_FILE_HOST:/run/secrets/pizzapi_api_key:ro" \
+    "$SMOKE_IMAGE" >/dev/null
+
+if wait_healthy "$FILECRED_CONTAINER" 60; then
+    record PASS "PIZZAPI_API_KEY_FILE registers normally" "healthy after ~${HEALTH_ELAPSED}s"
+else
+    record FAIL "PIZZAPI_API_KEY_FILE registers normally" "status=$HEALTH_STATUS after ${HEALTH_ELAPSED}s"
+    docker logs "$FILECRED_CONTAINER" 2>&1 | tail -50
+fi
+
+INSPECT_ENV="$(docker inspect --format '{{json .Config.Env}}' "$FILECRED_CONTAINER")"
+if echo "$INSPECT_ENV" | grep -q 'PIZZAPI_API_KEY='; then
+    record FAIL "raw API key absent from docker inspect env" "PIZZAPI_API_KEY found in launch env — only _FILE was passed"
+else
+    record PASS "raw API key absent from docker inspect env" "only PIZZAPI_API_KEY_FILE present in launch env"
+fi
+
+# ── 14. PIZZAPI_AUTH_FILE seeds once, never clobbers ────────────────────
+AUTH1_HOST="$TMPDIR_ROOT/auth1.json"
+AUTH2_HOST="$TMPDIR_ROOT/auth2.json"
+echo '{"marker":"auth-file-one"}' > "$AUTH1_HOST"
+echo '{"marker":"auth-file-two-should-not-appear"}' > "$AUTH2_HOST"
+
+AUTHFILE_CONTAINER="$CONTAINER-authfile"
+AUTHFILE_VOLUME="$VOLUME-authfile"
+EXTRA_CONTAINERS+=("$AUTHFILE_CONTAINER")
+EXTRA_VOLUMES+=("$AUTHFILE_VOLUME")
+
+docker run -d --name "$AUTHFILE_CONTAINER" --network "$SMOKE_NETWORK" \
+    -e PIZZAPI_RELAY_URL="$SMOKE_RELAY_URL" \
+    -e PIZZAPI_API_KEY="$API_KEY" \
+    -e PIZZAPI_RUNNER_NAME="$RUN_ID-authfile" \
+    -e PIZZAPI_AUTH_FILE=/run/secrets/auth.json \
+    -v "$AUTHFILE_VOLUME:/home/pizza/.pizzapi" \
+    -v "$AUTH1_HOST:/run/secrets/auth.json:ro" \
+    "$SMOKE_IMAGE" >/dev/null
+
+if wait_healthy "$AUTHFILE_CONTAINER" 60; then
+    AUTH_MODE="$(docker exec "$AUTHFILE_CONTAINER" stat -c '%a' /home/pizza/.pizzapi/auth.json 2>/dev/null || echo '?')"
+    [ "$AUTH_MODE" = "600" ] && record PASS "PIZZAPI_AUTH_FILE seeds auth.json at 0600 (first boot)" "mode=$AUTH_MODE" \
+        || record FAIL "PIZZAPI_AUTH_FILE seeds auth.json at 0600 (first boot)" "mode=$AUTH_MODE"
+
+    AUTH_CONTENT="$(docker exec "$AUTHFILE_CONTAINER" cat /home/pizza/.pizzapi/auth.json 2>/dev/null || echo '')"
+    echo "$AUTH_CONTENT" | grep -q 'auth-file-one' && record PASS "seeded auth.json has the source file's contents" "" \
+        || record FAIL "seeded auth.json has the source file's contents" "got: $AUTH_CONTENT"
+else
+    record FAIL "PIZZAPI_AUTH_FILE seeds auth.json at 0600 (first boot)" "container never became healthy"
+    docker logs "$AUTHFILE_CONTAINER" 2>&1 | tail -50
+fi
+
+docker stop -t 10 "$AUTHFILE_CONTAINER" >/dev/null 2>&1 || true
+docker rm "$AUTHFILE_CONTAINER" >/dev/null 2>&1 || true
+
+docker run -d --name "$AUTHFILE_CONTAINER" --network "$SMOKE_NETWORK" \
+    -e PIZZAPI_RELAY_URL="$SMOKE_RELAY_URL" \
+    -e PIZZAPI_API_KEY="$API_KEY" \
+    -e PIZZAPI_RUNNER_NAME="$RUN_ID-authfile" \
+    -e PIZZAPI_AUTH_FILE=/run/secrets/auth.json \
+    -v "$AUTHFILE_VOLUME:/home/pizza/.pizzapi" \
+    -v "$AUTH2_HOST:/run/secrets/auth.json:ro" \
+    "$SMOKE_IMAGE" >/dev/null
+
+if wait_healthy "$AUTHFILE_CONTAINER" 60; then
+    AUTH_CONTENT2="$(docker exec "$AUTHFILE_CONTAINER" cat /home/pizza/.pizzapi/auth.json 2>/dev/null || echo '')"
+    if echo "$AUTH_CONTENT2" | grep -q 'auth-file-one'; then
+        record PASS "PIZZAPI_AUTH_FILE never clobbers an existing auth.json" "still has first seed's contents after a second boot with a different file"
+    else
+        record FAIL "PIZZAPI_AUTH_FILE never clobbers an existing auth.json" "got: $AUTH_CONTENT2"
+    fi
+else
+    record FAIL "PIZZAPI_AUTH_FILE never clobbers an existing auth.json" "container never became healthy on second boot"
+    docker logs "$AUTHFILE_CONTAINER" 2>&1 | tail -50
+fi
+
+# ── 15. A rejected API key is loud and prompt, not a silent hang ───────
+BADKEY_CONTAINER="$CONTAINER-badkey"
+EXTRA_CONTAINERS+=("$BADKEY_CONTAINER")
+BAD_KEY="pizzapi_smoke_invalid_$(date +%s)"
+docker run -d --name "$BADKEY_CONTAINER" --network "$SMOKE_NETWORK" \
+    -e PIZZAPI_RELAY_URL="$SMOKE_RELAY_URL" \
+    -e PIZZAPI_API_KEY="$BAD_KEY" \
+    -e PIZZAPI_RUNNER_NAME="$RUN_ID-badkey" \
+    "$SMOKE_IMAGE" >/dev/null
+
+if wait_for_log_pattern "$BADKEY_CONTAINER" 'rejected our API key' 20; then
+    record PASS "bad API key rejection is loud and prompt" "rejection message appeared within 20s"
+else
+    record FAIL "bad API key rejection is loud and prompt" "no rejection message within 20s (looks like a silent hang)"
+    docker logs "$BADKEY_CONTAINER" 2>&1 | tail -30
+fi
+
+STATUS_REASON="$(status_reason_of "$BADKEY_CONTAINER" || true)"
+case "$STATUS_REASON" in
+    *"relay rejected credentials"*) record PASS "runner status reports the relay-rejected reason (bonus)" "$STATUS_REASON" ;;
+    *) record SKIP "runner status reports the relay-rejected reason (bonus)" "got '${STATUS_REASON:-<empty>}' — may need another connect_error round-trip" ;;
+esac
