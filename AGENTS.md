@@ -120,8 +120,9 @@ PizzaPi patches four upstream pi packages via `patchedDependencies` in the root 
 
 - **Version check removal:** Disables the npm registry version check and "Update Available" notification (irrelevant for PizzaPi's headless runner).
 - **Auth path display:** Shows the actual auth file path instead of hardcoded default.
+- **`sendUserMessage({ expandPromptTemplates })` opt-in:** lets the web UI input path run slash-command/template expansion.
 
-PizzaPi still binds `newSession()` / `switchSession()` command actions in the runner so the remote extension can trigger `/new` and `/resume` from the web UI, but upstream 0.79.x no longer needs PizzaPi's old loader/runner shim patch for that wiring.
+**Removed in Phase 1 (SessionHost):** the patch no longer copies session-control onto `ExtensionAPI` (`newSession`/`switchSession`/`fork`, `getQueuedMessages`/`replaceQueuedMessages`). Those were surface-widening — already native on `AgentSessionRuntime`/`AgentSession`. PizzaPi's remote extension now drives control through a host-owned `SessionHost` (`packages/cli/src/runner/session-host.ts`), threaded in via `extensions/remote/session-host-ref.ts`. `patches.test.ts` guards against the hunks silently returning on a version bump.
 
 ### @earendil-works/pi-ai
 

@@ -240,7 +240,11 @@ export async function handleExecFromWeb(
             }
             const messages = req.messages.filter((m): m is string => typeof m === "string" && m.trim().length > 0);
             try {
-                rctx.pi.replaceQueuedMessages(messages);
+                if (!rctx.sessionHost) {
+                    replyErr("Session control is not available");
+                    return;
+                }
+                rctx.sessionHost.replaceQueuedMessages(messages);
             } catch (err) {
                 replyErr(`Failed to update queued messages: ${err instanceof Error ? err.message : String(err)}`);
                 return;
@@ -384,8 +388,8 @@ export async function handleExecFromWeb(
                 replyErr("No active session");
                 return;
             }
-            if (typeof (rctx.pi as any).fork !== "function") {
-                replyErr("fork is not available in this pi version");
+            if (!rctx.sessionHost) {
+                replyErr("fork is not available (no session host)");
                 return;
             }
             const entryId = typeof req.entryId === "string" ? req.entryId.trim() : "";
@@ -394,7 +398,7 @@ export async function handleExecFromWeb(
                 return;
             }
             try {
-                const result = await (rctx.pi as any).fork(entryId);
+                const result = await rctx.sessionHost.fork(entryId);
                 if (result?.cancelled) {
                     replyErr("Fork was cancelled");
                     return;
@@ -459,8 +463,8 @@ export async function handleExecFromWeb(
                 replyErr("No active session");
                 return;
             }
-            if (typeof (rctx.pi as any).switchSession !== "function") {
-                replyErr("switchSession is not available in this pi version");
+            if (!rctx.sessionHost) {
+                replyErr("switchSession is not available (no session host)");
                 return;
             }
             const sessions = await listSessionsForResume(rctx.latestCtx);
@@ -474,7 +478,7 @@ export async function handleExecFromWeb(
                 return;
             }
             try {
-                const result = await (rctx.pi as any).switchSession(target.path);
+                const result = await rctx.sessionHost.switchSession(target.path);
                 if (result?.cancelled) {
                     replyErr("Resume was cancelled");
                     return;
@@ -494,8 +498,12 @@ export async function handleExecFromWeb(
                 replyErr("No active session");
                 return;
             }
+            if (!rctx.sessionHost) {
+                replyErr("New session is not available (no session host)");
+                return;
+            }
             try {
-                const result = await (rctx.pi as any).newSession();
+                const result = await rctx.sessionHost.newSession();
                 if (result?.cancelled) {
                     replyErr("New session was cancelled");
                     return;

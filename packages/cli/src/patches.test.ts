@@ -73,17 +73,22 @@ describe("pi-coding-agent patch application", () => {
         expect(source).toContain("options?.expandPromptTemplates ?? false");
     });
 
-    test("agent-session.js: pending queues are exposed to extensions (getQueuedMessages/replaceQueuedMessages)", async () => {
+    // Phase 1: the ExtensionAPI control-plane exposure (newSession/switchSession/
+    // fork + getQueuedMessages/replaceQueuedMessages) was removed from the patch.
+    // PizzaPi's remote extension now drives control through the host-owned
+    // SessionHost (packages/cli/src/runner/session-host.ts). These guards prevent
+    // the surface-widening hunks from silently returning on a version bump.
+    test("agent-session.js: pending-queue getters are NOT patched onto the runtime (SessionHost owns them)", async () => {
         const source = await Bun.file(
             piCodingAgentPath("dist/core/agent-session.js"),
         ).text();
 
-        expect(source).toContain("PATCH(pizzapi): expose the pending queues");
-        expect(source).toContain("getQueuedMessages: () => ({ steering: [...this._steeringMessages], followUp: [...this._followUpMessages] })");
-        expect(source).toContain("replaceQueuedMessages: (followUp) => {");
+        expect(source).not.toContain("PATCH(pizzapi): expose the pending queues");
+        expect(source).not.toContain("getQueuedMessages: () => ({ steering: [...this._steeringMessages]");
+        expect(source).not.toContain("replaceQueuedMessages: (followUp) => {");
     });
 
-    test("loader.js + runner.js: queue read/replace wired through ExtensionAPI", async () => {
+    test("loader.js + runner.js: queue read/replace is NOT wired through ExtensionAPI", async () => {
         const loader = await Bun.file(
             piCodingAgentPath("dist/core/extensions/loader.js"),
         ).text();
@@ -91,10 +96,9 @@ describe("pi-coding-agent patch application", () => {
             piCodingAgentPath("dist/core/extensions/runner.js"),
         ).text();
 
-        expect(loader).toContain("getQueuedMessages()");
-        expect(loader).toContain("replaceQueuedMessages(followUp)");
-        expect(runner).toContain("this.runtime.getQueuedMessages = actions.getQueuedMessages");
-        expect(runner).toContain("this.runtime.replaceQueuedMessages = actions.replaceQueuedMessages");
+        expect(loader).not.toContain("replaceQueuedMessages(followUp)");
+        expect(runner).not.toContain("this.runtime.getQueuedMessages = actions.getQueuedMessages");
+        expect(runner).not.toContain("this.runtime.replaceQueuedMessages = actions.replaceQueuedMessages");
     });
 
     test("interactive-mode.js: version check call is removed from run()", async () => {
@@ -192,7 +196,7 @@ describe("pi-coding-agent patched runtime behavior", () => {
         expect(dir).not.toContain(".pizzapi/agent/sessions");
     });
 
-    test("extension API exposes bound newSession and switchSession handlers", async () => {
+    test("extension API does NOT expose newSession/switchSession/fork (removed in Phase 1)", async () => {
         const { createExtensionRuntime, loadExtensionFromFactory } = await import(
             piCodingAgentPath("dist/core/extensions/loader.js")
         );
@@ -201,20 +205,15 @@ describe("pi-coding-agent patched runtime behavior", () => {
         );
 
         const runtime = createExtensionRuntime() as any;
-        const calls: string[] = [];
         const runner = new ExtensionRunner([], runtime, process.cwd(), {} as any, {} as any);
+        // Command-context handlers still bind natively (slash commands, TUI) —
+        // that is upstream behavior, unaffected by the patch removal.
         runner.bindCommandContext({
             waitForIdle: async () => undefined,
-            newSession: async () => {
-                calls.push("new");
-                return { cancelled: false };
-            },
+            newSession: async () => ({ cancelled: false }),
             fork: async () => ({ cancelled: false }),
             navigateTree: async () => ({ cancelled: false }),
-            switchSession: async (sessionPath: string) => {
-                calls.push(`switch:${sessionPath}`);
-                return { cancelled: false };
-            },
+            switchSession: async () => ({ cancelled: false }),
             reload: async () => undefined,
         });
 
@@ -223,11 +222,13 @@ describe("pi-coding-agent patched runtime behavior", () => {
             api = pi;
         }, process.cwd(), {} as any, runtime);
 
-        expect(typeof api.newSession).toBe("function");
-        expect(typeof api.switchSession).toBe("function");
-        await expect(api.newSession()).resolves.toEqual({ cancelled: false });
-        await expect(api.switchSession("/tmp/session.jsonl")).resolves.toEqual({ cancelled: false });
-        expect(calls).toEqual(["new", "switch:/tmp/session.jsonl"]);
+        // The patch no longer copies these onto ExtensionAPI — PizzaPi reaches
+        // session control via SessionHost, not pi.*.
+        expect(api.newSession).toBeUndefined();
+        expect(api.switchSession).toBeUndefined();
+        expect(api.fork).toBeUndefined();
+        expect(api.getQueuedMessages).toBeUndefined();
+        expect(api.replaceQueuedMessages).toBeUndefined();
     });
 
 });

@@ -15,6 +15,7 @@ import { normalizeLoopbackHost } from "../../relay-url.js";
 import { buildHeartbeat } from "../remote-heartbeat.js";
 import { getCurrentTodoList } from "../update-todo.js";
 import { isDisabled, toWebSocketBaseUrl } from "./connection.js";
+import { getRemoteSessionHost } from "./session-host-ref.js";
 import type { RelayContext, RelayModelInfo, TriggerResponse } from "../remote-types.js";
 import { getActiveGoalFromEntries, toMetaGoalStatus } from "../goal/state.js";
 import { getCommandIntrospection } from "../command-introspection.js";
@@ -50,6 +51,16 @@ export function createRelayContext(
 ): RelayContext {
     const rctx: RelayContext = {
         pi,
+        // Read live rather than snapshot: this factory runs during
+        // loader.reload() (worker.ts), before the worker constructs and
+        // installs its SessionHost via setRemoteSessionHost(). A one-time
+        // snapshot here would freeze sessionHost at null for the process
+        // lifetime. Reading through the module ref on every access keeps it
+        // in sync however the host's install ordering shakes out (worker or
+        // interactive CLI).
+        get sessionHost() {
+            return getRemoteSessionHost();
+        },
         relay: null,
         sioSocket: null,
         latestCtx: null,

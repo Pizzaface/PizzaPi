@@ -18,6 +18,8 @@ import { c, usageBar, colorPct, colorRemaining } from "./cli-colors.js";
 import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride } from "./skills.js";
 import { getPluginSkillPaths } from "./extensions/claude-plugins.js";
 import { buildPizzaPiExtensionFactories } from "./extensions/factories.js";
+import { setRemoteSessionHost } from "./extensions/remote/session-host-ref.js";
+import { runtimeSessionHost } from "./runner/session-host.js";
 import { migrateAgentDir } from "./migrations.js";
 import { runSetup } from "./setup.js";
 import { createLogger, initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
@@ -549,6 +551,17 @@ async function main() {
         agentDir,
         sessionManager,
     });
+
+    // Install the TUI-backed SessionHost so the remote extension can drive
+    // new/switch/fork + queue ops through `runtime` instead of the removed
+    // patched ExtensionAPI surface (mirrors worker.ts's SessionHost wiring).
+    setRemoteSessionHost(
+        runtimeSessionHost(runtime, (followUp) => {
+            const { steering } = runtime.session.clearQueue();
+            for (const text of steering) void (runtime.session as any)._queueSteer(text);
+            for (const text of followUp) void (runtime.session as any)._queueFollowUp(text);
+        }),
+    );
 
     const mode = new InteractiveMode(runtime, {
         modelFallbackMessage: runtime.modelFallbackMessage,

@@ -32,7 +32,7 @@ const log = createLogger("remote");
  */
 export function readQueuedFollowUps(rctx: RelayContext): string[] {
     try {
-        const queued = rctx.pi?.getQueuedMessages?.();
+        const queued = rctx.sessionHost?.getQueuedMessages();
         return Array.isArray(queued?.followUp) ? [...queued.followUp] : [];
     } catch {
         return [];

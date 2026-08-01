@@ -185,6 +185,10 @@ export interface RelayContext {
     // Core references — the pi instance is typed loosely since the actual
     // PiInstance type is internal to the extension factory closure.
     readonly pi: any;
+    // Host-owned session-control handle (set by the worker before bindExtensions).
+    // Remote handlers drive new/switch/fork + queue ops through this instead of
+    // the patched ExtensionAPI surface. Null only if the host never set one.
+    readonly sessionHost: import("../runner/session-host.js").SessionHost | null;
     relay: RelayState | null;
     sioSocket: Socket<RelayServerToClientEvents, RelayClientToServerEvents> | null;
     latestCtx: ExtensionContext | null;
