@@ -130,7 +130,6 @@ import {
   augmentThinkingDurations,
   normalizeModelList,
   normalizeCommandList,
-  mergeChunkSnapshot,
   buildStreamingPartialMessage,
 } from "@/lib/message-helpers";
 import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "@/lib/session-ui-cache";
@@ -145,9 +144,10 @@ import {
   registerChunkIndex,
   shouldAllowOutOfOrderSnapshotDuringHydration,
   shouldDeferEventForHydration,
+  shouldRequestChunkRecovery,
 } from "@/lib/session-seq";
 import { createLogger } from "@pizzapi/tools";
-import { isActiveViewerSessionPayload, matchesViewerGeneration } from "@/lib/viewer-switch";
+import { isActiveViewerSessionPayload, matchesHydrationGeneration, matchesViewerGeneration } from "@/lib/viewer-switch";
 
 // Lazy-loaded low-frequency surfaces. Auth, session sidebar/viewer, banners,
 // and loading/error UI remain eager so critical paths stay fast.
@@ -845,6 +845,9 @@ export function App() {
   // chunks from a previous stream are discarded (e.g. if a new viewer
   // connects mid-stream and triggers a fresh emitSessionActive).
   // (Owned by lifecycleRefs.chunked / lifecycleRefs.lastCompletedSnapshot.)
+  // Live deltas that arrive while the historical snapshot is loading are
+  // replayed after the snapshot is installed so the current turn is not lost.
+  const deferredChunkEventsRef = React.useRef<unknown[]>([]);
 
   // Mobile layout
   const {
@@ -1049,6 +1052,7 @@ export function App() {
     lastSeqRef.current = null;
     renderedMcpReportTsRef.current = null;
     injectedMessagesRef.current = [];
+    deferredChunkEventsRef.current = [];
     // Single atomic reset — all session-scoped fields defined in SessionState
     // are cleared together. New fields added to SessionState are automatically
     // included; nothing can be accidentally left stale between sessions.
@@ -1680,21 +1684,16 @@ export function App() {
       onSnapshotStarted({});
     }
 
-    // While awaiting the initial snapshot OR during chunked hydration, skip
-    // streaming delta events.  They'd render briefly and then be replaced
-    // when the snapshot arrives, causing visible "jumping".  During chunked
-    // delivery, live events can interleave with historical chunks and produce
-    // an out-of-order transcript.  This also covers tool execution events —
-    // without this guard, tool_execution_update partials can write synthetic
-    // toolResult messages into state before the snapshot hydrates the real
-    // conversation, producing orphan/duplicate tool output on reconnect.
-    if (lifecycleRefs.awaitingSnapshot.current || lifecycleRefs.chunked.current) {
-      if (
-        type === "message_update" || type === "message_start" || type === "message_end" || type === "turn_end" ||
-        type === "tool_execution_start" || type === "tool_execution_update" || type === "tool_execution_end"
-      ) {
-        return;
-      }
+    // Deltas cannot be applied on top of a half-loaded snapshot. Drop them
+    // before the header, but retain them during chunking for replay after the
+    // atomic swap. The same helper also rejects chunks seen before their header.
+    if (shouldDeferEventForHydration(
+      type,
+      lifecycleRefs.awaitingSnapshot.current,
+      !!lifecycleRefs.chunked.current,
+    )) {
+      if (lifecycleRefs.chunked.current) deferredChunkEventsRef.current.push(event);
+      return;
     }
 
     if (type === "heartbeat") {
@@ -1864,6 +1863,9 @@ export function App() {
       const isChunked = !!state?.chunked;
       const snapshotId = typeof state?.snapshotId === "string" ? state.snapshotId : "";
       const totalMessages = typeof state?.totalMessages === "number" ? state.totalMessages : rawMessages.length;
+      // A newer snapshot supersedes both the old chunks and any deltas buffered
+      // against them. Those deltas are already represented in this snapshot.
+      deferredChunkEventsRef.current = [];
       onSnapshotStarted({ chunked: isChunked, snapshotId, totalMessages });
 
       const stateModel = normalizeModel(state?.model);
@@ -1879,15 +1881,17 @@ export function App() {
       }
 
       // Flush any queued streaming-delta RAF before replacing state so stale
-      // partials can't be re-inserted on top of the fresh snapshot.
+      // partials can't be re-inserted on top of the fresh snapshot. Chunked
+      // snapshots remain off-screen until complete, preserving the last good
+      // transcript instead of flashing an empty conversation on every refresh.
       cancelPendingDeltas();
-      // Re-append locally-injected messages (e.g. MCP auth banners) that
-      // aren't part of the server-side state snapshot.
-      const injected = injectedMessagesRef.current;
-      setMessages(injected.length > 0 ? [...normalizedMessages, ...injected] : normalizedMessages);
-      const serverHasMore = state?.hasMore === true;
-      const oldestLoadedIndex = typeof state?.oldestLoadedIndex === "number" ? state.oldestLoadedIndex : 0;
-      paginationStateRef.current = { totalMessages, hasMore: serverHasMore, oldestLoadedIndex };
+      if (!isChunked) {
+        const injected = injectedMessagesRef.current;
+        setMessages(injected.length > 0 ? [...normalizedMessages, ...injected] : normalizedMessages);
+        const serverHasMore = state?.hasMore === true;
+        const oldestLoadedIndex = typeof state?.oldestLoadedIndex === "number" ? state.oldestLoadedIndex : 0;
+        paginationStateRef.current = { totalMessages, hasMore: serverHasMore, oldestLoadedIndex };
+      }
       if (!metaViaHub) {
         setActiveModel(stateModel);
         if (hasSessionName) {
@@ -1976,7 +1980,7 @@ export function App() {
         setTodoList(stateTodos);
 
         patchSessionCache({
-          messages: normalizedMessages,
+          ...(!isChunked ? { messages: normalizedMessages } : {}),
           activeModel: stateModel,
           ...(hasSessionName ? { sessionName: nextSessionName } : {}),
           availableModels: stateModels,
@@ -1988,7 +1992,7 @@ export function App() {
         });
       } else {
         patchSessionCache({
-          messages: normalizedMessages,
+          ...(!isChunked ? { messages: normalizedMessages } : {}),
           availableModels: stateModels,
           ...(hasStateCommands ? { availableCommands: stateCommands } : {}),
           ...(hasStateAnalysis ? { analysis: stateAnalysis ?? null } : {}),
@@ -2070,6 +2074,15 @@ export function App() {
         chunkState.totalChunks,
       );
 
+      if (shouldRequestChunkRecovery(isFinal, readyToFinalize)) {
+        // The relay finalizes its durable snapshot before broadcasting the
+        // final chunk. A resync now can therefore recover the complete state
+        // without replaying the stale pre-chunk checkpoint.
+        // Omit lastSeq: delta-only replay cannot repair a missing historical
+        // chunk and would leave hydration stuck if newer deltas are cached.
+        viewerWsRef.current?.emit("resync", {});
+      }
+
       if (readyToFinalize) {
         // Assemble all buffered chunks in chunkIndex order so the resulting
         // transcript matches the original server-side ordering regardless of
@@ -2089,30 +2102,28 @@ export function App() {
           .filter((m): m is RelayMessage => m !== null);
         const finalMessages = deduplicateMessages(convertedOrdered);
 
-        lifecycleRefs.lastCompletedSnapshot.current = chunkSnapshotId || null;
-        lifecycleRefs.chunked.current = null;
-        lifecycleRefs.hydrated.current = true;
-        // Flush any MCP startup report that arrived before hydration completed
+        const injected = injectedMessagesRef.current;
+        const completedMessages = injected.length > 0 ? [...finalMessages, ...injected] : finalMessages;
+        const deferredEvents = deferredChunkEventsRef.current;
+        deferredChunkEventsRef.current = [];
+
+        setMessages(completedMessages);
+        setActiveToolCalls(detectInFlightTools(finalMessages));
+        paginationStateRef.current = { totalMessages, hasMore: false, oldestLoadedIndex: 0 };
+        patchSessionCache({ messages: completedMessages });
+        onSnapshotComplete();
+
+        // Queue updates above are applied in order, so replayed functional
+        // message updates land on the completed snapshot rather than the old
+        // visible transcript.
+        for (const deferredEvent of deferredEvents) {
+          handleRelayEvent(deferredEvent);
+        }
+
         if (pendingMcpReportRef.current) {
           applyMcpReport(pendingMcpReportRef.current);
           pendingMcpReportRef.current = null;
         }
-        onSnapshotComplete();
-
-        // Capture the merged result inside the updater so patchSessionCache
-        // receives the same value that setMessages commits — including any
-        // injected banners or system messages that are in prev but not in
-        // the snapshot.  Using a plain variable here mirrors the mcpNext
-        // pattern used in applyMcpReport; React calls functional updaters
-        // synchronously when enqueuing the update so mergedMessages is
-        // populated before patchSessionCache runs.
-        let mergedMessages: RelayMessage[] = finalMessages;
-        setMessages((prev) => {
-          mergedMessages = mergeChunkSnapshot(finalMessages, prev);
-          return mergedMessages;
-        });
-        setActiveToolCalls(detectInFlightTools(finalMessages));
-        patchSessionCache({ messages: mergedMessages });
       }
       return;
     }
@@ -3206,6 +3217,7 @@ export function App() {
     renderedMcpReportTsRef.current = null;
     pendingMcpReportRef.current = null;
     injectedMessagesRef.current = [];
+    deferredChunkEventsRef.current = [];
     metaSourceHubRef.current = false;
     paginationStateRef.current = null;
     setLoadingOlderMessages(false);
@@ -3350,31 +3362,26 @@ export function App() {
         }
         const { event: rawEvent, seq: envelopeSeq, deltaReplay, generation } = envelope.value;
 
-        // During session switch, only accept events that explicitly match our generation.
-        // This prevents events without generation tags from old sessions being processed
-        // while we're awaiting the snapshot for the new session.
-        if (lifecycleRefs.awaitingSnapshot.current) {
-          if (generation !== lifecycleRefs.generation.current) {
-            return;
-          }
-        } else if (!matchesViewerGeneration(lifecycleRefs.generation.current, generation)) {
-          return;
-        }
-        if (!lifecycleRefs.activeSessionId.current) return;
-        lastViewerEventAtRef.current = Date.now();
-
         const eventType =
           rawEvent && typeof rawEvent === "object" && typeof (rawEvent as Record<string, unknown>).type === "string"
             ? (rawEvent as Record<string, unknown>).type as string
             : "";
 
-        if (shouldDeferEventForHydration(
+        // Direct hydration events carry the switch generation. A cache-miss
+        // recovery snapshot is instead broadcast through the new session room,
+        // so its session_active header has no generation. The server has already
+        // removed this socket from the old room before joining the new one; accept
+        // only that state-setting header while awaiting hydration.
+        if (!matchesHydrationGeneration(
+          lifecycleRefs.generation.current,
+          generation,
           eventType,
           lifecycleRefs.awaitingSnapshot.current,
-          !!lifecycleRefs.chunked.current,
         )) {
           return;
         }
+        if (!lifecycleRefs.activeSessionId.current) return;
+        lastViewerEventAtRef.current = Date.now();
 
         const seq = envelopeSeq ?? null;
         if (seq !== null) {

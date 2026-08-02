@@ -14,6 +14,7 @@ import {
     onViewerConnectedSignal,
     onViewerReadyForRunnerSignal,
     isViewerSwitchCurrent,
+    shouldAvoidSnapshotFallback,
     forwardRecoveryConnectedSignal,
     withHubMetaSource,
     withMetaViaHubHint,
@@ -154,6 +155,14 @@ describe("isViewerSwitchCurrent", () => {
 
     test("rejects stale generations", () => {
         expect(isViewerSwitchCurrent(4, 3)).toBe(false);
+    });
+});
+
+describe("shouldAvoidSnapshotFallback", () => {
+    test("blocks stale snapshots for seq cache misses and chunk assembly", () => {
+        expect(shouldAvoidSnapshotFallback(12, null)).toBe(true);
+        expect(shouldAvoidSnapshotFallback(undefined, { snapshotId: "snap-1" })).toBe(true);
+        expect(shouldAvoidSnapshotFallback(undefined, null)).toBe(false);
     });
 });
 

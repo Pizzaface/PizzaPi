@@ -327,13 +327,18 @@ export function useSessionLifecycle(
 
   const onSnapshotStarted = React.useCallback(
     (payload: Parameters<UseSessionLifecycleResult["onSnapshotStarted"]>[0]) => {
-      dispatch(
-        lifecycleActions.snapshotStarted({
-          chunked: payload.chunked,
-          snapshotId: payload.snapshotId,
-          totalMessages: payload.totalMessages,
-        }),
-      );
+      const action = lifecycleActions.snapshotStarted({
+        chunked: payload.chunked,
+        snapshotId: payload.snapshotId,
+        totalMessages: payload.totalMessages,
+      });
+      if (action.type === "SNAPSHOT_STARTED") {
+        awaitingSnapshotRef.current = false;
+        hydratedRef.current = false;
+        chunkedRef.current = action.chunkState;
+        lastCompletedSnapshotRef.current = action.chunked === true ? null : "non-chunked";
+      }
+      dispatch(action);
     },
     [],
   );
@@ -343,6 +348,11 @@ export function useSessionLifecycle(
   }, []);
 
   const onSnapshotComplete = React.useCallback(() => {
+    const completedSnapshot = chunkedRef.current?.snapshotId ?? lastCompletedSnapshotRef.current;
+    awaitingSnapshotRef.current = false;
+    hydratedRef.current = true;
+    chunkedRef.current = null;
+    lastCompletedSnapshotRef.current = completedSnapshot;
     dispatch(lifecycleActions.snapshotComplete());
   }, []);
 

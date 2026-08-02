@@ -5,6 +5,7 @@ import {
   mergeConnectedSeq,
   registerChunkIndex,
   shouldAllowOutOfOrderSnapshotDuringHydration,
+  shouldRequestChunkRecovery,
   shouldDeferEventForHydration,
 } from "./session-seq";
 
@@ -112,6 +113,14 @@ describe("chunk index tracking", () => {
     // Arrival order [2, 0, 1] must NOT be reflected in the final transcript
     expect(assembled[0]).toBe("msg-c0-a");
     expect(assembled[assembled.length - 1]).toBe("msg-c2-b");
+  });
+});
+
+describe("shouldRequestChunkRecovery", () => {
+  test("requests recovery only when the final chunk arrives before all indexes", () => {
+    expect(shouldRequestChunkRecovery(true, false)).toBe(true);
+    expect(shouldRequestChunkRecovery(false, false)).toBe(false);
+    expect(shouldRequestChunkRecovery(true, true)).toBe(false);
   });
 });
 

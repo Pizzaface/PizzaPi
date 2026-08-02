@@ -58,6 +58,27 @@ describe("enqueueSessionEvent", () => {
 
         errorSpy.mockRestore();
     });
+
+    test("returned promise drains earlier events before lifecycle cleanup", async () => {
+        const order: string[] = [];
+        let release!: () => void;
+        const blocked = new Promise<void>((resolve) => { release = resolve; });
+
+        enqueueSessionEvent("session-1", async () => {
+            await blocked;
+            order.push("chunk-finalized");
+        });
+        const cleanup = enqueueSessionEvent("session-1", async () => {
+            order.push("cleanup");
+        });
+
+        await Promise.resolve();
+        expect(order).toEqual([]);
+        release();
+        await cleanup;
+
+        expect(order).toEqual(["chunk-finalized", "cleanup"]);
+    });
 });
 
 describe("chunked snapshot assembly", () => {

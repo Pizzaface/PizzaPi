@@ -14,6 +14,9 @@ import {
     emitSessionActive,
     buildLiveSessionAnalysis,
     readQueuedFollowUps,
+    recordInFlightMessageState,
+    finishInFlightMessageState,
+    _resetChunkedDeliveryStateForTesting,
 } from "./chunked-delivery.js";
 import type { RelayContext } from "../remote-types.js";
 import { resetSessionAnalysis, sessionAnalysisExtension } from "../session-analysis.js";
@@ -24,6 +27,7 @@ afterEach(() => {
     if (originalSessionId == null) delete process.env.PIZZAPI_SESSION_ID;
     else process.env.PIZZAPI_SESSION_ID = originalSessionId;
     resetSessionAnalysis("test-session");
+    _resetChunkedDeliveryStateForTesting();
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -156,9 +160,7 @@ function createFakePi() {
 
 describe("messagesChangedSinceLastEmit", () => {
     beforeEach(() => {
-        // Reset module-level state by recording a fresh baseline with no messages.
-        // We use a dummy context with no leafId and empty messages so that
-        // subsequent tests start from a known state.
+        _resetChunkedDeliveryStateForTesting();
     });
 
     test("returns true when no baseline has been recorded yet", () => {
@@ -192,6 +194,40 @@ describe("messagesChangedSinceLastEmit", () => {
 
         expect(messagesChangedSinceLastEmit(ctx)).toBe(false);
         expect(messagesChangedSinceLastEmit(ctx)).toBe(false);
+        expect(messagesChangedSinceLastEmit(ctx)).toBe(false);
+    });
+
+    test("does not mark a real chunked refresh complete when delivery fails", async () => {
+        const ctx = makeContext({
+            leafId: "large-message",
+            entries: [{
+                type: "message",
+                id: "large-message",
+                parentId: null,
+                timestamp: new Date(0).toISOString(),
+                message: { role: "user", content: "x".repeat(4_800_000), timestamp: Date.now() },
+            }],
+        });
+
+        emitSessionActive(ctx);
+        expect((ctx.emitted[0] as any).state.chunked).toBe(true);
+        expect(messagesChangedSinceLastEmit(ctx)).toBe(false);
+
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(messagesChangedSinceLastEmit(ctx)).toBe(true);
+    });
+
+    test("suppresses duplicate heartbeat refreshes while a chunk stream is in flight", () => {
+        const ctx = makeContext({ leafId: "leaf-chunking" });
+        const leafId = recordInFlightMessageState(ctx);
+
+        expect(messagesChangedSinceLastEmit(ctx)).toBe(false);
+
+        finishInFlightMessageState(ctx, leafId, false);
+        expect(messagesChangedSinceLastEmit(ctx)).toBe(true);
+
+        recordInFlightMessageState(ctx);
+        finishInFlightMessageState(ctx, leafId, true);
         expect(messagesChangedSinceLastEmit(ctx)).toBe(false);
     });
 });

@@ -216,6 +216,30 @@ describe("useSessionLifecycle", () => {
     expect(apiRef.current!.refs.hydrated.current).toBe(true);
   });
 
+  test("snapshot callbacks update hydration refs before React flushes", () => {
+    const { apiRef } = renderHarness();
+
+    act(() => {
+      apiRef.current!.openSession("session-abc");
+    });
+
+    let immediateChunk: UseSessionLifecycleResult["refs"]["chunked"]["current"] = null;
+    act(() => {
+      apiRef.current!.onSnapshotStarted({ chunked: true, snapshotId: "snap-1", totalMessages: 10 });
+      immediateChunk = apiRef.current!.refs.chunked.current;
+    });
+
+    expect(immediateChunk?.snapshotId).toBe("snap-1");
+    expect(immediateChunk?.chunkBuffer).toBeInstanceOf(Map);
+    expect(apiRef.current!.refs.awaitingSnapshot.current).toBe(false);
+
+    act(() => {
+      apiRef.current!.onSnapshotComplete();
+      expect(apiRef.current!.refs.chunked.current).toBeNull();
+      expect(apiRef.current!.refs.hydrated.current).toBe(true);
+    });
+  });
+
   test("disconnected with isRestarting transitions to reconnecting", () => {
     const { apiRef } = renderHarness();
 

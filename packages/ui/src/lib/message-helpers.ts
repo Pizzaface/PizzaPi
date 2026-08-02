@@ -152,23 +152,6 @@ export function deduplicateMessages(messages: RelayMessage[]): RelayMessage[] {
 }
 
 /**
- * Merge a finalized chunk snapshot with the previous message state.
- *
- * The assembled snapshot takes precedence for every message ID it covers, but
- * any messages already in `prev` whose keys are *not* present in the snapshot
- * (e.g. MCP auth banners, local system messages injected during hydration) are
- * preserved by appending them after the snapshot messages.
- */
-export function mergeChunkSnapshot(
-  snapshotMessages: RelayMessage[],
-  prev: RelayMessage[],
-): RelayMessage[] {
-  const snapshotKeys = new Set(snapshotMessages.map((m) => m.key));
-  const preserved = prev.filter((m) => !snapshotKeys.has(m.key));
-  return preserved.length > 0 ? [...snapshotMessages, ...preserved] : snapshotMessages;
-}
-
-/**
  * Build a synthetic streaming-partial `RelayMessage` from a `tool_execution_update`
  * event's `partialResult`. The shape produced here MUST match the shape of the
  * final tool result delivered via `message_end` so the rendering pipeline
