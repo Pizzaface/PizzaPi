@@ -381,11 +381,23 @@ describe("runner — RunnerServerToClientEvents payloads", () => {
     expect(withLimit.limit).toBe(50);
   });
 
-  test("read_file carries cwd and path", () => {
+  test("read_file carries binary preview options", () => {
     type Payload = Parameters<RunnerServerToClientEvents["read_file"]>[0];
-    const p: Payload = { cwd: "/home/user", path: "src/index.ts" };
-    expect(typeof p.cwd).toBe("string");
-    expect(typeof p.path).toBe("string");
+    const p: Payload = {
+      path: "demo.mp4",
+      encoding: "base64",
+      maxBytes: 10 * 1024 * 1024,
+      rejectTruncated: true,
+    };
+    expect(p.encoding).toBe("base64");
+    expect(p.maxBytes).toBe(10 * 1024 * 1024);
+    expect(p.rejectTruncated).toBe(true);
+  });
+
+  test("cancel_file_request identifies the read to cancel", () => {
+    type Payload = Parameters<RunnerServerToClientEvents["cancel_file_request"]>[0];
+    const p: Payload = { requestId: "read-1" };
+    expect(p.requestId).toBe("read-1");
   });
 
   test("git operations use service_message channel (no dedicated events)", () => {

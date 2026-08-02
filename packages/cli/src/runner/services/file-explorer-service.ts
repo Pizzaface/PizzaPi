@@ -26,21 +26,24 @@ export class FileExplorerService implements ServiceHandler {
     private _onListFiles: ((data: any) => void) | null = null;
     private _onSearchFiles: ((data: any) => void) | null = null;
     private _onReadFile: ((data: any) => void) | null = null;
+    private _onCancelFileRequest: ((data: any) => void) | null = null;
     private _onBrowseDirectory: ((data: any) => void) | null = null;
+    private _activeReadRequests = new Map<string, AbortController>();
 
     init(socket: Socket, { isShuttingDown }: ServiceInitOptions): void {
         this._socket = socket;
 
-        // Helper: emit file_result on both channels (direct + service envelope).
-        // ALL file_result emissions in this service go through this helper so
-        // error paths and success paths are both covered.
-        const emitFileResult = (payload: Record<string, unknown>) => {
+        // REST reads use only the correlated direct response so file content
+        // is never broadcast to unrelated session viewers.
+        const emitFileResult = (payload: Record<string, unknown>, broadcast = true) => {
             socket.emit("file_result" as any, payload);
-            (socket as any).emit("service_message", {
-                serviceId: "file-explorer",
-                type: "file_result",
-                payload,
-            });
+            if (broadcast) {
+                (socket as any).emit("service_message", {
+                    serviceId: "file-explorer",
+                    type: "file_result",
+                    payload,
+                });
+            }
         };
 
         this._onListFiles = async (data: any) => {
@@ -229,48 +232,70 @@ export class FileExplorerService implements ServiceHandler {
                 : encoding === "base64"
                     ? 10 * 1024 * 1024
                     : 256 * 1024; // 10MB for base64, 256KB for text
+            const controller = new AbortController();
+            if (typeof requestId === "string") {
+                this._activeReadRequests.get(requestId)?.abort();
+                this._activeReadRequests.set(requestId, controller);
+            }
+            const emitReadResult = (payload: Record<string, unknown>) => {
+                if (!controller.signal.aborted) emitFileResult(payload, false);
+            };
 
-            if (!filePath) {
-                emitFileResult({ requestId, ok: false, message: "Missing path" });
-                return;
-            }
-            if (!isCwdAllowed(filePath)) {
-                emitFileResult({ requestId, ok: false, message: "Path outside allowed roots" });
-                return;
-            }
             try {
-                const s = await stat(filePath);
-                const truncated = s.size > maxBytes;
-                if (encoding === "base64") {
-                    const buf = await Bun.file(filePath).slice(0, maxBytes).arrayBuffer();
-                    const b64 = Buffer.from(buf).toString("base64");
-                    emitFileResult({
-                        requestId,
-                        ok: true,
-                        content: b64,
-                        encoding: "base64",
-                        size: s.size,
-                        truncated,
-                    });
-                } else {
-                    const fd = await Bun.file(filePath).slice(0, maxBytes).text();
-                    emitFileResult({
-                        requestId,
-                        ok: true,
-                        content: fd,
-                        size: s.size,
-                        truncated,
-                    });
+                if (!filePath) {
+                    emitReadResult({ requestId, ok: false, message: "Missing path" });
+                    return;
                 }
+                if (!isCwdAllowed(filePath)) {
+                    emitReadResult({ requestId, ok: false, message: "Path outside allowed roots" });
+                    return;
+                }
+
+                const s = await stat(filePath);
+                if (controller.signal.aborted) return;
+                if (s.size > maxBytes && (data as any).rejectTruncated === true) {
+                    emitReadResult({ requestId, ok: true, size: s.size, truncated: true });
+                    return;
+                }
+
+                const bytes = Buffer.from(await Bun.file(filePath).slice(0, maxBytes + 1).arrayBuffer());
+                const finalSize = (await stat(filePath)).size;
+                if (controller.signal.aborted) return;
+                const truncated = finalSize > maxBytes || bytes.byteLength > maxBytes;
+                if (truncated && (data as any).rejectTruncated === true) {
+                    emitReadResult({ requestId, ok: true, size: finalSize, truncated: true });
+                    return;
+                }
+
+                const content = bytes.subarray(0, maxBytes);
+                emitReadResult({
+                    requestId,
+                    ok: true,
+                    content: encoding === "base64" ? content.toString("base64") : content.toString("utf8"),
+                    ...(encoding === "base64" ? { encoding: "base64" } : {}),
+                    size: finalSize,
+                    truncated,
+                });
             } catch (err) {
-                emitFileResult({
+                emitReadResult({
                     requestId,
                     ok: false,
                     message: err instanceof Error ? err.message : String(err),
                 });
+            } finally {
+                if (typeof requestId === "string" && this._activeReadRequests.get(requestId) === controller) {
+                    this._activeReadRequests.delete(requestId);
+                }
             }
         };
         socket.on("read_file", this._onReadFile);
+
+        this._onCancelFileRequest = (data: any) => {
+            if (typeof data?.requestId === "string") {
+                this._activeReadRequests.get(data.requestId)?.abort();
+            }
+        };
+        socket.on("cancel_file_request" as any, this._onCancelFileRequest);
     }
 
     dispose(): void {
@@ -280,12 +305,16 @@ export class FileExplorerService implements ServiceHandler {
             if (this._onListFiles) (this._socket as any).off("list_files", this._onListFiles);
             if (this._onSearchFiles) (this._socket as any).off("search_files", this._onSearchFiles);
             if (this._onReadFile) (this._socket as any).off("read_file", this._onReadFile);
+            if (this._onCancelFileRequest) (this._socket as any).off("cancel_file_request", this._onCancelFileRequest);
             if (this._onBrowseDirectory) (this._socket as any).off("browse_directory", this._onBrowseDirectory);
             this._socket = null;
         }
         this._onListFiles = null;
         this._onSearchFiles = null;
         this._onReadFile = null;
+        this._onCancelFileRequest = null;
         this._onBrowseDirectory = null;
+        for (const controller of this._activeReadRequests.values()) controller.abort();
+        this._activeReadRequests.clear();
     }
 }

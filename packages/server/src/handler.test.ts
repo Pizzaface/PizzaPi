@@ -314,7 +314,9 @@ describe("withSecurityHeaders", () => {
 
     test("injects Content-Security-Policy", () => {
         const res = withSecurityHeaders(new Response("ok"));
-        expect(res.headers.get("content-security-policy")).toContain("default-src 'self'");
+        const csp = res.headers.get("content-security-policy");
+        expect(csp).toContain("default-src 'self'");
+        expect(csp).toContain("media-src 'self' data: blob:");
     });
 
     test("preserves existing headers", () => {

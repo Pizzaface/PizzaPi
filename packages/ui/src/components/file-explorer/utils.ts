@@ -14,6 +14,7 @@ import {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 export const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif"]);
+export const VIDEO_EXTENSIONS = new Set(["mp4", "m4v", "mov", "webm", "ogv", "ogg"]);
 export const MARKDOWN_EXTENSIONS = new Set(["md", "mdx"]);
 
 export const POSITION_OPTIONS = [
@@ -66,7 +67,7 @@ export function getFileIcon(name: string): string {
     css: "🎨", html: "🌐", py: "🐍", rs: "🦀", go: "🐹",
     sh: "🐚", bash: "🐚", zsh: "🐚", yml: "⚙️", yaml: "⚙️",
     toml: "⚙️", lock: "🔒", svg: "🖼️", png: "🖼️", jpg: "🖼️",
-    gif: "🖼️", webp: "🖼️", mp4: "🎬", mp3: "🎵", pdf: "📄",
+    gif: "🖼️", webp: "🖼️", mp4: "🎬", m4v: "🎬", mov: "🎬", webm: "🎬", ogv: "🎬", ogg: "🎬", mp3: "🎵", pdf: "📄",
     zip: "📦", tar: "📦", gz: "📦", env: "🔐", gitignore: "🚫",
   };
   return icons[ext] ?? "";
@@ -77,9 +78,27 @@ export function isImageFile(name: string): boolean {
   return IMAGE_EXTENSIONS.has(ext);
 }
 
+export function isVideoFile(name: string): boolean {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  return VIDEO_EXTENSIONS.has(ext);
+}
+
 export function isMarkdownFile(name: string): boolean {
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
   return MARKDOWN_EXTENSIONS.has(ext);
+}
+
+export function getVideoMimeType(name: string): string {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  const mimeMap: Record<string, string> = {
+    mp4: "video/mp4",
+    m4v: "video/mp4",
+    mov: "video/quicktime",
+    webm: "video/webm",
+    ogv: "video/ogg",
+    ogg: "video/ogg",
+  };
+  return mimeMap[ext] ?? "video/mp4";
 }
 
 export function getMimeType(name: string): string {

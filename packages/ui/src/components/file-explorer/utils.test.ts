@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { resolveFilePath, repoRelativePath } from "./utils";
+import { resolveFilePath, repoRelativePath, isVideoFile, getVideoMimeType } from "./utils";
 
 describe("resolveFilePath", () => {
   test("POSIX absolute passes through", () => {
@@ -21,6 +21,21 @@ describe("resolveFilePath", () => {
 
   test("relative joins with Windows cwd using backslash", () => {
     expect(resolveFilePath("C:\\Users\\j\\proj\\", "src/app.ts")).toBe("C:\\Users\\j\\proj\\src/app.ts");
+  });
+});
+
+describe("video files", () => {
+  test("recognizes browser-playable video containers case-insensitively", () => {
+    expect(isVideoFile("demo.MP4")).toBe(true);
+    expect(isVideoFile("demo.webm")).toBe(true);
+    expect(isVideoFile("demo.mov")).toBe(true);
+    expect(isVideoFile("demo.txt")).toBe(false);
+  });
+
+  test("returns the matching video MIME type", () => {
+    expect(getVideoMimeType("demo.mp4")).toBe("video/mp4");
+    expect(getVideoMimeType("demo.webm")).toBe("video/webm");
+    expect(getVideoMimeType("demo.ogv")).toBe("video/ogg");
   });
 });
 

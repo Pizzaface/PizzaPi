@@ -74,7 +74,8 @@ process.on("uncaughtException", (err: Error) => {
 });
 
 // Socket.IO imports
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
+import { nodeReqToFetchRequest } from "./node-request.js";
 import { Server as SocketIOServer } from "socket.io";
 import { createAdapter } from "@socket.io/redis-adapter";
 import { createClient } from "redis";
@@ -115,39 +116,6 @@ try {
 }
 
 // ── Helpers: convert node:http request/response ↔ fetch API ──────────────
-
-function nodeReqToFetchRequest(req: IncomingMessage): Request {
-    const proto = req.headers["x-forwarded-proto"] ?? "http";
-    const host = req.headers.host ?? `localhost:${PORT}`;
-    const url = new URL(req.url ?? "/", `${proto}://${host}`);
-
-    const headers = new Headers();
-    for (const [key, value] of Object.entries(req.headers)) {
-        if (value === undefined) continue;
-        if (key.toLowerCase() === "x-pizzapi-client-ip") continue; // Prevent spoofing
-        if (Array.isArray(value)) {
-            for (const v of value) headers.append(key, v);
-        } else {
-            headers.set(key, value);
-        }
-    }
-
-    // Securely attach the real client IP so downstream routes can use it for rate limiting, etc.
-    if (req.socket.remoteAddress) {
-        headers.set("x-pizzapi-client-ip", req.socket.remoteAddress);
-    }
-
-    const method = (req.method ?? "GET").toUpperCase();
-    const hasBody = method !== "GET" && method !== "HEAD";
-
-    return new Request(url.toString(), {
-        method,
-        headers,
-        body: hasBody ? req as any : undefined,
-        // @ts-expect-error — Bun supports duplex on Request
-        duplex: hasBody ? "half" : undefined,
-    });
-}
 
 async function sendFetchResponse(res: ServerResponse, response: Response): Promise<void> {
     // Security headers are already injected by withSecurityHeaders in handleFetch.
@@ -198,7 +166,7 @@ const httpServer = createServer(async (req, res) => {
     // listener it attaches to httpServer). For all other requests, convert
     // to the fetch API and run through the existing REST + auth handlers.
     try {
-        const fetchReq = nodeReqToFetchRequest(req);
+        const fetchReq = nodeReqToFetchRequest(req, res, PORT);
         const fetchRes = await handleFetch(fetchReq, authContext);
         await sendFetchResponse(res, fetchRes);
     } catch (e) {
@@ -214,7 +182,7 @@ const httpServer = createServer(async (req, res) => {
                 "referrer-policy": "strict-origin-when-cross-origin",
                 "permissions-policy": "camera=(), microphone=(), geolocation=()",
                 "content-security-policy":
-                    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss: blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'",
+                    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' ws: wss: blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'",
             });
             res.end(JSON.stringify({ error: "Internal server error" }));
             return;

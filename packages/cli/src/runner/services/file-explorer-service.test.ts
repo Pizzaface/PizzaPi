@@ -42,6 +42,9 @@ function createFakeSocket() {
                 .filter((e) => e.event === "service_message" && e.data?.serviceId === "file-explorer")
                 .map((e) => e.data);
         },
+        fileResults(): any[] {
+            return emitted.filter((e) => e.event === "file_result").map((e) => e.data);
+        },
     };
 }
 
@@ -178,6 +181,71 @@ describe("FileExplorerService — browse_directory", () => {
         const names = getLastDirNames();
         const sorted = [...names].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
         expect(names).toEqual(sorted);
+    });
+
+    test("does not read oversized binary files when truncation is rejected", async () => {
+        const videoPath = join(tmpDir, "demo.mp4");
+        writeFileSync(videoPath, "0123456789");
+
+        await socket.trigger("read_file", {
+            requestId: "video",
+            path: videoPath,
+            encoding: "base64",
+            maxBytes: 4,
+            rejectTruncated: true,
+        });
+
+        const payload = socket.fileResults().pop();
+        expect(payload).toMatchObject({ ok: true, size: 10, truncated: true });
+        expect(payload?.content).toBeUndefined();
+        expect(socket.serviceMessages()).toHaveLength(0);
+    });
+
+    test("rejects a file that grows beyond the preview limit during the read", async () => {
+        const videoPath = join(tmpDir, "growing.mp4");
+        writeFileSync(videoPath, "0123456789");
+        const originalFile = Bun.file;
+        let grew = false;
+        (Bun as any).file = (...args: Parameters<typeof Bun.file>) => {
+            if (!grew) {
+                writeFileSync(videoPath, "x", { flag: "a" });
+                grew = true;
+            }
+            return originalFile(...args);
+        };
+
+        try {
+            await socket.trigger("read_file", {
+                requestId: "growing",
+                path: videoPath,
+                encoding: "base64",
+                maxBytes: 10,
+                rejectTruncated: true,
+            });
+        } finally {
+            (Bun as any).file = originalFile;
+        }
+
+        const payload = socket.fileResults().pop();
+        expect(payload).toMatchObject({ ok: true, size: 11, truncated: true });
+        expect(payload?.content).toBeUndefined();
+    });
+
+    test("does not emit a result after a read is cancelled", async () => {
+        const videoPath = join(tmpDir, "cancelled.mp4");
+        writeFileSync(videoPath, "0123456789");
+
+        const read = socket.trigger("read_file", {
+            requestId: "cancelled",
+            path: videoPath,
+            encoding: "base64",
+            maxBytes: 10,
+        });
+        await socket.trigger("cancel_file_request", { requestId: "cancelled" });
+        await read;
+
+        expect(socket.fileResults()).toHaveLength(0);
+        expect(socket.serviceMessages()).toHaveLength(0);
     });
 
     test("dispose removes listener", () => {
