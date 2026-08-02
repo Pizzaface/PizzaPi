@@ -147,6 +147,11 @@ export function withLivenessOnlyHint<T extends Record<string, unknown>>(event: T
 }
 
 /** @internal — exported for unit tests only */
+export function shouldAvoidSnapshotFallback(requestedLastSeq: number | undefined, pending: unknown): boolean {
+    return requestedLastSeq !== undefined || (pending !== null && pending !== undefined);
+}
+
+/** @internal — exported for unit tests only */
 export function isViewerSwitchCurrent(currentGeneration: number | undefined, requestedGeneration?: number): boolean {
     return requestedGeneration === undefined || currentGeneration === requestedGeneration;
 }
@@ -492,13 +497,14 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 } catch {}
             }
 
-            // If a chunked delivery is in-flight, lastState is stale (chunked
-            // session_active intentionally skips updating it). Emitting the old
-            // non-chunked snapshot here would overwrite the chunked header the
-            // viewer already received via the room broadcast, clear chunk-tracking
-            // in App.tsx, and cause remaining chunks to be dropped. Skip it and
-            // let the runner's fresh chunked delivery hydrate the viewer instead.
-            if (freshSession.lastState && !chunkedPending) {
+            // A seq cache miss must recover from the runner; an unsequenced
+            // snapshot can rewind a client that already has newer events. The
+            // same applies while a chunked checkpoint is still assembling.
+            if (shouldAvoidSnapshotFallback(requestedLastSeq, chunkedPending)) {
+                return;
+            }
+
+            if (freshSession.lastState) {
                 try {
                     socket.emit("event", {
                         event: withMetaViaHubHint({ type: "session_active", state: JSON.parse(freshSession.lastState) }),
@@ -506,13 +512,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                         generation,
                     });
                 } catch {}
-            } else if (!chunkedPending) {
-                // No in-memory state — fall back to event cache.
-                // Don't send partial chunked snapshots here — they'd arrive as
-                // non-chunked SA events, set lastCompletedSnapshotRef, and cause
-                // the UI to reject subsequent chunks from the active stream.
-                // The runner re-emits a fresh snapshot on the "connected" event
-                // above, which will properly restart chunked delivery.
+            } else {
                 await sendLatestSnapshotFromCache(socket, nextSessionId, generation);
             }
         };
@@ -548,20 +548,13 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
         socket.on("resync", async (data) => {
             const currentSessionId = getCurrentSessionId();
             if (!currentSessionId) return;
-            // If a chunked delivery is in-flight on this node, skip
-            // sendSnapshotToViewer() entirely — that helper unconditionally
-            // emits lastState (the previous completed non-chunked snapshot),
-            // which would clear chunkedDeliveryRef on the client and cause all
-            // remaining session_messages_chunk events from the active stream to
-            // be dropped.  Ask the runner for a fresh chunked delivery instead;
-            // it will arrive in-order via the room broadcast.
+            // Never answer an in-flight chunk resync with lastState: it is the
+            // previous completed checkpoint until server assembly finishes.
+            // The client keeps the last good transcript visible and retries on
+            // an incomplete final chunk, after finalization is durable.
             //
-            // Note: getPendingChunkedSnapshot() reads node-local in-memory state.
-            // In a multi-node deployment this returns null when the delivery is
-            // managed by a different server node.  In that case we fall through to
-            // sendSnapshotToViewer(), which is the same behaviour as before this
-            // guard was added — a degraded-but-safe fallback for a deployment
-            // topology PizzaPi doesn't formally support.
+            // getPendingChunkedSnapshot() is node-local. Multi-node deployments
+            // still need sticky routing or shared pending state for this guard.
             const requestedLastSeq = typeof data?.lastSeq === "number" && Number.isFinite(data.lastSeq) ? data.lastSeq : undefined;
             const resyncChunkedPending = getPendingChunkedSnapshot(currentSessionId);
             if (requestedLastSeq !== undefined && !resyncChunkedPending) {
@@ -573,22 +566,13 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                     return;
                 }
             }
-            if (resyncChunkedPending) {
-                // A chunked delivery is in-flight on this node.  DON'T request
-                // a room-wide re-emit via emitToRelaySession("connected") —
-                // that triggers emitSessionActive() on the runner which
-                // broadcasts to ALL viewers, resetting every watcher's
-                // transcript even though only this one viewer needed recovery.
-                //
-                // Fall through to sendSnapshotToViewer() below instead.  This
-                // sends the previous completed (non-chunked) lastState — it's
-                // slightly stale but gives the viewer a complete transcript.
-                // The non-chunked SA will set lastCompletedSnapshotRef on the
-                // client, which rejects remaining chunks from the in-flight
-                // delivery.  That's acceptable: the viewer has a working
-                // transcript, and the next session_active (from normal agent
-                // activity or a later resync after the chunked delivery
-                // finishes) will bring them fully up to date.
+            if (shouldAvoidSnapshotFallback(requestedLastSeq, resyncChunkedPending)) {
+                // Cache miss with a client cursor requires a newly sequenced
+                // runner snapshot; stale lastState cannot safely fill the gap.
+                if (requestedLastSeq !== undefined && !resyncChunkedPending) {
+                    forwardRecoveryConnectedSignal(currentSessionId);
+                }
+                return;
             }
 
             await sendSnapshotToViewer(currentSessionId, socket);

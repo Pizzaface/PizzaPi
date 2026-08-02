@@ -129,7 +129,7 @@ export type SessionLifecycleAction =
   | { type: "DISCONNECTED"; reason: string; isRestarting?: boolean; stopReconnect?: boolean }
   | { type: "RECONNECTING" }
   | { type: "RESTART_PENDING_CLEARED" }
-  | { type: "SNAPSHOT_STARTED"; chunked?: boolean; snapshotId?: string; totalMessages?: number }
+  | { type: "SNAPSHOT_STARTED"; chunked?: boolean; snapshotId?: string; totalMessages?: number; chunkState: ChunkedDeliveryState | null }
   | { type: "CHUNK_RECEIVED"; loaded: number; total: number }
   | { type: "SNAPSHOT_COMPLETE" }
   | { type: "ERROR"; error: string }
@@ -154,7 +154,25 @@ export const sessionLifecycleActions: SessionLifecycleActions = {
   disconnected: (payload) => ({ type: "DISCONNECTED", ...payload }),
   reconnecting: () => ({ type: "RECONNECTING" }),
   restartPendingCleared: () => ({ type: "RESTART_PENDING_CLEARED" }),
-  snapshotStarted: (payload = {}) => ({ type: "SNAPSHOT_STARTED", ...payload }),
+  snapshotStarted: (payload = {}) => {
+    const totalMessages = typeof payload.totalMessages === "number" ? payload.totalMessages : 0;
+    return {
+      type: "SNAPSHOT_STARTED",
+      ...payload,
+      totalMessages,
+      chunkState: payload.chunked === true
+        ? {
+            snapshotId: payload.snapshotId ?? "",
+            totalMessages,
+            totalChunks: 0,
+            receivedChunkIndexes: new Set<number>(),
+            finalChunkSeen: false,
+            loadedMessages: 0,
+            chunkBuffer: new Map<number, unknown[]>(),
+          }
+        : null,
+    };
+  },
   chunkReceived: (loaded, total) => ({ type: "CHUNK_RECEIVED", loaded, total }),
   snapshotComplete: () => ({ type: "SNAPSHOT_COMPLETE" }),
   error: (error) => ({ type: "ERROR", error }),
@@ -364,7 +382,7 @@ export function sessionLifecycleReducer(
     case "SNAPSHOT_STARTED": {
       if (!state.activeSessionId) return state;
       const isChunked = action.chunked === true;
-      const totalMessages = typeof action.totalMessages === "number" ? action.totalMessages : 0;
+      const totalMessages = action.totalMessages;
 
       if (isChunked) {
         return {
@@ -375,15 +393,7 @@ export function sessionLifecycleReducer(
             ...state.hydration,
             awaitingSnapshot: false,
             hydrated: false,
-            chunked: {
-              snapshotId: action.snapshotId ?? "",
-              totalMessages,
-              totalChunks: 0,
-              receivedChunkIndexes: new Set(),
-              finalChunkSeen: false,
-              loadedMessages: 0,
-              chunkBuffer: new Map(),
-            },
+            chunked: action.chunkState,
             lastCompletedSnapshot: null,
           },
         };

@@ -38,6 +38,13 @@ export function shouldDeferEventForHydration(
   return false;
 }
 
+export function shouldRequestChunkRecovery(
+  finalChunkSeen: boolean,
+  readyToFinalize: boolean,
+): boolean {
+  return finalChunkSeen && !readyToFinalize;
+}
+
 export function shouldAllowOutOfOrderSnapshotDuringHydration(
   eventType: string,
   awaitingSnapshot: boolean,

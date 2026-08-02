@@ -217,7 +217,13 @@ export function computeChunkBoundaries(messages: unknown[], sizes?: number[]): A
  * Each chunk carries a `snapshotId` that matches the session_active event,
  * so the UI can discard stale chunks from a previous snapshot stream.
  */
-function sendChunkedMessages(rctx: RelayContext, rawMessages: unknown[], snapshotId: string, rawSizes?: number[]): void {
+function sendChunkedMessages(
+    rctx: RelayContext,
+    rawMessages: unknown[],
+    snapshotId: string,
+    onComplete: (delivered: boolean) => void,
+    rawSizes?: number[],
+): void {
     const initialSizes = rawSizes ?? computeMessageSizes(rawMessages);
     const { messages, sizes } = capOversizedMessagesInternal(rawMessages, initialSizes);
     const chunks = computeChunkBoundariesInternal(messages, sizes);
@@ -231,10 +237,14 @@ function sendChunkedMessages(rctx: RelayContext, rawMessages: unknown[], snapsho
     let chunkIndex = 0;
 
     function sendNextChunk() {
-        if (!rctx.relay || !rctx.sioSocket?.connected) return; // disconnected mid-stream
-        if (chunkIndex >= totalChunks) return;
-        // A newer emitSessionActive() superseded this sender — stop.
+        // A newer emitSessionActive() superseded this sender — stop before any
+        // cleanup, because the newer sender owns the in-flight marker.
         if (activeChunkedSnapshotId !== snapshotId) return;
+        if (!rctx.relay || !rctx.sioSocket?.connected) {
+            onComplete(false);
+            return;
+        }
+        if (chunkIndex >= totalChunks) return;
 
         const [start, end] = chunks[chunkIndex];
         const isFinal = chunkIndex === totalChunks - 1;
@@ -251,7 +261,9 @@ function sendChunkedMessages(rctx: RelayContext, rawMessages: unknown[], snapsho
 
         chunkIndex++;
 
-        if (chunkIndex < totalChunks) {
+        if (isFinal) {
+            onComplete(true);
+        } else if (chunkIndex < totalChunks) {
             // Yield the event loop so Socket.IO can process pings/acks between chunks
             setImmediate(sendNextChunk);
         }
@@ -276,6 +288,7 @@ interface LastEmittedMessageState {
     leafId: string | null;
 }
 let lastEmittedMessageState: LastEmittedMessageState | null = null;
+let inFlightMessageLeafId: string | null = null;
 
 function getLiveModel(rctx: RelayContext, fallback: unknown | (() => unknown)) {
     const liveModel = rctx.latestCtx?.model;
@@ -351,10 +364,36 @@ export function buildLiveSessionAnalysis(rctx: RelayContext): SessionAnalysis | 
  * Record the current message state as "last emitted" after a full session_active.
  * Exported for unit testing.
  */
-export function recordEmittedMessageState(rctx: RelayContext): void {
+export function recordEmittedMessageState(rctx: RelayContext, leafId?: string | null): void {
     lastEmittedMessageState = {
-        leafId: rctx.latestCtx?.sessionManager.getLeafId() ?? null,
+        leafId: leafId === undefined
+            ? rctx.latestCtx?.sessionManager.getLeafId() ?? null
+            : leafId,
     };
+}
+
+/** Mark a chunked checkpoint as actively draining without claiming success. */
+export function recordInFlightMessageState(rctx: RelayContext): string | null {
+    inFlightMessageLeafId = rctx.latestCtx?.sessionManager.getLeafId() ?? null;
+    return inFlightMessageLeafId;
+}
+
+/** Complete the current chunk sender; failed sends remain eligible for refresh. */
+export function finishInFlightMessageState(
+    rctx: RelayContext,
+    leafId: string | null,
+    delivered: boolean,
+): void {
+    if (inFlightMessageLeafId !== leafId) return;
+    inFlightMessageLeafId = null;
+    if (delivered) recordEmittedMessageState(rctx, leafId);
+}
+
+/** @internal — reset module state between tests. */
+export function _resetChunkedDeliveryStateForTesting(): void {
+    activeChunkedSnapshotId = null;
+    lastEmittedMessageState = null;
+    inFlightMessageLeafId = null;
 }
 
 /**
@@ -369,8 +408,9 @@ export function recordEmittedMessageState(rctx: RelayContext): void {
  * Exported for unit testing.
  */
 export function messagesChangedSinceLastEmit(rctx: RelayContext): boolean {
-    if (!lastEmittedMessageState) return true; // no baseline yet
     const currentLeafId = rctx.latestCtx?.sessionManager.getLeafId() ?? null;
+    if (inFlightMessageLeafId !== null && currentLeafId === inFlightMessageLeafId) return false;
+    if (!lastEmittedMessageState) return true;
     return currentLeafId !== lastEmittedMessageState.leafId;
 }
 
@@ -413,6 +453,7 @@ export function emitSessionActive(rctx: RelayContext, recoveryNonce?: string): v
         const snapshotId = randomUUID();
         // Cancel any in-flight chunked sender from a previous call.
         activeChunkedSnapshotId = snapshotId;
+        const snapshotLeafId = recordInFlightMessageState(rctx);
         rctx.forwardEvent({
             type: "session_active",
             ...(recoveryNonce !== undefined ? { recoveryNonce } : {}),
@@ -424,13 +465,19 @@ export function emitSessionActive(rctx: RelayContext, recoveryNonce?: string): v
                 totalMessages: messages.length,
             },
         });
-        recordEmittedMessageState(rctx);
-        sendChunkedMessages(rctx, messages, snapshotId, messageSizes);
+        sendChunkedMessages(
+            rctx,
+            messages,
+            snapshotId,
+            (delivered) => finishInFlightMessageState(rctx, snapshotLeafId, delivered),
+            messageSizes,
+        );
     } else {
         // Small session — single event (original path).
         // Cancel any in-flight chunked sender since we're replacing with a full snapshot.
         // Still cap individual oversized messages to avoid transport failures.
         activeChunkedSnapshotId = null;
+        inFlightMessageLeafId = null;
         rctx.forwardEvent({
             type: "session_active",
             ...(recoveryNonce !== undefined ? { recoveryNonce } : {}),

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isActiveViewerSessionPayload, matchesViewerGeneration } from "./viewer-switch";
+import { isActiveViewerSessionPayload, matchesHydrationGeneration, matchesViewerGeneration } from "./viewer-switch";
 
 describe("matchesViewerGeneration", () => {
   test("accepts payloads without a generation", () => {
@@ -16,6 +16,22 @@ describe("matchesViewerGeneration", () => {
 
   test("rejects generated payloads when no current generation is set", () => {
     expect(matchesViewerGeneration(undefined, 1)).toBe(false);
+  });
+});
+
+describe("matchesHydrationGeneration", () => {
+  test("accepts an untagged state header while awaiting a cache-miss recovery", () => {
+    expect(matchesHydrationGeneration(4, undefined, "session_active", true)).toBe(true);
+    expect(matchesHydrationGeneration(4, undefined, "agent_end", true)).toBe(true);
+  });
+
+  test("rejects untagged deltas and chunks before the state header", () => {
+    expect(matchesHydrationGeneration(4, undefined, "message_update", true)).toBe(false);
+    expect(matchesHydrationGeneration(4, undefined, "session_messages_chunk", true)).toBe(false);
+  });
+
+  test("still rejects explicitly stale generations", () => {
+    expect(matchesHydrationGeneration(4, 3, "session_active", true)).toBe(false);
   });
 });
 

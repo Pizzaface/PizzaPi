@@ -77,7 +77,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
         // pendingChunkedStates immediately, any chunks still queued in
         // enqueueSessionEvent() would wake up, find no pending state, and
         // skip final assembly — leaving the session with a stale snapshot.
-        enqueueSessionEvent(sessionId, async () => {
+        await enqueueSessionEvent(sessionId, async () => {
             pendingChunkedStates.delete(sessionId);
         });
         void clearPushPendingQuestion(sessionId);
@@ -123,7 +123,11 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             }
 
             clearThinkingMaps(sessionId);
-            pendingChunkedStates.delete(sessionId);
+            // Drain chunk handlers before deleting their assembly state or the
+            // last queued chunk can lose the durable checkpoint on disconnect.
+            await enqueueSessionEvent(sessionId, async () => {
+                pendingChunkedStates.delete(sessionId);
+            });
             void clearPushPendingQuestion(sessionId);
             // NOTE: We intentionally do NOT remove the child from the
             // parent's children set here.  Doing so races with

@@ -168,7 +168,7 @@ export async function finalizeChunkedSnapshot(
 // scrambling the viewer's message assembly.
 export const sessionEventQueues = new Map<string, Promise<void>>();
 
-export function enqueueSessionEvent(sessionId: string, fn: () => Promise<void>): void {
+export function enqueueSessionEvent(sessionId: string, fn: () => Promise<void>): Promise<void> {
     const prev = sessionEventQueues.get(sessionId) ?? Promise.resolve();
     const next = prev
         .then(fn, fn) // always chain, even on prior rejection
@@ -184,6 +184,7 @@ export function enqueueSessionEvent(sessionId: string, fn: () => Promise<void>):
             sessionEventQueues.delete(sessionId);
         }
     });
+    return next;
 }
 
 /**
