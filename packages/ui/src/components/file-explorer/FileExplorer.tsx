@@ -15,8 +15,9 @@ import {
   ChevronsDownUp,
 } from "lucide-react";
 import { FileEntry, FileExplorerProps } from "./types";
-import { shouldInterceptEscape, isImageFile, isMarkdownFile, getFileIcon, formatSize, repoRelativePath } from "./utils";
+import { shouldInterceptEscape, isImageFile, isVideoFile, isMarkdownFile, getFileIcon, formatSize, repoRelativePath } from "./utils";
 import { ImageViewer } from "./image-viewer";
+import { VideoViewer } from "./video-viewer";
 import { FileViewer } from "./file-viewer";
 import { MarkdownViewer } from "./markdown-viewer";
 import { useGitService } from "@/hooks/useGitService";
@@ -310,12 +311,19 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
   if (viewingFile) {
     const viewingFileName = viewingFile.split(/[\\/]/).pop() ?? viewingFile;
     const isImage = isImageFile(viewingFileName);
+    const isVideo = isVideoFile(viewingFileName);
     const isMarkdown = isMarkdownFile(viewingFileName);
 
     return (
       <div ref={previewContainerRef} tabIndex={-1} data-escape-abort-guard className={cn("flex flex-col bg-background text-foreground outline-none", className)}>
         {isImage ? (
           <ImageViewer
+            runnerId={runnerId}
+            filePath={viewingFile}
+            onClose={() => setViewingFile(null)}
+          />
+        ) : isVideo ? (
+          <VideoViewer
             runnerId={runnerId}
             filePath={viewingFile}
             onClose={() => setViewingFile(null)}
@@ -461,6 +469,7 @@ export { GitChangesView } from "./git-changes-view";
 export { PositionPicker } from "./position-picker";
 export { FileTreeNode } from "./file-tree-node";
 export { ImageViewer } from "./image-viewer";
+export { VideoViewer } from "./video-viewer";
 export { FileViewer } from "./file-viewer";
 export { MarkdownViewer } from "./markdown-viewer";
 export {
@@ -468,10 +477,13 @@ export {
   formatSize,
   getFileIcon,
   isImageFile,
+  isVideoFile,
   isMarkdownFile,
   getMimeType,
+  getVideoMimeType,
   gitStatusLabel,
   IMAGE_EXTENSIONS,
+  VIDEO_EXTENSIONS,
   MARKDOWN_EXTENSIONS,
   POSITION_OPTIONS,
   repoRelativePath,
