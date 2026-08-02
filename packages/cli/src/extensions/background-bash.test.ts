@@ -1,8 +1,18 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { spawn } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { backgroundBashExtension, backgroundPendingJobs, pendingCommands, backgroundAfterSeconds } from "./background-bash.js";
+import { sessionJobsFilePath } from "../runner/session-procs.js";
 
-// Keep the auto-background window out of the way unless a test opts in.
-beforeAll(() => { process.env.PIZZAPI_BASH_BACKGROUND_SECONDS = "30"; });
+// Keep the auto-background window out of the way unless a test opts in, and
+// never write to the real session's proc/jobs files (inherited when tests run
+// under a PizzaPi worker).
+beforeAll(() => {
+    process.env.PIZZAPI_BASH_BACKGROUND_SECONDS = "30";
+    delete process.env.PIZZAPI_SESSION_PROC_FILE;
+});
 afterAll(() => { delete process.env.PIZZAPI_BASH_BACKGROUND_SECONDS; });
 
 function mockPi() {
@@ -175,9 +185,121 @@ describe("bash override with backgrounding", () => {
         expect(again.content[0].text).toContain("already");
     });
 
-    test("shortcut and /background command are registered", () => {
+    test("shortcut, /background, and /shells commands are registered", () => {
         const { pi } = getTool();
         expect(pi.shortcuts.has("ctrl+shift+b")).toBe(true);
         expect(pi.commands.has("background")).toBe(true);
+        expect(pi.commands.has("shells")).toBe(true);
+    });
+});
+
+describe("process tracking and lifecycle", () => {
+    function withProcFile(): { dir: string; procFile: string; jobsFile: string; cleanup: () => void } {
+        const dir = mkdtempSync(join(tmpdir(), "bgbash-"));
+        const procFile = join(dir, "s.pids");
+        process.env.PIZZAPI_SESSION_PROC_FILE = procFile;
+        return {
+            dir,
+            procFile,
+            jobsFile: sessionJobsFilePath(procFile),
+            cleanup: () => {
+                delete process.env.PIZZAPI_SESSION_PROC_FILE;
+                rmSync(dir, { recursive: true, force: true });
+            },
+        };
+    }
+
+    /** Spawn-and-reap a process to get a pid that is definitely dead. */
+    async function deadPid(): Promise<number> {
+        const p = spawn("true");
+        await new Promise((r) => p.on("close", r));
+        return p.pid!;
+    }
+
+    test("records the command's group-leader pid into the session proc file", async () => {
+        const { procFile, cleanup } = withProcFile();
+        try {
+            const { tool } = getTool();
+            await run(tool, { command: "echo hi", title: "hi" });
+            const pids = readFileSync(procFile, "utf8").trim().split("\n").map(Number);
+            expect(pids.length).toBe(1);
+            expect(pids[0]).toBeGreaterThan(0);
+        } finally {
+            cleanup();
+        }
+    });
+
+    test("persists backgrounded jobs and marks their exit", async () => {
+        const { jobsFile, cleanup } = withProcFile();
+        try {
+            const { tool } = getTool();
+            const res = await run(tool, { command: "sleep 0.3; exit 5", title: "Flaky", run_in_background: true });
+            const pid = Number(res.content[0].text.match(/pid (\d+)/)![1]);
+
+            const persisted = JSON.parse(readFileSync(jobsFile, "utf8"));
+            const rec = persisted.find((j: any) => j.pid === pid);
+            expect(rec.title).toBe("Flaky");
+            expect(rec.endedAt).toBeUndefined();
+
+            await Bun.sleep(800);
+            const after = JSON.parse(readFileSync(jobsFile, "utf8")).find((j: any) => j.pid === pid);
+            expect(after.exitCode).toBe(5);
+            expect(after.endedAt).toBeGreaterThan(0);
+        } finally {
+            cleanup();
+        }
+    });
+
+    test("recovers persisted jobs on startup; dead ones marked lost, log still readable", async () => {
+        const { dir, jobsFile, cleanup } = withProcFile();
+        try {
+            const pid = await deadPid();
+            const logPath = join(dir, "dev.log");
+            writeFileSync(logPath, "old output here");
+            writeFileSync(
+                jobsFile,
+                JSON.stringify([{ pid, command: "npm run dev", title: "Dev server", logPath, startedAt: Date.now() - 5000, readOffset: 0 }]),
+            );
+
+            const { pi } = getTool(); // factory runs loadJobs()
+            const bashOutput = pi.tools.get("bash_output")!;
+            const listing = await bashOutput.execute("id", {});
+            expect(listing.content[0].text).toContain("npm run dev");
+            expect(listing.content[0].text).toContain("lost to a worker restart");
+
+            const out = await bashOutput.execute("id", { pid });
+            expect(out.content[0].text).toContain("old output here");
+        } finally {
+            cleanup();
+        }
+    });
+
+    test("/new reset kills running shells, silences completions, removes logs", async () => {
+        const { pi, tool } = getTool();
+        const res = await run(tool, { command: "sleep 30", title: "Server", run_in_background: true });
+        const pid = Number(res.content[0].text.match(/pid (\d+)/)![1]);
+        const logPath = res.content[0].text.match(/goes to (\S+)\./)![1];
+
+        pi.emit("session_switch", { reason: "new" });
+
+        const listing = await pi.tools.get("bash_output")!.execute("id", {});
+        expect(listing.content[0].text).toBe("No background shells.");
+        expect(existsSync(logPath)).toBe(false);
+
+        await Bun.sleep(300);
+        expect(pi.messages.length).toBe(0); // completion suppressed — old conversation is gone
+        expect(() => process.kill(pid, 0)).toThrow(); // actually dead
+    });
+
+    test("session_shutdown kills running shells without notifying", async () => {
+        const { pi, tool } = getTool();
+        const res = await run(tool, { command: "sleep 30", title: "Server", run_in_background: true });
+        const pid = Number(res.content[0].text.match(/pid (\d+)/)![1]);
+
+        pi.emit("session_shutdown");
+
+        await Bun.sleep(300);
+        expect(pi.messages.length).toBe(0);
+        expect(() => process.kill(pid, 0)).toThrow();
     });
 });

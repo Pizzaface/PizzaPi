@@ -1,10 +1,12 @@
 import { spawn } from "node:child_process";
-import { createWriteStream, openSync, readSync, closeSync, statSync, unlinkSync } from "node:fs";
+import { createWriteStream, openSync, readSync, closeSync, statSync, unlinkSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "../config.js";
+import { SHELL_PROC_CAPTURE_PREFIX, sessionJobsFilePath, readSessionJobs } from "../runner/session-procs.js";
+export { tailFile } from "../runner/session-procs.js";
 
 /**
  * Bash override with auto-backgrounding.
@@ -26,7 +28,6 @@ import { loadConfig } from "../config.js";
  * and this override keeps the name "bash".
  */
 
-const TAIL_BYTES = 4000;
 const DEFAULT_BACKGROUND_AFTER_SECONDS = 15;
 const DELIVERY_RETRY_MS = 10_000;
 const MAX_DELIVERY_ATTEMPTS = 3;
@@ -66,11 +67,59 @@ interface BackgroundJob {
     endedAt?: number;
     /** Byte offset of the last bash_output read — next read returns only new output. */
     readOffset: number;
+    /** Loaded from disk after a worker restart — no exit notification possible. */
+    recovered?: boolean;
+    /** Found dead on recovery — exit status was lost with the old worker. */
+    lost?: boolean;
 }
 
 /** Backgrounded jobs (running or exited), keyed by pid. Kept for bash_output/kill_shell. */
 // ponytail: unbounded per-session map of tiny records (output lives on disk) — prune if sessions ever run thousands of background jobs.
+// ponytail: keyed by OS pid — pid reuse within one session would overwrite an exited record; harmless enough to ignore.
 const jobs = new Map<number, BackgroundJob>();
+
+/** Persisted registry path (worker mode only — unset in TUI, where nothing reads it). */
+function jobsFilePath(): string | undefined {
+    const procFile = process.env.PIZZAPI_SESSION_PROC_FILE;
+    return procFile ? sessionJobsFilePath(procFile) : undefined;
+}
+
+/** Persist the jobs registry so the daemon's Processes panel and a restarted worker can see it. */
+function saveJobs(): void {
+    const path = jobsFilePath();
+    if (!path) return;
+    try {
+        if (jobs.size === 0) rmSync(path, { force: true });
+        else writeFileSync(path, JSON.stringify([...jobs.values()]));
+    } catch {
+        // best-effort
+    }
+}
+
+function isAlive(pid: number): boolean {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/** Recover persisted jobs after a worker restart. Exit notifications are gone with the old worker. */
+function loadJobs(): void {
+    const path = jobsFilePath();
+    if (!path) return;
+    for (const j of readSessionJobs(path)) {
+        if (jobs.has(j.pid)) continue;
+        const job: BackgroundJob = { ...j, readOffset: j.readOffset ?? 0, recovered: true };
+        if (job.endedAt === undefined && !isAlive(job.pid)) {
+            job.endedAt = Date.now();
+            job.lost = true;
+        }
+        jobs.set(j.pid, job);
+    }
+    saveJobs();
+}
 
 /** Read a file from `offset` to EOF. */
 function readFrom(path: string, offset: number): { text: string; newOffset: number } {
@@ -91,7 +140,8 @@ function readFrom(path: string, offset: number): { text: string; newOffset: numb
 }
 
 function jobStatus(job: BackgroundJob): string {
-    if (job.endedAt === undefined) return "running";
+    if (job.endedAt === undefined) return job.recovered ? "running (recovered — no exit notification, poll bash_output)" : "running";
+    if (job.lost) return "ended (exit status lost to a worker restart)";
     if (job.signal) return `killed by ${job.signal}`;
     return `exited ${job.exitCode}`;
 }
@@ -99,7 +149,10 @@ function jobStatus(job: BackgroundJob): string {
 function listJobsText(): string {
     if (jobs.size === 0) return "No background shells.";
     return [...jobs.values()]
-        .map((j) => `pid ${j.pid} [${jobStatus(j)}] ${j.title} — ${j.command} (log: ${j.logPath})`)
+        .map((j) => {
+            const runtime = Math.round(((j.endedAt ?? Date.now()) - j.startedAt) / 1000);
+            return `pid ${j.pid} [${jobStatus(j)}, ${runtime}s] ${j.title} — ${j.command} (log: ${j.logPath})`;
+        })
         .join("\n");
 }
 
@@ -119,25 +172,6 @@ export function backgroundPendingJobs(): string[] {
     return commands;
 }
 
-/** Last `maxBytes` of a file, as text. */
-export function tailFile(path: string, maxBytes = TAIL_BYTES): string {
-    let fd: number | undefined;
-    try {
-        const size = statSync(path).size;
-        const start = Math.max(0, size - maxBytes);
-        const len = size - start;
-        if (len === 0) return "";
-        const buf = Buffer.allocUnsafe(len);
-        fd = openSync(path, "r");
-        readSync(fd, buf, 0, len, start);
-        return (start > 0 ? `…(truncated, full log at ${path})\n` : "") + buf.toString("utf8");
-    } catch {
-        return "";
-    } finally {
-        if (fd !== undefined) closeSync(fd);
-    }
-}
-
 export function formatCompletion(
     title: string,
     code: number | null,
@@ -150,6 +184,8 @@ export function formatCompletion(
 }
 
 function killTree(pid: number): void {
+    // pid <= 0 would signal init's group (-pid) or every user process (kill(-1)).
+    if (!Number.isInteger(pid) || pid <= 0) return;
     try {
         // Detached on POSIX → child is its own group leader; kill the group.
         process.platform === "win32" ? process.kill(pid) : process.kill(-pid);
@@ -200,11 +236,49 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
         }
     }
 
-    pi.on("agent_start" as any, () => { streaming = true; });
+    pi.on("agent_start" as any, (_event: any, ctx: any) => {
+        streaming = true;
+        if (ctx?.ui) ui = ctx.ui;
+    });
     pi.on("agent_settled" as any, () => { streaming = false; sweep(); });
     pi.on("message_start" as any, (event: any) => {
         const deliveryId = event?.message?.details?.deliveryId;
         if (deliveryId) undelivered.delete(deliveryId);
+    });
+
+    // ── lifecycle: recover persisted jobs, kill on shutdown / /new reset ─────
+    let ui: { setStatus?: (key: string, text: string | undefined) => void; notify?: (msg: string, level?: string) => void } | undefined;
+    const updateStatus = () => {
+        const running = [...jobs.values()].filter((j) => j.endedAt === undefined).length;
+        ui?.setStatus?.("bg-shells", running > 0 ? `${running} bg shell${running === 1 ? "" : "s"}` : undefined);
+    };
+
+    loadJobs();
+
+    /** Kill running jobs, drop their logs, and forget everything — session is over or reset. */
+    const cleanupJobs = () => {
+        for (const job of jobs.values()) {
+            if (job.endedAt === undefined) killTree(job.pid);
+            try { unlinkSync(job.logPath); } catch { /* best effort */ }
+        }
+        jobs.clear();
+        saveJobs();
+        undelivered.clear();
+        if (sweeper) {
+            clearInterval(sweeper);
+            sweeper = undefined;
+        }
+        updateStatus();
+    };
+    pi.on("session_shutdown" as any, async () => { cleanupJobs(); });
+    pi.on("session_start" as any, (_event: any, ctx: any) => {
+        if (ctx?.ui) ui = ctx.ui;
+        updateStatus();
+    });
+    // /new resets the conversation in place — old shells (and their completions)
+    // must not bleed into it. Other switches keep jobs: same worker, same user.
+    pi.on("session_switch" as any, (event: any) => {
+        if (event?.reason === "new") cleanupJobs();
     });
 
     const notifyExit = (title: string, command: string, code: number | null, sig: string | null, ms: number, logPath: string, pid: number | undefined) => {
@@ -239,9 +313,13 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
         const logPath = join(tmpdir(), `pizzapi-bash-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.log`);
         const log = createWriteStream(logPath);
         const startedAt = Date.now();
+        // Record this command's detached group-leader PID for the daemon's
+        // process tracking (Processes panel + end-of-session reaping). The
+        // prefix is self-guarded on $PIZZAPI_SESSION_PROC_FILE — no-op in TUI.
+        const spawnCommand = process.platform === "win32" ? command : `${SHELL_PROC_CAPTURE_PREFIX}\n${command}`;
         // ponytail: shell:true instead of pi's getShellConfig — loses custom
         // shellPath/windows stdin transport; wire pi's shell utils if that bites.
-        const child = spawn(command, {
+        const child = spawn(spawnCommand, {
             shell: true,
             cwd,
             env,
@@ -271,6 +349,8 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
                 job.exitCode = r.code;
                 job.signal = r.sig;
                 job.endedAt = Date.now();
+                saveJobs();
+                updateStatus();
             }
             await new Promise<void>((res) => log.end(res));
             return r;
@@ -293,7 +373,7 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
         try {
             const bg = new Promise<"bg">((resolve) => {
                 if (runInBackground) return resolve("bg");
-                waiting.set(pid, { command, backgroundNow: () => resolve("bg") });
+                if (pid > 0) waiting.set(pid, { command, backgroundNow: () => resolve("bg") });
                 // Auto-background once the foreground streaming window elapses.
                 const after = backgroundAfterSeconds();
                 bgTimer = setTimeout(() => resolve("bg"), after * 1000);
@@ -313,7 +393,11 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
             // Backgrounded: stop streaming, let it run, notify on exit.
             backgrounded = true;
             waiting.delete(pid);
-            jobs.set(pid, { pid, command, title, logPath, startedAt, readOffset: 0 });
+            if (pid > 0) {
+                jobs.set(pid, { pid, command, title, logPath, startedAt, readOffset: 0 });
+                saveJobs();
+                updateStatus();
+            }
             onData(Buffer.from(
                 `\n[Still running: "${title}" (pid ${pid}). Output now goes to ${logPath}. ` +
                 `A message will arrive in this session when it exits — do NOT use sleep or poll for it. ` +
@@ -321,6 +405,9 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
             ));
             void exited.then(({ code, sig }) => {
                 if (timer) clearTimeout(timer);
+                // Cleaned up in the meantime (shutdown or /new)? Stay quiet — the
+                // conversation this shell belonged to is gone.
+                if (pid > 0 && !jobs.has(pid)) return;
                 notifyExit(title, command, code, sig, Date.now() - startedAt, logPath, child.pid);
             });
             return { exitCode: 0 };
@@ -391,7 +478,10 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
                 };
             }
             const { text, newOffset } = readFrom(job.logPath, job.readOffset);
-            job.readOffset = newOffset;
+            if (newOffset !== job.readOffset) {
+                job.readOffset = newOffset;
+                saveJobs();
+            }
             const runtime = Math.round(((job.endedAt ?? Date.now()) - job.startedAt) / 1000);
             const header = `[pid ${job.pid}, ${jobStatus(job)}, ${runtime}s] ${job.command}`;
             return {
@@ -454,5 +544,10 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
     pi.registerCommand("background", {
         description: "Send the running bash command to the background",
         handler: async (_args: string, ctx: any) => { backgroundNow(ctx?.ui); },
+    });
+
+    pi.registerCommand("shells", {
+        description: "List background shells and their status",
+        handler: async (_args: string, ctx: any) => { ctx?.ui?.notify?.(listJobsText(), "info"); },
     });
 };

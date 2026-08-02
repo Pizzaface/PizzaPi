@@ -157,6 +157,28 @@ export const SessionMessageItem = React.memo(
               {isCustomMessage && message.customType && (
                 <span className="normal-case font-mono">• {message.customType}</span>
               )}
+              {isCustomMessage &&
+                message.customType === "background-bash" &&
+                (() => {
+                  const d = message.details as
+                    | { exitCode?: number | null; signal?: string | null }
+                    | undefined;
+                  if (!d || (d.exitCode === undefined && !d.signal)) return null;
+                  const label = d.signal ? d.signal : `exit ${d.exitCode}`;
+                  const ok = !d.signal && d.exitCode === 0;
+                  return (
+                    <span
+                      className={cn(
+                        "normal-case rounded px-1.5 py-0.5 text-[10px] font-medium tracking-normal",
+                        ok
+                          ? "bg-primary/15 text-primary"
+                          : "bg-destructive/15 text-destructive",
+                      )}
+                    >
+                      {label}
+                    </span>
+                  );
+                })()}
               {message.toolName && <span>• {message.toolName}</span>}
               {message.timestamp && (
                 <span>• {new Date(message.timestamp).toLocaleTimeString()}</span>

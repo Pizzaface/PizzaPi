@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parsePsLine, ProcessService } from "./process-service.js";
 import { killSessionProcessGroup } from "../session-spawner.js";
+import { sessionJobsFilePath } from "../session-procs.js";
 
 describe("parsePsLine", () => {
     test("parses a normal ps line", () => {
@@ -103,6 +104,66 @@ describe("ProcessService", () => {
         expect(sent[1].type).toBe("process_list_result");
 
         killSessionProcessGroup(groupPid, "SIGKILL");
+        rmSync(dir, { recursive: true, force: true });
+    });
+
+    test("reports background shells with liveness and serves log tails", async () => {
+        const live = spawn("sh", ["-c", "sleep 30"], { detached: true, stdio: "ignore" });
+        const livePid = live.pid!;
+        const dead = spawn("true");
+        await new Promise((r) => dead.on("close", r));
+        await new Promise((r) => setTimeout(r, 100));
+
+        const dir = mkdtempSync(join(tmpdir(), "procsvc-"));
+        const procFile = join(dir, "s3.pids");
+        const logPath = join(dir, "dev.log");
+        writeFileSync(logPath, "hello log");
+        writeFileSync(
+            sessionJobsFilePath(procFile),
+            JSON.stringify([
+                { pid: livePid, command: "sleep 30", title: "Server", logPath, startedAt: Date.now() },
+                { pid: dead.pid!, command: "npm run dev", title: "Crashed", logPath, startedAt: Date.now() - 5000 },
+            ]),
+        );
+
+        const service = new ProcessService(() => null, () => procFile);
+        const sent: Array<{ type: string; payload: any }> = [];
+        (service as any).socket = { on() {}, off() {}, emit: (_e: string, env: any) => sent.push(env) };
+
+        await (service as any).handleList({ serviceId: "process", type: "process_list", sessionId: "s3", payload: {} });
+        const shells = sent[0].payload.shells;
+        expect(shells.find((s: any) => s.pid === livePid).running).toBe(true);
+        expect(shells.find((s: any) => s.pid === dead.pid).running).toBe(false); // stale record, re-checked
+
+        await (service as any).handleTail({ serviceId: "process", type: "process_tail", sessionId: "s3", payload: { pid: livePid } });
+        expect(sent[1].type).toBe("process_tail_result");
+        expect(sent[1].payload.text).toContain("hello log");
+
+        await (service as any).handleTail({ serviceId: "process", type: "process_tail", sessionId: "s3", payload: { pid: 999999 } });
+        expect(sent[2].type).toBe("process_error");
+
+        killSessionProcessGroup(livePid, "SIGKILL");
+        rmSync(dir, { recursive: true, force: true });
+    });
+
+    test("kill of a recorded group leader takes the whole group down", async () => {
+        const child = spawn("sh", ["-c", "sleep 30 & sleep 30"], { detached: true, stdio: "ignore" });
+        const groupPid = child.pid!;
+        await new Promise((r) => setTimeout(r, 100));
+
+        const dir = mkdtempSync(join(tmpdir(), "procsvc-"));
+        const procFile = join(dir, "s4.pids");
+        writeFileSync(procFile, `${groupPid}\n`);
+
+        const service = new ProcessService(() => null, () => procFile);
+        const sent: Array<{ type: string; payload: any }> = [];
+        (service as any).socket = { on() {}, off() {}, emit: (_e: string, env: any) => sent.push(env) };
+
+        await (service as any).handleKill({ serviceId: "process", type: "process_kill", sessionId: "s4", payload: { pid: groupPid } });
+        await new Promise((r) => setTimeout(r, 200));
+        // The whole group is gone — grandchild `sleep 30 &` included.
+        expect(killSessionProcessGroup(groupPid, "SIGKILL")).toBe(false);
+
         rmSync(dir, { recursive: true, force: true });
     });
 });

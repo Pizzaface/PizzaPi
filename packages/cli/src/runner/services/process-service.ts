@@ -5,16 +5,26 @@ import type { ServiceHandler, ServiceInitOptions, ServiceEnvelope } from "../ser
 import { logInfo } from "../logger.js";
 import {
     sessionProcFilePath,
+    sessionJobsFilePath,
     readRecordedGroupPids,
+    readSessionJobs,
     pruneProcFile,
     selectGroupProcesses,
     parsePsFullLine,
+    tailFile,
     type SessionProcess,
+    type PersistedShellJob,
 } from "../session-procs.js";
 
 const execFileAsync = promisify(execFile);
 
 export type { SessionProcess };
+
+/** A background shell as reported to the Processes panel. */
+export interface ShellInfo extends PersistedShellJob {
+    /** Liveness re-checked by the daemon — the persisted record can be stale after a worker crash. */
+    running: boolean;
+}
 
 /** Parse one `ps -o pid=,etime=,rss=,command=` output line (legacy helper). */
 export function parsePsLine(line: string): SessionProcess | null {
@@ -57,6 +67,9 @@ export class ProcessService implements ServiceHandler {
                     break;
                 case "process_kill":
                     void this.handleKill(envelope);
+                    break;
+                case "process_tail":
+                    void this.handleTail(envelope);
                     break;
             }
         };
@@ -142,11 +155,43 @@ export class ProcessService implements ServiceHandler {
         return typeof payload?.sessionId === "string" ? payload.sessionId : null;
     }
 
+    /** Background shells persisted by the worker's bash override, with liveness re-checked. */
+    private listShells(sessionId: string): ShellInfo[] {
+        const jobsPath = sessionJobsFilePath(this.getProcFilePath(sessionId));
+        return readSessionJobs(jobsPath).map((j) => {
+            let running = j.endedAt === undefined;
+            if (running) {
+                try {
+                    process.kill(j.pid, 0);
+                } catch {
+                    running = false; // stale record — worker died before it could mark the exit
+                }
+            }
+            return { ...j, running };
+        });
+    }
+
     private async handleList(envelope: ServiceEnvelope): Promise<void> {
         const sessionId = this.resolveSessionId(envelope);
         const workerPid = sessionId ? this.getWorkerPid(sessionId) : null;
         const processes = sessionId ? await this.listProcesses(sessionId, workerPid) : [];
-        this.emit("process_list_result", { workerPid, processes }, envelope.requestId);
+        const shells = sessionId ? this.listShells(sessionId) : [];
+        this.emit("process_list_result", { workerPid, processes, shells }, envelope.requestId);
+    }
+
+    /** Tail of a background shell's log file. Only paths from the worker-written registry are readable. */
+    private async handleTail(envelope: ServiceEnvelope): Promise<void> {
+        const sessionId = this.resolveSessionId(envelope);
+        const payload = envelope.payload as { pid?: number } | undefined;
+        const pid = typeof payload?.pid === "number" ? payload.pid : NaN;
+        const job = sessionId
+            ? readSessionJobs(sessionJobsFilePath(this.getProcFilePath(sessionId))).find((j) => j.pid === pid)
+            : undefined;
+        if (!job) {
+            this.emit("process_error", { error: `No background shell with pid ${payload?.pid}` }, envelope.requestId);
+            return;
+        }
+        this.emit("process_tail_result", { pid: job.pid, text: tailFile(job.logPath, 8192) }, envelope.requestId);
     }
 
     private async handleKill(envelope: ServiceEnvelope): Promise<void> {
@@ -173,7 +218,18 @@ export class ProcessService implements ServiceHandler {
         }
 
         try {
-            process.kill(pid, "SIGTERM");
+            // Recorded bash-command group leader? Kill the whole group so
+            // grandchildren (dev servers a command spawned) go with it.
+            const { groups } = this.sessionGroups(sessionId, workerPid);
+            if (groups.has(pid) && pid !== workerPid && process.platform !== "win32") {
+                try {
+                    process.kill(-pid, "SIGTERM");
+                } catch {
+                    process.kill(pid, "SIGTERM");
+                }
+            } else {
+                process.kill(pid, "SIGTERM");
+            }
             logInfo(`[process] killed pid ${pid} in session ${sessionId}`);
         } catch {
             // Already exited — fall through to refreshed list
