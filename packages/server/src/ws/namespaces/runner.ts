@@ -251,9 +251,14 @@ interface PendingRunnerCommand {
     reject: (err: Error) => void;
     timer: ReturnType<typeof setTimeout>;
     socketId: string;
+    abortCleanup?: () => void;
 }
 
 const pendingRunnerCommands = new Map<string, PendingRunnerCommand>();
+
+export function cancelRunnerFileRead(socket: Socket, eventName: string, requestId: string): void {
+    if (eventName === "read_file") socket.emit("cancel_file_request" as any, { requestId });
+}
 
 /**
  * Send a generic command to a runner via Socket.IO and wait for the response.
@@ -266,6 +271,7 @@ export async function sendRunnerCommand(
     runnerId: string,
     command: Record<string, unknown>,
     timeoutMs = 15_000,
+    signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
     const socket = getLocalRunnerSocket(runnerId);
     if (!socket) throw new Error("Runner not found");
@@ -281,17 +287,44 @@ export async function sendRunnerCommand(
         }
 
         const timer = setTimeout(() => {
+            const pending = pendingRunnerCommands.get(requestId);
+            pending?.abortCleanup?.();
             pendingRunnerCommands.delete(requestId);
+            cancelRunnerFileRead(socket as Socket, eventName, requestId);
             reject(new Error("Runner command timed out"));
         }, timeoutMs);
 
-        pendingRunnerCommands.set(requestId, { resolve, reject, timer, socketId: socket.id });
+        let abortCleanup: (() => void) | undefined;
+        let abortRequest: (() => void) | undefined;
+        if (signal) {
+            const onAbort = () => {
+                const pending = pendingRunnerCommands.get(requestId);
+                if (!pending) return;
+                clearTimeout(pending.timer);
+                pending.abortCleanup?.();
+                pendingRunnerCommands.delete(requestId);
+                cancelRunnerFileRead(socket as Socket, eventName, requestId);
+                const error = new Error("Runner command aborted");
+                error.name = "AbortError";
+                reject(error);
+            };
+            signal.addEventListener("abort", onAbort, { once: true });
+            abortRequest = onAbort;
+            abortCleanup = () => signal.removeEventListener("abort", onAbort);
+        }
+
+        pendingRunnerCommands.set(requestId, { resolve, reject, timer, socketId: socket.id, abortCleanup });
 
         try {
+            if (signal?.aborted) {
+                abortRequest?.();
+                return;
+            }
             const { type: _type, ...rest } = command;
             (socket as Socket).emit(eventName, { ...rest, requestId });
         } catch (err) {
             clearTimeout(timer);
+            abortCleanup?.();
             pendingRunnerCommands.delete(requestId);
             reject(err);
         }
@@ -669,6 +702,7 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
                 const pending = pendingRunnerCommands.get(requestId);
                 if (pendingSocketMatches(pending, socket.id)) {
                     clearTimeout(pending.timer);
+                    pending.abortCleanup?.();
                     pendingRunnerCommands.delete(requestId);
                     const { requestId: _rid, ...rest } = data;
                     pending.resolve(rest);

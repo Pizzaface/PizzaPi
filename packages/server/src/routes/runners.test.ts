@@ -49,10 +49,11 @@ mock.module("../sessions/runner-trigger-listener-store.js", () => ({
 
 const mockGetSession = mock(() => Promise.resolve(null));
 const mockEmitTriggerSubscriptionDelta = mock((_runnerId: string, _delta: any) => Promise.resolve());
+const mockSendRunnerCommand = mock(() => Promise.resolve({ ok: true }));
 mock.module("../ws/namespaces/runner.js", () => ({
     sendSkillCommand: mock(() => Promise.resolve({ ok: true })),
     sendAgentCommand: mock(() => Promise.resolve({ ok: true })),
-    sendRunnerCommand: mock(() => Promise.resolve({ ok: true })),
+    sendRunnerCommand: mockSendRunnerCommand,
     emitTriggerSubscriptionDelta: mockEmitTriggerSubscriptionDelta,
 }));
 mock.module("../ws/runner-control.js", () => ({ waitForSpawnAck: mock(() => Promise.resolve({ ok: true })) }));
@@ -108,6 +109,43 @@ describe("runner service toggle route", () => {
             serviceId: "taxonomy",
             enabled: false,
         });
+    });
+});
+
+describe("runner read-file route", () => {
+    beforeEach(() => {
+        mockRequireSession.mockReset();
+        mockRequireSession.mockReturnValue(Promise.resolve({ userId: "user-1", userName: "TestUser" } as any));
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+        mockSendRunnerCommand.mockReset();
+        mockSendRunnerCommand.mockReturnValue(Promise.resolve({ ok: true, size: 3, content: "AAAA" }));
+    });
+
+    test("forwards rejectTruncated and strips partial content from older runners", async () => {
+        mockSendRunnerCommand.mockReturnValue(Promise.resolve({
+            ok: true,
+            size: 11 * 1024 * 1024,
+            content: "partial",
+            truncated: true,
+        }));
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/read-file", {
+            path: "/repo/demo.mp4",
+            encoding: "base64",
+            rejectTruncated: true,
+        });
+
+        const res = await handleRunnersRoute(req, url);
+
+        expect(res!.status).toBe(200);
+        expect(mockSendRunnerCommand).toHaveBeenCalledWith("runner-A", {
+            type: "read_file",
+            path: "/repo/demo.mp4",
+            encoding: "base64",
+            maxBytes: 10 * 1024 * 1024,
+            rejectTruncated: true,
+        }, 30_000, req.signal);
+        expect(await res!.json()).toEqual({ ok: true, size: 11 * 1024 * 1024, truncated: true });
     });
 });
 

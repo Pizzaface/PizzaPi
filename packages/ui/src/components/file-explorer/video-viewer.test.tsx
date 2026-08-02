@@ -49,7 +49,50 @@ describe("VideoViewer", () => {
     expect(video.getAttribute("src")).toBe("data:video/webm;base64,AAAA");
     expect(fetchSpy).toHaveBeenCalledWith(
       "/api/runners/r1/read-file",
-      expect.objectContaining({ body: JSON.stringify({ path: "/repo/demo.webm", encoding: "base64" }) }),
+      expect.objectContaining({
+        body: JSON.stringify({ path: "/repo/demo.webm", encoding: "base64", rejectTruncated: true }),
+        signal: expect.any(AbortSignal),
+      }),
     );
+  });
+
+  test("announces the loading state", () => {
+    fetchSpy.mockImplementationOnce(async () => new Promise<Response>(() => {}));
+
+    const { getByRole, unmount } = render(
+      <VideoViewer runnerId="r1" filePath="/repo/demo.mp4" onClose={mock(() => {})} />,
+    );
+
+    expect(getByRole("status").textContent).toContain("Loading video preview");
+    unmount();
+  });
+
+  test("announces asynchronous preview errors", async () => {
+    fetchSpy.mockImplementationOnce(async () => ({
+      ok: true,
+      json: async () => ({ size: 11 * 1024 * 1024, truncated: true }),
+    }) as Response);
+
+    const { getByRole } = render(
+      <VideoViewer runnerId="r1" filePath="/repo/large.mp4" onClose={mock(() => {})} />,
+    );
+
+    await waitFor(() => expect(getByRole("alert").textContent).toContain("too large"));
+  });
+
+  test("aborts the file request when the preview closes", async () => {
+    let signal: AbortSignal | undefined;
+    fetchSpy.mockImplementationOnce(async (_url, init) => {
+      signal = init?.signal as AbortSignal;
+      return new Promise<Response>(() => {});
+    });
+
+    const { unmount } = render(
+      <VideoViewer runnerId="r1" filePath="/repo/demo.mp4" onClose={mock(() => {})} />,
+    );
+    await waitFor(() => expect(signal).toBeDefined());
+
+    unmount();
+    expect(signal?.aborted).toBe(true);
   });
 });

@@ -1054,11 +1054,16 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
         const encoding = body.encoding === "base64" ? "base64" : "utf8";
         const maxBytes = encoding === "base64" ? 10 * 1024 * 1024 : 512 * 1024;
+        const rejectTruncated = body.rejectTruncated === true;
         const timeout = encoding === "base64" ? 30_000 : 15_000;
 
         try {
-            const result = await sendRunnerCommand(runnerId, { type: "read_file", path, encoding, maxBytes }, timeout);
+            const result = await sendRunnerCommand(runnerId, { type: "read_file", path, encoding, maxBytes, rejectTruncated }, timeout, req.signal);
             if (!(result as any).ok) return Response.json({ error: (result as any).message ?? "Failed to read file" }, { status: 500 });
+            if (rejectTruncated && result.truncated === true) {
+                const { content: _content, ...metadata } = result;
+                return Response.json(metadata);
+            }
             return Response.json(result);
         } catch (err) {
             return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });

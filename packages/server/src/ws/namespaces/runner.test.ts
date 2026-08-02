@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
     MAX_PENDING_REQUESTS,
+    cancelRunnerFileRead,
     isPendingRequestCapReached,
     pendingSocketMatches,
 } from "./runner.js";
@@ -40,5 +41,15 @@ describe("runner namespace pending-request hardening", () => {
         expect(isPendingRequestCapReached(MAX_PENDING_REQUESTS - 1)).toBe(false);
         expect(isPendingRequestCapReached(MAX_PENDING_REQUESTS)).toBe(true);
         expect(isPendingRequestCapReached(MAX_PENDING_REQUESTS + 1)).toBe(true);
+    });
+
+    test("read cancellation emits the correlated runner event", () => {
+        const emitted: Array<[string, unknown]> = [];
+        const socket = { emit: (event: string, data: unknown) => emitted.push([event, data]) };
+
+        cancelRunnerFileRead(socket as any, "read_file", "read-1");
+        cancelRunnerFileRead(socket as any, "list_files", "list-1");
+
+        expect(emitted).toEqual([["cancel_file_request", { requestId: "read-1" }]]);
     });
 });

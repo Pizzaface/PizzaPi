@@ -20,6 +20,7 @@ export function VideoViewer({
 
   React.useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     setDataUrl(null);
     setFileSize(undefined);
     setLoading(true);
@@ -29,7 +30,8 @@ export function VideoViewer({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ path: filePath, encoding: "base64" }),
+      signal: controller.signal,
+      body: JSON.stringify({ path: filePath, encoding: "base64", rejectTruncated: true }),
     })
       .then((res) => res.ok
         ? res.json()
@@ -52,6 +54,7 @@ export function VideoViewer({
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [runnerId, filePath, fileName]);
 
@@ -77,8 +80,13 @@ export function VideoViewer({
       </div>
 
       <div className="flex flex-1 items-center justify-center overflow-auto bg-black p-4">
-        {loading && <Spinner className="size-5" />}
-        {error && <div className="text-sm text-red-400">{error}</div>}
+        {loading && (
+          <div role="status" className="text-muted-foreground">
+            <Spinner aria-hidden="true" className="size-5" />
+            <span className="sr-only">Loading video preview</span>
+          </div>
+        )}
+        {error && <div role="alert" className="text-sm text-red-400">{error}</div>}
         {dataUrl && !error && (
           <video
             src={dataUrl}

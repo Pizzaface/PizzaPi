@@ -429,9 +429,15 @@ export interface RunnerServerToClientEvents {
   /** Reads a file's content */
   read_file: (data: {
     requestId?: string;
-    cwd: string;
+    cwd?: string;
     path: string;
+    encoding?: "utf8" | "base64";
+    maxBytes?: number;
+    rejectTruncated?: boolean;
   }) => void;
+
+  /** Cancels an in-flight file read */
+  cancel_file_request: (data: { requestId: string }) => void;
 
   // Git operations (status, diff, branches, checkout, stage, unstage,
   // commit, push) are handled via the service_message channel with

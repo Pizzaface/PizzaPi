@@ -45,8 +45,6 @@ The breadcrumb bar at the top shows the current root path (`cwd`). Use the **ref
 
 Click any file to open it in the built-in viewer. Press **Escape** to return to the directory tree.
 
-### Text Files
-
 ### Text files
 
 Text files open in a read-only monospaced preview with syntax-appropriate formatting. If the file exceeds **512 KB**, it is truncated and a warning banner appears:
@@ -67,6 +65,12 @@ Image files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.bmp`, `.ico`, `
 - **Dimensions** — natural width × height shown in the header
 
 Images are fetched as base64-encoded data with a **10 MB** size limit.
+
+### Videos
+
+Video files (`.mp4`, `.m4v`, `.mov`, `.webm`, `.ogv`, `.ogg`) open in the browser's native video player with playback, volume, timeline, and fullscreen controls. Playback support depends on the browser and the video's codec.
+
+Videos have a **10 MB** preview limit. Larger files show their size instead of transferring a partial, unplayable video.
 
 <Aside type="tip">
   The file explorer is **read-only** — you cannot edit, rename, or delete files through it. However, the Markdown and text file viewers do offer a **Blame** toggle (when the runner has git available). Use the agent itself (or a terminal) to make changes.
@@ -141,6 +145,7 @@ POST /api/runners/:runnerId/read-file
 |-------|------|---------|-------------|
 | `path` | `string` | _(required)_ | Absolute path to the file |
 | `encoding` | `"utf8"` \| `"base64"` | `"utf8"` | Response encoding — use `base64` for images and binary files |
+| `rejectTruncated` | `boolean` | `false` | When `true`, omit `content` if the file exceeds the encoding limit instead of returning partial content |
 
 **Response:**
 
@@ -160,7 +165,7 @@ Size limits depend on encoding:
 | `utf8` | 512 KB | 15 s |
 | `base64` | 10 MB | 30 s |
 
-If the file exceeds the limit, `content` contains the first N bytes and `truncated` is `true`.
+If the file exceeds the limit, `content` contains the first N bytes and `truncated` is `true`. When `rejectTruncated` is `true`, the response still reports `size` and `truncated: true` but omits `content`; video previews use this to avoid transferring unusable partial files.
 
 ### Search files
 
