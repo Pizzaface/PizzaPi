@@ -16,7 +16,7 @@ import { updateTodoExtension } from "./update-todo.js";
 import { memoryExtension } from "./memory/index.js";
 import { subagentExtension } from "./subagent.js";
 import { tunnelToolsExtension } from "./tunnel-tools.js";
-import { sessionMirrorExtension } from "./session-mirror.js";
+import { serviceMessageBridgeExtension } from "./service-message-bridge.js";
 import { planModeToggleExtension } from "./plan-mode/index.js";
 import { triggersExtension } from "./triggers/extension.js";
 import { sandboxEventsExtension } from "./sandbox-events.js";
@@ -50,7 +50,7 @@ const CORE_EXTENSIONS_HEAD: ExtensionFactory[] = [
     triggersExtension,  // Must be before remoteExtension (shutdown ordering)
     remoteExtension,
     tunnelToolsExtension,
-    sessionMirrorExtension,
+    serviceMessageBridgeExtension,
     mcpExtension,
     toolSearchExtension,  // Must be after MCP to see registered MCP tools
     ollamaWebToolsExtension,
@@ -161,7 +161,7 @@ describe("buildPizzaPiExtensionFactories — safe mode", () => {
         const factories = buildPizzaPiExtensionFactories({ cwd: "/tmp/pizzapi-test", agentDir: TEST_AGENT_DIR, skipRelay: true });
         expect(factories).not.toContain(remoteExtension);
         expect(factories).not.toContain(tunnelToolsExtension);
-        expect(factories).not.toContain(sessionMirrorExtension);
+        expect(factories).not.toContain(serviceMessageBridgeExtension);
         expect(factories).toContain(mcpExtension);
     });
 

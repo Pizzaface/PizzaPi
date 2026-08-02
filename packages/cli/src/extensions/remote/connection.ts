@@ -41,21 +41,6 @@ let connectFailureNotified = false;
 const oauthPendingCallbacks = new Map<string, (result: { code: string; state?: string }) => void>();
 const log = createLogger("relay");
 
-/**
- * Map a plain-text connector reply (Discord, Slack, …) to a pending plan_mode
- * into the JSON action consumePendingPlanModeFromWeb expects. Approve/cancel
- * words become explicit actions; anything else is treated as edit feedback
- * (its default for raw text).
- */
-export function mapConnectorPlanReply(text: string): string {
-    const lower = text.toLowerCase().trim().replace(/[!.]+$/, "");
-    const approve = ["begin", "approve", "approved", "lgtm", "looks good", "proceed", "go", "yes", "ship it"];
-    const cancel = ["cancel", "stop", "reject", "no", "abort"];
-    if (approve.some((w) => lower === w || lower.startsWith(`${w} `))) return JSON.stringify({ action: "execute" });
-    if (cancel.some((w) => lower === w || lower.startsWith(`${w} `))) return JSON.stringify({ action: "cancel" });
-    return text;
-}
-
 /** Fetch one connector CDN image URL into an inline image content part. */
 export async function fetchImagePart(url: string): Promise<{ type: "image"; mimeType: string; data: string } | null> {
     try {
@@ -534,7 +519,16 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                 : [];
             if (text && consumePendingAskUserQuestionFromWeb(rctx, text)) return;
             if (text && rctx.pendingPlanMode) {
-                consumePendingPlanModeFromWeb(rctx, mapConnectorPlanReply(text));
+                // Connectors map their own approve/cancel vocabulary (button
+                // clicks, "lgtm") to a structured action; anything else falls
+                // through as raw text, which plan_mode reads as edit feedback.
+                const planAction = p.planAction;
+                consumePendingPlanModeFromWeb(
+                    rctx,
+                    planAction === "execute" || planAction === "cancel"
+                        ? JSON.stringify({ action: planAction })
+                        : text,
+                );
                 return;
             }
             if (imageUrls.length > 0) {

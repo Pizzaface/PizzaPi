@@ -459,6 +459,40 @@ This handshake is capability discovery, not a security boundary: another extensi
 
 Host absence is a supported outcome, not an error. Package extensions MAY omit PizzaPi-only behavior when no callback arrives or the probe returns `undefined`, but MUST keep their ordinary pi behavior working.
 
+### 9.4 Session extension to daemon service messaging
+
+A package's service runs in the daemon and observes none of a session's
+in-process events (tool calls, assistant messages, renames). A package whose
+service needs those — chat connectors, dashboards, notifiers — ships a
+session-side extension alongside its service and forwards over the bus:
+
+```ts
+export function sendServiceMessage(
+  pi: PizzaPiHostAPI,
+  serviceId: string,
+  type: string,
+  payload?: Record<string, unknown>,
+): void {
+  pi.events.emit("pizzapi:service_message", { serviceId, type, payload: payload ?? {} });
+}
+```
+
+The host listens on `pizzapi:service_message` and relays each well-formed
+message to the daemon as a `service_message` envelope. The host MUST stamp
+`sessionId` and a unique `id` onto the payload, overwriting any values the
+package supplied — a package cannot address another session's service traffic.
+Messages with a non-string or empty `serviceId`/`type` are dropped, as are all
+messages while the relay socket is absent or reconnecting: delivery is
+best-effort and MUST NOT block or fail a turn. Hosts supporting this advertise
+the `serviceMessages` capability; without a host the emit is inert, satisfying
+§10.1.
+
+The inbound direction is unchanged: services post to
+`/api/sessions/:id/trigger`. Connector-specific interpretation of a reply (for
+example mapping "lgtm" to a `plan_mode` approval) belongs in the package, which
+sends a structured field on the trigger payload rather than relying on the host
+to parse its vocabulary.
+
 ## 10. Graceful degradation contract
 
 ### 10.1 PizzaPi package in vanilla pi

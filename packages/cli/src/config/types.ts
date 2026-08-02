@@ -336,28 +336,6 @@ export interface ProviderConfig {
 }
 
 /**
- * Discord bridge configuration — mirrors the session into a Discord thread.
- *
- * Global config (~/.pizzapi/config.json) ONLY. Project-local values are
- * ignored: honoring a repo-supplied bot token would hand control of the
- * session to whoever configured that repository.
- *
- * The bot needs the Message Content privileged gateway intent enabled in the
- * Discord developer portal, plus View Channels / Send Messages / Create
- * Threads permissions in the target channel.
- */
-export interface DiscordConfig {
-    /** Bot token. Env override: DISCORD_TOKEN. */
-    token?: string;
-    /** Parent text channel ID where per-session threads are created. Env override: DISCORD_CHANNEL_ID. */
-    channelId?: string;
-    /** Discord user IDs allowed to drive the session. Empty/unset = anyone who can post in the thread. */
-    allowedUserIds?: string[];
-    /** Connect and create the session thread automatically on session start. Default: false (use /discord start). */
-    autoStart?: boolean;
-}
-
-/**
  * A daemon-service trust grant for one `pi.pizzapi` overlay package.
  *
  * Distinct from pi's project trust, `trustedPlugins` (legacy plugin-path
@@ -483,9 +461,6 @@ export interface PizzaPiConfig {
      * Default: true. Set to false to suppress these warnings.
      */
     slowStartupWarning?: boolean;
-
-    /** Discord bridge — mirror the session into a Discord thread (global config only). */
-    discord?: DiscordConfig;
 
     /** Subagent execution settings */
     subagent?: {

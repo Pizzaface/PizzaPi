@@ -24,7 +24,18 @@ import type { PizzaPiHostInfo } from "@pizzapi/extension-sdk";
  * Capabilities a package can rely on when this host responds. Kept as a
  * flat list (not versioned per-capability) — v1 hosts support the full set.
  */
-const HOST_CAPABILITIES: readonly string[] = ["services", "agents", "rules", "mcp", "panels", "triggers", "sigils"];
+const HOST_CAPABILITIES: readonly string[] = [
+    "services",
+    "agents",
+    "rules",
+    "mcp",
+    "panels",
+    "triggers",
+    "sigils",
+    // Session extensions can reach their daemon service via
+    // `sendServiceMessage()` — see service-message-bridge.ts.
+    "serviceMessages",
+];
 
 export function buildHostInfo(): PizzaPiHostInfo {
     return { apiVersion: 1, capabilities: HOST_CAPABILITIES };

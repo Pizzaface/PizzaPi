@@ -249,19 +249,6 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
         delete config.relayUrl;
     }
 
-    // Discord bridge config is global-only: a project-supplied bot token would
-    // hand remote control of the session to whoever owns that bot.
-    if ("discord" in project) {
-        warnLoadConfigOnce(
-            projectPath,
-            "project-discord-ignored",
-            "Project config .pizzapi/config.json contains 'discord' — ignored. " +
-                "Configure the Discord bridge in ~/.pizzapi/config.json only.",
-        );
-        if (global.discord !== undefined) config.discord = global.discord;
-        else delete config.discord;
-    }
-
     // Footgun guard: an apiKey with no relay to send it to means the user thinks
     // they've "configured a relay" (they have an API key!) but sessions will
     // never appear in the web UI because relayUrl is explicitly disabled.
