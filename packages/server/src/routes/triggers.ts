@@ -361,7 +361,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Invalid JSON body" }, { status: 400 });
         }
         const level = typeof body.level === "string" ? body.level.trim() : "";
-        const VALID_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
+        const VALID_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
         if (!VALID_LEVELS.includes(level)) {
             return Response.json(
                 { error: `Invalid 'level' — expected one of: ${VALID_LEVELS.join(", ")}` },

@@ -25,7 +25,8 @@ import { isCancelTriggerAction } from "../remote-trigger-response.js";
 import type { TriggerWaitManager } from "../trigger-wait-manager.js";
 import { emitSessionActive } from "./chunked-delivery.js";
 import { emitSessionTriggerWithAck } from "./session-complete-delivery.js";
-import { fetchOllamaCloudModels, getCachedOllamaCloudModels } from "../../ollama-cloud-models.js";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import { fetchOllamaCloudModels, getCachedOllamaCloudModels, toOllamaCloudRuntimeModel } from "../../ollama-cloud-models.js";
 import { writeSessionModelsCache } from "../../session-models-cache.js";
 
 const RELAY_DEFAULT = "ws://localhost:7492";
@@ -215,6 +216,7 @@ export function createRelayContext(
                     name: model.name,
                     reasoning: model.reasoning,
                     contextWindow: model.contextWindow,
+                    thinkingLevels: getSupportedThinkingLevels(model),
                 }));
 
             let liveOllama: RelayModelInfo[] = [];
@@ -232,6 +234,7 @@ export function createRelayContext(
                         name: model.name,
                         reasoning: model.reasoning,
                         contextWindow: model.contextWindow,
+                        thinkingLevels: getSupportedThinkingLevels(toOllamaCloudRuntimeModel(model)),
                     }));
                 } else {
                     // No cache yet — kick off a background fetch to warm it for next time.

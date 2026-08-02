@@ -106,6 +106,8 @@ export interface RelayModelInfo {
     name: string;
     reasoning: boolean;
     contextWindow: number;
+    /** Thinking levels this model supports (pi getSupportedThinkingLevels). */
+    thinkingLevels?: string[];
 }
 
 // ── Provider usage types ─────────────────────────────────────────────────────
