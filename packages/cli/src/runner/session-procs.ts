@@ -19,7 +19,7 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, rmSync, openSync, readSync, closeSync, statSync } from "node:fs";
 
 /** Directory holding per-session recorded-group pid files. */
 export function sessionProcDir(): string {
@@ -90,12 +90,68 @@ export function parseRecordedGroupPids(content: string): number[] {
     return [...seen];
 }
 
-/** Delete a session's pid file (best-effort). */
+/** Delete a session's pid file and persisted shell registry (best-effort). */
 export function removeSessionProcFile(sessionId: string): void {
     try {
         rmSync(sessionProcFilePath(sessionId), { force: true });
+        rmSync(sessionJobsFilePath(sessionProcFilePath(sessionId)), { force: true });
     } catch {
         // best-effort
+    }
+}
+
+/** Path of the persisted background-shell registry next to a session's pid file. */
+export function sessionJobsFilePath(procFilePath: string): string {
+    return procFilePath.replace(/\.pids$/, "") + ".jobs.json";
+}
+
+/**
+ * A background shell record persisted by the worker's bash override
+ * (extensions/background-bash.ts) so the daemon's process service can show
+ * shells in the Processes panel and a restarted worker can recover handles.
+ */
+export interface PersistedShellJob {
+    pid: number;
+    command: string;
+    title: string;
+    logPath: string;
+    startedAt: number;
+    exitCode?: number | null;
+    signal?: string | null;
+    endedAt?: number;
+    readOffset?: number;
+}
+
+/** Read the persisted background-shell registry (worker-written, best-effort). */
+export function readSessionJobs(jobsPath: string): PersistedShellJob[] {
+    try {
+        const raw = JSON.parse(readFileSync(jobsPath, "utf8"));
+        if (!Array.isArray(raw)) return [];
+        return raw.filter(
+            (j): j is PersistedShellJob =>
+                j && Number.isInteger(j.pid) && j.pid > 0 && typeof j.logPath === "string" && typeof j.command === "string",
+        );
+    } catch {
+        return []; // missing or corrupt — nothing persisted
+    }
+}
+
+/** Last `maxBytes` of a file, as text (shared by bash_output and the panel's log tail). */
+export function tailFile(path: string, maxBytes = 4000): string {
+    let fd: number | undefined;
+    try {
+        const size = statSync(path).size;
+        const start = Math.max(0, size - maxBytes);
+        const len = size - start;
+        if (len === 0) return "";
+        const buf = Buffer.allocUnsafe(len);
+        fd = openSync(path, "r");
+        readSync(fd, buf, 0, len, start);
+        return (start > 0 ? `…(truncated, full log at ${path})\n` : "") + buf.toString("utf8");
+    } catch {
+        return "";
+    } finally {
+        if (fd !== undefined) closeSync(fd);
     }
 }
 
