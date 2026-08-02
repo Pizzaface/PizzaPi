@@ -42,11 +42,12 @@ const oauthPendingCallbacks = new Map<string, (result: { code: string; state?: s
 const log = createLogger("relay");
 
 /**
- * Map a plain-text Discord reply to a pending plan_mode into the JSON action
- * consumePendingPlanModeFromWeb expects. Approve/cancel words become explicit
- * actions; anything else is treated as edit feedback (its default for raw text).
+ * Map a plain-text connector reply (Discord, Slack, …) to a pending plan_mode
+ * into the JSON action consumePendingPlanModeFromWeb expects. Approve/cancel
+ * words become explicit actions; anything else is treated as edit feedback
+ * (its default for raw text).
  */
-export function mapDiscordPlanReply(text: string): string {
+export function mapConnectorPlanReply(text: string): string {
     const lower = text.toLowerCase().trim().replace(/[!.]+$/, "");
     const approve = ["begin", "approve", "approved", "lgtm", "looks good", "proceed", "go", "yes", "ship it"];
     const cancel = ["cancel", "stop", "reject", "no", "abort"];
@@ -55,7 +56,7 @@ export function mapDiscordPlanReply(text: string): string {
     return text;
 }
 
-/** Fetch one Discord CDN image URL into an inline image content part. */
+/** Fetch one connector CDN image URL into an inline image content part. */
 export async function fetchImagePart(url: string): Promise<{ type: "image"; mimeType: string; data: string } | null> {
     try {
         const res = await fetch(url);
@@ -69,8 +70,8 @@ export async function fetchImagePart(url: string): Promise<{ type: "image"; mime
     }
 }
 
-/** Build a user message from a Discord message's text + image attachments and deliver it. */
-async function deliverDiscordImages(
+/** Build a user message from a connector message's text + image attachments and deliver it. */
+async function deliverConnectorImages(
     rctx: RelayContext,
     handlers: ConnectionHandlers,
     text: string,
@@ -92,7 +93,7 @@ async function deliverDiscordImages(
         });
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        log.error(`pizzapi: failed to deliver Discord image message: ${message}`);
+        log.error(`pizzapi: failed to deliver connector image message: ${message}`);
     }
 }
 
@@ -517,11 +518,15 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
             return;
         }
 
-        // Discord messages (poll votes, plan buttons, or plain replies) can
-        // answer a pending AskUserQuestion / plan_mode, or carry images. Route
-        // those here rather than steering a fresh turn that would strand the
-        // blocked tool. Falls through to the normal render path otherwise.
-        if (trigger.type === "discord:message") {
+        // Connector messages (Discord/Slack/… poll votes, plan buttons, or plain
+        // replies) can answer a pending AskUserQuestion / plan_mode, or carry
+        // images. Route those here rather than steering a fresh turn that would
+        // strand the blocked tool. Any `<connector>:message` trigger qualifies;
+        // if there's no pending prompt and no images it falls through to the
+        // normal render path, so a false-positive match is harmless.
+        // ponytail: endsWith(":message") over a connector allowlist — the
+        // pending-prompt/images guard below makes an unrelated match a no-op.
+        if (trigger.type.endsWith(":message")) {
             const p = (trigger.payload ?? {}) as Record<string, unknown>;
             const text = typeof p.text === "string" ? p.text : "";
             const imageUrls = Array.isArray(p.imageUrls)
@@ -529,11 +534,11 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                 : [];
             if (text && consumePendingAskUserQuestionFromWeb(rctx, text)) return;
             if (text && rctx.pendingPlanMode) {
-                consumePendingPlanModeFromWeb(rctx, mapDiscordPlanReply(text));
+                consumePendingPlanModeFromWeb(rctx, mapConnectorPlanReply(text));
                 return;
             }
             if (imageUrls.length > 0) {
-                void deliverDiscordImages(rctx, handlers, text, imageUrls);
+                void deliverConnectorImages(rctx, handlers, text, imageUrls);
                 return;
             }
         }

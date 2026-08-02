@@ -1,16 +1,18 @@
 /**
- * Discord mirror extension — forwards each settled assistant turn to the
- * daemon-scoped `discord` runner service over `service_message`.
+ * Session mirror extension — forwards each settled assistant turn (plus live
+ * tool activity, prompts, and renames) to any daemon-scoped *connector* runner
+ * service (Discord today; Slack/Telegram/etc. tomorrow) over `service_message`.
  *
- * This is the *outbound* half of the Discord bridge. The inbound half (Discord
- * message -> session) is owned by the service, which posts to
+ * This is the *outbound* half of every chat-connector bridge. The inbound half
+ * (connector message -> session) is owned by each service, which posts to
  * `/api/sessions/:id/trigger`. See the "connectivity services" section of
  * docs/customization/runner-services.mdx.
  *
- * The session deliberately knows nothing about Discord: it emits one envelope
- * per settled turn and the service drops it if this session has no mapped
- * thread. That keeps thread mapping in exactly one place (the service) instead
- * of duplicating it into every session.
+ * Connector-agnostic by design: envelopes carry no connector name and are
+ * broadcast on the shared `connector` channel (serviceId). Every connector
+ * service already receives every `service_message` and drops sessions it has
+ * not thread-mapped, so a session that belongs to one connector is silently
+ * ignored by the others. Adding a connector is a new package — zero edits here.
  */
 
 import { randomUUID } from "node:crypto";
@@ -21,7 +23,7 @@ import {
 } from "./remote.js";
 import { sanitizeQuestions } from "./remote-ask-user.js";
 
-/** Discord's hard limit is 2000 chars; the service re-chunks, this just bounds the payload. */
+/** Discord's hard limit is 2000 chars (the tightest connector); services re-chunk, this just bounds the payload. */
 const MAX_MIRROR_CHARS = 8_000;
 
 /** Mid-turn assistant text rides the activity feed as a preview line, not the full post — keep it short. */
@@ -48,13 +50,13 @@ export function sanitizeToolInput(input: unknown): Record<string, unknown> {
     return out;
 }
 
-export interface DiscordMirrorDeps {
+export interface SessionMirrorDeps {
     getRelaySocket: typeof getRelaySocketDefault;
     getRelaySessionId: typeof getRelaySessionIdDefault;
     newId: () => string;
 }
 
-const defaultDeps: DiscordMirrorDeps = {
+const defaultDeps: SessionMirrorDeps = {
     getRelaySocket: getRelaySocketDefault,
     getRelaySessionId: getRelaySessionIdDefault,
     newId: randomUUID,
@@ -98,22 +100,23 @@ export function lastAssistantText(messages: unknown): string | null {
     return null;
 }
 
-export function createDiscordMirrorExtension(deps: DiscordMirrorDeps = defaultDeps): ExtensionFactory {
+export function createSessionMirrorExtension(deps: SessionMirrorDeps = defaultDeps): ExtensionFactory {
     return (pi) => {
         // agent_end fires after every attempt (including retried ones); hold the
         // text and only publish once agent_settled confirms the turn is final.
         let pending: string | null = null;
 
-        // Fire-and-forget emit of one envelope to the discord service. A dropped
-        // mirror is cosmetic; blocking the turn on Discord's availability is not.
-        // `id` lets the service dedupe at-least-once relay delivery.
+        // Fire-and-forget broadcast of one envelope on the shared `connector`
+        // channel. A dropped mirror is cosmetic; blocking the turn on a
+        // connector's availability is not. `id` lets services dedupe
+        // at-least-once relay delivery.
         const emit = (type: string, payload: Record<string, unknown>) => {
             const conn = deps.getRelaySocket();
             const sessionId = deps.getRelaySessionId();
             if (!conn || !sessionId) return;
             try {
                 conn.socket.emit("service_message" as any, {
-                    serviceId: "discord",
+                    serviceId: "connector",
                     type,
                     payload: { id: deps.newId(), sessionId, ...payload },
                 });
@@ -132,7 +135,7 @@ export function createDiscordMirrorExtension(deps: DiscordMirrorDeps = defaultDe
         pi.on("tool_call" as any, (event: any) => {
             const name = event?.toolName;
             if (name === "AskUserQuestion") {
-                emit("discord_ask", {
+                emit("session_ask", {
                     toolCallId: event?.toolCallId,
                     questions: sanitizeQuestions((event?.input ?? {}) as any),
                 });
@@ -140,7 +143,7 @@ export function createDiscordMirrorExtension(deps: DiscordMirrorDeps = defaultDe
             }
             if (name === "plan_mode") {
                 const input = (event?.input ?? {}) as Record<string, unknown>;
-                emit("discord_plan", {
+                emit("session_plan", {
                     toolCallId: event?.toolCallId,
                     title: typeof input.title === "string" ? input.title : "",
                     description: typeof input.description === "string" ? input.description : null,
@@ -158,10 +161,10 @@ export function createDiscordMirrorExtension(deps: DiscordMirrorDeps = defaultDe
                 const content = typeof event?.input?.content === "string" ? event.input.content : "";
                 const input = sanitizeToolInput(event?.input);
                 if (content) input.added = content.split("\n").length;
-                emit("discord_activity", { toolName: name, input });
+                emit("session_activity", { toolName: name, input });
                 return;
             }
-            emit("discord_activity", { toolName: name, input: sanitizeToolInput(event?.input) });
+            emit("session_activity", { toolName: name, input: sanitizeToolInput(event?.input) });
         });
 
         // Assistant text that lands *between* tool calls ("let me check that file
@@ -174,7 +177,7 @@ export function createDiscordMirrorExtension(deps: DiscordMirrorDeps = defaultDe
             const text = assistantMessageText(event?.message);
             if (!text) return;
             const line = text.length > MAX_MIDTURN_CHARS ? `${text.slice(0, MAX_MIDTURN_CHARS)}…` : text;
-            emit("discord_activity", { line: `💬 ${line}` });
+            emit("session_activity", { line: `💬 ${line}` });
         });
 
         // set_session_name -> Discord thread title. session_info_changed fires
@@ -182,24 +185,24 @@ export function createDiscordMirrorExtension(deps: DiscordMirrorDeps = defaultDe
         // bound thread to match.
         pi.on("session_info_changed" as any, (event: any) => {
             const name = typeof event?.name === "string" ? event.name.trim() : "";
-            if (name) emit("discord_rename", { name });
+            if (name) emit("session_rename", { name });
         });
         pi.on("tool_result" as any, (event: any) => {
             if (event?.isError) {
-                emit("discord_activity", { line: `\u274C \`${event?.toolName ?? "tool"}\` failed` });
+                emit("session_activity", { line: `\u274C \`${event?.toolName ?? "tool"}\` failed` });
                 return;
             }
             // AskUserQuestion just finished (answered or cancelled) via web, TUI,
             // or Discord itself — tell the service to close its poll so it never
             // sits open on an already-resolved question.
             if (event?.toolName === "AskUserQuestion") {
-                emit("discord_ask_resolved", { toolCallId: event?.toolCallId });
+                emit("session_ask_resolved", { toolCallId: event?.toolCallId });
                 return;
             }
             if (event?.toolName === "edit") {
                 const stats = diffStatsFromPatch((event?.details as any)?.patch);
                 const input = stats ? { path: event?.input?.path, ...stats } : sanitizeToolInput(event?.input);
-                emit("discord_activity", { toolName: "edit", input });
+                emit("session_activity", { toolName: "edit", input });
             }
         });
 
@@ -212,9 +215,9 @@ export function createDiscordMirrorExtension(deps: DiscordMirrorDeps = defaultDe
             const content = pending;
             pending = null;
             if (!content) return;
-            emit("discord_post", { content });
+            emit("session_post", { content });
         });
     };
 }
 
-export const discordMirrorExtension: ExtensionFactory = createDiscordMirrorExtension();
+export const sessionMirrorExtension: ExtensionFactory = createSessionMirrorExtension();

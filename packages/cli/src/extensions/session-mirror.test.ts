@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from "bun:test";
-import { createDiscordMirrorExtension, lastAssistantText, sanitizeToolInput } from "./discord-mirror.js";
+import { createSessionMirrorExtension, lastAssistantText, sanitizeToolInput } from "./session-mirror.js";
 
 function createMockPi() {
     const handlers = new Map<string, Function[]>();
@@ -61,7 +61,7 @@ describe("lastAssistantText", () => {
     });
 });
 
-describe("discordMirrorExtension", () => {
+describe("sessionMirrorExtension", () => {
     let emitted: any[];
     let pi: ReturnType<typeof createMockPi>;
 
@@ -75,7 +75,7 @@ describe("discordMirrorExtension", () => {
                 emitted.push({ event, payload });
             },
         };
-        createDiscordMirrorExtension({
+        createSessionMirrorExtension({
             getRelaySocket: (() => (opts.socket === false ? null : { socket })) as any,
             getRelaySessionId: (() => (opts.sessionId === undefined ? "sess-1" : opts.sessionId)) as any,
             newId: () => `id-${++n}`,
@@ -84,15 +84,15 @@ describe("discordMirrorExtension", () => {
 
     beforeEach(() => build());
 
-    test("emits one discord_post envelope per settled turn", () => {
+    test("emits one session_post envelope per settled turn", () => {
         pi.fire("agent_end", { messages: [assistantMsg("hello world")] });
         pi.fire("agent_settled");
 
         expect(emitted).toHaveLength(1);
         expect(emitted[0].event).toBe("service_message");
         expect(emitted[0].payload).toEqual({
-            serviceId: "discord",
-            type: "discord_post",
+            serviceId: "connector",
+            type: "session_post",
             payload: { id: "id-1", sessionId: "sess-1", content: "hello world" },
         });
     });
@@ -154,10 +154,10 @@ describe("discordMirrorExtension", () => {
         expect(() => pi.fire("agent_settled")).not.toThrow();
     });
 
-    test("mirrors mid-turn assistant text as a discord_activity line, not just the final post", () => {
+    test("mirrors mid-turn assistant text as a session_activity line, not just the final post", () => {
         pi.fire("message_end", { message: assistantMsg("let me check that file first") });
         expect(emitted).toHaveLength(1);
-        expect(emitted[0].payload.type).toBe("discord_activity");
+        expect(emitted[0].payload.type).toBe("session_activity");
         expect(emitted[0].payload.payload.line).toBe("\u{1F4AC} let me check that file first");
     });
 
@@ -174,10 +174,10 @@ describe("discordMirrorExtension", () => {
         expect(line.endsWith("\u2026")).toBe(true);
     });
 
-    test("emits a discord_activity envelope with raw toolName/input for each tool call", () => {
+    test("emits a session_activity envelope with raw toolName/input for each tool call", () => {
         pi.fire("tool_call", { toolName: "bash", input: { command: "ls -la" } });
         expect(emitted).toHaveLength(1);
-        expect(emitted[0].payload.type).toBe("discord_activity");
+        expect(emitted[0].payload.type).toBe("session_activity");
         expect(emitted[0].payload.payload).toMatchObject({
             sessionId: "sess-1",
             toolName: "bash",
@@ -237,47 +237,47 @@ describe("discordMirrorExtension", () => {
         expect(emitted[0].payload.payload.line).toContain("failed");
     });
 
-    test("emits discord_ask_resolved when AskUserQuestion finishes, so Discord closes its poll", () => {
+    test("emits session_ask_resolved when AskUserQuestion finishes, so Discord closes its poll", () => {
         pi.fire("tool_result", { toolName: "AskUserQuestion", toolCallId: "tc-9", isError: false });
         expect(emitted).toHaveLength(1);
-        expect(emitted[0].payload.type).toBe("discord_ask_resolved");
+        expect(emitted[0].payload.type).toBe("session_ask_resolved");
         expect(emitted[0].payload.payload).toMatchObject({ sessionId: "sess-1", toolCallId: "tc-9" });
     });
 
-    test("does not emit discord_ask_resolved when AskUserQuestion errors", () => {
+    test("does not emit session_ask_resolved when AskUserQuestion errors", () => {
         pi.fire("tool_result", { toolName: "AskUserQuestion", toolCallId: "tc-9", isError: true });
         expect(emitted).toHaveLength(1);
-        expect(emitted[0].payload.type).toBe("discord_activity");
+        expect(emitted[0].payload.type).toBe("session_activity");
     });
 
-    test("routes AskUserQuestion to a discord_ask envelope, not activity", () => {
+    test("routes AskUserQuestion to a session_ask envelope, not activity", () => {
         pi.fire("tool_call", {
             toolCallId: "tc-1",
             toolName: "AskUserQuestion",
             input: { questions: [{ question: "Ship?", options: ["Yes", "No"], type: "radio" }] },
         });
         expect(emitted).toHaveLength(1);
-        expect(emitted[0].payload.type).toBe("discord_ask");
+        expect(emitted[0].payload.type).toBe("session_ask");
         expect(emitted[0].payload.payload.toolCallId).toBe("tc-1");
         expect(emitted[0].payload.payload.questions[0]).toMatchObject({ question: "Ship?", options: ["Yes", "No"], type: "radio" });
     });
 
-    test("routes plan_mode to a discord_plan envelope with title and steps", () => {
+    test("routes plan_mode to a session_plan envelope with title and steps", () => {
         pi.fire("tool_call", {
             toolCallId: "tc-2",
             toolName: "plan_mode",
             input: { title: "My plan", description: "why", steps: [{ title: "one" }] },
         });
         expect(emitted).toHaveLength(1);
-        expect(emitted[0].payload.type).toBe("discord_plan");
+        expect(emitted[0].payload.type).toBe("session_plan");
         expect(emitted[0].payload.payload).toMatchObject({ toolCallId: "tc-2", title: "My plan", description: "why" });
         expect(emitted[0].payload.payload.steps).toEqual([{ title: "one" }]);
     });
 
-    test("emits discord_rename when the session name changes", () => {
+    test("emits session_rename when the session name changes", () => {
         pi.fire("session_info_changed", { name: "  Relay prompts through Discord  " });
         expect(emitted).toHaveLength(1);
-        expect(emitted[0].payload.type).toBe("discord_rename");
+        expect(emitted[0].payload.type).toBe("session_rename");
         expect(emitted[0].payload.payload.name).toBe("Relay prompts through Discord");
     });
 
