@@ -34,6 +34,28 @@ export function detectPizzaPiHost(pi: PizzaPiHostAPI): PizzaPiHostInfo | undefin
 }
 
 /**
+ * Send a message from a session-side package extension to a daemon-scoped
+ * runner service, as a `service_message` envelope on the relay socket.
+ *
+ * This is the outbound half of any bridge whose service lives in the daemon
+ * (chat connectors, dashboards, notifiers): services see none of a session's
+ * in-process events, so the package ships an extension that observes them and
+ * forwards what it needs over this channel.
+ *
+ * The host stamps `sessionId` and a unique `id` (for at-least-once dedupe)
+ * onto the payload. No-op when there is no PizzaPi host, or when the relay
+ * socket is mid-reconnect — a dropped message must never block a turn.
+ */
+export function sendServiceMessage(
+  pi: PizzaPiHostAPI,
+  serviceId: string,
+  type: string,
+  payload?: Record<string, unknown>,
+): void {
+  pi.events.emit("pizzapi:service_message", { serviceId, type, payload: payload ?? {} });
+}
+
+/**
  * Subscribes to host readiness. Delivers immediately if the host already
  * responded to a synchronous probe, otherwise waits for the host's
  * `pizzapi:host:ready` announcement. Delivers at most once.

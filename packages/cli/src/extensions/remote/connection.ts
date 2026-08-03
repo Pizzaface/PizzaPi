@@ -41,6 +41,47 @@ let connectFailureNotified = false;
 const oauthPendingCallbacks = new Map<string, (result: { code: string; state?: string }) => void>();
 const log = createLogger("relay");
 
+/** Fetch one connector CDN image URL into an inline image content part. */
+export async function fetchImagePart(url: string): Promise<{ type: "image"; mimeType: string; data: string } | null> {
+    try {
+        const res = await fetch(url);
+        if (!res.ok) return null;
+        const mimeType = (res.headers.get("content-type") || "image/png").split(";")[0].trim();
+        if (!mimeType.startsWith("image/")) return null;
+        const data = Buffer.from(await res.arrayBuffer()).toString("base64");
+        return { type: "image", mimeType, data };
+    } catch {
+        return null;
+    }
+}
+
+/** Build a user message from a connector message's text + image attachments and deliver it. */
+async function deliverConnectorImages(
+    rctx: RelayContext,
+    handlers: ConnectionHandlers,
+    text: string,
+    imageUrls: string[],
+): Promise<void> {
+    try {
+        const parts: unknown[] = [];
+        if (text) parts.push({ type: "text", text });
+        for (const url of imageUrls.slice(0, 8)) {
+            const img = await fetchImagePart(url);
+            if (img) parts.push(img);
+        }
+        if (parts.length === 0) return;
+        await waitForWorkerStartupComplete();
+        const effectiveDeliverAs = resolveInputDeliverAs("steer", rctx.isAgentActive === true);
+        await handlers.sendUserMessage(parts, {
+            expandPromptTemplates: true,
+            ...(effectiveDeliverAs ? { deliverAs: effectiveDeliverAs } : {}),
+        });
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log.error(`pizzapi: failed to deliver connector image message: ${message}`);
+    }
+}
+
 // ── Dependency injection for factory-closure callbacks ────────────────────────
 
 /**
@@ -460,6 +501,40 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         if (handlers.isStaleChild(trigger.sourceSessionId)) {
             log.info(`dropping stale session_trigger (${trigger.type}) from ${trigger.sourceSessionId} — sender is a pre-/new child`);
             return;
+        }
+
+        // Connector messages (Discord/Slack/… poll votes, plan buttons, or plain
+        // replies) can answer a pending AskUserQuestion / plan_mode, or carry
+        // images. Route those here rather than steering a fresh turn that would
+        // strand the blocked tool. Any `<connector>:message` trigger qualifies;
+        // if there's no pending prompt and no images it falls through to the
+        // normal render path, so a false-positive match is harmless.
+        // ponytail: endsWith(":message") over a connector allowlist — the
+        // pending-prompt/images guard below makes an unrelated match a no-op.
+        if (trigger.type.endsWith(":message")) {
+            const p = (trigger.payload ?? {}) as Record<string, unknown>;
+            const text = typeof p.text === "string" ? p.text : "";
+            const imageUrls = Array.isArray(p.imageUrls)
+                ? (p.imageUrls.filter((u): u is string => typeof u === "string"))
+                : [];
+            if (text && consumePendingAskUserQuestionFromWeb(rctx, text)) return;
+            if (text && rctx.pendingPlanMode) {
+                // Connectors map their own approve/cancel vocabulary (button
+                // clicks, "lgtm") to a structured action; anything else falls
+                // through as raw text, which plan_mode reads as edit feedback.
+                const planAction = p.planAction;
+                consumePendingPlanModeFromWeb(
+                    rctx,
+                    planAction === "execute" || planAction === "cancel"
+                        ? JSON.stringify({ action: planAction })
+                        : text,
+                );
+                return;
+            }
+            if (imageUrls.length > 0) {
+                void deliverConnectorImages(rctx, handlers, text, imageUrls);
+                return;
+            }
         }
 
         // NOTE: We no longer auto-suppress session_complete triggers when

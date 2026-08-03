@@ -14,7 +14,8 @@ import { GitService, GIT_SIGIL_DEFS } from "./services/git-service.js";
 // Resolves @VARIABLE@ tokens used in service panel requires
 import { resolvePizzaPiVar } from "../config/io.js";
 import { mergeModelLists, readSessionModelsCache, type SessionModelEntry } from "../session-models-cache.js";
-import { getCachedOllamaCloudModels, registerOllamaCloudProvider } from "../ollama-cloud-models.js";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import { getCachedOllamaCloudModels, registerOllamaCloudProvider, toOllamaCloudRuntimeModel } from "../ollama-cloud-models.js";
 import { TunnelService } from "./services/tunnel-service.js";
 import { ProcessService } from "./services/process-service.js";
 import { MemoryService } from "./services/memory-service.js";
@@ -575,7 +576,7 @@ export async function listConfiguredModels(cwd = process.cwd()): Promise<Session
     // credentials go unrecognized. Mirrors ollamaCloudProviderExtension.
     registerOllamaCloudProvider(runtime);
     const modelRegistry = new ModelRegistry(runtime);
-    const diskModels = modelRegistry
+    const diskModels: SessionModelEntry[] = modelRegistry
         .getAvailable()
         .map((model: any) => ({
             provider: model.provider,
@@ -583,6 +584,7 @@ export async function listConfiguredModels(cwd = process.cwd()): Promise<Session
             name: model.name,
             reasoning: model.reasoning,
             contextWindow: model.contextWindow,
+            thinkingLevels: getSupportedThinkingLevels(model),
         }));
     // Ollama Cloud models are discovered dynamically and are NOT in the
     // static disk registry. Surface the cached list directly so newer
@@ -597,6 +599,7 @@ export async function listConfiguredModels(cwd = process.cwd()): Promise<Session
             name: model.name,
             reasoning: model.reasoning,
             contextWindow: model.contextWindow,
+            thinkingLevels: getSupportedThinkingLevels(toOllamaCloudRuntimeModel(model)),
         }));
     }
     // Extension-registered providers (pi packages calling registerProvider)
@@ -1614,7 +1617,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         socket.on("new_session", async (data: any) => {
             if (isShuttingDown) return;
-            const { sessionId, cwd: requestedCwd, prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: requestedAgent, parentSessionId: requestedParentSessionId, resumePath: requestedResumePath, resumeId: requestedResumeId, autoClose: requestedAutoClose } = data;
+            const { sessionId, cwd: requestedCwd, prompt: requestedPrompt, imageUrls: requestedImageUrls, model: requestedModel, hiddenModels: requestedHiddenModels, agent: requestedAgent, parentSessionId: requestedParentSessionId, resumePath: requestedResumePath, resumeId: requestedResumeId, autoClose: requestedAutoClose } = data;
 
             if (!sessionId) {
                 socket.emit("session_error", { sessionId: sessionId ?? "", message: "Missing sessionId" });
@@ -1687,7 +1690,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     // On restart (exit code 43), the session already has
                     // the prompt in its history — re-sending would duplicate it.
                     const spawnOpts = isFirstSpawn
-                        ? { prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, resumePath: resolvedResumePath, autoClose: requestedAutoClose === true }
+                        ? { prompt: requestedPrompt, imageUrls: Array.isArray(requestedImageUrls) ? requestedImageUrls : undefined, model: requestedModel, hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, resumePath: resolvedResumePath, autoClose: requestedAutoClose === true }
                         : { hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, autoClose: requestedAutoClose === true }; // Always pass agent + hidden models + parent + autoClose on restart
                     isFirstSpawn = false;
                     spawnSession(sessionId, apiKey!, relayRaw, requestedCwd, runningSessions, restartingSessions, killedSessions, doSpawn, spawnOpts);

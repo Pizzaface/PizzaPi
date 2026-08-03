@@ -80,6 +80,9 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         const requestedRunnerId = typeof body.runnerId === "string" ? body.runnerId : undefined;
         const requestedCwd = typeof body.cwd === "string" ? body.cwd : undefined;
         const requestedPrompt = typeof body.prompt === "string" ? body.prompt : undefined;
+        const requestedImageUrls = Array.isArray(body.imageUrls)
+            ? body.imageUrls.filter((u: unknown): u is string => typeof u === "string").slice(0, 8)
+            : undefined;
         const requestedResumePath = typeof body.resumePath === "string" ? body.resumePath : undefined;
         const requestedResumeId = typeof body.resumeId === "string" ? body.resumeId : undefined;
 
@@ -184,6 +187,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 sessionId,
                 cwd: requestedCwd,
                 ...(requestedPrompt ? { prompt: requestedPrompt } : {}),
+                ...(requestedImageUrls && requestedImageUrls.length > 0 ? { imageUrls: requestedImageUrls } : {}),
                 ...(requestedModel ? { model: requestedModel } : {}),
                 ...(hiddenModels.length > 0 ? { hiddenModels } : {}),
                 ...(requestedAgent ? { agent: requestedAgent } : {}),

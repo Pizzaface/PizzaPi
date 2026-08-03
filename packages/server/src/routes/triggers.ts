@@ -10,6 +10,14 @@
  *   `model_set` socket event, so runner services can drive it with an API key.
  *   Body: { provider, modelId }. Requires collab mode; hidden models are blocked.
  *
+ * POST /api/sessions/:id/abort
+ *   Stops the session's current generation. HTTP equivalent of the viewer's
+ *   Esc → exec abort, so runner services can drive it with an API key.
+ *
+ * POST /api/sessions/:id/thinking
+ *   Sets the session's thinking/reasoning effort level. HTTP equivalent of
+ *   the viewer's exec set_thinking_level. Body: { level }.
+ *
  * GET /api/sessions/:id/triggers
  *   Lists recent triggers for a session (from Redis trigger history).
  *
@@ -286,6 +294,95 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
 
         const delivered = await emitToRelaySessionVerified(sessionId, "model_set", { provider, modelId });
         if (delivered) return Response.json({ ok: true, provider, modelId });
+
+        return Response.json(
+            { error: "Session is registered but not currently connected" },
+            { status: 503 },
+        );
+    }
+
+    // ── POST /api/sessions/:id/abort ──────────────────────────────────
+    // Stop the session's current generation. Same effect as the viewer's
+    // Esc → exec { command: "abort" }, but reachable with an API key so
+    // runner services (the Discord bridge's /stop command) can drive it.
+    const abortMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/abort$/);
+    if (abortMatch && req.method === "POST") {
+        const identity = await authenticate(req);
+        if (identity instanceof Response) return identity;
+
+        const sessionId = decodeURIComponent(abortMatch[1]);
+        const targetSession = await getSharedSession(sessionId);
+        if (!targetSession || targetSession.userId !== identity.userId) {
+            return Response.json({ error: "Session not found or not connected" }, { status: 404 });
+        }
+        if (!targetSession.collabMode) {
+            return Response.json({ error: "Session is not in collab mode" }, { status: 409 });
+        }
+
+        const execReq = { type: "exec", id: `abort_${randomUUID().replace(/-/g, "").slice(0, 16)}`, command: "abort" };
+        const targetSocket = getLocalTuiSocket(sessionId);
+        if (targetSocket?.connected) {
+            targetSocket.emit("exec", execReq);
+            return Response.json({ ok: true });
+        }
+
+        const delivered = await emitToRelaySessionVerified(sessionId, "exec", execReq);
+        if (delivered) return Response.json({ ok: true });
+
+        return Response.json(
+            { error: "Session is registered but not currently connected" },
+            { status: 503 },
+        );
+    }
+
+    // ── POST /api/sessions/:id/thinking ───────────────────────────────
+    // Set the session's thinking/reasoning effort level. Same effect as the
+    // viewer's exec { command: "set_thinking_level" }, but reachable with an
+    // API key so runner services (the Discord bridge's /effort command) can
+    // drive it. Body: { level }.
+    const thinkingMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/thinking$/);
+    if (thinkingMatch && req.method === "POST") {
+        const identity = await authenticate(req);
+        if (identity instanceof Response) return identity;
+
+        const sessionId = decodeURIComponent(thinkingMatch[1]);
+        const targetSession = await getSharedSession(sessionId);
+        if (!targetSession || targetSession.userId !== identity.userId) {
+            return Response.json({ error: "Session not found or not connected" }, { status: 404 });
+        }
+        if (!targetSession.collabMode) {
+            return Response.json({ error: "Session is not in collab mode" }, { status: 409 });
+        }
+
+        let body: { level?: unknown };
+        try {
+            body = await req.json() as typeof body;
+        } catch {
+            return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+        }
+        const level = typeof body.level === "string" ? body.level.trim() : "";
+        const VALID_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+        if (!VALID_LEVELS.includes(level)) {
+            return Response.json(
+                { error: `Invalid 'level' — expected one of: ${VALID_LEVELS.join(", ")}` },
+                { status: 400 },
+            );
+        }
+
+        const execReq = {
+            type: "exec",
+            id: `think_${randomUUID().replace(/-/g, "").slice(0, 16)}`,
+            command: "set_thinking_level",
+            level,
+        };
+        const thinkingSocket = getLocalTuiSocket(sessionId);
+        if (thinkingSocket?.connected) {
+            thinkingSocket.emit("exec", execReq);
+            return Response.json({ ok: true, level });
+        }
+
+        const thinkingDelivered = await emitToRelaySessionVerified(sessionId, "exec", execReq);
+        if (thinkingDelivered) return Response.json({ ok: true, level });
 
         return Response.json(
             { error: "Session is registered but not currently connected" },

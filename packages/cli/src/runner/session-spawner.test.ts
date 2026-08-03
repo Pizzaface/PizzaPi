@@ -115,6 +115,7 @@ describe("session-spawner child", () => {
                 undefined,
                 {
                     prompt: "hello",
+                    imageUrls: ["https://cdn.discordapp.com/a.png"],
                     model: { provider: "anthropic", id: "claude-sonnet" },
                     hiddenModels: ["anthropic/claude-opus"],
                     agent: {
@@ -140,6 +141,7 @@ describe("session-spawner child", () => {
                 PIZZAPI_WORKER_CWD: tempCwd,
                 PIZZAPI_RUNNER_USAGE_CACHE_PATH: "/tmp/test-usage-cache.json",
                 PIZZAPI_WORKER_INITIAL_PROMPT: "hello",
+                PIZZAPI_WORKER_INITIAL_IMAGE_URLS: JSON.stringify(["https://cdn.discordapp.com/a.png"]),
                 PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER: "anthropic",
                 PIZZAPI_WORKER_INITIAL_MODEL_ID: "claude-sonnet",
                 PIZZAPI_HIDDEN_MODELS: JSON.stringify(["anthropic/claude-opus"]),

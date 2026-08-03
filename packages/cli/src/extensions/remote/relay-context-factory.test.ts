@@ -62,9 +62,12 @@ describe("getConfiguredModels session snapshot", () => {
 
         const models = rctx.getConfiguredModels();
         expect(models).toHaveLength(1);
-        expect(readSessionModelsCache()).toEqual([
+        // ponytail: thinkingLevels comes from pi-ai, assert shape not exact levels
+        const cached = readSessionModelsCache();
+        expect(cached).toMatchObject([
             { provider: "claude-subscription", id: "claude-sonnet-5", name: "Claude Sonnet 5", reasoning: true, contextWindow: 200000 },
         ]);
+        expect(Array.isArray(cached?.[0]?.thinkingLevels)).toBe(true);
     });
 });
 

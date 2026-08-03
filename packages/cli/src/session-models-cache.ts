@@ -24,6 +24,8 @@ export interface SessionModelEntry {
     name: string;
     reasoning: boolean;
     contextWindow: number;
+    /** Thinking levels this model supports (pi getSupportedThinkingLevels). */
+    thinkingLevels?: string[];
 }
 
 function cachePath(): string {

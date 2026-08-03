@@ -13,6 +13,7 @@ function sleep(ms: number) {
 describe("initialPromptExtension", () => {
     const envKeys = [
         "PIZZAPI_WORKER_INITIAL_PROMPT",
+        "PIZZAPI_WORKER_INITIAL_IMAGE_URLS",
         "PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER",
         "PIZZAPI_WORKER_INITIAL_MODEL_ID",
         "PIZZAPI_WORKER_AGENT_NAME",
@@ -116,5 +117,40 @@ describe("initialPromptExtension", () => {
 
         expect(sendUserMessage).toHaveBeenCalledTimes(1);
         expect(sendUserMessage.mock.calls[0]![0]).toBe("do the thing");
+    });
+
+    test("attaches initial image URLs as content parts alongside the prompt", async () => {
+        mock.module("./remote.js", () => ({
+            ...actualRemote,
+            waitForRelayRegistration: mock(async (_timeoutMs?: number) => {}),
+        }));
+        mock.module("./remote/connection.js", () => ({
+            fetchImagePart: mock(async (url: string) => ({ type: "image", mimeType: "image/png", data: `b64:${url}` })),
+        }));
+
+        const { initialPromptExtension } = await import("./initial-prompt.js");
+
+        process.env.PIZZAPI_WORKER_INITIAL_PROMPT = "look at this";
+        process.env.PIZZAPI_WORKER_INITIAL_IMAGE_URLS = JSON.stringify(["https://cdn.discordapp.com/a.png"]);
+
+        let sessionStartHandler: ((event: unknown, ctx: unknown) => Promise<void>) | undefined;
+        const sendUserMessage = mock((_content: unknown) => {});
+        const pi = {
+            on: mock((event: string, handler: typeof sessionStartHandler) => {
+                if (event === "session_start") sessionStartHandler = handler;
+            }),
+            sendUserMessage,
+            setSessionName: mock((_name: string) => {}),
+        };
+
+        initialPromptExtension(pi as any);
+        await sessionStartHandler!(undefined, {});
+        await sleep(30);
+
+        expect(sendUserMessage).toHaveBeenCalledTimes(1);
+        expect(sendUserMessage.mock.calls[0]![0]).toEqual([
+            { type: "text", text: "look at this" },
+            { type: "image", mimeType: "image/png", data: "b64:https://cdn.discordapp.com/a.png" },
+        ]);
     });
 });
