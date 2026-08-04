@@ -31,6 +31,10 @@ permissions:
   pull-requests: write
   packages: write
 
+env:
+  # Release jobs never run Redis-backed tests; don't compile Redis during install.
+  REDISMS_DISABLE_POSTINSTALL: "true"
+
 jobs:
   # ─── Gate: only Pizzaface can trigger this ────────────────────
   authorize:
