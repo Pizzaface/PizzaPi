@@ -167,6 +167,10 @@ pm2 save
 pm2 startup   # generate startup script
 ```
 
+### Docker
+
+To run the runner as a container instead of a host process, see the dedicated [Runner Container](/PizzaPi/deployment/runner-container/) guide — it covers the Compose service, the persistent data volume, workspace mounts, UID/GID remapping, and sandbox posture.
+
 ---
 
 ## Stopping the Runner
@@ -176,6 +180,28 @@ pizzapi runner stop
 ```
 
 This sends SIGTERM to the supervisor and polls for up to 10 seconds, then force-kills with SIGKILL if it has not exited. The daemon disconnects from the relay and releases its lock immediately; workers are independent processes that may continue running or be reaped by the system.
+
+---
+
+## Checking Status
+
+```bash
+pizzapi runner status          # human-readable
+pizzapi runner status --json   # machine-readable
+```
+
+Exits `0` if the process is alive **and** currently registered with the relay, `1` otherwise (dead process, alive but disconnected, waiting on pairing approval, or rejected by the relay — `reason` distinguishes these). This is what the [runner container image](/PizzaPi/deployment/runner-container/)'s Docker `HEALTHCHECK` runs. See the [CLI Reference](/PizzaPi/running/cli-reference/#pizzapi-runner-status) for the JSON field reference, and [Runner Container → Credentials](/PizzaPi/deployment/runner-container/#credentials) for what auto-pairing does when no `PIZZAPI_API_KEY` is set.
+
+---
+
+## Re-pairing On Demand
+
+```bash
+pizzapi runner pair            # refuses if a credential already resolves
+pizzapi runner pair --force    # pairs and overwrites any existing credential
+```
+
+Runs the same headless device-claim flow the daemon runs automatically on a credential-less boot, but on demand — useful after revoking a runner's API key in the web UI. Refuses without `--force` if a credential already resolves (env var or `config.json`), and refuses (or, with `--force`, warns loudly) if `PIZZAPI_RUNNER_API_KEY` / `PIZZAPI_API_KEY` / `PIZZAPI_API_TOKEN` is set, since that would keep shadowing the freshly paired key at runtime. If a daemon is already running, pairing still writes the new credential but the daemon keeps using the old one in memory until you restart it — the command tells you so. See the [CLI Reference](/PizzaPi/running/cli-reference/#pizzapi-runner-pair) for the full guard-rail and exit-code reference.
 
 ---
 

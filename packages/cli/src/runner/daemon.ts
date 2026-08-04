@@ -38,8 +38,9 @@ import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } from "@pizzapi/protocol";
 import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
 import { extractHookSummary } from "./hook-summary.js";
-import { defaultStatePath, acquireStateAndIdentity, releaseStateLock } from "./runner-state.js";
-import { normalizeLoopbackHost } from "../relay-url.js";
+import { defaultStatePath, acquireStateAndIdentity, releaseStateLock, patchRunnerState } from "./runner-state.js";
+import { seedAuthFileIfNeeded } from "../secrets.js";
+import { normalizeLoopbackHost, toHttpRelayUrl } from "../relay-url.js";
 import { startUsageRefreshLoop, stopUsageRefreshLoop } from "./runner-usage-cache.js";
 import { startOllamaModelsRefreshLoop, stopOllamaModelsRefreshLoop } from "./runner-ollama-models-cache.js";
 import { getWorkspaceRoots } from "./workspace.js";
@@ -60,6 +61,7 @@ import { registerUsageHandlers } from "./daemon-handlers/usage.js";
 import { registerSessionAnalysisHandlers } from "./daemon-handlers/session-analysis.js";
 import { registerSettingsHandlers } from "./daemon-handlers/settings.js";
 import { registerPackagesHandlers } from "./daemon-handlers/packages.js";
+import { registerProviderAuthHandlers } from "./daemon-handlers/provider-auth.js";
 
 // Re-export migration from shared module — used on daemon startup
 import { migrateAgentDir } from "../migrations.js";
@@ -661,6 +663,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
     const packageDiscoveryCwd = process.cwd();
     const packageDiscoveryAgentDir = resolveConfiguredAgentDir(packageDiscoveryCwd);
 
+    // Seed provider credentials from a mounted secret on first boot (never
+    // clobbers an existing auth.json — OAuth refresh writes back to it).
+    seedAuthFileIfNeeded(packageDiscoveryAgentDir);
+
     // Priority: env var > config.json > default
     const apiKey =
         process.env.PIZZAPI_RUNNER_API_KEY ??
@@ -686,17 +692,6 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 .replace(/\/$/, ""),
         );
 
-        // Normalise the relay URL for socket.io-client (needs http(s)://).
-        // If the user supplies a bare hostname (no scheme), default to https://.
-        function normaliseRelayUrl(raw: string): string {
-            if (raw.startsWith("ws://"))      return raw.replace(/^ws:\/\//, "http://");
-            if (raw.startsWith("wss://"))     return raw.replace(/^wss:\/\//, "https://");
-            if (raw.startsWith("http://"))    return raw;
-            if (raw.startsWith("https://"))   return raw;
-            // No scheme — treat as an https host (e.g. "example.com" or "example.com:5173")
-            return `https://${raw}`;
-        }
-
         function toTunnelRelayUrl(raw: string): string {
             if (raw.startsWith("http://")) return `${raw.replace(/^http:\/\//, "ws://")}/_tunnel`;
             if (raw.startsWith("https://")) return `${raw.replace(/^https:\/\//, "wss://")}/_tunnel`;
@@ -704,7 +699,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             return `wss://${raw}/_tunnel`;
         }
 
-        const sioUrl = normaliseRelayUrl(relayRaw);
+        // Normalise the relay URL for socket.io-client (needs http(s)://).
+        // If the user supplies a bare hostname (no scheme), default to https://.
+        const sioUrl = toHttpRelayUrl(relayRaw);
         const tunnelRelayUrl = toTunnelRelayUrl(sioUrl);
 
         const runningSessions = new Map<string, RunnerSession>();
@@ -1146,6 +1143,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 socket.disconnect();
                 return;
             }
+            // Reaching "connect" means the auth middleware accepted us — clear any
+            // earlier rejection so `runner status` stops reporting it as stale.
+            patchRunnerState(statePath, { authRejected: false });
             if (tunnelClient && !tunnelClientStarted) {
                 tunnelClientStarted = true;
                 tunnelClient.connect();
@@ -1156,6 +1156,30 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             emitRegister();
         });
 
+        // A bad API key otherwise looks like a silent hang: the server rejects
+        // with next(new Error("unauthorized")) during the handshake, socket.io
+        // never fires "connect", and (with reconnection on) just retries forever.
+        // Surface it loudly and distinctly from an ordinary network failure, but
+        // rate-limit so a long retry loop can't flood the logs.
+        let lastAuthErrorLoggedAt = 0;
+        const AUTH_ERROR_LOG_INTERVAL_MS = 60_000;
+        socket.on("connect_error", (err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            if (message !== "unauthorized") {
+                logWarn(`[relay] connect error: ${message}`);
+                return;
+            }
+            patchRunnerState(statePath, { authRejected: true });
+            const now = Date.now();
+            if (now - lastAuthErrorLoggedAt < AUTH_ERROR_LOG_INTERVAL_MS) return;
+            lastAuthErrorLoggedAt = now;
+            logError(
+                `[relay] rejected our API key at ${sioUrl}/runner — check PIZZAPI_API_KEY ` +
+                    "(or PIZZAPI_RUNNER_API_KEY / PIZZAPI_API_TOKEN), or re-pair this runner. " +
+                    "Retrying, but it will keep failing until credentials are fixed.",
+            );
+        });
+
         socket.on("disconnect", (reason, details) => {
             if (isShuttingDown) return;
             const engine = socket.io.engine;
@@ -1164,6 +1188,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 `disconnected (${reason}). Socket.IO will reconnect automatically. `
                 + `transport=${transportName} details=${JSON.stringify(details ?? {})}`,
             );
+            // ponytail: no heartbeat timer here — socket.io's own ping/timeout
+            // already fires "disconnect" on a dead connection, and `runner status`
+            // combines this flag with a PID liveness check. That's sufficient to
+            // answer "is this runner alive AND registered" without extra polling.
+            patchRunnerState(statePath, { connected: false, disconnectedAt: new Date().toISOString() });
         });
 
         // ── Registration confirmation ─────────────────────────────────────
@@ -1179,6 +1208,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     logWarn(`server assigned unexpected ID ${runnerId} (expected ${identity.runnerId})`);
                 }
                 logInfo(`registered as ${runnerId}`);
+                patchRunnerState(statePath, {
+                    connected: true,
+                    connectedAt: new Date().toISOString(),
+                    relayUrl: sioUrl,
+                    runnerName,
+                    cliVersion,
+                });
 
                 // Wait for plugin service discovery to finish, then init ALL services
                 // (built-in + plugins) once and announce the full list.
@@ -1868,6 +1904,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         );
         registerSettingsHandlers(socket, () => isShuttingDown);
         registerPackagesHandlers(socket, () => isShuttingDown);
+        registerProviderAuthHandlers(socket, () => isShuttingDown, () => resolveConfiguredAgentDir());
 
         // ── Error handling ────────────────────────────────────────────────
 

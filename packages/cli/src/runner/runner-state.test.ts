@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireStateAndIdentity, isPidRunning, releaseStateLock } from "./runner-state.js";
+import { acquireStateAndIdentity, getPidStartTime, isPidReused, isPidRunning, releaseStateLock } from "./runner-state.js";
 
 describe("runner-state", () => {
     let tmpHome: string;
@@ -109,6 +109,64 @@ describe("runner-state", () => {
         }
     });
 
+    test("isPidReused: only says reused when both start times are known and differ", () => {
+        expect(isPidReused("100", "100")).toBe(false); // same process
+        expect(isPidReused("100", "200")).toBe(true); // PID recycled by a newer process
+        expect(isPidReused(undefined, "200")).toBe(false); // no recorded value — can't tell, trust liveness
+        expect(isPidReused("100", null)).toBe(false); // current unreadable — can't tell, trust liveness
+        expect(isPidReused(null, null)).toBe(false);
+    });
+
+    test("getPidStartTime returns a stable, non-empty value for a live process", async () => {
+        const runner = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)", "runner-lock"]);
+        try {
+            expect(runner.pid).toBeDefined();
+            const a = getPidStartTime(runner.pid!);
+            const b = getPidStartTime(runner.pid!);
+            expect(a).toBeString();
+            expect(a).toBe(b as string);
+        } finally {
+            runner.kill("SIGTERM");
+            await new Promise((resolve) => runner.once("exit", resolve));
+        }
+    });
+
+    test("acquireStateAndIdentity clears a lock whose PID was reused by a different process (container restart)", async () => {
+        const statePath = join(tmpHome, ".pizzapi", "runner.json");
+        mkdirSync(join(tmpHome, ".pizzapi"), { recursive: true });
+        const runner = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)", "runner-lock"]);
+
+        try {
+            expect(runner.pid).toBeDefined();
+            writeFileSync(
+                statePath,
+                JSON.stringify(
+                    {
+                        pid: runner.pid,
+                        // Deliberately wrong start time — simulates a stale lock left
+                        // by a different (now-dead) process that happened to reuse
+                        // this exact PID, e.g. across a container restart.
+                        pidStartTime: "not-the-real-start-time",
+                        startedAt: "2024-01-01T00:00:00.000Z",
+                        runnerId: "runner-123",
+                        runnerSecret: "secret-abc",
+                    },
+                    null,
+                    2,
+                ),
+            );
+
+            const identity = acquireStateAndIdentity(statePath);
+            const state = JSON.parse(readFileSync(statePath, "utf-8"));
+
+            expect(identity).toEqual({ runnerId: "runner-123", runnerSecret: "secret-abc" });
+            expect(state.pid).toBe(process.pid);
+        } finally {
+            runner.kill("SIGTERM");
+            await new Promise((resolve) => runner.once("exit", resolve));
+        }
+    });
+
     test("acquireStateAndIdentity exits when a live runner already holds the lock", async () => {
         const statePath = join(tmpHome, ".pizzapi", "runner.json");
         mkdirSync(join(tmpHome, ".pizzapi"), { recursive: true });
@@ -121,6 +179,41 @@ describe("runner-state", () => {
                 JSON.stringify(
                     {
                         pid: runner.pid,
+                        startedAt: "2024-01-01T00:00:00.000Z",
+                        runnerId: "runner-123",
+                        runnerSecret: "secret-abc",
+                    },
+                    null,
+                    2,
+                ),
+            );
+
+            (process as any).exit = (code?: number) => {
+                throw new Error(`process.exit:${code ?? 0}`);
+            };
+
+            expect(() => acquireStateAndIdentity(statePath)).toThrow("process.exit:1");
+        } finally {
+            process.exit = originalExit;
+            runner.kill("SIGTERM");
+            await new Promise((resolve) => runner.once("exit", resolve));
+        }
+    });
+
+    test("acquireStateAndIdentity exits when the recorded start time still matches (genuinely the same live process)", async () => {
+        const statePath = join(tmpHome, ".pizzapi", "runner.json");
+        mkdirSync(join(tmpHome, ".pizzapi"), { recursive: true });
+        const runner = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)", "runner-lock"]);
+        const originalExit = process.exit;
+
+        try {
+            expect(runner.pid).toBeDefined();
+            writeFileSync(
+                statePath,
+                JSON.stringify(
+                    {
+                        pid: runner.pid,
+                        pidStartTime: getPidStartTime(runner.pid!),
                         startedAt: "2024-01-01T00:00:00.000Z",
                         runnerId: "runner-123",
                         runnerSecret: "secret-abc",

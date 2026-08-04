@@ -9,6 +9,7 @@ import {
     pollSetupClaim,
     approveSetupClaim,
     sweepExpiredSetupClaims,
+    getSetupClaimInfo,
 } from "./setup-claims.js";
 import { runWithAuthContext } from "./auth.js";
 
@@ -125,6 +126,143 @@ describe("setup-claims store", () => {
             expect(first).not.toBeNull();
             const second = await approveSetupClaim(token, "user-2", "Other");
             expect(second).toBeNull();
+        });
+    });
+
+    test("label is trimmed, persisted, and returned on poll", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492", "  docker-demo-runner  ");
+            const status = await pollSetupClaim(token);
+            expect(status!.label).toBe("docker-demo-runner");
+        });
+    });
+
+    test("hostile label input is stripped to a safe charset and truncated", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const hostile = "<script>alert(1)</script>\x00\x07" + "a".repeat(100);
+            const { token } = await createSetupClaim("http://localhost:7492", hostile);
+            const status = await pollSetupClaim(token);
+            expect(status!.label).toBeDefined();
+            expect(status!.label!.length).toBeLessThanOrEqual(64);
+            // Only letters, digits, space, -, _, . may survive.
+            expect(status!.label!).toMatch(/^[a-zA-Z0-9 _.-]*$/);
+        });
+    });
+
+    test("whitespace-only label is treated as no label", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492", "   ");
+            const status = await pollSetupClaim(token);
+            expect(status!.label).toBeUndefined();
+        });
+    });
+
+    test("no label still behaves exactly as before (relayUrl-only call)", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token, expiresAt } = await createSetupClaim("http://localhost:7492");
+            expect(new Date(expiresAt).getTime()).toBeGreaterThan(Date.now());
+            const status = await pollSetupClaim(token);
+            expect(status!.label).toBeUndefined();
+
+            const approve = await approveSetupClaim(token, "user-nolabel", "NoLabel");
+            expect(approve).not.toBeNull();
+
+            const { getKysely } = await import("./auth.js");
+            const row = await getKysely()
+                .selectFrom("apikey")
+                .select(["name"])
+                .where("name", "=", `setup-claim-${token.slice(0, 8)}`)
+                .executeTakeFirst();
+            expect(row).toBeTruthy();
+
+            const firstPoll = await pollSetupClaim(token);
+            expect(firstPoll!.status).toBe("approved");
+            expect(firstPoll!.apiKey).toBe(approve!.apiKey);
+
+            const redeemed = await pollSetupClaim(token);
+            expect(redeemed!.status).toBe("redeemed");
+        });
+    });
+
+    test("approving a labeled claim names the minted key after the label", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492", "docker-demo-runner");
+            const approve = await approveSetupClaim(token, "user-label", "Labelled");
+            expect(approve).not.toBeNull();
+
+            const { getKysely } = await import("./auth.js");
+            const row = await getKysely()
+                .selectFrom("apikey")
+                .select(["name"])
+                .where("name", "=", "runner-docker-demo-runner")
+                .executeTakeFirst();
+            expect(row).toBeTruthy();
+        });
+    });
+
+    test("label survives the approve -> poll -> redeem cycle", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492", "docker-demo-runner");
+            await approveSetupClaim(token, "user-cycle", "Cycle");
+
+            const first = await pollSetupClaim(token);
+            expect(first!.status).toBe("approved");
+            expect(first!.label).toBe("docker-demo-runner");
+
+            const second = await pollSetupClaim(token);
+            expect(second!.status).toBe("redeemed");
+            expect(second!.label).toBe("docker-demo-runner");
+        });
+    });
+
+    // Regression: the web UI reads label/status via getSetupClaimInfo (the
+    // /info route), which must be safe to call after approval without
+    // disturbing the CLI's one-shot redeem via pollSetupClaim.
+    test("getSetupClaimInfo never leaks the key and never redeems an approved claim", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492", "docker-demo-runner");
+            const approve = await approveSetupClaim(token, "user-info", "Info");
+            expect(approve).not.toBeNull();
+
+            const info = await getSetupClaimInfo(token);
+            expect(info).not.toBeNull();
+            expect(info!.status).toBe("approved");
+            expect(info!.label).toBe("docker-demo-runner");
+            expect((info as unknown as { apiKey?: string }).apiKey).toBeUndefined();
+
+            // The CLI's poll must still work: first call redeems and returns the key,
+            // second call reports redeemed. getSetupClaimInfo must not have consumed it.
+            const firstPoll = await pollSetupClaim(token);
+            expect(firstPoll!.status).toBe("approved");
+            expect(firstPoll!.apiKey).toBe(approve!.apiKey);
+
+            const secondPoll = await pollSetupClaim(token);
+            expect(secondPoll!.status).toBe("redeemed");
+            expect(secondPoll!.apiKey).toBeUndefined();
+        });
+    });
+
+    test("repeated getSetupClaimInfo reads on an approved claim never redeem it", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492");
+            await approveSetupClaim(token, "user-repeat", "Repeat");
+
+            for (let i = 0; i < 5; i++) {
+                const info = await getSetupClaimInfo(token);
+                expect(info!.status).toBe("approved");
+            }
+
+            // Still approved (not redeemed) after all those reads — the CLI poll
+            // is the only thing allowed to consume it.
+            const info = await getSetupClaimInfo(token);
+            expect(info!.status).toBe("approved");
+        });
+    });
+
+    test("getSetupClaimInfo returns null for an unknown token", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const info = await getSetupClaimInfo("definitely-not-a-token");
+            expect(info).toBeNull();
         });
     });
 });

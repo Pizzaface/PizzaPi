@@ -29,11 +29,21 @@ import { fileURLToPath } from "node:url";
 import { defaultStatePath } from "./runner-state.js";
 import { setLogComponent, logInfo, logError } from "./logger.js";
 import { forceKillTree, SHUTDOWN_MESSAGE } from "./process-kill.js";
+import { resolveAgentDir } from "../config.js";
+import { ensureRunnerCredentials } from "./pairing.js";
 
 const RESTART_DELAY_BASE = 2_000;  // 2 s
 const RESTART_DELAY_MAX  = 60_000; // 60 s
 
 export async function runSupervisor(_args: string[] = []): Promise<number> {
+    setLogComponent("supervisor");
+
+    // Auto-pair before the daemon (and its runner.json pid lock) ever exist —
+    // if no usable credential is configured, this blocks here printing a QR /
+    // approval URL instead of the daemon failing fast after acquiring the lock.
+    const pairingExitCode = await ensureRunnerCredentials(resolveAgentDir());
+    if (pairingExitCode !== null) return pairingExitCode;
+
     // Resolve the CLI entry point so we can re-spawn it with `_daemon`.
     // Works from TypeScript source, compiled dist, and standalone binaries.
     // Detect compiled Bun single-file binary.
@@ -109,7 +119,6 @@ export async function runSupervisor(_args: string[] = []): Promise<number> {
         // Best-effort — the daemon will create the file if it doesn't exist.
     }
 
-    setLogComponent("supervisor");
     logInfo("starting runner daemon as subprocess…");
 
     while (true) {

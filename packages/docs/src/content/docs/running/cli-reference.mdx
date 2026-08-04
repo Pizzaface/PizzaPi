@@ -24,6 +24,8 @@ Commands:
   pizza web [flags]           Manage the PizzaPi web hub (Docker)
   pizza runner [args]         Manage the background runner daemon
   pizza runner stop           Stop the runner daemon
+  pizza runner status [--json]  Health check the runner daemon (exit 0 = healthy)
+  pizza runner pair [--force]   Pair (or re-pair) the runner with a fresh API key
   pizza setup                 Run first-time setup
   pizza usage [provider]      Show API usage stats
   pizza models                List available models
@@ -177,6 +179,70 @@ Send a stop signal to the currently running runner daemon.
 ```bash
 pizzapi runner stop
 ```
+
+---
+
+### `pizzapi runner status`
+
+Health check for the runner daemon — answers "is this runner alive **and** registered with the relay?" by combining a PID liveness check with the daemon's last-known relay connection state. Fast and dependency-light: no relay round-trip, no config/model loading.
+
+```bash
+pizzapi runner status          # human-readable summary
+pizzapi runner status --json   # machine-readable, for scripting/monitoring
+```
+
+**Exit code:** `0` if healthy (process running and `connected: true`), `1` otherwise.
+
+`--json` prints:
+
+```json
+{
+  "healthy": true,
+  "runnerId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "runnerName": "docker-runner",
+  "relayUrl": "https://pizza.example.com",
+  "connected": true,
+  "pid": 12345,
+  "startedAt": "2025-01-15T10:30:00.000Z",
+  "cliVersion": "0.5.61"
+}
+```
+
+| Field | Present when | Description |
+|---|---|---|
+| `healthy` | always | `true` only if the process is alive and `connected` is `true` |
+| `reason` | unhealthy | `"no runner state file found"`, `"pairing pending — approve at <url>"` (auto-pairing is waiting on approval), `"process not running"`, `"relay rejected credentials — check PIZZAPI_API_KEY / re-pair"` (the relay rejected the key — distinct from an ordinary connectivity problem), or `"not registered with relay"` |
+| `pairingUrl` | pairing pending | The approval URL to open, when `reason` is a pending-pairing message |
+| `runnerId`, `runnerName`, `relayUrl`, `cliVersion` | state file exists | Copied from `~/.pizzapi/runner.json` |
+| `connected` | always | Whether the daemon's last-known state is registered with the relay |
+| `pid` | a pid was recorded | The daemon process's own PID (not the supervisor's) |
+| `startedAt` | state file exists | ISO timestamp of the daemon's last start |
+
+This is the command the [runner container image](/PizzaPi/deployment/runner-container/)'s Docker `HEALTHCHECK` runs.
+
+---
+
+### `pizzapi runner pair`
+
+Mint a fresh headless-paired API key on demand — the same device-claim flow the daemon runs automatically on a credential-less boot ([Runner Container → Credentials](/PizzaPi/deployment/runner-container/#credentials)), but invokable any time. Useful after revoking a runner's key in the web UI, instead of hand-editing the data volume.
+
+```bash
+pizzapi runner pair            # refuses if a credential already resolves
+pizzapi runner pair --force    # pairs and overwrites any existing credential
+```
+
+Prints an approval URL + QR code (re-printed periodically while waiting), polls until approved or expired, then writes `apiKey`/`relayUrl` into `config.json` in the resolved agent dir, replacing only those two fields.
+
+**Exit code:** `0` on a successful pair. Non-zero if refused, if the claim expires, or on any pairing failure.
+
+Two guard rails, both bypassed only with `--force`:
+
+- **Refuses to clobber an existing credential.** If an API key already resolves (env var or `config.json`), it prints where it came from (never the key itself) and exits non-zero telling you to re-run with `--force`.
+- **Refuses when an env var would shadow the result.** The runtime resolution order is `PIZZAPI_RUNNER_API_KEY` → `PIZZAPI_API_KEY` → `PIZZAPI_API_TOKEN` → config `apiKey`. If any of those three env vars is set, a freshly paired key written to `config.json` would be silently ignored at runtime — pairing would "succeed" while nothing actually changes. This refuses outright by default (naming the offending variable and telling you to unset it) rather than just warning, because a warning line is easy to miss when the operator is scanning for a success message. Even with `--force`, the same warning still prints before proceeding, since forcing past the refusal doesn't make the shadow go away.
+
+If a runner daemon is already running when pairing succeeds, the daemon keeps using its old credential in memory — the command prints a reminder to restart it (`pizzapi runner stop` then start again, or `docker restart <container>`) rather than restarting anything itself.
+
+If no relay URL is known (neither `PIZZAPI_RELAY_URL` nor a configured one), it fails immediately with an actionable message — it never prompts or guesses a default.
 
 ---
 

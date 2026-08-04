@@ -1,22 +1,33 @@
 /**
  * Setup-claim routes — QR-code device enrollment.
  *
- * - POST /api/setup-claim         — unauthenticated; creates a pending claim.
- * - GET  /api/setup-claim/:token  — unauthenticated; poll/redeem a claim.
+ * - POST /api/setup-claim              — unauthenticated; creates a pending claim.
+ * - GET  /api/setup-claim/:token       — unauthenticated; poll/redeem a claim (one-shot key delivery, CLI only).
+ * - GET  /api/setup-claim-info/:token  — unauthenticated; non-consuming status/label read for the approval UI.
+ *
+ * The info route deliberately sits OUTSIDE the /api/setup-claim/ prefix. Older
+ * relays parse the poll route's token as
+ * `pathname.slice("/api/setup-claim/".length).split("/")[0]`, so a nested
+ * `/api/setup-claim/:token/info` request would hit their *consuming* poll
+ * handler with a valid token and silently redeem an approved claim. The UI is
+ * shipped as a separately versioned image from the server, so a newer UI WILL
+ * meet an older server in the wild. A distinct prefix 404s there instead.
  * - POST /api/setup-claim/:token/approve — authenticated; approve and attach API key.
  */
 
 import { requireEnrollmentAuth } from "../middleware.js";
-import { createSetupClaim, pollSetupClaim, approveSetupClaim } from "../setup-claims.js";
+import { createSetupClaim, pollSetupClaim, approveSetupClaim, getSetupClaimInfo } from "../setup-claims.js";
 import type { RouteHandler } from "./types.js";
 
 export const handleSetupClaimsRoute: RouteHandler = async (req, url) => {
     // Create a pending claim (called by the CLI during `pizzapi setup --scan`).
     if (url.pathname === "/api/setup-claim" && req.method === "POST") {
         let relayUrl = "";
+        let label: string | undefined;
         try {
-            const body = (await req.json()) as { relayUrl?: string };
+            const body = (await req.json()) as { relayUrl?: string; label?: string };
             relayUrl = typeof body.relayUrl === "string" ? body.relayUrl.trim() : "";
+            label = typeof body.label === "string" ? body.label : undefined;
         } catch {
             relayUrl = "";
         }
@@ -24,8 +35,22 @@ export const handleSetupClaimsRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Missing required field: relayUrl" }, { status: 400 });
         }
 
-        const { token, expiresAt } = await createSetupClaim(relayUrl);
+        const { token, expiresAt } = await createSetupClaim(relayUrl, label);
         return Response.json({ token, expiresAt });
+    }
+
+    // Non-consuming status/label read for the web approval UI (checked before the
+    // poll/redeem route below — must NEVER fall through to the one-shot redeem).
+    if (url.pathname.startsWith("/api/setup-claim-info/") && req.method === "GET") {
+        const token = url.pathname.slice("/api/setup-claim-info/".length).split("/")[0];
+        if (!token) {
+            return Response.json({ error: "Missing claim token" }, { status: 400 });
+        }
+        const info = await getSetupClaimInfo(token);
+        if (!info) {
+            return Response.json({ error: "Unknown or expired claim" }, { status: 404 });
+        }
+        return Response.json(info);
     }
 
     // Poll/redeem a claim (called by the CLI every few seconds).

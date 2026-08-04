@@ -44,6 +44,17 @@ export async function ensureSetupClaimsTable(): Promise<void> {
         .addColumn("approvedAt", "text")
         .addColumn("redeemedAt", "text")
         .execute();
+
+    // Migration: add label column for naming the runner/device being paired
+    // (older rows/deployments simply have a null label).
+    try {
+        await getKysely().schema.alterTable("setup_claim").addColumn("label", "text").execute();
+    } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes("duplicate column name")) {
+            throw err;
+        }
+    }
 }
 
 function claimExpiry(): string {
@@ -54,7 +65,22 @@ function generateToken(): string {
     return crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
 }
 
-export async function createSetupClaim(relayUrl: string): Promise<{ token: string; expiresAt: string }> {
+const LABEL_MAX_LENGTH = 64;
+// Letters, digits, space, dash, underscore, dot. Rendered as text in the web UI
+// and folded into a minted API key name, so nothing else survives.
+const LABEL_SAFE_CHARS = /[^a-zA-Z0-9 _.-]/g;
+
+/** Sanitize an attacker-controlled label: trim, strip unsafe chars, cap length. */
+function sanitizeLabel(label: unknown): string | null {
+    if (typeof label !== "string") return null;
+    const cleaned = label.trim().replace(LABEL_SAFE_CHARS, "").slice(0, LABEL_MAX_LENGTH).trim();
+    return cleaned || null;
+}
+
+export async function createSetupClaim(
+    relayUrl: string,
+    label?: string | null,
+): Promise<{ token: string; expiresAt: string }> {
     const token = generateToken();
     const now = new Date().toISOString();
     const expiresAt = claimExpiry();
@@ -71,6 +97,7 @@ export async function createSetupClaim(relayUrl: string): Promise<{ token: strin
             expiresAt,
             approvedAt: null,
             redeemedAt: null,
+            label: sanitizeLabel(label),
         })
         .execute();
     return { token, expiresAt };
@@ -80,6 +107,7 @@ export interface SetupClaimStatus {
     status: SetupClaimTable["status"];
     relayUrl: string;
     apiKey?: string;
+    label?: string;
 }
 
 /**
@@ -103,7 +131,7 @@ export async function pollSetupClaim(token: string): Promise<SetupClaimStatus | 
                 .where("id", "=", token)
                 .execute();
         }
-        return { status: "expired", relayUrl: row.relayUrl };
+        return { status: "expired", relayUrl: row.relayUrl, label: row.label ?? undefined };
     }
 
     if (row.status === "approved" && row.apiKey) {
@@ -112,10 +140,35 @@ export async function pollSetupClaim(token: string): Promise<SetupClaimStatus | 
             .set({ status: "redeemed", redeemedAt: new Date().toISOString() })
             .where("id", "=", token)
             .execute();
-        return { status: "approved", relayUrl: row.relayUrl, apiKey: row.apiKey };
+        return { status: "approved", relayUrl: row.relayUrl, apiKey: row.apiKey, label: row.label ?? undefined };
     }
 
-    return { status: row.status, relayUrl: row.relayUrl };
+    return { status: row.status, relayUrl: row.relayUrl, label: row.label ?? undefined };
+}
+
+export interface SetupClaimInfo {
+    status: SetupClaimTable["status"] | "expired";
+    label?: string;
+}
+
+/**
+ * Non-consuming read of a claim's status/label, for the web approval UI to
+ * show "what am I approving" before the user clicks. Unlike `pollSetupClaim`
+ * (the CLI's one-shot redeem), this NEVER mutates the row and NEVER returns
+ * the API key — it's safe to call any number of times, including after the
+ * claim has been approved, without disturbing the CLI's pending redemption.
+ */
+export async function getSetupClaimInfo(token: string): Promise<SetupClaimInfo | null> {
+    const row = await getKysely()
+        .selectFrom("setup_claim")
+        .select(["status", "expiresAt", "label"])
+        .where("id", "=", token)
+        .executeTakeFirst();
+
+    if (!row) return null;
+
+    const expired = row.status !== "redeemed" && new Date(row.expiresAt) < new Date();
+    return { status: expired ? "expired" : row.status, label: row.label ?? undefined };
 }
 
 /**
@@ -144,7 +197,8 @@ export async function approveSetupClaim(
     const ttl = maxTtlSeconds == null
         ? SETUP_CLAIM_API_KEY_TTL_SECONDS
         : Math.min(SETUP_CLAIM_API_KEY_TTL_SECONDS, maxTtlSeconds);
-    const apiKey = await mintEphemeralApiKey(userId, `setup-claim-${token.slice(0, 8)}`, ttl);
+    const keyName = row.label ? `runner-${row.label}`.slice(0, LABEL_MAX_LENGTH + 7) : `setup-claim-${token.slice(0, 8)}`;
+    const apiKey = await mintEphemeralApiKey(userId, keyName, ttl);
 
     await getKysely()
         .updateTable("setup_claim")

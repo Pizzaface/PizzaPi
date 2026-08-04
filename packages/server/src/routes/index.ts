@@ -22,6 +22,7 @@ import { handleAttachmentsRoute } from "./attachments.js";
 import { handlePushRoute } from "./push.js";
 import { handleSettingsRoute } from "./settings.js";
 import { handleRunnerSettingsRoute } from "./runner-settings.js";
+import { handleRunnerAuthRoute } from "./runner-auth.js";
 import { handlePackagesRoute } from "./packages.js";
 import { handleMcpOAuthRoute } from "./mcp-oauth.js";
 import { handleTunnelRoute } from "./tunnel.js";
@@ -40,6 +41,7 @@ const routers: RouteHandler[] = [
     handleMobileLinksRoute, // Android app pairing lifecycle
     handleMobileOtaRoute,   // Self-hosted OTA bundle for the mobile app (unauthenticated)
     handleTunnelRoute,     // Before runners — /api/tunnel/* is session-scoped, not runner-scoped
+    handleRunnerAuthRoute,  // Before runners — /api/runners/:id/providers/*
     handleRunnersRoute,
     handleRunnerSettingsRoute,
     handlePackagesRoute,

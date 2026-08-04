@@ -7,6 +7,10 @@ import { Tabs, TabItem, Steps, Aside } from "@astrojs/starlight/components";
 
 Self-hosting gives you full control over your data, no rate limits, and the ability to customize the server. The default Docker stack includes **Redis** (event buffer), a **UI sidecar** (GHCR UI assets), and the **PizzaPi server** (relay API + web UI).
 
+<Aside type="tip">
+  This page covers the relay/server. Looking to run the **runner** (the agent host that connects out to a relay) in Docker instead? See [Runner Container](/PizzaPi/deployment/runner-container/).
+</Aside>
+
 ---
 
 ## Quickest: `pizza web`

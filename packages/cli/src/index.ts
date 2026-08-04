@@ -23,6 +23,7 @@ import { setRemoteSessionHost } from "./extensions/remote/session-host-ref.js";
 import { runtimeSessionHost } from "./runner/session-host.js";
 import { migrateAgentDir } from "./migrations.js";
 import { runSetup } from "./setup.js";
+import { expandFileBackedEnv } from "./secrets.js";
 import { createLogger, initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
 
 const log = createLogger("cli");
@@ -31,6 +32,10 @@ const log = createLogger("cli");
 registerBunOAuthFlows();
 
 async function main() {
+    // Docker/K8s secrets are file-based — populate FOO from FOO_FILE for
+    // credential-shaped env vars before anything reads them.
+    expandFileBackedEnv();
+
     const args = process.argv.slice(2);
     const cwdFlagIdx = args.indexOf("--cwd");
     const cwd = cwdFlagIdx !== -1 && args[cwdFlagIdx + 1] ? args[cwdFlagIdx + 1] : process.cwd();
@@ -46,6 +51,18 @@ async function main() {
     if (args[0] === "runner" && args[1] === "stop") {
         const { runStop } = await import("./runner/stop.js");
         const code = await runStop();
+        process.exit(code);
+    }
+
+    if (args[0] === "runner" && args[1] === "status") {
+        const { runStatus } = await import("./runner/status.js");
+        const code = await runStatus(args.slice(2));
+        process.exit(code);
+    }
+
+    if (args[0] === "runner" && args[1] === "pair") {
+        const { runPair } = await import("./runner/pair.js");
+        const code = await runPair(args.slice(2));
         process.exit(code);
     }
 
@@ -325,6 +342,12 @@ async function main() {
         process.exit(code);
     }
 
+    if (args[0] === "auth") {
+        const { runAuthCommand } = await import("./auth-command.js");
+        const code = await runAuthCommand(args.slice(1), cwd);
+        process.exit(code);
+    }
+
     if (args[0] === "config" && args[1] === "show") {
         const { runConfigShowCommand } = await import("./config-show.js");
         process.exit(runConfigShowCommand(cwd));
@@ -355,9 +378,12 @@ async function main() {
         log.info(`  ${c.cmd("pizza web")} ${c.dim("[flags]")}           Manage the PizzaPi web hub (Docker)`);
         log.info(`  ${c.cmd("pizza runner")} ${c.dim("[args]")}         Manage the background runner daemon`);
         log.info(`  ${c.cmd("pizza runner stop")}           Stop the runner daemon`);
+        log.info(`  ${c.cmd("pizza runner status")} ${c.dim("[--json]")}  Health check the runner daemon (exit 0 = healthy)`);
+        log.info(`  ${c.cmd("pizza runner pair")} ${c.dim("[--force]")}   Pair (or re-pair) the runner with a fresh API key`);
         log.info(`  ${c.cmd("pizza setup")}                 Run first-time setup`);
         log.info(`  ${c.cmd("pizza usage")} ${c.dim("[provider]")}      Show API usage stats`);
         log.info(`  ${c.cmd("pizza models")}                List available models`);
+        log.info(`  ${c.cmd("pizza auth")} ${c.dim("[provider]")}       Log in to a model provider (headless-friendly)`);
         log.info(`  ${c.cmd("pizza plugins")} ${c.dim("[cmd]")}         Manage Claude Code plugins`);
         log.info(`  ${c.cmd("pizza install")} ${c.dim("<source>")}       Install a pi package (extensions, skills, prompts, themes)`);
         log.info(`  ${c.cmd("pizza remove")} ${c.dim("<source>")}        Remove an installed pi package`);

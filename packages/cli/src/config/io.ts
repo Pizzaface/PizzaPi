@@ -652,15 +652,24 @@ export function applyProviderSettingsEnv(config: PizzaPiConfig): void {
 // ── Config saving ─────────────────────────────────────────────────────────────
 
 /**
- * Merge fields into ~/.pizzapi/config.json (global config).
+ * Merge fields into <dir>/config.json. Shared by saveGlobalConfig (fixed to
+ * ~/.pizzapi) and callers that need to target a *different* agent dir (e.g.
+ * headless pairing writing into the configured agentDir rather than
+ * assuming ~/.pizzapi — see runner/pairing.ts).
  */
-export function saveGlobalConfig(fields: Partial<PizzaPiConfig>): void {
-    const dir = globalConfigDir();
+export function saveConfigAt(dir: string, fields: Partial<PizzaPiConfig>): void {
     const path = join(dir, "config.json");
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
     const existing = readJsonSafe(path);
     writeFileSync(path, JSON.stringify({ ...existing, ...fields }, null, 2), { encoding: "utf-8", mode: 0o600 });
     chmodSync(path, 0o600); // tighten permissions on pre-existing files
+}
+
+/**
+ * Merge fields into ~/.pizzapi/config.json (global config).
+ */
+export function saveGlobalConfig(fields: Partial<PizzaPiConfig>): void {
+    saveConfigAt(globalConfigDir(), fields);
 }
 
 /**

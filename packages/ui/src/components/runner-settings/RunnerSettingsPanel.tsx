@@ -16,10 +16,12 @@ const ProviderOverridesSettings = React.lazy(() => import("./ProviderOverridesSe
 const TuiPrefsSettings = React.lazy(() => import("./TuiPrefsSettings"));
 const FastModelSettings = React.lazy(() => import("./FastModelSettings"));
 const PackagesSettings = React.lazy(() => import("./PackagesSettings"));
+const ProviderAuthSettings = React.lazy(() => import("./ProviderAuthSettings"));
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type SettingsSection =
+    | "providerAuth"
     | "models"
     | "webSearch"
     | "toolSearch"
@@ -50,6 +52,7 @@ export interface SectionProps {
 // ── Sub-tab definitions ───────────────────────────────────────────────────────
 
 const SETTINGS_TABS: { key: SettingsSection; label: string }[] = [
+    { key: "providerAuth", label: "Providers" },
     { key: "models", label: "Models" },
     { key: "goal", label: "Fast Model" },
     { key: "webSearch", label: "Web Search" },
@@ -177,6 +180,9 @@ export function RunnerSettingsPanel({ runnerId }: RunnerSettingsPanelProps) {
             break;
         case "packages":
             content = <PackagesSettings {...sectionProps} />;
+            break;
+        case "providerAuth":
+            content = <ProviderAuthSettings {...sectionProps} />;
             break;
     }
 
