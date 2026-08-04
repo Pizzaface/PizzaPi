@@ -71,6 +71,14 @@ export interface GitLogEntry {
     refs: string[];
 }
 
+export interface GitCommitSuggestion {
+    subject: string;
+    body: string;
+    type: string;
+    scope: string;
+    files: Array<{ path: string; added: number; deleted: number }>;
+}
+
 export interface GitBlameLine {
     hash: string;
     author: string;
@@ -123,6 +131,7 @@ export interface UseGitServiceReturn {
     fetchBranches: () => void;
     fetchLog: (path?: string, limit?: number, revisionRange?: string) => Promise<GitLogEntry[]>;
     fetchBlame: (path: string, revision?: string) => Promise<GitBlameLine[]>;
+    suggestCommitMessage: () => Promise<GitCommitSuggestion | null>;
     stashList: () => void;
     stashPush: (message?: string, includeUntracked?: boolean) => void;
     stashPop: (index?: number) => void;
@@ -173,6 +182,8 @@ export function useGitService(cwd: string): UseGitServiceReturn {
     const pendingDiffRevTimeoutsRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
     const pendingBlamesRef = useRef(new Map<string, (lines: GitBlameLine[]) => void>());
     const pendingBlameTimeoutsRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+    const pendingSuggestionsRef = useRef(new Map<string, (s: GitCommitSuggestion | null) => void>());
+    const pendingSuggestionTimeoutsRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
     const pendingFullStatusRequestRef = useRef<string | null>(null);
     const fullStatusFallbackTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
     const statusRequestRetireTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -318,6 +329,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         clearMap(pendingLogsRef.current, pendingLogTimeoutsRef.current, []);
         clearMap(pendingDiffRevsRef.current, pendingDiffRevTimeoutsRef.current, resolution);
         clearMap(pendingBlamesRef.current, pendingBlameTimeoutsRef.current, []);
+        clearMap(pendingSuggestionsRef.current, pendingSuggestionTimeoutsRef.current, null);
     }, []);
 
     const postMutationRefreshSchedulerRef = useRef(
@@ -479,6 +491,30 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                             setBlame({ lines, content });
                         }
                         resolve(lines);
+                    }
+                    break;
+                }
+                case "git_commit_message_suggest_result": {
+                    if (requestId && pendingSuggestionsRef.current.has(requestId)) {
+                        const timeoutId = pendingSuggestionTimeoutsRef.current.get(requestId);
+                        if (timeoutId) {
+                            clearTimeout(timeoutId);
+                            pendingSuggestionTimeoutsRef.current.delete(requestId);
+                        }
+                        requestGenerationRef.current.delete(requestId);
+                        const resolve = pendingSuggestionsRef.current.get(requestId)!;
+                        pendingSuggestionsRef.current.delete(requestId);
+                        resolve(
+                            payload.ok
+                                ? {
+                                    subject: (payload.subject as string) ?? "",
+                                    body: (payload.body as string) ?? "",
+                                    type: (payload.type as string) ?? "chore",
+                                    scope: (payload.scope as string) ?? "",
+                                    files: (payload.files as GitCommitSuggestion["files"]) ?? [],
+                                }
+                                : null,
+                        );
                     }
                     break;
                 }
@@ -706,6 +742,29 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                 }
             }, 15000);
             pendingBlameTimeoutsRef.current.set(reqId, timeoutId);
+        });
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
+    const suggestCommitMessage = useCallback((): Promise<GitCommitSuggestion | null> => {
+        return new Promise((resolve) => {
+            if (!available) {
+                resolve(null);
+                return;
+            }
+            const reqId = makeRequestId();
+            registerRequestGeneration(reqId);
+            pendingSuggestionsRef.current.set(reqId, resolve);
+            send("git_commit_message_suggest", { cwd }, reqId);
+
+            const timeoutId = setTimeout(() => {
+                pendingSuggestionTimeoutsRef.current.delete(reqId);
+                requestGenerationRef.current.delete(reqId);
+                if (pendingSuggestionsRef.current.has(reqId)) {
+                    pendingSuggestionsRef.current.delete(reqId);
+                    resolve(null);
+                }
+            }, 15000);
+            pendingSuggestionTimeoutsRef.current.set(reqId, timeoutId);
         });
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
@@ -1001,6 +1060,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         fetchBranches,
         fetchLog,
         fetchBlame,
+        suggestCommitMessage,
         fetchWorktrees,
         stashList,
         stashPush,

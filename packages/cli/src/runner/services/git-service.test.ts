@@ -1915,3 +1915,66 @@ describe("GitService diff/blame", () => {
         expect(r2.payload).toMatchObject({ ok: false, message: expect.stringContaining("Invalid path") });
     });
 });
+
+describe("GitService commit message suggestion", () => {
+    test("derives a conventional-commit subject/body from the staged numstat", async () => {
+        const service = new GitService({
+            execGit: async (args) => {
+                if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "" };
+                if (args[0] === "diff" && args.includes("--numstat")) {
+                    return {
+                        stdout: "12\t2\tpackages/ui/src/components/git/GitPanel.tsx\n4\t0\tpackages/ui/src/components/git/GitPanel.test.tsx\n",
+                        stderr: "",
+                    };
+                }
+                if (args[0] === "diff" && args.includes("--name-only")) {
+                    return { stdout: "packages/ui/src/components/git/GitPanel.tsx\npackages/ui/src/components/git/GitPanel.test.tsx\n", stderr: "" };
+                }
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_commit_message_suggest",
+            requestId: "s1",
+            payload: { cwd: "/repo" },
+        });
+        const result = await waitForResult(socket, "s1", "git_commit_message_suggest_result");
+
+        expect(result.payload.ok).toBe(true);
+        expect(result.payload.type).toBe("feat");
+        expect(result.payload.scope).toBe("packages");
+        expect(result.payload.subject).toContain("feat(packages): add 2 files");
+        expect(result.payload.files).toHaveLength(2);
+        expect(result.payload.files[0]).toEqual({ path: "packages/ui/src/components/git/GitPanel.tsx", added: 12, deleted: 2 });
+    });
+
+    test("returns a safe fallback when there is nothing staged", async () => {
+        const service = new GitService({
+            execGit: async (args) => {
+                if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "" };
+                if (args[0] === "diff") return { stdout: "", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_commit_message_suggest",
+            requestId: "s2",
+            payload: { cwd: "/repo" },
+        });
+        const result = await waitForResult(socket, "s2", "git_commit_message_suggest_result");
+
+        expect(result.payload.ok).toBe(true);
+        expect(result.payload.subject).toBe("chore: staged changes");
+        expect(result.payload.files).toEqual([]);
+    });
+});

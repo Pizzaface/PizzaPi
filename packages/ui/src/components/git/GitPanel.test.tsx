@@ -121,6 +121,10 @@ mock.module("./GitDiffView", () => ({
     GitDiffView: () => <div data-testid="diff-view" />,
 }));
 
+mock.module("./GitDiffModal", () => ({
+    GitDiffModal: () => <div data-testid="diff-modal" />,
+}));
+
 mock.module("./GitWorktreeList", () => ({
     GitWorktreeList: () => <div data-testid="worktree-list" />,
 }));
@@ -152,12 +156,12 @@ describe("GitPanel", () => {
     test("disables branch selector and sync controls while any mutation is running", () => {
         gitState.operationInProgress = "commit";
 
-        const { getByTestId, getByText } = render(<GitPanel cwd="/repo" />);
+        const { getByTestId, getByText, getByTitle } = render(<GitPanel cwd="/repo" />);
 
         expect(getByTestId("branch-selector").getAttribute("data-disabled")).toBe("true");
         expect((getByText("Pull").closest("button") as HTMLButtonElement).disabled).toBe(true);
         expect((getByText("Push").closest("button") as HTMLButtonElement).disabled).toBe(true);
-        expect((getByText("Sync").closest("button") as HTMLButtonElement).disabled).toBe(true);
+        expect((getByTitle("Sync options") as HTMLButtonElement).disabled).toBe(true);
     });
 
     test("shows rebase conflict resolution bar when last operation returned a conflict", () => {

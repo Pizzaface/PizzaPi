@@ -108,6 +108,14 @@ type GitLogEntry = {
     refs: string[];
 };
 
+type GitCommitSuggestion = {
+    subject: string;
+    body: string;
+    type: string;
+    scope: string;
+    files: Array<{ path: string; added: number; deleted: number }>;
+};
+
 type GitBlameLine = {
     hash: string;
     author: string;
@@ -274,6 +282,9 @@ export class GitService implements ServiceHandler {
                     break;
                 case "git_commit":
                     void this.handleCommit(payload, requestId, sessionId);
+                    break;
+                case "git_commit_message_suggest":
+                    void this.handleCommitMessageSuggest(payload, requestId, sessionId);
                     break;
                 case "git_push":
                     void this.handlePush(payload, requestId, sessionId);
@@ -1187,6 +1198,113 @@ export class GitService implements ServiceHandler {
             this.emitError("git_commit_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         } finally {
             this.endRepoMutation(mutation);
+        }
+    }
+
+    // ── git commit message suggestion ────────────────────────────────
+
+    /**
+     * Build a deterministic conventional-commit suggestion from the staged diff.
+     * No LLM — derived from `git diff --cached --numstat` (per-file add/del counts)
+     * and file paths. Good enough as a starting point; the agent session can refine it.
+     */
+    private async handleCommitMessageSuggest(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_commit_message_suggest_result", requestId, sessionId);
+        if (!cwd) return;
+
+        try {
+            const repoRoot = this._cwdRepoRoot.get(cwd) ?? (await this.resolveRepoRoot(cwd));
+            if (!this._cwdRepoRoot.has(cwd)) this._cwdRepoRoot.set(cwd, repoRoot);
+
+            const [numstat, nameOnly] = await Promise.allSettled([
+                this._execGit(["diff", "--cached", "--numstat"], { cwd: repoRoot, timeout: 10000 }),
+                this._execGit(["diff", "--cached", "--name-only"], { cwd: repoRoot, timeout: 10000 }),
+            ]);
+
+            const files: Array<{ path: string; added: number; deleted: number }> = [];
+            let totalAdded = 0;
+            let totalDeleted = 0;
+            const numstatOutput = numstat.status === "fulfilled" ? numstat.value.stdout : "";
+            for (const line of numstatOutput.split("\n")) {
+                if (!line.trim()) continue;
+                // numstat: "<add>\t<del>\t<path>" (binary files show "-")
+                const m = line.match(/^([^\t\s]+)\t([^\t\s]+)\t(.+)$/);
+                if (!m) continue;
+                const added = m[1] === "-" ? 0 : parseInt(m[1], 10) || 0;
+                const deleted = m[2] === "-" ? 0 : parseInt(m[2], 10) || 0;
+                totalAdded += added;
+                totalDeleted += deleted;
+                files.push({ path: m[3], added, deleted });
+            }
+
+            // Fall back to name-only if numstat produced nothing (e.g. binary-only).
+            if (files.length === 0 && nameOnly.status === "fulfilled") {
+                for (const line of nameOnly.value.stdout.split("\n")) {
+                    if (line.trim()) files.push({ path: line.trim(), added: 0, deleted: 0 });
+                }
+            }
+
+            if (files.length === 0) {
+                this.emit("git_commit_message_suggest_result", {
+                    ok: true,
+                    subject: "chore: staged changes",
+                    body: "",
+                    type: "chore",
+                    scope: "",
+                    files: [],
+                }, requestId, sessionId);
+                return;
+            }
+
+            // Derive type from the change mix and paths.
+            const paths = files.map((f) => f.path);
+            const allDeleted = totalAdded === 0 && totalDeleted > 0;
+            const touchesTests = paths.some((p) => /(test|spec)\./.test(p));
+            const hasFixHints = paths.some((p) => /fix|bug|hotfix|regression/.test(p))
+                || files.some((f) => f.deleted > f.added);
+            let type: string;
+            if (allDeleted) type = "chore";
+            else if (hasFixHints && !touchesTests) type = "fix";
+            else type = "feat";
+
+            // Scope: the most common top-level directory shared by changed files.
+            const topDirs = paths.map((p) => p.split("/")[0]).filter((d) => d);
+            const counts = new Map<string, number>();
+            for (const d of topDirs) counts.set(d, (counts.get(d) ?? 0) + 1);
+            let scope = "";
+            let bestCount = 0;
+            for (const [d, c] of counts) {
+                if (c > bestCount) { bestCount = c; scope = d; }
+            }
+
+            // Subject: summarize the dominant change.
+            const subject =
+                `${type}${scope ? `(${scope})` : ""}: ${totalAdded > 0 ? "add" : "update"} ${files.length} file${files.length === 1 ? "" : "s"}`;
+
+            // Body: per-file bullet list with +/- counts.
+            const body = files
+                .map((f) => `- ${f.path}${f.added + f.deleted > 0 ? ` (${f.added}+ / ${f.deleted}-)` : ""}`)
+                .join("\n");
+
+            this.emit("git_commit_message_suggest_result", {
+                ok: true,
+                subject,
+                body,
+                type,
+                scope,
+                files,
+            }, requestId, sessionId);
+        } catch (err) {
+            this.emitError(
+                "git_commit_message_suggest_result",
+                err instanceof Error ? err.message : String(err),
+                requestId,
+                sessionId,
+            );
         }
     }
 
