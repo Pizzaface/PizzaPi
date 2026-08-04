@@ -2,8 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { runQrSetup, qrCodeUrl, requestHeadlessPairing } from "./setup.js";
-import qrcode from "qrcode";
+import { runQrSetup, qrCodeUrl, renderQrCode, requestHeadlessPairing } from "./setup.js";
 import { _setGlobalConfigDir } from "./config/io.js";
 
 const originalHome = process.env.HOME;
@@ -27,12 +26,19 @@ describe("QR setup", () => {
         expect(url).toBe("http://localhost:7492/setup-claim?t=abc123");
     });
 
-    test("qrcode terminal renderer produces non-empty output for setup URL", async () => {
+    test("renderQrCode emits one line per module row with a 4-module quiet zone", async () => {
         const url = qrCodeUrl("http://localhost:7492", "test-token-123");
-        const rendered = await qrcode.toString(url, { type: "terminal", small: true });
-        expect(rendered.length).toBeGreaterThan(10);
-        // Terminal QR codes contain unicode block characters.
-        expect(rendered).toMatch(/[\u2580-\u259f█\s]+/);
+        const rendered = await renderQrCode(url);
+        const rows = rendered.split("\n");
+        // No half-block glyphs: every module row is its own line, so log viewers
+        // with line spacing can't slice a row in half.
+        expect(rendered).not.toMatch(/[\u2580-\u259f]/);
+        // 3 padded rows on each side + the renderer's own 1-module border.
+        expect(rows.slice(0, 3).every((r) => !r.includes("\x1b[40m"))).toBe(true);
+        expect(rows.slice(-3).every((r) => !r.includes("\x1b[40m"))).toBe(true);
+        // All rows are the same width in modules.
+        const widths = new Set(rows.map((r) => r.split("\x1b[0m").length));
+        expect(widths.size).toBe(1);
     });
 
     test("runQrSetup creates claim, prints QR, and saves config on approval", async () => {

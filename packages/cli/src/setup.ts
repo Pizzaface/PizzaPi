@@ -118,6 +118,36 @@ export function qrCodeUrl(relayUrl: string, token: string): string {
     return `${relayUrl}/setup-claim?t=${encodeURIComponent(token)}`;
 }
 
+const WHITE_MODULE = "\x1b[47m  \x1b[0m";
+
+/**
+ * Render a scannable terminal QR.
+ *
+ * ponytail: full-size renderer (one log line per module row) instead of
+ * `small: true` — the half-block glyphs pack two module rows into one text
+ * line, so any log viewer with line spacing (docker logs in the web UI)
+ * slices every row in half and nothing scans. Also pads the 1-module border
+ * out to the spec's 4-module quiet zone, since the surrounding terminal
+ * background is dark and would otherwise read as QR data.
+ */
+export async function renderQrCode(url: string): Promise<string> {
+    const rendered = await qrcode.toString(url, { type: "terminal", errorCorrectionLevel: "L" });
+    const rows = rendered.split("\n").filter((line) => line.length > 0);
+    const modulesWide = (rows[0]?.split("\x1b[0m").length ?? 1) - 1;
+    const side = WHITE_MODULE.repeat(3);
+    const blank = WHITE_MODULE.repeat(modulesWide + 6);
+    return [blank, blank, blank, ...rows.map((r) => side + r + side), blank, blank, blank].join("\n");
+}
+
+/** Write raw to stdout: log prefixes/timestamps would shift the first row. */
+async function printQrCode(url: string): Promise<void> {
+    try {
+        process.stdout.write(`\n${await renderQrCode(url)}\n\n`);
+    } catch (err) {
+        log.warn("Could not render QR code; use the URL below.", err instanceof Error ? err.message : String(err));
+    }
+}
+
 export async function runQrSetup(relayUrl: string, pollIntervalMs = 2000): Promise<boolean> {
     const configPath = join(homedir(), ".pizzapi", "config.json");
 
@@ -134,13 +164,7 @@ export async function runQrSetup(relayUrl: string, pollIntervalMs = 2000): Promi
     const wsRelayUrl = relayUrl.replace(/^http/, "ws");
 
     log.info("Scan this QR code with an authenticated PizzaPi web browser:");
-    log.info("");
-    try {
-        const qr = await qrcode.toString(claimUrl, { type: "terminal", small: true });
-        log.info(qr);
-    } catch (err) {
-        log.warn("Could not render QR code; use the URL below.", err instanceof Error ? err.message : String(err));
-    }
+    await printQrCode(claimUrl);
     log.info(c.dim("Or open:"), c.accent(claimUrl));
     log.info("");
     log.info(c.dim("Waiting for approval… (expires in 10 minutes)"));
@@ -215,13 +239,7 @@ export async function requestHeadlessPairing(
     };
 
     log.info("Scan this QR code with an authenticated PizzaPi web browser, or open the URL below:");
-    log.info("");
-    try {
-        const qr = await qrcode.toString(claimUrl, { type: "terminal", small: true });
-        log.info(qr);
-    } catch (err) {
-        log.warn("Could not render QR code; use the URL below.", err instanceof Error ? err.message : String(err));
-    }
+    await printQrCode(claimUrl);
     printUrl();
     log.info(c.dim("Waiting for approval\u2026 (expires in 10 minutes)"));
 
