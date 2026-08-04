@@ -106,6 +106,8 @@ type GitLogEntry = {
     subject: string;
     body: string;
     refs: string[];
+    /** Full parent commit hashes, newest-first for a merge. Empty for a root commit. */
+    parents: string[];
 };
 
 type GitCommitSuggestion = {
@@ -115,6 +117,8 @@ type GitCommitSuggestion = {
     scope: string;
     files: Array<{ path: string; added: number; deleted: number }>;
 };
+
+type GitCommitFile = { status: string; path: string };
 
 type GitBlameLine = {
     hash: string;
@@ -342,6 +346,9 @@ export class GitService implements ServiceHandler {
                     break;
                 case "git_blame":
                     void this.handleBlame(payload, requestId, sessionId);
+                    break;
+                case "git_commit_files":
+                    void this.handleCommitFiles(payload, requestId, sessionId);
                     break;
             }
         };
@@ -2244,8 +2251,8 @@ export class GitService implements ServiceHandler {
 
             // NUL-delimited fixed-field format with a trailing empty sentinel so we can
             // parse without relying on newlines (commit body may contain newlines).
-            // Fields: hash, shortHash, author, authorDate, commitDate, subject, body, refs, sentinel.
-            const format = "%H%x00%h%x00%an%x00%aI%x00%cI%x00%s%x00%b%x00%D%x00%x00";
+            // Fields: hash, shortHash, author, authorDate, commitDate, subject, body, refs, parents, sentinel.
+            const format = "%H%x00%h%x00%an%x00%aI%x00%cI%x00%s%x00%b%x00%D%x00%P%x00%x00";
             const args = ["log", `--format=${format}`, "--decorate=short", "-n", String(limit)];
             if (revisionRange) args.push(revisionRange);
             if (path) args.push("--", path);
@@ -2254,7 +2261,7 @@ export class GitService implements ServiceHandler {
             const fields = stdout.split("\0");
             const entries: GitLogEntry[] = [];
 
-            for (let i = 0; i + 8 < fields.length; i += 9) {
+            for (let i = 0; i + 9 < fields.length; i += 10) {
                 const hash = fields[i].replace(/^\n+/, "").trim();
                 if (!hash) continue;
                 const shortHash = fields[i + 1].replace(/^\n+/, "").trim();
@@ -2264,6 +2271,7 @@ export class GitService implements ServiceHandler {
                 const subject = fields[i + 5].replace(/^\n+/, "").trim();
                 const body = fields[i + 6].replace(/^\n+/, "");
                 const refsField = fields[i + 7].replace(/^\n+/, "").trim();
+                const parentsField = fields[i + 8].replace(/^\n+/, "").trim();
 
                 const refs = refsField
                     ? refsField.split(", ").map((r) => {
@@ -2273,8 +2281,9 @@ export class GitService implements ServiceHandler {
                         return s;
                     }).filter(Boolean)
                     : [];
+                const parents = parentsField ? parentsField.split(/\s+/).filter(Boolean) : [];
 
-                entries.push({ hash, shortHash, author, authorDate, commitDate, subject, body, refs });
+                entries.push({ hash, shortHash, author, authorDate, commitDate, subject, body, refs, parents });
             }
 
             this.emit("git_log_result", { ok: true, entries }, requestId, sessionId);
@@ -2440,6 +2449,67 @@ export class GitService implements ServiceHandler {
             this.emit("git_blame_result", { ok: true, lines, content }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_blame_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        }
+    }
+
+    // ── git commit changed files (for the rev explorer) ────────────────
+
+    private async handleCommitFiles(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_commit_files_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const revision = typeof payload.revision === "string" ? payload.revision.trim() : "";
+        if (!revision) {
+            this.emitError("git_commit_files_result", "Missing revision", requestId, sessionId);
+            return;
+        }
+        if (revision.startsWith("-")) {
+            this.emitError("git_commit_files_result", "Invalid revision", requestId, sessionId);
+            return;
+        }
+
+        // Optional base → compute a range (base..revision) instead of a single commit.
+        const base = typeof payload.base === "string" && payload.base.trim() ? payload.base.trim() : "";
+        if (base && base.startsWith("-")) {
+            this.emitError("git_commit_files_result", "Invalid base revision", requestId, sessionId);
+            return;
+        }
+
+        try {
+            const repoRoot = this._cwdRepoRoot.get(cwd) ?? (await this.resolveRepoRoot(cwd));
+            if (!this._cwdRepoRoot.has(cwd)) this._cwdRepoRoot.set(cwd, repoRoot);
+
+            const args = base
+                ? ["diff", "--name-status", base, revision]
+                : ["diff-tree", "-r", "--no-commit-id", "--name-status", revision];
+            const { stdout } = await this._execGit(args, { cwd: repoRoot, timeout: 15000 });
+
+            const files: GitCommitFile[] = [];
+            for (const line of stdout.split("\n")) {
+                if (!line.trim()) continue;
+                // name-status: "<X>\t<path>" (renames: "R100\torig\tnew")
+                const tab = line.indexOf("\t");
+                if (tab < 0) continue;
+                const status = line.substring(0, tab).trim();
+                const path = line.substring(tab + 1).trim();
+                if (!path) continue;
+                if (status.startsWith("R") || status.startsWith("C")) {
+                    // path is the original for renames/copies; the new path follows.
+                    const secondTab = line.indexOf("\t", tab + 1);
+                    const newPath = secondTab >= 0 ? line.substring(secondTab + 1).trim() : path;
+                    files.push({ status, path: newPath || path });
+                } else {
+                    files.push({ status, path });
+                }
+            }
+
+            this.emit("git_commit_files_result", { ok: true, revision, files }, requestId, sessionId);
+        } catch (err) {
+            this.emitError("git_commit_files_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         }
     }
 }

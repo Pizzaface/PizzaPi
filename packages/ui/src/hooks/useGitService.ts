@@ -69,6 +69,12 @@ export interface GitLogEntry {
     subject: string;
     body: string;
     refs: string[];
+    parents: string[];
+}
+
+export interface GitCommitFile {
+    status: string;
+    path: string;
 }
 
 export interface GitCommitSuggestion {
@@ -131,6 +137,7 @@ export interface UseGitServiceReturn {
     fetchBranches: () => void;
     fetchLog: (path?: string, limit?: number, revisionRange?: string) => Promise<GitLogEntry[]>;
     fetchBlame: (path: string, revision?: string) => Promise<GitBlameLine[]>;
+    fetchCommitFiles: (revision: string, base?: string) => Promise<GitCommitFile[]>;
     suggestCommitMessage: () => Promise<GitCommitSuggestion | null>;
     stashList: () => void;
     stashPush: (message?: string, includeUntracked?: boolean) => void;
@@ -184,6 +191,8 @@ export function useGitService(cwd: string): UseGitServiceReturn {
     const pendingBlameTimeoutsRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
     const pendingSuggestionsRef = useRef(new Map<string, (s: GitCommitSuggestion | null) => void>());
     const pendingSuggestionTimeoutsRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+    const pendingCommitFilesRef = useRef(new Map<string, (files: GitCommitFile[]) => void>());
+    const pendingCommitFilesTimeoutsRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
     const pendingFullStatusRequestRef = useRef<string | null>(null);
     const fullStatusFallbackTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
     const statusRequestRetireTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -330,6 +339,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         clearMap(pendingDiffRevsRef.current, pendingDiffRevTimeoutsRef.current, resolution);
         clearMap(pendingBlamesRef.current, pendingBlameTimeoutsRef.current, []);
         clearMap(pendingSuggestionsRef.current, pendingSuggestionTimeoutsRef.current, null);
+        clearMap(pendingCommitFilesRef.current, pendingCommitFilesTimeoutsRef.current, []);
     }, []);
 
     const postMutationRefreshSchedulerRef = useRef(
@@ -515,6 +525,20 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                                 }
                                 : null,
                         );
+                    }
+                    break;
+                }
+                case "git_commit_files_result": {
+                    if (requestId && pendingCommitFilesRef.current.has(requestId)) {
+                        const timeoutId = pendingCommitFilesTimeoutsRef.current.get(requestId);
+                        if (timeoutId) {
+                            clearTimeout(timeoutId);
+                            pendingCommitFilesTimeoutsRef.current.delete(requestId);
+                        }
+                        requestGenerationRef.current.delete(requestId);
+                        const resolve = pendingCommitFilesRef.current.get(requestId)!;
+                        pendingCommitFilesRef.current.delete(requestId);
+                        resolve(payload.ok ? ((payload.files as GitCommitFile[]) ?? []) : []);
                     }
                     break;
                 }
@@ -742,6 +766,29 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                 }
             }, 15000);
             pendingBlameTimeoutsRef.current.set(reqId, timeoutId);
+        });
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
+    const fetchCommitFiles = useCallback((revision: string, base?: string): Promise<GitCommitFile[]> => {
+        return new Promise((resolve) => {
+            if (!available) {
+                resolve([]);
+                return;
+            }
+            const reqId = makeRequestId();
+            registerRequestGeneration(reqId);
+            pendingCommitFilesRef.current.set(reqId, resolve);
+            send("git_commit_files", { cwd, revision, base }, reqId);
+
+            const timeoutId = setTimeout(() => {
+                pendingCommitFilesTimeoutsRef.current.delete(reqId);
+                requestGenerationRef.current.delete(reqId);
+                if (pendingCommitFilesRef.current.has(reqId)) {
+                    pendingCommitFilesRef.current.delete(reqId);
+                    resolve([]);
+                }
+            }, 15000);
+            pendingCommitFilesTimeoutsRef.current.set(reqId, timeoutId);
         });
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
@@ -1060,6 +1107,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         fetchBranches,
         fetchLog,
         fetchBlame,
+        fetchCommitFiles,
         suggestCommitMessage,
         fetchWorktrees,
         stashList,

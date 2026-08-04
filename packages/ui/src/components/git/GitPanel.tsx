@@ -27,6 +27,7 @@ import {
     StopCircle,
     Play,
     GitBranch,
+    History as HistoryIcon,
 } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
@@ -50,17 +51,14 @@ import { GitCommitForm } from "./GitCommitForm";
 import { GitDiffModal } from "./GitDiffModal";
 import { GitWorktreeList } from "./GitWorktreeList";
 import { GitStashList } from "./GitStashList";
-import { GitHistoryView } from "./GitHistoryView";
-import { GitDiffRevsView } from "./GitDiffRevsView";
+import { GitRevExplorer } from "./GitRevExplorer";
 import { getGitOperationFeedback, parseUpstreamRef, type GitOperationFeedback } from "./git-operation-feedback";
 
-type GitTab = "changes" | "stash" | "history" | "compare";
+type GitTab = "changes" | "stash";
 
 const GIT_TABS: Array<{ id: GitTab; label: string }> = [
     { id: "changes", label: "Changes" },
     { id: "stash", label: "Stash" },
-    { id: "history", label: "History" },
-    { id: "compare", label: "Compare" },
 ];
 
 // ── Props ───────────────────────────────────────────────────────────────────
@@ -80,9 +78,9 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
         open: false,
     });
 
-    // Tab + optional path filter (used by history/compare)
+    // Tab
     const [activeTab, setActiveTab] = useState<GitTab>("changes");
-    const [pathFilter, setPathFilter] = useState("");
+    const [explorerOpen, setExplorerOpen] = useState(false);
 
     const currentBranchInfo = git.branches.find((b) => b.isCurrent);
 
@@ -418,21 +416,15 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                         {t.label}
                     </button>
                 ))}
+                <button
+                    type="button"
+                    onClick={() => setExplorerOpen(true)}
+                    className="ml-auto inline-flex items-center gap-1 px-2 py-1 text-[0.65rem] @sm:text-xs font-medium whitespace-nowrap text-muted-foreground hover:text-foreground transition-colors shrink-0"
+                    title="Open the revision explorer (history + compare)"
+                >
+                    <HistoryIcon className="size-3" /> History
+                </button>
             </div>
-
-            {/* Optional path filter for history/compare */}
-            {activeTab !== "changes" && activeTab !== "stash" && (
-                <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-border bg-muted/20 min-w-0">
-                    <span className="text-xs text-muted-foreground shrink-0">Path</span>
-                    <input
-                        type="text"
-                        value={pathFilter}
-                        onChange={(e) => setPathFilter(e.target.value)}
-                        placeholder="optional path/dir"
-                        className="min-w-0 flex-1 h-7 rounded border border-input bg-background px-2 text-xs"
-                    />
-                </div>
-            )}
 
             {/* Content area */}
             <div className="flex-1 overflow-auto min-h-0">
@@ -455,8 +447,6 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                     )
                 )}
                 {activeTab === "stash" && <GitStashList cwd={cwd} />}
-                {activeTab === "history" && <GitHistoryView cwd={cwd} path={pathFilter.trim() || undefined} />}
-                {activeTab === "compare" && <GitDiffRevsView cwd={cwd} path={pathFilter.trim() || undefined} />}
             </div>
 
             {/* Worktrees — only on the Changes tab */}
@@ -478,6 +468,17 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                 initialPath={diffModal.path}
                 initialStaged={diffModal.staged}
                 fetchDiff={git.fetchDiff}
+            />
+
+            {/* Revision explorer (history + compare) */}
+            <GitRevExplorer
+                open={explorerOpen}
+                onOpenChange={setExplorerOpen}
+                cwd={cwd}
+                log={git.log}
+                fetchLog={() => git.fetchLog()}
+                fetchCommitFiles={git.fetchCommitFiles}
+                fetchDiffRevs={git.fetchDiffRevs}
             />
         </div>
     );

@@ -125,6 +125,10 @@ mock.module("./GitDiffModal", () => ({
     GitDiffModal: () => <div data-testid="diff-modal" />,
 }));
 
+mock.module("./GitRevExplorer", () => ({
+    GitRevExplorer: () => <div data-testid="rev-explorer" />,
+}));
+
 mock.module("./GitWorktreeList", () => ({
     GitWorktreeList: () => <div data-testid="worktree-list" />,
 }));
