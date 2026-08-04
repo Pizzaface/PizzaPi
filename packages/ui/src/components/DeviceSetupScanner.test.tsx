@@ -7,15 +7,17 @@ mock.module("@/lib/utils", () => ({
     cn: (...classes: Array<string | undefined | null | false>) => classes.filter(Boolean).join(" "),
 }));
 
-const approveMock = mock().mockResolvedValue({ error: null });
 mock.module("@/lib/auth-client", () => ({
-    authClient: { $fetch: approveMock },
     useSession: () => ({ data: { session: null }, isPending: false }),
 }));
 
 // Capture the html5-qrcode success callback so tests can simulate a decode.
 let decodeCallback: ((text: string) => void) | null = null;
+// Whether the preview container was visible at the moment start() measured it.
+let readerHiddenAtStart: boolean | null = null;
 const startMock = mock().mockImplementation(async (_cameraId: unknown, _config: unknown, onDecode: (text: string) => void) => {
+    const reader = document.querySelector('[id$="-qr-reader"]');
+    readerHiddenAtStart = reader ? reader.hasAttribute("hidden") : null;
     decodeCallback = onDecode;
 });
 const stopMock = mock().mockResolvedValue(undefined);
@@ -57,8 +59,8 @@ const originalFetch = globalThis.fetch;
 afterEach(() => {
     cleanup();
     decodeCallback = null;
-    approveMock.mockClear();
     startMock.mockClear();
+    readerHiddenAtStart = null;
     stopMock.mockClear();
     clearMock.mockClear();
     getCamerasMock.mockClear();
@@ -74,6 +76,10 @@ describe("DeviceSetupScanner", () => {
 
         await waitFor(() => expect(getCamerasMock).toHaveBeenCalledTimes(1));
         expect(startMock).toHaveBeenCalledTimes(1);
+        // Must request the rear lens: cameras[0] is the selfie camera on Android.
+        expect(startMock.mock.calls[0][0]).toEqual({ facingMode: "environment" });
+        // A display:none container measures 0x0 and the preview renders black.
+        expect(readerHiddenAtStart).toBe(false);
     });
 
     test("scanning a QR requires explicit confirmation before approving", async () => {
@@ -84,15 +90,20 @@ describe("DeviceSetupScanner", () => {
         await waitFor(() => expect(startMock).toHaveBeenCalledTimes(1));
         expect(decodeCallback).not.toBeNull();
 
+        const fetchMock = mock().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+        globalThis.fetch = fetchMock as unknown as typeof fetch;
+        const approveCalls = () => fetchMock.mock.calls.filter((c: unknown[]) => String(c[0]).includes("/approve"));
+
         // A decoded QR must NOT auto-approve; it shows a confirmation step.
         decodeCallback!(`http://localhost/?t=${token}`);
         await waitFor(() => expect(getByText("Approve this device")).toBeDefined());
-        expect(approveMock).not.toHaveBeenCalled();
+        expect(approveCalls()).toHaveLength(0);
 
         // Only an explicit click approves.
         fireEvent.click(getByText("Approve this device"));
-        await waitFor(() => expect(approveMock).toHaveBeenCalledTimes(1));
-        expect(approveMock.mock.calls[0][0]).toContain(`/api/setup-claim/${token}/approve`);
+        await waitFor(() => expect(approveCalls()).toHaveLength(1));
+        // Exact path: an auth-client baseURL prefix (/api/auth/...) 404s here.
+        expect(approveCalls()[0][0]).toBe(`/api/setup-claim/${token}/approve`);
         expect(queryByText("Cancel")).toBeNull();
     });
 
@@ -127,6 +138,24 @@ describe("DeviceSetupScanner", () => {
         await waitFor(() => expect(getByText("Approve this device")).toBeDefined());
         expect(queryByText("undefined")).toBeNull();
         expect(container.textContent).not.toContain("undefined");
+    });
+
+    test("unmounting before the scanner starts does not throw", async () => {
+        // html5-qrcode throws a bare string synchronously, which a .catch() on
+        // the returned promise would never see.
+        stopMock.mockImplementationOnce(() => {
+            throw "Cannot stop, scanner is not running or paused.";
+        });
+        clearMock.mockImplementationOnce(() => {
+            throw "Cannot clear while scan is ongoing, close it first.";
+        });
+
+        const { getByText, unmount } = render(<DeviceSetupScanner onClose={() => {}} />);
+        fireEvent.click(getByText("Allow Camera & Scan"));
+        await waitFor(() => expect(startMock).toHaveBeenCalledTimes(1));
+
+        expect(() => unmount()).not.toThrow();
+        await waitFor(() => expect(stopMock).toHaveBeenCalled());
     });
 
     test("initialToken pre-fills the manual approve input", () => {

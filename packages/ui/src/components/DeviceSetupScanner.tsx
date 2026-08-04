@@ -1,7 +1,6 @@
 import * as React from "react";
 // ponytail: type-only — the 330KB html5-qrcode lib is dynamically imported on scan start
 import type { Html5Qrcode } from "html5-qrcode";
-import { authClient } from "@/lib/auth-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -54,17 +53,47 @@ async function fetchClaimLabel(token: string): Promise<string | undefined> {
     }
 }
 
+/**
+ * ponytail: plain fetch, not authClient.$fetch — the auth client prefixes its
+ * baseURL (`<origin>/api/auth`), which turned this into a 404 at
+ * /api/auth/api/setup-claim/:token/approve. The route accepts the browser
+ * session cookie, and the mobile fetch patch adds x-api-key for the bundled app.
+ */
 async function approveClaim(token: string): Promise<{ ok: boolean; error?: string }> {
     try {
-        const { error } = await authClient.$fetch(`/api/setup-claim/${token}/approve`, {
+        const res = await fetch(`/api/setup-claim/${token}/approve`, {
             method: "POST",
+            credentials: "include",
         });
-        if (error) {
-            return { ok: false, error: (error as any)?.message ?? "Approval failed" };
+        if (!res.ok) {
+            const body = (await res.json().catch(() => null)) as { error?: string } | null;
+            return { ok: false, error: body?.error ?? `Approval failed (HTTP ${res.status})` };
         }
         return { ok: true };
     } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : "Network error" };
+    }
+}
+
+/**
+ * Stop + clear without ever throwing.
+ *
+ * ponytail: html5-qrcode throws a bare *string* synchronously from stop()/clear()
+ * when the scanner isn't in the state it expects ("Cannot stop, scanner is not
+ * running or paused."). A .catch() on the returned promise never sees that, so
+ * it escaped the unmount cleanup and tripped the app's error boundary whenever
+ * the panel closed before start() finished.
+ */
+async function teardownScanner(scanner: Html5Qrcode): Promise<void> {
+    try {
+        await scanner.stop();
+    } catch {
+        // Not scanning (or already stopped) — nothing to stop.
+    }
+    try {
+        scanner.clear();
+    } catch {
+        // Nothing rendered to clear.
     }
 }
 
@@ -79,16 +108,8 @@ export function DeviceSetupScanner({ initialToken, onClose }: { initialToken?: s
 
     React.useEffect(() => {
         return () => {
-            if (scannerRef.current) {
-                scannerRef.current
-                    .stop()
-                    .catch(() => {
-                        // Ignore stop errors during unmount.
-                    })
-                    .finally(() => {
-                        scannerRef.current?.clear();
-                    });
-            }
+            const scanner = scannerRef.current;
+            if (scanner) void teardownScanner(scanner);
         };
     }, []);
 
@@ -153,7 +174,13 @@ export function DeviceSetupScanner({ initialToken, onClose }: { initialToken?: s
 
         try {
             await scanner.start(
-                cameras[0].id,
+                // ponytail: a facingMode constraint, not cameras[0].id — the first
+                // enumerated device is the selfie camera on Android, so scanning
+                // opened the wrong lens. Bare string, not { ideal } (html5-qrcode
+                // rejects that) and not { exact } (hard-fails on a front-camera-only
+                // laptop); getUserMedia treats a bare string as "ideal". getCameras()
+                // above stays: it drives the permission prompt and no-camera message.
+                { facingMode: "environment" },
                 { fps: 10, qrbox: { width: 250, height: 250 } },
                 async (decodedText) => {
                     const token = extractToken(decodedText);
@@ -263,10 +290,18 @@ export function DeviceSetupScanner({ initialToken, onClose }: { initialToken?: s
                             <p className="text-center text-xs text-muted-foreground">Point your camera at the QR code on the new device.</p>
                         )}
 
+                        {/*
+                          * Visible from "requesting" on, not just "scanning":
+                          * html5-qrcode measures this element inside start(), and a
+                          * hidden (display:none) container measures 0×0 — the camera
+                          * opens but the preview renders as a black square. The two
+                          * awaits in startScanning (dynamic import, getCameras) give
+                          * React time to flush this before start() runs.
+                          */}
                         <div
                             id={readerId}
                             className="mx-auto aspect-square w-full max-w-[300px] overflow-hidden rounded-md border bg-black"
-                            hidden={state.kind !== "scanning"}
+                            hidden={state.kind !== "scanning" && state.kind !== "requesting"}
                         />
 
                         {state.kind === "error" && (
