@@ -137,14 +137,6 @@ mock.module("./GitStashList", () => ({
     GitStashList: () => <div data-testid="stash-list" />,
 }));
 
-mock.module("./GitHistoryView", () => ({
-    GitHistoryView: () => <div data-testid="history-view" />,
-}));
-
-mock.module("./GitDiffRevsView", () => ({
-    GitDiffRevsView: () => <div data-testid="diff-revs-view" />,
-}));
-
 afterAll(() => mock.restore());
 
 const { GitPanel } = await import("./GitPanel");
