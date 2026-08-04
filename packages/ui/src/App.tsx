@@ -4531,6 +4531,15 @@ export function App() {
     ),
   } : null, [showFileExplorer, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, startPanelDragWith, handleFilesPositionChange, fileToOpen]);
 
+  // Open a git worktree as its own session: prefill the New Session wizard with
+  // the worktree path as cwd (same flow as duplicating a session).
+  const handleOpenWorktree = React.useCallback((worktreePath: string) => {
+    const runnerId = activeSessionInfo?.runnerId;
+    if (!runnerId || !worktreePath) return;
+    setLifecycleSpawnParams({ runnerId, preselectedRunnerId: runnerId, cwd: worktreePath });
+    setNewSessionOpen(true);
+  }, [activeSessionInfo?.runnerId, setLifecycleSpawnParams]);
+
   const gitPanelTab = React.useMemo<CombinedPanelTab | null>(() => (showGit && activeSessionInfo?.runnerId && activeSessionInfo?.cwd) ? {
     id: "git",
     label: "Git",
@@ -4541,10 +4550,11 @@ export function App() {
       <Suspense fallback={<PanelFallback label="Git" />}>
         <LazyGitPanel
           cwd={activeSessionInfo.cwd}
+          onOpenWorktree={handleOpenWorktree}
         />
       </Suspense>
     ),
-  } : null, [showGit, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, startPanelDragWith, handleGitPositionChange]);
+  } : null, [showGit, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, startPanelDragWith, handleGitPositionChange, handleOpenWorktree]);
 
   const triggersPanelTab = React.useMemo<CombinedPanelTab | null>(() => (showTriggers && activeSessionId) ? {
     id: "triggers",

@@ -333,6 +333,9 @@ export class GitService implements ServiceHandler {
                 case "git_worktree_remove":
                     void this.handleWorktreeRemove(payload, requestId, sessionId);
                     break;
+                case "git_worktree_prune":
+                    void this.handleWorktreePrune(payload, requestId, sessionId);
+                    break;
                 case "git_stash_list":
                     void this.handleStashList(payload, requestId, sessionId);
                     break;
@@ -1948,9 +1951,17 @@ export class GitService implements ServiceHandler {
 
         const branch = typeof payload.branch === "string" ? payload.branch.trim() : "";
         const path = typeof payload.path === "string" ? payload.path.trim() : "";
+        // Optional: base ref for a new branch; explicit new-branch flag; remote source.
+        const base = typeof payload.base === "string" ? payload.base.trim() : "";
+        const create = payload.create === true;
+        const isRemote = payload.isRemote === true;
 
         if (!branch || !isValidBranchName(branch)) {
             this.emitError("git_worktree_add_result", "Invalid branch name", requestId, sessionId);
+            return;
+        }
+        if (base && base !== "HEAD" && !isValidBranchName(base)) {
+            this.emitError("git_worktree_add_result", "Invalid base ref", requestId, sessionId);
             return;
         }
         if (!path) {
@@ -1969,24 +1980,44 @@ export class GitService implements ServiceHandler {
         if (!mutation) return;
 
         try {
-            // Use -b to create a new branch at the worktree. If the branch already
-            // exists locally, just check it out in the new worktree.
-            const branchExists = await this._execGit(
-                ["rev-parse", "--verify", `refs/heads/${branch}`],
-                { cwd, timeout: 5000 },
-            ).then(
-                (r) => r.stdout.trim(),
-                () => "",
-            );
+            let args: string[];
+            let resultBranch = branch;
 
-            const args = branchExists
-                ? ["worktree", "add", "--", path, branch]
-                : ["worktree", "add", "-b", branch, "--", path];
+            if (isRemote) {
+                // Check out a remote branch into a new local tracking branch.
+                // `git worktree add -b <local> <path> <remote/branch>` sets up tracking.
+                const local = branch.includes("/") ? branch.slice(branch.indexOf("/") + 1) : branch;
+                if (!isValidBranchName(local)) {
+                    this.emitError("git_worktree_add_result", "Invalid local branch derived from remote ref", requestId, sessionId);
+                    return;
+                }
+                resultBranch = local;
+                args = ["worktree", "add", "-b", local, "--", path, branch];
+            } else if (create) {
+                // Explicit new branch, optionally based on a chosen ref.
+                args = base
+                    ? ["worktree", "add", "-b", branch, "--", path, base]
+                    : ["worktree", "add", "-b", branch, "--", path];
+            } else {
+                // Legacy behavior: check out an existing local branch, or create it
+                // from HEAD when it doesn't exist yet.
+                const branchExists = await this._execGit(
+                    ["rev-parse", "--verify", `refs/heads/${branch}`],
+                    { cwd, timeout: 5000 },
+                ).then(
+                    (r) => r.stdout.trim(),
+                    () => "",
+                );
+                args = branchExists
+                    ? ["worktree", "add", "--", path, branch]
+                    : ["worktree", "add", "-b", branch, "--", path];
+            }
+
             await this._execGit(args, { cwd, timeout: 30000 });
             await this.invalidateStatusCacheFamily(cwd);
             this.emit("git_worktree_add_result", {
                 ok: true,
-                branch,
+                branch: resultBranch,
                 path,
             }, requestId, sessionId);
         } catch (err) {
@@ -2049,6 +2080,32 @@ export class GitService implements ServiceHandler {
             this.emit("git_worktree_remove_result", { ok: true, path: worktreePath }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_worktree_remove_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
+        }
+    }
+
+    // ── git worktree prune ────────────────────────────────────
+
+    /** Prune worktree metadata for directories that no longer exist. */
+    private async handleWorktreePrune(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_worktree_prune_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const mutation = await this.beginRepoMutation(cwd, "git_worktree_prune_result", "worktree-prune", requestId, sessionId);
+        if (!mutation) return;
+
+        try {
+            const { stdout, stderr } = await this._execGit(["worktree", "prune", "-v"], { cwd, timeout: 15000 });
+            const output = (stdout + "\n" + stderr).trim();
+            await this.invalidateStatusCacheFamily(cwd);
+            this.emit("git_worktree_prune_result", { ok: true, ...(output ? { message: output } : {}) }, requestId, sessionId);
+        } catch (err) {
+            this.emitError("git_worktree_prune_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         } finally {
             this.endRepoMutation(mutation);
         }

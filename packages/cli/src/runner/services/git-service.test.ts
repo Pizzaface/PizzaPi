@@ -2145,3 +2145,66 @@ describe("GitService commit message suggestion (model-backed)", () => {
         expect(payload.subject).toContain("feat(packages): add 1 file");
     });
 });
+
+describe("GitService worktree add/prune", () => {
+    test("creates a new branch with a chosen base", async () => {
+        let usedArgs: string[] = [];
+        const service = new GitService({
+            execGit: async (args) => {
+                if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "" };
+                if (args[0] === "worktree" && args[1] === "add") { usedArgs = args; return { stdout: "", stderr: "" }; }
+                if (args[0] === "status") return { stdout: "", stderr: "" };
+                return { stdout: "", stderr: "" };
+            },
+        });
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git", type: "git_worktree_add", requestId: "wa1",
+            payload: { cwd: "/repo", branch: "feat/x", path: ".worktrees/x", base: "main", create: true },
+        });
+        const r = await waitForResult(socket, "wa1", "git_worktree_add_result");
+        expect((r.payload as any).ok).toBe(true);
+        expect(usedArgs).toEqual(["worktree", "add", "-b", "feat/x", "--", ".worktrees/x", "main"]);
+    });
+
+    test("checks out a remote branch into a new local tracking branch", async () => {
+        let usedArgs: string[] = [];
+        const service = new GitService({
+            execGit: async (args) => {
+                if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "" };
+                if (args[0] === "worktree" && args[1] === "add") { usedArgs = args; return { stdout: "", stderr: "" }; }
+                return { stdout: "", stderr: "" };
+            },
+        });
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git", type: "git_worktree_add", requestId: "wa2",
+            payload: { cwd: "/repo", branch: "origin/feature", path: ".worktrees/feature", isRemote: true },
+        });
+        const r = await waitForResult(socket, "wa2", "git_worktree_add_result");
+        expect((r.payload as any).branch).toBe("feature");
+        expect(usedArgs).toEqual(["worktree", "add", "-b", "feature", "--", ".worktrees/feature", "origin/feature"]);
+    });
+
+    test("prune runs git worktree prune", async () => {
+        let pruned = false;
+        const service = new GitService({
+            execGit: async (args) => {
+                if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "" };
+                if (args[0] === "worktree" && args[1] === "prune") { pruned = true; return { stdout: "Removing worktrees/x: gitdir file points to non-existent location\n", stderr: "" }; }
+                return { stdout: "", stderr: "" };
+            },
+        });
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, { serviceId: "git", type: "git_worktree_prune", requestId: "wp1", payload: { cwd: "/repo" } });
+        const r = await waitForResult(socket, "wp1", "git_worktree_prune_result");
+        expect(pruned).toBe(true);
+        expect((r.payload as any).ok).toBe(true);
+    });
+});

@@ -71,11 +71,13 @@ const GIT_TABS: Array<{ id: GitTab; label: string }> = [
 interface GitPanelProps {
     cwd: string;
     className?: string;
+    /** Open a worktree as its own session (spawns a session rooted at the path). */
+    onOpenWorktree?: (path: string) => void;
 }
 
 // ── Component ───────────────────────────────────────────────────────────────
 
-export function GitPanel({ cwd, className }: GitPanelProps) {
+export function GitPanel({ cwd, className, onOpenWorktree }: GitPanelProps) {
     const git = useGitService(cwd);
 
     // Diff modal state (replaces the old full-panel diff takeover).
@@ -480,9 +482,14 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
             {activeTab === "changes" && (
                 <GitWorktreeList
                     worktrees={git.worktrees}
+                    branches={git.branches}
+                    currentBranch={git.status.branch}
                     onOpen={git.fetchWorktrees}
+                    onOpenBranches={git.fetchBranches}
                     onAdd={git.addWorktree}
                     onRemove={git.removeWorktree}
+                    onPrune={git.pruneWorktrees}
+                    onOpenWorktree={onOpenWorktree}
                     operationInProgress={git.operationInProgress}
                 />
             )}

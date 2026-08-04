@@ -159,8 +159,9 @@ export interface UseGitServiceReturn {
     rebase: (branch: string) => void;
     rebaseAbort: () => void;
     rebaseContinue: () => void;
-    addWorktree: (branch: string, path: string) => void;
+    addWorktree: (branch: string, path: string, opts?: { base?: string; create?: boolean; isRemote?: boolean }) => void;
     removeWorktree: (path: string, force?: boolean) => void;
+    pruneWorktrees: () => void;
     clearOperationResult: () => void;
 }
 
@@ -580,6 +581,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                 case "git_rebase_continue_result":
                 case "git_worktree_add_result":
                 case "git_worktree_remove_result":
+                case "git_worktree_prune_result":
                 case "git_discard_result": {
                     if (!isRequestCurrentGeneration(requestId)) break;
                     setOperationInProgress(null);
@@ -1026,13 +1028,20 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         send("git_rebase_continue", { cwd }, requestId);
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
-    const addWorktree = useCallback((branch: string, path: string) => {
+    const addWorktree = useCallback((branch: string, path: string, opts?: { base?: string; create?: boolean; isRemote?: boolean }) => {
         if (!available || !branch || !path) return;
         const requestId = makeRequestId();
         registerRequestGeneration(requestId);
         setOperationInProgress("worktree-add");
         setLastOperationResult(null);
-        send("git_worktree_add", { cwd, branch, path }, requestId);
+        send("git_worktree_add", {
+            cwd,
+            branch,
+            path,
+            ...(opts?.base ? { base: opts.base } : {}),
+            ...(opts?.create ? { create: true } : {}),
+            ...(opts?.isRemote ? { isRemote: true } : {}),
+        }, requestId);
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
     const removeWorktree = useCallback((path: string, force = false) => {
@@ -1042,6 +1051,15 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         setOperationInProgress("worktree-remove");
         setLastOperationResult(null);
         send("git_worktree_remove", { cwd, path, force }, requestId);
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
+    const pruneWorktrees = useCallback(() => {
+        if (!available) return;
+        const requestId = makeRequestId();
+        registerRequestGeneration(requestId);
+        setOperationInProgress("worktree-prune");
+        setLastOperationResult(null);
+        send("git_worktree_prune", { cwd }, requestId);
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
     const clearOperationResult = useCallback(() => {
@@ -1143,6 +1161,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         rebaseContinue,
         addWorktree,
         removeWorktree,
+        pruneWorktrees,
         clearOperationResult,
     };
 }
