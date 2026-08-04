@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { watch } from "node:fs";
+import { rm } from "node:fs/promises";
 import { promisify } from "node:util";
 import { isAbsolute, join, normalize, resolve } from "node:path";
 import type { Socket } from "socket.io-client";
@@ -20,6 +21,8 @@ type GitExec = (
     args: string[],
     options: { cwd: string; timeout: number; env?: Record<string, string> },
 ) => Promise<{ stdout: string; stderr: string }>;
+
+type GitRm = (path: string, options: { force: boolean; recursive: boolean }) => Promise<void>;
 
 type GitStatusResultPayload = {
     ok: true;
@@ -219,6 +222,7 @@ export class GitService implements ServiceHandler {
     private readonly _setTimeout: SetTimeoutFn;
     private readonly _clearTimeout: ClearTimeoutFn;
     private readonly _now: () => number;
+    private readonly _rm: GitRm;
     private readonly _statusCache = new Map<string, { expiresAt: number; snapshot: GitStatusSnapshot }>();
     private readonly _statusInFlight = new Map<string, Promise<GitStatusSnapshot>>();
     private readonly _statusGeneration = new Map<string, number>();
@@ -242,12 +246,14 @@ export class GitService implements ServiceHandler {
         setTimeoutFn?: SetTimeoutFn;
         clearTimeoutFn?: ClearTimeoutFn;
         now?: () => number;
+        rm?: GitRm;
     }) {
         this._execGit = options?.execGit ?? ((args, execOptions) => execFileAsync("git", args, execOptions));
         this._watchFs = options?.watchFs ?? ((path, listener) => watch(path, { persistent: false }, listener));
         this._setTimeout = options?.setTimeoutFn ?? ((callback, delayMs) => setTimeout(callback, delayMs));
         this._clearTimeout = options?.clearTimeoutFn ?? ((timeout) => clearTimeout(timeout));
         this._now = options?.now ?? (() => Date.now());
+        this._rm = options?.rm ?? ((path, options) => rm(path, options));
     }
 
     init(socket: Socket, { isShuttingDown }: ServiceInitOptions): void {
@@ -349,6 +355,9 @@ export class GitService implements ServiceHandler {
                     break;
                 case "git_commit_files":
                     void this.handleCommitFiles(payload, requestId, sessionId);
+                    break;
+                case "git_discard":
+                    void this.handleDiscard(payload, requestId, sessionId);
                     break;
             }
         };
@@ -2453,7 +2462,6 @@ export class GitService implements ServiceHandler {
     }
 
     // ── git commit changed files (for the rev explorer) ────────────────
-
     private async handleCommitFiles(
         payload: Record<string, unknown>,
         requestId?: string,
@@ -2510,6 +2518,77 @@ export class GitService implements ServiceHandler {
             this.emit("git_commit_files_result", { ok: true, revision, files }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_commit_files_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        }
+    }
+
+    // ── git discard (destructive) ──────────────────────────────────────
+
+    /**
+     * Discard working-tree (and staged) changes for the given paths.
+     * Tracked files: `git restore --staged --worktree`. Untracked files: delete.
+     * Destructive — the caller must confirm before invoking.
+     */
+    private async handleDiscard(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_discard_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const paths = Array.isArray(payload.paths)
+            ? payload.paths.filter((p): p is string => typeof p === "string" && isValidPath(p))
+            : [];
+        if (paths.length === 0) {
+            this.emitError("git_discard_result", "No valid paths specified", requestId, sessionId);
+            return;
+        }
+
+        const mutation = await this.beginRepoMutation(cwd, "git_discard_result", "discard", requestId, sessionId);
+        if (!mutation) return;
+
+        try {
+            const repoRoot = this._cwdRepoRoot.get(cwd) ?? (await this.resolveRepoRoot(cwd));
+            if (!this._cwdRepoRoot.has(cwd)) this._cwdRepoRoot.set(cwd, repoRoot);
+
+            // Classify untracked vs tracked so we can delete vs restore.
+            const { stdout } = await this._execGit(["status", "--porcelain=v1", "-uall", "-z", "--", ...paths],
+                { cwd: repoRoot, timeout: 10000 },
+            );
+            const untracked = new Set<string>();
+            const entries = stdout.split("\0");
+            for (let i = 0; i < entries.length; i++) {
+                const entry = entries[i];
+                if (!entry || entry.length < 3) continue;
+                if (entry.startsWith("??")) untracked.add(entry.substring(3));
+                else if (entry.startsWith("R") || entry.startsWith("C")) i++; // skip rename source
+            }
+
+            const tracked = paths.filter((p) => !untracked.has(p));
+
+            if (tracked.length > 0) {
+                await this._execGit(["restore", "--staged", "--worktree", "--", ...tracked],
+                    { cwd: repoRoot, timeout: 15000 },
+                );
+            }
+            for (const p of untracked) {
+                // Guard against traversal (already validated) and absolute paths.
+                if (p.startsWith("/") || p.includes("..")) continue;
+                const abs = resolve(repoRoot, p);
+                if (!abs.startsWith(repoRoot + "/") && abs !== repoRoot) continue;
+                try {
+                    await this._rm(abs, { force: true, recursive: true });
+                } catch {
+                    // ignore missing files
+                }
+            }
+
+            await this.invalidateStatusCacheFamily(cwd);
+            this.emit("git_discard_result", { ok: true, paths }, requestId, sessionId);
+        } catch (err) {
+            this.emitError("git_discard_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
         }
     }
 }

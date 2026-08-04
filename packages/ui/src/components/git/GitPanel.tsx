@@ -442,6 +442,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                             onStageAll={git.stageAll}
                             onUnstage={git.unstage}
                             onUnstageAll={git.unstageAll}
+                            onDiscard={git.discard}
                             operationInProgress={git.operationInProgress}
                         />
                     )

@@ -2037,3 +2037,44 @@ describe("GitService commit files", () => {
         expect(r.payload.ok).toBe(false);
     });
 });
+
+describe("GitService discard", () => {
+    test("restores tracked files and deletes untracked files", async () => {
+        const removed: string[] = [];
+        const service = new GitService({
+            rm: async (p) => { removed.push(p); },
+            execGit: async (args) => {
+                if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "" };
+                if (args[0] === "status") {
+                    return { stdout: " M src/tracked.ts\0?? notes.md\0", stderr: "" };
+                }
+                if (args[0] === "restore") return { stdout: "", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_discard",
+            requestId: "d1",
+            payload: { cwd: "/repo", paths: ["src/tracked.ts", "notes.md"] },
+        });
+        const r = await waitForResult(socket, "d1", "git_discard_result");
+        expect(r.payload.ok).toBe(true);
+        // notes.md was untracked → deleted; tracked.ts → restored via git.
+        expect(removed.some((p) => p.endsWith("notes.md"))).toBe(true);
+        expect(removed.some((p) => p.includes("tracked.ts"))).toBe(false);
+    });
+
+    test("rejects no valid paths", async () => {
+        const service = new GitService({ execGit: async () => { throw new Error("should not run"); } });
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, { serviceId: "git", type: "git_discard", requestId: "d2", payload: { cwd: "/repo", paths: [] } });
+        const r = await waitForResult(socket, "d2", "git_discard_result");
+        expect(r.payload.ok).toBe(false);
+    });
+});

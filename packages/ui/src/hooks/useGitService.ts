@@ -149,6 +149,7 @@ export interface UseGitServiceReturn {
     stageAll: () => void;
     unstage: (paths: string[]) => void;
     unstageAll: () => void;
+    discard: (paths: string[]) => void;
     commit: (message: string) => void;
     push: (setUpstream?: boolean) => void;
     pull: (rebase?: boolean) => void;
@@ -578,7 +579,8 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                 case "git_rebase_abort_result":
                 case "git_rebase_continue_result":
                 case "git_worktree_add_result":
-                case "git_worktree_remove_result": {
+                case "git_worktree_remove_result":
+                case "git_discard_result": {
                     if (!isRequestCurrentGeneration(requestId)) break;
                     setOperationInProgress(null);
                     setLastOperationResult(payload as GitOperationResult);
@@ -934,6 +936,15 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         send("git_unstage", { cwd, all: true }, requestId);
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
+    const discard = useCallback((paths: string[]) => {
+        if (!available) return;
+        const requestId = makeRequestId();
+        registerRequestGeneration(requestId);
+        setOperationInProgress("discard");
+        setLastOperationResult(null);
+        send("git_discard", { cwd, paths }, requestId);
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
     const commit = useCallback((message: string) => {
         if (!available) return;
         const requestId = makeRequestId();
@@ -1120,6 +1131,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         stageAll,
         unstage,
         unstageAll,
+        discard,
         commit,
         push,
         pull,
