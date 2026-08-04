@@ -223,6 +223,8 @@ export class GitService implements ServiceHandler {
     private readonly _clearTimeout: ClearTimeoutFn;
     private readonly _now: () => number;
     private readonly _rm: GitRm;
+    /** Optional model-backed commit-message generator. Falls back to heuristic when absent. */
+    private readonly _generateCommitMessage: (diff: string) => Promise<{ subject: string; body: string } | null>;
     private readonly _statusCache = new Map<string, { expiresAt: number; snapshot: GitStatusSnapshot }>();
     private readonly _statusInFlight = new Map<string, Promise<GitStatusSnapshot>>();
     private readonly _statusGeneration = new Map<string, number>();
@@ -247,6 +249,7 @@ export class GitService implements ServiceHandler {
         clearTimeoutFn?: ClearTimeoutFn;
         now?: () => number;
         rm?: GitRm;
+        generateCommitMessage?: (diff: string) => Promise<{ subject: string; body: string } | null>;
     }) {
         this._execGit = options?.execGit ?? ((args, execOptions) => execFileAsync("git", args, execOptions));
         this._watchFs = options?.watchFs ?? ((path, listener) => watch(path, { persistent: false }, listener));
@@ -254,6 +257,7 @@ export class GitService implements ServiceHandler {
         this._clearTimeout = options?.clearTimeoutFn ?? ((timeout) => clearTimeout(timeout));
         this._now = options?.now ?? (() => Date.now());
         this._rm = options?.rm ?? ((path, options) => rm(path, options));
+        this._generateCommitMessage = options?.generateCommitMessage ?? (async () => null);
     }
 
     init(socket: Socket, { isShuttingDown }: ServiceInitOptions): void {
@@ -1274,6 +1278,26 @@ export class GitService implements ServiceHandler {
                     files: [],
                 }, requestId, sessionId);
                 return;
+            }
+
+            // Call out to PizzaPi: let a real model write the message from the
+            // staged diff. Fall back to the deterministic heuristic on failure.
+            try {
+                const diffResult = await this._execGit(["diff", "--cached"], { cwd: repoRoot, timeout: 10000 });
+                const modelResult = await this._generateCommitMessage(diffResult.stdout);
+                if (modelResult && modelResult.subject && modelResult.subject.trim()) {
+                    this.emit("git_commit_message_suggest_result", {
+                        ok: true,
+                        subject: modelResult.subject.trim(),
+                        body: modelResult.body?.trim() ?? "",
+                        type: "",
+                        scope: "",
+                        files,
+                    }, requestId, sessionId);
+                    return;
+                }
+            } catch {
+                // fall through to the heuristic
             }
 
             // Derive type from the change mix and paths.

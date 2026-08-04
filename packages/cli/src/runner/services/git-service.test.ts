@@ -2085,3 +2085,63 @@ describe("GitService discard", () => {
         expect(payload.ok).toBe(false);
     });
 });
+
+describe("GitService commit message suggestion (model-backed)", () => {
+    test("uses the injected generateCommitMessage when it returns a subject", async () => {
+        const service = new GitService({
+            generateCommitMessage: async (diff) => {
+                expect(diff).toContain("index ");
+                return { subject: "feat(ui): model-written message", body: "- from model" };
+            },
+            execGit: async (args) => {
+                if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "" };
+                if (args[0] === "diff" && args.includes("--numstat")) {
+                    return { stdout: "1\t1\tsrc/a.ts\n", stderr: "" };
+                }
+                if (args[0] === "diff" && args.includes("--name-only")) {
+                    return { stdout: "src/a.ts\n", stderr: "" };
+                }
+                if (args[0] === "diff") return { stdout: "index abc..def 100644\n@@ -1 +1 @@\n-a\n+b\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_commit_message_suggest",
+            requestId: "sm1",
+            payload: { cwd: "/repo" },
+        });
+        const r = await waitForResult(socket, "sm1", "git_commit_message_suggest_result");
+        const payload = r.payload as any;
+        expect(payload.subject).toBe("feat(ui): model-written message");
+        expect(payload.body).toBe("- from model");
+    });
+
+    test("falls back to the heuristic when the model returns null", async () => {
+        const service = new GitService({
+            generateCommitMessage: async () => null,
+            execGit: async (args) => {
+                if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "" };
+                if (args[0] === "diff" && args.includes("--numstat")) return { stdout: "12\t2\tpackages/ui/src/a.ts\n", stderr: "" };
+                if (args[0] === "diff" && args.includes("--name-only")) return { stdout: "packages/ui/src/a.ts\n", stderr: "" };
+                if (args[0] === "diff") return { stdout: "", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_commit_message_suggest",
+            requestId: "sm2",
+            payload: { cwd: "/repo" },
+        });
+        const r = await waitForResult(socket, "sm2", "git_commit_message_suggest_result");
+        const payload = r.payload as any;
+        expect(payload.subject).toContain("feat(packages): add 1 file");
+    });
+});
