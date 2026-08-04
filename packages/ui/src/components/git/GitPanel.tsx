@@ -35,9 +35,14 @@ import {
     DropdownMenu,
     DropdownMenuContent,
     DropdownMenuItem,
+    DropdownMenuLabel,
     DropdownMenuSeparator,
+    DropdownMenuSub,
+    DropdownMenuSubContent,
+    DropdownMenuSubTrigger,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import type { GitBranch as GitBranchType } from "@/hooks/useGitService";
 import {
     Tooltip,
     TooltipContent,
@@ -94,14 +99,11 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
 
     const [toast, setToast] = useState<GitOperationFeedback | null>(null);
 
-    const handleSetUpstream = useCallback(() => {
-        const currentBranch = git.status?.branch?.trim();
-        const suggestion = currentBranch ? `origin/${currentBranch}` : "origin/main";
-        const response = window.prompt("Set upstream to which remote branch?", suggestion);
-        if (!response) return;
-        const parsed = parseUpstreamRef(response);
+    // Set upstream to a chosen remote branch (e.g. "origin/main").
+    const handleSetUpstream = useCallback((remoteRef: string) => {
+        const parsed = parseUpstreamRef(remoteRef);
         if (!parsed) {
-            setToast({ type: "error", message: "Enter the upstream as remote/branch, for example origin/main." });
+            setToast({ type: "error", message: "Choose a remote branch as remote/branch, for example origin/main." });
             return;
         }
         git.setUpstream(parsed.remote, parsed.branch);
@@ -118,10 +120,8 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
         setDiffModal({ open: true, path, staged });
     }, []);
 
-    const handleMerge = useCallback(() => {
+    const handleMerge = useCallback((branchName: string) => {
         const current = git.status?.branch ?? "";
-        const branchName = window.prompt("Merge which branch into current?", "");
-        if (!branchName) return;
         if (branchName === current) {
             setToast({ type: "error", message: "Cannot merge the current branch into itself." });
             return;
@@ -129,10 +129,8 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
         git.merge(branchName);
     }, [git]);
 
-    const handleRebase = useCallback(() => {
+    const handleRebase = useCallback((branchName: string) => {
         const current = git.status?.branch ?? "";
-        const branchName = window.prompt("Rebase current branch onto which branch?", "main");
-        if (!branchName) return;
         if (branchName === current) {
             setToast({ type: "error", message: "Cannot rebase onto the current branch." });
             return;
@@ -280,7 +278,7 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                     )}
 
                     {/* Sync ⋯ menu */}
-                    <DropdownMenu>
+                    <DropdownMenu onOpenChange={(open) => { if (open) git.fetchBranches(); }}>
                         <DropdownMenuTrigger asChild>
                             <button
                                 type="button"
@@ -298,16 +296,32 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                             <DropdownMenuItem onSelect={() => git.pull(true)} disabled={git.operationInProgress !== null}>
                                 <Download className="size-3.5" /> Pull --rebase
                             </DropdownMenuItem>
-                            <DropdownMenuItem onSelect={handleMerge} disabled={git.operationInProgress !== null}>
-                                <GitMerge className="size-3.5" /> Merge into current…
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onSelect={handleRebase} disabled={git.operationInProgress !== null}>
-                                <ArrowRightLeft className="size-3.5" /> Rebase onto…
-                            </DropdownMenuItem>
+                            <BranchSubmenu
+                                label="Merge into current…"
+                                icon={<GitMerge className="size-3.5" />}
+                                branches={git.branches}
+                                currentBranch={git.status.branch}
+                                disabled={isMutating}
+                                onSelect={(b) => handleMerge(b.name)}
+                            />
+                            <BranchSubmenu
+                                label="Rebase onto…"
+                                icon={<ArrowRightLeft className="size-3.5" />}
+                                branches={git.branches}
+                                currentBranch={git.status.branch}
+                                disabled={isMutating}
+                                onSelect={(b) => handleRebase(b.name)}
+                            />
                             <DropdownMenuSeparator />
-                            <DropdownMenuItem onSelect={handleSetUpstream} disabled={git.operationInProgress !== null}>
-                                <GitBranch className="size-3.5" /> Set upstream…
-                            </DropdownMenuItem>
+                            <BranchSubmenu
+                                label="Set upstream…"
+                                icon={<GitBranch className="size-3.5" />}
+                                branches={git.branches}
+                                currentBranch={git.status.branch}
+                                disabled={isMutating}
+                                remoteOnly
+                                onSelect={(b) => handleSetUpstream(b.name)}
+                            />
                         </DropdownMenuContent>
                     </DropdownMenu>
 
@@ -337,9 +351,21 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                     {toast.type === "success" ? <Check className="size-3" /> : <AlertCircle className="size-3" />}
                     <span className="truncate flex-1">{toast.message}</span>
                     {toast.action === "setUpstream" && (
-                        <button type="button" onClick={handleSetUpstream} className="text-current underline underline-offset-2 hover:no-underline">
-                            Set upstream…
-                        </button>
+                        <DropdownMenu onOpenChange={(open) => { if (open) git.fetchBranches(); }}>
+                            <DropdownMenuTrigger asChild>
+                                <button type="button" className="text-current underline underline-offset-2 hover:no-underline">
+                                    Set upstream…
+                                </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-56 max-h-72 overflow-auto">
+                                <BranchList
+                                    branches={git.branches}
+                                    currentBranch={git.status.branch}
+                                    remoteOnly
+                                    onSelect={(b) => handleSetUpstream(b.name)}
+                                />
+                            </DropdownMenuContent>
+                        </DropdownMenu>
                     )}
                     <button type="button" onClick={() => setToast(null)} className="text-current opacity-60 hover:opacity-100" aria-label="Dismiss">×</button>
                 </div>
@@ -482,5 +508,79 @@ export function GitPanel({ cwd, className }: GitPanelProps) {
                 fetchDiffRevs={git.fetchDiffRevs}
             />
         </div>
+    );
+}
+
+// ── Branch pickers (replace free-text prompts with local/remote dropdowns) ──
+
+/** Grouped Local/Remote branch items for a dropdown. Excludes the current branch. */
+function BranchList({
+    branches,
+    currentBranch,
+    remoteOnly = false,
+    onSelect,
+}: {
+    branches: GitBranchType[];
+    currentBranch: string;
+    remoteOnly?: boolean;
+    onSelect: (branch: GitBranchType) => void;
+}) {
+    const local = remoteOnly ? [] : branches.filter((b) => !b.isRemote && b.name !== currentBranch);
+    const remote = branches.filter((b) => b.isRemote);
+
+    if (branches.length === 0) {
+        return <DropdownMenuItem disabled>Loading branches…</DropdownMenuItem>;
+    }
+    if (local.length === 0 && remote.length === 0) {
+        return <DropdownMenuItem disabled>No {remoteOnly ? "remote " : ""}branches</DropdownMenuItem>;
+    }
+
+    return (
+        <>
+            {local.length > 0 && <DropdownMenuLabel className="text-[0.65rem] uppercase tracking-wider text-muted-foreground">Local</DropdownMenuLabel>}
+            {local.map((b) => (
+                <DropdownMenuItem key={`local-${b.name}`} onSelect={() => onSelect(b)}>
+                    <GitBranch className="size-3.5 shrink-0" />
+                    <span className="truncate font-mono text-xs">{b.name}</span>
+                </DropdownMenuItem>
+            ))}
+            {remote.length > 0 && <DropdownMenuLabel className="text-[0.65rem] uppercase tracking-wider text-muted-foreground">Remote</DropdownMenuLabel>}
+            {remote.map((b) => (
+                <DropdownMenuItem key={`remote-${b.name}`} onSelect={() => onSelect(b)}>
+                    <GitBranch className="size-3.5 shrink-0 opacity-60" />
+                    <span className="truncate font-mono text-xs">{b.name}</span>
+                </DropdownMenuItem>
+            ))}
+        </>
+    );
+}
+
+/** A sync-menu submenu that lists branches to merge/rebase/track. */
+function BranchSubmenu({
+    label,
+    icon,
+    branches,
+    currentBranch,
+    remoteOnly = false,
+    disabled,
+    onSelect,
+}: {
+    label: string;
+    icon: React.ReactNode;
+    branches: GitBranchType[];
+    currentBranch: string;
+    remoteOnly?: boolean;
+    disabled?: boolean;
+    onSelect: (branch: GitBranchType) => void;
+}) {
+    return (
+        <DropdownMenuSub>
+            <DropdownMenuSubTrigger disabled={disabled}>
+                {icon} {label}
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="w-56 max-h-72 overflow-auto">
+                <BranchList branches={branches} currentBranch={currentBranch} remoteOnly={remoteOnly} onSelect={onSelect} />
+            </DropdownMenuSubContent>
+        </DropdownMenuSub>
     );
 }
