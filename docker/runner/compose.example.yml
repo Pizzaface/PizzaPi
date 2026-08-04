@@ -28,6 +28,26 @@ services:
       # PUID: "1000"
       # PGID: "1000"
       # PIZZAPI_CHOWN_WORKSPACE: "1"  # also chown workspace roots on start (slow, off by default)
+    # --- Model provider credentials ---
+    # Log providers in from the web UI (Runner Settings → Providers), or inside
+    # the container:
+    #   docker compose exec runner pizza auth            # list providers
+    #   docker compose exec runner pizza auth anthropic  # OAuth / API key login
+    # Credentials land in /home/pizza/.pizzapi/auth.json (the runner-data volume
+    # below); new sessions pick them up without a restart. PIZZAPI_AUTH_FILE
+    # (further down) is the non-interactive alternative.
+    #
+    # Provider OAuth clients hard-code a loopback redirect (Anthropic
+    # localhost:53692, OpenAI Codex localhost:1455) and won't accept the relay's
+    # URL, so the browser is redirected to ITS OWN localhost. Publish the ports
+    # below and a browser on THIS host completes the login with no copy/paste;
+    # from any other device you paste the redirect URL into the login card
+    # instead. Bound to 127.0.0.1: these are one-shot OAuth callbacks, not a
+    # service to expose.
+    # ports:
+    #   - "127.0.0.1:53692:53692"   # Anthropic (Claude Pro/Max)
+    #   - "127.0.0.1:1455:1455"     # OpenAI Codex
+
     volumes:
       # Required: runner identity, auth, sessions, installed services — treat as secret.
       - runner-data:/home/pizza/.pizzapi

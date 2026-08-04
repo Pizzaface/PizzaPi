@@ -60,6 +60,7 @@ import { registerUsageHandlers } from "./daemon-handlers/usage.js";
 import { registerSessionAnalysisHandlers } from "./daemon-handlers/session-analysis.js";
 import { registerSettingsHandlers } from "./daemon-handlers/settings.js";
 import { registerPackagesHandlers } from "./daemon-handlers/packages.js";
+import { registerProviderAuthHandlers } from "./daemon-handlers/provider-auth.js";
 
 // Re-export migration from shared module — used on daemon startup
 import { migrateAgentDir } from "../migrations.js";
@@ -1900,6 +1901,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         );
         registerSettingsHandlers(socket, () => isShuttingDown);
         registerPackagesHandlers(socket, () => isShuttingDown);
+        registerProviderAuthHandlers(socket, () => isShuttingDown, () => resolveConfiguredAgentDir());
 
         // ── Error handling ────────────────────────────────────────────────
 

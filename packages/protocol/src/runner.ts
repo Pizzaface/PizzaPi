@@ -504,6 +504,38 @@ export interface RunnerServerToClientEvents {
     source?: string;
   }) => void;
 
+  /** Model provider auth: list providers that support interactive login */
+  auth_list: (data: {
+    requestId?: string;
+  }) => void;
+
+  /** Model provider auth: begin a login; replies with the flow's first step */
+  auth_login_start: (data: {
+    requestId?: string;
+    providerId: string;
+    /** "oauth" (default) or "api_key" */
+    authType?: string;
+  }) => void;
+
+  /** Model provider auth: answer the flow's pending prompt (code, key, choice) */
+  auth_login_submit: (data: {
+    requestId?: string;
+    loginId: string;
+    value: string;
+  }) => void;
+
+  /** Model provider auth: poll a login (its loopback callback may have won) */
+  auth_login_status: (data: {
+    requestId?: string;
+    loginId: string;
+  }) => void;
+
+  /** Model provider auth: abandon an in-flight login */
+  auth_login_cancel: (data: {
+    requestId?: string;
+    loginId: string;
+  }) => void;
+
   /** Full snapshot of active trigger subscriptions for this runner's sessions.
    *  Sent after runner_registered so the runner can rebuild subscription state. */
   trigger_subscriptions_snapshot: (data: TriggerSubscriptionsSnapshot) => void;
