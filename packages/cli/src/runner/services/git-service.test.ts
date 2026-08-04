@@ -1947,13 +1947,14 @@ describe("GitService commit message suggestion", () => {
             payload: { cwd: "/repo" },
         });
         const result = await waitForResult(socket, "s1", "git_commit_message_suggest_result");
+        const payload = result.payload as any;
 
-        expect(result.payload.ok).toBe(true);
-        expect(result.payload.type).toBe("feat");
-        expect(result.payload.scope).toBe("packages");
-        expect(result.payload.subject).toContain("feat(packages): add 2 files");
-        expect(result.payload.files).toHaveLength(2);
-        expect(result.payload.files[0]).toEqual({ path: "packages/ui/src/components/git/GitPanel.tsx", added: 12, deleted: 2 });
+        expect(payload.ok).toBe(true);
+        expect(payload.type).toBe("feat");
+        expect(payload.scope).toBe("packages");
+        expect(payload.subject).toContain("feat(packages): add 2 files");
+        expect(payload.files).toHaveLength(2);
+        expect(payload.files[0]).toEqual({ path: "packages/ui/src/components/git/GitPanel.tsx", added: 12, deleted: 2 });
     });
 
     test("returns a safe fallback when there is nothing staged", async () => {
@@ -1975,10 +1976,11 @@ describe("GitService commit message suggestion", () => {
             payload: { cwd: "/repo" },
         });
         const result = await waitForResult(socket, "s2", "git_commit_message_suggest_result");
+        const payload = result.payload as any;
 
-        expect(result.payload.ok).toBe(true);
-        expect(result.payload.subject).toBe("chore: staged changes");
-        expect(result.payload.files).toEqual([]);
+        expect(payload.ok).toBe(true);
+        expect(payload.subject).toBe("chore: staged changes");
+        expect(payload.files).toEqual([]);
     });
 });
 
@@ -2001,8 +2003,9 @@ describe("GitService commit files", () => {
 
         dispatchServiceMessage(socket, { serviceId: "git", type: "git_commit_files", requestId: "cf1", payload: { cwd: "/repo", revision: "abc1234" } });
         const r = await waitForResult(socket, "cf1", "git_commit_files_result");
-        expect(r.payload.ok).toBe(true);
-        expect(r.payload.files).toEqual([
+        const payload = r.payload as any;
+        expect(payload.ok).toBe(true);
+        expect(payload.files).toEqual([
             { status: "M", path: "packages/ui/src/a.ts" },
             { status: "A", path: "packages/ui/src/b.ts" },
             { status: "D", path: "notes.md" },
@@ -2023,8 +2026,9 @@ describe("GitService commit files", () => {
 
         dispatchServiceMessage(socket, { serviceId: "git", type: "git_commit_files", requestId: "cf2", payload: { cwd: "/repo", revision: "abc1234", base: "main" } });
         const r = await waitForResult(socket, "cf2", "git_commit_files_result");
+        const payload = r.payload as any;
         expect(usedRange).toBe(true);
-        expect(r.payload.files).toEqual([{ status: "M", path: "packages/ui/src/a.ts" }]);
+        expect(payload.files).toEqual([{ status: "M", path: "packages/ui/src/a.ts" }]);
     });
 
     test("rejects a missing or flag-like revision", async () => {
@@ -2034,7 +2038,8 @@ describe("GitService commit files", () => {
 
         dispatchServiceMessage(socket, { serviceId: "git", type: "git_commit_files", requestId: "cf3", payload: { cwd: "/repo" } });
         const r = await waitForResult(socket, "cf3", "git_commit_files_result");
-        expect(r.payload.ok).toBe(false);
+        const payload = r.payload as any;
+        expect(payload.ok).toBe(false);
     });
 });
 
@@ -2062,7 +2067,8 @@ describe("GitService discard", () => {
             payload: { cwd: "/repo", paths: ["src/tracked.ts", "notes.md"] },
         });
         const r = await waitForResult(socket, "d1", "git_discard_result");
-        expect(r.payload.ok).toBe(true);
+        const payload = r.payload as any;
+        expect(payload.ok).toBe(true);
         // notes.md was untracked → deleted; tracked.ts → restored via git.
         expect(removed.some((p) => p.endsWith("notes.md"))).toBe(true);
         expect(removed.some((p) => p.includes("tracked.ts"))).toBe(false);
@@ -2075,6 +2081,7 @@ describe("GitService discard", () => {
 
         dispatchServiceMessage(socket, { serviceId: "git", type: "git_discard", requestId: "d2", payload: { cwd: "/repo", paths: [] } });
         const r = await waitForResult(socket, "d2", "git_discard_result");
-        expect(r.payload.ok).toBe(false);
+        const payload = r.payload as any;
+        expect(payload.ok).toBe(false);
     });
 });
