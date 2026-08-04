@@ -342,6 +342,12 @@ async function main() {
         process.exit(code);
     }
 
+    if (args[0] === "auth") {
+        const { runAuthCommand } = await import("./auth-command.js");
+        const code = await runAuthCommand(args.slice(1), cwd);
+        process.exit(code);
+    }
+
     if (args[0] === "config" && args[1] === "show") {
         const { runConfigShowCommand } = await import("./config-show.js");
         process.exit(runConfigShowCommand(cwd));
@@ -377,6 +383,7 @@ async function main() {
         log.info(`  ${c.cmd("pizza setup")}                 Run first-time setup`);
         log.info(`  ${c.cmd("pizza usage")} ${c.dim("[provider]")}      Show API usage stats`);
         log.info(`  ${c.cmd("pizza models")}                List available models`);
+        log.info(`  ${c.cmd("pizza auth")} ${c.dim("[provider]")}       Log in to a model provider (headless-friendly)`);
         log.info(`  ${c.cmd("pizza plugins")} ${c.dim("[cmd]")}         Manage Claude Code plugins`);
         log.info(`  ${c.cmd("pizza install")} ${c.dim("<source>")}       Install a pi package (extensions, skills, prompts, themes)`);
         log.info(`  ${c.cmd("pizza remove")} ${c.dim("<source>")}        Remove an installed pi package`);
