@@ -77,13 +77,16 @@ export function GitRevExplorerBody({
     const [headHash, setHeadHash] = useState<string | null>(null);
     const [baseHash, setBaseHash] = useState<string | null>(null);
     const [files, setFiles] = useState<Array<{ status: string; path: string }>>([]);
+    const [selectedFile, setSelectedFile] = useState<string | null>(null);
     const [diff, setDiff] = useState("");
-    const [loading, setLoading] = useState(false);
+    const [logLoading, setLogLoading] = useState(false);
+    const [filesLoading, setFilesLoading] = useState(false);
+    const [diffLoading, setDiffLoading] = useState(false);
 
     // Load the log on mount.
     useEffect(() => {
         let cancelled = false;
-        setLoading(true);
+        setLogLoading(true);
         fetchLog()
             .then((entries) => {
                 if (cancelled) return;
@@ -94,7 +97,7 @@ export function GitRevExplorerBody({
                 }
             })
             .finally(() => {
-                if (!cancelled) setLoading(false);
+                if (!cancelled) setLogLoading(false);
             });
         return () => { cancelled = true; };
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -108,26 +111,34 @@ export function GitRevExplorerBody({
         return m;
     }, [entries]);
 
-    // Load files + diff for the current selection.
+    // Load the changed-files list for the current selection (fast — populates
+    // the middle pane independently of the potentially large diff).
     useEffect(() => {
         if (!headHash) return;
         let cancelled = false;
-        (async () => {
-            setLoading(true);
-            const [fileList, diffText] = await Promise.all([
-                fetchCommitFiles(headHash, baseHash ?? undefined),
-                baseHash
-                    ? fetchDiffRevs(baseHash, headHash)
-                    : fetchDiffRevs(headHash, `${headHash}^`),
-            ]);
-            if (cancelled) return;
-            setFiles(fileList);
-            setDiff(diffText);
-            setLoading(false);
-        })();
+        setFilesLoading(true);
+        setSelectedFile(null);
+        fetchCommitFiles(headHash, baseHash ?? undefined)
+            .then((fileList) => { if (!cancelled) setFiles(fileList); })
+            .finally(() => { if (!cancelled) setFilesLoading(false); });
         return () => { cancelled = true; };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [headHash, baseHash]);
+
+    // Load the diff separately, scoped to the selected file when one is picked.
+    // A single commit diffs against its parent (parent → commit); a range diffs
+    // base → head. Getting the direction right keeps additions green, not red.
+    useEffect(() => {
+        if (!headHash) return;
+        let cancelled = false;
+        setDiffLoading(true);
+        const base = baseHash ?? `${headHash}^`;
+        fetchDiffRevs(base, headHash, selectedFile ?? undefined)
+            .then((diffText) => { if (!cancelled) setDiff(diffText); })
+            .finally(() => { if (!cancelled) setDiffLoading(false); });
+        return () => { cancelled = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [headHash, baseHash, selectedFile]);
 
     // Clicking a commit: in compare mode, first click sets Base, second sets Head.
     const selectCommit = useCallback(
@@ -210,7 +221,7 @@ export function GitRevExplorerBody({
                     </button>
                 </div>
 
-                {loading && entries.length === 0 ? (
+                {logLoading && entries.length === 0 ? (
                     <div className="flex-1 flex items-center justify-center">
                         <Spinner className="size-5" />
                     </div>
@@ -254,19 +265,44 @@ export function GitRevExplorerBody({
                             </div>
                             <ScrollArea className="flex-1">
                                 <div className="py-1">
-                                    {files.length === 0 && !loading && (
+                                    {filesLoading && files.length === 0 && (
+                                        <div className="flex items-center justify-center py-4"><Spinner className="size-4" /></div>
+                                    )}
+                                    {!filesLoading && files.length === 0 && (
                                         <div className="px-3 py-4 text-xs text-muted-foreground text-center">
                                             No files changed
                                         </div>
                                     )}
+                                    {files.length > 0 && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setSelectedFile(null)}
+                                            className={cn(
+                                                "flex items-center gap-1.5 w-full px-3 py-1 text-left",
+                                                selectedFile === null ? "bg-accent/70 text-foreground" : "hover:bg-accent/30 text-muted-foreground",
+                                            )}
+                                        >
+                                            <FileText className="size-3 shrink-0" />
+                                            <span className="truncate flex-1 text-xs">All changes ({files.length})</span>
+                                        </button>
+                                    )}
                                     {files.map((f) => (
-                                        <div key={f.path} className="flex items-center gap-1.5 px-3 py-1 hover:bg-accent/30">
+                                        <button
+                                            key={f.path}
+                                            type="button"
+                                            onClick={() => setSelectedFile(f.path)}
+                                            className={cn(
+                                                "flex items-center gap-1.5 w-full px-3 py-1 text-left",
+                                                selectedFile === f.path ? "bg-accent/70" : "hover:bg-accent/30",
+                                            )}
+                                            title={f.path}
+                                        >
                                             <GitStatusIcon status={f.status} staged={false} className="size-3" />
-                                            <span className="truncate flex-1 text-xs font-mono text-foreground/80">{f.path}</span>
+                                            <span className="truncate flex-1 text-xs font-mono text-foreground/80">{f.path.split("/").pop()}</span>
                                             <span className="text-[0.6rem] font-semibold text-muted-foreground shrink-0">
                                                 {f.status.replace(/\d/g, "")}
                                             </span>
-                                        </div>
+                                        </button>
                                     ))}
                                 </div>
                             </ScrollArea>
@@ -274,13 +310,11 @@ export function GitRevExplorerBody({
 
                         {/* Right: diff */}
                         <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-muted/10">
-                            {files.length > 0 && (
-                                <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border/60 text-xs text-muted-foreground shrink-0">
-                                    <FileText className="size-3" />
-                                    <span className="truncate">{files[0].path}</span>
-                                </div>
-                            )}
-                            <GitDiffCode diff={diff} loading={loading} className="flex-1" />
+                            <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border/60 text-xs text-muted-foreground shrink-0">
+                                <FileText className="size-3 shrink-0" />
+                                <span className="truncate">{selectedFile ?? (baseHash ? "All changes in range" : "All changes in commit")}</span>
+                            </div>
+                            <GitDiffCode diff={diff} loading={diffLoading} className="flex-1" />
                         </div>
                     </div>
                 )}
