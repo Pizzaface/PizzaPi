@@ -113,20 +113,8 @@ mock.module("./GitStagingArea", () => ({
     GitStagingArea: () => <div data-testid="staging-area" />,
 }));
 
-mock.module("./GitCommitForm", () => ({
-    GitCommitForm: () => <div data-testid="commit-form" />,
-}));
-
 mock.module("./GitDiffView", () => ({
     GitDiffView: () => <div data-testid="diff-view" />,
-}));
-
-mock.module("./GitDiffModal", () => ({
-    GitDiffModal: () => <div data-testid="diff-modal" />,
-}));
-
-mock.module("./GitRevExplorer", () => ({
-    GitRevExplorer: () => <div data-testid="rev-explorer" />,
 }));
 
 mock.module("./GitWorktreeList", () => ({
@@ -144,7 +132,12 @@ const { GitPanel } = await import("./GitPanel");
 afterEach(() => {
     cleanup();
     gitState.operationInProgress = null;
+    gitState.lastOperationResult = null;
+    gitState.lastConflictType = null;
+    gitState.status.branch = "feature/test";
     gitState.status.changes = [];
+    gitState.branches = [];
+    gitState.log = [];
     document.body.innerHTML = "";
 });
 
