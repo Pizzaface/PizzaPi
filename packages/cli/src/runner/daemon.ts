@@ -11,6 +11,7 @@ import type { PizzaPiSocket } from "@pizzapi/extension-sdk";
 import { TerminalService } from "./services/terminal-service.js";
 import { FileExplorerService } from "./services/file-explorer-service.js";
 import { GitService, GIT_SIGIL_DEFS } from "./services/git-service.js";
+import { makeCommitMessageGenerator } from "./commit-message-generator.js";
 // Resolves @VARIABLE@ tokens used in service panel requires
 import { resolvePizzaPiVar } from "../config/io.js";
 import { mergeModelLists, readSessionModelsCache, type SessionModelEntry } from "../session-models-cache.js";
@@ -762,7 +763,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         if (isServiceDisabled("git")) {
             logInfo('[services] built-in service "git" disabled by config');
         } else {
-            registry.register(new GitService());
+            registry.register(new GitService({
+                generateCommitMessage: makeCommitMessageGenerator(resolveConfiguredAgentDir()).generate,
+            }));
         }
         if (isServiceDisabled("process")) {
             logInfo('[services] built-in service "process" disabled by config');

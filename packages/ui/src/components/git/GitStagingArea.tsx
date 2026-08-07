@@ -1,6 +1,13 @@
 import { useState } from "react";
 import { cn } from "@/lib/utils";
-import { Plus, Minus, Edit3, FileQuestion, HelpCircle, File, ChevronUp, ChevronDown, List, FolderTree } from "lucide-react";
+import { Plus, Minus, Edit3, FileQuestion, HelpCircle, File, ChevronUp, ChevronDown, List, FolderTree, MoreHorizontal, Copy, Trash2, Eye } from "lucide-react";
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import type { GitChange } from "@/hooks/useGitService";
 import { GitChangesTree } from "./GitChangesTree";
 
@@ -62,6 +69,7 @@ interface GitStagingAreaProps {
     onStageAll: () => void;
     onUnstage: (paths: string[]) => void;
     onUnstageAll: () => void;
+    onDiscard: (paths: string[]) => void;
     operationInProgress: string | null;
 }
 
@@ -74,6 +82,7 @@ export function GitStagingArea({
     onStageAll,
     onUnstage,
     onUnstageAll,
+    onDiscard,
     operationInProgress,
 }: GitStagingAreaProps) {
     const { staged, unstaged } = partitionChanges(changes);
@@ -142,6 +151,16 @@ export function GitStagingArea({
                                     <span className="truncate flex-1 font-mono text-xs text-foreground/80">{change.path}</span>
                                     <span className={cn("text-[0.6rem] flex-shrink-0", info.color)}>{change.status[0]}</span>
                                 </button>
+                                <RowMenu
+                                    path={change.path}
+                                    staged
+                                    isUntracked={false}
+                                    isBusy={isBusy}
+                                    onViewDiff={onViewDiff}
+                                    onStage={onStage}
+                                    onUnstage={onUnstage}
+                                    onDiscard={onDiscard}
+                                />
                             </div>
                         );
                     })}
@@ -195,6 +214,16 @@ export function GitStagingArea({
                                             <span className="truncate flex-1 font-mono text-xs text-foreground/80">{change.path}</span>
                                             <span className={cn("text-[0.6rem] flex-shrink-0", info.color)}>{displayStatus}</span>
                                         </button>
+                                        <RowMenu
+                                            path={change.path}
+                                            staged={false}
+                                            isUntracked={isUntracked}
+                                            isBusy={isBusy}
+                                            onViewDiff={onViewDiff}
+                                            onStage={onStage}
+                                            onUnstage={onUnstage}
+                                            onDiscard={onDiscard}
+                                        />
                                     </div>
                                 );
                             })}
@@ -229,5 +258,78 @@ export function GitStagingArea({
                 </button>
             </div>
         </div>
+    );
+}
+
+// ── Row context menu ────────────────────────────────────────────────────────
+
+function RowMenu({
+    path,
+    staged,
+    isUntracked,
+    isBusy,
+    onViewDiff,
+    onStage,
+    onUnstage,
+    onDiscard,
+}: {
+    path: string;
+    staged: boolean;
+    isUntracked: boolean;
+    isBusy: boolean;
+    onViewDiff: (path: string, staged?: boolean) => void;
+    onStage: (paths: string[]) => void;
+    onUnstage: (paths: string[]) => void;
+    onDiscard: (paths: string[]) => void;
+}) {
+    const handleDiscard = () => {
+        const label = isUntracked ? "Delete" : "Discard changes to";
+        const confirmed = window.confirm(`${label} ${path}? This cannot be undone.`);
+        if (confirmed) onDiscard([path]);
+    };
+    const handleCopy = () => {
+        try {
+            navigator.clipboard?.writeText(path);
+        } catch {
+            // clipboard may be unavailable
+        }
+    };
+    return (
+        <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+                <button
+                    type="button"
+                    disabled={isBusy}
+                    className="flex-shrink-0 p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50"
+                    title="File actions"
+                    aria-label={`Actions for ${path}`}
+                >
+                    <MoreHorizontal className="size-3" />
+                </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+                {!isUntracked && (
+                    <DropdownMenuItem onSelect={() => onViewDiff(path, staged)}>
+                        <Eye className="size-3.5" /> View Diff
+                    </DropdownMenuItem>
+                )}
+                {staged ? (
+                    <DropdownMenuItem onSelect={() => onUnstage([path])} disabled={isBusy}>
+                        <Minus className="size-3.5" /> Unstage
+                    </DropdownMenuItem>
+                ) : (
+                    <DropdownMenuItem onSelect={() => onStage([path])} disabled={isBusy}>
+                        <Plus className="size-3.5" /> Stage
+                    </DropdownMenuItem>
+                )}
+                <DropdownMenuItem onSelect={handleCopy}>
+                    <Copy className="size-3.5" /> Copy Path
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" onSelect={handleDiscard} disabled={isBusy}>
+                    <Trash2 className="size-3.5" /> {isUntracked ? "Delete file" : "Discard changes"}
+                </DropdownMenuItem>
+            </DropdownMenuContent>
+        </DropdownMenu>
     );
 }

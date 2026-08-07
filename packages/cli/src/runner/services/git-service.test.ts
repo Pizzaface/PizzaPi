@@ -1597,11 +1597,12 @@ describe("GitService log", () => {
         subject: string;
         body: string;
         refs: string;
+        parents?: string;
     }>) {
         return entries
             .map(
                 (e) =>
-                    `${e.hash}\0${e.shortHash}\0${e.author}\0${e.authorDate}\0${e.commitDate}\0${e.subject}\0${e.body}\0${e.refs}\0\0`,
+                    `${e.hash}\0${e.shortHash}\0${e.author}\0${e.authorDate}\0${e.commitDate}\0${e.subject}\0${e.body}\0${e.refs}\0${e.parents ?? ""}\0\0`,
             )
             .join("\n");
     }
@@ -1620,6 +1621,7 @@ describe("GitService log", () => {
                             subject: "Fix bug",
                             body: "More detail\nAnother body line",
                             refs: "HEAD -> main, tag: v1.0",
+                            parents: "def56789abcdef123456789abcdef123456789ab",
                         },
                         {
                             hash: "def56789abcdef123456789abcdef123456789ab",
@@ -1659,6 +1661,7 @@ describe("GitService log", () => {
             subject: "Fix bug",
             body: "More detail\nAnother body line",
             refs: ["main", "v1.0"],
+            parents: ["def56789abcdef123456789abcdef123456789ab"],
         });
         expect(payload.entries[1]).toMatchObject({
             hash: "def56789abcdef123456789abcdef123456789ab",
@@ -1913,5 +1916,295 @@ describe("GitService diff/blame", () => {
         });
         const r2 = await waitForResult(socket, "blame-bad-path", "git_blame_result");
         expect(r2.payload).toMatchObject({ ok: false, message: expect.stringContaining("Invalid path") });
+    });
+});
+
+describe("GitService commit message suggestion", () => {
+    test("derives a conventional-commit subject/body from the staged numstat", async () => {
+        const service = new GitService({
+            execGit: async (args) => {
+                if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "" };
+                if (args[0] === "diff" && args.includes("--numstat")) {
+                    return {
+                        stdout: "12\t2\tpackages/ui/src/components/git/GitPanel.tsx\n4\t0\tpackages/ui/src/components/git/GitPanel.test.tsx\n",
+                        stderr: "",
+                    };
+                }
+                if (args[0] === "diff" && args.includes("--name-only")) {
+                    return { stdout: "packages/ui/src/components/git/GitPanel.tsx\npackages/ui/src/components/git/GitPanel.test.tsx\n", stderr: "" };
+                }
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_commit_message_suggest",
+            requestId: "s1",
+            payload: { cwd: "/repo" },
+        });
+        const result = await waitForResult(socket, "s1", "git_commit_message_suggest_result");
+        const payload = result.payload as any;
+
+        expect(payload.ok).toBe(true);
+        expect(payload.type).toBe("feat");
+        expect(payload.scope).toBe("packages");
+        expect(payload.subject).toContain("feat(packages): add 2 files");
+        expect(payload.files).toHaveLength(2);
+        expect(payload.files[0]).toEqual({ path: "packages/ui/src/components/git/GitPanel.tsx", added: 12, deleted: 2 });
+    });
+
+    test("returns a safe fallback when there is nothing staged", async () => {
+        const service = new GitService({
+            execGit: async (args) => {
+                if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "" };
+                if (args[0] === "diff") return { stdout: "", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_commit_message_suggest",
+            requestId: "s2",
+            payload: { cwd: "/repo" },
+        });
+        const result = await waitForResult(socket, "s2", "git_commit_message_suggest_result");
+        const payload = result.payload as any;
+
+        expect(payload.ok).toBe(true);
+        expect(payload.subject).toBe("chore: staged changes");
+        expect(payload.files).toEqual([]);
+    });
+});
+
+describe("GitService commit files", () => {
+    test("lists files changed by a single commit (diff-tree name-status)", async () => {
+        const service = new GitService({
+            execGit: async (args) => {
+                if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "" };
+                if (args[0] === "diff-tree") {
+                    return {
+                        stdout: "M\tpackages/ui/src/a.ts\nA\tpackages/ui/src/b.ts\nD\tnotes.md\n",
+                        stderr: "",
+                    };
+                }
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, { serviceId: "git", type: "git_commit_files", requestId: "cf1", payload: { cwd: "/repo", revision: "abc1234" } });
+        const r = await waitForResult(socket, "cf1", "git_commit_files_result");
+        const payload = r.payload as any;
+        expect(payload.ok).toBe(true);
+        expect(payload.files).toEqual([
+            { status: "M", path: "packages/ui/src/a.ts" },
+            { status: "A", path: "packages/ui/src/b.ts" },
+            { status: "D", path: "notes.md" },
+        ]);
+    });
+
+    test("uses git diff --name-status for a base..revision range", async () => {
+        let usedRange = false;
+        const service = new GitService({
+            execGit: async (args) => {
+                if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "" };
+                if (args[0] === "diff") { usedRange = true; return { stdout: "M\tpackages/ui/src/a.ts\n", stderr: "" }; }
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, { serviceId: "git", type: "git_commit_files", requestId: "cf2", payload: { cwd: "/repo", revision: "abc1234", base: "main" } });
+        const r = await waitForResult(socket, "cf2", "git_commit_files_result");
+        const payload = r.payload as any;
+        expect(usedRange).toBe(true);
+        expect(payload.files).toEqual([{ status: "M", path: "packages/ui/src/a.ts" }]);
+    });
+
+    test("rejects a missing or flag-like revision", async () => {
+        const service = new GitService({ execGit: async () => { throw new Error("should not run"); } });
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, { serviceId: "git", type: "git_commit_files", requestId: "cf3", payload: { cwd: "/repo" } });
+        const r = await waitForResult(socket, "cf3", "git_commit_files_result");
+        const payload = r.payload as any;
+        expect(payload.ok).toBe(false);
+    });
+});
+
+describe("GitService discard", () => {
+    test("restores tracked files and deletes untracked files", async () => {
+        const removed: string[] = [];
+        const service = new GitService({
+            rm: async (p) => { removed.push(p); },
+            execGit: async (args) => {
+                if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "" };
+                if (args[0] === "status") {
+                    return { stdout: " M src/tracked.ts\0?? notes.md\0", stderr: "" };
+                }
+                if (args[0] === "restore") return { stdout: "", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_discard",
+            requestId: "d1",
+            payload: { cwd: "/repo", paths: ["src/tracked.ts", "notes.md"] },
+        });
+        const r = await waitForResult(socket, "d1", "git_discard_result");
+        const payload = r.payload as any;
+        expect(payload.ok).toBe(true);
+        // notes.md was untracked → deleted; tracked.ts → restored via git.
+        expect(removed.some((p) => p.endsWith("notes.md"))).toBe(true);
+        expect(removed.some((p) => p.includes("tracked.ts"))).toBe(false);
+    });
+
+    test("rejects no valid paths", async () => {
+        const service = new GitService({ execGit: async () => { throw new Error("should not run"); } });
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, { serviceId: "git", type: "git_discard", requestId: "d2", payload: { cwd: "/repo", paths: [] } });
+        const r = await waitForResult(socket, "d2", "git_discard_result");
+        const payload = r.payload as any;
+        expect(payload.ok).toBe(false);
+    });
+});
+
+describe("GitService commit message suggestion (model-backed)", () => {
+    test("uses the injected generateCommitMessage when it returns a subject", async () => {
+        const service = new GitService({
+            generateCommitMessage: async (diff) => {
+                expect(diff).toContain("index ");
+                return { subject: "feat(ui): model-written message", body: "- from model" };
+            },
+            execGit: async (args) => {
+                if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "" };
+                if (args[0] === "diff" && args.includes("--numstat")) {
+                    return { stdout: "1\t1\tsrc/a.ts\n", stderr: "" };
+                }
+                if (args[0] === "diff" && args.includes("--name-only")) {
+                    return { stdout: "src/a.ts\n", stderr: "" };
+                }
+                if (args[0] === "diff") return { stdout: "index abc..def 100644\n@@ -1 +1 @@\n-a\n+b\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_commit_message_suggest",
+            requestId: "sm1",
+            payload: { cwd: "/repo" },
+        });
+        const r = await waitForResult(socket, "sm1", "git_commit_message_suggest_result");
+        const payload = r.payload as any;
+        expect(payload.subject).toBe("feat(ui): model-written message");
+        expect(payload.body).toBe("- from model");
+    });
+
+    test("falls back to the heuristic when the model returns null", async () => {
+        const service = new GitService({
+            generateCommitMessage: async () => null,
+            execGit: async (args) => {
+                if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "" };
+                if (args[0] === "diff" && args.includes("--numstat")) return { stdout: "12\t2\tpackages/ui/src/a.ts\n", stderr: "" };
+                if (args[0] === "diff" && args.includes("--name-only")) return { stdout: "packages/ui/src/a.ts\n", stderr: "" };
+                if (args[0] === "diff") return { stdout: "", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_commit_message_suggest",
+            requestId: "sm2",
+            payload: { cwd: "/repo" },
+        });
+        const r = await waitForResult(socket, "sm2", "git_commit_message_suggest_result");
+        const payload = r.payload as any;
+        expect(payload.subject).toContain("feat(packages): add 1 file");
+    });
+});
+
+describe("GitService worktree add/prune", () => {
+    test("creates a new branch with a chosen base", async () => {
+        let usedArgs: string[] = [];
+        const service = new GitService({
+            execGit: async (args) => {
+                if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "" };
+                if (args[0] === "worktree" && args[1] === "add") { usedArgs = args; return { stdout: "", stderr: "" }; }
+                if (args[0] === "status") return { stdout: "", stderr: "" };
+                return { stdout: "", stderr: "" };
+            },
+        });
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git", type: "git_worktree_add", requestId: "wa1",
+            payload: { cwd: "/repo", branch: "feat/x", path: ".worktrees/x", base: "main", create: true },
+        });
+        const r = await waitForResult(socket, "wa1", "git_worktree_add_result");
+        expect((r.payload as any).ok).toBe(true);
+        expect(usedArgs).toEqual(["worktree", "add", "-b", "feat/x", "--", ".worktrees/x", "main"]);
+    });
+
+    test("checks out a remote branch into a new local tracking branch", async () => {
+        let usedArgs: string[] = [];
+        const service = new GitService({
+            execGit: async (args) => {
+                if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "" };
+                if (args[0] === "worktree" && args[1] === "add") { usedArgs = args; return { stdout: "", stderr: "" }; }
+                return { stdout: "", stderr: "" };
+            },
+        });
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git", type: "git_worktree_add", requestId: "wa2",
+            payload: { cwd: "/repo", branch: "origin/feature", path: ".worktrees/feature", isRemote: true },
+        });
+        const r = await waitForResult(socket, "wa2", "git_worktree_add_result");
+        expect((r.payload as any).branch).toBe("feature");
+        expect(usedArgs).toEqual(["worktree", "add", "-b", "feature", "--", ".worktrees/feature", "origin/feature"]);
+    });
+
+    test("prune runs git worktree prune", async () => {
+        let pruned = false;
+        const service = new GitService({
+            execGit: async (args) => {
+                if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "" };
+                if (args[0] === "worktree" && args[1] === "prune") { pruned = true; return { stdout: "Removing worktrees/x: gitdir file points to non-existent location\n", stderr: "" }; }
+                return { stdout: "", stderr: "" };
+            },
+        });
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, { serviceId: "git", type: "git_worktree_prune", requestId: "wp1", payload: { cwd: "/repo" } });
+        const r = await waitForResult(socket, "wp1", "git_worktree_prune_result");
+        expect(pruned).toBe(true);
+        expect((r.payload as any).ok).toBe(true);
     });
 });

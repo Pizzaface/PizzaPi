@@ -69,6 +69,20 @@ export interface GitLogEntry {
     subject: string;
     body: string;
     refs: string[];
+    parents: string[];
+}
+
+export interface GitCommitFile {
+    status: string;
+    path: string;
+}
+
+export interface GitCommitSuggestion {
+    subject: string;
+    body: string;
+    type: string;
+    scope: string;
+    files: Array<{ path: string; added: number; deleted: number }>;
 }
 
 export interface GitBlameLine {
@@ -123,6 +137,8 @@ export interface UseGitServiceReturn {
     fetchBranches: () => void;
     fetchLog: (path?: string, limit?: number, revisionRange?: string) => Promise<GitLogEntry[]>;
     fetchBlame: (path: string, revision?: string) => Promise<GitBlameLine[]>;
+    fetchCommitFiles: (revision: string, base?: string) => Promise<GitCommitFile[]>;
+    suggestCommitMessage: () => Promise<GitCommitSuggestion | null>;
     stashList: () => void;
     stashPush: (message?: string, includeUntracked?: boolean) => void;
     stashPop: (index?: number) => void;
@@ -133,6 +149,7 @@ export interface UseGitServiceReturn {
     stageAll: () => void;
     unstage: (paths: string[]) => void;
     unstageAll: () => void;
+    discard: (paths: string[]) => void;
     commit: (message: string) => void;
     push: (setUpstream?: boolean) => void;
     pull: (rebase?: boolean) => void;
@@ -142,8 +159,9 @@ export interface UseGitServiceReturn {
     rebase: (branch: string) => void;
     rebaseAbort: () => void;
     rebaseContinue: () => void;
-    addWorktree: (branch: string, path: string) => void;
+    addWorktree: (branch: string, path: string, opts?: { base?: string; create?: boolean; isRemote?: boolean }) => void;
     removeWorktree: (path: string, force?: boolean) => void;
+    pruneWorktrees: () => void;
     clearOperationResult: () => void;
 }
 
@@ -173,6 +191,10 @@ export function useGitService(cwd: string): UseGitServiceReturn {
     const pendingDiffRevTimeoutsRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
     const pendingBlamesRef = useRef(new Map<string, (lines: GitBlameLine[]) => void>());
     const pendingBlameTimeoutsRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+    const pendingSuggestionsRef = useRef(new Map<string, (s: GitCommitSuggestion | null) => void>());
+    const pendingSuggestionTimeoutsRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+    const pendingCommitFilesRef = useRef(new Map<string, (files: GitCommitFile[]) => void>());
+    const pendingCommitFilesTimeoutsRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
     const pendingFullStatusRequestRef = useRef<string | null>(null);
     const fullStatusFallbackTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
     const statusRequestRetireTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -318,6 +340,8 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         clearMap(pendingLogsRef.current, pendingLogTimeoutsRef.current, []);
         clearMap(pendingDiffRevsRef.current, pendingDiffRevTimeoutsRef.current, resolution);
         clearMap(pendingBlamesRef.current, pendingBlameTimeoutsRef.current, []);
+        clearMap(pendingSuggestionsRef.current, pendingSuggestionTimeoutsRef.current, null);
+        clearMap(pendingCommitFilesRef.current, pendingCommitFilesTimeoutsRef.current, []);
     }, []);
 
     const postMutationRefreshSchedulerRef = useRef(
@@ -482,6 +506,44 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                     }
                     break;
                 }
+                case "git_commit_message_suggest_result": {
+                    if (requestId && pendingSuggestionsRef.current.has(requestId)) {
+                        const timeoutId = pendingSuggestionTimeoutsRef.current.get(requestId);
+                        if (timeoutId) {
+                            clearTimeout(timeoutId);
+                            pendingSuggestionTimeoutsRef.current.delete(requestId);
+                        }
+                        requestGenerationRef.current.delete(requestId);
+                        const resolve = pendingSuggestionsRef.current.get(requestId)!;
+                        pendingSuggestionsRef.current.delete(requestId);
+                        resolve(
+                            payload.ok
+                                ? {
+                                    subject: (payload.subject as string) ?? "",
+                                    body: (payload.body as string) ?? "",
+                                    type: (payload.type as string) ?? "chore",
+                                    scope: (payload.scope as string) ?? "",
+                                    files: (payload.files as GitCommitSuggestion["files"]) ?? [],
+                                }
+                                : null,
+                        );
+                    }
+                    break;
+                }
+                case "git_commit_files_result": {
+                    if (requestId && pendingCommitFilesRef.current.has(requestId)) {
+                        const timeoutId = pendingCommitFilesTimeoutsRef.current.get(requestId);
+                        if (timeoutId) {
+                            clearTimeout(timeoutId);
+                            pendingCommitFilesTimeoutsRef.current.delete(requestId);
+                        }
+                        requestGenerationRef.current.delete(requestId);
+                        const resolve = pendingCommitFilesRef.current.get(requestId)!;
+                        pendingCommitFilesRef.current.delete(requestId);
+                        resolve(payload.ok ? ((payload.files as GitCommitFile[]) ?? []) : []);
+                    }
+                    break;
+                }
                 case "git_branches_result": {
                     if (!isRequestCurrentGeneration(requestId)) break;
                     if (payload.ok) {
@@ -518,7 +580,9 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                 case "git_rebase_abort_result":
                 case "git_rebase_continue_result":
                 case "git_worktree_add_result":
-                case "git_worktree_remove_result": {
+                case "git_worktree_remove_result":
+                case "git_worktree_prune_result":
+                case "git_discard_result": {
                     if (!isRequestCurrentGeneration(requestId)) break;
                     setOperationInProgress(null);
                     setLastOperationResult(payload as GitOperationResult);
@@ -709,6 +773,52 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         });
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
+    const fetchCommitFiles = useCallback((revision: string, base?: string): Promise<GitCommitFile[]> => {
+        return new Promise((resolve) => {
+            if (!available) {
+                resolve([]);
+                return;
+            }
+            const reqId = makeRequestId();
+            registerRequestGeneration(reqId);
+            pendingCommitFilesRef.current.set(reqId, resolve);
+            send("git_commit_files", { cwd, revision, base }, reqId);
+
+            const timeoutId = setTimeout(() => {
+                pendingCommitFilesTimeoutsRef.current.delete(reqId);
+                requestGenerationRef.current.delete(reqId);
+                if (pendingCommitFilesRef.current.has(reqId)) {
+                    pendingCommitFilesRef.current.delete(reqId);
+                    resolve([]);
+                }
+            }, 15000);
+            pendingCommitFilesTimeoutsRef.current.set(reqId, timeoutId);
+        });
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
+    const suggestCommitMessage = useCallback((): Promise<GitCommitSuggestion | null> => {
+        return new Promise((resolve) => {
+            if (!available) {
+                resolve(null);
+                return;
+            }
+            const reqId = makeRequestId();
+            registerRequestGeneration(reqId);
+            pendingSuggestionsRef.current.set(reqId, resolve);
+            send("git_commit_message_suggest", { cwd }, reqId);
+
+            const timeoutId = setTimeout(() => {
+                pendingSuggestionTimeoutsRef.current.delete(reqId);
+                requestGenerationRef.current.delete(reqId);
+                if (pendingSuggestionsRef.current.has(reqId)) {
+                    pendingSuggestionsRef.current.delete(reqId);
+                    resolve(null);
+                }
+            }, 15000);
+            pendingSuggestionTimeoutsRef.current.set(reqId, timeoutId);
+        });
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
     const stashList = useCallback(() => {
         if (!available) return;
         const requestId = makeRequestId();
@@ -828,6 +938,15 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         send("git_unstage", { cwd, all: true }, requestId);
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
+    const discard = useCallback((paths: string[]) => {
+        if (!available) return;
+        const requestId = makeRequestId();
+        registerRequestGeneration(requestId);
+        setOperationInProgress("discard");
+        setLastOperationResult(null);
+        send("git_discard", { cwd, paths }, requestId);
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
     const commit = useCallback((message: string) => {
         if (!available) return;
         const requestId = makeRequestId();
@@ -909,13 +1028,20 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         send("git_rebase_continue", { cwd }, requestId);
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
-    const addWorktree = useCallback((branch: string, path: string) => {
+    const addWorktree = useCallback((branch: string, path: string, opts?: { base?: string; create?: boolean; isRemote?: boolean }) => {
         if (!available || !branch || !path) return;
         const requestId = makeRequestId();
         registerRequestGeneration(requestId);
         setOperationInProgress("worktree-add");
         setLastOperationResult(null);
-        send("git_worktree_add", { cwd, branch, path }, requestId);
+        send("git_worktree_add", {
+            cwd,
+            branch,
+            path,
+            ...(opts?.base ? { base: opts.base } : {}),
+            ...(opts?.create ? { create: true } : {}),
+            ...(opts?.isRemote ? { isRemote: true } : {}),
+        }, requestId);
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
     const removeWorktree = useCallback((path: string, force = false) => {
@@ -925,6 +1051,15 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         setOperationInProgress("worktree-remove");
         setLastOperationResult(null);
         send("git_worktree_remove", { cwd, path, force }, requestId);
+    }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
+
+    const pruneWorktrees = useCallback(() => {
+        if (!available) return;
+        const requestId = makeRequestId();
+        registerRequestGeneration(requestId);
+        setOperationInProgress("worktree-prune");
+        setLastOperationResult(null);
+        send("git_worktree_prune", { cwd }, requestId);
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
     const clearOperationResult = useCallback(() => {
@@ -1001,6 +1136,8 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         fetchBranches,
         fetchLog,
         fetchBlame,
+        fetchCommitFiles,
+        suggestCommitMessage,
         fetchWorktrees,
         stashList,
         stashPush,
@@ -1012,6 +1149,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         stageAll,
         unstage,
         unstageAll,
+        discard,
         commit,
         push,
         pull,
@@ -1023,6 +1161,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         rebaseContinue,
         addWorktree,
         removeWorktree,
+        pruneWorktrees,
         clearOperationResult,
     };
 }

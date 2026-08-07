@@ -2,7 +2,8 @@
  * GitWorktreeList — interactive list of git worktrees.
  *
  * Shows each worktree's branch, path, change count, ahead/behind status.
- * Supports creating new worktrees and removing existing ones.
+ * Create via a dialog (no free-text prompts); per-row ⋯ menu for copy-path,
+ * open-as-session, and remove; list-level prune for stale entries.
  */
 import { useState, useEffect, useCallback } from "react";
 import { cn } from "@/lib/utils";
@@ -17,83 +18,106 @@ import {
     Star,
     Plus,
     Trash2,
+    MoreHorizontal,
+    Copy,
+    ExternalLink,
+    Brush,
 } from "lucide-react";
-import type { GitWorktree } from "@/hooks/useGitService";
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import type { GitWorktree, GitBranch as GitBranchType } from "@/hooks/useGitService";
+import { GitAddWorktreeDialog } from "./GitAddWorktreeDialog";
 
 interface GitWorktreeListProps {
     worktrees: GitWorktree[];
+    branches: GitBranchType[];
+    currentBranch: string;
     onOpen: () => void;
-    onAdd?: (branch: string, path: string) => void;
+    onOpenBranches: () => void;
+    onAdd?: (branch: string, path: string, opts?: { base?: string; create?: boolean; isRemote?: boolean }) => void;
     onRemove?: (path: string) => void;
+    onPrune?: () => void;
+    /** Open a worktree as its own session (spawns rooted at the worktree path). */
+    onOpenWorktree?: (path: string) => void;
     operationInProgress?: string | null;
     className?: string;
 }
 
-export function GitWorktreeList({ worktrees, onOpen, onAdd, onRemove, operationInProgress, className }: GitWorktreeListProps) {
+export function GitWorktreeList({
+    worktrees,
+    branches,
+    currentBranch,
+    onOpen,
+    onOpenBranches,
+    onAdd,
+    onRemove,
+    onPrune,
+    onOpenWorktree,
+    operationInProgress,
+    className,
+}: GitWorktreeListProps) {
     const [expanded, setExpanded] = useState(false);
+    const [addOpen, setAddOpen] = useState(false);
 
-    // Fetch worktrees when first expanded
     useEffect(() => {
-        if (expanded && worktrees.length === 0) {
-            onOpen();
-        }
+        if (expanded && worktrees.length === 0) onOpen();
     }, [expanded]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const isBusy = operationInProgress !== null;
 
-    const handleAdd = useCallback(() => {
-        if (!onAdd) return;
-        const branch = window.prompt("New worktree branch name:", "feat/");
-        if (!branch) return;
-        // Default path suggestion: .worktrees/<branch-name>
-        const branchSlug = branch.replace(/[\/]/g, "-").replace(/^[-]+|[-]+$/g, "");
-        const path = window.prompt("Worktree directory path:", `.worktrees/${branchSlug}`);
-        if (!path) return;
-        onAdd(branch, path);
-    }, [onAdd]);
+    const dialog = onAdd ? (
+        <GitAddWorktreeDialog
+            open={addOpen}
+            onOpenChange={setAddOpen}
+            branches={branches}
+            currentBranch={currentBranch}
+            onOpenBranches={onOpenBranches}
+            onCreate={onAdd}
+            isBusy={isBusy}
+        />
+    ) : null;
 
-    // Don't render if there's only one worktree (the main one) or none loaded yet while collapsed
+    // Collapsed state with only the main worktree: show the toggle + New button.
     if (!expanded && worktrees.length <= 1) {
-        // Still show the toggle if we haven't fetched yet
         return (
             <div className={cn("border-t border-border", className)}>
-                <button
-                    type="button"
-                    onClick={() => { setExpanded(true); onOpen(); }}
-                    className={cn(
-                        "flex items-center gap-1.5 w-full px-3 py-1.5 text-xs text-muted-foreground min-h-9",
-                        "hover:text-foreground hover:bg-muted/50 transition-colors",
-                    )}
-                >
-                    <FolderGit2 className="size-3.5 shrink-0" />
-                    <span>Worktrees</span>
-                    <ChevronRight className="size-3 ml-auto" />
-                </button>
-                {onAdd && (
+                <div className="flex items-center">
                     <button
                         type="button"
-                        onClick={handleAdd}
-                        disabled={isBusy}
-                        className={cn(
-                            "flex items-center justify-center gap-1.5 w-full px-3 py-1 text-xs text-muted-foreground/70 min-h-9",
-                            "hover:text-foreground hover:bg-muted/50 transition-colors disabled:opacity-50 border-t border-border/50",
-                        )}
+                        onClick={() => { setExpanded(true); onOpen(); }}
+                        className="flex items-center gap-1.5 flex-1 px-3 py-1.5 text-xs text-muted-foreground min-h-9 hover:text-foreground hover:bg-muted/50 transition-colors"
                     >
-                        <Plus className="size-3" />
-                        <span>New Worktree…</span>
+                        <FolderGit2 className="size-3.5 shrink-0" />
+                        <span>Worktrees</span>
+                        <ChevronRight className="size-3 ml-auto" />
                     </button>
-                )}
+                    {onAdd && (
+                        <button
+                            type="button"
+                            onClick={() => setAddOpen(true)}
+                            disabled={isBusy}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/50 disabled:opacity-50 border-l border-border/50 min-h-9"
+                            title="New worktree"
+                        >
+                            <Plus className="size-3" /> New
+                        </button>
+                    )}
+                </div>
+                {dialog}
             </div>
         );
     }
 
-    // Sort: main first, then alphabetical by branch
     const sorted = [...worktrees].sort((a, b) => {
         if (a.isMain && !b.isMain) return -1;
         if (!a.isMain && b.isMain) return 1;
         return a.branch.localeCompare(b.branch);
     });
-
     const totalChanges = worktrees.reduce((sum, w) => sum + w.changeCount, 0);
 
     return (
@@ -102,41 +126,35 @@ export function GitWorktreeList({ worktrees, onOpen, onAdd, onRemove, operationI
             <button
                 type="button"
                 onClick={() => setExpanded((v) => !v)}
-                className={cn(
-                    "flex items-center gap-1.5 w-full px-3 py-1.5 text-xs font-medium min-h-9",
-                    "text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors",
-                )}
+                className="flex items-center gap-1.5 w-full px-3 py-1.5 text-xs font-medium min-h-9 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
             >
                 {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
                 <FolderGit2 className="size-3.5" />
                 <span>Worktrees</span>
                 {worktrees.length > 1 && (
-                    <span className="ml-1 text-[0.6rem] text-muted-foreground/70">
-                        ({worktrees.length})
-                    </span>
+                    <span className="ml-1 text-[0.6rem] text-muted-foreground/70">({worktrees.length})</span>
                 )}
+                <span className="flex-1" />
                 {totalChanges > 0 && (
-                    <span className="ml-auto inline-flex items-center gap-0.5 text-[0.6rem] text-amber-500 dark:text-amber-400">
-                        <Edit3 className="size-2.5" />
-                        {totalChanges}
+                    <span className="inline-flex items-center gap-0.5 text-[0.6rem] text-amber-500 dark:text-amber-400 mr-1">
+                        <Edit3 className="size-2.5" /> {totalChanges}
                     </span>
                 )}
-                {totalChanges === 0 && <div className="flex-1" />}
                 {onAdd && (
-                    <Plus
-                        className={cn(
-                            "size-3 ml-auto hover:text-foreground transition-colors",
-                            totalChanges > 0 && "ml-1",
-                        )}
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            handleAdd();
-                        }}
-                    />
+                    <span
+                        role="button"
+                        tabIndex={0}
+                        className="inline-flex items-center justify-center size-5 rounded hover:bg-accent hover:text-foreground transition-colors"
+                        title="New worktree"
+                        onClick={(e) => { e.stopPropagation(); setAddOpen(true); }}
+                        onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); setAddOpen(true); } }}
+                    >
+                        <Plus className="size-3" />
+                    </span>
                 )}
             </button>
 
-            {/* Worktree list */}
+            {/* Worktree rows */}
             {expanded && (
                 <div className="pb-1">
                     {sorted.map((wt) => (
@@ -144,20 +162,41 @@ export function GitWorktreeList({ worktrees, onOpen, onAdd, onRemove, operationI
                             key={wt.path}
                             worktree={wt}
                             onRemove={onRemove}
+                            onOpenWorktree={onOpenWorktree}
                             isBusy={isBusy}
                         />
                     ))}
+                    {onPrune && (
+                        <button
+                            type="button"
+                            onClick={onPrune}
+                            disabled={isBusy}
+                            className="flex items-center gap-1.5 w-full px-3 py-1.5 mt-0.5 text-[0.65rem] text-muted-foreground/70 hover:text-foreground hover:bg-muted/50 disabled:opacity-50 transition-colors"
+                            title="Prune worktree metadata for directories that no longer exist"
+                        >
+                            <Brush className="size-3" /> Prune stale worktrees
+                        </button>
+                    )}
                 </div>
             )}
+            {dialog}
         </div>
     );
 }
 
 // ── Individual worktree row ─────────────────────────────────────────────────
 
-function WorktreeRow({ worktree: wt, onRemove, isBusy }: { worktree: GitWorktree; onRemove?: (path: string) => void; isBusy: boolean }) {
-    const [showActions, setShowActions] = useState(false);
-
+function WorktreeRow({
+    worktree: wt,
+    onRemove,
+    onOpenWorktree,
+    isBusy,
+}: {
+    worktree: GitWorktree;
+    onRemove?: (path: string) => void;
+    onOpenWorktree?: (path: string) => void;
+    isBusy: boolean;
+}) {
     const handleRemove = useCallback(() => {
         if (!onRemove || wt.isMain) return;
         const confirmed = window.confirm(
@@ -167,85 +206,82 @@ function WorktreeRow({ worktree: wt, onRemove, isBusy }: { worktree: GitWorktree
         onRemove(wt.path);
     }, [onRemove, wt]);
 
+    const handleCopy = useCallback(() => {
+        try { navigator.clipboard?.writeText(wt.path); } catch { /* clipboard unavailable */ }
+    }, [wt.path]);
+
+    const clean = wt.changeCount === 0 && wt.ahead === 0 && wt.behind === 0;
+
     return (
         <div
-            className={cn(
-                "grid grid-cols-1 @md:grid-cols-[1fr_auto_auto] gap-2 px-3 py-2 @md:py-1 mx-1 rounded text-xs",
-                "hover:bg-muted/60 transition-colors group",
-            )}
+            className="flex items-center gap-2 px-3 py-1.5 mx-1 rounded text-xs hover:bg-muted/60 transition-colors group"
             title={wt.path}
-            onMouseEnter={() => setShowActions(true)}
-            onMouseLeave={() => setShowActions(false)}
         >
-            {/* Branch / path */}
-            <div className="flex items-center gap-2 min-w-0">
-                <GitBranch className="size-3 shrink-0 text-muted-foreground" />
-                <div className="flex flex-col min-w-0">
-                    <div className="flex items-center gap-1.5">
-                        <span className={cn(
-                            "font-medium truncate",
-                            wt.isMain ? "text-foreground" : "text-foreground/90",
-                        )}>
-                            {wt.isDetached ? `(${wt.shortHash})` : wt.branch}
-                        </span>
-                        {wt.isMain && (
-                            <Star className="size-2.5 shrink-0 text-amber-500 dark:text-amber-400 fill-current" />
-                        )}
-                    </div>
-                    <span className="text-[0.6rem] text-muted-foreground/70 truncate">
-                        {wt.isMain ? "(main worktree)" : wt.displayPath}
+            <GitBranch className={cn("size-3 shrink-0", wt.isMain ? "text-amber-500 dark:text-amber-400" : "text-muted-foreground")} />
+            <div className="flex flex-col min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 min-w-0">
+                    <span className={cn("font-medium truncate", wt.isMain ? "text-foreground" : "text-foreground/90")}>
+                        {wt.isDetached ? `(${wt.shortHash})` : wt.branch}
                     </span>
+                    {wt.isMain && <Star className="size-2.5 shrink-0 text-amber-500 dark:text-amber-400 fill-current" />}
                 </div>
+                <span className="text-[0.6rem] text-muted-foreground/70 truncate">
+                    {wt.isMain ? "main worktree" : wt.displayPath}
+                </span>
             </div>
 
-            {/* Badges: changes, ahead, behind */}
-            <div className="flex items-center gap-1.5 min-w-0 @md:justify-end">
+            {/* Status badges */}
+            <div className="flex items-center gap-1.5 shrink-0">
                 {wt.changeCount > 0 && (
-                    <span
-                        className="inline-flex items-center gap-0.5 text-[0.6rem] text-amber-500 dark:text-amber-400"
-                        title={`${wt.changeCount} change(s)`}
-                    >
-                        <Edit3 className="size-2.5" />
-                        {wt.changeCount}
+                    <span className="inline-flex items-center gap-0.5 text-[0.6rem] text-amber-500 dark:text-amber-400" title={`${wt.changeCount} change(s)`}>
+                        <Edit3 className="size-2.5" /> {wt.changeCount}
                     </span>
                 )}
                 {wt.ahead > 0 && (
-                    <span
-                        className="inline-flex items-center gap-0.5 text-[0.6rem] text-green-600 dark:text-green-400"
-                        title={`${wt.ahead} ahead`}
-                    >
-                        <ArrowUp className="size-2.5" />
-                        {wt.ahead}
+                    <span className="inline-flex items-center gap-0.5 text-[0.6rem] text-green-600 dark:text-green-400" title={`${wt.ahead} ahead`}>
+                        <ArrowUp className="size-2.5" /> {wt.ahead}
                     </span>
                 )}
                 {wt.behind > 0 && (
-                    <span
-                        className="inline-flex items-center gap-0.5 text-[0.6rem] text-amber-500 dark:text-amber-400"
-                        title={`${wt.behind} behind`}
-                    >
-                        <ArrowDown className="size-2.5" />
-                        {wt.behind}
+                    <span className="inline-flex items-center gap-0.5 text-[0.6rem] text-amber-500 dark:text-amber-400" title={`${wt.behind} behind`}>
+                        <ArrowDown className="size-2.5" /> {wt.behind}
                     </span>
                 )}
-                {wt.changeCount === 0 && wt.ahead === 0 && wt.behind === 0 && (
-                    <span className="text-[0.6rem] text-muted-foreground/50">clean</span>
-                )}
+                {clean && <span className="text-[0.6rem] text-muted-foreground/50">clean</span>}
             </div>
 
-            {/* Actions: remove */}
-            {showActions && !wt.isMain && onRemove && (
-                <div className="flex items-center gap-1 min-w-0 @md:justify-end opacity-100 transition-opacity @md:opacity-0 @md:group-hover:opacity-100">
+            {/* Actions menu */}
+            <DropdownMenu>
+                <DropdownMenuTrigger asChild>
                     <button
                         type="button"
-                        onClick={handleRemove}
                         disabled={isBusy}
-                        className="inline-flex items-center justify-center min-h-9 p-0.5 rounded text-muted-foreground/60 hover:text-red-500 dark:hover:text-red-400 transition-colors disabled:opacity-50"
-                        title={`Remove worktree ${wt.branch}`}
+                        className="shrink-0 p-0.5 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent disabled:opacity-50 opacity-100 @md:opacity-0 @md:group-hover:opacity-100 transition-opacity"
+                        title={`Actions for ${wt.branch}`}
+                        aria-label={`Actions for ${wt.branch}`}
                     >
-                        <Trash2 className="size-3" />
+                        <MoreHorizontal className="size-3.5" />
                     </button>
-                </div>
-            )}
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-48">
+                    {onOpenWorktree && (
+                        <DropdownMenuItem onSelect={() => onOpenWorktree(wt.path)}>
+                            <ExternalLink className="size-3.5" /> Open as session
+                        </DropdownMenuItem>
+                    )}
+                    <DropdownMenuItem onSelect={handleCopy}>
+                        <Copy className="size-3.5" /> Copy path
+                    </DropdownMenuItem>
+                    {!wt.isMain && onRemove && (
+                        <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem variant="destructive" onSelect={handleRemove} disabled={isBusy}>
+                                <Trash2 className="size-3.5" /> Remove worktree
+                            </DropdownMenuItem>
+                        </>
+                    )}
+                </DropdownMenuContent>
+            </DropdownMenu>
         </div>
     );
 }

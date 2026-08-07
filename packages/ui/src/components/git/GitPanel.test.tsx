@@ -113,28 +113,12 @@ mock.module("./GitStagingArea", () => ({
     GitStagingArea: () => <div data-testid="staging-area" />,
 }));
 
-mock.module("./GitCommitForm", () => ({
-    GitCommitForm: () => <div data-testid="commit-form" />,
-}));
-
 mock.module("./GitDiffView", () => ({
     GitDiffView: () => <div data-testid="diff-view" />,
 }));
 
-mock.module("./GitWorktreeList", () => ({
-    GitWorktreeList: () => <div data-testid="worktree-list" />,
-}));
-
 mock.module("./GitStashList", () => ({
     GitStashList: () => <div data-testid="stash-list" />,
-}));
-
-mock.module("./GitHistoryView", () => ({
-    GitHistoryView: () => <div data-testid="history-view" />,
-}));
-
-mock.module("./GitDiffRevsView", () => ({
-    GitDiffRevsView: () => <div data-testid="diff-revs-view" />,
 }));
 
 afterAll(() => mock.restore());
@@ -144,7 +128,12 @@ const { GitPanel } = await import("./GitPanel");
 afterEach(() => {
     cleanup();
     gitState.operationInProgress = null;
+    gitState.lastOperationResult = null;
+    gitState.lastConflictType = null;
+    gitState.status.branch = "feature/test";
     gitState.status.changes = [];
+    gitState.branches = [];
+    gitState.log = [];
     document.body.innerHTML = "";
 });
 
@@ -152,12 +141,12 @@ describe("GitPanel", () => {
     test("disables branch selector and sync controls while any mutation is running", () => {
         gitState.operationInProgress = "commit";
 
-        const { getByTestId, getByText } = render(<GitPanel cwd="/repo" />);
+        const { getByTestId, getByText, getByTitle } = render(<GitPanel cwd="/repo" />);
 
         expect(getByTestId("branch-selector").getAttribute("data-disabled")).toBe("true");
         expect((getByText("Pull").closest("button") as HTMLButtonElement).disabled).toBe(true);
         expect((getByText("Push").closest("button") as HTMLButtonElement).disabled).toBe(true);
-        expect((getByText("Sync").closest("button") as HTMLButtonElement).disabled).toBe(true);
+        expect((getByTitle("Sync options") as HTMLButtonElement).disabled).toBe(true);
     });
 
     test("shows rebase conflict resolution bar when last operation returned a conflict", () => {
