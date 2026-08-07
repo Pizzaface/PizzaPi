@@ -1,455 +1,201 @@
 ---
 name: creating-runner-services
-description: Use when building a new runner service — background processes with optional UI panels, custom triggers agents can subscribe to, sigils that render inline references in the UI, or lifecycle-aware context injection into agent turns
+description: Use when building a runner service — a daemon background process that ships inside a pi package (pi.pizzapi.services), exposes a UI panel, advertises triggers agents subscribe to, or defines sigils the UI renders inline. Covers panels, triggers, sigils, connectivity bridges, trust grants, and graceful degradation.
 ---
 
 # Creating Runner Services
 
-Runner services are background processes on the runner daemon. Pick the right API for your needs:
+A runner service is a background process on the runner daemon. It can expose an
+interactive **UI panel** in the web interface, advertise **custom triggers**
+agent sessions subscribe to, and define **sigils** the UI renders as `[[type:id]]`
+inline tokens.
 
-| API | Directory | Use when |
-|-----|-----------|----------|
-| **ExtensionProvider** | `~/.pizzapi/providers/` | You need lifecycle hooks (session start/end, turn end), context injection into the LLM's system prompt, or session metadata attachment. Preferred for new services. |
-| **ServiceHandler** | `~/.pizzapi/services/` | You only need a panel, triggers, or sigils — no lifecycle awareness. Simpler, less boilerplate for panel-only services. |
+**A service loads exactly one way: inside a pi package that declares it under
+`pi.pizzapi.services`, granted daemon-service trust.** There is no loose-file
+discovery — no `~/.pizzapi/services/` directory, no `manifest.json`, and the old
+`ExtensionProvider` / `~/.pizzapi/providers/` API is gone. Service code runs on
+the daemon, outside any session sandbox, so it needs an explicit trust grant that
+a package install can carry and a loose file cannot.
 
----
-
-# ExtensionProvider API (Recommended)
-
-The `ExtensionProvider` interface gives services direct access to:
-
-- **Context injection** — inject text into the LLM's system prompt before each turn
-- **Lifecycle hooks** — react to session_start, turn_end, session_shutdown, session_close
-- **UI extension** — sidebar widgets, metadata cards, and panels visible in the web UI
-- **Session metadata** — attach typed metadata to session records
-
-## Folder Structure
-
-```
-~/.pizzapi/providers/<provider-id>/
-  index.ts            # ExtensionProvider module (default export)
-  panel/              # Optional — static panel assets (HTML/CSS/JS)
-```
-
-## ExtensionProvider Template
-
-```typescript
-import type { ExtensionProvider, ProviderInitContext, ProviderContext } from "@pizzapi/cli/providers/types";
-
-class MyProvider implements ExtensionProvider {
-  id = "my-provider";
-  capabilities = ["context", "lifecycle", "ui-panel", "metadata"] as const;
-
-  // ── Core Lifecycle ────────────────────────────────────────
-
-  init(ctx: ProviderInitContext) {
-    // ctx.config — per-provider config from config.json
-    // ctx.fireTrigger(sessionId, type, payload) — fire triggers
-    // ctx.publishMetadata(sessionId, metadata) — push metadata to UI
-    // ctx.socket — relay socket for custom protocols
-  }
-
-  dispose() {
-    // Cleanup
-  }
-
-  // ── Context Injection ─────────────────────────────────────
-
-  async onBeforeAgentStart(event, ctx) {
-    // Search your DB for relevant context based on event.prompt
-    return [
-      {
-        text: "Memory: use pnpm, not npm",
-        placement: "prepend",        // "prepend" | "append"
-        order: 50,                   // Lower = sorted first (default 100)
-        dedupeKey: "pkg-mgr",        // Same key + providerId = dedup
-        summary: "Package manager preference",
-        referencedArtifacts: [{
-          id: "mem-123",
-          type: "memory",
-          label: "Use pnpm"
-        }],
-      },
-    ];
-  }
-
-  // ── Lifecycle Hooks ───────────────────────────────────────
-
-  async onSessionStart(event, ctx) {
-    // event.reason — "startup" | "reload" | "new" | "resume" | "fork"
-    // event.model  — { provider, id, name } | undefined  (model active at session start)
-    // Use event.model to gate provider behavior on the current model
-    // Rehydrate session state, load pending jobs
-  }
-
-  async onTurnEnd(event, ctx) {
-    // event.turnIndex, event.message, event.toolResults
-    // Incremental indexing — scan messages for signals
-  }
-
-  async onSessionShutdown(event, ctx) {
-    // event.reason — "quit" | "reload" | "new" | "resume" | "fork"
-    // Flush pending writes
-  }
-
-  async onSessionClose(event, ctx) {
-    // event.reason — "close" | "error" | "complete"
-    // Best-effort final flush before archival
-    return { label: "Finalizing memory…", jobRef: { jobId: "123" } };
-  }
-
-  // ── UI Extension ──────────────────────────────────────────
-
-  get panel() {
-    return { dir: "./panel", requires: ["SESSION_ID", "PROJECT_DIR"] };
-  }
-
-  get sidebarWidgets() {
-    return [{
-      id: "my-timeline",
-      label: "Recent Activity",
-      source: { type: "html", dir: "./widgets/timeline" },
-    }];
-  }
-
-  get sessionMetadataCards() {
-    return [{
-      id: "my-stats",
-      label: "Provider Stats",
-      source: { type: "api", endpoint: "./api/stats" },
-    }];
-  }
-
-  // ── Session Metadata ──────────────────────────────────────
-
-  async getSessionMetadata(sessionId, ctx) {
-    return {
-      activeDirectives: 3,
-      recentMemories: ["Use pnpm", "Write tests first"],
-    };
-  }
-}
-
-export default MyProvider;
-```
-
-## Capability Interfaces
-
-A provider implements capability interfaces by duck-typing. PizzaPi discovers what a provider supports by checking its method signatures. Declare which capabilities you implement in the `capabilities` array:
-
-| Capability | Key methods/properties |
-|-----------|----------------------|
-| `"context"` | `onBeforeAgentStart(event, ctx)` → `ContextContribution[]` |
-| `"lifecycle"` | `onSessionStart`, `onTurnEnd`, `onSessionClose`, `onSessionShutdown` |
-| `"ui-panel"` | `panel`, `sidebarWidgets`, `sessionMetadataCards` |
-| `"metadata"` | `getSessionMetadata(sessionId, ctx)` → `Record<string, unknown>` |
-
-## Provider Configuration
-
-Providers can be configured in `~/.pizzapi/config.json`:
-
-```json
-{
-  "providers": {
-    "my-provider": {
-      "enabled": true,
-      "dbPath": "/custom/path/to/db.sqlite"
-    }
-  }
-}
-```
-
-The config object is passed to `ProviderInitContext.config` during `init()`. Set `"enabled": false` to disable a provider.
-
-**Trust gate:** Project-local providers (`.pizzapi/providers/`) are disabled by default. Set `"allowProjectProviders": true` in `config.json` to enable them for a specific project.
-
-## ProviderContext Fields
-
-Every hook method receives `ProviderContext`:
-
-| Field | Description |
-|-------|-------------|
-| `signal` | `AbortSignal` — respect this to cancel work |
-| `timeoutMs` | Timeout budget for this hook (default 5000ms) |
-| `sessionId` | Current session ID |
-| `sessionFile` | Path to session JSONL file |
-| `cwd` | Working directory |
-| `promptId` | Stable across all turns of one user prompt (turn-scoped only) |
-| `turnId` | Incrementing turn index within the current prompt |
-| `isFirstTurn` | `true` only for turn 0 |
-
-## Error Isolation
-
-PizzaPi catches provider errors and continues without the failing provider's contribution. After 3 consecutive errors, a provider is temporarily disabled for the remainder of the session. Errors are logged and surfaced in the provider's panel.
-
-## SessionStart Model Information
-
-`onSessionStart` now receives the active model in the event payload. This lets providers and hooks gate behavior on the model at session start — for example, adjusting context injection strategy per-model.
-
-```typescript
-async onSessionStart(event, ctx) {
-  // event.model — { provider: string; id: string; name: string } | undefined
-  // undefined only during very early startup before model resolution
-  console.log(`Session started with model: ${event.model?.id ?? 'unknown'}`);
-}
-```
-
-The same model information is also available to **native hooks** via the `SessionStart` hook:
-
-```json
-// ~/.pizzapi/config.json
-{
-  "hooks": {
-    "SessionStart": [{
-      "command": "echo $PIZZAPI_MODEL_ID > /tmp/session-model.txt"
-    }]
-  }
-}
-```
-
-Hook scripts receive JSON on stdin:
-
-```json
-{
-  "event": "SessionStart",
-  "reason": "startup",
-  "previous_session_file": null,
-  "session_id": "abc123",
-  "model": { "provider": "anthropic", "id": "claude-sonnet-4-20250514", "name": "Claude 4 Sonnet" }
-}
-```
-
-When no model is available yet, `model` is `null`. This is a fire-and-forget hook — exit codes are ignored.
+> **Authoritative docs** (keep in sync when you change behavior):
+> `packages/docs/src/content/docs/customization/runner-services.mdx` and
+> `.../overlay-packages.mdx`. This skill is the practical distillation.
 
 ---
 
-# ServiceHandler API (Legacy)
+## Mental model
 
-Use the `ServiceHandler` interface for simple services that only need a panel, triggers, or sigils — no lifecycle awareness.
+```
+pi package (package.json → pi.pizzapi.services[])
+  └─ granted daemon-service trust (overlayServiceGrants in ~/.pizzapi/config.json)
+       └─ daemon discoverPackageServices() → imports entry → registry.init()
+            ├─ panel HTTP server        → announcePanel(port)   → UI iframe
+            ├─ sigil-only HTTP server   → announceSigilServer(port)
+            ├─ triggers[] + sigils[]    → service_announce → agents/UI discover
+            └─ fires triggers           → POST /api/runners/{id}/trigger-broadcast
+```
 
-## manifest.json
+Rules the loader enforces:
+- **User-scope only.** Project-scope packages install but their services stay
+  inactive in schema v1 (one global registry can't safely run one project's code
+  for unrelated sessions).
+- **Built-in ids are reserved** and always win a collision: `terminal`,
+  `file-explorer`, `git`, `memory`, `process`, `time`, `tunnel`.
+- **First package to claim an id wins**; later claimants are skipped with a warning.
+- **The handler's runtime `id` must equal the declared `id`**, or the service is
+  rejected. Trigger types must be namespaced by the service id (`my-service:thing`)
+  — the daemon routes on `type.split(":")[0]`, so an unnamespaced trigger is dropped.
+
+---
+
+## Quick start
+
+```bash
+mkdir -p ~/my-service/service/panel && cd ~/my-service
+```
+
+`package.json` — everything PizzaPi-specific lives under `pi.pizzapi`:
 
 ```json
 {
-  "id": "my-service",
-  "label": "My Service",
-  "icon": "activity",
-  "entry": "./index.ts",
-  "panel": {
-    "dir": "./panel",
-    "requires": ["PROJECT_DIR", "SESSION_ID"]
-  },
-  "triggers": [
-    {
-      "type": "my-service:something_happened",
-      "label": "Something Happened",
-      "description": "Emitted when something noteworthy occurs",
-      "schema": {
-        "type": "object",
-        "properties": {
-          "itemId": { "type": "string" },
-          "timestamp": { "type": "number" }
-        }
-      },
-      "params": [
+  "name": "@me/my-service",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "pizzapi": {
+      "schemaVersion": 1,
+      "services": [
         {
-          "name": "itemId",
-          "label": "Item ID",
-          "type": "string",
-          "description": "Only receive events for this specific item",
-          "required": false
+          "id": "my-service",
+          "label": "My Service",
+          "icon": "activity",
+          "entry": "./service/index.ts",
+          "panel": { "dir": "./service/panel" },
+          "triggers": [
+            {
+              "type": "my-service:something_happened",
+              "label": "Something Happened",
+              "description": "Emitted when something noteworthy occurs"
+            }
+          ]
         }
       ]
     }
-  ],
-  "sigils": [
-    {
-      "type": "item",
-      "label": "Item",
-      "description": "Reference an item from My Service",
-      "resolve": "/api/resolve/item/{id}"
-    }
-  ]
+  }
 }
 ```
+
+```bash
+pizza install ~/my-service --allow-daemon-services   # install + grant in one step
+# restart the runner — grants apply on daemon start
+pizza list                                            # verify: services:[my-service:granted]
+grep "loaded package service" ~/.pizzapi/logs/runner.log
+```
+
+Install without the grant to defer trust, then grant later:
+
+```bash
+pizza install ~/my-service --no-allow-daemon-services
+pizza config grant  ~/my-service              # grant every declared service
+pizza config grant  ~/my-service my-service   # grant one service by id
+pizza config revoke ~/my-service my-service
+```
+
+Agents, rules, skills and MCP servers in the package still load without the
+grant — only the daemon services stay inactive until trusted.
+
+---
+
+## Folder structure
+
+```
+my-service/
+  package.json          # the pi.pizzapi.services declaration
+  service/
+    index.ts            # ServiceHandler (default export)
+    triggers.json       # optional — see Split files
+    sigils.json         # optional
+    panel/
+      index.html        # self-contained HTML/CSS/JS
+```
+
+Layout is up to you — only the paths named in the declaration matter, and they
+are confined to the package root.
+
+---
+
+## Service declaration fields
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `id` | Yes | | Unique service ID (must match `ServiceHandler.id`) |
-| `label` | Yes | | Button label shown in the PizzaPi header bar |
-| `icon` | No | `"square"` | [Lucide](https://lucide.dev/icons) icon name (kebab-case) |
-| `entry` | No | `./index.ts` | Service module path relative to folder |
-| `panel.dir` | No | `./panel` | Panel static files directory (omit if no panel) |
-| `panel.requires` | No | `[]` | Variable names the panel needs resolved as query params (e.g. `["PROJECT_DIR", "SESSION_ID"]`) |
-| `triggers` | No | `[]` | Array of trigger type definitions (see below). Can also live in `triggers.json`. |
-| `sigils` | No | `[]` | Array of sigil type definitions (see below). Can also live in `sigils.json`. |
+| `id` | Yes | — | Unique id; must match `ServiceHandler.id`; cannot collide with a built-in |
+| `label` | Yes | — | Button label in the header bar |
+| `icon` | No | `"square"` | [Lucide](https://lucide.dev/icons) icon name, kebab-case |
+| `entry` | No | `"./index.ts"` | Service module path, relative to package root |
+| `panel.dir` | No | — | Panel static-files directory (omit for no panel) |
+| `panel.requires` | No | `[]` | Vars resolved and passed to the panel iframe as query params. One or more of `PWD`, `SESSION_ID`, `HOME`, `USER`, `PROJECT_DIR` |
+| `triggers` | No | `[]` | Inline `ServiceTriggerDef[]` **or** a path to a JSON file |
+| `sigils` | No | `[]` | Inline `ServiceSigilDef[]` **or** a path to a JSON file |
 
-### Variable Substitution
+### Split files
 
-The `entry` and `panel.dir` fields support `@VARIABLE@` tokens that are expanded at load time. This lets services reference paths relative to the session, project, or home directory without hardcoding absolute paths.
-
-Additionally, `panel.requires` declares which variables the panel needs at **runtime**. The daemon resolves these values and passes them as query parameters to the panel's iframe URL (e.g., `?projectDir=/path&sessionId=abc`). This is the recommended way to pass session context to panels — prefer it over `@VARIABLE@` in static file paths when the value changes per session.
-
-| Variable | Resolves to |
-|----------|-------------|
-| `@PWD@` | Current working directory |
-| `@SESSION_ID@` | Current session ID (`PIZZAPI_SESSION_ID` env var) |
-| `@HOME@` | User home directory (`$HOME`) |
-| `@USER@` | Current username (`$USER`) |
-| `@PROJECT_DIR@` | Project directory (`PIZZAPI_PROJECT_DIR` env var, falls back to cwd) |
-
-**Example — project-relative entry point:**
+For large lists, point `triggers`/`sigils` at their own files instead of inlining:
 
 ```json
-{
-  "id": "project-watcher",
-  "label": "Project Watcher",
-  "entry": "@PROJECT_DIR@/scripts/watcher.ts",
-  "panel": {
-    "dir": "@HOME@/.pizzapi/services/project-watcher/panel"
-  }
+{ "triggers": "./service/triggers.json", "sigils": "./service/sigils.json" }
+```
+
+Each file is a bare array or `{ "triggers": [...] }` / `{ "sigils": [...] }`.
+
+---
+
+## The ServiceHandler
+
+The `entry` module must default-export a handler matching this contract (from
+`@pizzapi/extension-sdk`):
+
+```ts
+interface ServiceHandler {
+  readonly id: string;
+  init(socket: PizzaPiSocket, options: ServiceInitOptions): void;
+  dispose(): void;
+  handleSessionEnded?(sessionId: string): void;                 // per-session state cleanup
+  reconcileSubscriptions?(subs, opts?): ReconcileResult;        // per-subscription state rebuild
+}
+
+interface ServiceInitOptions {
+  isShuttingDown(): boolean;
+  announcePanel?(port: number): void;        // provided only if the declaration has a panel
+  announceSigilServer?(port: number): void;  // for sigil resolve with NO panel
 }
 ```
 
-Unknown variables are left as-is (not replaced). These same variables are available across MCP server configs and hooks as well.
+- `init` runs once at daemon startup. Socket.IO reconnects reuse the same socket,
+  so listeners stay attached across transient reconnects.
+- `dispose` must release **everything** — HTTP servers, listeners, child
+  processes, timers — or ports leak after the service is disabled or removed.
+- `handleSessionEnded` — implement if you hold per-session state (processes,
+  buffers, bindings, temp files).
+- `reconcileSubscriptions` — implement if you hold per-subscription runtime state
+  (timers, watchers). Called after runner reconnect with a `snapshot`, and on
+  individual `delta` changes.
 
-### Trigger Definitions
+> `@pizzapi/extension-sdk` is the authoring contract. It's **not published to npm
+> yet** — this doesn't block you: the overlay is plain JSON and the handler only
+> has to match the structural interface. Import the types for checking when you
+> can; match by hand until it ships.
 
-Each entry in `triggers` declares a trigger type this service can emit:
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `type` | Yes | Namespaced trigger type, e.g. `"my-service:event_name"` |
-| `label` | Yes | Human-readable label for the UI and agent tools |
-| `description` | No | When/why this trigger fires |
-| `schema` | No | JSON Schema describing the trigger payload |
-| `params` | No | Array of configurable parameters for subscriber filtering (see below) |
-
-### Trigger Parameters
-
-Triggers can declare **params** — configurable values that subscribers provide when subscribing. At broadcast time, delivery is filtered: a subscriber only receives the trigger if every param they specified matches the corresponding field in the trigger payload. Subscribers with no params receive all events (wildcard).
-
-Each entry in `params`:
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `name` | Yes | Parameter name — must match a key in the trigger payload |
-| `label` | Yes | Human-readable label for the UI |
-| `type` | No | Value type: `"string"` (default), `"number"`, `"boolean"`, or `"json"` |
-| `description` | No | Help text for the subscriber |
-| `required` | No | If `true`, subscriber must provide this param |
-| `default` | No | Default value if not provided |
-| `enum` | No | Array of allowed values — renders as a dropdown in the UI |
-| `multiselect` | No | If `true` (requires `enum`), subscriber can pick multiple values. Subscribers send an actual JSON array, the UI renders selected values as chips, and delivery matches if the payload value is **in** the selected set (OR semantics). |
-+
-+Use `type: "json"` when the subscription param should carry an arbitrary JSON value such as an object or array. The UI renders a JSON textarea for these params and forwards the parsed value to the service unchanged.
-
-**Example — scalar param with enum:**
-
-```json
-{
-  "type": "github:pr_comment_added",
-  "label": "PR Comment Added",
-  "params": [
-    { "name": "prNumber", "label": "PR Number", "type": "number", "required": true },
-    { "name": "repo", "label": "Repository", "type": "string", "enum": ["pizzapi", "pi-mono", "docs"] }
-  ]
-}
-```
-
-An agent subscribes with: `subscribe_trigger(triggerType: "github:pr_comment_added", params: { prNumber: 42, repo: "pizzapi" })`
-
-Only events with `prNumber: 42` **and** `repo: "pizzapi"` in their payload are delivered.
-
-**Example — JSON param:**
-
-```json
-{
-  "type": "review:requested",
-  "label": "Review Requested",
-  "params": [
-    { "name": "config", "label": "Config", "type": "json", "description": "Arbitrary review routing config" }
-  ]
-}
-```
-
-An agent subscribes with: `subscribe_trigger(triggerType: "review:requested", params: { config: { reviewers: ["jordanpizza"], labels: ["bug"], dryRun: true } })`
-
-The service receives the parsed object exactly as provided.
-
-**Example — multiselect param:**
-
-```json
-{
-  "type": "demo:message_sent",
-  "label": "Message Sent",
-  "params": [
-    { "name": "channel", "label": "Channels", "type": "string", "enum": ["general", "alerts", "debug"], "multiselect": true }
-  ]
-}
-```
-
-An agent subscribes with: `subscribe_trigger(triggerType: "demo:message_sent", params: { channel: ["alerts", "debug"] })`
-
-Events with `channel: "alerts"` **or** `channel: "debug"` in their payload are delivered. Events with `channel: "general"` are not. Sessions subscribed without specifying `channel` receive all events.
-
-**Important contract:**
-- `multiselect` only works when `enum` is also declared
-- subscribers send a real JSON array, not a comma-separated string
-- matching is currently **subscriber array vs payload scalar** (`params.channel = ["alerts", "debug"]` matches payload `channel: "alerts"`)
-- array-valued payload fields also work with scalar subscription params: if the payload has `labels: ["bug", "urgent"]`, a subscriber with `labels: "bug"` receives the event
-- if you need arbitrary freeform lists (for example usernames not known ahead of time), `multiselect` is the wrong fit today unless you can declare those values in `enum`
-
-For substring filtering, name the param with a `Contains` suffix. For example, a trigger with `bodyContains` will match when the payload's `body` field includes the subscriber's text.
-
-Trigger types are advertised to agents via `service_announce` so they can be discovered with `list_available_triggers()` and subscribed to with `subscribe_trigger()`.
-
-> **Split file note:** Triggers can live in a separate `triggers.json` file (bare array or `{ "triggers": [...] }` format). When `triggers.json` exists, it takes precedence over inline `triggers` in `manifest.json`.
-
-## sigils.json
-
-Define sigil types the service teaches the UI to render as `[[type:id]]` inline tokens.
-Can be a bare array or wrapped in `{ "sigils": [...] }`.
-
-```json
-[
-  {
-    "type": "pr",
-    "label": "Pull Request",
-    "description": "A GitHub pull request reference",
-    "resolve": "/api/resolve/pr/{id}",
-    "aliases": ["pull-request", "mr"]
-  },
-  {
-    "type": "commit",
-    "label": "Commit",
-    "resolve": "/api/resolve/commit/{id}"
-  }
-]
-```
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `type` | Yes | Sigil type name used in `[[type:id]]` syntax |
-| `label` | Yes | Human-readable label for the UI |
-| `description` | No | What this sigil represents |
-| `resolve` | No | API path to resolve a sigil ID to display data (e.g. PR number → title) |
-| `schema` | No | JSON Schema for valid sigil params |
-| `aliases` | No | Alternative type names that resolve to this sigil |
-
-When `sigils.json` exists, it takes precedence over inline `sigils` in `manifest.json`.
-
-## ServiceHandler Template
+### Handler template
 
 ```typescript
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { Server } from "bun";
 
-// ── Relay helpers (needed for firing triggers) ────────────────────────────
-
+// ── Relay helpers (needed only to FIRE triggers) ─────────────────────────
 function readRunnerId(): string | null {
     try {
         const home = process.env.HOME || homedir();
@@ -457,7 +203,6 @@ function readRunnerId(): string | null {
         return typeof raw?.runnerId === "string" ? raw.runnerId : null;
     } catch { return null; }
 }
-
 function resolveRelayUrl(): string {
     const home = process.env.HOME || homedir();
     let raw = process.env.PIZZAPI_RELAY_URL?.trim();
@@ -472,39 +217,27 @@ function resolveRelayUrl(): string {
     if (raw.startsWith("wss://")) return raw.replace(/^wss:/, "https:").replace(/\/$/, "");
     return raw.replace(/\/$/, "");
 }
-
 function getApiKey(): string | null {
     return process.env.PIZZAPI_RUNNER_API_KEY ?? process.env.PIZZAPI_API_KEY ?? null;
 }
-
-/** Broadcast a trigger to all subscribed sessions on this runner. */
 async function broadcastTrigger(
     type: string,
     payload: Record<string, unknown>,
-    opts?: { deliverAs?: "steer" | "followUp"; summary?: string },
+    opts?: { deliverAs?: "steer" | "followUp"; summary?: string; expectsResponse?: boolean },
 ): Promise<void> {
     const runnerId = readRunnerId();
     const apiKey = getApiKey();
     if (!runnerId || !apiKey) return;
-
     await fetch(`${resolveRelayUrl()}/api/runners/${runnerId}/trigger-broadcast`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-api-key": apiKey },
-        body: JSON.stringify({
-            type,
-            payload,
-            source: "my-service",
-            deliverAs: opts?.deliverAs ?? "followUp",
-            summary: opts?.summary,
-        }),
-    }).catch(err => console.error("[my-service] trigger broadcast failed:", err));
+        body: JSON.stringify({ type, payload, source: "my-service", deliverAs: opts?.deliverAs ?? "followUp", summary: opts?.summary, expectsResponse: opts?.expectsResponse }),
+    }).catch((err) => console.error("[my-service] trigger broadcast failed:", err));
 }
 
-// ── Service ───────────────────────────────────────────────────────────────
-
+// ── Service ──────────────────────────────────────────────────────────────
 class MyService {
     get id() { return "my-service"; }
-
     #server: Server | null = null;
 
     init(_socket: any, { announcePanel }: any) {
@@ -512,206 +245,319 @@ class MyService {
         const indexHtml = readFileSync(join(panelDir, "index.html"), "utf-8");
 
         this.#server = Bun.serve({
-            port: 0,
+            port: 0, // OS picks a free port
             fetch: async (req) => {
                 const url = new URL(req.url);
+                const cors = { "Access-Control-Allow-Origin": "*" };
 
+                // Panel context arrives as query params (from panel.requires)
                 if (url.pathname.endsWith("/api/data")) {
-                    // Read panel context from query params (from panel.requires)
-                    const projectDir = url.searchParams.get("projectDir") || "unknown";
-                    const sessionId = url.searchParams.get("sessionId") || "unknown";
-
-                    return Response.json({
-                        hello: "world",
-                        projectDir,
-                        sessionId,
-                    }, {
-                        headers: { "Access-Control-Allow-Origin": "*" },
-                    });
+                    return Response.json({ sessionId: url.searchParams.get("sessionId") }, { headers: cors });
                 }
-
-                if (url.pathname.endsWith("/api/resolve/item/abc-123")) {
-                    return Response.json({
-                        id: "abc-123",
-                        title: "Example Item",
-                        href: "https://example.com/items/abc-123",
-                        subtitle: "Open in My Service",
-                    }, {
-                        headers: { "Access-Control-Allow-Origin": "*" },
-                    });
+                // Sigil resolve: match each sigil's `resolve` template
+                if (url.pathname.includes("/api/resolve/item/")) {
+                    const id = url.pathname.split("/").pop();
+                    return Response.json({ id, title: "Example Item", href: `https://example.com/${id}`, subtitle: "Open" }, { headers: cors });
                 }
-
                 if (url.pathname.endsWith("/api/do-thing") && req.method === "POST") {
-                    // Fire a trigger when something happens
-                    void broadcastTrigger("my-service:something_happened", {
-                        itemId: "abc-123",
-                        timestamp: Date.now(),
-                    }, { summary: "A thing happened" });
-
-                    return Response.json({ ok: true }, {
-                        headers: { "Access-Control-Allow-Origin": "*" },
-                    });
+                    void broadcastTrigger("my-service:something_happened", { itemId: "abc-123", timestamp: Date.now() }, { summary: "A thing happened" });
+                    return Response.json({ ok: true }, { headers: cors });
                 }
-
-                return new Response(indexHtml, {
-                    headers: { "Content-Type": "text/html; charset=utf-8" },
-                });
+                return new Response(indexHtml, { headers: { "Content-Type": "text/html; charset=utf-8" } });
             },
         });
 
-        if (announcePanel) {
-            announcePanel(this.#server.port);
-        }
+        announcePanel?.(this.#server.port);      // panel service
+        // announceSigilServer?.(this.#server.port);  // sigil-only service (no panel)
     }
 
-    dispose() {
-        if (this.#server) {
-            this.#server.stop(true);
-            this.#server = null;
-        }
-    }
+    dispose() { this.#server?.stop(true); this.#server = null; }
 }
 
 export default MyService;
 ```
 
-## Firing Triggers
+---
 
-Triggers are broadcast via the relay's HTTP API:
+## Triggers
+
+Triggers push service events into agent conversations. Agents discover and
+subscribe; the service fires; the relay fans out to subscribers.
+
+### Declare
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `type` | Yes | Namespaced, `"my-service:event_name"` |
+| `label` | Yes | Human-readable, for UI and agent tools |
+| `description` | No | When/why it fires |
+| `schema` | No | JSON Schema of the payload. **Its properties are the filterable fields** subscribers can target with `filters` |
+| `params` | No | Subscription params **forwarded to the service** (e.g. "which repo to watch"). See the params-vs-filters note below |
+
+### Fire
 
 ```
-POST /api/runners/{runnerId}/trigger-broadcast
-Headers: x-api-key: {apiKey}, Content-Type: application/json
-Body: {
-    "type": "my-service:something_happened",
-    "payload": { "itemId": "abc-123", "timestamp": 1711600000 },
-    "source": "my-service",
-    "deliverAs": "followUp",
-    "summary": "Human-readable description"
-}
+POST /api/runners/{runnerId}/trigger-broadcast     (header: x-api-key)
+```
+
+| Body field | Required | Description |
+|------------|----------|-------------|
+| `type` | Yes | Must match a declared trigger type |
+| `payload` | Yes | Arbitrary JSON delivered to subscribers |
+| `source` | No | Label in trigger history (usually the service name) |
+| `deliverAs` | No | `"followUp"` (default, queues after the turn) or `"steer"` (interrupts now) |
+| `summary` | No | One-liner for trigger history |
+| `expectsResponse` | No | Whether the delivery expects a reply |
+
+Read `runnerId`/`apiKey`/`relayUrl` **at call time**, not in `init()` — they can
+change on daemon reconnect (see the helpers in the template).
+
+### params vs filters — get this right
+
+These are two different mechanisms. The old model conflated them.
+
+| Concept | Where it runs | What it's for |
+|---------|---------------|---------------|
+| `params` | Forwarded **to the service** | Tell the service *what to emit* (which repo, which channel). **Not** a delivery filter in the modern model. |
+| `filters` | **Server-side, on delivery** | Tell the relay *what to deliver* — matched against the trigger payload before it reaches the agent. |
+
+A subscriber sets `filters: [{ field, value, op? }]` (`op` = `"eq"` default or
+`"contains"` substring) plus `filterMode` (`"and"` default / `"or"`). `field` is a
+dot-path into the payload; array payload fields match by set membership.
+
+```
+subscribe_trigger("orders:status_changed", {
+  filters: [{ field: "status", value: "shipped" }],
+  filterMode: "and"
+})
+```
+
+> **Legacy compat:** a subscription that has `params` but **no** `filters` still
+> gets its params converted to filters at delivery time (exact match; a
+> `...Contains` param name → substring; AND semantics). Prefer `filters` for new
+> code; reserve `params` for values the service actually consumes.
+
+### Agent tools
+
+| Action | Tool |
+|--------|------|
+| Discover | `list_available_triggers()` |
+| Subscribe | `subscribe_trigger("my-service:file_changed", { filters, filterMode, params })` |
+| Edit a sub | `update_trigger_subscription({ subscriptionId, filters, filterMode })` |
+| Unsubscribe | `unsubscribe_trigger({ subscriptionId })` (prefer id; type-only is legacy bulk) |
+
+Subscribed triggers arrive as injected messages in the agent's conversation.
+
+> **Advanced (see runner-services.mdx):** *Runner trigger listeners*
+> (`POST /api/runners/{id}/trigger-listeners`) spawn a fresh session per matching
+> trigger instead of delivering into an existing one. *Trigger history* is a
+> per-session Redis log (`GET /api/sessions/{id}/triggers`, 200 entries, 24h TTL)
+> shown live in the UI Triggers panel.
+
+---
+
+## Sigils
+
+Sigils are `[[type:id]]` tokens in agent output that the UI renders as clickable
+chips, status badges, or rich previews. A service declares sigil types so the UI
+recognizes them.
+
+```json
+[
+  { "type": "pr", "label": "Pull Request", "description": "GitHub PR chip",
+    "resolve": "/api/resolve/pr/{id}", "aliases": ["pull-request", "mr"], "icon": "git-pull-request" },
+  { "type": "commit", "label": "Commit", "resolve": "/api/resolve/commit/{id}" }
+]
 ```
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `type` | Yes | Must match a type declared in manifest `triggers[]` |
-| `payload` | Yes | Arbitrary JSON object delivered to subscribers |
-| `source` | No | Identifier shown in trigger history (e.g. service name) |
-| `deliverAs` | No | `"steer"` (interrupts current turn) or `"followUp"` (queues after turn, default) |
-| `summary` | No | Human-readable one-liner for trigger history |
+| `type` | Yes | Token name in `[[type:id]]` |
+| `label` | Yes | Human-readable |
+| `description` | No | What it represents |
+| `resolve` | No | HTTP path to enrich an id → display data (`/api/resolve/pr/{id}`) |
+| `schema` | No | JSON Schema for params (`[[type:id key=val]]`) |
+| `aliases` | No | Alt type names resolving to this sigil |
+| `icon` | No | Lucide icon name |
 
-The relay fans out to all sessions subscribed to that trigger type on this runner.
+To resolve sigils, expose a matching HTTP route. If the service has **no panel**,
+call `announceSigilServer(port)` (instead of `announcePanel`) so the tunnel routes
+resolve calls without listing the service in the panels grid. Sigil defs are
+advertised via `service_announce`, the same as triggers.
 
-**Where to get runnerId and apiKey:**
-- `runnerId` — read from `~/.pizzapi/runner.json` (written by the daemon on startup)
-- `apiKey` — from `PIZZAPI_API_KEY` or `PIZZAPI_RUNNER_API_KEY` env vars
-- `relayUrl` — from `PIZZAPI_RELAY_URL` env var or `relayUrl` in `~/.pizzapi/config.json`
+---
 
-## Agent Interaction
+## Panels
 
-Once a service advertises triggers, agents can:
+Panels render in a sandboxed iframe. Bottom dock is **280px tall**, side dock
+**320px wide**.
 
-1. **Discover** — `list_available_triggers()` returns all triggers from runner services
-2. **Subscribe** — `subscribe_trigger("my-service:something_happened")` starts receiving events
-3. **Receive** — triggers arrive as injected messages in the agent's conversation
-4. **Unsubscribe** — `unsubscribe_trigger("my-service:something_happened")` stops delivery
-
-## Panel HTML Guidelines
-
-The panel renders inside a 280px-tall iframe. Key constraints:
-
-- **Self-contained** — all CSS and JS inline (no build step)
-- **Dark theme** — match PizzaPi's dark UI:
-  ```css
-  body { background: #0a0a0b; color: #e4e4e7; font-size: 11px; }
-  ```
-- **Relative API URLs** — use `./api/data` (the tunnel proxy preserves the path)
-- **Polling** — use `setInterval` + `fetch` for live data (typically 3–5s)
-- **No external dependencies** — the iframe is sandboxed; CDN scripts may be blocked
-
-**Reading panel.requires query params** — if your manifest declares `panel.requires`, the UI appends them to the iframe URL as query params. Read them in the panel:
+- **Self-contained** — inline all CSS/JS, no build step, no CDN (CSP may block it).
+- **Dark theme** — `background:#0a0a0b; color:#e4e4e7;` borders `#27272a`, `font-size:11px`.
+- **Relative API URLs** — `./api/data` (the tunnel proxy preserves the path;
+  absolute URLs break).
+- **CORS** — API responses need `Access-Control-Allow-Origin: *`.
+- **Live data** — `setInterval` + `fetch`, 3–5s.
+- **Panel context** — vars in `panel.requires` arrive as camelCase query params:
 
 ```html
 <script>
-  // Values injected as query params from panel.requires
-  const params = new URLSearchParams(location.search);
-  const projectDir = params.get("projectDir"); // from requires: ["PROJECT_DIR"]
-  const sessionId = params.get("sessionId");   // from requires: ["SESSION_ID"]
-
-  // Pass them along to API calls so the backend also has context
-  fetch(`./api/state?${params.toString()}`)
-    .then(r => r.json())
-    .then(data => console.log(data));
+  const p = new URLSearchParams(location.search);
+  const sessionId = p.get("sessionId");   // from requires: ["SESSION_ID"]
+  const projectDir = p.get("projectDir"); // from requires: ["PROJECT_DIR"]
+  fetch(`./api/state?${p.toString()}`).then(r => r.json()).then(render);
 </script>
 ```
 
-## Services Without Panels
+A service without a panel omits `panel` from the declaration and skips
+`announcePanel()` — it still runs and can fire triggers.
 
-A service doesn't need a panel. Omit `panel` from manifest.json and skip the `announcePanel()` call. The service still runs in the background and can fire triggers:
+---
 
-```json
-{
-  "id": "my-watcher",
-  "label": "File Watcher",
-  "entry": "./index.ts",
-  "triggers": [
-    { "type": "my-watcher:file_changed", "label": "File Changed" }
-  ]
+## Connectivity services (Discord, Slack, MQTT, webhooks…)
+
+When sessions need to talk to an external network that keeps a persistent
+connection, **the daemon owns the one connection; sessions never open their own.**
+A per-session connection object does not survive contact with reality — N sessions
+means N connections on one token, duplicate inbound, credential spread, and no
+routing authority.
+
+Two directions, two transports:
+
+**Inbound (outside → session).** The service owns the session↔conversation
+mapping, so deliver straight to the one session over HTTP:
+
+```typescript
+await fetch(`${relayUrl}/api/sessions/${sessionId}/trigger`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+    body: JSON.stringify({ type: "discord:message", payload: { threadId, text }, source: "discord", deliverAs: "steer" }),
+});
+```
+
+Use `trigger-broadcast` only when an event has **no** single owner (a CI result, a
+repo push) and any subscriber should hear it.
+
+**Outbound (session → outside).** The service can't see a session's in-process
+events, so the package ships a **session-side extension** that observes them and
+forwards over the `service_message` channel:
+
+```typescript
+import { sendServiceMessage } from "@pizzapi/extension-sdk";
+sendServiceMessage(pi, "discord", "discord_post", { sessionId, content }); // in the extension
+```
+
+```typescript
+init(socket, opts) {                                  // in the service handler
+    this.onMessage = (env) => {
+        if (opts.isShuttingDown() || env.serviceId !== "discord") return;
+        if (this.#isDuplicate(env.id)) return;        // see below
+        if (env.type === "discord_post") void this.post(env.payload);
+    };
+    socket.on("service_message", this.onMessage);
 }
 ```
 
-## How It Works
+**`service_message` delivery is at-least-once** — the relay emits to the per-runner
+room *and* the local runner socket, so a local runner sees **every envelope twice**.
+Idempotent ops don't care; side effects (posting, emailing, charging) must dedupe
+on the host-stamped `env.id`:
 
-### ExtensionProvider
-
-```
-1. Daemon discovers folder in ~/.pizzapi/providers/
-2. Reads index.ts → validates capabilities against declared methods
-3. Calls provider.init(config) → provider initializes its DB/state
-4. On session_start → bridge fires onSessionStart on all providers
-5. On before_agent_start → bridge collects ContextContribution[], sorts, dedupes, injects into system prompt
-6. On turn_end → bridge fires onTurnEnd for incremental indexing
-7. On session archival → daemon calls onSessionClose for final flush
-8. On session_shutdown → bridge fires onSessionShutdown, then calls provider.dispose()
-```
-
-### ServiceHandler
-
-```
-1. Daemon discovers folder in ~/.pizzapi/services/
-2. Reads manifest.json → extracts panel metadata + trigger definitions
-3. Loads service module → calls init(socket, { announcePanel })
-4. Service starts Bun.serve() on port 0 → calls announcePanel(port)
-5. Daemon aggregates all trigger defs and sigil defs from all services
-6. Daemon emits service_announce with panels[] + triggerDefs[] + sigilDefs[]
-7. UI renders iframe; agents discover triggers via list_available_triggers()
-8. Service fires triggers via POST /api/runners/{runnerId}/trigger-broadcast
-9. Relay fans out to all subscribed sessions
+```typescript
+#seen = new Set<string>();
+#isDuplicate(id: unknown): boolean {
+    if (typeof id !== "string" || !id) return false;
+    if (this.#seen.has(id)) return true;
+    this.#seen.add(id);
+    if (this.#seen.size > 500) { const o = this.#seen.values().next().value; if (o !== undefined) this.#seen.delete(o); }
+    return false;
+}
 ```
 
-## Quick Reference
+Mapping lifecycle the service owns: persist bindings (write-temp-then-rename) so a
+restart doesn't orphan conversations; index both ways; drop the binding in
+`handleSessionEnded(sessionId)` and on a `404` from the trigger endpoint (session
+gone). To *drive* a session, most controls already exist over HTTP with API-key
+auth: spawn `POST /api/runners/:id/spawn`, input `POST /api/sessions/:id/trigger`,
+switch model `POST /api/sessions/:id/model`, stop `POST /api/sessions/:id/abort`,
+list `GET /api/sessions`.
+
+Worked example: the Discord bridge —
+`packages/cli/src/extensions/discord-mirror.ts` (session-side) plus its service.
+
+---
+
+## Graceful degradation
+
+The same package may load in **vanilla pi**, where no daemon, relay, or UI exists.
+Guard PizzaPi-only code with host detection from `@pizzapi/extension-sdk`. Package
+load order vs host startup is not guaranteed, so prefer `onPizzaPiHost` (fires
+immediately if the host is up, else waits for its ready event; at most once) over
+a top-level `detectPizzaPiHost` probe:
+
+```typescript
+import { onPizzaPiHost } from "@pizzapi/extension-sdk";
+export default function myExtension(pi) {
+    const unsubscribe = onPizzaPiHost(pi, (host) => {
+        if (!host.capabilities.includes("services")) return;
+        // safe to use PizzaPi capabilities
+    });
+    return { dispose: unsubscribe };
+}
+```
+
+Check `host.capabilities` before relying on a feature; don't assume `apiVersion`
+implies it.
+
+---
+
+## Path placeholders
+
+`entry`, `panel.dir`, and overlay MCP definitions expand these at load time:
+
+| Token | Expands to |
+|-------|-----------|
+| `@PACKAGE_ROOT@` | Installed package root (use for shipped binaries/scripts — makes the package relocatable) |
+| `@HOME@` | User home |
+| `@PWD@` | Current working directory |
+| `@PROJECT_DIR@` | Project directory |
+| `@SESSION_ID@` | Active session id |
+| `@USER@` | Username |
+
+Keep durable state (configs, DBs) under `@HOME@/...`, never `@PACKAGE_ROOT@` — a
+package can be reinstalled, moved, or resolved from a different checkout.
+
+---
+
+## Quick reference
 
 | Task | How |
 |------|-----|
-| Declare triggers | Add `triggers[]` to `manifest.json` or `triggers.json` |
-| Declare sigils | Add `sigils[]` to `manifest.json` or `sigils.json` |
-| Resolve sigils | Expose an API route matching each sigil's `resolve` template |
-| Fire a trigger | `POST /api/runners/{runnerId}/trigger-broadcast` with API key |
-| Serve static files | `Bun.serve()` with `readFileSync` for index.html |
-| Expose an API | Add route checks in the `fetch` handler |
-| Get a random port | `Bun.serve({ port: 0 })` then read `.port` |
-| Announce the panel | Call `announcePanel(server.port)` in `init()` |
-| Match PizzaPi theme | Use `#0a0a0b` bg, `#e4e4e7` text, `#27272a` borders |
-| Choose an icon | Browse [lucide.dev/icons](https://lucide.dev/icons), use kebab-case name |
+| Ship a service | Declare it in `package.json` → `pi.pizzapi.services[]`, `pizza install --allow-daemon-services`, restart runner |
+| Grant / revoke | `pizza config grant\|revoke <pkg> [serviceId]` (recorded in `overlayServiceGrants`) |
+| Declare triggers/sigils | Inline array or a path to `triggers.json` / `sigils.json` |
+| Fire a trigger | `POST /api/runners/{runnerId}/trigger-broadcast` with `x-api-key` |
+| Filter delivery | Subscriber sets `filters` + `filterMode`, not `params` |
+| Deliver to one session | `POST /api/sessions/{sessionId}/trigger` |
+| Session → service | `sendServiceMessage(pi, id, type, payload)` + `socket.on("service_message")` |
+| Resolve sigils w/o panel | `announceSigilServer(port)` instead of `announcePanel` |
+| Random port | `Bun.serve({ port: 0 })` then read `.port` |
+| Match theme | `#0a0a0b` bg, `#e4e4e7` text, `#27272a` borders |
 
-## Common Mistakes
+## Common mistakes
 
 | Mistake | Fix |
 |---------|-----|
-| Triggers declared but never fired | Use the relay broadcast API — `console.log` doesn't deliver triggers |
-| Sigils declared but not resolvable | Implement the `resolve` API route or omit `resolve` until you have one |
-| Missing runnerId or apiKey | Read from `~/.pizzapi/runner.json` and env vars at call time, not init time |
-| Forgetting `announcePanel()` | Panel won't appear in UI — always call it after server starts |
-| Using absolute API URLs | Tunnel proxy rewrites paths; use relative URLs (`./api/...`) |
-| Not cleaning up server in `dispose()` | Call `server.stop(true)` to avoid port leaks |
-| Large panel height assumptions | Panel container is 280px tall — design accordingly |
-| Missing `Access-Control-Allow-Origin` | Iframe requests need CORS headers on API responses |
+| Loose file in `~/.pizzapi/services/` | Removed. Ship a package with `pi.pizzapi.services` |
+| Using the old `ExtensionProvider` API | Removed. Implement `ServiceHandler` in a package |
+| Service installed but never mounts | Missing grant, or project-scope (user-scope only). `pizza list`, restart runner |
+| Handler id ≠ declared id | Loader rejects it — they must match exactly |
+| Unnamespaced trigger type | Route is `type.split(":")[0]`; use `my-service:event` |
+| Filtering via `params` | Modern delivery filtering is `filters`; params go to the service |
+| Reading runnerId/apiKey in `init()` | Read at call time — they change on reconnect |
+| Triggers declared but not delivered | Declaring only advertises; you must fire via broadcast |
+| Missing CORS on panel API | Add `Access-Control-Allow-Origin: *` |
+| No dedupe on side effects | `service_message` is at-least-once — dedupe on `env.id` |
+| Not cleaning up in `dispose()` | `server.stop(true)`; release listeners/timers/processes |
+| Absolute panel API URLs | Use relative `./api/...` — the tunnel rewrites paths |
+| Panel designed too big | Bottom dock 280px tall, side dock 320px wide |
