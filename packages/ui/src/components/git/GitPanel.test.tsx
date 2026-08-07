@@ -117,10 +117,6 @@ mock.module("./GitDiffView", () => ({
     GitDiffView: () => <div data-testid="diff-view" />,
 }));
 
-mock.module("./GitWorktreeList", () => ({
-    GitWorktreeList: () => <div data-testid="worktree-list" />,
-}));
-
 mock.module("./GitStashList", () => ({
     GitStashList: () => <div data-testid="stash-list" />,
 }));
