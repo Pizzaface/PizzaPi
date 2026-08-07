@@ -33,7 +33,6 @@ export function IframeServicePanel({ sessionId, port, query, fragment, panelPara
     // Heuristic: HTTP failures inside an iframe don't fire onError, so flag a
     // panel that never fires onLoad within a grace window as likely-broken.
     const [loadTimedOut, setLoadTimedOut] = useState(false);
-    const [loaded, setLoaded] = useState(false);
 
     const src = useMemo(() => {
         if (!base) return null;
@@ -56,10 +55,7 @@ export function IframeServicePanel({ sessionId, port, query, fragment, panelPara
 
     useEffect(() => {
         setLoadTimedOut(false);
-        setLoaded(false);
         if (!src) return;
-        // ponytail: fires once per src; banner is gated on !loaded so a
-        // successful onLoad suppresses it even after the timer elapses.
         const t = setTimeout(() => setLoadTimedOut(true), 12_000);
         return () => clearTimeout(t);
     }, [src]);
@@ -85,10 +81,10 @@ export function IframeServicePanel({ sessionId, port, query, fragment, panelPara
                 title={`Service panel — port ${port}`}
                 // SECURITY: allow-same-origin is needed because tunnel content is same-origin. TODO: serve tunnel content from a separate origin to enable full sandbox isolation.
                 sandbox="allow-scripts allow-forms allow-same-origin allow-popups"
-                onLoad={() => setLoaded(true)}
+                onLoad={() => setLoadTimedOut(false)}
                 onError={() => reportError("tunnel", `Panel failed to load (port ${port})`, { detail: src, toast: false })}
             />
-            {loadTimedOut && !loaded && (
+            {loadTimedOut && (
                 <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-destructive/10 px-3 py-1.5 text-[11px] text-muted-foreground">
                     <span>Panel is taking a while — the service on port {port} may not be running.</span>
                     <a href={src} target="_blank" rel="noopener noreferrer" className="shrink-0 underline">Open directly</a>
