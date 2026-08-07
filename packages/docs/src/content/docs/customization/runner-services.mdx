@@ -391,7 +391,7 @@ Once triggers are advertised, agents can interact with them using built-in tools
 | Discover available triggers | `list_available_triggers()` |
 | Subscribe to a trigger type | `subscribe_trigger("my-service:file_changed")` |
 | Unsubscribe | `unsubscribe_trigger({ subscriptionId })` preferred; `unsubscribe_trigger("my-service:file_changed")` is legacy bulk behavior |
-| View subscriptions | `list_trigger_subscriptions()` |
+| Update filters/params | `update_trigger_subscription({ subscriptionId, filters, filterMode })` |
 
 Subscribed triggers arrive as injected messages in the agent's conversation, with the payload and metadata from the broadcast.
 
