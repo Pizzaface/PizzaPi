@@ -75,8 +75,10 @@ export async function checkPushNotifications(
     const userId = session?.userId;
     if (!userId) return;
 
-    const viewerCount = await getViewerCount(sessionId);
-    if (viewerCount > 0) return;
+    // Connected viewers receive live session events over Socket.IO, so Web Push
+    // would duplicate their in-app notification. Native Android registrations
+    // still need ntfy fan-out: one connected viewer must not silence other devices.
+    const suppressWebPush = await getViewerCount(sessionId) > 0;
 
     const sName = session?.sessionName ?? null;
 
@@ -100,7 +102,7 @@ export async function checkPushNotifications(
     const isChildSession = !!effectiveParentId && await isLinkedChildForSuppression(effectiveParentId, sessionId);
 
     if (event.type === "agent_end") {
-        notifyAgentFinished(userId, sessionId, sName, isChildSession, extractLastAssistantText(event));
+        notifyAgentFinished(userId, sessionId, sName, isChildSession, extractLastAssistantText(event), suppressWebPush);
     }
 
     if (event.type === "tool_execution_start" && event.toolName === "AskUserQuestion") {
@@ -137,11 +139,11 @@ export async function checkPushNotifications(
         // reject with 400 — so don't show action buttons in any of those cases.
         const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
         const canQuickReply = questionCount <= 1 && session?.collabMode === true && !!toolCallId;
-        notifyAgentNeedsInput(userId, sessionId, question, sName, canQuickReply ? options : undefined, toolCallId, isChildSession);
+        notifyAgentNeedsInput(userId, sessionId, question, sName, canQuickReply ? options : undefined, toolCallId, isChildSession, suppressWebPush);
     }
 
     if (event.type === "cli_error") {
         const errMsg = typeof event.message === "string" ? event.message : undefined;
-        notifyAgentError(userId, sessionId, errMsg, sName, isChildSession);
+        notifyAgentError(userId, sessionId, errMsg, sName, isChildSession, suppressWebPush);
     }
 }
