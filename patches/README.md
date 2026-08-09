@@ -90,11 +90,22 @@ removals absorbed elsewhere rather than restored:
   shape anymore. Instead, `packages/cli` callers were migrated to
   `ModelRuntime`/`ModelRegistry`/`readStoredCredential` (see below).
 
+OpenAI's direct API catalog reports a 272K short-context pricing threshold for
+some GPT-5.4, GPT-5.5, and GPT-5.6 models instead of their actual capacity.
+PizzaPi wraps the built-in `openai` provider in `ModelRuntime` after
+remote-catalog discovery but before extension and `models.json` composition,
+so direct API consumers see OpenAI's published 1.05M/400K windows while
+provider auth, streaming, model discovery, user overrides, and custom native-
+provider metadata remain intact. The separate `openai-codex` OAuth backend
+keeps its own catalog limits.
+Source: https://developers.openai.com/api/docs/models/compare
+
 **What it changes:**
 
 | File | Change |
 |------|--------|
 | `dist/config.js` | Same `.pizzapi` config-dir / flat-directory / `PIZZAPI_CHANGELOG_PATH` overrides as 0.80.6 |
+| `dist/core/model-runtime.js` | Wraps the built-in OpenAI API provider so GPT-5.4+ defaults match OpenAI's published context capacities |
 | `dist/core/model-resolver.js` | Same `ollama-cloud` default model (`glm-5.1`) as 0.80.6 |
 | `dist/modes/interactive/interactive-mode.js` | Same version-notification-UI removal as 0.80.6 (upstream shifted a few lines; hunk re-applied manually) |
 | `dist/index.js` / `dist/index.d.ts` | Same `handlePackageCommand`/`handleConfigCommand` re-export as 0.80.6 |

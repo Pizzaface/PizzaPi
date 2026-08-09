@@ -47,6 +47,52 @@ index 4cd51566b17e362a4c9c149fa3a339458abc30f6..6f41d5c16b9e476dfe01c312cf86fe0b
      "vercel-ai-gateway": "zai/glm-5.1",
      xai: "grok-4.5",
      groq: "openai/gpt-oss-120b",
+diff --git a/dist/core/model-runtime.js b/dist/core/model-runtime.js
+index e81a5368e8072e452a16ffbbfb4db7767a3a0e38..c90c3a087a48af85bff2e0504e10df6e27f72a03 100644
+--- a/dist/core/model-runtime.js
++++ b/dist/core/model-runtime.js
+@@ -8,6 +8,32 @@ import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.
+ import { composeModelProvider, configuredRequestAuthStatus, resolveCompatibilityRequestConfig, resolveConfiguredModelHeaders, validateExtensionProvider, } from "./provider-composer.js";
+ import { withRemoteCatalog } from "./remote-catalog-provider.js";
+ import { RuntimeCredentials } from "./runtime-credentials.js";
++// PATCH(pizzapi): Report OpenAI API's published context capacity instead of
++// the lower short-context pricing threshold used by Pi's model catalog.
++const OPENAI_CONTEXT_WINDOWS = {
++    "gpt-5.4": 1050000,
++    "gpt-5.4-mini": 400000,
++    "gpt-5.4-nano": 400000,
++    "gpt-5.4-pro": 1050000,
++    "gpt-5.5": 1050000,
++    "gpt-5.5-pro": 1050000,
++    "gpt-5.6-luna": 1050000,
++    "gpt-5.6-sol": 1050000,
++    "gpt-5.6-terra": 1050000,
++};
++function withOfficialOpenAIContextWindows(provider) {
++    if (!provider || provider.id !== "openai")
++        return provider;
++    return {
++        ...provider,
++        getModels: () => provider.getModels().map((model) => {
++            const contextWindow = OPENAI_CONTEXT_WINDOWS[model.id];
++            return contextWindow === undefined || contextWindow === model.contextWindow
++                ? model
++                : { ...model, contextWindow };
++        }),
++    };
++}
+ function mergeHeaders(base, override) {
+     if (!base && !override)
+         return undefined;
+@@ -109,7 +135,7 @@ export class ModelRuntime {
+         ]);
+     }
+     recomposeProvider(providerId) {
+-        const base = this.nativeExtensionProviders.get(providerId) ?? this.builtins.get(providerId);
++        const base = this.nativeExtensionProviders.get(providerId) ?? withOfficialOpenAIContextWindows(this.builtins.get(providerId));
+         const extension = this.extensionProviders.get(providerId);
+         if (!base && !this.config.getProvider(providerId) && !extension) {
+             this.models.deleteProvider(providerId);
 diff --git a/dist/index.d.ts b/dist/index.d.ts
 index e91e38f8bedfabb6e67305f9739277d1ebacde22..8ee1013bedc3895457115c714122c40b65871ed8 100644
 --- a/dist/index.d.ts
