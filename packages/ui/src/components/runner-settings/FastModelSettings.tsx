@@ -16,6 +16,8 @@ import type { SectionProps } from "./RunnerSettingsPanel";
 interface GoalConfig {
     evaluatorModel?: string;
     evaluatorMaxTokens?: number;
+    evaluateEveryNTurns?: number;
+    minTurnsBeforeEvaluate?: number;
 }
 
 interface ModelInfo {
@@ -29,6 +31,10 @@ interface ModelInfo {
 const DEFAULT_MAX_TOKENS = 512;
 const MIN_TOKENS = 1;
 const MAX_TOKENS = 4096;
+const DEFAULT_EVALUATE_EVERY_N_TURNS = 3;
+const MIN_EVALUATE_EVERY_N_TURNS = 1;
+const DEFAULT_MIN_TURNS_BEFORE_EVALUATE = 10;
+const MIN_MIN_TURNS_BEFORE_EVALUATE = 0;
 
 /**
  * Parse a stored evaluatorModel value into provider + modelId.
@@ -59,6 +65,12 @@ export default function FastModelSettings({ runnerId, config, onSave, saving }: 
     const [provider, setProvider] = useState<string>(initialModel.provider);
     const [modelId, setModelId] = useState<string>(initialModel.modelId);
     const [maxTokens, setMaxTokens] = useState<number>(goalConfig.evaluatorMaxTokens ?? DEFAULT_MAX_TOKENS);
+    const [evaluateEveryNTurns, setEvaluateEveryNTurns] = useState<number>(
+        goalConfig.evaluateEveryNTurns ?? DEFAULT_EVALUATE_EVERY_N_TURNS,
+    );
+    const [minTurnsBeforeEvaluate, setMinTurnsBeforeEvaluate] = useState<number>(
+        goalConfig.minTurnsBeforeEvaluate ?? DEFAULT_MIN_TURNS_BEFORE_EVALUATE,
+    );
 
     // Available models fetched from the runner
     const [models, setModels] = useState<ModelInfo[]>([]);
@@ -71,7 +83,9 @@ export default function FastModelSettings({ runnerId, config, onSave, saving }: 
         setProvider(parsed.provider);
         setModelId(parsed.modelId);
         setMaxTokens(goalConfig.evaluatorMaxTokens ?? DEFAULT_MAX_TOKENS);
-    }, [goalConfig.evaluatorModel, goalConfig.evaluatorMaxTokens]);
+        setEvaluateEveryNTurns(goalConfig.evaluateEveryNTurns ?? DEFAULT_EVALUATE_EVERY_N_TURNS);
+        setMinTurnsBeforeEvaluate(goalConfig.minTurnsBeforeEvaluate ?? DEFAULT_MIN_TURNS_BEFORE_EVALUATE);
+    }, [goalConfig.evaluatorModel, goalConfig.evaluatorMaxTokens, goalConfig.evaluateEveryNTurns, goalConfig.minTurnsBeforeEvaluate]);
 
     // Fetch available models from the runner
     useEffect(() => {
@@ -134,10 +148,31 @@ export default function FastModelSettings({ runnerId, config, onSave, saving }: 
         setMaxTokens(Math.max(MIN_TOKENS, Math.min(MAX_TOKENS, Math.round(parsed))));
     };
 
+    const handleEvaluateEveryChange = (value: string) => {
+        const parsed = Number(value);
+        if (Number.isNaN(parsed)) {
+            setEvaluateEveryNTurns(0);
+            return;
+        }
+        setEvaluateEveryNTurns(Math.max(MIN_EVALUATE_EVERY_N_TURNS, Math.round(parsed)));
+    };
+
+    const handleMinTurnsChange = (value: string) => {
+        const parsed = Number(value);
+        if (Number.isNaN(parsed)) {
+            setMinTurnsBeforeEvaluate(0);
+            return;
+        }
+        setMinTurnsBeforeEvaluate(Math.max(MIN_MIN_TURNS_BEFORE_EVALUATE, Math.round(parsed)));
+    };
+
     const handleSave = () => {
         const value: GoalConfig = {
             evaluatorModel: provider && modelId ? `${provider}:${modelId}` : modelId || undefined,
             evaluatorMaxTokens: maxTokens || undefined,
+            evaluateEveryNTurns: evaluateEveryNTurns === DEFAULT_EVALUATE_EVERY_N_TURNS ? undefined : evaluateEveryNTurns,
+            minTurnsBeforeEvaluate:
+                minTurnsBeforeEvaluate === DEFAULT_MIN_TURNS_BEFORE_EVALUATE ? undefined : minTurnsBeforeEvaluate,
         };
         onSave("goal", value);
     };
@@ -145,9 +180,13 @@ export default function FastModelSettings({ runnerId, config, onSave, saving }: 
     const isDirty =
         provider !== initialModel.provider ||
         modelId !== initialModel.modelId ||
-        maxTokens !== (goalConfig.evaluatorMaxTokens ?? DEFAULT_MAX_TOKENS);
+        maxTokens !== (goalConfig.evaluatorMaxTokens ?? DEFAULT_MAX_TOKENS) ||
+        evaluateEveryNTurns !== (goalConfig.evaluateEveryNTurns ?? DEFAULT_EVALUATE_EVERY_N_TURNS) ||
+        minTurnsBeforeEvaluate !== (goalConfig.minTurnsBeforeEvaluate ?? DEFAULT_MIN_TURNS_BEFORE_EVALUATE);
 
-    const canSave = !saving && provider && modelId && maxTokens >= MIN_TOKENS;
+    const canSave =
+        !saving && provider && modelId && maxTokens >= MIN_TOKENS && evaluateEveryNTurns >= MIN_EVALUATE_EVERY_N_TURNS &&
+        minTurnsBeforeEvaluate >= MIN_MIN_TURNS_BEFORE_EVALUATE;
 
     return (
         <div className="flex flex-col gap-6">
@@ -217,6 +256,38 @@ export default function FastModelSettings({ runnerId, config, onSave, saving }: 
                 />
                 <p className="text-xs text-muted-foreground">
                     Maximum output tokens for the goal evaluator. Default: {DEFAULT_MAX_TOKENS}.
+                </p>
+            </div>
+
+            {/* Evaluate cadence */}
+            <div className="flex flex-col gap-2">
+                <Label htmlFor="evaluator-every-n-turns">Evaluate Every N Turns</Label>
+                <Input
+                    id="evaluator-every-n-turns"
+                    type="number"
+                    min={MIN_EVALUATE_EVERY_N_TURNS}
+                    value={evaluateEveryNTurns}
+                    onChange={(e) => handleEvaluateEveryChange(e.target.value)}
+                    className="w-full max-w-sm"
+                />
+                <p className="text-xs text-muted-foreground">
+                    Run the LLM evaluator once every N completed turns. Set to 1 to evaluate every turn. Default: {DEFAULT_EVALUATE_EVERY_N_TURNS}.
+                </p>
+            </div>
+
+            {/* Minimum turns before first evaluation */}
+            <div className="flex flex-col gap-2">
+                <Label htmlFor="evaluator-min-turns">Minimum Turns Before Evaluating</Label>
+                <Input
+                    id="evaluator-min-turns"
+                    type="number"
+                    min={MIN_MIN_TURNS_BEFORE_EVALUATE}
+                    value={minTurnsBeforeEvaluate}
+                    onChange={(e) => handleMinTurnsChange(e.target.value)}
+                    className="w-full max-w-sm"
+                />
+                <p className="text-xs text-muted-foreground">
+                    Wait for this many completed turns before the goal evaluator runs for the first time. Default: {DEFAULT_MIN_TURNS_BEFORE_EVALUATE}.
                 </p>
             </div>
 

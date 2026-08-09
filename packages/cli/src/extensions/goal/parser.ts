@@ -16,6 +16,7 @@ const KNOWN_FLAGS = new Set([
     "--evaluator",
     "--keyword",
     "--every",
+    "--min-turns",
 ]);
 
 function isFlag(token: string): boolean {
@@ -86,6 +87,7 @@ export function parseGoalArgs(input: string): GoalCommandArgs {
     const successKeywords: string[] = [];
     let evaluator: GoalEvaluatorKind = "llm";
     let evaluateEveryNTurns: number | undefined;
+    let minTurnsBeforeEvaluate: number | undefined;
     let conditionParts: string[] = [];
 
     let i = 0;
@@ -131,6 +133,12 @@ export function parseGoalArgs(input: string): GoalCommandArgs {
                     // No effect on the free/local keyword evaluator.
                     evaluateEveryNTurns = parsePositiveInt(next, "--every");
                     break;
+                case "--min-turns":
+                    // Minimum completed agent turns before the evaluator may
+                    // run. Prevents premature judgment while the agent is still
+                    // getting started.
+                    minTurnsBeforeEvaluate = parsePositiveInt(next, "--min-turns");
+                    break;
             }
         } else {
             conditionParts.push(token);
@@ -155,6 +163,7 @@ export function parseGoalArgs(input: string): GoalCommandArgs {
         evaluator,
         successKeywords: successKeywords.length > 0 ? successKeywords : undefined,
         evaluateEveryNTurns,
+        minTurnsBeforeEvaluate,
     };
 
     return { rawCondition, condition, budget, clear: false, statusOnly: false };

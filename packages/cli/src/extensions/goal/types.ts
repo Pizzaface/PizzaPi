@@ -43,11 +43,20 @@ export interface GoalCondition {
      * `config.goal.evaluateEveryNTurns`, then `DEFAULT_EVALUATE_EVERY_N_TURNS`.
      */
     evaluateEveryNTurns?: number;
+
+    /**
+     * Minimum completed agent turns before the evaluator may run. Keeps the
+     * goal from judging success before the agent has had a chance to act.
+     * Falls back to `config.goal.minTurnsBeforeEvaluate`, then
+     * `DEFAULT_MIN_TURNS_BEFORE_EVALUATE`.
+     */
+    minTurnsBeforeEvaluate?: number;
 }
 
 /**
- * Budget guardrails. All fields are optional; unset means "no limit".
+ * Default minimum completed turns before the goal evaluator runs.
  */
+export const DEFAULT_MIN_TURNS_BEFORE_EVALUATE = 10;
 export interface GoalBudget {
     /** Maximum number of agent turns allowed while pursuing the goal. */
     maxTurns?: number;

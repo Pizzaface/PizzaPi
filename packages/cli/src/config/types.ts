@@ -568,16 +568,24 @@ export interface PizzaPiConfig {
      * `/goal` command configuration.
      */
     goal?: {
-        /** Model identifier (provider:modelId or just modelId) for the LLM evaluator. Defaults to Anthropic Haiku. */
+        /** Model identifier (provider:modelId or just modelId) for the LLM evaluator. When omitted, the evaluator uses the session's current model so the call shares the prompt cache; if no current model is available it falls back to the cheapest authenticated text model. */
         evaluatorModel?: string;
         /** Maximum output tokens for the evaluator LLM call. Default: 512. */
         evaluatorMaxTokens?: number;
         /**
-         * Default cadence (in turns) for the LLM evaluator across all goals
+         * Default cadence (in turns) for the goal evaluator across all goals
          * that don't set `/goal --every`. 1 = every turn. Default: 3.
          * Ignored by the keyword evaluator (free/local, always runs).
          */
         evaluateEveryNTurns?: number;
+        /**
+         * Minimum completed agent turns before the goal evaluator runs for the
+         * first time. Prevents early judgment while the agent is still getting
+         * started. Default: 10. Ignored by the keyword evaluator only if the
+         * goal explicitly sets `--min-turns 0`; otherwise it gates every
+         * evaluator.
+         */
+        minTurnsBeforeEvaluate?: number;
     };
 
     /**

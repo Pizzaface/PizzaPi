@@ -31,6 +31,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "@pizzapi/tools";
 import { loadConfig } from "../../config/io.js";
+import { hasActiveSubagents } from "../subagent/background-state.js";
 import {
     checkBudget,
     clearGoal,
@@ -62,6 +63,7 @@ import type {
     GoalEvaluationContext,
     GoalState,
 } from "./types.js";
+import { DEFAULT_MIN_TURNS_BEFORE_EVALUATE } from "./types.js";
 
 const log = createLogger("goal");
 
@@ -192,6 +194,24 @@ function resolveEvaluateRate(state: GoalState, ctx: ExtensionContext): number {
     }
 }
 
+/**
+ * Minimum completed agent turns before the goal evaluator may run. Keeps
+ * the goal from judging success before the agent has had a chance to act.
+ * Resolution order: per-goal `--min-turns` override, then
+ * `config.goal.minTurnsBeforeEvaluate`, then `DEFAULT_MIN_TURNS_BEFORE_EVALUATE`.
+ */
+function resolveMinTurnsBeforeEvaluate(state: GoalState, ctx: ExtensionContext): number {
+    if (state.condition.minTurnsBeforeEvaluate !== undefined) {
+        return Math.max(0, state.condition.minTurnsBeforeEvaluate);
+    }
+    try {
+        const configured = loadConfig(ctx.cwd).goal?.minTurnsBeforeEvaluate;
+        return configured !== undefined ? Math.max(0, configured) : DEFAULT_MIN_TURNS_BEFORE_EVALUATE;
+    } catch {
+        return DEFAULT_MIN_TURNS_BEFORE_EVALUATE;
+    }
+}
+
 function stopForBudget(
     sessionId: string,
     state: GoalState,
@@ -222,13 +242,44 @@ async function runGoalStopCheck(
     const usage = getAssistantUsage(event.message);
     state = recordTurnSpend(sessionId, usage.tokens, usage.cost) ?? state;
 
-    // The LLM evaluator is a billed API call, so it's throttled to every
-    // `evaluateRate` turns instead of every turn. The first turn always
-    // evaluates so instantly-satisfied goals resolve right away; skipped
-    // turns still enforce budgets and keep the agent looping, they just
-    // don't spend a judge call.
+    const minTurnsBeforeEvaluate = resolveMinTurnsBeforeEvaluate(state, ctx);
     const evaluateRate = resolveEvaluateRate(state, ctx);
-    if (state.turnCount > 1 && state.turnCount % evaluateRate !== 0) {
+    const firstEvalTurn = Math.max(1, minTurnsBeforeEvaluate);
+
+    // If background subagents or queued user/trigger messages are still
+    // pending, don't start another goal iteration. The existing work will
+    // produce more turns and the evaluator will check again when it's actually
+    // idle. This prevents the goal loop from drowning out subagent results or
+    // relay trigger responses.
+    if (hasActiveSubagents() || (typeof ctx.hasPendingMessages === "function" && ctx.hasPendingMessages())) {
+        return;
+    }
+
+    if (state.turnCount < firstEvalTurn) {
+        // The evaluator is gated until the agent has completed enough turns
+        // to have produced real work. Budgets and the continuation loop still
+        // apply while waiting.
+        const budgetReason = checkBudget(state);
+        if (budgetReason) {
+            stopForBudget(sessionId, state, budgetReason, pi);
+            return;
+        }
+        const guidance = getPendingGuidance(sessionId);
+        pi.sendUserMessage(
+            guidance
+                ? `[Goal not met] ${guidance}\nContinue working toward the goal: ${state.condition.description}`
+                : `Work toward this goal until it is met: ${state.condition.description}`,
+            { deliverAs: "steer" },
+        );
+        return;
+    }
+
+    // The evaluator is now eligible to run. The first turn after the minimum
+    // wait is always evaluated (so goals satisfied right at the boundary
+    // resolve immediately); after that, LLM evaluations are throttled to turns
+    // whose count is a multiple of `evaluateRate`. Keyword evaluations run
+    // every turn. Skipped turns still enforce budgets and keep the agent looping.
+    if (state.turnCount > firstEvalTurn && state.turnCount % evaluateRate !== 0) {
         const budgetReason = checkBudget(state);
         if (budgetReason) {
             stopForBudget(sessionId, state, budgetReason, pi);
@@ -252,7 +303,7 @@ async function runGoalStopCheck(
     } else {
         try {
             const config = loadConfig(ctx.cwd);
-            const resolved = await resolveEvaluatorModel(ctx.modelRegistry, config.goal?.evaluatorModel);
+            const resolved = await resolveEvaluatorModel(ctx.modelRegistry, config.goal?.evaluatorModel, ctx.model);
             if (!resolved) {
                 const reason = "No configured evaluator model with auth is available; skipping LLM evaluation.";
                 log.warn(reason);
