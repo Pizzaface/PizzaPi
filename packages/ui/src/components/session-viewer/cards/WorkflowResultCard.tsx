@@ -24,6 +24,7 @@ import {
   XCircleIcon,
   ChevronRightIcon,
   CircleIcon,
+  TerminalIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ToolCardShell } from "@/components/ui/tool-card";
@@ -303,6 +304,36 @@ function PhaseSection({ phase, defaultOpen }: { phase: WorkflowPhase; defaultOpe
   );
 }
 
+function ResultSection({ result }: { result: unknown }) {
+  const [expanded, setExpanded] = React.useState(true);
+  const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
+  if (text.length === 0) return null;
+
+  return (
+    <div className="border-t border-zinc-800/60">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((e) => !e)}
+        className="flex w-full items-center gap-2 px-3 py-2 hover:bg-zinc-900/40 transition-colors text-left"
+      >
+        <ChevronRightIcon
+          className={cn("size-3.5 shrink-0 text-zinc-500 transition-transform", expanded && "rotate-90")}
+        />
+        <TerminalIcon className="size-3.5 shrink-0 text-zinc-500" />
+        <span className="text-[0.8rem] font-medium text-zinc-300">Result</span>
+      </button>
+      {expanded && (
+        <div className="px-3 pb-3 pl-9">
+          <pre className="text-[0.75rem] whitespace-pre-wrap break-words leading-relaxed text-zinc-300 bg-zinc-900/50 rounded px-2.5 py-2 border border-zinc-800/60">
+            {text}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main component ───────────────────────────────────────────────────────
 
 export function WorkflowResultCard({
@@ -332,7 +363,7 @@ export function WorkflowResultCard({
     );
   }
 
-  const { name, status, phases, totalAgents, totalTokens, error } = workflow;
+  const { name, status, phases, totalAgents, totalTokens, error, result } = workflow;
 
   return (
     <ToolCardShell className="border-zinc-700/80">
@@ -370,6 +401,9 @@ export function WorkflowResultCard({
           {error}
         </div>
       )}
+
+      {/* Final result */}
+      {status === "done" && result !== undefined && <ResultSection result={result} />}
     </ToolCardShell>
   );
 }

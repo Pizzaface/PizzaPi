@@ -97,6 +97,51 @@ describe("WorkflowResultCard", () => {
     expect(text).toContain("Workflow failed: boom");
   });
 
+  test("renders a done workflow's final result", () => {
+    const details = {
+      name: "audit",
+      status: "done",
+      phases: [{ label: "Phase 1", agents: [{ id: "a1", prompt: "x", status: "done", result: "agent text" }] }],
+      totalAgents: 1,
+      totalTokens: 10,
+      result: "The aggregate answer.",
+    };
+
+    const { container } = render(<WorkflowResultCard details={details} />);
+    const text = container.textContent ?? "";
+    expect(text).toContain("Result");
+    expect(text).toContain("The aggregate answer.");
+    expect(text).not.toContain("agent text"); // agent result is collapsed by default
+  });
+
+  test("stringifies non-string workflow results", () => {
+    const details = {
+      status: "done",
+      phases: [],
+      totalAgents: 0,
+      totalTokens: 0,
+      result: { summary: "ok" },
+    };
+
+    const { container } = render(<WorkflowResultCard details={details} />);
+    expect(container.textContent ?? "").toContain('"summary"');
+    expect(container.textContent ?? "").toContain("ok");
+  });
+
+  test("does not render a result section while workflow is running", () => {
+    const details = {
+      status: "running",
+      phases: [{ label: "Phase 1", agents: [{ id: "a1", prompt: "x", status: "running" }] }],
+      totalAgents: 1,
+      totalTokens: 0,
+      result: "early value",
+    };
+
+    const { container } = render(<WorkflowResultCard details={details} />);
+    expect(container.textContent ?? "").not.toContain("Result");
+    expect(container.textContent ?? "").not.toContain("early value");
+  });
+
   test("handles empty/partial details without crashing", () => {
     const { container: emptyContainer } = render(<WorkflowResultCard details={undefined} />);
     expect(emptyContainer.textContent ?? "").toContain("Workflow");
