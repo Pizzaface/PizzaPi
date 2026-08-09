@@ -362,6 +362,35 @@ describe("native push registration", () => {
         expect(fetchCalled).toBe(false);
     });
 
+    authIt("sends native notifications only for input requests and completed agents", async () => {
+        await registerNativePush({ userId: "user-native-events", platform: "android" });
+        const originalNtfyUrl = process.env.PIZZAPI_NTFY_URL;
+        process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
+
+        let fetchCalled = false;
+        const origFetch = globalThis.fetch;
+        (globalThis as any).fetch = () => {
+            fetchCalled = true;
+            return Promise.resolve(new Response("ok", { status: 200 }));
+        };
+        try {
+            for (const type of ["agent_error", "session_started", "session_ended"] as const) {
+                await sendPushToUser("user-native-events", {
+                    type,
+                    title: "Unexpected alert",
+                    body: "something happened",
+                    sessionId: "sess-native-events",
+                });
+            }
+        } finally {
+            (globalThis as any).fetch = origFetch;
+            if (originalNtfyUrl === undefined) delete process.env.PIZZAPI_NTFY_URL;
+            else process.env.PIZZAPI_NTFY_URL = originalNtfyUrl;
+        }
+
+        expect(fetchCalled).toBe(false);
+    });
+
     authIt("sendPushToUser publishes to ntfy with mapped headers when configured", async () => {
         await registerNativePush({ userId: "user-E", platform: "android" });
         const reg = (await getNativeRegistrationsForUser("user-E"))[0];
