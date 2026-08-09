@@ -270,7 +270,7 @@ function createInitialSessionState(): SessionState {
 
 export function App() {
   const { data: session, isPending } = usePizzaPiSession();
-  // Drive native badge + Android activity pill from the attention store.
+  // Drive the native badge from the attention store.
   // No-op outside the bundled Capacitor app.
   useMobileNativeActivity();
   const { runners: feedRunners, status: runnersStatus } = useRunnersFeed({

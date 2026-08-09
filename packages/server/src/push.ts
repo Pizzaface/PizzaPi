@@ -378,6 +378,7 @@ function buildNtfyPublish(payload: PushPayload): Record<string, unknown> {
  * Publish a push payload to all native (ntfy) registrations for a user.
  * Never throws — failures are logged and stale registrations pruned. Caller
  * (sendPushToUser) treats this as best-effort alongside the Web Push fan-out.
+ * Native devices alert only when the agent needs input or finishes.
  *
  * Linked child sessions never send native push by default (docs: "only
  * top-level sessions send push notifications") — native registrations have
@@ -386,7 +387,7 @@ function buildNtfyPublish(payload: PushPayload): Record<string, unknown> {
  * per-registration escape hatch yet — add one here if that's ever needed.)
  */
 async function sendNtfyToUser(userId: string, payload: PushPayload, isChildSession: boolean): Promise<void> {
-    if (isChildSession) return;
+    if (isChildSession || (payload.type !== "agent_needs_input" && payload.type !== "agent_finished")) return;
     const cfg = ntfyConfig();
     if (!cfg.url) return;
     const registrations = await getNativeRegistrationsForUser(userId);

@@ -22,38 +22,16 @@ const origIsNativePlatform = Capacitor.isNativePlatform;
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const pluginCalls = {
     requestPermissions: 0,
-    createChannel: 0,
-    schedule: 0,
-    cancel: 0,
     badgeRequestPermissions: 0,
     badgeSet: 0,
     badgeClear: 0,
 };
-
-const lastChannel: { value?: any } = {};
-const lastSchedule: { value?: any } = {};
 
 mock.module("@capacitor/local-notifications", () => ({
     LocalNotifications: {
         requestPermissions: () => {
             pluginCalls.requestPermissions++;
             return Promise.resolve({ display: "granted" });
-        },
-        createChannel: (channel: any) => {
-            pluginCalls.createChannel++;
-            lastChannel.value = channel;
-            return Promise.resolve();
-        },
-        schedule: (options: any) => {
-            pluginCalls.schedule++;
-            lastSchedule.value = options;
-            return Promise.resolve({
-                notifications: options.notifications.map((n: any) => ({ id: n.id })),
-            });
-        },
-        cancel: () => {
-            pluginCalls.cancel++;
-            return Promise.resolve();
         },
     },
 }));
@@ -106,14 +84,9 @@ function makeLocalStorage(serverUrl: string | null): Storage {
 
 function resetPluginCalls() {
     pluginCalls.requestPermissions = 0;
-    pluginCalls.createChannel = 0;
-    pluginCalls.schedule = 0;
-    pluginCalls.cancel = 0;
     pluginCalls.badgeRequestPermissions = 0;
     pluginCalls.badgeSet = 0;
     pluginCalls.badgeClear = 0;
-    lastChannel.value = undefined;
-    lastSchedule.value = undefined;
 }
 
 function restorePlatform() {
@@ -162,15 +135,6 @@ describe("mobile-native (web no-op path)", () => {
         expect(pluginCalls.badgeSet).toBe(0);
         expect(pluginCalls.badgeClear).toBe(0);
     });
-
-    test("setAndroidActivityPill is a no-op on web for both transitions", async () => {
-        await expect(mod.setAndroidActivityPill(1)).resolves.toBeUndefined();
-        await expect(mod.setAndroidActivityPill(3, "custom summary")).resolves.toBeUndefined();
-        await expect(mod.setAndroidActivityPill(0)).resolves.toBeUndefined();
-        expect(pluginCalls.createChannel).toBe(0);
-        expect(pluginCalls.schedule).toBe(0);
-        expect(pluginCalls.cancel).toBe(0);
-    });
 });
 
 describe("mobile-native (android path)", () => {
@@ -201,51 +165,5 @@ describe("mobile-native (android path)", () => {
         await mod.setActivityBadge(0);
         expect(pluginCalls.badgeSet).toBe(1);
         expect(pluginCalls.badgeClear).toBe(1);
-    });
-
-    test("setAndroidActivityPill creates a low-importance channel and schedules the pill", async () => {
-        await mod.setAndroidActivityPill(1);
-
-        expect(pluginCalls.createChannel).toBe(1);
-        expect(lastChannel.value).toMatchObject({
-            id: "pizzapi-agent-activity",
-            importance: 1,
-            vibration: false,
-            lights: false,
-        });
-
-        expect(pluginCalls.schedule).toBe(1);
-        const notification = lastSchedule.value.notifications[0];
-        // Must stay out of NtfyForegroundService.java's id range
-        // (SUMMARY=0x8_FFFF, SERVICE=0x9_0000, FIRST_MESSAGE=0x9_0001+).
-        expect(notification.id).toBe(0xa_0000);
-        expect(notification).toMatchObject({
-            id: 0xa_0000,
-            title: "PizzaPi",
-            body: "Agent session running",
-            channelId: "pizzapi-agent-activity",
-            ongoing: true,
-            silent: true,
-        });
-    });
-
-    test("setAndroidActivityPill uses the provided summary", async () => {
-        await mod.setAndroidActivityPill(1, "Baking the pizza");
-        expect(lastSchedule.value.notifications[0].body).toBe("Baking the pizza");
-    });
-
-    test("setAndroidActivityPill is idempotent while running", async () => {
-        await mod.setAndroidActivityPill(1);
-        await mod.setAndroidActivityPill(1);
-        await mod.setAndroidActivityPill(2);
-        expect(pluginCalls.createChannel).toBe(1);
-        expect(pluginCalls.schedule).toBe(1);
-        expect(pluginCalls.cancel).toBe(0);
-    });
-
-    test("setAndroidActivityPill cancels the pill when runningCount drops to zero", async () => {
-        await mod.setAndroidActivityPill(1);
-        await mod.setAndroidActivityPill(0);
-        expect(pluginCalls.cancel).toBe(1);
     });
 });
