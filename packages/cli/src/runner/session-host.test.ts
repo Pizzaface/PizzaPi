@@ -65,6 +65,14 @@ function makeHost(opts: { sessionOverrides?: Record<string, unknown>; replaceFn?
     return { host, lifecycle, session: () => current, setSession: (s: Record<string, unknown>) => (current = s) };
 }
 
+describe("SessionHost.abort", () => {
+    test("waits for the active session to become idle", async () => {
+        const { host, session } = makeHost();
+        await host.abort();
+        expect(session().calls).toContainEqual({ method: "abort", args: [] });
+    });
+});
+
 describe("SessionHost.sendUserMessage", () => {
     test("string content maps to prompt with extension defaults", async () => {
         const { host, session } = makeHost();

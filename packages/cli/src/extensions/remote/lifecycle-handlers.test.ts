@@ -171,6 +171,19 @@ describe("agent_end — session_error / session_complete ordering", () => {
         expect(emitted).toEqual([]);
     });
 
+    test("does not complete while a steering slash command aborts then dispatches", () => {
+        const { agentEnd, agentSettled, emitted, rctx } = setup(null);
+        (rctx as any).pendingSteeringSlashCommands = 1;
+
+        agentEnd({ messages: [] }, agentEndCtx);
+        expect((rctx as any).isAgentSettling).toBe(true);
+        agentSettled({}, agentEndCtx);
+
+        expect(emitted).toEqual([]);
+        expect((rctx as any).isAgentSettling).toBe(false);
+        expect((rctx as any).lastRetryableError).toBeNull();
+    });
+
     test("no session_error when a retry recovers before settling", () => {
         const { agentEnd, agentSettled, emitted, rctx } = setup({
             errorMessage: "You have exceeded your usage limit",

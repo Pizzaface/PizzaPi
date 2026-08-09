@@ -373,6 +373,7 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
 
     pi.on("agent_start", (event: any) => {
         rctx.isAgentActive = true;
+        rctx.isAgentSettling = false;
         rctx.lastRetryableError = null;
         emitRetryStateChanged(rctx, null);
         rctx.forwardEvent(event);
@@ -381,6 +382,7 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
 
     pi.on("agent_end", (event: any, ctx: any) => {
         rctx.isAgentActive = false;
+        rctx.isAgentSettling = true;
         // pi's agent_end.messages contains only THIS run's messages (prompts +
         // new assistant/tool messages), not the full transcript. The web UI and
         // the server's snapshot cache both treat agent_end.messages as a full
@@ -398,7 +400,17 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
     });
 
     function handleAgentSettled(_event: any, ctx: any) {
+        rctx.isAgentSettling = false;
         if (settledMessages === null) return; // settled without a preceding agent_end
+        // A steering slash command aborts its predecessor because pi executes
+        // extension commands before applying streaming behavior. Do not let
+        // that interim settle report completion or auto-close the session.
+        if (rctx.pendingSteeringSlashCommands > 0) {
+            settledMessages = null;
+            rctx.lastRetryableError = null;
+            emitRetryStateChanged(rctx, null);
+            return;
+        }
         if (hasActiveSubagents()) {
             deferredSettlementCtx = ctx;
             noteSubagentSettlementDeferred();

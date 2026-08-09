@@ -33,7 +33,9 @@ function setup(options: {
     input: string;
     forkMessages?: ForkMessageOption[];
     onExec?: (payload: unknown) => boolean | void;
+    onSendInput?: SlashCommandDeps["onSendInput"];
     onRequestForkMessages?: () => boolean | void;
+    isAgentActive?: boolean;
 }) {
     const setInputCalls: string[] = [];
     const deps: SlashCommandDeps = {
@@ -41,6 +43,8 @@ function setup(options: {
         sessionIdRef: { current: "sess-1" },
         compactingRef: { current: false },
         onExec: options.onExec,
+        onSendInput: options.onSendInput,
+        isAgentActive: options.isAgentActive,
         forkMessages: options.forkMessages,
         onRequestForkMessages: options.onRequestForkMessages,
         skillCommands: [],
@@ -61,6 +65,21 @@ const messages: ForkMessageOption[] = [
     { entryId: "e2", text: "second question" },
     { entryId: "e3", text: "third about CSS" },
 ];
+
+describe("slash command delivery", () => {
+    test("steers runner slash commands while the agent is active", () => {
+        const sent: unknown[] = [];
+        const { view } = setup({
+            input: "/goal finish the task",
+            isAgentActive: true,
+            onSendInput: (message) => { sent.push(message); },
+        });
+
+        act(() => { view.result.current.executeSlashCommand("/goal finish the task"); });
+
+        expect(sent).toEqual([{ text: "/goal finish the task", files: [], deliverAs: "steer", suppressOptimistic: true }]);
+    });
+});
 
 describe("rewind mode", () => {
     test("activates for /rewind and /fork, not for other commands", () => {

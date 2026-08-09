@@ -197,9 +197,13 @@ export interface RelayContext {
 
     // Mutable flags
     isAgentActive: boolean;
+    /** True after an attempt ends, until the agent settles its retries. */
+    isAgentSettling: boolean;
     isCompacting: boolean;
     shuttingDown: boolean;
     wasAborted: boolean;
+    /** Number of steering slash commands aborting a turn before dispatch. */
+    pendingSteeringSlashCommands: number;
     sessionStartedAt: number | null;
     lastRetryableError: RetryState | null;
 

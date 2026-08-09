@@ -312,6 +312,7 @@ export function SessionViewer({
     compactingRef,
     onExec,
     onSendInput,
+    isAgentActive: agentActive,
     resumeSessions,
     onRequestResumeSessions,
     forkMessages,
