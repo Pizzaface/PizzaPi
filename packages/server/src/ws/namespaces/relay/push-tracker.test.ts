@@ -1,5 +1,48 @@
-import { describe, it, expect } from "bun:test";
-import { extractLastAssistantText } from "./push-tracker.js";
+import { beforeEach, describe, it, expect, mock } from "bun:test";
+
+const finishedCalls: unknown[][] = [];
+
+mock.module("../../../push.js", () => ({
+    notifyAgentFinished: (...args: unknown[]) => finishedCalls.push(args),
+    notifyAgentNeedsInput: () => {},
+    notifyAgentError: () => {},
+}));
+mock.module("../../sio-state/index.js", () => ({
+    setPushPendingQuestion: async () => {},
+    clearPushPendingQuestion: async () => {},
+    isLinkedChildForSuppression: async () => false,
+}));
+mock.module("../../sio-registry.js", () => ({
+    getSharedSession: async () => ({
+        userId: "user-connected",
+        sessionName: "Connected session",
+        parentSessionId: null,
+        linkedParentId: null,
+    }),
+    getViewerCount: async () => 1,
+}));
+
+const { checkPushNotifications, extractLastAssistantText } = await import("./push-tracker.js");
+
+beforeEach(() => finishedCalls.splice(0));
+
+describe("checkPushNotifications", () => {
+    it("keeps native delivery enabled when connected viewers suppress Web Push", async () => {
+        await checkPushNotifications("sess-connected", {
+            type: "agent_end",
+            messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }],
+        });
+
+        expect(finishedCalls).toEqual([[
+            "user-connected",
+            "sess-connected",
+            "Connected session",
+            false,
+            "done",
+            true,
+        ]]);
+    });
+});
 
 describe("extractLastAssistantText", () => {
     it("returns the last assistant message's text", () => {

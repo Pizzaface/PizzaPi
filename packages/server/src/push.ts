@@ -557,8 +557,16 @@ function isEventEnabled(enabledEvents: string, eventType: PushEventType): boolea
  *   only ever offered an opt-IN to further suppression, never a guaranteed
  *   "receive despite being a child" opt-out, so there is nothing to preserve
  *   here — it remains stored/toggleable but is now redundant.
+ * @param suppressWebPush - Skip browser subscriptions while still delivering
+ *   native Android push. Used when a live Socket.IO viewer already covers the
+ *   browser path but other registered Android devices still need notification.
  */
-export async function sendPushToUser(userId: string, payload: PushPayload, isChildSession = false): Promise<void> {
+export async function sendPushToUser(
+    userId: string,
+    payload: PushPayload,
+    isChildSession = false,
+    suppressWebPush = false,
+): Promise<void> {
     const subscriptions = await getSubscriptionsForUser(userId);
 
     // Native (ntfy) fan-out runs regardless of Web Push subscriptions — a user
@@ -576,7 +584,7 @@ export async function sendPushToUser(userId: string, payload: PushPayload, isChi
         ntfyPromise,
         ...subscriptions.map(async (sub) => {
             if (!isEventEnabled(sub.enabledEvents, payload.type)) return;
-            if (isChildSession) return;
+            if (isChildSession || suppressWebPush) return;
 
             let keys: { p256dh: string; auth: string };
             try {
@@ -622,6 +630,7 @@ export function notifyAgentFinished(
     sessionName?: string | null,
     isChildSession = false,
     replyText?: string,
+    suppressWebPush = false,
 ): void {
     const label = sessionName ?? sessionId.slice(0, 8);
     const reply = replyText?.trim();
@@ -633,7 +642,7 @@ export function notifyAgentFinished(
             : `Your agent in "${label}" has finished its task.`,
         sessionId,
         sessionName: label,
-    }, isChildSession).catch((err) => {
+    }, isChildSession, suppressWebPush).catch((err) => {
         log.error("notifyAgentFinished failed:", err);
     });
 }
@@ -651,6 +660,7 @@ export function notifyAgentNeedsInput(
     options?: string[],
     toolCallId?: string,
     isChildSession = false,
+    suppressWebPush = false,
 ): void {
     const label = sessionName ?? sessionId.slice(0, 8);
     const body = question
@@ -693,7 +703,7 @@ export function notifyAgentNeedsInput(
             ...(options && options.length > 0 ? { options } : {}),
             ...(toolCallId ? { toolCallId } : {}),
         },
-    }, isChildSession).catch((err) => {
+    }, isChildSession, suppressWebPush).catch((err) => {
         log.error("notifyAgentNeedsInput failed:", err);
     });
 }
@@ -701,7 +711,14 @@ export function notifyAgentNeedsInput(
 /**
  * Convenience: notify a user that an error occurred.
  */
-export function notifyAgentError(userId: string, sessionId: string, errorMessage?: string, sessionName?: string | null, isChildSession = false): void {
+export function notifyAgentError(
+    userId: string,
+    sessionId: string,
+    errorMessage?: string,
+    sessionName?: string | null,
+    isChildSession = false,
+    suppressWebPush = false,
+): void {
     const label = sessionName ?? sessionId.slice(0, 8);
     const body = errorMessage
         ? `Error in "${label}": ${errorMessage.slice(0, 120)}`
@@ -712,7 +729,7 @@ export function notifyAgentError(userId: string, sessionId: string, errorMessage
         body,
         sessionId,
         sessionName: label,
-    }, isChildSession).catch((err) => {
+    }, isChildSession, suppressWebPush).catch((err) => {
         log.error("notifyAgentError failed:", err);
     });
 }

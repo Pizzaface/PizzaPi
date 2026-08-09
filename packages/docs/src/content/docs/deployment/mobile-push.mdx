@@ -24,7 +24,8 @@ same approach Home Assistant and Element use for Google-free push.
    self-hosted ntfy instance with a single HTTP `POST`.
 2. The PizzaPi Android app holds a persistent **subscribe stream** to that topic
    in an Android **foreground service**, and posts a local notification when a
-   message arrives.
+   message arrives. Native registrations receive this fan-out even when a web
+   viewer is connected; the viewer only suppresses duplicate Web Push delivery.
 3. Because the connection is held by a foreground service, the app shows a
    persistent "PizzaPi — connected" notification. This is the unavoidable price
    of Google-free background push on Android.

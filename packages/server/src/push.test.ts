@@ -472,6 +472,38 @@ describe("native push registration", () => {
         expect(body.click).toBeUndefined(); // PIZZAPI_BASE_URL unset → omitted
     });
 
+    authIt("still sends native push when web push is suppressed for connected viewers", async () => {
+        await registerNativePush({ userId: "user-connected", platform: "android" });
+        await insertSub("sub-connected", "user-connected", "https://example.com/push/connected");
+        await getKysely()
+            .updateTable("push_subscription" as any)
+            .set({ keys: "not-json" })
+            .where("id", "=", "sub-connected")
+            .execute();
+        process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
+
+        let ntfyPublishes = 0;
+        const origFetch = globalThis.fetch;
+        (globalThis as any).fetch = () => {
+            ntfyPublishes++;
+            return Promise.resolve(new Response("ok", { status: 200 }));
+        };
+        try {
+            await sendPushToUser("user-connected", {
+                type: "agent_finished",
+                title: "Agent finished",
+                body: "done",
+                sessionId: "sess-connected",
+            }, false, true);
+        } finally {
+            (globalThis as any).fetch = origFetch;
+            delete process.env.PIZZAPI_NTFY_URL;
+        }
+
+        expect(ntfyPublishes).toBe(1);
+        expect(await getSubscriptionsForUser("user-connected")).toHaveLength(1);
+    });
+
     authIt("sendPushToUser prunes ntfy registrations on 403/404", async () => {
         await registerNativePush({ userId: "user-F", platform: "android" });
         process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
