@@ -147,7 +147,7 @@ import {
   shouldRequestChunkRecovery,
 } from "@/lib/session-seq";
 import { createLogger } from "@pizzapi/tools";
-import { isActiveViewerSessionPayload, matchesHydrationGeneration, matchesViewerGeneration } from "@/lib/viewer-switch";
+import { isActiveViewerSessionPayload, matchesHydrationGeneration, matchesViewerGeneration, matchesViewerSession } from "@/lib/viewer-switch";
 
 // Lazy-loaded low-frequency surfaces. Auth, session sidebar/viewer, banners,
 // and loading/error UI remain eager so critical paths stay fast.
@@ -3360,7 +3360,14 @@ export function App() {
           logFrontendEvent("viewer", "warning", "Malformed viewer event envelope", envelope.error);
           return;
         }
-        const { event: rawEvent, seq: envelopeSeq, deltaReplay, generation } = envelope.value;
+        const { event: rawEvent, seq: envelopeSeq, deltaReplay, generation, sessionId: envelopeSessionId } = envelope.value;
+
+        // Session-stamped envelopes from another session are cross-session
+        // bleed (in-flight old-room broadcasts during a tab switch) — drop
+        // them before the generation/hydration checks can accept them.
+        if (!matchesViewerSession(lifecycleRefs.activeSessionId.current, envelopeSessionId)) {
+          return;
+        }
 
         const eventType =
           rawEvent && typeof rawEvent === "object" && typeof (rawEvent as Record<string, unknown>).type === "string"

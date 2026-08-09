@@ -33,6 +33,8 @@ export interface ViewerServerToClientEvents {
     deltaReplay?: true;
     /** Optional switch generation echoed back during logical session switches. */
     generation?: number;
+    /** Session the event belongs to — lets the client drop cross-session bleed. */
+    sessionId?: string;
   }) => void;
 
   /** Notifies the viewer that the TUI disconnected */

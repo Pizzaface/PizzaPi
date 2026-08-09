@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isActiveViewerSessionPayload, matchesHydrationGeneration, matchesViewerGeneration } from "./viewer-switch";
+import { isActiveViewerSessionPayload, matchesHydrationGeneration, matchesViewerGeneration, matchesViewerSession } from "./viewer-switch";
 
 describe("matchesViewerGeneration", () => {
   test("accepts payloads without a generation", () => {
@@ -32,6 +32,24 @@ describe("matchesHydrationGeneration", () => {
 
   test("still rejects explicitly stale generations", () => {
     expect(matchesHydrationGeneration(4, 3, "session_active", true)).toBe(false);
+  });
+});
+
+describe("matchesViewerSession", () => {
+  test("accepts unstamped envelopes (older servers)", () => {
+    expect(matchesViewerSession("sess-a", undefined)).toBe(true);
+  });
+
+  test("accepts envelopes stamped with the active session", () => {
+    expect(matchesViewerSession("sess-a", "sess-a")).toBe(true);
+  });
+
+  test("rejects envelopes stamped with another session (tab-switch bleed)", () => {
+    expect(matchesViewerSession("sess-a", "sess-b")).toBe(false);
+  });
+
+  test("rejects stamped envelopes when no session is active", () => {
+    expect(matchesViewerSession(null, "sess-b")).toBe(false);
   });
 });
 

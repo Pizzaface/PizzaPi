@@ -195,6 +195,8 @@ export interface ViewerEventEnvelope {
   replay?: boolean;
   deltaReplay?: boolean;
   generation?: number;
+  /** Session the event belongs to. Absent on envelopes from older servers. */
+  sessionId?: string;
 }
 
 export function parseViewerEventEnvelope(raw: unknown): ParseResult<ViewerEventEnvelope> {
@@ -212,6 +214,7 @@ export function parseViewerEventEnvelope(raw: unknown): ParseResult<ViewerEventE
       replay: optionalBoolean(raw.replay),
       deltaReplay: optionalBoolean(raw.deltaReplay),
       generation: optionalNumber(raw.generation),
+      sessionId: typeof raw.sessionId === "string" ? raw.sessionId : undefined,
     },
   };
 }

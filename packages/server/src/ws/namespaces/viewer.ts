@@ -493,6 +493,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                         event: withLivenessOnlyHint(JSON.parse(freshSession.lastHeartbeat)),
                         seq: freshSeq,
                         generation,
+                        sessionId: nextSessionId,
                     });
                 } catch {}
             }
@@ -510,6 +511,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                         event: withMetaViaHubHint({ type: "session_active", state: JSON.parse(freshSession.lastState) }),
                         seq: freshSeq,
                         generation,
+                        sessionId: nextSessionId,
                     });
                 } catch {}
             } else {
