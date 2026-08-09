@@ -2101,14 +2101,57 @@ export class GitService implements ServiceHandler {
 
         try {
             const { stdout, stderr } = await this._execGit(["worktree", "prune", "-v"], { cwd, timeout: 15000 });
-            const output = (stdout + "\n" + stderr).trim();
+            const lines = [(stdout + "\n" + stderr).trim()].filter(Boolean);
+            lines.push(...await this.removeMergedWorktrees(cwd));
             await this.invalidateStatusCacheFamily(cwd);
+            const output = lines.join("\n");
             this.emit("git_worktree_prune_result", { ok: true, ...(output ? { message: output } : {}) }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_worktree_prune_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         } finally {
             this.endRepoMutation(mutation);
         }
+    }
+
+    /**
+     * Remove worktree directories that are safe to delete: clean (no uncommitted
+     * changes) and on a branch fully merged into origin's default branch. The
+     * branch ref itself survives — only the directory is reclaimed.
+     */
+    private async removeMergedWorktrees(cwd: string): Promise<string[]> {
+        const defaultRef = await this.resolveDefaultRemoteRef(cwd);
+        if (!defaultRef) return [];
+        const defaultBranch = defaultRef.replace(/^[^/]+\//, "");
+        const removed: string[] = [];
+        const { worktrees } = await this.collectWorktrees(cwd);
+        for (const wt of worktrees) {
+            if (wt.isMain || wt.isDetached || !wt.branch || wt.branch === defaultBranch || wt.changeCount > 0) continue;
+            try {
+                // Throws (non-zero exit) when the branch tip is not an ancestor of the default ref.
+                // ponytail: ancestor check misses squash-merged branches; add remote-branch-gone detection if that matters.
+                await this._execGit(["merge-base", "--is-ancestor", wt.branch, defaultRef], { cwd, timeout: 10000 });
+                // Non-force: git itself refuses dirty or locked worktrees — last safety net.
+                await this._execGit(["worktree", "remove", "--", wt.path], { cwd, timeout: 30000 });
+                removed.push(`Removed merged worktree ${wt.displayPath} (${wt.branch})`);
+            } catch { /* not merged, locked, or dirty — keep it */ }
+        }
+        return removed;
+    }
+
+    /** Resolve origin's default branch ref (e.g. "origin/main"), or null if unknown. */
+    private async resolveDefaultRemoteRef(cwd: string): Promise<string | null> {
+        try {
+            const { stdout } = await this._execGit(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], { cwd, timeout: 5000 });
+            const ref = stdout.trim();
+            if (ref) return ref;
+        } catch { /* fall through */ }
+        for (const ref of ["origin/main", "origin/master"]) {
+            try {
+                await this._execGit(["rev-parse", "--verify", "--quiet", ref], { cwd, timeout: 5000 });
+                return ref;
+            } catch { /* try next */ }
+        }
+        return null;
     }
 
     // ── git stash list ──────────────────────────────────────────────────
