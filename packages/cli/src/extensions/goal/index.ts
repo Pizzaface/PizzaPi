@@ -215,7 +215,9 @@ async function runGoalStopCheck(
     const sessionId = getSessionId(ctx);
     let state = getGoal(sessionId);
     if (!state || state.status !== "active") return;
-    if (isAssistantMessage(event.message) && event.message.stopReason === "aborted") return;
+    // Aborts and provider errors (including rate limits) are not completed
+    // turns. Do not spend/evaluate them or enqueue another goal continuation.
+    if (isAssistantMessage(event.message) && (event.message.stopReason === "aborted" || event.message.stopReason === "error")) return;
 
     const usage = getAssistantUsage(event.message);
     state = recordTurnSpend(sessionId, usage.tokens, usage.cost) ?? state;
