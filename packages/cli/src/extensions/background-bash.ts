@@ -28,7 +28,7 @@ export { tailFile } from "../runner/session-procs.js";
  * and this override keeps the name "bash".
  */
 
-const DEFAULT_BACKGROUND_AFTER_SECONDS = 15;
+const DEFAULT_BACKGROUND_AFTER_SECONDS = 300;
 const DELIVERY_RETRY_MS = 10_000;
 const MAX_DELIVERY_ATTEMPTS = 3;
 
@@ -41,6 +41,9 @@ export function backgroundAfterSeconds(): number {
 
 // ponytail: config read once per process (bash runs often); restart to change it.
 let configuredSeconds: number | undefined | null = null;
+export function resetBackgroundBashConfigCache() {
+    configuredSeconds = null;
+}
 function readConfiguredSeconds(): number | undefined {
     if (configuredSeconds === null) {
         try {
@@ -458,7 +461,7 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
         name: "bash_output",
         label: "Bash Output",
         description:
-            "Get new output from a background shell since the last bash_output call (incremental — already-seen output is not repeated). Call without pid to list all background shells and their status. Use this to check progress instead of re-reading the log file.",
+            "Get new output from a background shell since the last bash_output call (incremental — already-seen output is not repeated). Call without pid to list all background shells and their status. Use this to check progress instead of re-reading the log file. Do NOT call bash_output(pid) in a tight loop; do other work between checks and let the exit notification tell you when the shell is done.",
         parameters: {
             type: "object",
             properties: {
