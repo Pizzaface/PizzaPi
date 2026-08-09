@@ -2115,27 +2115,52 @@ export class GitService implements ServiceHandler {
 
     /**
      * Remove worktree directories that are safe to delete: clean (no uncommitted
-     * changes) and on a branch fully merged into origin's default branch. The
+     * changes) and on a branch either fully merged into origin's default branch
+     * or whose upstream was deleted on the remote (e.g. squash-merged PR). The
      * branch ref itself survives — only the directory is reclaimed.
      */
     private async removeMergedWorktrees(cwd: string): Promise<string[]> {
         const defaultRef = await this.resolveDefaultRemoteRef(cwd);
         if (!defaultRef) return [];
         const defaultBranch = defaultRef.replace(/^[^/]+\//, "");
+        // Best-effort prune-fetch so branches deleted on the remote show as [gone].
+        try {
+            await this._execGit(["fetch", "--prune", "--quiet", "origin"], { cwd, timeout: 30000 });
+        } catch { /* offline — gone-detection just sees stale tracking refs */ }
         const removed: string[] = [];
         const { worktrees } = await this.collectWorktrees(cwd);
         for (const wt of worktrees) {
             if (wt.isMain || wt.isDetached || !wt.branch || wt.branch === defaultBranch || wt.changeCount > 0) continue;
+            const merged = await this.isAncestorOf(cwd, wt.branch, defaultRef);
+            const gone = merged ? false : await this.isUpstreamGone(cwd, wt.branch);
+            if (!merged && !gone) continue;
             try {
-                // Throws (non-zero exit) when the branch tip is not an ancestor of the default ref.
-                // ponytail: ancestor check misses squash-merged branches; add remote-branch-gone detection if that matters.
-                await this._execGit(["merge-base", "--is-ancestor", wt.branch, defaultRef], { cwd, timeout: 10000 });
                 // Non-force: git itself refuses dirty or locked worktrees — last safety net.
                 await this._execGit(["worktree", "remove", "--", wt.path], { cwd, timeout: 30000 });
-                removed.push(`Removed merged worktree ${wt.displayPath} (${wt.branch})`);
-            } catch { /* not merged, locked, or dirty — keep it */ }
+                removed.push(`Removed ${merged ? "merged" : "remote-deleted"} worktree ${wt.displayPath} (${wt.branch})`);
+            } catch { /* locked or raced dirty — keep it */ }
         }
         return removed;
+    }
+
+    /** True when `rev` is an ancestor of `ref` (i.e. fully merged). */
+    private async isAncestorOf(cwd: string, rev: string, ref: string): Promise<boolean> {
+        try {
+            await this._execGit(["merge-base", "--is-ancestor", rev, ref], { cwd, timeout: 10000 });
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    /** True when the branch has an upstream configured but it no longer exists on the remote. */
+    private async isUpstreamGone(cwd: string, branch: string): Promise<boolean> {
+        try {
+            const { stdout } = await this._execGit(["for-each-ref", "--format=%(upstream:track)", `refs/heads/${branch}`], { cwd, timeout: 5000 });
+            return stdout.trim() === "[gone]";
+        } catch {
+            return false;
+        }
     }
 
     /** Resolve origin's default branch ref (e.g. "origin/main"), or null if unknown. */

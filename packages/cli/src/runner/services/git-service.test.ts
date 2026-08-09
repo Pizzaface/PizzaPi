@@ -2210,17 +2210,20 @@ describe("GitService worktree add/prune", () => {
         expect((r.payload as any).ok).toBe(true);
     });
 
-    test("prune removes clean merged worktrees but keeps dirty and unmerged ones", async () => {
+    test("prune removes clean merged and remote-deleted worktrees but keeps dirty and unmerged ones", async () => {
         const removedPaths: string[] = [];
+        let fetched = false;
         const porcelain = [
             "worktree /repo", "HEAD aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "branch refs/heads/main", "",
             "worktree /repo/.worktrees/merged", "HEAD bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "branch refs/heads/feat/merged", "",
             "worktree /repo/.worktrees/unmerged", "HEAD cccccccccccccccccccccccccccccccccccccccc", "branch refs/heads/feat/unmerged", "",
             "worktree /repo/.worktrees/dirty", "HEAD dddddddddddddddddddddddddddddddddddddddd", "branch refs/heads/feat/dirty", "",
+            "worktree /repo/.worktrees/squashed", "HEAD eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "branch refs/heads/feat/squashed", "",
         ].join("\n");
         const service = new GitService({
             execGit: async (args, options) => {
                 if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: "/repo\n", stderr: "" };
+                if (args[0] === "fetch") { fetched = true; return { stdout: "", stderr: "" }; }
                 if (args[0] === "worktree" && args[1] === "prune") return { stdout: "", stderr: "" };
                 if (args[0] === "worktree" && args[1] === "list") return { stdout: porcelain + "\n", stderr: "" };
                 if (args[0] === "status") {
@@ -2232,6 +2235,9 @@ describe("GitService worktree add/prune", () => {
                     if (args[2] === "feat/merged") return { stdout: "", stderr: "" };
                     throw new Error("not an ancestor");
                 }
+                if (args[0] === "for-each-ref") {
+                    return { stdout: args[2] === "refs/heads/feat/squashed" ? "[gone]\n" : "\n", stderr: "" };
+                }
                 if (args[0] === "worktree" && args[1] === "remove") { removedPaths.push(args[3]!); return { stdout: "", stderr: "" }; }
                 return { stdout: "", stderr: "" };
             },
@@ -2242,7 +2248,8 @@ describe("GitService worktree add/prune", () => {
         dispatchServiceMessage(socket, { serviceId: "git", type: "git_worktree_prune", requestId: "wp2", payload: { cwd: "/repo" } });
         const r = await waitForResult(socket, "wp2", "git_worktree_prune_result");
         expect((r.payload as any).ok).toBe(true);
-        expect(removedPaths).toEqual(["/repo/.worktrees/merged"]);
-        expect((r.payload as any).message).toContain("feat/merged");
+        expect(fetched).toBe(true);
+        expect(removedPaths).toEqual(["/repo/.worktrees/merged", "/repo/.worktrees/squashed"]);
+        expect((r.payload as any).message).toContain("remote-deleted");
     });
 });
