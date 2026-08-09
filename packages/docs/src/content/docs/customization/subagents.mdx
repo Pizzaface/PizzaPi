@@ -5,18 +5,18 @@ description: Delegate tasks to specialized agents with isolated context windows
 
 import { Aside, Tabs, TabItem } from "@astrojs/starlight/components";
 
-Subagents let an agent delegate work to a **child agent with its own isolated context window**. The child runs in-process with its own token budget, executes with a scoped set of tools, and sends a distilled result back to the parent. The parent's conversation stays clean and focused.
+Subagents let an agent delegate work to a **child agent with its own isolated context window**. On a runner, `single` and `parallel` calls start visible linked child sessions with scoped tools; their final result automatically steers back to the parent. `chain` stays in-process because each step needs the prior output. The parent's conversation stays clean and focused.
 
 ## How it works
 
 When the agent calls the `subagent` tool, PizzaPi:
 
 1. Discovers available agent definitions from multiple directories (see [Agent discovery paths](#agent-discovery-paths))
-2. Creates an in-process `AgentSession` via the pi SDK (no child process, zero overhead)
+2. For `single` and `parallel` on a runner, starts a linked child session with the agent's prompt, model, and tool restrictions
 3. Returns immediately so the parent can continue working
-4. Runs the child behind the scenes and injects its final output as a follow-up message when done
+4. Delivers each linked child's final result as an automatic **steer** trigger; chains inject their final output as a follow-up
 
-Unlike [`spawn_session`](/PizzaPi/running/cli-reference/#spawn_session), subagents stay inside the parent session rather than creating a separately visible child session. Result delivery is automatic; the parent should not poll or wait.
+Runner-backed children are visible in the session tree just like [`spawn_session`](/PizzaPi/running/cli-reference/#spawn_session). Result delivery is automatic; the parent must not poll or wait.
 
 ## Quick start
 
@@ -45,7 +45,7 @@ The agent can invoke the subagent tool like this:
 }
 ```
 
-The subagent starts in its own context and the tool returns immediately. When the work finishes, the summary arrives automatically as a follow-up that resumes the parent session. Only the summary enters the parent's context window.
+The tool returns immediately. On a runner, the subagent starts as a visible linked child and its final result automatically steers into the parent session. Only the delivered result enters the parent's context window.
 
 ## Agent definitions
 
@@ -206,25 +206,25 @@ Project-scope agents (`.pizzapi/agents/` and `.claude/agents/`) are loaded from 
 
 ## Background execution
 
-The launch card records that the subagent started in the background. The parent session remains usable while it runs. On completion or failure, PizzaPi injects the result as a follow-up message and automatically resumes the parent agent. No polling is needed.
+The launch card records each background child session. The parent remains usable while it runs. On completion or failure, linked children automatically steer their result into the parent; chains inject a follow-up result. No polling is needed.
 
 ## Comparison with spawn_session
 
 | Feature | `subagent` | `spawn_session` |
 |---------|-----------|----------------|
-| **Communication** | Automatic follow-up result | Triggers + `tell_child` |
-| **Context** | Isolated in-process session | Fully independent session |
-| **UI** | Inline in parent session | Separate session view |
-| **Overhead** | Near-zero (in-process SDK) | Higher (relay round-trip, new PTY) |
-| **Best for** | Background delegation with automatic results | Interactive child workflows, cross-runner tasks |
+| **Communication** | `single` / `parallel`: automatic steer completion; `chain`: automatic follow-up result | Triggers + `tell_child` |
+| **Context** | `single` / `parallel`: independent linked child; `chain`: isolated in-process session | Fully independent session |
+| **UI** | `single` / `parallel`: separate child session view | Separate session view |
+| **Overhead** | Child process for `single` / `parallel`; near-zero in-process chain | Higher relay round-trip, new PTY |
+| **Best for** | Named agent definitions | Self-contained prompts, cross-runner, or long-lived child workflows |
 | **Model selection** | Via agent definition or parameter | Via spawn parameter |
 | **Agent definitions** | File-based (`~/.pizzapi/agents/`) | Prompt-based (inline in spawn call) |
 
-Use `subagent` when you only need the result. Use `spawn_session` when you need an independent session, cross-runner execution, or interactive trigger communication.
+Use `subagent` for named agent definitions. Use `spawn_session` for a self-contained prompt, a different runner, or a long-lived interactive child.
 
 ## Linked Session Triggers
 
-When using `spawn_session`, spawned sessions are **automatically linked** — child events surface as trigger messages in the parent's conversation. Three trigger types are delivered:
+`spawn_session` and runner-backed `subagent` calls create **automatically linked** children — child events surface as trigger messages in the parent's conversation. Three trigger types are delivered:
 
 ### `session_complete`
 
@@ -263,7 +263,7 @@ PizzaPi subagents are designed to be compatible with [Claude Code agent files](h
 
 | Feature | Claude Code (`Task`) | PizzaPi (`subagent`) |
 |---------|---------------------|---------------------|
-| **Execution** | In-process | In-process via pi SDK (isolated session) |
+| **Execution** | In-process | Linked child process for single/parallel; in-process via pi SDK for chains |
 | **Built-in agents** | `general-purpose`, `Explore`, `Plan` | `task` (general-purpose) |
 | **Skills** | `skills` frontmatter field | Not yet supported |
 | **MCP servers** | `mcpServers` frontmatter field | Not yet supported |

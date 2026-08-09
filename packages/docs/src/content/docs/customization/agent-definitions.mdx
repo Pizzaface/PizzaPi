@@ -100,7 +100,7 @@ The `tools:` frontmatter limits what tools the agent can access:
 
 ## Using Agent Definitions
 
-Agent definitions are invoked through the `subagent` tool:
+Agent definitions are invoked through the `subagent` tool. On a runner, single and parallel calls become visible linked child sessions and automatically steer their completion back to the parent; never poll for them. Chains (and sessions without a relay connection) stay in-process so later steps can consume `{previous}` output.
 
 ```json
 {

@@ -598,12 +598,12 @@ PizzaPi registers several tools that are available in every agent session:
 
 ### `subagent`
 
-Delegate tasks to specialized agents in isolated in-process sessions. The tool returns immediately; each result is automatically delivered as a follow-up message when ready, so the parent can keep working without polling.
+Delegate tasks to specialized agents. Single and parallel calls start visible linked child sessions; each completion is automatically delivered as a **steer** trigger, so the parent must never poll. Chain calls remain isolated in-process to preserve `{previous}` output substitution and deliver their result automatically as a follow-up.
 
 **Modes:**
-- **Single**: `{ agent: "name", task: "..." }` — invoke one agent
-- **Parallel**: `{ tasks: [...] }` — run up to 8 agents concurrently, with at most 4 at once
-- **Chain**: `{ chain: [...] }` — sequential execution with `{previous}` output substitution
+- **Single**: `{ agent: "name", task: "..." }` — start one linked child session
+- **Parallel**: `{ tasks: [...] }` — start up to 8 linked child sessions (spawn requests are limited to 4 at once)
+- **Chain**: `{ chain: [...] }` — sequential in-process execution with `{previous}` output substitution
 
 Agent definitions are loaded from `~/.pizzapi/agents/*.md` (user scope), `~/.claude/agents/*.md` (user backward-compat), `.pizzapi/agents/*.md` (project scope), and `.claude/agents/*.md` (project backward-compat). Use `agentScope: "both"` (or `"project"`) to include project-local definitions.
 

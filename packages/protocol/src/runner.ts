@@ -282,6 +282,7 @@ export interface RunnerServerToClientEvents {
       systemPrompt?: string;
       tools?: string;
       disallowedTools?: string;
+      maxTurns?: number;
     };
     /** ID of the parent session that spawned this one. */
     parentSessionId?: string;

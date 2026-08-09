@@ -65,7 +65,7 @@ On success, returns the session ID, runner ID, working directory, status (`Pendi
 
 - Parent's session ID is sent as `parentSessionId`
 - Child events (questions, plans, completion, errors) arrive as triggers in the parent's conversation
-- No manual polling needed — triggers are injected automatically
+- No manual polling needed — completion triggers steer into the parent automatically
 - If the linked relationship cannot be restored after a reconnect, the harness surfaces that as an orchestration failure instead of silently degrading into peer messaging
 
 <Aside type="caution">
@@ -251,18 +251,17 @@ Fire a trigger into **any** session — not just children. This enables peer-to-
 
 | | `subagent` tool | `spawn_session` (linked child) |
 |---|---|---|
-| **Communication** | Automatic follow-up result | Triggers + `tell_child` |
-| **Blocking** | No — parent continues, result arrives async | No — parent continues, triggers arrive async |
-| **Context** | Isolated in-process session | Fully independent session + process |
-| **UI** | Inline card in parent session | Separate session in web UI |
-| **Overhead** | Near-zero (in-process SDK) | Higher (relay round-trip, new PTY) |
+| **Communication** | `single` / `parallel`: automatic **steer** completion trigger; `chain`: automatic follow-up result | Triggers + `tell_child` |
+| **Blocking** | No — parent continues; completion is delivered automatically | No — parent continues; completion is delivered automatically |
+| **Context** | `single` / `parallel`: fully independent child process; `chain`: isolated in-process session | Fully independent session + process |
+| **UI** | `single` / `parallel`: separate child sessions in the web UI | Separate session in web UI |
 | **Model selection** | Via agent definition `model` field | Via `model` parameter |
-| **Best for** | Background tasks that only need a result | Interactive children and cross-runner work |
+| **Best for** | Named agent definitions | Self-contained prompts, another runner, or long-lived children |
 | **Agent definitions** | File-based (`~/.pizzapi/agents/`) | Prompt-based (inline) |
 | **Modes** | Single, parallel, chain | One session per call |
 
 <Aside type="tip">
-  **Prefer `subagent` for most delegation.** It's simpler, runs in the background, and delivers results automatically. Use `spawn_session` when you need an independently visible session, cross-runner execution, or interactive trigger-based coordination. See the [Subagents guide](/PizzaPi/customization/subagents/) for full details.
+  **Do not poll background work.** `subagent` completions arrive automatically. For linked child completions, read the delivered result and acknowledge it only when the child is truly finished. See the [Subagents guide](/PizzaPi/customization/subagents/) for full documentation.
 </Aside>
 
 ---

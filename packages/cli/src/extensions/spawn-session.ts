@@ -15,6 +15,105 @@ import { formatProviderUsage, getUsageKey, normalizeUsageKeys } from "./format-u
 /** Minimal Component that renders nothing — keeps the tool call invisible in the TUI. */
 const silent = { render: (_width: number): string[] => [], invalidate: () => {} };
 
+export interface SpawnedAgentConfig {
+    name: string;
+    systemPrompt?: string;
+    tools?: string;
+    disallowedTools?: string;
+    maxTurns?: number;
+}
+
+export interface SpawnRunnerSessionOptions {
+    prompt: string;
+    model?: { provider: string; id: string };
+    cwd?: string;
+    runnerId?: string;
+    parentSessionId?: string;
+    agent?: SpawnedAgentConfig;
+    signal?: AbortSignal;
+}
+
+export type SpawnRunnerSessionResult =
+    | { ok: true; sessionId: string; runnerId: string; cwd: string; pending: boolean; shareUrl: string }
+    | { ok: false; error: string; status?: number };
+
+export function getRelayHttpBaseUrl(): string | null {
+    const configured =
+        process.env.PIZZAPI_RELAY_URL ??
+        loadConfig(process.cwd()).relayUrl ??
+        "ws://localhost:7492";
+
+    if (configured.toLowerCase() === "off") return null;
+
+    const trimmed = normalizeLoopbackHost(
+        configured.trim().replace(/\/$/, "").replace(/\/ws\/sessions$/, ""),
+    );
+    if (trimmed.startsWith("ws://")) return `http://${trimmed.slice("ws://".length)}`;
+    if (trimmed.startsWith("wss://")) return `https://${trimmed.slice("wss://".length)}`;
+    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed;
+    return `https://${trimmed}`;
+}
+
+export function getSpawnApiKey(): string | undefined {
+    return process.env.PIZZAPI_API_KEY ?? process.env.PIZZAPI_API_TOKEN ?? loadConfig(process.cwd()).apiKey;
+}
+
+export function getRunnerIdFromState(): string | null {
+    const statePath = process.env.PIZZAPI_RUNNER_STATE_PATH ?? join(homedir(), ".pizzapi", "runner.json");
+    try {
+        if (!existsSync(statePath)) return null;
+        const state = JSON.parse(readFileSync(statePath, "utf-8"));
+        return typeof state.runnerId === "string" ? state.runnerId : null;
+    } catch {
+        return null;
+    }
+}
+
+/** Spawn a linked runner worker for either spawn_session or subagent. */
+export async function spawnRunnerSession(options: SpawnRunnerSessionOptions): Promise<SpawnRunnerSessionResult> {
+    const prompt = options.prompt.trim();
+    if (!prompt) return { ok: false, error: "prompt is required and cannot be empty." };
+
+    const cwd = options.cwd ?? process.cwd();
+    const relayBase = getRelayHttpBaseUrl();
+    if (!relayBase) return { ok: false, error: "Relay is disabled. Cannot spawn sessions without a relay connection." };
+
+    const apiKey = getSpawnApiKey();
+    if (!apiKey) return { ok: false, error: "No API key configured. Set PIZZAPI_API_KEY to spawn sessions." };
+
+    const runnerId = options.runnerId ?? getRunnerIdFromState();
+    if (!runnerId) return { ok: false, error: "Could not determine runner ID. Pass runnerId explicitly or ensure the runner state file exists." };
+
+    const body: Record<string, unknown> = { runnerId, cwd, prompt };
+    if (options.parentSessionId) body.parentSessionId = options.parentSessionId;
+    if (options.model) body.model = options.model;
+    if (options.agent) body.agent = options.agent;
+
+    try {
+        const response = await fetch(`${relayBase}/api/runners/spawn`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+            body: JSON.stringify(body),
+            signal: options.signal,
+        });
+        const result = await response.json().catch(() => ({})) as Record<string, unknown>;
+        if (!response.ok) {
+            return { ok: false, error: typeof result.error === "string" ? result.error : `HTTP ${response.status}`, status: response.status };
+        }
+        if (typeof result.sessionId !== "string") return { ok: false, error: "Spawn response missing session ID." };
+        return {
+            ok: true,
+            sessionId: result.sessionId,
+            runnerId,
+            cwd,
+            pending: result.pending === true,
+            shareUrl: `${relayBase}/session/${result.sessionId}`,
+        };
+    } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+}
+
 /**
  * SpawnSession extension — provides a tool that allows the agent to spawn a new
  * headless session on a runner, optionally selecting a specific model and
@@ -25,44 +124,6 @@ const silent = { render: (_width: number): string[] => [], invalidate: () => {} 
  * monitored through the web UI.
  */
 export const spawnSessionExtension: ExtensionFactory = (pi) => {
-    function getRelayHttpBaseUrl(): string | null {
-        const configured =
-            process.env.PIZZAPI_RELAY_URL ??
-            loadConfig(process.cwd()).relayUrl ??
-            "ws://localhost:7492";
-
-        if (configured.toLowerCase() === "off") return null;
-
-        const trimmed = normalizeLoopbackHost(
-            configured.trim().replace(/\/$/, "").replace(/\/ws\/sessions$/, ""),
-        );
-        // Normalize to HTTP(S) base URL
-        if (trimmed.startsWith("ws://")) return `http://${trimmed.slice("ws://".length)}`;
-        if (trimmed.startsWith("wss://")) return `https://${trimmed.slice("wss://".length)}`;
-        if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed;
-        // No scheme — treat as a secure remote host (e.g. "example.com" or "example.com:5173")
-        return `https://${trimmed}`;
-    }
-
-    function getApiKey(): string | undefined {
-        return (
-            process.env.PIZZAPI_API_KEY ??
-            process.env.PIZZAPI_API_TOKEN ??
-            loadConfig(process.cwd()).apiKey
-        );
-    }
-
-    function getRunnerIdFromState(): string | null {
-        const statePath = process.env.PIZZAPI_RUNNER_STATE_PATH ?? join(homedir(), ".pizzapi", "runner.json");
-        try {
-            if (!existsSync(statePath)) return null;
-            const state = JSON.parse(readFileSync(statePath, "utf-8"));
-            return typeof state.runnerId === "string" ? state.runnerId : null;
-        } catch {
-            return null;
-        }
-    }
-
     pi.registerTool({
         name: "spawn_session",
         label: "Spawn Session",
@@ -127,35 +188,7 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                 return ok("Error: prompt is required and cannot be empty.", { error: "Missing prompt" });
             }
 
-            const relayBase = getRelayHttpBaseUrl();
-            if (!relayBase) {
-                return ok("Error: Relay is disabled. Cannot spawn sessions without a relay connection.", { error: "Relay disabled" });
-            }
-
-            const apiKey = getApiKey();
-            if (!apiKey) {
-                return ok("Error: No API key configured. Set PIZZAPI_API_KEY to spawn sessions.", { error: "No API key" });
-            }
-
-            // Determine runner ID — prefer explicit param, then env, then state file
-            const runnerId = params.runnerId ?? getRunnerIdFromState();
-            if (!runnerId) {
-                return ok("Error: Could not determine runner ID. Pass runnerId explicitly or ensure the runner state file exists.", { error: "No runner ID" });
-            }
-
-            const cwd = params.cwd ?? process.cwd();
-
-            // Build the spawn request
-            const body: Record<string, unknown> = {
-                runnerId,
-                cwd,
-                prompt,
-            };
-
             // Linked parent→child orchestration is mandatory.
-            // Prefer the relay session ID (available for both runner-spawned and
-            // standalone CLI sessions) over the env var, which is only set for
-            // runner-spawned workers.
             const ownSessionId = getRelaySessionId();
             if (!ownSessionId) {
                 return ok(
@@ -163,63 +196,36 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                     { error: "No linked parent session available" },
                 );
             }
-            body.parentSessionId = ownSessionId;
 
-            if (params.model) {
-                // Note: hidden-model enforcement is done server-side (runners.ts).
-                // A client-side check here using PIZZAPI_HIDDEN_MODELS would be
-                // stale — the env var is set once at worker start and does not
-                // reflect later changes made via PUT /api/settings/hidden-models.
-                // Relying on the server ensures the freshest list is always used.
-                body.model = {
-                    provider: params.model.provider,
-                    id: params.model.id,
-                };
+            const spawned = await spawnRunnerSession({
+                prompt,
+                cwd: params.cwd,
+                runnerId: params.runnerId,
+                parentSessionId: ownSessionId,
+                model: params.model,
+            });
+            if (!spawned.ok) {
+                return ok(`Error spawning session: ${spawned.error}`, { error: spawned.error, ...(spawned.status ? { status: spawned.status } : {}) });
             }
 
-            try {
-                const response = await fetch(`${relayBase}/api/runners/spawn`, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "x-api-key": apiKey,
-                    },
-                    body: JSON.stringify(body),
-                });
+            const summary = [
+                "Session spawned successfully.",
+                `  Session ID: ${spawned.sessionId}`,
+                `  Runner: ${spawned.runnerId}`,
+                `  Working directory: ${spawned.cwd}`,
+                params.model ? `  Model: ${params.model.provider}/${params.model.id}` : null,
+                spawned.pending ? "  Status: Pending (worker is starting up)" : "  Status: Ready",
+                `  Web UI: ${spawned.shareUrl}`,
+            ].filter(Boolean).join("\n");
 
-                const result = await response.json() as Record<string, unknown>;
-
-                if (!response.ok) {
-                    const errorMsg = typeof result.error === "string" ? result.error : `HTTP ${response.status}`;
-                    return ok(`Error spawning session: ${errorMsg}`, { error: errorMsg, status: response.status });
-                }
-
-                const sessionId = result.sessionId as string;
-                const pending = result.pending === true;
-                const shareUrl = `${relayBase}/session/${sessionId}`;
-
-                const summary = [
-                    `Session spawned successfully.`,
-                    `  Session ID: ${sessionId}`,
-                    `  Runner: ${runnerId}`,
-                    `  Working directory: ${cwd}`,
-                    params.model ? `  Model: ${params.model.provider}/${params.model.id}` : null,
-                    pending ? `  Status: Pending (worker is starting up)` : `  Status: Ready`,
-                    `  Web UI: ${shareUrl}`,
-                ].filter(Boolean).join("\n");
-
-                return ok(summary, {
-                    sessionId,
-                    runnerId,
-                    cwd,
-                    model: params.model ?? null,
-                    pending,
-                    shareUrl,
-                });
-            } catch (err) {
-                const message = err instanceof Error ? err.message : String(err);
-                return ok(`Error spawning session: ${message}`, { error: message });
-            }
+            return ok(summary, {
+                sessionId: spawned.sessionId,
+                runnerId: spawned.runnerId,
+                cwd: spawned.cwd,
+                model: params.model ?? null,
+                pending: spawned.pending,
+                shareUrl: spawned.shareUrl,
+            });
         },
 
         renderCall: (args: any, theme: any) => {

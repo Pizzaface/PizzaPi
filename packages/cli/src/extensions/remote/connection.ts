@@ -31,6 +31,7 @@ import { waitForWorkerStartupComplete } from "../worker-startup-gate.js";
 import { setHiddenModelKeys } from "../../hidden-models.js";
 import { resolveInputDeliverAs } from "./deliver-as-default.js";
 import { sendSessionCompleteFollowUp } from "./session-complete-followup.js";
+import { notifyRelayTrigger } from "./trigger-listeners.js";
 
 // ── Module-level singletons (safe: one relay extension per process) ───────────
 
@@ -383,6 +384,22 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                 break;
         }
 
+        if (rctx.isChildSession && rctx.parentSessionId) {
+            sock.emit("session_trigger", {
+                token: data.token,
+                trigger: {
+                    type: "pizzapi:child_ready",
+                    sourceSessionId: data.sessionId,
+                    targetSessionId: rctx.parentSessionId,
+                    payload: {},
+                    deliverAs: "followUp",
+                    expectsResponse: false,
+                    triggerId: crypto.randomUUID(),
+                    ts: new Date().toISOString(),
+                },
+            });
+        }
+
         emitSessionActive(rctx);
         void refreshAllUsage();
         startHeartbeat(rctx);
@@ -497,6 +514,10 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
     sock.on("session_trigger" as any, (data: { trigger: ConversationTrigger }) => {
         const trigger = data?.trigger;
         if (!trigger) return;
+        notifyRelayTrigger(trigger);
+        // Internal lifecycle triggers feed extension listeners only; they must
+        // never create an agent turn or appear as a user-visible prompt.
+        if (trigger.type === "pizzapi:child_ready") return;
         // Drop triggers from known pre-/new children.
         if (handlers.isStaleChild(trigger.sourceSessionId)) {
             log.info(`dropping stale session_trigger (${trigger.type}) from ${trigger.sourceSessionId} — sender is a pre-/new child`);

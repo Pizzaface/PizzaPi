@@ -18,7 +18,9 @@ describe("initialPromptExtension", () => {
         "PIZZAPI_WORKER_INITIAL_MODEL_ID",
         "PIZZAPI_WORKER_AGENT_NAME",
         "PIZZAPI_WORKER_AGENT_TOOLS",
+        "PIZZAPI_WORKER_AGENT_HAS_TOOL_ALLOWLIST",
         "PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS",
+        "PIZZAPI_WORKER_AGENT_MAX_TURNS",
     ] as const;
 
     beforeEach(() => {
@@ -71,6 +73,45 @@ describe("initialPromptExtension", () => {
 
         expect(find).toHaveBeenCalledWith("anthropic", "claude-sonnet-4-20250514");
         expect(setModel).toHaveBeenCalledWith(model);
+    });
+
+    test("aborts the spawned agent after its configured maximum turns", async () => {
+        const { initialPromptExtension } = await import("./initial-prompt.js");
+        process.env.PIZZAPI_WORKER_AGENT_NAME = "limited";
+        process.env.PIZZAPI_WORKER_AGENT_MAX_TURNS = "2";
+
+        let messageEndHandler: ((event: unknown, ctx: { abort: () => void }) => void) | undefined;
+        const pi = {
+            on: mock((event: string, handler: typeof messageEndHandler) => {
+                if (event === "message_end") messageEndHandler = handler;
+            }),
+        };
+        initialPromptExtension(pi as any);
+        const abort = mock(() => {});
+        messageEndHandler!({ message: { role: "assistant" } }, { abort });
+        expect(abort).not.toHaveBeenCalled();
+        messageEndHandler!({ message: { role: "assistant" } }, { abort });
+        expect(abort).toHaveBeenCalledTimes(1);
+    });
+
+    test("honors an empty tool allowlist instead of retaining active tools", async () => {
+        const { initialPromptExtension } = await import("./initial-prompt.js");
+        process.env.PIZZAPI_WORKER_AGENT_NAME = "restricted";
+        process.env.PIZZAPI_WORKER_AGENT_HAS_TOOL_ALLOWLIST = "true";
+
+        let sessionStartHandler: ((event: unknown, ctx: unknown) => Promise<void>) | undefined;
+        const setActiveTools = mock(() => {});
+        const pi = {
+            on: mock((event: string, handler: typeof sessionStartHandler) => {
+                if (event === "session_start") sessionStartHandler = handler;
+            }),
+            setSessionName: mock(() => {}),
+            getAllTools: () => [{ name: "bash" }],
+            setActiveTools,
+        };
+        initialPromptExtension(pi as any);
+        await sessionStartHandler!(undefined, {});
+        expect(setActiveTools).toHaveBeenCalledWith([]);
     });
 
     test("delays sendUserMessage until worker startup gate releases", async () => {

@@ -1,8 +1,8 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSessionExtension } from "./spawn-session.js";
+import { spawnRunnerSession, spawnSessionExtension } from "./spawn-session.js";
 import type { OllamaCloudModel } from "../ollama-cloud-models.js";
 
 // list_models must surface dynamically-discovered Ollama Cloud models (cached
@@ -99,5 +99,54 @@ describe("list_models tool — Ollama Cloud merge", () => {
 
         expect(ids).not.toContain("ollama-cloud/glm-5.2");
         expect(ids).toContain("anthropic/claude-x");
+    });
+});
+
+describe("spawnRunnerSession", () => {
+    test("forwards linked agent configuration to the runner", async () => {
+        const previousRelayUrl = process.env.PIZZAPI_RELAY_URL;
+        const previousApiKey = process.env.PIZZAPI_API_KEY;
+        const previousFetch = globalThis.fetch;
+        let requestBody: Record<string, unknown> | undefined;
+        try {
+            process.env.PIZZAPI_RELAY_URL = "https://relay.example";
+            process.env.PIZZAPI_API_KEY = "api-key";
+            globalThis.fetch = mock(async (_url, init) => {
+                requestBody = JSON.parse(String(init?.body));
+                return new Response(JSON.stringify({ ok: true, sessionId: "child-1" }), { status: 200 });
+            }) as unknown as typeof fetch;
+
+            const result = await spawnRunnerSession({
+                prompt: "Task: inspect this",
+                cwd: "/repo",
+                runnerId: "runner-1",
+                parentSessionId: "parent-1",
+                model: { provider: "openai-codex", id: "gpt-5.6" },
+                agent: { name: "reviewer", systemPrompt: "Review only.", tools: "read,grep", maxTurns: 2 },
+            });
+
+            expect(result).toEqual({
+                ok: true,
+                sessionId: "child-1",
+                runnerId: "runner-1",
+                cwd: "/repo",
+                pending: false,
+                shareUrl: "https://relay.example/session/child-1",
+            });
+            expect(requestBody).toEqual({
+                runnerId: "runner-1",
+                cwd: "/repo",
+                prompt: "Task: inspect this",
+                parentSessionId: "parent-1",
+                model: { provider: "openai-codex", id: "gpt-5.6" },
+                agent: { name: "reviewer", systemPrompt: "Review only.", tools: "read,grep", maxTurns: 2 },
+            });
+        } finally {
+            globalThis.fetch = previousFetch;
+            if (previousRelayUrl === undefined) delete process.env.PIZZAPI_RELAY_URL;
+            else process.env.PIZZAPI_RELAY_URL = previousRelayUrl;
+            if (previousApiKey === undefined) delete process.env.PIZZAPI_API_KEY;
+            else process.env.PIZZAPI_API_KEY = previousApiKey;
+        }
     });
 });

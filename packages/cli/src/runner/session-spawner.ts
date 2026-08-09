@@ -116,7 +116,7 @@ export function spawnSession(
         imageUrls?: string[];
         model?: { provider: string; id: string };
         hiddenModels?: string[];
-        agent?: { name: string; systemPrompt?: string; tools?: string; disallowedTools?: string };
+        agent?: { name: string; systemPrompt?: string; tools?: string; disallowedTools?: string; maxTurns?: number };
         parentSessionId?: string;
         resumePath?: string;
         autoClose?: boolean;
@@ -229,8 +229,12 @@ export function spawnSession(
         ...(options?.parentSessionId ? { PIZZAPI_WORKER_PARENT_SESSION_ID: options.parentSessionId } : {}),
         ...(options?.agent?.name ? { PIZZAPI_WORKER_AGENT_NAME: options.agent.name } : {}),
         ...(options?.agent?.systemPrompt ? { PIZZAPI_WORKER_AGENT_SYSTEM_PROMPT: options.agent.systemPrompt } : {}),
-        ...(options?.agent?.tools ? { PIZZAPI_WORKER_AGENT_TOOLS: options.agent.tools } : {}),
+        ...(typeof options?.agent?.tools === "string" ? {
+            PIZZAPI_WORKER_AGENT_TOOLS: options.agent.tools,
+            PIZZAPI_WORKER_AGENT_HAS_TOOL_ALLOWLIST: "true",
+        } : {}),
         ...(options?.agent?.disallowedTools ? { PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS: options.agent.disallowedTools } : {}),
+        ...(options?.agent?.maxTurns ? { PIZZAPI_WORKER_AGENT_MAX_TURNS: String(options.agent.maxTurns) } : {}),
         ...(options?.resumePath ? { PIZZAPI_WORKER_RESUME_PATH: options.resumePath } : {}),
         ...(options?.autoClose ? { PIZZAPI_WORKER_AUTO_CLOSE: "true" } : {}),
     };

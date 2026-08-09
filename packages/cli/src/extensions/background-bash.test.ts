@@ -48,6 +48,7 @@ describe("bash override with backgrounding", () => {
         const { pi } = getTool();
         expect(pi.tools.has("bash")).toBe(true);
         expect(pi.tools.get("bash").description).toContain("run_in_background");
+        expect(pi.tools.get("bash_output").description).toContain("never poll it for completion or status");
         expect(pi.tools.get("bash").parameters.required).toEqual(["command", "title"]);
     });
 

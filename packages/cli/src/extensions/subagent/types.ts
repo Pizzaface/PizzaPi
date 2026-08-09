@@ -58,7 +58,11 @@ export interface SubagentDetails {
     agentScope: AgentScope;
     projectAgentsDir: string | null;
     results: SingleResult[];
-    background?: { taskId: string; status: "started" };
+    background?: {
+        taskId: string;
+        status: "started";
+        sessions?: Array<{ agent: string; task: string; sessionId?: string; shareUrl?: string; error?: string }>;
+    };
 }
 
 export type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;

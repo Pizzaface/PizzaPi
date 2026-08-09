@@ -91,6 +91,10 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
     // session_complete is fired from remoteExtension's shutdown handler (before disconnect).
     factories.push(named(triggersExtension, "triggers"));
 
+    // Register before relay so visible children are cleaned up while the
+    // parent relay socket is still connected during session shutdown.
+    factories.push(named(subagentExtension, "subagent"));
+
     if (!options.skipRelay) {
         factories.push(named(remoteExtension, "relay"));
         factories.push(named(tunnelToolsExtension, "tunnel-tools"));
@@ -130,7 +134,6 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
         named(updateTodoExtension, "todo"),
         named(memoryExtension, "memory"),
         named(spawnSessionExtension, "spawn-session"),
-        named(subagentExtension, "subagent"),
         named(planModeToggleExtension, "plan-mode"),
         named(sandboxEventsExtension, "sandbox"),
         named(pizzapiTitleExtension, "title"),

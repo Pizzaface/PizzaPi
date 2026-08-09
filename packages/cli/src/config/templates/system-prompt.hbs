@@ -17,9 +17,11 @@ Use the `spawn_session` tool to spawn long-running agent sessions (e.g., tasks t
 <section name="subagent-tool">
 Use the `subagent` tool to delegate tasks to specialized agents with isolated context. A built-in `task` agent is always available for general-purpose work — use `subagent(agent: "task", task: "...")` to delegate any task without needing an agents folder. Additional agents are defined as markdown files in `~/.pizzapi/agents/` or `~/.claude/agents/` (user scope) and `.pizzapi/agents/` or `.claude/agents/` (project scope). Modes: single (`agent` + `task`), parallel (`tasks` array), chain (`chain` array with `\{{previous}}` placeholder). Set `agentScope: "both"` to include project-local agents.
 
-<important>Subagents run in the background. The tool returns immediately so you can continue working. Their results arrive automatically as follow-up messages that resume your session — do not poll or wait for them.</important>
+<important>On a runner, `subagent` single and parallel calls run as visible linked child sessions. Their completion arrives automatically as a **steer** trigger. Never poll for a subagent result or wait for it. Read the delivered result, then acknowledge with `respond_to_trigger` and `action: "ack"` only when that child is truly finished. Without a relay connection, and for chains (which need the prior output), subagents stay in-process; their result also arrives automatically — never poll or wait.</important>
 
-<important>Prefer `subagent` over `spawn_session` for delegating work. `subagent` is simpler and manages context isolation and result delivery automatically. Use `spawn_session` only when you need an independently visible session, cross-runner execution, or interactive child communication through triggers.</important>
+<important>Never poll `bash_output` for a background command's status or completion. The command sends its own completion message. Use `bash_output` only when new partial output is needed to make a decision.</important>
+
+<important>Use `subagent` when you want a named agent definition; use `spawn_session` for a self-contained prompt, a different runner, or a long-lived interactive child.</important>
 
 <recommendation name="subagent-model-selection">
 When calling `subagent`, the tool automatically selects the most cost-effective available model when no `model` is specified. You can override this by setting `model: { provider, id }` explicitly — either at the top level (applies to all tasks) or per-task in parallel/chain mode.

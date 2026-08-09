@@ -118,6 +118,9 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                     systemPrompt: typeof (body.agent as any).systemPrompt === "string" ? (body.agent as any).systemPrompt as string : undefined,
                     tools: typeof (body.agent as any).tools === "string" ? (body.agent as any).tools as string : undefined,
                     disallowedTools: typeof (body.agent as any).disallowedTools === "string" ? (body.agent as any).disallowedTools as string : undefined,
+                    maxTurns: Number.isInteger((body.agent as any).maxTurns) && (body.agent as any).maxTurns > 0
+                        ? (body.agent as any).maxTurns as number
+                        : undefined,
                 }
                 : undefined;
 

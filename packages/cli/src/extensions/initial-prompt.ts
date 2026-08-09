@@ -20,7 +20,9 @@ const log = createLogger("worker");
  *   PIZZAPI_WORKER_INITIAL_MODEL_ID         — model ID override
  *   PIZZAPI_WORKER_AGENT_NAME               — agent name (sets session name)
  *   PIZZAPI_WORKER_AGENT_TOOLS              — comma-separated allowlist of tools
+ *   PIZZAPI_WORKER_AGENT_HAS_TOOL_ALLOWLIST — applies the allowlist even when empty
  *   PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS   — comma-separated denylist of tools
+ *   PIZZAPI_WORKER_AGENT_MAX_TURNS          — maximum assistant turns before aborting
  *
  * This extension is designed for runner-spawned workers created via the
  * spawn_session tool or the /agents UI command. It:
@@ -46,12 +48,17 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
     const initialModelId = process.env.PIZZAPI_WORKER_INITIAL_MODEL_ID?.trim();
     const agentName = process.env.PIZZAPI_WORKER_AGENT_NAME?.trim();
     const agentTools = process.env.PIZZAPI_WORKER_AGENT_TOOLS?.trim();
+    const agentHasToolAllowlist = process.env.PIZZAPI_WORKER_AGENT_HAS_TOOL_ALLOWLIST === "true";
     const agentDisallowedTools = process.env.PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS?.trim();
+    const configuredAgentMaxTurns = Number.parseInt(process.env.PIZZAPI_WORKER_AGENT_MAX_TURNS ?? "", 10);
+    const agentMaxTurns = Number.isSafeInteger(configuredAgentMaxTurns) && configuredAgentMaxTurns > 0
+        ? configuredAgentMaxTurns
+        : undefined;
     const resumePath = process.env.PIZZAPI_WORKER_RESUME_PATH?.trim();
     const hasInitialContent = Boolean(initialPrompt) || initialImageUrls.length > 0;
 
     // Nothing to do if no initial prompt/images, initial model, agent, or resume path was set.
-    if (!hasInitialContent && !agentName && !resumePath && !(initialModelProvider && initialModelId)) return;
+    if (!hasInitialContent && !agentName && !agentHasToolAllowlist && !agentMaxTurns && !resumePath && !(initialModelProvider && initialModelId)) return;
 
     // Clear prompt/model/resume env vars immediately so restarts don't re-trigger.
     // Agent name is NOT cleared — it should persist across restarts.
@@ -62,6 +69,14 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
     delete process.env.PIZZAPI_WORKER_RESUME_PATH;
 
     let fired = false;
+    let agentTurns = 0;
+    if (agentMaxTurns) {
+        pi.on("message_end", (event: any, ctx: any) => {
+            if (event?.message?.role !== "assistant") return;
+            agentTurns += 1;
+            if (agentTurns >= agentMaxTurns) ctx.abort();
+        });
+    }
 
     pi.on("session_start", async (_event, ctx) => {
         if (fired) return;
@@ -113,9 +128,9 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
         // `tools` is an allowlist — only the listed tools are enabled.
         // `disallowedTools` is a denylist — listed tools are removed from the active set.
         // Both can be specified: allowlist is applied first, then denylist filters the result.
-        if (agentTools) {
+        if (agentHasToolAllowlist) {
             try {
-                const requested = agentTools.split(",").map(t => t.trim()).filter(Boolean);
+                const requested = (agentTools ?? "").split(",").map(t => t.trim()).filter(Boolean);
                 // Resolve names case-insensitively against the set of all known tools
                 // so frontmatter values like "Read, Bash" map to "read", "bash".
                 // Also map Claude Code tool aliases (Glob→find, Grep→grep, etc.)

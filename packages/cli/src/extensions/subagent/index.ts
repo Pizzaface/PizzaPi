@@ -23,8 +23,17 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { type AgentScope, discoverAgents } from "../subagent-agents.js";
+import { type AgentConfig, type AgentScope, discoverAgents } from "../subagent-agents.js";
 import { getPluginAgentPaths } from "../claude-plugins.js";
+import { getRelaySessionId, getRelaySocket } from "../remote.js";
+import { onRelayTrigger } from "../remote/trigger-listeners.js";
+import type { ConversationTrigger } from "../triggers/types.js";
+import {
+    getRunnerIdFromState,
+    getSpawnApiKey,
+    spawnRunnerSession,
+    type SpawnRunnerSessionResult,
+} from "../spawn-session.js";
 import { loadGlobalConfig, resolveAgentDir, resolveExplicitProjectTrust } from "../../config.js";
 import { collectOverlayAgentDirs } from "../../overlay/session-packages.js";
 import {
@@ -41,7 +50,16 @@ import {
     type SubagentDetails,
     type SingleResult,
 } from "./types.js";
-import { runSingleAgent, mapWithConcurrencyLimit, type ModelOverride } from "./engine.js";
+import {
+    runSingleAgent,
+    mapWithConcurrencyLimit,
+    parseModelString,
+    resolveModelSpec,
+    resolveTools,
+    selectLightweightModel,
+    type ModelOverride,
+    type ModelRegistryLike,
+} from "./engine.js";
 import { renderSubagentCall, renderSubagentResult } from "./render.js";
 import { reserveSubagentSlots, resetSubagentState } from "./background-state.js";
 
@@ -110,15 +128,132 @@ const SubagentParams = {
     },
 } as const;
 
+// ── Linked child spawning ───────────────────────────────────────────────
+
+type SpawnSubagent = (
+    ctx: { cwd: string; modelRegistry?: ModelRegistryLike },
+    agent: AgentConfig,
+    task: string,
+    cwd: string | undefined,
+    modelOverride: ModelOverride | undefined,
+    signal?: AbortSignal,
+) => Promise<SpawnRunnerSessionResult>;
+
+async function spawnLinkedSubagent(
+    ctx: { cwd: string; modelRegistry?: ModelRegistryLike },
+    agent: AgentConfig,
+    task: string,
+    cwd: string | undefined,
+    modelOverride: ModelOverride | undefined,
+    signal?: AbortSignal,
+): Promise<SpawnRunnerSessionResult> {
+    const parentSessionId = getRelaySessionId();
+    if (!parentSessionId) {
+        return { ok: false, error: "This session is not registered with the relay yet, so a linked child cannot be started. Reconnect to the relay and retry." };
+    }
+    const modelSpec = modelOverride ?? (agent.model ? parseModelString(agent.model) : undefined);
+    let model: ModelOverride | undefined;
+    if (modelSpec) {
+        const resolved = ctx.modelRegistry ? resolveModelSpec(modelSpec, ctx.modelRegistry) : undefined;
+        if (ctx.modelRegistry && !resolved) {
+            return { ok: false, error: `Model not found: ${modelSpec.provider}/${modelSpec.id}. Use \`list_models\` to see available models.` };
+        }
+        model = resolved ? { provider: String(resolved.provider), id: resolved.id } : modelSpec;
+    } else {
+        const selected = ctx.modelRegistry ? selectLightweightModel(ctx.modelRegistry) : undefined;
+        if (selected) model = { provider: String(selected.provider), id: selected.id };
+    }
+
+    // Keep runner children inside the built-in tool set and use fail-closed
+    // validation instead of inheriting PizzaPi's session/MCP tools.
+    const toolNames = (agent.permissionMode === "plan" ? ["read", "grep", "find", "ls"] : agent.tools ?? ["read", "bash", "edit", "write", "grep", "find", "ls"])
+        .filter((tool) => !agent.disallowedTools?.includes(tool));
+    const resolvedTools = resolveTools(toolNames);
+    if ("error" in resolvedTools) return { ok: false, error: resolvedTools.error };
+
+    return await spawnRunnerSession({
+        prompt: `Task: ${task}`,
+        cwd: cwd ?? ctx.cwd,
+        parentSessionId,
+        model,
+        agent: {
+            name: agent.name,
+            systemPrompt: agent.systemPrompt,
+            tools: resolvedTools.tools.join(","),
+            ...(agent.disallowedTools?.length ? { disallowedTools: agent.disallowedTools.join(",") } : {}),
+            ...(agent.maxTurns && agent.maxTurns > 0 ? { maxTurns: agent.maxTurns } : {}),
+        },
+        signal,
+    });
+}
+
 // ── Extension factory ──────────────────────────────────────────────────
 
-export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) => {
+type VisibleChildGroup = {
+    sessionIds: Set<string>;
+    complete: (sessionId: string) => void;
+    ready: (sessionId: string) => void;
+    cancel: () => Promise<void>;
+};
+
+type SubagentDependencies = {
+    getGlobalConfig?: typeof loadGlobalConfig;
+    discoverAgents?: typeof discoverAgents;
+    cleanupVisibleChild?: (sessionId: string) => void | Promise<void>;
+    subscribeToRelayTriggers?: typeof onRelayTrigger;
+};
+
+async function cleanupVisibleChild(
+    sessionId: string,
+    relay = getRelaySocket(),
+): Promise<void> {
+    if (!relay) return;
+    await new Promise<void>((resolve) => {
+        const timeout = setTimeout(resolve, 10_000);
+        relay.socket.emit("cleanup_child_session", {
+            token: relay.token,
+            childSessionId: sessionId,
+        }, () => {
+            clearTimeout(timeout);
+            resolve();
+        });
+    });
+}
+
+export const subagentExtension = (
+    pi: ExtensionAPI,
+    runAgent = runSingleAgent,
+    spawnSubagent: SpawnSubagent = spawnLinkedSubagent,
+    dependencies: SubagentDependencies = {},
+) => {
     const backgroundTasks = new Map<AbortController, Promise<void>>();
+    const visibleChildGroups = new Set<VisibleChildGroup>();
+    const unsubscribeRelayTriggers = (dependencies.subscribeToRelayTriggers ?? onRelayTrigger)((trigger: ConversationTrigger) => {
+        for (const group of visibleChildGroups) {
+            if (trigger.type === "pizzapi:child_ready") group.ready(trigger.sourceSessionId);
+            // Child errors are terminal for the delegated job even though the
+            // follow-up session_complete may arrive later during cleanup.
+            if (trigger.type === "session_complete" || trigger.type === "session_error") {
+                group.complete(trigger.sourceSessionId);
+            }
+        }
+    });
+
+    const cancelVisibleChildren = async () => {
+        await Promise.all([...visibleChildGroups].map((group) => group.cancel()));
+        visibleChildGroups.clear();
+    };
+
+    (pi as any).on("session_switch", async (event: any) => {
+        if (event.reason === "new") await cancelVisibleChildren();
+    });
 
     pi.on("session_shutdown", async () => {
         for (const controller of backgroundTasks.keys()) controller.abort();
         await Promise.allSettled(backgroundTasks.values());
         backgroundTasks.clear();
+        await cancelVisibleChildren();
+        unsubscribeRelayTriggers();
         resetSubagentState();
     });
 
@@ -127,7 +262,7 @@ export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) =
         label: "Subagent",
         description: [
             "Delegate tasks to specialized subagents with isolated context.",
-            "Subagents run in the background; this tool returns immediately and automatically sends their results as a follow-up when done.",
+            "Subagents run in the background. Runner-backed single and parallel calls complete through automatic steer triggers; in-process chains send a follow-up result.",
             "Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
             'Default agent scope is "user" (from ~/.pizzapi/agents and ~/.claude/agents).',
             'To enable project-local agents in .pizzapi/agents or .claude/agents, set agentScope: "both" (or "project").',
@@ -139,7 +274,7 @@ export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) =
         async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
             // Read concurrency limits from global config only — project-local
             // config must not be able to raise fan-out limits for untrusted repos.
-            const globalConfig = loadGlobalConfig();
+            const globalConfig = (dependencies.getGlobalConfig ?? loadGlobalConfig)();
             const maxParallelTasks = toFinitePositiveInt(globalConfig.subagent?.maxParallelTasks, DEFAULT_MAX_PARALLEL_TASKS);
             const maxConcurrency = toFinitePositiveInt(globalConfig.subagent?.maxConcurrency, DEFAULT_MAX_CONCURRENCY);
 
@@ -162,7 +297,7 @@ export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) =
             const overlayAgentDir = resolveAgentDir(ctx.cwd);
             const overlayProjectTrusted = resolveExplicitProjectTrust(ctx.cwd, overlayAgentDir);
             const overlayAgentDirs = collectOverlayAgentDirs(ctx.cwd, overlayAgentDir, overlayProjectTrusted);
-            const discovery = discoverAgents(ctx.cwd, agentScope, {
+            const discovery = (dependencies.discoverAgents ?? discoverAgents)(ctx.cwd, agentScope, {
                 extraUserDirs: [...overlayAgentDirs.userDirs, ...pluginAgentDirs],
                 extraProjectDirs: overlayAgentDirs.projectDirs,
                 extraUserFiles: overlayAgentDirs.userFiles,
@@ -254,8 +389,166 @@ export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) =
                 };
             }
 
-            const slotCount = params.tasks?.length ?? 1;
-            const releaseSlots = reserveSubagentSlots(slotCount, maxParallelTasks);
+            const taskId = randomUUID();
+
+            // A linked worker is the honest representation of a background
+            // single/parallel subagent: it is visible in the session tree and
+            // sends its final result back as an automatic steer trigger.
+            // Chains intentionally retain the local scheduler below because
+            // `{previous}` requires the prior result before the next job exists.
+            // Dependency injection keeps this branch unit-testable without a relay.
+            const canSpawnVisibleChild = Boolean(getRelaySocket() && getRunnerIdFromState() && getSpawnApiKey());
+            if (mode !== "chain" && (canSpawnVisibleChild || spawnSubagent !== spawnLinkedSubagent)) {
+                const items = params.tasks && params.tasks.length > 0
+                    ? params.tasks
+                    : [{ agent: params.agent!, task: params.task!, cwd: params.cwd, model: params.model }];
+                const releaseSlots = reserveSubagentSlots(items.length, maxParallelTasks);
+                if (!releaseSlots) {
+                    return {
+                        content: [{ type: "text", text: `Too many active subagents. Max is ${maxParallelTasks}.` }],
+                        details: makeDetails(mode)([]),
+                        isError: true,
+                    };
+                }
+
+                const queued = [...items];
+                const initialItems = queued.splice(0, Math.min(maxConcurrency, queued.length));
+                // The remote extension clears its global context during shutdown;
+                // retain this live connection so child cleanup still reaches relay.
+                const relayForCleanup = getRelaySocket();
+                const cleanupChild = dependencies.cleanupVisibleChild
+                    ? (sessionId: string) => Promise.resolve(dependencies.cleanupVisibleChild!(sessionId))
+                    : (sessionId: string) => cleanupVisibleChild(sessionId, relayForCleanup);
+                const childSessionIds = new Set<string>();
+                const readySessionIds = new Set<string>();
+                const terminalSessionIds = new Set<string>();
+                const startupTimers = new Map<string, ReturnType<typeof setTimeout>>();
+                let running = initialItems.length;
+                let remaining = items.length;
+                let initialLaunchesComplete = false;
+                let cancelled = false;
+                let released = false;
+
+                const release = () => {
+                    if (released) return;
+                    released = true;
+                    visibleChildGroups.delete(group);
+                    releaseSlots();
+                };
+                const finishTask = () => {
+                    if (cancelled || remaining === 0) return;
+                    running -= 1;
+                    remaining -= 1;
+                    if (remaining === 0) release();
+                    else if (initialLaunchesComplete) startNext();
+                };
+                const group: VisibleChildGroup = {
+                    sessionIds: childSessionIds,
+                    complete(sessionId) {
+                        const startupTimer = startupTimers.get(sessionId);
+                        if (startupTimer) clearTimeout(startupTimer);
+                        startupTimers.delete(sessionId);
+                        readySessionIds.delete(sessionId);
+                        if (!childSessionIds.delete(sessionId)) {
+                            terminalSessionIds.add(sessionId);
+                            return;
+                        }
+                        finishTask();
+                    },
+                    ready(sessionId) {
+                        readySessionIds.add(sessionId);
+                        const startupTimer = startupTimers.get(sessionId);
+                        if (startupTimer) clearTimeout(startupTimer);
+                        startupTimers.delete(sessionId);
+                    },
+                    async cancel() {
+                        if (cancelled) return;
+                        cancelled = true;
+                        queued.length = 0;
+                        for (const startupTimer of startupTimers.values()) clearTimeout(startupTimer);
+                        startupTimers.clear();
+                        const sessionIds = [...childSessionIds];
+                        childSessionIds.clear();
+                        readySessionIds.clear();
+                        terminalSessionIds.clear();
+                        await Promise.all(sessionIds.map(cleanupChild));
+                        release();
+                    },
+                };
+                visibleChildGroups.add(group);
+
+                const launch = async (item: typeof items[number]) => {
+                    if (cancelled || signal?.aborted) {
+                        await group.cancel();
+                        return { item, spawned: { ok: false as const, error: "Subagent launch canceled." } };
+                    }
+                    const agent = agents.find((candidate) => candidate.name === item.agent);
+                    if (!agent) {
+                        finishTask();
+                        return { item, spawned: { ok: false as const, error: `Unknown agent: "${item.agent}".` } };
+                    }
+                    const spawned = await spawnSubagent(ctx, agent, item.task, item.cwd, item.model ?? params.model, signal);
+                    if (!spawned.ok) finishTask();
+                    else if (cancelled || signal?.aborted) {
+                        await cleanupChild(spawned.sessionId);
+                        await group.cancel();
+                    } else {
+                        childSessionIds.add(spawned.sessionId);
+                        if (terminalSessionIds.delete(spawned.sessionId)) {
+                            finishTask();
+                        } else if (!readySessionIds.has(spawned.sessionId)) {
+                            // ponytail: bound only unacknowledged startup; child_ready
+                            // clears this before normal long-running work begins.
+                            startupTimers.set(spawned.sessionId, setTimeout(() => {
+                                if (!childSessionIds.has(spawned.sessionId)) return;
+                                void cleanupChild(spawned.sessionId).finally(() => group.complete(spawned.sessionId));
+                            }, 30_000));
+                        }
+                    }
+                    return { item, spawned };
+                };
+                const startNext = () => {
+                    while (!cancelled && running < maxConcurrency && queued.length > 0) {
+                        const item = queued.shift()!;
+                        running += 1;
+                        void launch(item);
+                    }
+                };
+                const onTurnAbort = () => { void group.cancel(); };
+                signal?.addEventListener("abort", onTurnAbort, { once: true });
+                const launches = await Promise.all(initialItems.map(launch));
+                signal?.removeEventListener("abort", onTurnAbort);
+                initialLaunchesComplete = true;
+                startNext();
+
+                const successCount = launches.filter(({ spawned }) => spawned.ok).length;
+                const sessions = launches.map(({ item, spawned }) => spawned.ok
+                    ? { agent: item.agent, task: item.task, sessionId: spawned.sessionId, shareUrl: spawned.shareUrl }
+                    : { agent: item.agent, task: item.task, error: spawned.error });
+                const text = launches.map(({ item, spawned }) => spawned.ok
+                    ? [
+                        `[${item.agent}] started as a linked child session.`,
+                        `  Session ID: ${spawned.sessionId}`,
+                        `  Web UI: ${spawned.shareUrl}`,
+                    ].join("\n")
+                    : `[${item.agent}] failed to start: ${spawned.error}`,
+                ).join("\n\n");
+                const queuedText = queued.length > 0 ? ` ${queued.length} task${queued.length === 1 ? "" : "s"} queued until a child completes.` : "";
+
+                return {
+                    content: [{
+                        type: "text",
+                        text: `Subagent ${successCount}/${items.length} child session${items.length === 1 ? "" : "s"} started. Continue working; each result will arrive automatically as a steer trigger.${queuedText}\n\n${text}`,
+                    }],
+                    details: {
+                        ...makeDetails(mode)([]),
+                        background: { taskId, status: "started", sessions },
+                    },
+                    ...(successCount === 0 && queued.length === 0 && { isError: true }),
+                };
+            }
+
+            const releaseSlots = reserveSubagentSlots(params.tasks?.length ?? 1, maxParallelTasks);
             if (!releaseSlots) {
                 return {
                     content: [{ type: "text", text: `Too many active subagents. Max is ${maxParallelTasks}.` }],
@@ -264,7 +557,6 @@ export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) =
                 };
             }
 
-            const taskId = randomUUID();
             const controller = new AbortController();
             const onTurnAbort = () => controller.abort();
             signal?.addEventListener("abort", onTurnAbort, { once: true });

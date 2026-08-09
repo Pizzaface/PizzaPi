@@ -138,10 +138,12 @@ describe("buildSystemPrompt", () => {
         expect(result).not.toContain("{{>");
     });
 
-    test("contains background subagent guidance", () => {
-        const result = buildSystemPrompt();
-        expect(result).toContain("Subagents run in the background");
-        expect(result).toContain("do not poll or wait for them");
+    test("says visible subagent completions steer in automatically without polling", () => {
+        const result = buildSystemPrompt({ isRunner: true });
+        expect(result).toContain("linked child sessions");
+        expect(result).toContain("**steer** trigger");
+        expect(result).toContain("Never poll for a subagent result");
+        expect(result).toContain("Never poll `bash_output`");
     });
 
     test("contains subagent model recommendation", () => {

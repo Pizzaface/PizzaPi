@@ -48,6 +48,7 @@ const CORE_EXTENSIONS_HEAD: ExtensionFactory[] = [
     ollamaCloudProviderExtension,
     providerRequestLogExtension,
     triggersExtension,  // Must be before remoteExtension (shutdown ordering)
+    subagentExtension,  // Must be before relay so it can clean up child sessions
     remoteExtension,
     tunnelToolsExtension,
     serviceMessageBridgeExtension,
@@ -66,7 +67,6 @@ const CORE_EXTENSIONS_TAIL: ExtensionFactory[] = [
     updateTodoExtension,
     memoryExtension,
     spawnSessionExtension,
-    subagentExtension,
     planModeToggleExtension,
     sandboxEventsExtension,
     pizzapiTitleExtension,

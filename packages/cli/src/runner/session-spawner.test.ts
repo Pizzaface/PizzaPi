@@ -123,6 +123,7 @@ describe("session-spawner child", () => {
                         systemPrompt: "system",
                         tools: "read,bash",
                         disallowedTools: "write",
+                        maxTurns: 2,
                     },
                     parentSessionId: "parent-1",
                     autoClose: true,
@@ -149,7 +150,9 @@ describe("session-spawner child", () => {
                 PIZZAPI_WORKER_AGENT_NAME: "researcher",
                 PIZZAPI_WORKER_AGENT_SYSTEM_PROMPT: "system",
                 PIZZAPI_WORKER_AGENT_TOOLS: "read,bash",
+                PIZZAPI_WORKER_AGENT_HAS_TOOL_ALLOWLIST: "true",
                 PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS: "write",
+                PIZZAPI_WORKER_AGENT_MAX_TURNS: "2",
                 PIZZAPI_WORKER_AUTO_CLOSE: "true",
             });
             expect(lastSpawnCall?.env.PIZZAPI_RUNNER_TOKEN).toBeUndefined();

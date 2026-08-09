@@ -221,6 +221,7 @@ describe("runner — RunnerServerToClientEvents payloads", () => {
         systemPrompt: "You are a code reviewer",
         tools: "bash,read",
         disallowedTools: "write",
+        maxTurns: 2,
       },
       parentSessionId: "parent-sess",
     };
@@ -229,6 +230,7 @@ describe("runner — RunnerServerToClientEvents payloads", () => {
     expect(full.skills).toHaveLength(2);
     expect(full.hiddenModels).toHaveLength(1);
     expect(full.agent?.name).toBe("reviewer");
+    expect(full.agent?.maxTurns).toBe(2);
     expect(full.parentSessionId).toBe("parent-sess");
   });
 

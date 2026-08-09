@@ -140,7 +140,7 @@ function readFrom(path: string, offset: number): { text: string; newOffset: numb
 }
 
 function jobStatus(job: BackgroundJob): string {
-    if (job.endedAt === undefined) return job.recovered ? "running (recovered — no exit notification, poll bash_output)" : "running";
+    if (job.endedAt === undefined) return job.recovered ? "running (recovered — exit notification unavailable)" : "running";
     if (job.lost) return "ended (exit status lost to a worker restart)";
     if (job.signal) return `killed by ${job.signal}`;
     return `exited ${job.exitCode}`;
@@ -400,8 +400,8 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
             }
             onData(Buffer.from(
                 `\n[Still running: "${title}" (pid ${pid}). Output now goes to ${logPath}. ` +
-                `A message will arrive in this session when it exits — do NOT use sleep or poll for it. ` +
-                `Continue with other work; use bash_output(${pid}) for new output so far, kill_shell(${pid}) to stop it.]\n`,
+                `A message will arrive in this session when it exits — do NOT use sleep or bash_output to poll for it. ` +
+                `Continue with other work; use bash_output(${pid}) only if new partial output is needed, kill_shell(${pid}) to stop it.]\n`,
             ));
             void exited.then(({ code, sig }) => {
                 if (timer) clearTimeout(timer);
@@ -428,8 +428,8 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
             `${def.description} ` +
             `Output streams back for the first ${backgroundAfterSeconds()}s; if the command is still running after that ` +
             "it keeps running in the background, its output goes to a log file, and a message with the exit code " +
-            "is delivered to this session when it finishes. NEVER use `sleep` to wait for it — do other work and the " +
-            "message will arrive on its own. Set run_in_background: true to skip the wait entirely (servers, watchers).",
+            "is delivered to this session when it finishes. NEVER use `sleep` or poll `bash_output` to wait for it — do other work and the " +
+            "message will arrive on its own. Use bash_output only when partial output is needed for a decision. Set run_in_background: true to skip the wait entirely (servers, watchers).",
         parameters: {
             type: "object",
             properties: {
@@ -458,7 +458,7 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
         name: "bash_output",
         label: "Bash Output",
         description:
-            "Get new output from a background shell since the last bash_output call (incremental — already-seen output is not repeated). Call without pid to list all background shells and their status. Use this to check progress instead of re-reading the log file.",
+            "Get new output from a background shell since the last bash_output call (incremental — already-seen output is not repeated). Call without pid to list all background shells and their status. Use only when partial output is needed to make a decision; never poll it for completion or status because completion is delivered automatically.",
         parameters: {
             type: "object",
             properties: {
