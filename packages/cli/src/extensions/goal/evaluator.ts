@@ -219,6 +219,7 @@ export function createLlmGoalEvaluator(deps: LlmEvaluatorDeps): GoalEvaluator {
 export async function resolveEvaluatorModel(
     registry: ModelRegistry,
     configured?: string,
+    currentModel?: Model<any>,
 ): Promise<{ model: Model<any>; apiKey?: string } | undefined> {
     let candidates: Model<any>[] = [];
 
@@ -228,6 +229,10 @@ export async function resolveEvaluatorModel(
             if (providerPart && m.provider !== providerPart) return false;
             return m.id === idPart;
         });
+    } else if (currentModel) {
+        // Use the model the session is already using so the evaluator call
+        // can share the provider's prompt cache.
+        candidates = [currentModel];
     } else {
         candidates = findSmallFastModels(registry);
     }
@@ -237,6 +242,18 @@ export async function resolveEvaluatorModel(
         const auth = await registry.getApiKeyAndHeaders(model);
         if (!auth.ok) continue;
         return { model, apiKey: auth.apiKey };
+    }
+
+    // If the current model isn't usable (no auth, etc.), fall back to the
+    // cheapest authenticated text model rather than giving up.
+    if (!configured && currentModel) {
+        for (const model of findSmallFastModels(registry)) {
+            if (model.provider === currentModel.provider && model.id === currentModel.id) continue;
+            if (!registry.hasConfiguredAuth(model)) continue;
+            const auth = await registry.getApiKeyAndHeaders(model);
+            if (!auth.ok) continue;
+            return { model, apiKey: auth.apiKey };
+        }
     }
 
     return undefined;

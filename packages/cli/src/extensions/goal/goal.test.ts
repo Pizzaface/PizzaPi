@@ -38,7 +38,7 @@ function fakeAppendEntry(_customType: string, _data: unknown): void {
 function makeGoal(): GoalState {
     return setGoal(
         "session-1",
-        { description: "the tests pass", evaluator: "keyword", successKeywords: ["tests pass"] },
+        { description: "the tests pass", evaluator: "keyword", successKeywords: ["tests pass"], minTurnsBeforeEvaluate: 0 },
         { maxTurns: 3, maxTokens: 1000 },
         { appendEntry: fakeAppendEntry },
     );
@@ -116,9 +116,19 @@ describe("parseGoalArgs", () => {
         expect(() => parseGoalArgs("the tests pass --every 1.5")).toThrow("positive integer");
     });
 
-    test("leaves evaluateEveryNTurns undefined when --every is omitted", () => {
+    test("parses --min-turns as the minimum turns before first evaluation", () => {
+        const parsed = parseGoalArgs('"the tests pass" --min-turns 5');
+        expect(parsed.condition.minTurnsBeforeEvaluate).toBe(5);
+    });
+
+    test("rejects --min-turns with a non-positive-integer value", () => {
+        expect(() => parseGoalArgs("the tests pass --min-turns 0")).toThrow("positive integer");
+        expect(() => parseGoalArgs("the tests pass --min-turns 1.5")).toThrow("positive integer");
+    });
+
+    test("leaves minTurnsBeforeEvaluate undefined when --min-turns is omitted", () => {
         const parsed = parseGoalArgs("the tests pass");
-        expect(parsed.condition.evaluateEveryNTurns).toBeUndefined();
+        expect(parsed.condition.minTurnsBeforeEvaluate).toBeUndefined();
     });
 });
 
@@ -268,7 +278,7 @@ describe("goal state", () => {
         resetSession("session-new");
         const oldState = setGoal(
             "session-old",
-            { description: "old", evaluator: "keyword", successKeywords: ["done"] },
+            { description: "old", evaluator: "keyword", successKeywords: ["done"], minTurnsBeforeEvaluate: 0 },
             {},
             { appendEntry: fakeAppendEntry },
         );
@@ -284,7 +294,7 @@ describe("goal state", () => {
 
         setGoal(
             "session-new",
-            { description: "new", evaluator: "keyword", successKeywords: ["done"] },
+            { description: "new", evaluator: "keyword", successKeywords: ["done"], minTurnsBeforeEvaluate: 0 },
             {},
             { appendEntry: fakeAppendEntry },
         );
@@ -512,6 +522,26 @@ describe("resolveEvaluatorModel", () => {
         const resolved = await resolveEvaluatorModel(registry);
         expect(resolved).toBeUndefined();
     });
+
+    test("prefers the session's current model when no evaluator model is configured", async () => {
+        const currentModel = { provider: "anthropic", id: "claude-sonnet-4-5", input: ["text"], cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 4096, reasoning: false, name: "Sonnet", api: "anthropic-messages", baseUrl: "" } as any;
+        const registry = makeRegistry([
+            { provider: "openai", id: "gpt-4o-mini", input: ["text"], cost: { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 4096, reasoning: false, name: "Mini", api: "openai-completions", baseUrl: "" },
+        ]);
+        const resolved = await resolveEvaluatorModel(registry, undefined, currentModel);
+        expect(resolved?.model.provider).toBe("anthropic");
+        expect(resolved?.model.id).toBe("claude-sonnet-4-5");
+        expect(resolved?.apiKey).toBe("anthropic-key");
+    });
+
+    test("falls back to the cheapest text model when the current model lacks auth", async () => {
+        const currentModel = { provider: "unauthenticated", id: "cheap", input: ["text"], cost: { input: 0.01, output: 0.01, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8_192, maxTokens: 4096, reasoning: false, name: "Cheap", api: "openai-completions", baseUrl: "" } as any;
+        const registry = makeRegistry([
+            { provider: "openai", id: "gpt-4o-mini", input: ["text"], cost: { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 4096, reasoning: false, name: "Mini", api: "openai-completions", baseUrl: "" },
+        ]);
+        const resolved = await resolveEvaluatorModel(registry, undefined, currentModel);
+        expect(resolved?.model.id).toBe("gpt-4o-mini");
+    });
 });
 
 describe("createLlmGoalEvaluator", () => {
@@ -719,6 +749,7 @@ function createFakeCtx(overrides: {
     entries?: SessionEntry[];
     shutdown?: () => void;
     signal?: AbortSignal;
+    pendingMessages?: boolean;
 } = {}): ExtensionContext {
     return {
         cwd: "/tmp/pizzapi-goal-test",
@@ -730,11 +761,13 @@ function createFakeCtx(overrides: {
             getAll: () => [],
             hasConfiguredAuth: () => false,
         },
+        model: undefined,
         signal: overrides.signal ?? undefined,
         shutdown: overrides.shutdown ?? (() => {}),
         ui: {
             setStatus: (_key: string, _text?: string) => {},
         },
+        hasPendingMessages: () => overrides.pendingMessages ?? false,
     } as unknown as ExtensionContext;
 }
 
@@ -776,7 +809,7 @@ describe("goalExtension event wiring", () => {
         goalExtension(pi);
         setGoal(
             "session-1",
-            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"] },
+            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"], minTurnsBeforeEvaluate: 0 },
             { maxTurns: 10 },
             pi,
         );
@@ -797,15 +830,15 @@ describe("goalExtension event wiring", () => {
         expect(messages.some((m) => m.content.includes("Goal met"))).toBe(true);
     });
 
-    test("turn_end from an aborted turn leaves the goal idle for a user follow-up", async () => {
+    test("does not auto-continue when background subagents or queued messages are pending", async () => {
         resetSession("session-1");
         const { pi, handlers, userMessages } = createFakePi();
-        const ctx = createFakeCtx();
+        const ctx = createFakeCtx({ pendingMessages: true });
 
         goalExtension(pi);
         setGoal(
             "session-1",
-            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"] },
+            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"], minTurnsBeforeEvaluate: 0 },
             {},
             pi,
         );
@@ -815,15 +848,14 @@ describe("goalExtension event wiring", () => {
             await handler({
                 type: "turn_end",
                 turnIndex: 1,
-                message: { ...makeAssistantMessage(""), stopReason: "aborted" },
+                message: makeAssistantMessage("Still failing"),
                 toolResults: [],
             } as TurnEndEvent, ctx);
         }
 
         expect(getGoal("session-1")?.status).toBe("active");
-        expect(getGoal("session-1")?.turnCount).toBe(0);
         expect(getPendingGuidance("session-1")).toBeUndefined();
-        expect(userMessages).toHaveLength(0);
+        expect(userMessages.length).toBe(0);
     });
 
     test("turn_end from a rate-limit error leaves the goal idle for a user follow-up", async () => {
@@ -834,7 +866,7 @@ describe("goalExtension event wiring", () => {
         goalExtension(pi);
         setGoal(
             "session-1",
-            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"] },
+            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"], minTurnsBeforeEvaluate: 0 },
             {},
             pi,
         );
@@ -863,7 +895,7 @@ describe("goalExtension event wiring", () => {
         goalExtension(pi);
         setGoal(
             "session-1",
-            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"] },
+            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"], minTurnsBeforeEvaluate: 0 },
             {},
             pi,
         );
@@ -896,7 +928,7 @@ describe("goalExtension event wiring", () => {
         goalExtension(pi);
         setGoal(
             "session-1",
-            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"] },
+            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"], minTurnsBeforeEvaluate: 0 },
             {},
             pi,
         );
@@ -941,7 +973,7 @@ describe("goalExtension event wiring", () => {
         goalExtension(pi);
         setGoal(
             "session-1",
-            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"] },
+            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"], minTurnsBeforeEvaluate: 0 },
             {},
             pi,
         );
@@ -969,7 +1001,7 @@ describe("goalExtension event wiring", () => {
         goalExtension(pi);
         setGoal(
             "session-1",
-            { description: "the deploy succeeds", evaluator: "llm", evaluateEveryNTurns: 3 },
+            { description: "the deploy succeeds", evaluator: "llm", evaluateEveryNTurns: 3, minTurnsBeforeEvaluate: 0 },
             {},
             pi,
         );
@@ -1004,15 +1036,59 @@ describe("goalExtension event wiring", () => {
         expect(getGoal("session-1")?.status).toBe("active");
     });
 
-    test("throttled turns still stop the goal when a budget is exhausted", async () => {
+    test("defers evaluation until the default minimum turns have completed", async () => {
         resetSession("session-1");
+        const { pi, handlers, userMessages } = createFakePi();
+        const ctx = createFakeCtx();
+
+        goalExtension(pi);
+        setGoal(
+            "session-1",
+            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"] },
+            {},
+            pi,
+        );
+
+        const turnHandlers = handlers.get("turn_end") ?? [];
+        for (let i = 0; i < 9; i++) {
+            for (const handler of turnHandlers) {
+                await handler({
+                    type: "turn_end",
+                    turnIndex: i + 1,
+                    message: makeAssistantMessage("Still failing"),
+                    toolResults: [],
+                } as TurnEndEvent, ctx);
+            }
+        }
+
+        expect(getGoal("session-1")?.status).toBe("active");
+        expect(getGoal("session-1")?.turnCount).toBe(9);
+        expect(getGoal("session-1")?.evaluations.length).toBe(0);
+        expect(userMessages.length).toBe(9);
+
+        for (const handler of turnHandlers) {
+            await handler({
+                type: "turn_end",
+                turnIndex: 10,
+                message: makeAssistantMessage("All tests pass"),
+                toolResults: [],
+            } as TurnEndEvent, ctx);
+        }
+
+        expect(getGoal("session-1")?.status).toBe("met");
+        expect(getGoal("session-1")?.turnCount).toBe(10);
+        expect(getGoal("session-1")?.evaluations.length).toBe(1);
+        expect(userMessages.length).toBe(9);
+    });
+
+    test("throttled turns still stop the goal when a budget is exhausted", async () => {
         const { pi, handlers, messages } = createFakePi();
         const ctx = createFakeCtx();
 
         goalExtension(pi);
         setGoal(
             "session-1",
-            { description: "the deploy succeeds", evaluator: "llm", evaluateEveryNTurns: 5 },
+            { description: "the deploy succeeds", evaluator: "llm", evaluateEveryNTurns: 5, minTurnsBeforeEvaluate: 0 },
             { maxTurns: 2 },
             pi,
         );
@@ -1073,7 +1149,7 @@ describe("goalExtension event wiring", () => {
         goalExtension(pi);
         setGoal(
             "session-1",
-            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"] },
+            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"], minTurnsBeforeEvaluate: 0 },
             { maxTurns: 1 },
             pi,
         );
@@ -1104,7 +1180,7 @@ describe("goalExtension event wiring", () => {
         goalExtension(pi);
         setGoal(
             "session-1",
-            { description: "x", evaluator: "keyword" },
+            { description: "x", evaluator: "keyword", minTurnsBeforeEvaluate: 0 },
             { maxTurns: 2 },
             pi,
         );
@@ -1139,7 +1215,7 @@ describe("goalExtension event wiring", () => {
         // /goal command sets an active goal and broadcasts it.
         const goalHandler = commands.get("goal");
         expect(goalHandler).toBeDefined();
-        await goalHandler!("tests pass --max-turns 5 --evaluator keyword --keyword pass", ctx as ExtensionCommandContext);
+        await goalHandler!("tests pass --max-turns 5 --evaluator keyword --keyword pass --min-turns 1", ctx as ExtensionCommandContext);
 
         let emitted = events.get("goal:state_changed") ?? [];
         expect(emitted.length).toBe(1);

@@ -137,11 +137,13 @@ function createFakeCtx(overrides: {
             hasConfiguredAuth: () => true,
             getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "fake-api-key", headers: {} }),
         },
+        model: undefined,
         signal: overrides.signal ?? undefined,
         shutdown: overrides.shutdown ?? (() => {}),
         ui: {
             setStatus: (_key: string, _text?: string) => {},
         },
+        hasPendingMessages: () => false,
     } as unknown as ExtensionContext;
 }
 
@@ -264,7 +266,7 @@ describe("/goal multi-turn integration", () => {
         // User sets a goal via /goal.
         const goalHandler = commands.get("goal")!;
         await goalHandler(
-            '"tests pass" --evaluator keyword --keyword "tests pass" --max-turns 5',
+            '"tests pass" --evaluator keyword --keyword "tests pass" --max-turns 5 --min-turns 1',
             ctx as ExtensionCommandContext,
         );
 
@@ -328,7 +330,7 @@ describe("/goal multi-turn integration", () => {
         // per-turn evaluate -> guidance -> re-evaluate flow across exactly
         // the two turns below.
         const goalHandler = commands.get("goal")!;
-        await goalHandler('"services are green" --max-turns 5 --every 1', ctx as ExtensionCommandContext);
+        await goalHandler('"services are green" --max-turns 5 --every 1 --min-turns 1', ctx as ExtensionCommandContext);
 
         expect(getGoal("goal-integration-session")?.condition.evaluator).toBe("llm");
         expect(messages.some((m) => m.content.includes("Goal set"))).toBe(true);
