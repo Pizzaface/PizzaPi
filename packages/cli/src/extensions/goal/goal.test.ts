@@ -797,6 +797,64 @@ describe("goalExtension event wiring", () => {
         expect(messages.some((m) => m.content.includes("Goal met"))).toBe(true);
     });
 
+    test("turn_end from an aborted turn leaves the goal idle for a user follow-up", async () => {
+        resetSession("session-1");
+        const { pi, handlers, userMessages } = createFakePi();
+        const ctx = createFakeCtx();
+
+        goalExtension(pi);
+        setGoal(
+            "session-1",
+            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"] },
+            {},
+            pi,
+        );
+
+        const turnHandlers = handlers.get("turn_end") ?? [];
+        for (const handler of turnHandlers) {
+            await handler({
+                type: "turn_end",
+                turnIndex: 1,
+                message: { ...makeAssistantMessage(""), stopReason: "aborted" },
+                toolResults: [],
+            } as TurnEndEvent, ctx);
+        }
+
+        expect(getGoal("session-1")?.status).toBe("active");
+        expect(getGoal("session-1")?.turnCount).toBe(0);
+        expect(getPendingGuidance("session-1")).toBeUndefined();
+        expect(userMessages).toHaveLength(0);
+    });
+
+    test("turn_end from a rate-limit error leaves the goal idle for a user follow-up", async () => {
+        resetSession("session-1");
+        const { pi, handlers, userMessages } = createFakePi();
+        const ctx = createFakeCtx();
+
+        goalExtension(pi);
+        setGoal(
+            "session-1",
+            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"] },
+            {},
+            pi,
+        );
+
+        const turnHandlers = handlers.get("turn_end") ?? [];
+        for (const handler of turnHandlers) {
+            await handler({
+                type: "turn_end",
+                turnIndex: 1,
+                message: { ...makeAssistantMessage(""), stopReason: "error", errorMessage: "rate limit exceeded" },
+                toolResults: [],
+            } as TurnEndEvent, ctx);
+        }
+
+        expect(getGoal("session-1")?.status).toBe("active");
+        expect(getGoal("session-1")?.turnCount).toBe(0);
+        expect(getPendingGuidance("session-1")).toBeUndefined();
+        expect(userMessages).toHaveLength(0);
+    });
+
     test("turn_end keyword not met stores guidance and auto-continues the loop", async () => {
         resetSession("session-1");
         const { pi, handlers, userMessages } = createFakePi();
