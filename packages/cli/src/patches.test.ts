@@ -8,6 +8,8 @@
  * See patches/README.md for details.
  */
 import { describe, test, expect } from "bun:test";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
@@ -52,6 +54,20 @@ function piTuiPath(subpath: string): string {
     const pkgMain = fileURLToPath(pkgMainUrl);
     const pkgRoot = resolve(dirname(pkgMain), "..");
     return resolve(pkgRoot, subpath);
+}
+
+async function withIsolatedModelRuntime(run: (runtime: any) => void | Promise<void>): Promise<void> {
+    const dir = mkdtempSync(resolve(tmpdir(), "pizzapi-model-runtime-"));
+    try {
+        const { ModelRuntime } = await import("@earendil-works/pi-coding-agent");
+        const runtime = await ModelRuntime.create({
+            authPath: resolve(dir, "auth.json"),
+            modelsPath: null,
+        });
+        await run(runtime);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
 }
 
 // ===========================================================================
@@ -168,6 +184,16 @@ describe("pi-coding-agent patch application", () => {
         expect(typeof handleConfigCommand).toBe("function");
     });
 
+    test("model-runtime.js: overrides Pi's OpenAI pricing-tier caps with published context windows", async () => {
+        const source = await Bun.file(
+            piCodingAgentPath("dist/core/model-runtime.js"),
+        ).text();
+
+        expect(source).toContain("PATCH(pizzapi): Report OpenAI API's published context capacity");
+        expect(source).toContain('"gpt-5.6-sol": 1050000');
+        expect(source).toContain("withOfficialOpenAIContextWindows");
+    });
+
     test("config.js: getChangelogPath honors PIZZAPI_CHANGELOG_PATH", async () => {
         const { getChangelogPath } = await import(piCodingAgentPath("dist/config.js"));
         const prev = process.env.PIZZAPI_CHANGELOG_PATH;
@@ -210,6 +236,75 @@ describe("pi-coding-agent patched runtime behavior", () => {
         const dir = getSessionsDir();
         expect(dir).toContain(".pizzapi/sessions");
         expect(dir).not.toContain(".pizzapi/agent/sessions");
+    });
+
+    test("OpenAI API models expose published capacity without changing Codex backend limits", async () => {
+        await withIsolatedModelRuntime((runtime) => {
+            const expected: Record<string, number> = {
+                "gpt-5.4": 1_050_000,
+                "gpt-5.4-mini": 400_000,
+                "gpt-5.4-nano": 400_000,
+                "gpt-5.4-pro": 1_050_000,
+                "gpt-5.5": 1_050_000,
+                "gpt-5.5-pro": 1_050_000,
+                "gpt-5.6-luna": 1_050_000,
+                "gpt-5.6-sol": 1_050_000,
+                "gpt-5.6-terra": 1_050_000,
+            };
+
+            for (const [id, contextWindow] of Object.entries(expected)) {
+                expect(runtime.getModel("openai", id)?.contextWindow).toBe(contextWindow);
+            }
+            expect(runtime.getModel("openai-codex", "gpt-5.4")?.contextWindow).toBe(272_000);
+            expect(runtime.getModel("openai-codex", "gpt-5.4-mini")?.contextWindow).toBe(272_000);
+            expect(runtime.getModel("openai", "gpt-4o")?.contextWindow).toBe(128_000);
+        });
+    });
+
+    test("OpenAI defaults preserve remote catalogs, native providers, and named overlays", async () => {
+        await withIsolatedModelRuntime(async (runtime) => {
+            const provider = runtime.getProvider("openai")!;
+            const model = runtime.getModel("openai", "gpt-5.4")!;
+            const futureModel = {
+                ...model,
+                id: "gpt-future",
+                name: "GPT Future",
+                contextWindow: 777_000,
+            };
+
+            await provider.refreshModels({
+                allowNetwork: false,
+                store: {
+                    read: async () => ({
+                        checkedAt: Date.now(),
+                        lastModified: Number.MAX_SAFE_INTEGER,
+                        models: [futureModel],
+                    }),
+                    write: async () => undefined,
+                },
+            });
+            expect(runtime.getModel("openai", "gpt-future")?.contextWindow).toBe(777_000);
+
+            runtime.registerNativeProvider({
+                ...provider,
+                getModels: () => [{ ...model, contextWindow: 123_000 }],
+            });
+            expect(runtime.getModel("openai", "gpt-5.4")?.contextWindow).toBe(123_000);
+
+            runtime.registerProvider("openai", {
+                apiKey: "proxy-key",
+                baseUrl: "https://proxy.example/v1",
+                headers: { "X-Proxy": "enabled" },
+                models: [{ ...model, baseUrl: "https://proxy.example/v1", contextWindow: 222_000 }],
+            });
+            expect(runtime.getRegisteredProviderConfig("openai")).toMatchObject({
+                apiKey: "proxy-key",
+                baseUrl: "https://proxy.example/v1",
+                headers: { "X-Proxy": "enabled" },
+            });
+            expect(runtime.getModel("openai", "gpt-5.4")?.baseUrl).toBe("https://proxy.example/v1");
+            expect(runtime.getModel("openai", "gpt-5.4")?.contextWindow).toBe(222_000);
+        });
     });
 
     test("extension API does NOT expose newSession/switchSession/fork (removed in Phase 1)", async () => {
