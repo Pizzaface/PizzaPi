@@ -450,11 +450,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                 // started streaming by the time we resume here. See
                 // resolveInputDeliverAs for the rationale.
                 const agentIsRunning = rctx.isAgentActive || rctx.isAgentSettling;
-                // Keep the generic input fallback as follow-up, but slash
-                // commands must steer when they arrive during a running turn.
-                // The UI's active state can be stale when it emitted the input.
-                const requestedDeliverAs = deliverAs ?? (isSlashCommand && agentIsRunning ? "steer" : undefined);
-                const effectiveDeliverAs = resolveInputDeliverAs(requestedDeliverAs, agentIsRunning);
+                const effectiveDeliverAs = resolveInputDeliverAs(deliverAs, agentIsRunning);
                 // Extension commands run before pi applies streaming behavior, so
                 // stop the prior turn before dispatching a steering slash command.
                 // This is also harmless while already idle. Suppress its interim
