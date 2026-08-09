@@ -17,6 +17,7 @@ import { memoryExtension } from "./memory/index.js";
 import { goalExtension } from "./goal/index.js";
 import { createClaudePluginExtension } from "./claude-plugins.js";
 import { subagentExtension } from "./subagent.js";
+import { workflowExtension } from "./workflow/index.js";
 import { tunnelToolsExtension } from "./tunnel-tools.js";
 import { serviceMessageBridgeExtension } from "./service-message-bridge.js";
 import { planModeToggleExtension } from "./plan-mode/index.js";
@@ -131,6 +132,7 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
         named(memoryExtension, "memory"),
         named(spawnSessionExtension, "spawn-session"),
         named(subagentExtension, "subagent"),
+        named(workflowExtension, "workflow"),
         named(planModeToggleExtension, "plan-mode"),
         named(sandboxEventsExtension, "sandbox"),
         named(pizzapiTitleExtension, "title"),
