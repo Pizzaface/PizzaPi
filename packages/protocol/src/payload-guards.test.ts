@@ -33,6 +33,7 @@ describe("parseViewerEventEnvelope", () => {
       replay: true,
       deltaReplay: true,
       generation: 7,
+      sessionId: "sess-a",
     };
     const result = parseViewerEventEnvelope(input);
     expect(result.ok).toBe(true);
@@ -46,6 +47,7 @@ describe("parseViewerEventEnvelope", () => {
     { label: "missing event", value: { seq: 1 }, expectOk: false },
     { label: "seq is string", value: { event: {}, seq: "42" }, expectOk: true, expectUndefined: "seq" },
     { label: "generation is string", value: { event: {}, generation: "1" }, expectOk: true, expectUndefined: "generation" },
+    { label: "sessionId is number", value: { event: {}, sessionId: 42 }, expectOk: true, expectUndefined: "sessionId" },
   ];
 
   for (const { label, value, expectOk, expectUndefined } of malformed) {

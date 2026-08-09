@@ -685,14 +685,14 @@ export async function broadcastSessionEventToViewers(sessionId: string, event: u
     try {
         io.of("/viewer")
             .to(viewerSessionRoom(sessionId))
-            .emit("event", { event, seq });
+            .emit("event", { event, seq, sessionId });
     } catch (err) {
         log.warn("broadcastSessionEventToViewers failed:", (err as Error)?.message);
         try {
             io.of("/viewer")
                 .local
                 .to(viewerSessionRoom(sessionId))
-                .emit("event", { event, seq });
+                .emit("event", { event, seq, sessionId });
         } catch {
             // Local delivery also failed — event may be lost but won't break cache
         }
@@ -747,7 +747,7 @@ export async function publishSessionEvent(sessionId: string, event: unknown): Pr
     try {
         io.of("/viewer")
             .to(viewerSessionRoom(sessionId))
-            .emit("event", { event: strippedEvent, seq });
+            .emit("event", { event: strippedEvent, seq, sessionId });
     } catch (err) {
         // Redis adapter throws EPIPE when the Redis connection drops mid-broadcast.
         // Fall back to local-only delivery so viewers on this server still receive
@@ -758,7 +758,7 @@ export async function publishSessionEvent(sessionId: string, event: unknown): Pr
             io.of("/viewer")
                 .local
                 .to(viewerSessionRoom(sessionId))
-                .emit("event", { event: strippedEvent, seq });
+                .emit("event", { event: strippedEvent, seq, sessionId });
         } catch {
             // Local delivery also failed — event may be lost for connected viewers,
             // but it's in the cache (if Redis accepted it) for future replay.
@@ -865,7 +865,7 @@ export async function sendSnapshotToViewer(sessionId: string, socket: Socket): P
     const seq = session.seq;
     if (session.lastHeartbeat) {
         const heartbeat = safeJsonParse(session.lastHeartbeat);
-        socket.emit("event", { event: heartbeat, seq });
+        socket.emit("event", { event: heartbeat, seq, sessionId });
     }
     if (session.lastState) {
         const state = safeJsonParse(session.lastState);
@@ -873,7 +873,7 @@ export async function sendSnapshotToViewer(sessionId: string, socket: Socket): P
         // initial page load / reconnect only sends the tail.  Full state
         // is available via load_messages pagination.
         const hydratedEvent = prepareBroadcastEvent({ type: "session_active", state });
-        socket.emit("event", { event: hydratedEvent, seq });
+        socket.emit("event", { event: hydratedEvent, seq, sessionId });
     }
 }
 
