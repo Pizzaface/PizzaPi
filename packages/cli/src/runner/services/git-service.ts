@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { watch } from "node:fs";
+import { rm } from "node:fs/promises";
 import { promisify } from "node:util";
 import { isAbsolute, join, normalize, resolve } from "node:path";
 import type { Socket } from "socket.io-client";
@@ -20,6 +21,8 @@ type GitExec = (
     args: string[],
     options: { cwd: string; timeout: number; env?: Record<string, string> },
 ) => Promise<{ stdout: string; stderr: string }>;
+
+type GitRm = (path: string, options: { force: boolean; recursive: boolean }) => Promise<void>;
 
 type GitStatusResultPayload = {
     ok: true;
@@ -106,7 +109,19 @@ type GitLogEntry = {
     subject: string;
     body: string;
     refs: string[];
+    /** Full parent commit hashes, newest-first for a merge. Empty for a root commit. */
+    parents: string[];
 };
+
+type GitCommitSuggestion = {
+    subject: string;
+    body: string;
+    type: string;
+    scope: string;
+    files: Array<{ path: string; added: number; deleted: number }>;
+};
+
+type GitCommitFile = { status: string; path: string };
 
 type GitBlameLine = {
     hash: string;
@@ -207,6 +222,9 @@ export class GitService implements ServiceHandler {
     private readonly _setTimeout: SetTimeoutFn;
     private readonly _clearTimeout: ClearTimeoutFn;
     private readonly _now: () => number;
+    private readonly _rm: GitRm;
+    /** Optional model-backed commit-message generator. Falls back to heuristic when absent. */
+    private readonly _generateCommitMessage: (diff: string) => Promise<{ subject: string; body: string } | null>;
     private readonly _statusCache = new Map<string, { expiresAt: number; snapshot: GitStatusSnapshot }>();
     private readonly _statusInFlight = new Map<string, Promise<GitStatusSnapshot>>();
     private readonly _statusGeneration = new Map<string, number>();
@@ -230,12 +248,16 @@ export class GitService implements ServiceHandler {
         setTimeoutFn?: SetTimeoutFn;
         clearTimeoutFn?: ClearTimeoutFn;
         now?: () => number;
+        rm?: GitRm;
+        generateCommitMessage?: (diff: string) => Promise<{ subject: string; body: string } | null>;
     }) {
         this._execGit = options?.execGit ?? ((args, execOptions) => execFileAsync("git", args, execOptions));
         this._watchFs = options?.watchFs ?? ((path, listener) => watch(path, { persistent: false }, listener));
         this._setTimeout = options?.setTimeoutFn ?? ((callback, delayMs) => setTimeout(callback, delayMs));
         this._clearTimeout = options?.clearTimeoutFn ?? ((timeout) => clearTimeout(timeout));
         this._now = options?.now ?? (() => Date.now());
+        this._rm = options?.rm ?? ((path, options) => rm(path, options));
+        this._generateCommitMessage = options?.generateCommitMessage ?? (async () => null);
     }
 
     init(socket: Socket, { isShuttingDown }: ServiceInitOptions): void {
@@ -275,6 +297,9 @@ export class GitService implements ServiceHandler {
                 case "git_commit":
                     void this.handleCommit(payload, requestId, sessionId);
                     break;
+                case "git_commit_message_suggest":
+                    void this.handleCommitMessageSuggest(payload, requestId, sessionId);
+                    break;
                 case "git_push":
                     void this.handlePush(payload, requestId, sessionId);
                     break;
@@ -308,6 +333,9 @@ export class GitService implements ServiceHandler {
                 case "git_worktree_remove":
                     void this.handleWorktreeRemove(payload, requestId, sessionId);
                     break;
+                case "git_worktree_prune":
+                    void this.handleWorktreePrune(payload, requestId, sessionId);
+                    break;
                 case "git_stash_list":
                     void this.handleStashList(payload, requestId, sessionId);
                     break;
@@ -331,6 +359,12 @@ export class GitService implements ServiceHandler {
                     break;
                 case "git_blame":
                     void this.handleBlame(payload, requestId, sessionId);
+                    break;
+                case "git_commit_files":
+                    void this.handleCommitFiles(payload, requestId, sessionId);
+                    break;
+                case "git_discard":
+                    void this.handleDiscard(payload, requestId, sessionId);
                     break;
             }
         };
@@ -1190,6 +1224,133 @@ export class GitService implements ServiceHandler {
         }
     }
 
+    // ── git commit message suggestion ────────────────────────────────
+
+    /**
+     * Build a deterministic conventional-commit suggestion from the staged diff.
+     * No LLM — derived from `git diff --cached --numstat` (per-file add/del counts)
+     * and file paths. Good enough as a starting point; the agent session can refine it.
+     */
+    private async handleCommitMessageSuggest(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_commit_message_suggest_result", requestId, sessionId);
+        if (!cwd) return;
+
+        try {
+            const repoRoot = this._cwdRepoRoot.get(cwd) ?? (await this.resolveRepoRoot(cwd));
+            if (!this._cwdRepoRoot.has(cwd)) this._cwdRepoRoot.set(cwd, repoRoot);
+
+            const [numstat, nameOnly] = await Promise.allSettled([
+                this._execGit(["diff", "--cached", "--numstat"], { cwd: repoRoot, timeout: 10000 }),
+                this._execGit(["diff", "--cached", "--name-only"], { cwd: repoRoot, timeout: 10000 }),
+            ]);
+
+            const files: Array<{ path: string; added: number; deleted: number }> = [];
+            let totalAdded = 0;
+            let totalDeleted = 0;
+            const numstatOutput = numstat.status === "fulfilled" ? numstat.value.stdout : "";
+            for (const line of numstatOutput.split("\n")) {
+                if (!line.trim()) continue;
+                // numstat: "<add>\t<del>\t<path>" (binary files show "-")
+                const m = line.match(/^([^\t\s]+)\t([^\t\s]+)\t(.+)$/);
+                if (!m) continue;
+                const added = m[1] === "-" ? 0 : parseInt(m[1], 10) || 0;
+                const deleted = m[2] === "-" ? 0 : parseInt(m[2], 10) || 0;
+                totalAdded += added;
+                totalDeleted += deleted;
+                files.push({ path: m[3], added, deleted });
+            }
+
+            // Fall back to name-only if numstat produced nothing (e.g. binary-only).
+            if (files.length === 0 && nameOnly.status === "fulfilled") {
+                for (const line of nameOnly.value.stdout.split("\n")) {
+                    if (line.trim()) files.push({ path: line.trim(), added: 0, deleted: 0 });
+                }
+            }
+
+            if (files.length === 0) {
+                this.emit("git_commit_message_suggest_result", {
+                    ok: true,
+                    subject: "chore: staged changes",
+                    body: "",
+                    type: "chore",
+                    scope: "",
+                    files: [],
+                }, requestId, sessionId);
+                return;
+            }
+
+            // Call out to PizzaPi: let a real model write the message from the
+            // staged diff. Fall back to the deterministic heuristic on failure.
+            try {
+                const diffResult = await this._execGit(["diff", "--cached"], { cwd: repoRoot, timeout: 10000 });
+                const modelResult = await this._generateCommitMessage(diffResult.stdout);
+                if (modelResult && modelResult.subject && modelResult.subject.trim()) {
+                    this.emit("git_commit_message_suggest_result", {
+                        ok: true,
+                        subject: modelResult.subject.trim(),
+                        body: modelResult.body?.trim() ?? "",
+                        type: "",
+                        scope: "",
+                        files,
+                    }, requestId, sessionId);
+                    return;
+                }
+            } catch {
+                // fall through to the heuristic
+            }
+
+            // Derive type from the change mix and paths.
+            const paths = files.map((f) => f.path);
+            const allDeleted = totalAdded === 0 && totalDeleted > 0;
+            const touchesTests = paths.some((p) => /(test|spec)\./.test(p));
+            const hasFixHints = paths.some((p) => /fix|bug|hotfix|regression/.test(p))
+                || files.some((f) => f.deleted > f.added);
+            let type: string;
+            if (allDeleted) type = "chore";
+            else if (hasFixHints && !touchesTests) type = "fix";
+            else type = "feat";
+
+            // Scope: the most common top-level directory shared by changed files.
+            const topDirs = paths.map((p) => p.split("/")[0]).filter((d) => d);
+            const counts = new Map<string, number>();
+            for (const d of topDirs) counts.set(d, (counts.get(d) ?? 0) + 1);
+            let scope = "";
+            let bestCount = 0;
+            for (const [d, c] of counts) {
+                if (c > bestCount) { bestCount = c; scope = d; }
+            }
+
+            // Subject: summarize the dominant change.
+            const subject =
+                `${type}${scope ? `(${scope})` : ""}: ${totalAdded > 0 ? "add" : "update"} ${files.length} file${files.length === 1 ? "" : "s"}`;
+
+            // Body: per-file bullet list with +/- counts.
+            const body = files
+                .map((f) => `- ${f.path}${f.added + f.deleted > 0 ? ` (${f.added}+ / ${f.deleted}-)` : ""}`)
+                .join("\n");
+
+            this.emit("git_commit_message_suggest_result", {
+                ok: true,
+                subject,
+                body,
+                type,
+                scope,
+                files,
+            }, requestId, sessionId);
+        } catch (err) {
+            this.emitError(
+                "git_commit_message_suggest_result",
+                err instanceof Error ? err.message : String(err),
+                requestId,
+                sessionId,
+            );
+        }
+    }
+
     // ── git worktrees ─────────────────────────────────────────────────
 
     private async collectWorktrees(cwd: string): Promise<GitWorktreeResultPayload> {
@@ -1790,9 +1951,17 @@ export class GitService implements ServiceHandler {
 
         const branch = typeof payload.branch === "string" ? payload.branch.trim() : "";
         const path = typeof payload.path === "string" ? payload.path.trim() : "";
+        // Optional: base ref for a new branch; explicit new-branch flag; remote source.
+        const base = typeof payload.base === "string" ? payload.base.trim() : "";
+        const create = payload.create === true;
+        const isRemote = payload.isRemote === true;
 
         if (!branch || !isValidBranchName(branch)) {
             this.emitError("git_worktree_add_result", "Invalid branch name", requestId, sessionId);
+            return;
+        }
+        if (base && base !== "HEAD" && !isValidBranchName(base)) {
+            this.emitError("git_worktree_add_result", "Invalid base ref", requestId, sessionId);
             return;
         }
         if (!path) {
@@ -1811,24 +1980,44 @@ export class GitService implements ServiceHandler {
         if (!mutation) return;
 
         try {
-            // Use -b to create a new branch at the worktree. If the branch already
-            // exists locally, just check it out in the new worktree.
-            const branchExists = await this._execGit(
-                ["rev-parse", "--verify", `refs/heads/${branch}`],
-                { cwd, timeout: 5000 },
-            ).then(
-                (r) => r.stdout.trim(),
-                () => "",
-            );
+            let args: string[];
+            let resultBranch = branch;
 
-            const args = branchExists
-                ? ["worktree", "add", "--", path, branch]
-                : ["worktree", "add", "-b", branch, "--", path];
+            if (isRemote) {
+                // Check out a remote branch into a new local tracking branch.
+                // `git worktree add -b <local> <path> <remote/branch>` sets up tracking.
+                const local = branch.includes("/") ? branch.slice(branch.indexOf("/") + 1) : branch;
+                if (!isValidBranchName(local)) {
+                    this.emitError("git_worktree_add_result", "Invalid local branch derived from remote ref", requestId, sessionId);
+                    return;
+                }
+                resultBranch = local;
+                args = ["worktree", "add", "-b", local, "--", path, branch];
+            } else if (create) {
+                // Explicit new branch, optionally based on a chosen ref.
+                args = base
+                    ? ["worktree", "add", "-b", branch, "--", path, base]
+                    : ["worktree", "add", "-b", branch, "--", path];
+            } else {
+                // Legacy behavior: check out an existing local branch, or create it
+                // from HEAD when it doesn't exist yet.
+                const branchExists = await this._execGit(
+                    ["rev-parse", "--verify", `refs/heads/${branch}`],
+                    { cwd, timeout: 5000 },
+                ).then(
+                    (r) => r.stdout.trim(),
+                    () => "",
+                );
+                args = branchExists
+                    ? ["worktree", "add", "--", path, branch]
+                    : ["worktree", "add", "-b", branch, "--", path];
+            }
+
             await this._execGit(args, { cwd, timeout: 30000 });
             await this.invalidateStatusCacheFamily(cwd);
             this.emit("git_worktree_add_result", {
                 ok: true,
-                branch,
+                branch: resultBranch,
                 path,
             }, requestId, sessionId);
         } catch (err) {
@@ -1891,6 +2080,32 @@ export class GitService implements ServiceHandler {
             this.emit("git_worktree_remove_result", { ok: true, path: worktreePath }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_worktree_remove_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
+        }
+    }
+
+    // ── git worktree prune ────────────────────────────────────
+
+    /** Prune worktree metadata for directories that no longer exist. */
+    private async handleWorktreePrune(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_worktree_prune_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const mutation = await this.beginRepoMutation(cwd, "git_worktree_prune_result", "worktree-prune", requestId, sessionId);
+        if (!mutation) return;
+
+        try {
+            const { stdout, stderr } = await this._execGit(["worktree", "prune", "-v"], { cwd, timeout: 15000 });
+            const output = (stdout + "\n" + stderr).trim();
+            await this.invalidateStatusCacheFamily(cwd);
+            this.emit("git_worktree_prune_result", { ok: true, ...(output ? { message: output } : {}) }, requestId, sessionId);
+        } catch (err) {
+            this.emitError("git_worktree_prune_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         } finally {
             this.endRepoMutation(mutation);
         }
@@ -2126,8 +2341,8 @@ export class GitService implements ServiceHandler {
 
             // NUL-delimited fixed-field format with a trailing empty sentinel so we can
             // parse without relying on newlines (commit body may contain newlines).
-            // Fields: hash, shortHash, author, authorDate, commitDate, subject, body, refs, sentinel.
-            const format = "%H%x00%h%x00%an%x00%aI%x00%cI%x00%s%x00%b%x00%D%x00%x00";
+            // Fields: hash, shortHash, author, authorDate, commitDate, subject, body, refs, parents, sentinel.
+            const format = "%H%x00%h%x00%an%x00%aI%x00%cI%x00%s%x00%b%x00%D%x00%P%x00%x00";
             const args = ["log", `--format=${format}`, "--decorate=short", "-n", String(limit)];
             if (revisionRange) args.push(revisionRange);
             if (path) args.push("--", path);
@@ -2136,7 +2351,7 @@ export class GitService implements ServiceHandler {
             const fields = stdout.split("\0");
             const entries: GitLogEntry[] = [];
 
-            for (let i = 0; i + 8 < fields.length; i += 9) {
+            for (let i = 0; i + 9 < fields.length; i += 10) {
                 const hash = fields[i].replace(/^\n+/, "").trim();
                 if (!hash) continue;
                 const shortHash = fields[i + 1].replace(/^\n+/, "").trim();
@@ -2146,6 +2361,7 @@ export class GitService implements ServiceHandler {
                 const subject = fields[i + 5].replace(/^\n+/, "").trim();
                 const body = fields[i + 6].replace(/^\n+/, "");
                 const refsField = fields[i + 7].replace(/^\n+/, "").trim();
+                const parentsField = fields[i + 8].replace(/^\n+/, "").trim();
 
                 const refs = refsField
                     ? refsField.split(", ").map((r) => {
@@ -2155,8 +2371,9 @@ export class GitService implements ServiceHandler {
                         return s;
                     }).filter(Boolean)
                     : [];
+                const parents = parentsField ? parentsField.split(/\s+/).filter(Boolean) : [];
 
-                entries.push({ hash, shortHash, author, authorDate, commitDate, subject, body, refs });
+                entries.push({ hash, shortHash, author, authorDate, commitDate, subject, body, refs, parents });
             }
 
             this.emit("git_log_result", { ok: true, entries }, requestId, sessionId);
@@ -2322,6 +2539,137 @@ export class GitService implements ServiceHandler {
             this.emit("git_blame_result", { ok: true, lines, content }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_blame_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        }
+    }
+
+    // ── git commit changed files (for the rev explorer) ────────────────
+    private async handleCommitFiles(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_commit_files_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const revision = typeof payload.revision === "string" ? payload.revision.trim() : "";
+        if (!revision) {
+            this.emitError("git_commit_files_result", "Missing revision", requestId, sessionId);
+            return;
+        }
+        if (revision.startsWith("-")) {
+            this.emitError("git_commit_files_result", "Invalid revision", requestId, sessionId);
+            return;
+        }
+
+        // Optional base → compute a range (base..revision) instead of a single commit.
+        const base = typeof payload.base === "string" && payload.base.trim() ? payload.base.trim() : "";
+        if (base && base.startsWith("-")) {
+            this.emitError("git_commit_files_result", "Invalid base revision", requestId, sessionId);
+            return;
+        }
+
+        try {
+            const repoRoot = this._cwdRepoRoot.get(cwd) ?? (await this.resolveRepoRoot(cwd));
+            if (!this._cwdRepoRoot.has(cwd)) this._cwdRepoRoot.set(cwd, repoRoot);
+
+            const args = base
+                ? ["diff", "--name-status", base, revision]
+                : ["diff-tree", "-r", "--no-commit-id", "--name-status", revision];
+            const { stdout } = await this._execGit(args, { cwd: repoRoot, timeout: 15000 });
+
+            const files: GitCommitFile[] = [];
+            for (const line of stdout.split("\n")) {
+                if (!line.trim()) continue;
+                // name-status: "<X>\t<path>" (renames: "R100\torig\tnew")
+                const tab = line.indexOf("\t");
+                if (tab < 0) continue;
+                const status = line.substring(0, tab).trim();
+                const path = line.substring(tab + 1).trim();
+                if (!path) continue;
+                if (status.startsWith("R") || status.startsWith("C")) {
+                    // path is the original for renames/copies; the new path follows.
+                    const secondTab = line.indexOf("\t", tab + 1);
+                    const newPath = secondTab >= 0 ? line.substring(secondTab + 1).trim() : path;
+                    files.push({ status, path: newPath || path });
+                } else {
+                    files.push({ status, path });
+                }
+            }
+
+            this.emit("git_commit_files_result", { ok: true, revision, files }, requestId, sessionId);
+        } catch (err) {
+            this.emitError("git_commit_files_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        }
+    }
+
+    // ── git discard (destructive) ──────────────────────────────────────
+
+    /**
+     * Discard working-tree (and staged) changes for the given paths.
+     * Tracked files: `git restore --staged --worktree`. Untracked files: delete.
+     * Destructive — the caller must confirm before invoking.
+     */
+    private async handleDiscard(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = this.validateCwd(payload.cwd, "git_discard_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const paths = Array.isArray(payload.paths)
+            ? payload.paths.filter((p): p is string => typeof p === "string" && isValidPath(p))
+            : [];
+        if (paths.length === 0) {
+            this.emitError("git_discard_result", "No valid paths specified", requestId, sessionId);
+            return;
+        }
+
+        const mutation = await this.beginRepoMutation(cwd, "git_discard_result", "discard", requestId, sessionId);
+        if (!mutation) return;
+
+        try {
+            const repoRoot = this._cwdRepoRoot.get(cwd) ?? (await this.resolveRepoRoot(cwd));
+            if (!this._cwdRepoRoot.has(cwd)) this._cwdRepoRoot.set(cwd, repoRoot);
+
+            // Classify untracked vs tracked so we can delete vs restore.
+            const { stdout } = await this._execGit(["status", "--porcelain=v1", "-uall", "-z", "--", ...paths],
+                { cwd: repoRoot, timeout: 10000 },
+            );
+            const untracked = new Set<string>();
+            const entries = stdout.split("\0");
+            for (let i = 0; i < entries.length; i++) {
+                const entry = entries[i];
+                if (!entry || entry.length < 3) continue;
+                if (entry.startsWith("??")) untracked.add(entry.substring(3));
+                else if (entry.startsWith("R") || entry.startsWith("C")) i++; // skip rename source
+            }
+
+            const tracked = paths.filter((p) => !untracked.has(p));
+
+            if (tracked.length > 0) {
+                await this._execGit(["restore", "--staged", "--worktree", "--", ...tracked],
+                    { cwd: repoRoot, timeout: 15000 },
+                );
+            }
+            for (const p of untracked) {
+                // Guard against traversal (already validated) and absolute paths.
+                if (p.startsWith("/") || p.includes("..")) continue;
+                const abs = resolve(repoRoot, p);
+                if (!abs.startsWith(repoRoot + "/") && abs !== repoRoot) continue;
+                try {
+                    await this._rm(abs, { force: true, recursive: true });
+                } catch {
+                    // ignore missing files
+                }
+            }
+
+            await this.invalidateStatusCacheFamily(cwd);
+            this.emit("git_discard_result", { ok: true, paths }, requestId, sessionId);
+        } catch (err) {
+            this.emitError("git_discard_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
         }
     }
 }
