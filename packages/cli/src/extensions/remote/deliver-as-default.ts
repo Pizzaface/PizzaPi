@@ -20,13 +20,13 @@
  * and the message would be silently dropped.
  *
  * If no explicit mode was supplied and the agent is currently streaming,
- * default to `"followUp"` so the message is safely queued.
+ * default to `"steer"` so the new input immediately takes over.
  */
 export function resolveInputDeliverAs(
     requested: "followUp" | "steer" | undefined,
     isAgentActive: boolean,
 ): "followUp" | "steer" | undefined {
     if (requested) return requested;
-    if (isAgentActive) return "followUp";
+    if (isAgentActive) return "steer";
     return undefined;
 }

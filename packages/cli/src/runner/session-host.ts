@@ -160,6 +160,7 @@ export class SessionHost {
         return this.lifecycle.importFromJsonl(inputPath, cwdOverride);
     }
 
+    /** Abort the active turn and wait until a slash command can safely run. */
     abort(): Promise<void> {
         return this.session.abort();
     }

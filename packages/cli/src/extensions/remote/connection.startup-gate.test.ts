@@ -269,6 +269,67 @@ describe("remote connection startup gate", () => {
         expect(firstCall[0]).toBe("fix the flaky test please");
     });
 
+    test("aborts steering slash commands while active or settling", async () => {
+        const abort = mock(async () => {});
+        const sendUserMessage = mock(() => {});
+        const rctx = {
+            shuttingDown: false,
+            sioSocket: null,
+            relay: null,
+            relaySessionId: null,
+            apiKey: () => "test-key",
+            relayUrl: () => "ws://relay.test",
+            relayHttpBaseUrl: () => "http://relay.test",
+            disconnectedStatusText: () => "Disconnected",
+            setRelayStatus: mock(() => {}),
+            getCurrentSessionName: () => null,
+            forwardEvent: mock(() => {}),
+            buildCapabilitiesState: () => ({ type: "capabilities" }),
+            isAgentActive: true,
+            isAgentSettling: false,
+            pendingSteeringSlashCommands: 0,
+            sessionHost: { abort },
+        } as any;
+        const handlers = {
+            clearFollowUpGrace: mock(() => {}),
+            setModelFromWeb: mock(async () => {}),
+            sendUserMessage,
+            isPendingDelinkOwnParent: () => false,
+            setServerClockOffset: mock(() => {}),
+            isStaleChild: () => false,
+            getStalePrimaryParentId: () => null,
+            onParentExplicitlyDelinked: mock(() => {}),
+            onParentTransientlyOffline: mock(() => {}),
+            onParentDelinked: mock(() => {}),
+            flushDeferredDelinks: mock(() => {}),
+            onDelinkDisconnect: mock(() => {}),
+            onSocketTeardown: mock(() => {}),
+            getParentSessionIdForRegister: () => undefined,
+        } as any;
+
+        connect(rctx, handlers);
+        // The UI can omit deliverAs when its active state is stale; resolve the
+        // runner-side default before deciding whether to abort.
+        lastSocket!.trigger("input", { text: "/goal finish the task" });
+        await sleep(50);
+
+        expect(abort).toHaveBeenCalledTimes(1);
+        expect(sendUserMessage).toHaveBeenCalledWith(
+            "/goal finish the task",
+            expect.objectContaining({ deliverAs: "steer" }),
+        );
+
+        // agent_end clears isAgentActive before agent_settled. An explicitly
+        // steering command must still abort during that settling window.
+        rctx.isAgentActive = false;
+        rctx.isAgentSettling = true;
+        lastSocket!.trigger("input", { text: "/goal finish the task", deliverAs: "steer" });
+        await sleep(50);
+
+        expect(abort).toHaveBeenCalledTimes(2);
+        expect(rctx.pendingSteeringSlashCommands).toBe(0);
+    });
+
     test("delivers immediately when gate is not armed (normal CLI session)", async () => {
         // Don't arm the gate — simulates a normal interactive CLI session
         const sendUserMessage = mock(() => {});

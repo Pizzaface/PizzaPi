@@ -437,6 +437,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         const deliverAs = data.deliverAs === "followUp" ? "followUp" as const
             : data.deliverAs === "steer" ? "steer" as const
             : undefined;
+        const isSlashCommand = typeof inputText === "string" && inputText.trimStart().startsWith("/");
         void (async () => {
             try {
                 const httpBase = rctx.relayHttpBaseUrl();
@@ -448,8 +449,21 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                 // initial prompt (or another buffered message) may have already
                 // started streaming by the time we resume here. See
                 // resolveInputDeliverAs for the rationale.
-                const effectiveDeliverAs = resolveInputDeliverAs(deliverAs, rctx.isAgentActive === true);
-                await handlers.sendUserMessage(message, { expandPromptTemplates: true, ...(effectiveDeliverAs ? { deliverAs: effectiveDeliverAs } : {}) });
+                const agentIsRunning = rctx.isAgentActive || rctx.isAgentSettling;
+                const effectiveDeliverAs = resolveInputDeliverAs(deliverAs, agentIsRunning);
+                // Extension commands run before pi applies streaming behavior, so
+                // stop the prior turn before dispatching a steering slash command.
+                // This is also harmless while already idle. Suppress its interim
+                // settlement: auto-close or a parent must not complete the session
+                // before the command gets to run.
+                const abortForSlashCommand = isSlashCommand && effectiveDeliverAs === "steer";
+                if (abortForSlashCommand) rctx.pendingSteeringSlashCommands += 1;
+                try {
+                    if (abortForSlashCommand) await rctx.sessionHost?.abort();
+                    await handlers.sendUserMessage(message, { expandPromptTemplates: true, ...(effectiveDeliverAs ? { deliverAs: effectiveDeliverAs } : {}) });
+                } finally {
+                    if (abortForSlashCommand) rctx.pendingSteeringSlashCommands -= 1;
+                }
             } catch (err) {
                 const errMessage = err instanceof Error ? err.message : String(err);
                 log.error(`pizzapi: failed to deliver remote input: ${errMessage}`);

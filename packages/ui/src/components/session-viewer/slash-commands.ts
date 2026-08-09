@@ -36,8 +36,9 @@ export interface SlashCommandDeps {
   compactingRef: React.MutableRefObject<boolean>;
   onExec?: (payload: unknown) => boolean | void;
   onSendInput?: (
-    message: (PromptInputMessage & { deliverAs?: "steer" | "followUp" }) | string,
+    message: (PromptInputMessage & { deliverAs?: "steer" | "followUp"; suppressOptimistic?: boolean }) | string,
   ) => boolean | void | Promise<boolean | void>;
+  isAgentActive?: boolean;
   resumeSessions?: ResumeSessionOption[];
   onRequestResumeSessions?: () => boolean | void;
   forkMessages?: ForkMessageOption[];
@@ -114,6 +115,7 @@ export function useSlashCommands(
     compactingRef,
     onExec,
     onSendInput,
+    isAgentActive,
     resumeSessions,
     onRequestResumeSessions,
     forkMessages,
@@ -438,9 +440,9 @@ export function useSlashCommands(
         command: "new_session",
       });
     } else if (onSendInput) {
-      void onSendInput({ text: "/new", files: [] });
+      void onSendInput({ text: "/new", files: [], suppressOptimistic: true, ...(isAgentActive ? { deliverAs: "steer" as const } : {}) });
     }
-  }, [onExec, onSendInput]);
+  }, [onExec, onSendInput, isAgentActive]);
 
   const requestNewSession = React.useCallback(() => {
     void checkTriggersAndRun(fireNewSession);
@@ -579,7 +581,7 @@ export function useSlashCommands(
           // Sub-commands (violations/config) are handled by the runner's
           // sandbox extension — forward as raw input.
           if (!onSendInput) return false;
-          void onSendInput({ text: trimmed, files: [] });
+          void onSendInput({ text: trimmed, files: [], suppressOptimistic: true, ...(isAgentActive ? { deliverAs: "steer" as const } : {}) });
           setInput("");
           setCommandOpen(false);
           setCommandQuery("");
@@ -718,7 +720,7 @@ export function useSlashCommands(
       );
       if (rawCommand === "goal" || isExtensionCommand) {
         if (!onSendInput) return false;
-        void onSendInput({ text: trimmed, files: [] });
+        void onSendInput({ text: trimmed, files: [], suppressOptimistic: true, ...(isAgentActive ? { deliverAs: "steer" as const } : {}) });
         setInput("");
         setCommandOpen(false);
         setCommandQuery("");
@@ -870,6 +872,7 @@ export function useSlashCommands(
     [
       onExec,
       onSendInput,
+      isAgentActive,
       resumeSessions,
       forkMessages,
       rewindToMessage,

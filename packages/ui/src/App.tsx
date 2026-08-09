@@ -3565,7 +3565,7 @@ export function App() {
   const inputDedupeRef = React.useRef<InputDedupeState | null>(null);
   const inputAttemptIdRef = React.useRef(0);
 
-  type SessionInputMessage = { text: string; files?: Array<{ file?: File; mediaType?: string; filename?: string; url?: string }>; deliverAs?: "steer" | "followUp" } | string;
+  type SessionInputMessage = { text: string; files?: Array<{ file?: File; mediaType?: string; filename?: string; url?: string }>; deliverAs?: "steer" | "followUp"; suppressOptimistic?: boolean } | string;
 
   // Messages submitted while the session was still hydrating (e.g. the runner
   // was loading MCP servers). Flushed once the snapshot completes.
@@ -3710,6 +3710,7 @@ export function App() {
     }
 
     const deliverAs = typeof message === "object" ? message.deliverAs : undefined;
+    const suppressOptimistic = typeof message === "object" && message.suppressOptimistic;
 
     try {
       socket.emit("input", {
@@ -3725,7 +3726,7 @@ export function App() {
       }
 
       // Track queued messages when the agent is active
-      if (deliverAs && trimmed) {
+      if (deliverAs && trimmed && !suppressOptimistic) {
         if (deliverAs === "steer") {
           // Steer messages appear immediately in the conversation
           const now = Date.now();

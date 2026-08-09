@@ -67,9 +67,11 @@ export function createRelayContext(
         latestCtx: null,
 
         isAgentActive: false,
+        isAgentSettling: false,
         isCompacting: false,
         shuttingDown: false,
         wasAborted: false,
+        pendingSteeringSlashCommands: 0,
         sessionStartedAt: null,
         lastRetryableError: null,
 
