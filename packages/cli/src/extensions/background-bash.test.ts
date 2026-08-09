@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { backgroundBashExtension, backgroundPendingJobs, pendingCommands, backgroundAfterSeconds } from "./background-bash.js";
+import { backgroundBashExtension, backgroundPendingJobs, pendingCommands, backgroundAfterSeconds, resetBackgroundBashConfigCache } from "./background-bash.js";
 import { sessionJobsFilePath } from "../runner/session-procs.js";
 
 // Keep the auto-background window out of the way unless a test opts in, and
@@ -51,14 +51,16 @@ describe("bash override with backgrounding", () => {
         expect(pi.tools.get("bash").parameters.required).toEqual(["command", "title"]);
     });
 
-    test("background threshold: default 15s, env override, invalid falls back", () => {
+    test("background threshold: default 5min, env override, invalid falls back", () => {
         const prev = process.env.PIZZAPI_BASH_BACKGROUND_SECONDS;
         delete process.env.PIZZAPI_BASH_BACKGROUND_SECONDS;
-        expect(backgroundAfterSeconds()).toBe(15);
+        // Reset module cache so config is re-read.
+        resetBackgroundBashConfigCache();
+        expect(backgroundAfterSeconds()).toBe(300);
         process.env.PIZZAPI_BASH_BACKGROUND_SECONDS = "0";
         expect(backgroundAfterSeconds()).toBe(0);
         process.env.PIZZAPI_BASH_BACKGROUND_SECONDS = "nope";
-        expect(backgroundAfterSeconds()).toBe(15);
+        expect(backgroundAfterSeconds()).toBe(300);
         process.env.PIZZAPI_BASH_BACKGROUND_SECONDS = prev!;
     });
 
