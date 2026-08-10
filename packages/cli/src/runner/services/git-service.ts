@@ -2101,14 +2101,82 @@ export class GitService implements ServiceHandler {
 
         try {
             const { stdout, stderr } = await this._execGit(["worktree", "prune", "-v"], { cwd, timeout: 15000 });
-            const output = (stdout + "\n" + stderr).trim();
+            const lines = [(stdout + "\n" + stderr).trim()].filter(Boolean);
+            lines.push(...await this.removeMergedWorktrees(cwd));
             await this.invalidateStatusCacheFamily(cwd);
+            const output = lines.join("\n");
             this.emit("git_worktree_prune_result", { ok: true, ...(output ? { message: output } : {}) }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_worktree_prune_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
         } finally {
             this.endRepoMutation(mutation);
         }
+    }
+
+    /**
+     * Remove worktree directories that are safe to delete: clean (no uncommitted
+     * changes) and on a branch either fully merged into origin's default branch
+     * or whose upstream was deleted on the remote (e.g. squash-merged PR). The
+     * branch ref itself survives — only the directory is reclaimed.
+     */
+    private async removeMergedWorktrees(cwd: string): Promise<string[]> {
+        const defaultRef = await this.resolveDefaultRemoteRef(cwd);
+        if (!defaultRef) return [];
+        const defaultBranch = defaultRef.replace(/^[^/]+\//, "");
+        // Best-effort prune-fetch so branches deleted on the remote show as [gone].
+        try {
+            await this._execGit(["fetch", "--prune", "--quiet", "origin"], { cwd, timeout: 30000 });
+        } catch { /* offline — gone-detection just sees stale tracking refs */ }
+        const removed: string[] = [];
+        const { worktrees } = await this.collectWorktrees(cwd);
+        for (const wt of worktrees) {
+            if (wt.isMain || wt.isDetached || !wt.branch || wt.branch === defaultBranch || wt.changeCount > 0) continue;
+            const merged = await this.isAncestorOf(cwd, wt.branch, defaultRef);
+            const gone = merged ? false : await this.isUpstreamGone(cwd, wt.branch);
+            if (!merged && !gone) continue;
+            try {
+                // Non-force: git itself refuses dirty or locked worktrees — last safety net.
+                await this._execGit(["worktree", "remove", "--", wt.path], { cwd, timeout: 30000 });
+                removed.push(`Removed ${merged ? "merged" : "remote-deleted"} worktree ${wt.displayPath} (${wt.branch})`);
+            } catch { /* locked or raced dirty — keep it */ }
+        }
+        return removed;
+    }
+
+    /** True when `rev` is an ancestor of `ref` (i.e. fully merged). */
+    private async isAncestorOf(cwd: string, rev: string, ref: string): Promise<boolean> {
+        try {
+            await this._execGit(["merge-base", "--is-ancestor", rev, ref], { cwd, timeout: 10000 });
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    /** True when the branch has an upstream configured but it no longer exists on the remote. */
+    private async isUpstreamGone(cwd: string, branch: string): Promise<boolean> {
+        try {
+            const { stdout } = await this._execGit(["for-each-ref", "--format=%(upstream:track)", `refs/heads/${branch}`], { cwd, timeout: 5000 });
+            return stdout.trim() === "[gone]";
+        } catch {
+            return false;
+        }
+    }
+
+    /** Resolve origin's default branch ref (e.g. "origin/main"), or null if unknown. */
+    private async resolveDefaultRemoteRef(cwd: string): Promise<string | null> {
+        try {
+            const { stdout } = await this._execGit(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], { cwd, timeout: 5000 });
+            const ref = stdout.trim();
+            if (ref) return ref;
+        } catch { /* fall through */ }
+        for (const ref of ["origin/main", "origin/master"]) {
+            try {
+                await this._execGit(["rev-parse", "--verify", "--quiet", ref], { cwd, timeout: 5000 });
+                return ref;
+            } catch { /* try next */ }
+        }
+        return null;
     }
 
     // ── git stash list ──────────────────────────────────────────────────

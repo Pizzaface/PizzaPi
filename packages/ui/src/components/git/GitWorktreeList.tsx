@@ -172,7 +172,7 @@ export function GitWorktreeList({
                             onClick={onPrune}
                             disabled={isBusy}
                             className="flex items-center gap-1.5 w-full px-3 py-1.5 mt-0.5 text-[0.65rem] text-muted-foreground/70 hover:text-foreground hover:bg-muted/50 disabled:opacity-50 transition-colors"
-                            title="Prune worktree metadata for directories that no longer exist"
+                            title="Delete clean worktrees whose branch is merged or deleted on the remote, and prune metadata for missing directories"
                         >
                             <Brush className="size-3" /> Prune stale worktrees
                         </button>
