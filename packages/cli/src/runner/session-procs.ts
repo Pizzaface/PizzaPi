@@ -147,7 +147,11 @@ export function tailFile(path: string, maxBytes = 4000): string {
         const buf = Buffer.allocUnsafe(len);
         fd = openSync(path, "r");
         readSync(fd, buf, 0, len, start);
-        return (start > 0 ? `…(truncated, full log at ${path})\n` : "") + buf.toString("utf8");
+        // A byte-offset window can start mid-UTF-8-sequence; drop the leading
+        // continuation bytes so emoji/CJK don't decode as U+FFFD.
+        let from = 0;
+        if (start > 0) while (from < buf.length && (buf[from] & 0xc0) === 0x80) from++;
+        return (start > 0 ? `…(truncated, full log at ${path})\n` : "") + buf.subarray(from).toString("utf8");
     } catch {
         return "";
     } finally {
