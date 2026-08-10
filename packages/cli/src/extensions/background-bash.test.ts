@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { backgroundBashExtension, backgroundPendingJobs, pendingCommands, backgroundAfterSeconds, resetBackgroundBashConfigCache } from "./background-bash.js";
+import { backgroundBashExtension, backgroundPendingJobs, pendingCommands, backgroundAfterSeconds, resetBackgroundBashConfigCache, readFrom } from "./background-bash.js";
 import { sessionJobsFilePath } from "../runner/session-procs.js";
 
 // Keep the auto-background window out of the way unless a test opts in, and
@@ -303,5 +303,31 @@ describe("process tracking and lifecycle", () => {
         await Bun.sleep(300);
         expect(pi.messages.length).toBe(0);
         expect(() => process.kill(pid, 0)).toThrow();
+    });
+});
+
+describe("readFrom UTF-8 boundaries", () => {
+    test("incremental reads never split an emoji", () => {
+        const dir = mkdtempSync(join(tmpdir(), "readfrom-"));
+        const file = join(dir, "log.txt");
+        try {
+            const full = "a🍕b🎉c";
+            const bytes = Buffer.from(full, "utf8");
+            let offset = 0;
+            let text = "";
+            // Write 3 bytes at a time — guarantees mid-emoji boundaries.
+            for (let i = 3; i <= bytes.length; i += 3) {
+                writeFileSync(file, bytes.subarray(0, i));
+                const r = readFrom(file, offset);
+                text += r.text;
+                offset = r.newOffset;
+            }
+            writeFileSync(file, bytes);
+            const last = readFrom(file, offset);
+            text += last.text;
+            expect(text).toBe(full);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
     });
 });

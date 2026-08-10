@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createWriteStream, openSync, readSync, closeSync, statSync, unlinkSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "../config.js";
@@ -124,8 +125,14 @@ function loadJobs(): void {
     saveJobs();
 }
 
-/** Read a file from `offset` to EOF. */
-function readFrom(path: string, offset: number): { text: string; newOffset: number } {
+/**
+ * Read a file from `offset` to EOF.
+ * Stops at the last complete UTF-8 sequence so an emoji straddling the read
+ * boundary isn't decoded as U+FFFD; the held-back bytes are re-read next call.
+ * ponytail: StringDecoder is stateful but a fresh one per call is enough because
+ * newOffset always lands on a character boundary (offsets start at 0).
+ */
+export function readFrom(path: string, offset: number): { text: string; newOffset: number } {
     let fd: number | undefined;
     try {
         const size = statSync(path).size;
@@ -134,7 +141,8 @@ function readFrom(path: string, offset: number): { text: string; newOffset: numb
         const buf = Buffer.allocUnsafe(len);
         fd = openSync(path, "r");
         readSync(fd, buf, 0, len, offset);
-        return { text: buf.toString("utf8"), newOffset: size };
+        const text = new StringDecoder("utf8").write(buf);
+        return { text, newOffset: offset + Buffer.byteLength(text, "utf8") };
     } catch {
         return { text: "", newOffset: offset };
     } finally {

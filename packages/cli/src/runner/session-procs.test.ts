@@ -6,7 +6,11 @@ import {
     stripCapturePrefix,
     sessionProcFilePath,
     SHELL_PROC_CAPTURE_PREFIX,
+    tailFile,
 } from "./session-procs.js";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 describe("parseRecordedGroupPids", () => {
     test("dedupes and drops garbage", () => {
@@ -84,5 +88,21 @@ describe("sessionProcFilePath", () => {
         const p = sessionProcFilePath("abc/../etc");
         expect(p.endsWith("abc_.._etc.pids")).toBe(true);
         expect(p.includes("/../")).toBe(false);
+    });
+});
+
+describe("tailFile UTF-8 boundaries", () => {
+    test("truncated tail does not emit replacement characters", () => {
+        const dir = mkdtempSync(join(tmpdir(), "tailfile-"));
+        const file = join(dir, "log.txt");
+        try {
+            writeFileSync(file, "x".repeat(10) + "🍕🍕🍕");
+            // maxBytes lands mid-emoji (each 🍕 is 4 bytes)
+            const out = tailFile(file, 10);
+            expect(out).not.toContain("\uFFFD");
+            expect(out).toContain("🍕");
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
     });
 });
