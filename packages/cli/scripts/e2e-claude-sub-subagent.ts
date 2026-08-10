@@ -1,14 +1,14 @@
 /**
  * E2E check: subagent engine works with the claude-subscription provider.
  *
- * Registers the provider directly on a real ModelRegistry (same call the
+ * Registers the provider directly on a real ModelRuntime (same call the
  * minimalcc-pi extension makes), then runs a subagent with an anthropic/*
  * model override — exercising the same-id provider fallback AND shared
- * registry auth. Burns one tiny haiku request.
+ * runtime auth. Burns one tiny haiku request.
  *
  * Run: bun scripts/e2e-claude-sub-subagent.ts
  */
-import { ModelRegistry, AuthStorage } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { runSingleAgent } from "../src/extensions/subagent/engine.js";
@@ -19,8 +19,11 @@ const { MODELS, CLAUDE_SUBSCRIPTION_NATIVE_API_ID } = await import(join(mcc, "sr
 const { streamNativeClaudeSubscription } = await import(join(mcc, "src/native-stream-simple.ts"));
 
 const agentDir = join(homedir(), ".pizzapi");
-const auth = AuthStorage.create(join(agentDir, "auth.json"));
-const registry = ModelRegistry.create(auth, join(agentDir, "models.json"));
+const runtime = await ModelRuntime.create({
+    authPath: join(agentDir, "auth.json"),
+    modelsPath: join(agentDir, "models.json"),
+});
+const registry = new ModelRegistry(runtime);
 
 registry.unregisterProvider("anthropic");
 registry.registerProvider("claude-subscription", {
