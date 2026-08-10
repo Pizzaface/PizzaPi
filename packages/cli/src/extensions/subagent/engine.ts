@@ -5,15 +5,15 @@
  * and the core single-agent runner (createAgentSession + session.prompt).
  */
 
-import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
+import type { AgentConfig } from "../subagent-agents.js";
+import type { Model, AssistantMessage, Message } from "@earendil-works/pi-ai";
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
     createAgentSession,
     DefaultResourceLoader,
     createCodingTools,
     createReadOnlyTools,
 } from "@earendil-works/pi-coding-agent";
-import type { AgentConfig } from "../subagent-agents.js";
-import type { Model } from "@earendil-works/pi-ai";
 import { defaultAgentDir } from "../../config.js";
 import { findCachedOllamaCloudModel } from "../../ollama-cloud-models.js";
 import { isModelHidden } from "../../hidden-models.js";
@@ -126,10 +126,18 @@ export interface ModelRegistryLike {
 
 /**
  * True when the registry is a real ModelRegistry (safe to hand to
- * createAgentSession for API-key resolution), not a narrow test mock.
+ * createAgentSession for auth resolution), not a narrow test mock.
  */
 function isFullModelRegistry(registry: ModelRegistryLike): registry is ModelRegistryLike & import("@earendil-works/pi-coding-agent").ModelRegistry {
     return typeof (registry as { getApiKeyForProvider?: unknown }).getApiKeyForProvider === "function";
+}
+
+/** Extract the live ModelRuntime from a real ModelRegistry facade. */
+function getModelRuntime(registry: ModelRegistryLike): ModelRuntime | undefined {
+    if (!isFullModelRegistry(registry)) return undefined;
+    // The upstream ModelRegistry class wraps a private `runtime` field;
+    // at runtime it is an ordinary public property on the compiled class.
+    return (registry as unknown as { runtime?: ModelRuntime }).runtime;
 }
 
 /**
@@ -322,11 +330,11 @@ export async function runSingleAgent(
             tools,
             resourceLoader: loader,
             ...(resolvedModel && { model: resolvedModel }),
-            // Share the parent's model registry so extension-registered
-            // providers (e.g. claude-subscription, ollama-cloud) resolve with
-            // their API keys — the subagent session skips extensions, so a
-            // fresh registry would fail with "No API key found".
-            ...(modelRegistry && isFullModelRegistry(modelRegistry) && { modelRegistry }),
+            // Reuse the parent's live ModelRuntime so OAuth/subscription
+            // providers (which keep tokens in memory, not in auth.json) work.
+            // createAgentSession reads credentials from modelRuntime; the
+            // modelRegistry facade alone is ignored by the SDK.
+            ...(modelRegistry && { modelRuntime: getModelRuntime(modelRegistry) }),
         });
         if (signal?.aborted) {
             session.dispose();
