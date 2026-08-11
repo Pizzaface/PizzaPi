@@ -9,6 +9,15 @@ type SortDir = "asc" | "desc";
 
 const DEFAULT_SORT: { key: SortKey; dir: SortDir } = { key: "turnIndex", dir: "asc" };
 
+function cacheHitRate(block: ContextBlock): number | null {
+  const usage = block.usage;
+  if (!usage || !Number.isFinite(usage.input) || !Number.isFinite(usage.cacheRead) || !Number.isFinite(usage.cacheWrite)) {
+    return null;
+  }
+  const totalPrompt = usage.input + usage.cacheRead + usage.cacheWrite;
+  return totalPrompt > 0 ? usage.cacheRead / totalPrompt : null;
+}
+
 interface Column {
   key: SortKey;
   label: string;
@@ -50,16 +59,8 @@ const COLUMNS: Column[] = [
     key: "cache",
     label: "Cache",
     align: "right",
-    sortValue: (b) => {
-      const input = b.usage?.input ?? 0;
-      const cacheRead = b.usage?.cacheRead ?? 0;
-      return input + cacheRead > 0 ? cacheRead / (input + cacheRead) : -1;
-    },
-    render: (b) => {
-      const input = b.usage?.input ?? 0;
-      const cacheRead = b.usage?.cacheRead ?? 0;
-      return formatPct(input + cacheRead > 0 ? cacheRead / (input + cacheRead) : null);
-    },
+    sortValue: (b) => cacheHitRate(b) ?? -1,
+    render: (b) => formatPct(cacheHitRate(b)),
   },
 ];
 

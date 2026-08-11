@@ -10,6 +10,8 @@ export interface Usage {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  cacheWrite1h?: number;
+  reasoning?: number;
   totalTokens: number;
   cost?: {
     input?: number;
@@ -53,11 +55,7 @@ export interface ContextBlock {
   model?: { provider: string; id: string }; // model active at this turn
   /** Human-readable title (e.g., "Global Rules", "Project Rules", skill name). */
   title?: string;
-  /**
-   * Heuristic breakdown of the turn block into per-role sub-components.
-   * Estimated from content blocks (text, toolCall, thinking) in the assistant message.
-   * Null for non-turn blocks.
-   */
+  /** Deprecated: new analyses omit this because generated output is not prompt input. */
   subBlocks?: Array<{
     role: "user" | "assistant" | "tool_result" | "thinking" | `tool:${string}`;
     tokens: number; // estimated from content
@@ -80,7 +78,7 @@ export interface ModelStats {
   contextWindow?: number;
   turns: number;
   totalCost: number;
-  cacheHitRate: number;
+  cacheHitRate: number | null;
 }
 
 export interface SessionAnalysis {
@@ -94,21 +92,19 @@ export interface SessionAnalysis {
   summary: {
     totalTokens: number;
     totalCost: number;
-    /** cacheRead / (input + cacheRead) — per Anthropic caching semantics */
-    cacheHitRate: number;
+    /** cacheRead / (input + cacheRead + cacheWrite) when every request has usage */
+    cacheHitRate: number | null;
     /**
-     * Estimated $ saved by caching. Computed per-model as:
-     *   Σ (cacheReadTokens * (uncachedInputPricePerToken - cacheReadPricePerToken))
-     * Requires both cost data and per-model pricing. Falls back to null if any turn is
-     * missing cost or if the model's pricing is unavailable.
+     * Estimated $ saved by caching from reported per-turn input/cache-read costs.
+     * Falls back to null when a cache read has no comparable cost data.
      */
     estimatedCacheSavings: number | null;
     compactionCount: number;
     /** Sum of estimatedTokensFreed across all compactions (null if any are unknown) */
     tokensFreedByCompaction: number | null;
-    /** Highest observed usage.input value (context peak, heuristic) */
+    /** Highest observed full prompt size: input + cacheRead + cacheWrite */
     peakContextUsage: number | null;
-    /** Mean % of context window used (null if contextWindow is unknown) */
+    /** Peak prompt size / the model used for that prompt's context window */
     contextUtilization: number | null;
   };
 }
@@ -148,6 +144,7 @@ export interface ParsedCompactionEntry {
   summary: string;
   firstKeptEntryId: string;
   tokensBefore: number;
+  usage?: Usage;
   details?: unknown;
   fromHook?: boolean;
 }
@@ -159,6 +156,7 @@ export interface ParsedBranchSummaryEntry {
   timestamp: string;
   fromId: string;
   summary: string;
+  usage?: Usage;
   details?: unknown;
   fromHook?: boolean;
 }
