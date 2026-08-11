@@ -82,7 +82,7 @@ If a sub-command requires an argument (like `/mcp disable`), selecting it fills 
 |---------|-------------|
 | `/name <name>` | Set a display name for the current session, e.g. `/name auth-refactor`. |
 | `/goal` | Show the active goal and current counters. |
-| `/goal "{condition}" [flags]` | Set a success condition and optional budget for the session. Flags: `--max-turns`, `--max-tokens`, `--max-cost`, `--every N`, `--min-turns N`. |
+| `/goal "{condition}" [flags]` | Set a success condition and optional budget for the session. An evaluator checks the condition each time the agent finishes a run and auto-continues while it is unmet; when the goal is met or a budget is exhausted the goal deactivates and control returns to you (the session is never terminated). Flags: `--max-turns` (counts completed agent runs, not LLM round-trips), `--max-tokens`, `--max-cost`, `--every N`, `--min-turns N`. |
 | `/goal clear` | Clear the active goal. Aliases: `stop`, `off`, `cancel`, `reset`, `none`. |
 | `/copy` | Copy the last assistant message to your clipboard. |
 

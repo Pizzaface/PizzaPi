@@ -31,9 +31,13 @@ interface ModelInfo {
 const DEFAULT_MAX_TOKENS = 512;
 const MIN_TOKENS = 1;
 const MAX_TOKENS = 4096;
-const DEFAULT_EVALUATE_EVERY_N_TURNS = 3;
+// Keep in sync with the CLI: DEFAULT_EVALUATE_EVERY_N_TURNS in
+// packages/cli/src/extensions/goal/evaluator.ts and
+// DEFAULT_MIN_TURNS_BEFORE_EVALUATE in .../goal/types.ts. Both are measured
+// in completed agent runs, not LLM round-trips.
+const DEFAULT_EVALUATE_EVERY_N_TURNS = 1;
 const MIN_EVALUATE_EVERY_N_TURNS = 1;
-const DEFAULT_MIN_TURNS_BEFORE_EVALUATE = 10;
+const DEFAULT_MIN_TURNS_BEFORE_EVALUATE = 1;
 const MIN_MIN_TURNS_BEFORE_EVALUATE = 0;
 
 /**
@@ -261,7 +265,7 @@ export default function FastModelSettings({ runnerId, config, onSave, saving }: 
 
             {/* Evaluate cadence */}
             <div className="flex flex-col gap-2">
-                <Label htmlFor="evaluator-every-n-turns">Evaluate Every N Turns</Label>
+                <Label htmlFor="evaluator-every-n-turns">Evaluate Every N Runs</Label>
                 <Input
                     id="evaluator-every-n-turns"
                     type="number"
@@ -271,13 +275,13 @@ export default function FastModelSettings({ runnerId, config, onSave, saving }: 
                     className="w-full max-w-sm"
                 />
                 <p className="text-xs text-muted-foreground">
-                    Run the LLM evaluator once every N completed turns. Set to 1 to evaluate every turn. Default: {DEFAULT_EVALUATE_EVERY_N_TURNS}.
+                    Run the LLM evaluator once every N completed agent runs — one prompt through to control returning to you, not each tool call. Set to 1 to evaluate every run. Default: {DEFAULT_EVALUATE_EVERY_N_TURNS}.
                 </p>
             </div>
 
             {/* Minimum turns before first evaluation */}
             <div className="flex flex-col gap-2">
-                <Label htmlFor="evaluator-min-turns">Minimum Turns Before Evaluating</Label>
+                <Label htmlFor="evaluator-min-turns">Minimum Runs Before Evaluating</Label>
                 <Input
                     id="evaluator-min-turns"
                     type="number"
@@ -287,7 +291,7 @@ export default function FastModelSettings({ runnerId, config, onSave, saving }: 
                     className="w-full max-w-sm"
                 />
                 <p className="text-xs text-muted-foreground">
-                    Wait for this many completed turns before the goal evaluator runs for the first time. Default: {DEFAULT_MIN_TURNS_BEFORE_EVALUATE}.
+                    Wait for this many completed agent runs before the goal evaluator runs for the first time. Default: {DEFAULT_MIN_TURNS_BEFORE_EVALUATE}.
                 </p>
             </div>
 

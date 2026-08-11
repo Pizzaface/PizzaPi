@@ -2,7 +2,7 @@
  * Argument parser for the `/goal` slash command.
  *
  * Examples:
- *   /goal "the tests pass" --max-turns 20 --max-tokens 100000
+ *   /goal "the tests pass" --max-turns 20 --max-cost 5
  *   /goal fix the Dockerfile --evaluator keyword --keyword "build succeeded"
  *   /goal status
  *   /goal clear
@@ -23,10 +23,15 @@ function isFlag(token: string): boolean {
     return token.startsWith("--");
 }
 
-function parseNumber(value: string, label: string): number {
+/**
+ * Budget values must be > 0. A zero budget is already exhausted the moment
+ * the goal starts, so `/goal "x" --max-turns 0` would set a goal that
+ * immediately reports "budget reached" — always a typo, never intent.
+ */
+function parsePositiveNumber(value: string, label: string): number {
     const parsed = Number(value);
-    if (!Number.isFinite(parsed) || parsed < 0) {
-        throw new Error(`${label} must be a non-negative number, got "${value}"`);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+        throw new Error(`${label} must be a positive number, got "${value}"`);
     }
     return parsed;
 }
@@ -110,13 +115,13 @@ export function parseGoalArgs(input: string): GoalCommandArgs {
 
             switch (token) {
                 case "--max-turns":
-                    budget.maxTurns = parseNumber(next, "--max-turns");
+                    budget.maxTurns = parsePositiveNumber(next, "--max-turns");
                     break;
                 case "--max-tokens":
-                    budget.maxTokens = parseNumber(next, "--max-tokens");
+                    budget.maxTokens = parsePositiveNumber(next, "--max-tokens");
                     break;
                 case "--max-cost":
-                    budget.maxCost = parseNumber(next, "--max-cost");
+                    budget.maxCost = parsePositiveNumber(next, "--max-cost");
                     break;
                 case "--evaluator":
                     if (next !== "llm" && next !== "keyword") {
@@ -128,13 +133,14 @@ export function parseGoalArgs(input: string): GoalCommandArgs {
                     successKeywords.push(next);
                     break;
                 case "--every":
-                    // How often (in turns) to invoke the LLM evaluator. It's a
-                    // billed API call; --every N throttles it to cut cost.
-                    // No effect on the free/local keyword evaluator.
+                    // How often (in completed agent runs) to invoke the LLM
+                    // evaluator. It's a billed API call; --every N throttles it
+                    // for goals known to need many runs. No effect on the
+                    // free/local keyword evaluator.
                     evaluateEveryNTurns = parsePositiveInt(next, "--every");
                     break;
                 case "--min-turns":
-                    // Minimum completed agent turns before the evaluator may
+                    // Minimum completed agent runs before the evaluator may
                     // run. Prevents premature judgment while the agent is still
                     // getting started.
                     minTurnsBeforeEvaluate = parsePositiveInt(next, "--min-turns");

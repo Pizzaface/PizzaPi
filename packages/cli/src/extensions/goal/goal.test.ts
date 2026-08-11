@@ -9,6 +9,7 @@ import {
     formatGoalStatus,
     getGoal,
     getPendingGuidance,
+    recordCompletedRun,
     recordEvaluation,
     recordTurnSpend,
     resetSession,
@@ -26,7 +27,6 @@ import type {
     ExtensionContext,
     ModelRegistry,
     TurnEndEvent,
-    BeforeAgentStartEvent,
     SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { goalExtension } from "./index.js";
@@ -96,6 +96,12 @@ describe("parseGoalArgs", () => {
         expect(() => parseGoalArgs("--max-turns 5")).toThrow("A goal condition is required");
     });
 
+    test.each([["--max-turns"], ["--max-tokens"], ["--max-cost"]])("rejects a zero or negative %s budget", (flag) => {
+        // A zero budget is exhausted before the first run — always a typo.
+        expect(() => parseGoalArgs(`the tests pass ${flag} 0`)).toThrow("must be a positive number");
+        expect(() => parseGoalArgs(`the tests pass ${flag} -1`)).toThrow("must be a positive number");
+    });
+
     test("treats unknown flags as condition text", () => {
         const parsed = parseGoalArgs("fix the --dry-run handling");
         expect(parsed.rawCondition).toBe("fix the --dry-run handling");
@@ -158,13 +164,39 @@ describe("goal state", () => {
         expect(state.evaluations[0]?.reason).toBe("turn 5");
     });
 
-    test("recordTurnSpend increments counters", () => {
+    test("recordTurnSpend accrues spend without counting a run", () => {
         resetSession("session-1");
         makeGoal();
         const updated = recordTurnSpend("session-1", 123, 0.001);
-        expect(updated?.turnCount).toBe(1);
         expect(updated?.tokenSpend).toBe(123);
         expect(updated?.costSpend).toBe(0.001);
+        // Mid-run tool-call turns spend but do not advance the run counter.
+        expect(updated?.turnCount).toBe(0);
+    });
+
+    test("recordCompletedRun advances turnCount only", () => {
+        resetSession("session-1");
+        makeGoal();
+        recordTurnSpend("session-1", 100, 0.002);
+        recordTurnSpend("session-1", 50, 0.001);
+        const updated = recordCompletedRun("session-1");
+        expect(updated?.turnCount).toBe(1);
+        expect(updated?.tokenSpend).toBe(150);
+        expect(updated?.costSpend).toBeCloseTo(0.003, 10);
+    });
+
+    test("recordEvaluation stamps lastEvaluatedTurn", () => {
+        resetSession("session-1");
+        makeGoal();
+        recordCompletedRun("session-1");
+        recordCompletedRun("session-1");
+        const state = recordEvaluation("session-1", {
+            turnIndex: 2,
+            verdict: "not_met",
+            reason: "still working",
+            timestamp: Date.now(),
+        }, { appendEntry: fakeAppendEntry });
+        expect(state?.lastEvaluatedTurn).toBe(2);
     });
 
     test("recordEvaluation appends a goal_evaluator_usage entry when the LLM evaluator spends tokens/cost", () => {
@@ -213,6 +245,7 @@ describe("goal state", () => {
         resetSession("session-1");
         makeGoal();
         recordTurnSpend("session-1", 10, 0);
+        recordCompletedRun("session-1");
         const feedback = await keywordGoalEvaluator.evaluate(getGoal("session-1")!, {
             latestTurnText: "All tests pass!",
             transcript: "",
@@ -229,9 +262,9 @@ describe("goal state", () => {
     test("max turns budget stops the goal", () => {
         resetSession("session-1");
         makeGoal();
-        recordTurnSpend("session-1", 1, 0);
-        recordTurnSpend("session-1", 1, 0);
-        const state = recordTurnSpend("session-1", 1, 0);
+        recordCompletedRun("session-1");
+        recordCompletedRun("session-1");
+        const state = recordCompletedRun("session-1");
         expect(state?.turnCount).toBe(3);
         expect(checkBudget(state!)).toBe("max_turns");
         expect(state?.status).toBe("failed");
@@ -456,6 +489,18 @@ describe("parseLlmVerdict", () => {
         expect(parseLlmVerdict("maybe later").verdict).toBe("uncertain");
     });
 
+    test("parses JSON whose reason contains braces", () => {
+        const result = parseLlmVerdict('{"verdict": "no", "reason": "the {foo} handler still throws"}');
+        expect(result.verdict).toBe("not_met");
+        expect(result.reason).toBe("the {foo} handler still throws");
+    });
+
+    test("parses JSON followed by trailing prose containing braces", () => {
+        const result = parseLlmVerdict('{"verdict": "yes", "reason": "all green"}\nNote: check {config} next.');
+        expect(result.verdict).toBe("met");
+        expect(result.reason).toBe("all green");
+    });
+
     test.each([
         ["The goal has not been met yet"],
         ["The goal has not yet been met"],
@@ -523,23 +568,23 @@ describe("resolveEvaluatorModel", () => {
         expect(resolved).toBeUndefined();
     });
 
-    test("prefers the session's current model when no evaluator model is configured", async () => {
-        const currentModel = { provider: "anthropic", id: "claude-sonnet-4-5", input: ["text"], cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 4096, reasoning: false, name: "Sonnet", api: "anthropic-messages", baseUrl: "" } as any;
+    test("does not prefer an expensive session model — unconfigured resolves cheapest", async () => {
+        // The evaluator prompt shares no prefix with the session context, so
+        // there is no prompt cache to hit by reusing the session's model.
         const registry = makeRegistry([
+            { provider: "anthropic", id: "claude-opus", input: ["text"], cost: { input: 15, output: 75, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 4096, reasoning: false, name: "Opus", api: "anthropic-messages", baseUrl: "" },
             { provider: "openai", id: "gpt-4o-mini", input: ["text"], cost: { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 4096, reasoning: false, name: "Mini", api: "openai-completions", baseUrl: "" },
         ]);
-        const resolved = await resolveEvaluatorModel(registry, undefined, currentModel);
-        expect(resolved?.model.provider).toBe("anthropic");
-        expect(resolved?.model.id).toBe("claude-sonnet-4-5");
-        expect(resolved?.apiKey).toBe("anthropic-key");
+        const resolved = await resolveEvaluatorModel(registry);
+        expect(resolved?.model.id).toBe("gpt-4o-mini");
     });
 
-    test("falls back to the cheapest text model when the current model lacks auth", async () => {
-        const currentModel = { provider: "unauthenticated", id: "cheap", input: ["text"], cost: { input: 0.01, output: 0.01, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8_192, maxTokens: 4096, reasoning: false, name: "Cheap", api: "openai-completions", baseUrl: "" } as any;
+    test("falls back to the cheapest text model when the configured model lacks auth", async () => {
         const registry = makeRegistry([
+            { provider: "unauthenticated", id: "pinned", input: ["text"], cost: { input: 0.01, output: 0.01, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8_192, maxTokens: 4096, reasoning: false, name: "Pinned", api: "openai-completions", baseUrl: "" },
             { provider: "openai", id: "gpt-4o-mini", input: ["text"], cost: { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 4096, reasoning: false, name: "Mini", api: "openai-completions", baseUrl: "" },
         ]);
-        const resolved = await resolveEvaluatorModel(registry, undefined, currentModel);
+        const resolved = await resolveEvaluatorModel(registry, "unauthenticated:pinned");
         expect(resolved?.model.id).toBe("gpt-4o-mini");
     });
 });
@@ -771,7 +816,7 @@ function createFakeCtx(overrides: {
     } as unknown as ExtensionContext;
 }
 
-function makeAssistantMessage(text: string): AssistantMessage {
+function makeAssistantMessage(text: string, stopReason: AssistantMessage["stopReason"] = "stop"): AssistantMessage {
     return {
         role: "assistant",
         content: [{ type: "text", text }],
@@ -779,9 +824,14 @@ function makeAssistantMessage(text: string): AssistantMessage {
         provider: "anthropic",
         model: "haiku",
         usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.0001 } },
-        stopReason: "stop",
+        stopReason,
         timestamp: Date.now(),
     };
+}
+
+/** A mid-run turn: the agent called tools and will keep going by itself. */
+function makeToolUseMessage(text: string): AssistantMessage {
+    return makeAssistantMessage(text, "toolUse");
 }
 
 describe("goalExtension event wiring", () => {
@@ -993,7 +1043,92 @@ describe("goalExtension event wiring", () => {
         expect(getPendingGuidance("session-1")).not.toContain("previous guidance");
     });
 
-    test("throttles the LLM evaluator to every N turns while still looping and enforcing budgets", async () => {
+    test("mid-run toolUse turns accrue spend but never steer, evaluate, or count a run", async () => {
+        resetSession("session-1");
+        const { pi, handlers, userMessages } = createFakePi();
+        const ctx = createFakeCtx();
+
+        goalExtension(pi);
+        setGoal(
+            "session-1",
+            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"] },
+            {},
+            pi,
+        );
+
+        const turnHandlers = handlers.get("turn_end") ?? [];
+        // Three tool-call turns inside a single agent run.
+        for (let i = 0; i < 3; i++) {
+            for (const handler of turnHandlers) {
+                await handler({
+                    type: "turn_end",
+                    turnIndex: i + 1,
+                    message: makeToolUseMessage("running a command"),
+                    toolResults: [],
+                } as TurnEndEvent, ctx);
+            }
+        }
+
+        const midRun = getGoal("session-1")!;
+        expect(midRun.status).toBe("active");
+        // The agent is already working — no "keep going" spam.
+        expect(userMessages.length).toBe(0);
+        expect(midRun.evaluations.length).toBe(0);
+        // --max-turns budgets agent runs, not tool calls.
+        expect(midRun.turnCount).toBe(0);
+        // Spend still accrues across every LLM round-trip.
+        expect(midRun.tokenSpend).toBe(45);
+
+        // The run ends: now the loop runs exactly once.
+        for (const handler of turnHandlers) {
+            await handler({
+                type: "turn_end",
+                turnIndex: 4,
+                message: makeAssistantMessage("Still failing"),
+                toolResults: [],
+            } as TurnEndEvent, ctx);
+        }
+
+        const afterRun = getGoal("session-1")!;
+        expect(afterRun.turnCount).toBe(1);
+        expect(afterRun.evaluations.length).toBe(1);
+        expect(userMessages.length).toBe(1);
+    });
+
+    test("a mid-run tool loop still stops the goal when a token budget is exhausted", async () => {
+        resetSession("session-1");
+        const { pi, handlers, messages, userMessages } = createFakePi();
+        const ctx = createFakeCtx();
+
+        goalExtension(pi);
+        setGoal(
+            "session-1",
+            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"] },
+            { maxTokens: 30 },
+            pi,
+        );
+
+        const turnHandlers = handlers.get("turn_end") ?? [];
+        for (let i = 0; i < 2; i++) {
+            for (const handler of turnHandlers) {
+                await handler({
+                    type: "turn_end",
+                    turnIndex: i + 1,
+                    message: makeToolUseMessage("running a command"),
+                    toolResults: [],
+                } as TurnEndEvent, ctx);
+            }
+        }
+
+        // A runaway tool loop can't spend past the budget just because it
+        // never reaches a run boundary.
+        expect(getGoal("session-1")?.status).toBe("failed");
+        expect(getGoal("session-1")?.stopReason).toBe("max_tokens");
+        expect(messages.some((m) => m.content.includes("budget reached"))).toBe(true);
+        expect(userMessages.length).toBe(0);
+    });
+
+    test("throttles the LLM evaluator to every N runs while still looping and enforcing budgets", async () => {
         resetSession("session-1");
         const { pi, handlers, userMessages } = createFakePi();
         const ctx = createFakeCtx();
@@ -1020,28 +1155,35 @@ describe("goalExtension event wiring", () => {
 
         // No configured evaluator model in the fake ctx, so every evaluation
         // that does run resolves to "uncertain" (not "not_met") — this test
-        // only cares how many turns actually invoke the evaluator.
-        await runTurn("working on it"); // turn 1: always evaluated
+        // only cares how many runs actually invoke the evaluator.
+        await runTurn("working on it"); // run 1: first eligible run always evaluates
         expect(getGoal("session-1")?.evaluations.length).toBe(1);
 
-        await runTurn("still working"); // turn 2: throttled, skips evaluation
+        await runTurn("still working"); // run 2: throttled, skips evaluation
         expect(getGoal("session-1")?.evaluations.length).toBe(1);
         // The loop still continues even though the evaluator didn't run.
         expect(userMessages.length).toBe(1);
 
-        await runTurn("still working"); // turn 3: 3 % 3 === 0, evaluates again
+        await runTurn("still working"); // run 3: still throttled
+        expect(getGoal("session-1")?.evaluations.length).toBe(1);
+
+        // Cadence is measured from the last evaluation (run 1), not
+        // `turnCount % rate`, so the next evaluation lands on run 4.
+        await runTurn("still working"); // run 4: 3 runs since last eval
         expect(getGoal("session-1")?.evaluations.length).toBe(2);
 
-        expect(getGoal("session-1")?.turnCount).toBe(3);
+        expect(getGoal("session-1")?.turnCount).toBe(4);
         expect(getGoal("session-1")?.status).toBe("active");
     });
 
-    test("defers evaluation until the default minimum turns have completed", async () => {
+    test("evaluates at the first run boundary by default", async () => {
         resetSession("session-1");
-        const { pi, handlers, userMessages } = createFakePi();
+        const { pi, handlers } = createFakePi();
         const ctx = createFakeCtx();
 
         goalExtension(pi);
+        // No --min-turns: the default is one completed agent run, which is
+        // already a substantial chunk of work.
         setGoal(
             "session-1",
             { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"] },
@@ -1049,36 +1191,86 @@ describe("goalExtension event wiring", () => {
             pi,
         );
 
+        for (const handler of handlers.get("turn_end") ?? []) {
+            await handler({
+                type: "turn_end",
+                turnIndex: 1,
+                message: makeAssistantMessage("All tests pass"),
+                toolResults: [],
+            } as TurnEndEvent, ctx);
+        }
+
+        expect(getGoal("session-1")?.evaluations.length).toBe(1);
+        expect(getGoal("session-1")?.status).toBe("met");
+    });
+
+    test("defers evaluation until --min-turns runs have completed", async () => {
+        resetSession("session-1");
+        const { pi, handlers, userMessages } = createFakePi();
+        const ctx = createFakeCtx();
+
+        goalExtension(pi);
+        setGoal(
+            "session-1",
+            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"], minTurnsBeforeEvaluate: 3 },
+            {},
+            pi,
+        );
+
         const turnHandlers = handlers.get("turn_end") ?? [];
-        for (let i = 0; i < 9; i++) {
+        for (let i = 0; i < 2; i++) {
             for (const handler of turnHandlers) {
                 await handler({
                     type: "turn_end",
                     turnIndex: i + 1,
-                    message: makeAssistantMessage("Still failing"),
+                    message: makeAssistantMessage("All tests pass"),
                     toolResults: [],
                 } as TurnEndEvent, ctx);
             }
         }
 
+        // The keyword is present, but the evaluator hasn't been allowed to run.
         expect(getGoal("session-1")?.status).toBe("active");
-        expect(getGoal("session-1")?.turnCount).toBe(9);
+        expect(getGoal("session-1")?.turnCount).toBe(2);
         expect(getGoal("session-1")?.evaluations.length).toBe(0);
-        expect(userMessages.length).toBe(9);
+        expect(userMessages.length).toBe(2);
 
         for (const handler of turnHandlers) {
             await handler({
                 type: "turn_end",
-                turnIndex: 10,
+                turnIndex: 3,
                 message: makeAssistantMessage("All tests pass"),
                 toolResults: [],
             } as TurnEndEvent, ctx);
         }
 
         expect(getGoal("session-1")?.status).toBe("met");
-        expect(getGoal("session-1")?.turnCount).toBe(10);
+        expect(getGoal("session-1")?.turnCount).toBe(3);
         expect(getGoal("session-1")?.evaluations.length).toBe(1);
-        expect(userMessages.length).toBe(9);
+        expect(userMessages.length).toBe(2);
+    });
+
+    test("an uncertain verdict does not auto-continue the loop", async () => {
+        resetSession("session-1");
+        const { pi, handlers, userMessages } = createFakePi();
+        // No authenticated evaluator model → every evaluation is "uncertain".
+        const ctx = createFakeCtx();
+
+        goalExtension(pi);
+        setGoal("session-1", { description: "the deploy succeeds", evaluator: "llm" }, {}, pi);
+
+        for (const handler of handlers.get("turn_end") ?? []) {
+            await handler({
+                type: "turn_end",
+                turnIndex: 1,
+                message: makeAssistantMessage("working on it"),
+                toolResults: [],
+            } as TurnEndEvent, ctx);
+        }
+
+        expect(getGoal("session-1")?.evaluations.at(-1)?.verdict).toBe("uncertain");
+        // A broken evaluator must not spin the session forever.
+        expect(userMessages.length).toBe(0);
     });
 
     test("throttled turns still stop the goal when a budget is exhausted", async () => {
@@ -1117,28 +1309,36 @@ describe("goalExtension event wiring", () => {
         expect(messages.some((m) => m.content.includes("budget reached"))).toBe(true);
     });
 
-    test("before_agent_start injects pending guidance into system prompt without clearing it", async () => {
+    test("guidance rides the steer message only — no system-prompt injection", async () => {
         resetSession("session-1");
-        setPendingGuidance("session-1", "add more tests");
-
-        const { pi, handlers } = createFakePi();
-        goalExtension(pi);
+        const { pi, handlers, userMessages } = createFakePi();
         const ctx = createFakeCtx();
 
-        const beforeHandlers = handlers.get("before_agent_start") ?? [];
-        let result: { systemPrompt?: string } | undefined;
-        for (const handler of beforeHandlers) {
-            result = (await handler({
-                type: "before_agent_start",
-                prompt: "continue",
-                systemPrompt: "base prompt",
-                systemPromptOptions: {} as any,
-            } as BeforeAgentStartEvent, ctx)) as typeof result;
+        goalExtension(pi);
+        // The extension must not register before_agent_start: guidance used to
+        // be delivered on both channels, repeating every turn and never
+        // clearing from the system prompt.
+        expect(handlers.get("before_agent_start")).toBeUndefined();
+
+        setGoal(
+            "session-1",
+            { description: "tests pass", evaluator: "keyword", successKeywords: ["pass"] },
+            {},
+            pi,
+        );
+        setPendingGuidance("session-1", "add more tests");
+
+        for (const handler of handlers.get("turn_end") ?? []) {
+            await handler({
+                type: "turn_end",
+                turnIndex: 1,
+                message: makeAssistantMessage("Still failing"),
+                toolResults: [],
+            } as TurnEndEvent, ctx);
         }
 
-        expect(result?.systemPrompt).toContain("[Goal guidance]");
-        expect(result?.systemPrompt).toContain("add more tests");
-        expect(getPendingGuidance("session-1")).toBe("add more tests");
+        expect(userMessages.length).toBe(1);
+        expect(userMessages[0]!.content).toContain("Goal not met");
     });
 
     test("goal met on the final budgeted turn reports met, not budget reached", async () => {

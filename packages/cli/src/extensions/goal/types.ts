@@ -37,15 +37,15 @@ export interface GoalCondition {
     successKeywords?: string[];
 
     /**
-     * How often (in turns) to invoke the LLM evaluator while the goal is
-     * active. 1 = every turn. Ignored by the keyword evaluator, which is
-     * free/local and always runs. Falls back to
+     * How often (in completed agent runs) to invoke the LLM evaluator while
+     * the goal is active. 1 = every run. Ignored by the keyword evaluator,
+     * which is free/local and always runs. Falls back to
      * `config.goal.evaluateEveryNTurns`, then `DEFAULT_EVALUATE_EVERY_N_TURNS`.
      */
     evaluateEveryNTurns?: number;
 
     /**
-     * Minimum completed agent turns before the evaluator may run. Keeps the
+     * Minimum completed agent runs before the evaluator may run. Keeps the
      * goal from judging success before the agent has had a chance to act.
      * Falls back to `config.goal.minTurnsBeforeEvaluate`, then
      * `DEFAULT_MIN_TURNS_BEFORE_EVALUATE`.
@@ -54,9 +54,15 @@ export interface GoalCondition {
 }
 
 /**
- * Default minimum completed turns before the goal evaluator runs.
+ * Default minimum completed agent runs before the goal evaluator runs.
+ *
+ * A "run" is one user prompt through to control returning to the user, not
+ * one LLM round-trip — so a single run is already a substantial chunk of
+ * work. Evaluating at the first run boundary is correct: the agent has
+ * stopped and is waiting, and skipping the check would cost a whole extra
+ * agent run (far more than one evaluator call).
  */
-export const DEFAULT_MIN_TURNS_BEFORE_EVALUATE = 10;
+export const DEFAULT_MIN_TURNS_BEFORE_EVALUATE = 1;
 export interface GoalBudget {
     /** Maximum number of agent turns allowed while pursuing the goal. */
     maxTurns?: number;
@@ -108,8 +114,18 @@ export interface GoalState {
     /** Current lifecycle status of the goal. */
     status: GoalStatus;
 
-    /** Number of completed agent turns since the goal was set. */
+    /**
+     * Number of completed agent *runs* since the goal was set. One run may
+     * span many LLM round-trips (tool-call turns); those are not counted.
+     */
     turnCount: number;
+
+    /**
+     * `turnCount` at the last evaluator invocation. Drives the `--every`
+     * cadence as runs-since-last-evaluation, so throttling stays evenly
+     * spaced regardless of when the first evaluation happened.
+     */
+    lastEvaluatedTurn?: number;
 
     /** Cumulative token spend since the goal was set. */
     tokenSpend: number;

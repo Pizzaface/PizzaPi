@@ -25,13 +25,15 @@ import type {
 export const DEFAULT_EVALUATOR_MAX_TOKENS = 512;
 
 /**
- * Default cadence (in turns) for the LLM evaluator when neither `/goal
- * --every` nor `config.goal.evaluateEveryNTurns` is set. The judge call is a
- * billed API request, so evaluating every turn is wasteful for multi-turn
- * goals; every 3rd turn cuts that spend ~3x while still catching completion
- * quickly (the first turn is always evaluated regardless of this rate).
+ * Default cadence (in completed agent runs) for the LLM evaluator when
+ * neither `/goal --every` nor `config.goal.evaluateEveryNTurns` is set.
+ *
+ * Evaluating at every run boundary is the cheap option, not the expensive
+ * one: the alternative to one small judge call is steering a whole extra
+ * agent run on the session model. `--every N` still throttles it for goals
+ * that are known to need many runs.
  */
-export const DEFAULT_EVALUATE_EVERY_N_TURNS = 3;
+export const DEFAULT_EVALUATE_EVERY_N_TURNS = 1;
 
 function buildEvaluatorPrompt(state: GoalState, context: GoalEvaluationContext): string {
     const budgetParts: string[] = [];
@@ -42,9 +44,11 @@ function buildEvaluatorPrompt(state: GoalState, context: GoalEvaluationContext):
     return [
         "You are a goal evaluator. Given the session goal and conversation transcript, decide whether the goal has been met.",
         "",
+        "Judge only on evidence. An assistant claiming the goal is done is not evidence — look for tool output that demonstrates it (command exit status, test results, file contents, build logs). If the transcript contains only claims, the verdict is \"no\".",
+        "",
         `Goal: ${state.condition.description}`,
         budgetParts.length ? `Budget: ${budgetParts.join(", ")}` : "Budget: none",
-        `Turns so far: ${context.turnCount}`,
+        `Agent runs so far: ${context.turnCount}`,
         `Tokens spent so far: ${context.tokenSpend.toLocaleString()}`,
         "",
         "Conversation so far:",
@@ -78,11 +82,12 @@ export function parseLlmVerdict(raw: string): { verdict: GoalVerdict; reason: st
     const text = raw.trim();
     const lower = text.toLowerCase();
 
-    // 1. Try structured JSON output first.
-    const jsonMatch = text.match(/\{[\s\S]*?\}/);
-    if (jsonMatch) {
+    // 1. Try structured JSON output first. Candidates are tried widest-first
+    // so a `reason` containing braces (`"fixed the {x} handler"`) still
+    // parses — a lone non-greedy match would truncate at the inner brace.
+    for (const candidate of jsonCandidates(text)) {
         try {
-            const parsed = JSON.parse(jsonMatch[0]);
+            const parsed = JSON.parse(candidate);
             if (parsed && typeof parsed === "object" && typeof parsed.verdict === "string") {
                 const verdict = parsed.verdict.toLowerCase().trim();
                 if (isYesVerdict(verdict) || isNoVerdict(verdict)) {
@@ -94,7 +99,7 @@ export function parseLlmVerdict(raw: string): { verdict: GoalVerdict; reason: st
                 }
             }
         } catch {
-            // Not valid JSON; fall through to regex parsing.
+            // Not valid JSON; try the next candidate.
         }
     }
 
@@ -119,6 +124,26 @@ export function parseLlmVerdict(raw: string): { verdict: GoalVerdict; reason: st
  * these must be checked before any positive \bmet\b match to avoid parsing
  * "the goal has not been met" as met.
  */
+/**
+ * Candidate JSON substrings from a model response, widest first: the span
+ * from the first `{` to the last `}` (handles nested/brace-containing
+ * values), then the shortest leading object (handles trailing prose that
+ * itself contains braces).
+ */
+function jsonCandidates(text: string): string[] {
+    const start = text.indexOf("{");
+    if (start === -1) return [];
+
+    const candidates: string[] = [];
+    const lastEnd = text.lastIndexOf("}");
+    if (lastEnd > start) candidates.push(text.slice(start, lastEnd + 1));
+
+    const shortest = text.slice(start).match(/\{[\s\S]*?\}/);
+    if (shortest && shortest[0] !== candidates[0]) candidates.push(shortest[0]);
+
+    return candidates;
+}
+
 function isNegative(text: string): boolean {
     return (
         /\bno\b/i.test(text) ||
@@ -215,11 +240,16 @@ export function createLlmGoalEvaluator(deps: LlmEvaluatorDeps): GoalEvaluator {
  * tried first. Otherwise the registry is searched for the cheapest available
  * text model that has configured auth. This avoids hardcoding Anthropic IDs
  * and works with any provider the user has set up.
+ *
+ * The session's own model is deliberately NOT preferred. The evaluator sends
+ * a standalone prompt that shares no prefix with the session context, so
+ * there is no prompt cache to hit — defaulting to the session model just
+ * bills a 60k-char transcript against (potentially) the most expensive model
+ * available. Set `config.goal.evaluatorModel` to pin a specific judge.
  */
 export async function resolveEvaluatorModel(
     registry: ModelRegistry,
     configured?: string,
-    currentModel?: Model<any>,
 ): Promise<{ model: Model<any>; apiKey?: string } | undefined> {
     let candidates: Model<any>[] = [];
 
@@ -229,10 +259,9 @@ export async function resolveEvaluatorModel(
             if (providerPart && m.provider !== providerPart) return false;
             return m.id === idPart;
         });
-    } else if (currentModel) {
-        // Use the model the session is already using so the evaluator call
-        // can share the provider's prompt cache.
-        candidates = [currentModel];
+        // A configured-but-unusable model shouldn't silently disable the
+        // evaluator; fall back to the cheapest authenticated text model.
+        candidates = candidates.concat(findSmallFastModels(registry));
     } else {
         candidates = findSmallFastModels(registry);
     }
@@ -242,18 +271,6 @@ export async function resolveEvaluatorModel(
         const auth = await registry.getApiKeyAndHeaders(model);
         if (!auth.ok) continue;
         return { model, apiKey: auth.apiKey };
-    }
-
-    // If the current model isn't usable (no auth, etc.), fall back to the
-    // cheapest authenticated text model rather than giving up.
-    if (!configured && currentModel) {
-        for (const model of findSmallFastModels(registry)) {
-            if (model.provider === currentModel.provider && model.id === currentModel.id) continue;
-            if (!registry.hasConfiguredAuth(model)) continue;
-            const auth = await registry.getApiKeyAndHeaders(model);
-            if (!auth.ok) continue;
-            return { model, apiKey: auth.apiKey };
-        }
     }
 
     return undefined;

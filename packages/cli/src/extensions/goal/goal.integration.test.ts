@@ -2,13 +2,14 @@
  * Integration tests for the `/goal` multi-turn feedback loop.
  *
  * These tests exercise the real extension wiring (`goalExtension`) across
- * several simulated turns. They verify:
+ * several simulated agent runs. They verify:
  *
  *   - `/goal` sets an active goal and broadcasts it.
  *   - The evaluator marks the goal as not met when the condition is missing.
- *   - Evaluator guidance is injected into the next turn's system prompt.
+ *   - Evaluator guidance is carried into the next run's steer message.
  *   - The simulated agent acts (assistant text / tool result) and on the
- *     following turn the evaluator clears the goal and stops the session.
+ *     following run the evaluator marks the goal met without stopping the
+ *     session.
  *
  * The tests are environment-independent: they use temp directories for the
  * project cwd and global config dir, and the LLM evaluator path mocks the
@@ -20,7 +21,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
 import type {
-    BeforeAgentStartEvent,
     ExtensionAPI,
     ExtensionCommandContext,
     ExtensionContext,
@@ -178,25 +178,11 @@ function makeToolResult(text: string): ToolResultMessage {
     };
 }
 
-async function runBeforeAgentStart(handlers: FakePi["handlers"], ctx: ExtensionContext, basePrompt = "base prompt"): Promise<string> {
-    let systemPrompt = basePrompt;
-    for (const handler of handlers.get("before_agent_start") ?? []) {
-        const result = (await handler(
-            {
-                type: "before_agent_start",
-                prompt: "continue",
-                systemPrompt,
-                systemPromptOptions: {} as any,
-            } as BeforeAgentStartEvent,
-            ctx,
-        )) as { systemPrompt?: string } | undefined;
-        if (result?.systemPrompt) {
-            systemPrompt = result.systemPrompt;
-        }
-    }
-    return systemPrompt;
-}
-
+/**
+ * Simulate a run-ending turn (`stopReason: "stop"`) — the agent has finished
+ * and control is returning to the user. This is the only boundary where the
+ * goal loop acts.
+ */
 async function runTurnEnd(
     handlers: FakePi["handlers"],
     ctx: ExtensionContext,
@@ -257,7 +243,7 @@ describe("/goal multi-turn integration", () => {
     });
 
     test("keyword evaluator loop: unmet → guidance → agent acts → goal cleared", async () => {
-        const { pi, handlers, messages, entries, events, commands } = createFakePi();
+        const { pi, handlers, messages, entries, events, commands, userMessages } = createFakePi();
         const shutdown = mock(() => {});
         const ctx = createFakeCtx({ cwd: tmpCwd, shutdown: shutdown as unknown as () => void });
 
@@ -274,10 +260,7 @@ describe("/goal multi-turn integration", () => {
         expect(messages.some((m) => m.content.includes("Goal set"))).toBe(true);
         expect((events.get("goal:state_changed") ?? []).length).toBe(1);
 
-        // Turn 1: agent has not satisfied the condition yet.
-        let systemPrompt = await runBeforeAgentStart(handlers, ctx, "You are a helpful assistant.");
-        expect(systemPrompt).not.toContain("[Goal guidance]");
-
+        // Run 1: agent has not satisfied the condition yet.
         await runTurnEnd(handlers, ctx, 1, "I am going to run the test suite now.");
 
         const stateAfterTurn1 = getGoal("goal-integration-session")!;
@@ -286,12 +269,10 @@ describe("/goal multi-turn integration", () => {
         expect(getPendingGuidance("goal-integration-session")).toContain("tests pass");
         expect(shutdown).not.toHaveBeenCalled();
 
-        // Turn 2: guidance is injected before the agent starts. Guidance is kept
-        // in memory until the next turn_end evaluation runs, so it is still
-        // pending here.
-        systemPrompt = await runBeforeAgentStart(handlers, ctx, "You are a helpful assistant.");
-        expect(systemPrompt).toContain("[Goal guidance]");
-        expect(systemPrompt).toContain("tests pass");
+        // The guidance rides the steer message that starts run 2 — one
+        // channel, not a system-prompt injection that repeats every turn.
+        expect(userMessages.at(-1)?.content).toContain("Goal not met");
+        expect(userMessages.at(-1)?.options?.deliverAs).toBe("steer");
         expect(getPendingGuidance("goal-integration-session")).toContain("tests pass");
 
         // Agent acts and reports the success keyword (via tool result text).
@@ -318,17 +299,17 @@ describe("/goal multi-turn integration", () => {
     });
 
     test("LLM evaluator loop: unmet → guidance → agent acts → goal cleared (mocked network)", async () => {
-        const { pi, handlers, messages, events, commands } = createFakePi();
+        const { pi, handlers, messages, events, commands, userMessages } = createFakePi();
         const shutdown = mock(() => {});
         const ctx = createFakeCtx({ cwd: tmpCwd, shutdown: shutdown as unknown as () => void });
 
         goalExtension(pi);
 
-        // User sets a goal that uses the default LLM evaluator. --every 1
-        // opts out of the default evaluator throttle (see goal.test.ts for
-        // dedicated throttling coverage) so this test can exercise the
-        // per-turn evaluate -> guidance -> re-evaluate flow across exactly
-        // the two turns below.
+        // User sets a goal that uses the default LLM evaluator. --every 1 is
+        // the default cadence, stated explicitly here (see goal.test.ts for
+        // dedicated throttling coverage) so this test exercises the
+        // per-run evaluate -> guidance -> re-evaluate flow across exactly
+        // the two runs below.
         const goalHandler = commands.get("goal")!;
         await goalHandler('"services are green" --max-turns 5 --every 1 --min-turns 1', ctx as ExtensionCommandContext);
 
@@ -357,7 +338,7 @@ describe("/goal multi-turn integration", () => {
             timestamp: Date.now(),
         }));
 
-        // Turn 1: evaluator says not met and stores guidance.
+        // Run 1: evaluator says not met and stores guidance.
         await runTurnEnd(handlers, ctx, 1, "I am checking service health.");
 
         expect(fakeCompleteSimple).toHaveBeenCalledTimes(1);
@@ -371,10 +352,10 @@ describe("/goal multi-turn integration", () => {
         expect(getPendingGuidance("goal-integration-session")).toContain("services still starting");
         expect(shutdown).not.toHaveBeenCalled();
 
-        // Turn 2: guidance is injected; agent acts and satisfies the LLM condition.
-        const systemPrompt = await runBeforeAgentStart(handlers, ctx, "You are a helpful assistant.");
-        expect(systemPrompt).toContain("[Goal guidance]");
-        expect(systemPrompt).toContain("services still starting");
+        // Run 2 is kicked off by a steer message carrying the guidance; the
+        // agent acts and satisfies the LLM condition.
+        expect(userMessages.at(-1)?.content).toContain("services still starting");
+        expect(userMessages.at(-1)?.options?.deliverAs).toBe("steer");
 
         await runTurnEnd(handlers, ctx, 2, "Health check complete: services are green.");
 
