@@ -50,7 +50,7 @@ describe("sessionAnalysisExtension", () => {
           cacheRead: 250,
           cacheWrite: 50,
           totalTokens: 1_500,
-          cost: { total: 0.01 },
+          cost: { total: 0.01, input: 0.003, cacheRead: 0.000075, cacheWrite: 0.0001875 },
         },
       },
     });
@@ -63,22 +63,26 @@ describe("sessionAnalysisExtension", () => {
       entryId: "assistant-1",
       role: "turn",
       turnIndex: 0,
-      tokens: 1_000,
-      rawTokenDelta: 1_000,
+      // Full prompt size: input + cacheRead + cacheWrite
+      tokens: 1_300,
+      rawTokenDelta: 1_300,
       model: { provider: "anthropic", id: "claude-sonnet-4-20250514" },
     });
     expect(analysis?.summary).toMatchObject({
       totalTokens: 1_500,
       totalCost: 0.01,
-      peakContextUsage: 1_000,
+      peakContextUsage: 1_300,
     });
+    expect(analysis?.summary.cacheHitRate).toBeCloseTo(250 / 1_300);
     expect(analysis?.modelsUsed[0]).toMatchObject({
       provider: "anthropic",
       id: "claude-sonnet-4-20250514",
       turns: 1,
       totalCost: 0.01,
     });
-    expect(analysis?.summary.estimatedCacheSavings).toBeCloseTo(0.000675);
+    // Net savings: reads saved 250*3e-6 - 0.000075 = 0.000675, minus the
+    // write premium 0.0001875 - 50*3e-6 = 0.0000375.
+    expect(analysis?.summary.estimatedCacheSavings).toBeCloseTo(0.0006375);
   });
 
   test("TTL sweep removes stale sessions that missed shutdown", () => {
@@ -94,7 +98,7 @@ describe("sessionAnalysisExtension", () => {
         role: "assistant",
         provider: "anthropic",
         model: "claude-sonnet-4-20250514",
-        usage: { input: 1_000, output: 100, totalTokens: 1_100 },
+        usage: { input: 1_000, output: 100, cacheRead: 0, cacheWrite: 0, totalTokens: 1_100 },
       },
     });
 
@@ -103,7 +107,7 @@ describe("sessionAnalysisExtension", () => {
     expect(getSessionAnalysis("test-session")).toBeNull();
   });
 
-  test("live cache savings use model-specific pricing and become null for unknown pricing", () => {
+  test("live cache savings use reported costs and become null when cost components are missing", () => {
     process.env.PIZZAPI_SESSION_ID = "test-session";
     const fakePi = createFakePi();
     sessionAnalysisExtension(fakePi.api as any);
@@ -122,12 +126,12 @@ describe("sessionAnalysisExtension", () => {
           cacheRead: 1_000,
           cacheWrite: 0,
           totalTokens: 2_100,
-          cost: { total: 0.01 },
+          cost: { total: 0.01, input: 0.001, cacheRead: 0.0001 },
         },
       },
     });
 
-    expect(getSessionAnalysis("test-session")?.summary.estimatedCacheSavings).toBeCloseTo(0.00072);
+    expect(getSessionAnalysis("test-session")?.summary.estimatedCacheSavings).toBeCloseTo(0.0009);
 
     fakePi.emit("turn_end", {
       turnIndex: 1,
@@ -139,9 +143,9 @@ describe("sessionAnalysisExtension", () => {
         usage: {
           input: 1_000,
           output: 100,
-          cacheRead: 0,
+          cacheRead: 500,
           cacheWrite: 0,
-          totalTokens: 1_100,
+          totalTokens: 1_600,
           cost: { total: 0.01 },
         },
       },

@@ -303,7 +303,7 @@ export function SessionAnalyzerBody({ analysis, runnerId, sessionId }: SessionAn
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">Blocks</div>
-                <h3 className="text-sm font-medium text-foreground">Largest context pieces</h3>
+                <h3 className="text-sm font-medium text-foreground">Context growth by turn</h3>
               </div>
               <span className="text-[11px] text-muted-foreground">{effectiveAnalysis.blocks?.length ?? 0} items</span>
             </div>
@@ -338,7 +338,7 @@ export function SessionAnalyzerBody({ analysis, runnerId, sessionId }: SessionAn
           </section>
 
           <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-muted-foreground/70">
-            <span>Approximate — token counts are provider estimates.</span>
+            <span>Approximate growth history — blocks show when context grew, not what is currently in it.</span>
             <span>Amber markers indicate a compaction boundary.</span>
           </div>
         </>

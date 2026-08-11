@@ -92,7 +92,9 @@ describe("reconstructContext", () => {
     expect(first?.estimatedTokensFreed).toBe(3_000);
     expect(second?.estimatedTokensAfter).toBe(1_000);
     expect(second?.estimatedTokensFreed).toBe(6_000);
-    expect(analysis.blocks.find((b) => b.entryId === "assistant-1")?.role).toBe("separator");
+    // Latest-compaction reconstruction (pi semantics): assistant-1 was
+    // summarized away by compact-2 and is no longer in active context.
+    expect(analysis.blocks.some((b) => b.entryId === "assistant-1")).toBe(false);
     expect(analysis.blocks.find((b) => b.entryId === "assistant-2")?.role).toBe("separator");
   });
 
@@ -456,6 +458,120 @@ describe("reconstructContext", () => {
     expect(analysis.summary.totalTokens).toBe(175);
     expect(analysis.summary.totalCost).toBe(1.4);
     expect(analysis.summary.cacheHitRate).toBeCloseTo(30 / 175);
+  });
+
+  test("terminates on malformed parent cycles", () => {
+    const entries: ParsedEntry[] = [
+      {
+        type: "session",
+        id: "session-1",
+        timestamp: "2026-05-28T00:00:00.000Z",
+        cwd: "/tmp/session-analysis-test",
+      },
+      {
+        type: "message",
+        id: "assistant-1",
+        parentId: "assistant-2",
+        timestamp: "2026-05-28T00:00:01.000Z",
+        message: { role: "assistant", provider: "openai", model: "gpt", usage: usage(1_000) },
+      },
+      {
+        type: "message",
+        id: "assistant-2",
+        parentId: "assistant-1",
+        timestamp: "2026-05-28T00:00:02.000Z",
+        message: { role: "assistant", provider: "openai", model: "gpt", usage: usage(1_200) },
+      },
+    ];
+
+    // A parent cycle must not hang; both entries appear once.
+    const analysis = reconstructContext(entries, "assistant-2");
+    expect(analysis.blocks).toHaveLength(2);
+  });
+
+  test("excludes aborted turns from context but keeps them in totals", () => {
+    const entries: ParsedEntry[] = [
+      {
+        type: "session",
+        id: "session-1",
+        timestamp: "2026-05-28T00:00:00.000Z",
+        cwd: "/tmp/session-analysis-test",
+      },
+      {
+        type: "message",
+        id: "assistant-1",
+        parentId: null,
+        timestamp: "2026-05-28T00:00:01.000Z",
+        message: { role: "assistant", provider: "openai", model: "gpt", usage: usage(1_000, 1) },
+      },
+      {
+        type: "message",
+        id: "assistant-aborted",
+        parentId: "assistant-1",
+        timestamp: "2026-05-28T00:00:02.000Z",
+        message: {
+          role: "assistant",
+          provider: "openai",
+          model: "gpt",
+          stopReason: "aborted",
+          usage: usage(9_000, 1),
+        },
+      },
+      {
+        type: "message",
+        id: "assistant-2",
+        parentId: "assistant-aborted",
+        timestamp: "2026-05-28T00:00:03.000Z",
+        message: { role: "assistant", provider: "openai", model: "gpt", usage: usage(1_200, 1) },
+      },
+    ];
+
+    const analysis = reconstructContext(entries, "assistant-2", new Map([["openai:gpt", 10_000]]));
+
+    // The aborted turn's inflated 9k snapshot must not set the peak or utilization.
+    expect(analysis.summary.peakContextUsage).toBe(1_200);
+    expect(analysis.summary.contextUtilization).toBe(0.12);
+    expect(analysis.blocks.find((b) => b.entryId === "assistant-aborted")?.role).toBe("separator");
+    // Billed usage still counts toward totals.
+    expect(analysis.summary.totalTokens).toBe(11_200);
+    expect(analysis.summary.totalCost).toBe(3);
+    // Continuity after the aborted turn is unknown → separator, not growth.
+    expect(analysis.blocks.find((b) => b.entryId === "assistant-2")?.role).toBe("separator");
+  });
+
+  test("subtracts the cache-write premium from net savings", () => {
+    const entries: ParsedEntry[] = [
+      {
+        type: "session",
+        id: "session-1",
+        timestamp: "2026-05-28T00:00:00.000Z",
+        cwd: "/tmp/session-analysis-test",
+      },
+      {
+        type: "message",
+        id: "assistant-1",
+        parentId: null,
+        timestamp: "2026-05-28T00:00:01.000Z",
+        message: {
+          role: "assistant",
+          provider: "anthropic",
+          model: "claude",
+          usage: {
+            input: 1_000,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 1_000,
+            totalTokens: 2_000,
+            // Write premium: 0.00375 - 1000 * (0.003 / 1000) = 0.00075
+            cost: { total: 0.01, input: 0.003, cacheWrite: 0.00375 },
+          },
+        },
+      },
+    ];
+
+    const analysis = reconstructContext(entries, "assistant-1");
+
+    expect(analysis.summary.estimatedCacheSavings).toBeCloseTo(-0.00075);
   });
 
   test("uses trailing model_change as the active model", () => {

@@ -3,12 +3,15 @@
  *
  * No files, no SQLite, no post-hoc parsing. Usage data is already in every
  * assistant message; we just accumulate it here and emit via session metadata.
+ *
+ * Semantics mirror session-analysis/analyzer.ts: prompt size is
+ * input + cacheRead + cacheWrite, cache metrics go null on incomplete
+ * telemetry, and context deltas reset across model switches and failed turns.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type {
   CompactionBoundary,
   ContextBlock,
-  ModelStats,
   SessionAnalysis,
   Usage,
 } from "../session-analysis/types.js";
@@ -19,17 +22,32 @@ import { estimateCacheReadSavings } from "../session-analysis/pricing.js";
 const SESSION_ANALYSIS_TTL_MS = 24 * 60 * 60_000;
 const SESSION_ANALYSIS_SWEEP_MS = 5 * 60_000;
 
+type LiveModelStats = {
+  provider: string;
+  id: string;
+  turns: number;
+  totalCost: number;
+  cacheRead: number;
+  cacheWrite: number;
+  totalInput: number;
+  unknownUsage: boolean;
+};
+
 type SessionAnalysisState = {
   blocks: ContextBlock[];
   compactions: CompactionBoundary[];
-  models: Map<string, ModelStats & { cacheRead: number; totalInput: number }>;
+  models: Map<string, LiveModelStats>;
   activeModel: SessionAnalysis["activeModel"];
-  prevInput: number;
+  prevPromptTokens: number | null;
+  prevModelKey: string | null;
+  hasSeenUsage: boolean;
+  hasUnknownUsage: boolean;
   cumulativeCacheRead: number;
+  cumulativeCacheWrite: number;
   cumulativeInput: number;
   totalTokens: number;
   totalCost: number;
-  peakInput: number;
+  peakPromptTokens: number;
   cumulativeCacheSavings: number;
   cacheSavingsKnown: boolean;
   updatedAt: number;
@@ -57,25 +75,32 @@ function ensureSessionAnalysisSweep() {
   analysisSweep.unref?.();
 }
 
+function finiteNonNegative(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
 // ── Public API ──────────────────────────────────────────────────
 
 export function getSessionAnalysis(sessionId: string): SessionAnalysis | null {
   const s = sessions.get(sessionId);
   if (!s || s.blocks.length === 0) return null;
 
-  const cacheHitRateDenominator = s.cumulativeInput + s.cumulativeCacheRead;
-  const cacheHitRate = cacheHitRateDenominator > 0
-    ? s.cumulativeCacheRead / cacheHitRateDenominator
-    : 0;
+  const promptDenominator = s.cumulativeInput + s.cumulativeCacheRead + s.cumulativeCacheWrite;
+  const cacheHitRate = s.hasUnknownUsage || promptDenominator <= 0
+    ? null
+    : s.cumulativeCacheRead / promptDenominator;
 
   return {
     sessionId,
     activeModel: s.activeModel,
-    modelsUsed: Array.from(s.models.values()).map(({ cacheRead, totalInput, ...model }) => {
-      const denominator = totalInput + cacheRead;
+    modelsUsed: Array.from(s.models.values()).map((m) => {
+      const denominator = m.totalInput + m.cacheRead + m.cacheWrite;
       return {
-        ...model,
-        cacheHitRate: denominator > 0 ? cacheRead / denominator : 0,
+        provider: m.provider,
+        id: m.id,
+        turns: m.turns,
+        totalCost: m.totalCost,
+        cacheHitRate: m.unknownUsage || denominator <= 0 ? null : m.cacheRead / denominator,
       };
     }),
     blocks: s.blocks,
@@ -84,10 +109,12 @@ export function getSessionAnalysis(sessionId: string): SessionAnalysis | null {
       totalTokens: s.totalTokens,
       totalCost: s.totalCost,
       cacheHitRate,
-      estimatedCacheSavings: s.cacheSavingsKnown ? s.cumulativeCacheSavings : null,
+      estimatedCacheSavings: s.cacheSavingsKnown && !s.hasUnknownUsage
+        ? s.cumulativeCacheSavings
+        : null,
       compactionCount: s.compactions.length,
       tokensFreedByCompaction: null,
-      peakContextUsage: s.peakInput > 0 ? s.peakInput : null,
+      peakContextUsage: s.peakPromptTokens > 0 ? s.peakPromptTokens : null,
       contextUtilization: null,
     },
   };
@@ -111,12 +138,16 @@ export function sessionAnalysisExtension(pi: ExtensionAPI) {
       compactions: [],
       models: new Map(),
       activeModel: null,
-      prevInput: 0,
+      prevPromptTokens: 0,
+      prevModelKey: null,
+      hasSeenUsage: false,
+      hasUnknownUsage: false,
       cumulativeCacheRead: 0,
+      cumulativeCacheWrite: 0,
       cumulativeInput: 0,
       totalTokens: 0,
       totalCost: 0,
-      peakInput: 0,
+      peakPromptTokens: 0,
       cumulativeCacheSavings: 0,
       cacheSavingsKnown: true,
       updatedAt: Date.now(),
@@ -134,19 +165,46 @@ export function sessionAnalysisExtension(pi: ExtensionAPI) {
     const msg = event.message;
     if (!msg || msg.role !== "assistant") return;
 
-    const usage = msg.usage;
-    if (!usage || typeof usage.input !== "number") return;
-
-    const input = usage.input as number;
-    const cacheRead = (usage.cacheRead as number) ?? 0;
-    const cacheWrite = (usage.cacheWrite as number) ?? 0;
-    const output = (usage.output as number) ?? 0;
-    const totalTokens = (usage.totalTokens as number) ?? input + output + cacheRead + cacheWrite;
-    const cost = usage.cost?.total as number | undefined;
     const provider = msg.provider as string | undefined;
     const model = msg.model as string | undefined;
+    const activeModel = provider && model ? { provider, id: model } : null;
+    s.activeModel = activeModel;
+    const modelKey = `${provider ?? "unknown"}:${model ?? "unknown"}`;
+    const stats = s.models.get(modelKey) ?? {
+      provider: provider ?? "unknown",
+      id: model ?? "unknown",
+      turns: 0,
+      totalCost: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalInput: 0,
+      unknownUsage: false,
+    };
+    stats.turns += 1;
+    s.models.set(modelKey, stats);
+
     const turnIndex = event.turnIndex ?? s.blocks.length;
     const entryId = typeof event.entryId === "string" ? event.entryId : `turn-${turnIndex}`;
+    const isFailedTurn = msg.stopReason === "aborted" || msg.stopReason === "error";
+
+    const rawUsage = msg.usage;
+    const input = finiteNonNegative(rawUsage?.input);
+    const cacheRead = finiteNonNegative(rawUsage?.cacheRead);
+    const cacheWrite = finiteNonNegative(rawUsage?.cacheWrite);
+    if (input == null || cacheRead == null || cacheWrite == null) {
+      // Incomplete telemetry: cache metrics become unknown (unless this is a
+      // failed turn, which often legitimately lacks usage) and context
+      // continuity is broken either way.
+      if (!isFailedTurn) s.hasUnknownUsage = true;
+      if (!isFailedTurn) stats.unknownUsage = true;
+      s.prevPromptTokens = null;
+      return;
+    }
+
+    const output = finiteNonNegative(rawUsage?.output) ?? 0;
+    const totalTokens = finiteNonNegative(rawUsage?.totalTokens)
+      ?? input + output + cacheRead + cacheWrite;
+    const cost = finiteNonNegative(rawUsage?.cost?.total);
 
     const normalizedUsage: Usage = {
       input,
@@ -154,61 +212,19 @@ export function sessionAnalysisExtension(pi: ExtensionAPI) {
       cacheRead,
       cacheWrite,
       totalTokens,
-      cost: usage.cost,
+      cost: rawUsage?.cost,
     };
 
-    const activeModel = provider && model ? { provider, id: model } : null;
-    s.activeModel = activeModel;
+    stats.totalCost += cost ?? 0;
+    stats.cacheRead += cacheRead;
+    stats.cacheWrite += cacheWrite;
+    stats.totalInput += input;
 
-    if (activeModel) {
-      const key = `${activeModel.provider}:${activeModel.id}`;
-      const stats = s.models.get(key) ?? {
-        provider: activeModel.provider,
-        id: activeModel.id,
-        turns: 0,
-        totalCost: 0,
-        cacheHitRate: 0,
-        cacheRead: 0,
-        totalInput: 0,
-      };
-      stats.turns += 1;
-      stats.totalCost += Math.max(0, cost ?? 0);
-      stats.cacheRead += cacheRead;
-      stats.totalInput += input;
-      s.models.set(key, stats);
-    }
-
-    const delta = input - s.prevInput;
-    const isCompaction = delta < 0;
-
-    if (isCompaction) {
-      s.compactions.push({
-        entryId,
-        tokensBeforeCompaction: s.prevInput,
-        estimatedSummaryTokens: input,
-        estimatedTokensAfter: input,
-        estimatedTokensFreed: s.prevInput - input,
-        firstKeptId: entryId,
-        timestamp: new Date().toISOString(),
-      });
-    }
-
-    s.blocks.push({
-      role: isCompaction ? "separator" : "turn",
-      turnIndex,
-      entryId,
-      tokens: Math.max(0, delta),
-      rawTokenDelta: delta,
-      usage: normalizedUsage,
-      model: activeModel ?? undefined,
-    });
-
-    s.prevInput = input;
     s.cumulativeCacheRead += cacheRead;
+    s.cumulativeCacheWrite += cacheWrite;
     s.cumulativeInput += input;
     s.totalTokens += totalTokens;
-    s.totalCost += Math.max(0, cost ?? 0);
-    if (input > s.peakInput) s.peakInput = input;
+    s.totalCost += cost ?? 0;
 
     if (s.cacheSavingsKnown) {
       const turnSavings = estimateCacheReadSavings(provider, model, normalizedUsage);
@@ -219,6 +235,47 @@ export function sessionAnalysisExtension(pi: ExtensionAPI) {
         s.cumulativeCacheSavings += turnSavings;
       }
     }
+
+    // Failed turns are billed but their prompt snapshot is not a trusted
+    // context measurement.
+    if (isFailedTurn) {
+      s.blocks.push({
+        role: "separator",
+        turnIndex,
+        entryId,
+        tokens: 0,
+        rawTokenDelta: 0,
+        usage: normalizedUsage,
+        model: activeModel ?? undefined,
+      });
+      s.prevPromptTokens = null;
+      s.prevModelKey = modelKey;
+      return;
+    }
+
+    // Prompt size spans all three buckets; `input` alone shrinks on cache hits.
+    const promptTokens = input + cacheRead + cacheWrite;
+    const delta = s.prevPromptTokens == null
+      ? (s.hasSeenUsage ? null : promptTokens)
+      : promptTokens - s.prevPromptTokens;
+    const modelChanged = s.prevModelKey != null && s.prevModelKey !== modelKey;
+    const isSeparator = delta == null || delta < 0 || modelChanged;
+    const clampedDelta = delta == null || modelChanged ? 0 : Math.max(0, delta);
+
+    s.blocks.push({
+      role: isSeparator ? "separator" : "turn",
+      turnIndex,
+      entryId,
+      tokens: clampedDelta,
+      rawTokenDelta: delta ?? 0,
+      usage: normalizedUsage,
+      model: activeModel ?? undefined,
+    });
+
+    s.prevPromptTokens = promptTokens;
+    s.prevModelKey = modelKey;
+    s.hasSeenUsage = true;
+    if (promptTokens > s.peakPromptTokens) s.peakPromptTokens = promptTokens;
   });
 
   pi.on("session_shutdown", () => {
