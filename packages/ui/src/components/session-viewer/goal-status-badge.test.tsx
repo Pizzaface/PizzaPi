@@ -46,7 +46,7 @@ function renderWithTooltip(node: React.ReactNode) {
 }
 
 describe("GoalStatusBadge", () => {
-  test("renders active goal with turn count and last reason", () => {
+  test("renders active goal with completed run count and last reason", () => {
     const { getByText } = renderWithTooltip(
       <GoalStatusBadge
         goal={{
@@ -63,7 +63,7 @@ describe("GoalStatusBadge", () => {
     );
 
     expect(getByText("/goal active")).toBeDefined();
-    expect(getByText(/turn 3\/5/)).toBeDefined();
+    expect(getByText(/run 3\/5/)).toBeDefined();
     expect(getByText(/still failing/)).toBeDefined();
   });
 

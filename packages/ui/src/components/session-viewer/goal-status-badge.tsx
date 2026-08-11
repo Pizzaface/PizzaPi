@@ -11,17 +11,20 @@ interface GoalStatusBadgeProps {
 /**
  * Header badge that surfaces the active /goal state in the web UI.
  *
- * Shows the goal indicator, current turn count (with budget if set), and a
+ * Shows the goal indicator, completed agent runs (with budget if set), and a
  * snippet of the last evaluator reason. Hidden automatically when the goal is
  * cleared, met, or otherwise no longer active.
+ *
+ * `turnCount` counts agent runs — one prompt through to control returning to
+ * the user — not LLM round-trips, so the label reads "run".
  */
 export function GoalStatusBadge({ goal }: GoalStatusBadgeProps) {
   if (!goal || goal.status !== "active") return null;
 
   const turnText =
     goal.maxTurns !== undefined
-      ? `turn ${goal.turnCount}/${goal.maxTurns}`
-      : `turn ${goal.turnCount}`;
+      ? `run ${goal.turnCount}/${goal.maxTurns}`
+      : `run ${goal.turnCount}`;
 
   const rawReason = goal.lastReason?.replace(/\s+/g, " ").trim();
   const displayReason =

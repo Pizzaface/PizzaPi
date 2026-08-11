@@ -1,0 +1,129 @@
+---
+title: Session Goals
+description: Set a success condition with /goal and let an evaluator keep the agent working until it's met.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+`/goal` gives a session a **success condition**. After each agent run, an evaluator judges whether the condition is satisfied. If it isn't, the agent is automatically prompted to keep going — so you can state an outcome once instead of typing "continue" a dozen times.
+
+```
+/goal "all tests pass and the README is updated" --max-turns 20 --max-cost 5
+```
+
+---
+
+## The Loop
+
+<Aside type="note" title="A “turn” is an agent run, not an LLM call">
+Everything `/goal` counts — `--max-turns`, `--every`, `--min-turns` — is measured in **completed agent runs**: one prompt through to the point where control returns to you. A single run may contain dozens of tool calls; those are not counted, and the evaluator never inspects a half-finished run.
+</Aside>
+
+1. You set a goal. The condition is sent to the agent immediately as its first directive.
+2. The agent works — reading, editing, running commands — for as many tool calls as it needs.
+3. When the agent finishes a run, the evaluator checks the condition.
+4. **Not met** → the evaluator's reasoning is fed back and a new run starts automatically.
+5. **Met**, or a budget is exhausted → the goal deactivates and control returns to you.
+
+The loop pauses itself when other work is in flight: if background subagents are running or messages are queued, `/goal` waits rather than talking over them.
+
+<Aside type="caution" title="/goal never ends your session">
+Reaching the goal (or a budget) only **deactivates the goal**. The session stays open, your context is intact, and you can keep working or set a new goal. Nothing is terminated and no stop hooks fire.
+</Aside>
+
+---
+
+## Evaluators
+
+| Evaluator | How it decides | Cost |
+|-----------|----------------|------|
+| `llm` (default) | Sends the goal and a transcript to a small model, which answers yes/no with a reason | One small API call per evaluation |
+| `keyword` | Checks whether any `--keyword` appears in the run's output | Free, local |
+
+The LLM evaluator is told to judge on **evidence** — command output, test results, file contents — rather than the agent's claim that it finished. Ending a run with real output ("42 passed") resolves a goal; ending it with "the tests should pass now" does not.
+
+```
+/goal "docker image builds" --evaluator keyword --keyword "Successfully built"
+```
+
+<Aside type="caution" title="Keyword matching is literal">
+The keyword evaluator matches the agent's own output, and the agent can see the goal. A run that merely *mentions* the phrase — "checking whether `Successfully built` appears" — will satisfy it. Prefer distinctive strings that only real output produces, or use the default LLM evaluator.
+</Aside>
+
+An `uncertain` verdict — evaluator model unreachable, no credentials, unparseable reply — never auto-continues. The loop stops and hands control back to you, so a broken evaluator can't spin a session.
+
+---
+
+## Budgets
+
+Budgets are guardrails, not targets. The first one to trip deactivates the goal.
+
+| Flag | Counts |
+|------|--------|
+| `--max-turns N` | Completed agent runs |
+| `--max-tokens N` | Cumulative tokens across every LLM round-trip, including evaluator calls |
+| `--max-cost N` | Cumulative USD across every LLM round-trip, including evaluator calls |
+
+<Aside type="tip" title="Token budgets drain faster than they look">
+`--max-tokens` counts each round-trip's **whole prompt** — the conversation replayed as input, plus cache reads — not just newly generated text. On a long session a single run can account for tens of thousands of tokens. `--max-cost` is usually the more predictable guardrail.
+</Aside>
+
+Budgets are enforced mid-run too, so a runaway tool loop can't blow past a token or cost ceiling while waiting for a run to end.
+
+---
+
+## Flags
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--max-turns N` | none | Stop after N completed agent runs |
+| `--max-tokens N` | none | Stop after N cumulative tokens |
+| `--max-cost N` | none | Stop after N cumulative USD |
+| `--evaluator llm\|keyword` | `llm` | Which evaluator decides |
+| `--keyword "text"` | none | Success string for the keyword evaluator (repeatable, required by it) |
+| `--every N` | `1` | Evaluate once every N completed runs |
+| `--min-turns N` | `1` | Wait N completed runs before the first evaluation |
+
+Budget values must be greater than zero. Text that isn't a recognized flag is treated as part of the condition, so `/goal "fix the --dry-run handling"` works as written.
+
+### Sub-commands
+
+| Command | Effect |
+|---------|--------|
+| `/goal` or `/goal status` | Show the active goal, counters, and budget |
+| `/goal clear` | Cancel the active goal (aliases: `stop`, `off`, `cancel`, `reset`, `none`) |
+
+An active goal appears in the TUI status bar and as a badge in the web UI session header, showing the completed run count (against `--max-turns` if set) and the latest evaluator reason.
+
+---
+
+## Configuration
+
+Defaults for every goal live under `goal` in `~/.pizzapi/config.json`, or in the web UI under **Runner Settings → Fast Model**:
+
+```json
+{
+  "goal": {
+    "evaluatorModel": "anthropic:claude-3-5-haiku-20241022",
+    "evaluatorMaxTokens": 512,
+    "evaluateEveryNTurns": 1,
+    "minTurnsBeforeEvaluate": 1
+  }
+}
+```
+
+When `evaluatorModel` is unset, the cheapest authenticated text model is used — the evaluator prompt shares nothing with your session context, so there's no cache benefit to reusing the session's (often much pricier) model. Pin a specific judge if you want consistency. If the pinned model has no working credentials, the evaluator falls back to the cheapest authenticated one rather than silently switching itself off.
+
+Evaluator spend is tracked separately and shows up in the Usage dashboard alongside normal session usage.
+
+See [Configuration](/customization/configuration/) for the full option reference.
+
+---
+
+## Privacy
+
+<Aside type="caution" title="The LLM evaluator sees your session">
+Each LLM evaluation sends a transcript — user messages, assistant replies, and tool output, up to 60,000 characters — to the evaluator model. Common credential-shaped environment variables (`ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY`, and similar) are redacted on a best-effort basis, but that is a safety net, not a guarantee.
+
+If a session handles secrets you don't want leaving your machine, use `--evaluator keyword` (fully local) or point `evaluatorModel` at a local provider.
+</Aside>

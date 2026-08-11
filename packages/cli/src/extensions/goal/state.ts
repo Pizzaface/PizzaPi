@@ -343,9 +343,9 @@ export function formatCompactGoalStatus(state: GoalState): string {
     const parts = ["◎ /goal active"];
 
     if (state.budget.maxTurns !== undefined) {
-        parts.push(`turn ${state.turnCount}/${state.budget.maxTurns}`);
+        parts.push(`run ${state.turnCount}/${state.budget.maxTurns}`);
     } else {
-        parts.push(`turn ${state.turnCount}`);
+        parts.push(`run ${state.turnCount}`);
     }
 
     const lastEval = state.evaluations.at(-1);
@@ -369,7 +369,7 @@ export function formatGoalStatus(state: GoalState): string {
     return [
         `Goal: ${state.condition.description}`,
         `Status: ${state.status}`,
-        `Turns: ${state.turnCount}`,
+        `Runs: ${state.turnCount}`,
         `Tokens: ${state.tokenSpend.toLocaleString()}`,
         `Cost: $${state.costSpend.toFixed(4)}`,
         budgetParts.length ? `Budget: ${budgetParts.join(", ")}` : "Budget: none",

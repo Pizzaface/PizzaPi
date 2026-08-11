@@ -353,7 +353,7 @@ The authoritative shape stored in Redis. Key fields:
 | `thinkingLevel` | `string \| null` | Current thinking level (e.g. "basic", "deep") |
 | `authSource` | `string \| null` | Source of the current auth context |
 | `model` | `MetaModelInfo \| null` | Current model |
-| `goal` | `MetaGoalStatus \| null` | Active session goal (id, description, status, turn/token/cost budgets) |
+| `goal` | `MetaGoalStatus \| null` | Active session goal (id, description, status, turn/token/cost budgets). `turnCount` counts completed agent runs, not LLM round-trips |
 | `version` | `number` | Monotonic counter for change ordering |
 
 ### `MetaRelayEvent`
