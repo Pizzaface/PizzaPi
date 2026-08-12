@@ -2,13 +2,14 @@
  * Integration tests for the `/goal` multi-turn feedback loop.
  *
  * These tests exercise the real extension wiring (`goalExtension`) across
- * several simulated turns. They verify:
+ * several simulated agent runs. They verify:
  *
  *   - `/goal` sets an active goal and broadcasts it.
  *   - The evaluator marks the goal as not met when the condition is missing.
- *   - Evaluator guidance is injected into the next turn's system prompt.
+ *   - Evaluator guidance is carried into the next run's steer message.
  *   - The simulated agent acts (assistant text / tool result) and on the
- *     following turn the evaluator clears the goal and stops the session.
+ *     following run the evaluator marks the goal met without stopping the
+ *     session.
  *
  * The tests are environment-independent: they use temp directories for the
  * project cwd and global config dir, and the LLM evaluator path mocks the
@@ -20,7 +21,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
 import type {
-    BeforeAgentStartEvent,
     ExtensionAPI,
     ExtensionCommandContext,
     ExtensionContext,
@@ -30,6 +30,7 @@ import type {
 import { _setGlobalConfigDir } from "../../config/io.js";
 import { goalExtension } from "./index.js";
 import { getGoal, getPendingGuidance, resetSession } from "./state.js";
+import { isCacheReuseViable, resetSessionContext } from "./session-context.js";
 
 // ── Mock the network path for the LLM evaluator ──────────────────────────────
 
@@ -97,6 +98,12 @@ function createFakePi(): FakePi {
         registerCommand: (name: string, options: { handler: (args: string, ctx: ExtensionCommandContext) => unknown }) => {
             commands.set(name, options.handler);
         },
+        // Tool introspection used to rebuild the tools block for cache reuse.
+        getActiveTools: () => ["bash"],
+        getAllTools: () => [
+            { name: "bash", description: "run a command", parameters: { type: "object" }, sourceInfo: {} },
+            { name: "unused", description: "not active", parameters: { type: "object" }, sourceInfo: {} },
+        ],
         events: {
             emit: (event: string, payload: unknown) => {
                 const list = events.get(event) ?? [];
@@ -114,9 +121,11 @@ function createFakeCtx(overrides: {
     entries?: SessionEntry[];
     shutdown?: () => void;
     signal?: AbortSignal;
+    model?: unknown;
 } = {}): ExtensionContext {
     return {
         cwd: overrides.cwd ?? "/tmp/pizzapi-goal-integration-test",
+        getSystemPrompt: () => "session system prompt",
         sessionManager: {
             getSessionId: () => process.env.PIZZAPI_SESSION_ID ?? "session-test",
             getEntries: () => overrides.entries ?? [],
@@ -137,7 +146,7 @@ function createFakeCtx(overrides: {
             hasConfiguredAuth: () => true,
             getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "fake-api-key", headers: {} }),
         },
-        model: undefined,
+        model: overrides.model,
         signal: overrides.signal ?? undefined,
         shutdown: overrides.shutdown ?? (() => {}),
         ui: {
@@ -178,25 +187,11 @@ function makeToolResult(text: string): ToolResultMessage {
     };
 }
 
-async function runBeforeAgentStart(handlers: FakePi["handlers"], ctx: ExtensionContext, basePrompt = "base prompt"): Promise<string> {
-    let systemPrompt = basePrompt;
-    for (const handler of handlers.get("before_agent_start") ?? []) {
-        const result = (await handler(
-            {
-                type: "before_agent_start",
-                prompt: "continue",
-                systemPrompt,
-                systemPromptOptions: {} as any,
-            } as BeforeAgentStartEvent,
-            ctx,
-        )) as { systemPrompt?: string } | undefined;
-        if (result?.systemPrompt) {
-            systemPrompt = result.systemPrompt;
-        }
-    }
-    return systemPrompt;
-}
-
+/**
+ * Simulate a run-ending turn (`stopReason: "stop"`) — the agent has finished
+ * and control is returning to the user. This is the only boundary where the
+ * goal loop acts.
+ */
 async function runTurnEnd(
     handlers: FakePi["handlers"],
     ctx: ExtensionContext,
@@ -236,6 +231,7 @@ describe("/goal multi-turn integration", () => {
         _setGlobalConfigDir(tmpHome);
 
         resetSession("goal-integration-session");
+        resetSessionContext("goal-integration-session");
         fakeCompleteSimple.mockClear();
     });
 
@@ -249,6 +245,7 @@ describe("/goal multi-turn integration", () => {
         process.env.HOME = originalHome;
         _setGlobalConfigDir(null);
         resetSession("goal-integration-session");
+        resetSessionContext("goal-integration-session");
         fakeCompleteSimple.mockClear();
     });
 
@@ -257,7 +254,7 @@ describe("/goal multi-turn integration", () => {
     });
 
     test("keyword evaluator loop: unmet → guidance → agent acts → goal cleared", async () => {
-        const { pi, handlers, messages, entries, events, commands } = createFakePi();
+        const { pi, handlers, messages, entries, events, commands, userMessages } = createFakePi();
         const shutdown = mock(() => {});
         const ctx = createFakeCtx({ cwd: tmpCwd, shutdown: shutdown as unknown as () => void });
 
@@ -274,10 +271,7 @@ describe("/goal multi-turn integration", () => {
         expect(messages.some((m) => m.content.includes("Goal set"))).toBe(true);
         expect((events.get("goal:state_changed") ?? []).length).toBe(1);
 
-        // Turn 1: agent has not satisfied the condition yet.
-        let systemPrompt = await runBeforeAgentStart(handlers, ctx, "You are a helpful assistant.");
-        expect(systemPrompt).not.toContain("[Goal guidance]");
-
+        // Run 1: agent has not satisfied the condition yet.
         await runTurnEnd(handlers, ctx, 1, "I am going to run the test suite now.");
 
         const stateAfterTurn1 = getGoal("goal-integration-session")!;
@@ -286,12 +280,10 @@ describe("/goal multi-turn integration", () => {
         expect(getPendingGuidance("goal-integration-session")).toContain("tests pass");
         expect(shutdown).not.toHaveBeenCalled();
 
-        // Turn 2: guidance is injected before the agent starts. Guidance is kept
-        // in memory until the next turn_end evaluation runs, so it is still
-        // pending here.
-        systemPrompt = await runBeforeAgentStart(handlers, ctx, "You are a helpful assistant.");
-        expect(systemPrompt).toContain("[Goal guidance]");
-        expect(systemPrompt).toContain("tests pass");
+        // The guidance rides the steer message that starts run 2 — one
+        // channel, not a system-prompt injection that repeats every turn.
+        expect(userMessages.at(-1)?.content).toContain("Goal not met");
+        expect(userMessages.at(-1)?.options?.deliverAs).toBe("steer");
         expect(getPendingGuidance("goal-integration-session")).toContain("tests pass");
 
         // Agent acts and reports the success keyword (via tool result text).
@@ -318,17 +310,17 @@ describe("/goal multi-turn integration", () => {
     });
 
     test("LLM evaluator loop: unmet → guidance → agent acts → goal cleared (mocked network)", async () => {
-        const { pi, handlers, messages, events, commands } = createFakePi();
+        const { pi, handlers, messages, events, commands, userMessages } = createFakePi();
         const shutdown = mock(() => {});
         const ctx = createFakeCtx({ cwd: tmpCwd, shutdown: shutdown as unknown as () => void });
 
         goalExtension(pi);
 
-        // User sets a goal that uses the default LLM evaluator. --every 1
-        // opts out of the default evaluator throttle (see goal.test.ts for
-        // dedicated throttling coverage) so this test can exercise the
-        // per-turn evaluate -> guidance -> re-evaluate flow across exactly
-        // the two turns below.
+        // User sets a goal that uses the default LLM evaluator. --every 1 is
+        // the default cadence, stated explicitly here (see goal.test.ts for
+        // dedicated throttling coverage) so this test exercises the
+        // per-run evaluate -> guidance -> re-evaluate flow across exactly
+        // the two runs below.
         const goalHandler = commands.get("goal")!;
         await goalHandler('"services are green" --max-turns 5 --every 1 --min-turns 1', ctx as ExtensionCommandContext);
 
@@ -357,7 +349,7 @@ describe("/goal multi-turn integration", () => {
             timestamp: Date.now(),
         }));
 
-        // Turn 1: evaluator says not met and stores guidance.
+        // Run 1: evaluator says not met and stores guidance.
         await runTurnEnd(handlers, ctx, 1, "I am checking service health.");
 
         expect(fakeCompleteSimple).toHaveBeenCalledTimes(1);
@@ -371,10 +363,10 @@ describe("/goal multi-turn integration", () => {
         expect(getPendingGuidance("goal-integration-session")).toContain("services still starting");
         expect(shutdown).not.toHaveBeenCalled();
 
-        // Turn 2: guidance is injected; agent acts and satisfies the LLM condition.
-        const systemPrompt = await runBeforeAgentStart(handlers, ctx, "You are a helpful assistant.");
-        expect(systemPrompt).toContain("[Goal guidance]");
-        expect(systemPrompt).toContain("services still starting");
+        // Run 2 is kicked off by a steer message carrying the guidance; the
+        // agent acts and satisfies the LLM condition.
+        expect(userMessages.at(-1)?.content).toContain("services still starting");
+        expect(userMessages.at(-1)?.options?.deliverAs).toBe("steer");
 
         await runTurnEnd(handlers, ctx, 2, "Health check complete: services are green.");
 
@@ -393,6 +385,123 @@ describe("/goal multi-turn integration", () => {
         const broadcasts = events.get("goal:state_changed") ?? [];
         expect(broadcasts.length).toBe(3);
         expect(broadcasts[2]).toBeNull();
+    });
+
+    test("evaluator reuses the session's cached context on the session's model", async () => {
+        const { pi, handlers, commands } = createFakePi();
+        const sessionModel = {
+            provider: "anthropic",
+            id: "claude-sonnet-4-5",
+            name: "Sonnet",
+            api: "anthropic-messages",
+            baseUrl: "",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+            contextWindow: 200_000,
+            maxTokens: 8192,
+        };
+        const ctx = createFakeCtx({ cwd: tmpCwd, model: sessionModel });
+
+        goalExtension(pi);
+        await commands.get("goal")!('"services are green" --min-turns 1', ctx as ExtensionCommandContext);
+
+        // pi hands the extension the exact prefix it sends to the provider.
+        const sessionMessages = [
+            { role: "user" as const, content: "check the services", timestamp: 1 },
+        ];
+        for (const handler of handlers.get("context") ?? []) {
+            const result = await handler({ type: "context", messages: sessionMessages } as never, ctx);
+            // The capture hook must never modify the outgoing context.
+            expect(result).toBeUndefined();
+        }
+
+        fakeCompleteSimple.mockImplementationOnce(async () => ({
+            role: "assistant" as const,
+            content: [{ type: "text" as const, text: '{"verdict": "no", "reason": "still starting"}' }],
+            api: "anthropic-messages" as const,
+            provider: "anthropic",
+            model: "claude-sonnet-4-5",
+            usage: { input: 40, output: 12, cacheRead: 4321, cacheWrite: 0, totalTokens: 4373, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.001 } },
+            stopReason: "stop" as const,
+            timestamp: Date.now(),
+        }));
+
+        await runTurnEnd(handlers, ctx, 1, "I restarted the services.");
+
+        expect(fakeCompleteSimple).toHaveBeenCalledTimes(1);
+        const [model, context] = fakeCompleteSimple.mock.calls[0] as unknown as [
+            { id: string },
+            { systemPrompt?: string; tools?: unknown[]; messages: Array<{ role: string; content: unknown }> },
+        ];
+
+        // The session's own model, so the provider can serve the prefix from cache.
+        expect(model.id).toBe("claude-sonnet-4-5");
+        expect(context.systemPrompt).toBe("session system prompt");
+        expect(context.messages[0]).toEqual(sessionMessages[0]);
+        expect(context.messages).toHaveLength(2);
+        expect(context.messages[1]!.role).toBe("user");
+
+        // The cache read was non-zero, so the path stays enabled.
+        expect(isCacheReuseViable("goal-integration-session")).toBe(true);
+        expect(getGoal("goal-integration-session")?.evaluations.at(-1)?.verdict).toBe("not_met");
+    });
+
+    test("falls back to a standalone cheap-model call once the cache misses", async () => {
+        const { pi, handlers, commands } = createFakePi();
+        const sessionModel = {
+            provider: "anthropic",
+            id: "claude-sonnet-4-5",
+            name: "Sonnet",
+            api: "anthropic-messages",
+            baseUrl: "",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+            contextWindow: 200_000,
+            maxTokens: 8192,
+        };
+        const ctx = createFakeCtx({ cwd: tmpCwd, model: sessionModel });
+
+        goalExtension(pi);
+        await commands.get("goal")!('"services are green" --min-turns 1', ctx as ExtensionCommandContext);
+
+        for (const handler of handlers.get("context") ?? []) {
+            await handler({ type: "context", messages: [{ role: "user", content: "check", timestamp: 1 }] } as never, ctx);
+        }
+
+        // Run 1: the prefix didn't match, so nothing was served from cache.
+        fakeCompleteSimple.mockImplementationOnce(async () => ({
+            role: "assistant" as const,
+            content: [{ type: "text" as const, text: '{"verdict": "no", "reason": "still starting"}' }],
+            api: "anthropic-messages" as const,
+            provider: "anthropic",
+            model: "claude-sonnet-4-5",
+            usage: { input: 9000, output: 12, cacheRead: 0, cacheWrite: 0, totalTokens: 9012, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.03 } },
+            stopReason: "stop" as const,
+            timestamp: Date.now(),
+        }));
+
+        await runTurnEnd(handlers, ctx, 1, "I restarted the services.");
+        expect(isCacheReuseViable("goal-integration-session")).toBe(false);
+
+        // Run 2: no longer worth re-sending the conversation at full price on
+        // the session model — fall back to the cheapest authenticated model
+        // with a standalone transcript.
+        for (const handler of handlers.get("context") ?? []) {
+            await handler({ type: "context", messages: [{ role: "user", content: "check again", timestamp: 3 }] } as never, ctx);
+        }
+        await runTurnEnd(handlers, ctx, 2, "Still restarting.");
+
+        expect(fakeCompleteSimple).toHaveBeenCalledTimes(2);
+        const [fallbackModel, fallbackContext] = fakeCompleteSimple.mock.calls[1] as unknown as [
+            { id: string },
+            { systemPrompt?: string; messages: Array<{ content: unknown }> },
+        ];
+        expect(fallbackModel.id).toBe("claude-haiku-4-5");
+        expect(fallbackContext.systemPrompt).toBeUndefined();
+        expect(fallbackContext.messages).toHaveLength(1);
+        expect(fallbackContext.messages[0]!.content as string).toContain("Conversation so far:");
     });
 
     test("goal is not cleared until the condition is actually met", async () => {

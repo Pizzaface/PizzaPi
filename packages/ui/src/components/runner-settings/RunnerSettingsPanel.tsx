@@ -14,7 +14,7 @@ const EnvVarsSettings = React.lazy(() => import("./EnvVarsSettings"));
 const SystemPromptSettings = React.lazy(() => import("./SystemPromptSettings"));
 const ProviderOverridesSettings = React.lazy(() => import("./ProviderOverridesSettings"));
 const TuiPrefsSettings = React.lazy(() => import("./TuiPrefsSettings"));
-const FastModelSettings = React.lazy(() => import("./FastModelSettings"));
+const GoalEvaluatorSettings = React.lazy(() => import("./GoalEvaluatorSettings"));
 const PackagesSettings = React.lazy(() => import("./PackagesSettings"));
 const ProviderAuthSettings = React.lazy(() => import("./ProviderAuthSettings"));
 
@@ -54,7 +54,7 @@ export interface SectionProps {
 const SETTINGS_TABS: { key: SettingsSection; label: string }[] = [
     { key: "providerAuth", label: "Providers" },
     { key: "models", label: "Models" },
-    { key: "goal", label: "Fast Model" },
+    { key: "goal", label: "Goal Evaluator" },
     { key: "webSearch", label: "Web Search" },
     { key: "toolSearch", label: "Tool Search" },
     { key: "envVars", label: "Env Vars" },
@@ -158,7 +158,7 @@ export function RunnerSettingsPanel({ runnerId }: RunnerSettingsPanelProps) {
             content = <ModelsSettings {...sectionProps} />;
             break;
         case "goal":
-            content = <FastModelSettings {...sectionProps} />;
+            content = <GoalEvaluatorSettings {...sectionProps} />;
             break;
         case "webSearch":
             content = <WebSearchSettings {...sectionProps} />;

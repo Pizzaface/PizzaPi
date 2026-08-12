@@ -123,7 +123,11 @@ export function getGoal(sessionId: string): GoalState | undefined {
 }
 
 /**
- * Increment counters for a completed turn.
+ * Accrue token/cost spend for one LLM round-trip.
+ *
+ * Every turn spends, including mid-run `toolUse` continuation turns, so this
+ * is called on all of them. It deliberately does NOT advance `turnCount` —
+ * see `recordCompletedRun`.
  */
 export function recordTurnSpend(
     sessionId: string,
@@ -133,9 +137,24 @@ export function recordTurnSpend(
     const state = goalsBySessionId.get(sessionId);
     if (!state || state.status !== "active") return undefined;
 
-    state.turnCount += 1;
     state.tokenSpend += Math.max(0, turnTokens);
     state.costSpend += Math.max(0, turnCost);
+    return state;
+}
+
+/**
+ * Advance `turnCount` by one completed agent run.
+ *
+ * `turnCount` (and therefore `--max-turns`) counts agent *runs* — one user
+ * prompt through to control returning to the user — not LLM round-trips. A
+ * single run may contain many tool-call turns; budgeting per round-trip would
+ * let one complex task exhaust the whole budget by itself.
+ */
+export function recordCompletedRun(sessionId: string): GoalState | undefined {
+    const state = goalsBySessionId.get(sessionId);
+    if (!state || state.status !== "active") return undefined;
+
+    state.turnCount += 1;
     return state;
 }
 
@@ -151,6 +170,7 @@ export function recordEvaluation(
     if (!state || state.status !== "active") return undefined;
 
     state.evaluations.push(feedback);
+    state.lastEvaluatedTurn = state.turnCount;
     if (state.evaluations.length > MAX_EVALUATIONS) {
         state.evaluations.splice(0, state.evaluations.length - MAX_EVALUATIONS);
     }
@@ -323,9 +343,9 @@ export function formatCompactGoalStatus(state: GoalState): string {
     const parts = ["◎ /goal active"];
 
     if (state.budget.maxTurns !== undefined) {
-        parts.push(`turn ${state.turnCount}/${state.budget.maxTurns}`);
+        parts.push(`run ${state.turnCount}/${state.budget.maxTurns}`);
     } else {
-        parts.push(`turn ${state.turnCount}`);
+        parts.push(`run ${state.turnCount}`);
     }
 
     const lastEval = state.evaluations.at(-1);
@@ -349,7 +369,7 @@ export function formatGoalStatus(state: GoalState): string {
     return [
         `Goal: ${state.condition.description}`,
         `Status: ${state.status}`,
-        `Turns: ${state.turnCount}`,
+        `Runs: ${state.turnCount}`,
         `Tokens: ${state.tokenSpend.toLocaleString()}`,
         `Cost: $${state.costSpend.toFixed(4)}`,
         budgetParts.length ? `Budget: ${budgetParts.join(", ")}` : "Budget: none",

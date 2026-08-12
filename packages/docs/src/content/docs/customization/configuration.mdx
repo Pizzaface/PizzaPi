@@ -103,16 +103,17 @@ You can also override any setting with **environment variables**.
     }
   },
 
-  // `/goal` evaluator configuration. The LLM evaluator sends the conversation
-  // transcript and active goal to a model after each eligible turn. When no
-  // `evaluatorModel` is set, the evaluator uses the session's current model so
-  // the call can share the provider's prompt cache; otherwise it falls back to
-  // the cheapest available authenticated text model.
+  // `/goal` evaluator configuration. Each time the agent finishes a run, the
+  // evaluator appends a judge question to the session's own context and asks
+  // the session's model — so the conversation is served from the provider's
+  // prompt cache. Cadence is measured in completed agent runs (one user prompt
+  // through to control returning to the user), not LLM round-trips.
+  // `evaluatorModel` is an advanced escape hatch: pinning a model opts out of
+  // cache reuse and sends a standalone transcript instead.
   "goal": {
-    "evaluatorModel": "anthropic:claude-3-5-haiku-20241022",
     "evaluatorMaxTokens": 512,
-    "evaluateEveryNTurns": 3,
-    "minTurnsBeforeEvaluate": 10
+    "evaluateEveryNTurns": 1,
+    "minTurnsBeforeEvaluate": 1
   },
 
   // Dynamic MCP tool discovery — defers MCP tools when their descriptions
@@ -164,10 +165,10 @@ You can also override any setting with **environment variables**.
 | `disabledRunnerServices` | `string[]` | `[]` | Runner service IDs to skip. Built-in services: `"terminal"`, `"file-explorer"`, `"git"`, `"tunnel"`, `"time"`. Plugin services use the id declared in their manifest. |
 | `subagent.maxParallelTasks` | `number` | `8` | Max parallel tasks per call and active agent slots across background calls. **Global config only.** |
 | `subagent.maxConcurrency` | `number` | `4` | Max concurrent agent sessions within one parallel call. **Global config only.** |
-| `goal.evaluatorModel` | `string` | session's current model, then cheapest authenticated text model | Model (`provider:modelId` or `modelId`) used by the `/goal` LLM evaluator. |
+| `goal.evaluatorModel` | `string` | the session's own model | Advanced: pin a model (`provider:modelId` or `modelId`) for the `/goal` LLM evaluator. Opts out of session-context cache reuse; falls back to the cheapest authenticated text model if the pinned model has no credentials. |
 | `goal.evaluatorMaxTokens` | `number` | `512` | Maximum output tokens for each `/goal` evaluator call. |
-| `goal.evaluateEveryNTurns` | `number` | `3` | Default cadence for the LLM evaluator. `1` = every turn. Ignored by the keyword evaluator. |
-| `goal.minTurnsBeforeEvaluate` | `number` | `10` | Minimum completed agent turns before the goal evaluator runs for the first time. `0` disables the wait. |
+| `goal.evaluateEveryNTurns` | `number` | `1` | Default cadence for the LLM evaluator, in completed agent runs. `1` = every run. Ignored by the keyword evaluator. |
+| `goal.minTurnsBeforeEvaluate` | `number` | `1` | Minimum completed agent runs before the goal evaluator runs for the first time. |
 | `allowProjectProviders` | `boolean` | — | **Obsolete and ignored.** Project-local `.pizzapi/providers/` is no longer loaded. PizzaPi warns if this key is still present. |
 | `providers` | `object` | — | **Obsolete and ignored.** The extension-provider layer was removed; PizzaPi warns if this key is still present. Use a [runner service](/PizzaPi/customization/runner-services/) for external integrations, or a plain pi extension for per-session behaviour. |
 | `providerSettings` | `object` | — | Provider-specific settings. See [Web Search](#web-search) and [Per-Provider Overrides](#per-provider-overrides) below. |

@@ -92,10 +92,16 @@ Sigils relay *references* — they don't replace analysis. If the user asks you 
 
 <section name="goal-command">
 The user can set a session goal with the `/goal` slash command, for example:
-`/goal "all tests pass and the README is updated" --max-turns 20 --max-tokens 100000`.
-When the goal is met or a budget is exhausted, the session stops and configured
-stop hooks run. If a goal is active, work toward satisfying the stated
-condition and keep an eye on the remaining budget.
+`/goal "all tests pass and the README is updated" --max-turns 20 --max-cost 5`.
+While a goal is active, an evaluator checks your work each time you finish a
+run and hand control back. If it judges the goal unmet, you are automatically
+prompted to keep going; if the goal is met or a budget is exhausted, the goal
+deactivates and control returns to the user. The session is never terminated by
+`/goal`.
+
+The evaluator judges from the transcript, so finish a run with evidence rather
+than assertion: show the command output, the test result, the file contents.
+"Tests pass" with nothing behind it reads as unmet.
 </section>
 
 <section name="sandbox">

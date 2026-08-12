@@ -568,22 +568,32 @@ export interface PizzaPiConfig {
      * `/goal` command configuration.
      */
     goal?: {
-        /** Model identifier (provider:modelId or just modelId) for the LLM evaluator. When omitted, the evaluator uses the session's current model so the call shares the prompt cache; if no current model is available it falls back to the cheapest authenticated text model. */
+        /**
+         * Advanced override: pin a specific model (provider:modelId or just
+         * modelId) for the LLM evaluator.
+         *
+         * Leave unset unless you need it. By default the evaluator appends its
+         * judge question to the session's own context and calls the session's
+         * model, so the conversation is read from the provider's prompt cache
+         * rather than re-sent as a fresh transcript. Pinning a different model
+         * opts out of that: the judge gets a standalone, truncated transcript
+         * instead. Useful for keeping evaluation on a local/private provider.
+         */
         evaluatorModel?: string;
         /** Maximum output tokens for the evaluator LLM call. Default: 512. */
         evaluatorMaxTokens?: number;
         /**
-         * Default cadence (in turns) for the goal evaluator across all goals
-         * that don't set `/goal --every`. 1 = every turn. Default: 3.
-         * Ignored by the keyword evaluator (free/local, always runs).
+         * Default cadence (in completed agent runs) for the goal evaluator
+         * across all goals that don't set `/goal --every`. 1 = every run.
+         * Default: 1. Ignored by the keyword evaluator (free/local, always
+         * runs). Note a "run" is one user prompt through to control returning
+         * to the user, not one LLM round-trip.
          */
         evaluateEveryNTurns?: number;
         /**
-         * Minimum completed agent turns before the goal evaluator runs for the
+         * Minimum completed agent runs before the goal evaluator runs for the
          * first time. Prevents early judgment while the agent is still getting
-         * started. Default: 10. Ignored by the keyword evaluator only if the
-         * goal explicitly sets `--min-turns 0`; otherwise it gates every
-         * evaluator.
+         * started. Default: 1.
          */
         minTurnsBeforeEvaluate?: number;
     };
