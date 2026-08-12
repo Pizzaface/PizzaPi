@@ -355,7 +355,8 @@ describe("emitSessionMetadataUpdate", () => {
         expect(analysis?.blocks[0]).toMatchObject({
             entryId: "assistant-1",
             role: "turn",
-            tokens: 1200,
+            // Full prompt size: input + cacheRead + cacheWrite
+            tokens: 1500,
         });
     });
 

@@ -4,7 +4,7 @@
  * Walks the active branch leaf→root using pi's buildSessionContext() semantics:
  * - Compaction entries create skip ranges (messages replaced by summaries)
  * - Model changes are tracked per-turn
- * - Context blocks are estimated from usage.input deltas
+ * - Context blocks are estimated from full prompt-token deltas
  * - Per-model contextWindows enable utilization calculation
  */
 import type {
@@ -24,17 +24,48 @@ function estimateTokens(text: string): number {
   return Math.max(1, Math.round(text.length / CHARS_PER_TOKEN));
 }
 
+function promptTokenCount(usage: Usage): number {
+  return usage.input + usage.cacheRead + usage.cacheWrite;
+}
+
 function extractUsage(raw: unknown): Usage | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const u = raw as Record<string, unknown>;
-  if (typeof u.input !== "number") return undefined;
+  if (typeof u.input !== "number" || !Number.isFinite(u.input) || u.input < 0) return undefined;
+
+  const numberOrZero = (value: unknown): number =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+  const optionalNumber = (value: unknown): number | undefined =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+  const cacheRead = optionalNumber(u.cacheRead);
+  const cacheWrite = optionalNumber(u.cacheWrite);
+  if (cacheRead == null || cacheWrite == null) return undefined;
+  const rawCost = u.cost;
+  const cost = rawCost && typeof rawCost === "object"
+    ? (() => {
+        const c = rawCost as Record<string, unknown>;
+        const total = optionalNumber(c.total);
+        return total == null
+          ? undefined
+          : {
+              total,
+              input: optionalNumber(c.input),
+              output: optionalNumber(c.output),
+              cacheRead: optionalNumber(c.cacheRead),
+              cacheWrite: optionalNumber(c.cacheWrite),
+            };
+      })()
+    : undefined;
+
   return {
-    input: u.input as number,
-    output: (u.output as number) ?? 0,
-    cacheRead: (u.cacheRead as number) ?? 0,
-    cacheWrite: (u.cacheWrite as number) ?? 0,
-    totalTokens: (u.totalTokens as number) ?? 0,
-    cost: u.cost as Usage["cost"],
+    input: u.input,
+    output: numberOrZero(u.output),
+    cacheRead,
+    cacheWrite,
+    cacheWrite1h: optionalNumber(u.cacheWrite1h),
+    reasoning: optionalNumber(u.reasoning),
+    totalTokens: numberOrZero(u.totalTokens),
+    cost,
   };
 }
 
@@ -43,17 +74,10 @@ function getMessageRole(msg: unknown): string | undefined {
   return (msg as Record<string, unknown>).role as string | undefined;
 }
 
-function getMessageContent(msg: unknown): string {
-  if (!msg || typeof msg !== "object") return "";
-  const m = msg as Record<string, unknown>;
-  if (typeof m.content === "string") return m.content;
-  if (Array.isArray(m.content)) {
-    return m.content
-      .filter((c: any) => c?.type === "text")
-      .map((c: any) => c.text ?? "")
-      .join(" ");
-  }
-  return "";
+function isFailedAssistantMessage(msg: unknown): boolean {
+  if (!msg || typeof msg !== "object") return false;
+  const stopReason = (msg as Record<string, unknown>).stopReason;
+  return stopReason === "aborted" || stopReason === "error";
 }
 
 function getMessageProvider(msg: unknown): string | undefined {
@@ -100,29 +124,26 @@ export function reconstructContext(
     }
   }
 
-  // Walk leaf → root to collect the active path
+  // Walk leaf → root to collect the active path. The visited set guards
+  // against malformed files with parent cycles.
   const path: ParsedEntry[] = [];
+  const visited = new Set<string>();
   let current = leafId;
-  while (current && byId.has(current)) {
+  while (current && byId.has(current) && !visited.has(current)) {
+    visited.add(current);
     const entry = byId.get(current)!;
     path.unshift(entry);
     current = parentMap.get(current) ?? "";
   }
 
-  // Identify compaction skip ranges
-  const compactionSkips = new Set<string>();
+  // Compaction log: every compaction on the active path.
   const compactions: CompactionBoundary[] = [];
+  let latestCompaction: ParsedCompactionEntry | null = null;
 
   for (const entry of path) {
     if (entry.type === "compaction") {
       const ce = entry as ParsedCompactionEntry;
-      if (ce.firstKeptEntryId) {
-        let skipId = parentMap.get(ce.firstKeptEntryId) ?? "";
-        while (skipId && byId.has(skipId)) {
-          compactionSkips.add(skipId);
-          skipId = parentMap.get(skipId) ?? "";
-        }
-      }
+      latestCompaction = ce;
       const summaryTokens = typeof ce.summary === "string"
         ? estimateTokens(ce.summary)
         : 0;
@@ -138,34 +159,58 @@ export function reconstructContext(
     }
   }
 
-  // Collect assistant messages from the active path (excluding compacted entries)
-  const activeEntries = path.filter((e) => !compactionSkips.has(e.id!));
+  // Active context mirrors pi's buildContextEntries(): the LATEST compaction
+  // is anchored first, followed by its kept range and everything after it.
+  // Older compactions and summarized history are omitted entirely. When the
+  // kept boundary does not resolve, pi keeps only the summary plus the suffix.
+  let activeEntries = path;
+  if (latestCompaction) {
+    const compactionIdx = path.findIndex((entry) => entry.id === latestCompaction!.id);
+    if (compactionIdx >= 0) {
+      const contextEntries: ParsedEntry[] = [latestCompaction];
+      let foundFirstKept = false;
+      for (let i = 0; i < compactionIdx; i++) {
+        const entry = path[i]!;
+        if (entry.id === latestCompaction.firstKeptEntryId) foundFirstKept = true;
+        if (foundFirstKept) contextEntries.push(entry);
+      }
+      contextEntries.push(...path.slice(compactionIdx + 1));
+      activeEntries = contextEntries;
+    }
+  }
 
   // Track model changes and build a model-per-turn map
   const modelByTurn = new Map<
     number,
     { provider: string; id: string }
   >();
+  const boundaryBeforeTurn = new Map<number, boolean>();
   let currentModel: { provider: string; id: string } | null = null;
   let turnIndex = 0;
+  let hasContextBoundary = false;
   const assistantEntries: ParsedEntry[] = [];
 
   for (const entry of activeEntries) {
+    if (entry.type === "compaction" || entry.type === "branch_summary") {
+      hasContextBoundary = true;
+    }
     if (entry.type === "model_change") {
       const mce = entry as any;
       currentModel = {
-        provider: mce.provider ?? "unknown",
-        id: mce.modelId ?? "unknown",
+        provider: typeof mce.provider === "string" ? mce.provider : "unknown",
+        id: typeof mce.modelId === "string" ? mce.modelId : "unknown",
       };
     }
     if (entry.type === "message" && getMessageRole((entry as any).message) === "assistant") {
       const msg = (entry as any).message;
-      if (!currentModel) {
-        currentModel = {
-          provider: msg.provider ?? "unknown",
-          id: msg.model ?? "unknown",
-        };
-      }
+      const provider = getMessageProvider(msg);
+      const modelId = getMessageModel(msg);
+      // The assistant message is authoritative. model_change is only a
+      // fallback for older/transformed entries that lack this metadata.
+      if (provider && modelId) currentModel = { provider, id: modelId };
+      currentModel ??= { provider: "unknown", id: "unknown" };
+      boundaryBeforeTurn.set(turnIndex, hasContextBoundary);
+      hasContextBoundary = false;
       modelByTurn.set(turnIndex, { ...currentModel });
       assistantEntries.push(entry);
       turnIndex++;
@@ -174,10 +219,16 @@ export function reconstructContext(
 
   // Build blocks from context deltas
   const blocks: ContextBlock[] = [];
-  let prevInput = 0;
+  let previousPromptTokens: number | null = 0;
+  let previousModelKey: string | null = null;
+  let hasSeenUsage = false;
   let peakUsage = 0;
+  let peakContextUtilization = 0;
+  let hasContextUtilization = false;
   let totalCacheRead = 0;
+  let totalCacheWrite = 0;
   let totalInput = 0;
+  let hasUnknownUsage = false;
 
   // Per-model aggregation
   const modelAgg = new Map<
@@ -188,84 +239,119 @@ export function reconstructContext(
       turns: number;
       totalCost: number;
       cacheRead: number;
+      cacheWrite: number;
       totalInput: number;
+      unknownUsage: boolean;
     }
   >();
 
-  const turnBlockByEntryId = new Map<string, ContextBlock>();
 
   for (let i = 0; i < assistantEntries.length; i++) {
     const entry = assistantEntries[i]! as any;
     const usage = extractUsage(entry.message?.usage);
-    const input = usage?.input ?? 0;
-    const delta = input - prevInput;
-    const clampedDelta = Math.max(0, delta);
-    const isSeparator = delta < 0;
-
     const model = modelByTurn.get(i) ?? currentModel;
-    const modelKey = `${model?.provider}:${model?.id}`;
+    const modelKey = `${model?.provider ?? "unknown"}:${model?.id ?? "unknown"}`;
     const stats = modelAgg.get(modelKey) ?? {
       provider: model?.provider ?? "unknown",
       id: model?.id ?? "unknown",
       turns: 0,
       totalCost: 0,
       cacheRead: 0,
+      cacheWrite: 0,
       totalInput: 0,
+      unknownUsage: false,
     };
     stats.turns++;
     stats.totalCost += usage?.cost?.total ?? 0;
-    stats.cacheRead += usage?.cacheRead ?? 0;
-    stats.totalInput += input;
-    modelAgg.set(modelKey, stats);
 
-    // Estimate subBlocks from content length ratios within this turn
-    let subBlocks: ContextBlock["subBlocks"];
-    if (!isSeparator && clampedDelta > 0) {
-      subBlocks = computeTurnSubBlocks(activeEntries, entry.id!, clampedDelta);
+    // Aborted/failed responses are billed but their prompt snapshot is not a
+    // trusted context measurement (pi excludes them from context estimation).
+    const isFailedTurn = isFailedAssistantMessage(entry.message);
+
+    if (!usage) {
+      if (!isFailedTurn) {
+        stats.unknownUsage = true;
+        hasUnknownUsage = true;
+      }
+      modelAgg.set(modelKey, stats);
+      previousPromptTokens = null;
+      continue;
     }
+
+    if (isFailedTurn) {
+      stats.cacheRead += usage.cacheRead;
+      stats.cacheWrite += usage.cacheWrite;
+      stats.totalInput += usage.input;
+      modelAgg.set(modelKey, stats);
+      totalCacheRead += usage.cacheRead;
+      totalCacheWrite += usage.cacheWrite;
+      totalInput += usage.input;
+      blocks.push({
+        turnIndex: i,
+        entryId: entry.id ?? `turn-${i}`,
+        role: "separator",
+        tokens: 0,
+        rawTokenDelta: 0,
+        usage,
+        model: model ? { provider: model.provider, id: model.id } : undefined,
+      });
+      previousPromptTokens = null;
+      previousModelKey = modelKey;
+      continue;
+    }
+
+    // Pi's `input` excludes cache reads and writes. The prompt snapshot is the
+    // sum of all three buckets, which is the only value comparable across turns.
+    const promptTokens = promptTokenCount(usage);
+    const delta = previousPromptTokens == null
+      ? (hasSeenUsage ? null : promptTokens)
+      : promptTokens - previousPromptTokens;
+    const modelChanged = previousModelKey != null && previousModelKey !== modelKey;
+    const hasContextBoundary = boundaryBeforeTurn.get(i) === true;
+    const isSeparator = delta == null || delta < 0 || modelChanged || hasContextBoundary;
+    const clampedDelta = delta == null || modelChanged || hasContextBoundary ? 0 : Math.max(0, delta);
+
+    stats.cacheRead += usage.cacheRead;
+    stats.cacheWrite += usage.cacheWrite;
+    stats.totalInput += usage.input;
+    modelAgg.set(modelKey, stats);
 
     const block: ContextBlock = {
       turnIndex: i,
       entryId: entry.id ?? `turn-${i}`,
       role: isSeparator ? "separator" : "turn",
       tokens: clampedDelta,
-      rawTokenDelta: delta,
+      rawTokenDelta: delta ?? 0,
       usage,
       model: model ? { provider: model.provider, id: model.id } : undefined,
-      subBlocks,
+      // Per-role attribution is intentionally omitted: assistant text and
+      // thinking are generated by this request, not part of its prompt.
     };
     blocks.push(block);
-    turnBlockByEntryId.set(block.entryId, block);
 
-    totalCacheRead += usage?.cacheRead ?? 0;
-    totalInput += input;
-    if (input > peakUsage) peakUsage = input;
-    prevInput = input;
+    totalCacheRead += usage.cacheRead;
+    totalCacheWrite += usage.cacheWrite;
+    totalInput += usage.input;
+    if (promptTokens > peakUsage) peakUsage = promptTokens;
+    const contextWindow = contextWindows?.get(modelKey);
+    if (contextWindow && contextWindow > 0) {
+      peakContextUtilization = Math.max(peakContextUtilization, promptTokens / contextWindow);
+      hasContextUtilization = true;
+    }
+    previousPromptTokens = promptTokens;
+    previousModelKey = modelKey;
+    hasSeenUsage = true;
   }
 
-  // Add special blocks for compaction summaries, branch summaries, custom messages
+  // Context telemetry is independently attributable because the extension
+  // records its sections explicitly. Compaction, branch, and custom-message
+  // text is already included in the provider's prompt snapshot, so adding it
+  // as another sized block would double-count it.
   for (const entry of activeEntries) {
-    if (entry.type === "compaction" && "summary" in entry && typeof entry.summary === "string") {
-      blocks.push({
-        turnIndex: -1,
-        entryId: entry.id ?? "compaction",
-        role: "compaction_summary",
-        tokens: estimateTokens(entry.summary),
-        rawTokenDelta: 0,
-      });
-    }
-    if (entry.type === "branch_summary" && "summary" in entry) {
-      blocks.push({
-        turnIndex: -1,
-        entryId: entry.id ?? "branch-summary",
-        role: "branch_summary",
-        tokens: estimateTokens(typeof entry.summary === "string" ? entry.summary : ""),
-        rawTokenDelta: 0,
-      });
-    }
     if (entry.type === "custom_message" || entry.type === "custom") {
       const customEntry = entry as any;
       const customType = (customEntry.customType as string) ?? "";
+      if (!customType.startsWith("context:")) continue;
       const content = entry.type === "custom"
         ? extractCustomTelemetryContent(customEntry.data)
         : typeof customEntry.content === "string"
@@ -312,29 +398,62 @@ export function reconstructContext(
 
   subtractContextTelemetryFromFirstTurn(blocks);
 
-  // Fill in compaction estimatedTokensAfter and estimatedTokensFreed.
-  // Each compaction must use the first assistant turn after that compaction in
-  // the active path. Later compactions cannot reuse the first turn in the whole
-  // analysis, and the post-compaction turn may be a separator (negative delta)
-  // while still carrying the correct usage.input snapshot.
-  const activeEntryIndexById = new Map<string, number>();
-  activeEntries.forEach((entry, index) => {
-    if (entry.id) activeEntryIndexById.set(entry.id, index);
+  // Fill in compaction estimates from the first non-failed assistant turn
+  // after each compaction on the FULL path — a historical view, so older
+  // compactions superseded by later ones still get estimates. A freed-token
+  // estimate is only shown when nothing else could have changed the prompt.
+  const pathIndexById = new Map<string, number>();
+  path.forEach((entry, index) => {
+    if (entry.id) pathIndexById.set(entry.id, index);
   });
 
   for (const c of compactions) {
-    const compactionIndex = activeEntryIndexById.get(c.entryId);
+    const compactionIndex = pathIndexById.get(c.entryId);
     const nextAssistantEntry = compactionIndex == null
       ? undefined
-      : activeEntries.slice(compactionIndex + 1).find(
-        (entry) => entry.type === "message" && getMessageRole((entry as any).message) === "assistant",
+      : path.slice(compactionIndex + 1).find(
+        (entry) => entry.type === "message"
+          && getMessageRole((entry as any).message) === "assistant"
+          && !isFailedAssistantMessage((entry as any).message),
       );
-    const nextTurn = nextAssistantEntry?.id
-      ? turnBlockByEntryId.get(nextAssistantEntry.id)
+    const nextUsage = nextAssistantEntry
+      ? extractUsage((nextAssistantEntry as any).message?.usage)
       : undefined;
-    c.estimatedTokensAfter = nextTurn?.usage?.input ?? null;
+    c.estimatedTokensAfter = nextUsage ? promptTokenCount(nextUsage) : null;
+
+    // Once new user/tool context was added, the later prompt is not a clean
+    // post-compaction snapshot, so the amount freed is unknowable.
+    const nextAssistantIndex = nextAssistantEntry?.id
+      ? pathIndexById.get(nextAssistantEntry.id)
+      : undefined;
+    const entriesBetweenCompactionAndTurn = compactionIndex != null && nextAssistantIndex != null
+      ? path.slice(compactionIndex + 1, nextAssistantIndex)
+      : [];
+    const hasNewContext = compactionIndex == null || nextAssistantIndex == null
+      ? true
+      : entriesBetweenCompactionAndTurn.some((entry) =>
+          entry.type === "custom_message" ||
+          entry.type === "branch_summary" ||
+          entry.type === "compaction" ||
+          (entry.type === "custom" && typeof (entry as any).customType === "string" && (entry as any).customType.startsWith("context:")) ||
+          (entry.type === "message" && ["user", "toolResult"].includes(getMessageRole((entry as any).message) ?? "")),
+        );
+    const hasModelChange = entriesBetweenCompactionAndTurn.some((entry) => entry.type === "model_change");
+    const previousAssistant = compactionIndex == null
+      ? undefined
+      : path.slice(0, compactionIndex).reverse().find(
+          (entry) => entry.type === "message" && getMessageRole((entry as any).message) === "assistant",
+        );
+    const previousProvider = previousAssistant ? getMessageProvider((previousAssistant as any).message) : undefined;
+    const previousModel = previousAssistant ? getMessageModel((previousAssistant as any).message) : undefined;
+    const nextProvider = nextAssistantEntry ? getMessageProvider((nextAssistantEntry as any).message) : undefined;
+    const nextModel = nextAssistantEntry ? getMessageModel((nextAssistantEntry as any).message) : undefined;
+    const modelsDiffer = previousAssistant != null &&
+      (!previousProvider || !previousModel || !nextProvider || !nextModel ||
+        previousProvider !== nextProvider || previousModel !== nextModel);
     c.estimatedTokensFreed =
-      c.estimatedTokensAfter != null
+      !hasNewContext && !hasModelChange && !modelsDiffer &&
+      c.tokensBeforeCompaction > 0 && c.estimatedTokensAfter != null
         ? c.tokensBeforeCompaction - c.estimatedTokensAfter
         : null;
   }
@@ -346,7 +465,11 @@ export function reconstructContext(
     contextWindow: contextWindows?.get(`${m.provider}:${m.id}`),
     turns: m.turns,
     totalCost: m.totalCost,
-    cacheHitRate: m.totalInput + m.cacheRead > 0 ? m.cacheRead / (m.totalInput + m.cacheRead) : 0,
+    cacheHitRate: m.unknownUsage
+      ? null
+      : m.totalInput + m.cacheRead + m.cacheWrite > 0
+        ? m.cacheRead / (m.totalInput + m.cacheRead + m.cacheWrite)
+        : null,
   }));
 
   // Active model at leaf (latest model seen on the active path). This may be a
@@ -360,27 +483,41 @@ export function reconstructContext(
       }
     : null;
 
-  // Summary
-  const totalTokens = assistantEntries.reduce((sum, e) => {
-    const u = extractUsage((e as any).message?.usage);
-    return sum + (u?.totalTokens ?? 0);
-  }, 0);
+  // Summary. Compaction and branch-summary generation calls also carry usage,
+  // but they are not assistant messages and must still count toward totals and
+  // cache metrics when their telemetry is complete.
+  const auxiliaryEntries = activeEntries.filter(
+    (entry) => entry.type === "compaction" || entry.type === "branch_summary",
+  );
+  const auxiliaryUsage = auxiliaryEntries.map((entry) => extractUsage((entry as any).usage));
+  const hasUnknownAuxiliaryUsage = auxiliaryUsage.some((usage) => usage == null);
+  const assistantUsage = assistantEntries.map((entry) => extractUsage((entry as any).message?.usage));
+  const allUsage = [...assistantUsage, ...auxiliaryUsage]
+    .filter((usage): usage is Usage => usage != null);
+  for (const usage of auxiliaryUsage) {
+    if (!usage) continue;
+    totalInput += usage.input;
+    totalCacheRead += usage.cacheRead;
+    totalCacheWrite += usage.cacheWrite;
+  }
+  const totalTokens = allUsage.reduce((sum, usage) => sum + usage.totalTokens, 0);
+  const totalCost = allUsage.reduce((sum, usage) => sum + (usage.cost?.total ?? 0), 0);
 
-  const totalCost = assistantEntries.reduce((sum, e) => {
-    const u = extractUsage((e as any).message?.usage);
-    return sum + (u?.cost?.total ?? 0);
-  }, 0);
-
-  const cacheHitRate = totalInput + totalCacheRead > 0 ? totalCacheRead / (totalInput + totalCacheRead) : 0;
-  const estimatedCacheSavings = computeCacheSavings(assistantEntries);
+  const cacheHitRate = hasUnknownUsage || hasUnknownAuxiliaryUsage
+    ? null
+    : totalInput + totalCacheRead + totalCacheWrite > 0
+      ? totalCacheRead / (totalInput + totalCacheRead + totalCacheWrite)
+      : null;
+  const estimatedCacheSavings = hasUnknownUsage || hasUnknownAuxiliaryUsage
+    ? null
+    : computeCacheSavings(allUsage);
   const tokensFreedByCompaction = compactions.length > 0 && compactions.every((c) => c.estimatedTokensFreed != null)
     ? compactions.reduce((sum, c) => sum + c.estimatedTokensFreed!, 0)
     : null;
 
-  // Context utilization: use the active model's context window for simplicity
-  const activeCtxWindow = activeModel?.contextWindow;
-  const contextUtilization =
-    activeCtxWindow && activeCtxWindow > 0 ? peakUsage / activeCtxWindow : null;
+  // A session can use multiple context windows. Compare each prompt to the
+  // window of the model that received it, then keep the highest ratio.
+  const contextUtilization = hasContextUtilization ? peakContextUtilization : null;
 
   return {
     sessionId,
@@ -421,108 +558,16 @@ function subtractContextTelemetryFromFirstTurn(blocks: ContextBlock[]): void {
     }
   }
 
-  const originalTurnTokens = firstTurn.tokens;
   firstTurn.tokens = Math.max(0, firstTurn.tokens - accountedContextTokens);
-  if (firstTurn.subBlocks?.length && originalTurnTokens > 0) {
-    const scale = firstTurn.tokens / originalTurnTokens;
-    firstTurn.subBlocks = firstTurn.subBlocks
-      .map((subBlock) => ({ ...subBlock, tokens: Math.round(subBlock.tokens * scale) }))
-      .filter((subBlock) => subBlock.tokens > 0);
-  }
 }
 
-function computeTurnSubBlocks(
-  activeEntries: ParsedEntry[],
-  turnAssistantId: string,
-  turnTokens: number,
-): ContextBlock["subBlocks"] {
-  if (turnTokens <= 0) return undefined;
-
-  // Walk backwards from the assistant to find the turn's messages
-  let userTextLen = 0;
-  let assistantTextLen = 0;
-  let thinkingTextLen = 0;
-  const toolCallLens = new Map<string, number>(); // toolCallId → content length
-  const toolResultLens = new Map<string, number>(); // toolCallId → content length
-  let foundAssistant = false;
-
-  for (let i = activeEntries.length - 1; i >= 0; i--) {
-    const entry = activeEntries[i]!;
-    if (entry.id === turnAssistantId) {
-      foundAssistant = true;
-      const msg = (entry as any).message;
-      const content = msg?.content;
-
-      if (Array.isArray(content)) {
-        for (const block of content) {
-          if (block?.type === "text") {
-            assistantTextLen += String(block.text ?? "").length;
-          } else if (block?.type === "thinking") {
-            thinkingTextLen += String(block.thinking ?? "").length;
-          } else if (block?.type === "toolCall" || block?.type === "tool_use") {
-            const callId = block.id ?? "unknown";
-            const args = JSON.stringify(block.arguments ?? block.input ?? {});
-            toolCallLens.set(callId, args.length);
-          }
-        }
-      }
-      continue;
-    }
-    if (!foundAssistant) continue;
-
-    // We're now before the assistant, collecting turn messages
-    const msg = (entry as any).message;
-    if (!msg) break;
-    const role = getMessageRole(msg);
-    if (role === "assistant") break; // previous turn boundary
-
-    if (role === "user") {
-      userTextLen += getMessageContent(msg).length;
-    } else if (role === "toolResult") {
-      const callId = msg.toolCallId ?? "unknown";
-      toolResultLens.set(callId, (toolResultLens.get(callId) ?? 0) + getMessageContent(msg).length);
-    }
-  }
-
-  const total = userTextLen + assistantTextLen + thinkingTextLen +
-    Array.from(toolCallLens.values()).reduce((a, b) => a + b, 0) +
-    Array.from(toolResultLens.values()).reduce((a, b) => a + b, 0);
-
-  if (total === 0) return undefined;
-
-  const result: NonNullable<ContextBlock["subBlocks"]> = [];
-
-  if (userTextLen > 0) result.push({ role: "user", tokens: Math.round(turnTokens * (userTextLen / total)) });
-  if (thinkingTextLen > 0) result.push({ role: "thinking", tokens: Math.round(turnTokens * (thinkingTextLen / total)) });
-  if (assistantTextLen > 0) result.push({ role: "assistant", tokens: Math.round(turnTokens * (assistantTextLen / total)) });
-
-  // Individual tool calls
-  for (const [callId, tcLen] of toolCallLens) {
-    if (tcLen > 0) {
-      result.push({ role: `tool:call`, tokens: Math.round(turnTokens * (tcLen / total)) });
-    }
-  }
-  // Individual tool results
-  for (const [callId, trLen] of toolResultLens) {
-    if (trLen > 0) {
-      result.push({ role: `tool:result`, tokens: Math.round(turnTokens * (trLen / total)) });
-    }
-  }
-
-  return result.filter(b => b.tokens > 0);
-}
-
-function computeCacheSavings(assistantEntries: ParsedEntry[]): number | null {
-  if (assistantEntries.length === 0) return null;
+function computeCacheSavings(usages: Usage[]): number | null {
+  if (usages.length === 0) return null;
 
   let savings = 0;
 
-  for (const entry of assistantEntries) {
-    const e = entry as any;
-    const usage = extractUsage(e.message?.usage);
-    if (!usage?.cost) return null;
-
-    const turnSavings = estimateCacheReadSavings(e.message?.provider, e.message?.model, usage);
+  for (const usage of usages) {
+    const turnSavings = estimateCacheReadSavings(undefined, undefined, usage);
     if (turnSavings == null) return null;
     savings += turnSavings;
   }

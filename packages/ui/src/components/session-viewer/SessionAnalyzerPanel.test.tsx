@@ -84,7 +84,7 @@ describe("SessionAnalyzerPanel", () => {
     expect(container.textContent).toContain("Context use");
     expect(container.textContent).toContain("50.0%");
     expect(container.textContent).toContain("Context over time");
-    expect(container.textContent).toContain("Largest context pieces");
+    expect(container.textContent).toContain("Context growth by turn");
     expect(container.textContent).toContain("Amber markers show compactions.");
     expect(container.textContent).toContain("120 total");
 

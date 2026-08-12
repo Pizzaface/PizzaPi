@@ -10,6 +10,8 @@ export interface Usage {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  cacheWrite1h?: number;
+  reasoning?: number;
   totalTokens: number;
   cost?: {
     input?: number;
@@ -45,7 +47,7 @@ export interface ContextBlock {
   model?: { provider: string; id: string };
   /** Human-readable title (e.g., "Global Rules", "Project Rules", skill name). */
   title?: string;
-  /** Heuristic per-role breakdown within the turn. */
+  /** Deprecated: new analyses omit this because generated output is not prompt input. */
   subBlocks?: Array<{
     role: "user" | "assistant" | "tool_result" | "thinking" | `tool:${string}`;
     tokens: number;
@@ -68,7 +70,7 @@ export interface ModelStats {
   contextWindow?: number;
   turns: number;
   totalCost: number;
-  cacheHitRate: number;
+  cacheHitRate: number | null;
 }
 
 export interface SessionAnalysis {
@@ -80,7 +82,7 @@ export interface SessionAnalysis {
   summary: {
     totalTokens: number;
     totalCost: number;
-    cacheHitRate: number;
+    cacheHitRate: number | null;
     estimatedCacheSavings: number | null;
     compactionCount: number;
     tokensFreedByCompaction: number | null;

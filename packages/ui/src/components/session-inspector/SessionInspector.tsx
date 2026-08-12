@@ -154,6 +154,9 @@ export function SessionInspector({
               blocks={sortedBlocks}
               onHover={(block) => setHoveredBlock(block)}
             />
+            <p className="text-[10px] text-muted-foreground/70">
+              Approximate growth history — blocks show when context grew, not what is currently in it.
+            </p>
             {hoveredBlock && (
               <div className="text-xs text-muted-foreground border rounded-md p-2 bg-muted/30">
                 <span className="font-medium text-foreground">
