@@ -29,7 +29,7 @@ Commands:
   pizza setup                 Run first-time setup
   pizza usage [provider]      Show API usage stats
   pizza models                List available models
-  pizza plugins [cmd]         Manage Claude Code plugins (list/trust/untrust)
+  pizza plugins [cmd]         Manage Claude Code plugins (list/trust/marketplace/install)
   pizza install <source>      Install a pi package (extensions, skills, prompts, themes)
   pizza remove <source>       Remove an installed pi package
   pizza update [source|self]  Update installed pi packages
@@ -506,6 +506,18 @@ pizzapi plugins --help
 | `trust [path]` | Trust project-local plugins. No path = trust all untrusted in cwd. |
 | `untrust [path]` | Remove from trust list. No path = clear entire list. |
 | `trusted` | Show the current trust list from `~/.pizzapi/config.json` |
+| `marketplace add <source>` | Add a marketplace (`owner/repo`, git URL, or local path) |
+| `marketplace list` | List registered marketplaces |
+| `marketplace show <name>` | List a marketplace's plugins |
+| `marketplace remove <name>` | Remove a marketplace and its clone |
+| `install <name[@marketplace]>` | Install and enable a plugin from a marketplace |
+| `uninstall <name[@marketplace]>` | Remove an installed plugin |
+| `enable` / `disable <name[@marketplace]>` | Toggle a plugin without uninstalling |
+| `installed` | List marketplace-installed plugins and their enabled state |
+
+Marketplace state is shared with Claude Code (`~/.claude/plugins/`). The same operations are
+available inside a session via the `/plugin` command, which also reloads session resources so a
+newly installed plugin is usable right away.
 
 **Trust model:**
 

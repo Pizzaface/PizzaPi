@@ -726,6 +726,51 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
         if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
 
+        // POST /api/runners/:id/skills/reload — re-scan from disk AND tell every
+        // live session on this runner to reload its resources, so a new skill is
+        // usable without restarting sessions. Delivered as the `/skills reload`
+        // slash command because pi only exposes reload() on a command context.
+        if (req.method === "POST" && skillName === "reload") {
+            let skills: unknown[] = [];
+            try {
+                const result = await sendSkillCommand(runnerId, { type: "list_skills" });
+                if (!result.ok) return Response.json({ error: result.message ?? "Skill scan failed" }, { status: 500 });
+                skills = result.skills ?? [];
+            } catch (err) {
+                skillsLog.error("reload scan failed:", err);
+                return Response.json({ error: "Failed to refresh skills" }, { status: 502 });
+            }
+
+            const reloadedSessionIds: string[] = [];
+            const failedSessionIds: string[] = [];
+            for (const { sessionId } of await getConnectedSessionsForRunner(runnerId)) {
+                const tuiSocket = getLocalTuiSocket(sessionId);
+                if (!tuiSocket) {
+                    failedSessionIds.push(sessionId);
+                    continue;
+                }
+                try {
+                    tuiSocket.emit("input" as string, {
+                        text: "/skills reload",
+                        attachments: [],
+                        deliverAs: "followUp",
+                    });
+                    reloadedSessionIds.push(sessionId);
+                } catch {
+                    failedSessionIds.push(sessionId);
+                }
+            }
+
+            return Response.json({
+                ok: true,
+                skills,
+                reloaded: reloadedSessionIds.length,
+                failed: failedSessionIds.length,
+                sessionIds: reloadedSessionIds,
+                failedSessionIds,
+            });
+        }
+
         // POST /api/runners/:id/skills/refresh — ask runner to re-scan skills from disk
         if (req.method === "POST" && skillName === "refresh") {
             try {

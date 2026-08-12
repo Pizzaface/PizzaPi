@@ -8,6 +8,8 @@
  *   pizza plugins trust [path]     Trust a project-local plugin (by path or interactively)
  *   pizza plugins untrust [path]   Remove a plugin from the trust list
  *   pizza plugins trusted          Show the current trust list
+ *   pizza plugins marketplace …    Add/list/remove plugin marketplaces
+ *   pizza plugins install <name>   Install a plugin from a marketplace
  *   pizza plugins --help           Show help
  */
 import { resolve } from "node:path";
@@ -19,6 +21,17 @@ import {
     toPluginInfo,
     type DiscoveredPlugin,
 } from "./plugins.js";
+import {
+    addMarketplace,
+    installPlugin,
+    listInstalledPlugins,
+    listMarketplaces,
+    readMarketplaceCatalog,
+    removeMarketplace,
+    resolvePluginKey,
+    setPluginEnabled,
+    uninstallPlugin,
+} from "./plugins/marketplace.js";
 import {
     getTrustedPlugins,
     isPluginTrusted,
@@ -187,6 +200,79 @@ function showTrusted(): void {
     }
 }
 
+// ── Marketplace subcommands ───────────────────────────────────────────────────
+
+function marketplaceCommand(args: string[]): void {
+    const action = args[0] ?? "list";
+    const target = args.slice(1).join(" ").trim();
+
+    if (action === "list" || action === "ls") {
+        const known = listMarketplaces();
+        const names = Object.keys(known);
+        if (names.length === 0) {
+            log.info("No marketplaces. Add one with `pizza plugins marketplace add <owner/repo>`.");
+            return;
+        }
+        log.info(`Marketplaces (${names.length}):`);
+        for (const name of names) {
+            const count = readMarketplaceCatalog(name)?.plugins.length ?? 0;
+            log.info(`  ${name}  ${c.dim(`(${count} plugins)`)}`);
+            log.info(`    ${c.dim(known[name].installLocation)}`);
+        }
+        return;
+    }
+
+    if (action === "add") {
+        if (!target) {
+            log.info("Usage: pizza plugins marketplace add <owner/repo | git-url | path>");
+            return;
+        }
+        const result = addMarketplace(target);
+        log.info(`✓ Added marketplace "${result.name}" (${result.pluginCount} plugins)`);
+        log.info(`  ${c.dim(result.installLocation)}`);
+        return;
+    }
+
+    if (action === "remove" || action === "rm") {
+        if (!target) {
+            log.info("Usage: pizza plugins marketplace remove <name>");
+            return;
+        }
+        log.info(removeMarketplace(target) ? `✓ Removed marketplace "${target}"` : `⋅ Unknown marketplace: ${target}`);
+        return;
+    }
+
+    if (action === "show" || action === "plugins") {
+        const catalog = target ? readMarketplaceCatalog(target) : null;
+        if (!catalog) {
+            log.info(`Unknown marketplace: ${target || "(none given)"}`);
+            return;
+        }
+        const installed = new Set(listInstalledPlugins().map((p) => p.key));
+        log.info(`${catalog.name} — ${catalog.plugins.length} plugins`);
+        for (const p of catalog.plugins) {
+            const mark = installed.has(`${p.name}@${target}`) ? "✓" : " ";
+            log.info(`  ${mark} ${p.name}${p.description ? c.dim(` — ${p.description.split("\n")[0].slice(0, 80)}`) : ""}`);
+        }
+        return;
+    }
+
+    log.info("Usage: pizza plugins marketplace <add|list|remove|show> [target]");
+}
+
+function installedCommand(): void {
+    const installed = listInstalledPlugins();
+    if (installed.length === 0) {
+        log.info("No marketplace plugins installed.");
+        return;
+    }
+    log.info(`Installed plugins (${installed.length}):`);
+    for (const p of installed) {
+        log.info(`  ${p.key}${p.enabled ? "" : c.dim("  (disabled)")}`);
+        log.info(`    ${c.dim(p.installPath)}`);
+    }
+}
+
 function showHelp(): void {
     log.info("");
     log.info(`${c.brand("pizza plugins")} ${c.dim("— Manage Claude Code plugins")}`);
@@ -202,6 +288,18 @@ function showHelp(): void {
     log.info(`                               ${c.dim("With path → remove that specific plugin")}`);
     log.info(`  ${c.cmd("pizza plugins trusted")}        Show the current trust list`);
     log.info("");
+    log.info(c.label("Marketplaces"));
+    log.info(`  ${c.cmd("pizza plugins marketplace add")} ${c.dim("<source>")}    owner/repo, git URL, or local path`);
+    log.info(`  ${c.cmd("pizza plugins marketplace list")}`);
+    log.info(`  ${c.cmd("pizza plugins marketplace show")} ${c.dim("<name>")}      List a marketplace's plugins`);
+    log.info(`  ${c.cmd("pizza plugins marketplace remove")} ${c.dim("<name>")}`);
+    log.info(`  ${c.cmd("pizza plugins install")} ${c.dim("<name[@marketplace]>")}`);
+    log.info(`  ${c.cmd("pizza plugins uninstall")} ${c.dim("<name[@marketplace]>")}`);
+    log.info(`  ${c.cmd("pizza plugins enable|disable")} ${c.dim("<name[@marketplace]>")}`);
+    log.info(`  ${c.cmd("pizza plugins installed")}       Show marketplace-installed plugins`);
+    log.info("");
+    log.info(c.dim("Marketplace state is shared with Claude Code (~/.claude/plugins)."));
+    log.info("");
     log.info(c.dim("Trusted plugins auto-load without prompting. Global plugins"));
     log.info(c.dim("(~/.pizzapi/plugins/, ~/.agents/plugins/, ~/.claude/plugins/) are"));
     log.info(c.dim("always auto-trusted. Project-local plugins require explicit trust"));
@@ -214,6 +312,16 @@ function showHelp(): void {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 export async function runPluginsCommand(args: string[], cwd: string): Promise<void> {
+    try {
+        await dispatchPluginsCommand(args, cwd);
+    } catch (err) {
+        // Marketplace operations throw on bad input, clone failures, etc.
+        log.error(err instanceof Error ? err.message : String(err));
+        process.exitCode = 1;
+    }
+}
+
+async function dispatchPluginsCommand(args: string[], cwd: string): Promise<void> {
     const subcommand = args[0] ?? "list";
 
     if (subcommand === "--help" || subcommand === "-h" || subcommand === "help") {
@@ -238,6 +346,50 @@ export async function runPluginsCommand(args: string[], cwd: string): Promise<vo
 
     if (subcommand === "trusted") {
         showTrusted();
+        return;
+    }
+
+    if (subcommand === "marketplace" || subcommand === "marketplaces") {
+        marketplaceCommand(args.slice(1));
+        return;
+    }
+
+    if (subcommand === "installed") {
+        installedCommand();
+        return;
+    }
+
+    if (subcommand === "install") {
+        const target = args.slice(1).join(" ").trim();
+        if (!target) {
+            log.info("Usage: pizza plugins install <name[@marketplace]>");
+            return;
+        }
+        const result = installPlugin(target);
+        log.info(`✓ Installed ${result.plugin}@${result.marketplace}`);
+        log.info(`  ${c.dim(result.installPath)}`);
+        return;
+    }
+
+    if (subcommand === "uninstall") {
+        const target = args.slice(1).join(" ").trim();
+        if (!target) {
+            log.info("Usage: pizza plugins uninstall <name[@marketplace]>");
+            return;
+        }
+        log.info(uninstallPlugin(target) ? `✓ Uninstalled ${target}` : `⋅ Not installed: ${target}`);
+        return;
+    }
+
+    if (subcommand === "enable" || subcommand === "disable") {
+        const target = args.slice(1).join(" ").trim();
+        if (!target) {
+            log.info(`Usage: pizza plugins ${subcommand} <name[@marketplace]>`);
+            return;
+        }
+        const key = resolvePluginKey(target);
+        setPluginEnabled(key, subcommand === "enable");
+        log.info(`✓ ${subcommand === "enable" ? "Enabled" : "Disabled"} ${key}`);
         return;
     }
 

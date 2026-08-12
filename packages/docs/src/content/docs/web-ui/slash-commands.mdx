@@ -44,13 +44,35 @@ The following commands are always available in the chat input:
 | `/sandbox violations` | List recent sandbox violations. |
 | `/sandbox config` | Show sandbox configuration. |
 | `/skills` | Display available skills loaded on the runner. |
+| `/skills reload` | Reload skills (and prompts, extensions, context files) from disk in this session — no restart needed. The **Reload** button in a runner's Skills tab sends this to every live session on that runner. |
 | `/plugins` | List all loaded plugins with their commands, hooks, skills, agents, rules, and MCP integrations. |
+| `/plugin [sub]` | Manage Claude Code plugin marketplaces. See [plugin sub-commands](#plugin-sub-commands) below. |
 | `/agents [name]` | Spawn a new session as a named agent. Select `/agents` from the picker to open the agent list; with a name, it dispatches immediately. |
 | `/mcp [status\|reload\|disable <name>\|enable <name>]` | MCP server management. See [MCP sub-commands](#mcp-sub-commands) below. |
 
 <Aside type="tip">
 You can also trigger context compaction by clicking the **context donut** in the session toolbar — it opens a confirmation dialog with the same effect as `/compact`. See [Web UI Overview](/web-ui/overview/#context-window-donut) for details.
 </Aside>
+
+### `/plugin` sub-commands
+
+Marketplace state is shared with Claude Code (`~/.claude/plugins/`), so installs are visible to
+both tools. Mutating sub-commands reload session resources afterwards, so a newly installed
+plugin's commands and skills work immediately.
+
+| Sub-command | Description |
+|-------------|-------------|
+| *(none)* / `list` | List marketplaces and installed plugins |
+| `marketplace add <source>` | Add a marketplace — `owner/repo`, a git URL, or a local path |
+| `marketplace list` | List registered marketplaces |
+| `marketplace show <name>` | List a marketplace's plugins (✓ marks installed) |
+| `marketplace remove <name>` | Remove a marketplace and its local clone |
+| `install <name[@marketplace]>` | Install and enable a plugin |
+| `uninstall <name[@marketplace]>` | Remove an installed plugin |
+| `enable` / `disable <name[@marketplace]>` | Toggle a plugin without uninstalling |
+
+The `@marketplace` suffix is optional when the plugin name is unambiguous. See the
+[Claude Code Plugins guide](/PizzaPi/customization/claude-plugins/#marketplaces) for details.
 
 ### MCP sub-commands
 

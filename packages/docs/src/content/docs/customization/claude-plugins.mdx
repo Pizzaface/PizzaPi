@@ -291,6 +291,65 @@ PizzaPi searches for plugins in these directories:
 
 A plugin folder placed directly in `~/.claude/plugins/` without a matching `installed_plugins.json` entry will **not** be discovered.
 
+---
+
+## Marketplaces
+
+PizzaPi can add marketplaces and install plugins itself, writing to the same files Claude Code
+uses — so an install made from either tool is visible to both.
+
+### From a session
+
+```
+/plugin                                  List marketplaces and installed plugins
+/plugin marketplace add <source>         Add a marketplace
+/plugin marketplace list
+/plugin marketplace show <name>           List a marketplace's plugins
+/plugin marketplace remove <name>
+/plugin install <name[@marketplace]>
+/plugin uninstall <name[@marketplace]>
+/plugin enable|disable <name[@marketplace]>
+```
+
+Mutating subcommands reload session resources afterwards, so a newly installed plugin's
+commands, skills, and rules are usable immediately — no restart.
+
+### From the CLI
+
+```bash
+pizza plugins marketplace add anthropics/claude-plugins-official
+pizza plugins marketplace list
+pizza plugins marketplace show claude-plugins-official
+pizza plugins install my-plugin@claude-plugins-official
+pizza plugins installed
+pizza plugins disable my-plugin@claude-plugins-official
+pizza plugins uninstall my-plugin@claude-plugins-official
+pizza plugins marketplace remove claude-plugins-official
+```
+
+### Sources
+
+| Spec | Interpreted as |
+|------|----------------|
+| `owner/repo` | GitHub repository (shallow clone) |
+| `https://…/x.git`, `git@host:x.git` | Git URL (shallow clone) |
+| `./path`, `/abs/path`, `~/path` | Local directory (copied) |
+
+A marketplace source must contain `.claude-plugin/marketplace.json`. The marketplace is named
+after that manifest's `name` field.
+
+The `@marketplace` suffix can be omitted when the plugin name is unambiguous.
+
+### Where state lives
+
+| Path | Contents |
+|------|----------|
+| `~/.claude/plugins/known_marketplaces.json` | Registered marketplaces and their sources |
+| `~/.claude/plugins/marketplaces/<name>/` | Cloned marketplace repository |
+| `~/.claude/plugins/cache/<marketplace>/<plugin>/` | Installed plugin payload |
+| `~/.claude/plugins/installed_plugins.json` | Install registry (`plugin@marketplace` → installations) |
+| `~/.claude/settings.json` → `enabledPlugins` | Enabled/disabled state |
+
 ### Project-local (require trust)
 
 | Directory | Source |

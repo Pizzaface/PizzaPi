@@ -166,7 +166,13 @@ export function useSlashCommands(
         ],
       },
       { name: "plugins", description: "Show loaded plugins" },
-      { name: "skills", description: "Show available skills" },
+      {
+        name: "skills",
+        description: "Show available skills",
+        subCommands: [
+          { name: "reload", description: "Reload skills from disk in this session" },
+        ],
+      },
       { name: "agents", description: "Start a new session as an agent" },
       { name: "model", description: "Select model" },
       { name: "cycle_model", description: "Select model (alias of /model)" },
@@ -523,6 +529,12 @@ export function useSlashCommands(
             onAppendSystemMessage?.(`**Plugins** — Failed to load: ${err.message}`);
           });
         return true;
+      }
+
+      // `/skills reload` belongs to the CLI extension (it reloads the session's
+      // resources) — only the bare listing is handled here in the browser.
+      if (rawCommand === "skills" && args.trim().toLowerCase() === "reload") {
+        return false;
       }
 
       if (rawCommand === "skills") {
