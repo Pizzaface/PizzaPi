@@ -19,6 +19,7 @@ import { findCachedOllamaCloudModel } from "../../ollama-cloud-models.js";
 import { isModelHidden } from "../../hidden-models.js";
 import type { SingleResult, SubagentDetails, OnUpdateCallback } from "./types.js";
 import { getFinalOutput, summarizeResultForStreaming } from "./types.js";
+import { createSubagentMirror, type SubagentMirror } from "./relay-mirror.js";
 
 // ── Built-in tool registry ─────────────────────────────────────────────
 
@@ -249,7 +250,12 @@ export async function runSingleAgent(
         step,
     };
 
+    // Mirror the run as an ephemeral relay child session so it shows up in the
+    // sidebar next to spawn_session children. Null when the relay is off.
+    let mirror: SubagentMirror | null = null;
+
     const emitUpdate = () => {
+        mirror?.update(currentResult);
         if (onUpdate) {
             const summary = summarizeResultForStreaming(currentResult);
             onUpdate({
@@ -268,6 +274,7 @@ export async function runSingleAgent(
 
         // Build session options — resolve tools fail-closed
         const sessionCwd = cwd ?? defaultCwd;
+        mirror = createSubagentMirror({ agentName, task, cwd: sessionCwd, step });
         let tools: string[];
         if (isPlanMode) {
             // Plan mode: restrict to read-only tools regardless of agent config
@@ -412,5 +419,9 @@ export async function runSingleAgent(
         currentResult.exitCode = 1;
         currentResult.stderr += `\nFailed to create subagent session: ${err instanceof Error ? err.message : String(err)}`;
         return currentResult;
+    } finally {
+        // Covers every exit path after the mirror exists: success, failure,
+        // and the abort re-throw.
+        mirror?.finish(currentResult);
     }
 }

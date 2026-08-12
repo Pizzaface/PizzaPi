@@ -16,7 +16,17 @@ When the agent calls the `subagent` tool, PizzaPi:
 3. Returns immediately so the parent can continue working
 4. Runs the child behind the scenes and injects its final output as a follow-up message when done
 
-Unlike [`spawn_session`](/PizzaPi/running/cli-reference/#spawn_session), subagents stay inside the parent session rather than creating a separately visible child session. Result delivery is automatic; the parent should not poll or wait.
+Unlike [`spawn_session`](/PizzaPi/running/cli-reference/#spawn_session), subagents run **inside** the parent process — no child process, no separate worker. They are still *visible*: each run is mirrored to the relay as an ephemeral child session, so it appears nested under its parent in the session sidebar with a live transcript, just like a linked session. Result delivery is automatic; the parent should not poll or wait.
+
+### Visibility in the web UI
+
+While a subagent runs, PizzaPi registers a short-lived relay session named `<agent>: <task>`
+(`<agent> #N: <task>` for chain steps) with the parent as its `parentSessionId`. It streams the
+subagent's transcript, and ends when the subagent finishes — after which the run remains in the
+parent's conversation as the usual inline subagent card.
+
+The mirror is best-effort and entirely optional: when the relay isn't configured (local TUI,
+no API key, or `PIZZAPI_RELAY_URL=off`), subagents run exactly as before with no mirroring.
 
 ## Quick start
 
