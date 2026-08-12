@@ -17,7 +17,20 @@ import {
     setGoal,
     setPendingGuidance,
 } from "./state.js";
-import { keywordGoalEvaluator, parseLlmVerdict, createLlmGoalEvaluator, resolveEvaluatorModel } from "./evaluator.js";
+import {
+    keywordGoalEvaluator,
+    parseLlmVerdict,
+    createLlmGoalEvaluator,
+    createSessionCacheEvaluator,
+    resolveEvaluatorModel,
+} from "./evaluator.js";
+import {
+    captureSessionContext,
+    isCacheReuseViable,
+    recordCacheOutcome,
+    resetSessionContext,
+    toLlmMessages,
+} from "./session-context.js";
 import { extractLatestTurnText, buildTranscript, extractAgentMessageText } from "./transcript.js";
 import type { AssistantMessage, Context, Model, SimpleStreamOptions, ToolResultMessage } from "@earendil-works/pi-ai";
 import type { GoalState, GoalVerdict } from "./types.js";
@@ -712,6 +725,203 @@ describe("createLlmGoalEvaluator", () => {
 
         expect(feedback.verdict).toBe("uncertain");
         expect(feedback.reason).toContain("network down");
+    });
+});
+
+describe("createSessionCacheEvaluator", () => {
+    const captured = {
+        systemPrompt: "You are a coding agent.",
+        messages: [
+            { role: "user" as const, content: "run the tests", timestamp: 1 },
+            {
+                role: "assistant" as const,
+                content: [{ type: "text" as const, text: "running them" }],
+                api: "anthropic-messages" as const,
+                provider: "anthropic",
+                model: "sonnet",
+                usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+                stopReason: "stop" as const,
+                timestamp: 2,
+            },
+        ],
+        tools: [{ name: "bash", description: "run a command", parameters: {} }],
+        capturedAt: 1,
+    };
+
+    function makeState(): GoalState {
+        return {
+            id: "g1",
+            condition: { description: "tests pass", evaluator: "llm" },
+            budget: {},
+            status: "active",
+            turnCount: 1,
+            tokenSpend: 0,
+            costSpend: 0,
+            evaluations: [],
+            createdAt: 1,
+        };
+    }
+
+    function makeResponse(text: string, cacheRead: number): AssistantMessage {
+        return {
+            role: "assistant",
+            content: [{ type: "text", text }],
+            api: "anthropic-messages",
+            provider: "anthropic",
+            model: "sonnet",
+            usage: { input: 120, output: 20, cacheRead, cacheWrite: 0, totalTokens: 140 + cacheRead, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.002 } },
+            stopReason: "stop",
+            timestamp: Date.now(),
+        };
+    }
+
+    test("re-sends the session prefix verbatim and appends the judge question", async () => {
+        let seen: Context | undefined;
+        const evaluator = createSessionCacheEvaluator({
+            completeSimple: async (_model, context) => {
+                seen = context;
+                return makeResponse('{"verdict": "no", "reason": "tests still failing"}', 900);
+            },
+            model: { id: "sonnet", provider: "anthropic" } as Model<any>,
+            captured,
+        });
+
+        const feedback = await evaluator.evaluate(makeState(), {
+            latestTurnText: "3 tests failed",
+            transcript: "",
+            history: [],
+            turnCount: 1,
+            tokenSpend: 0,
+        });
+
+        // The cached prefix must be byte-identical to what the session sent:
+        // same system prompt, same tools, same messages in the same order.
+        expect(seen?.systemPrompt).toBe(captured.systemPrompt);
+        expect(seen?.tools).toEqual(captured.tools);
+        expect(seen?.messages.slice(0, 2)).toEqual(captured.messages);
+
+        // Only a trailing user message is added — the shape of a normal
+        // follow-up turn, so the provider always accepts the sequence.
+        expect(seen?.messages).toHaveLength(3);
+        const appended = seen!.messages[2]!;
+        expect(appended.role).toBe("user");
+        expect(appended.content as string).toContain("tests pass");
+        expect(appended.content as string).toContain("3 tests failed");
+
+        expect(feedback.verdict).toBe("not_met");
+        expect(feedback.cacheReadTokens).toBe(900);
+    });
+
+    test("does not resend the transcript — the cached conversation is the transcript", async () => {
+        let seen: Context | undefined;
+        const evaluator = createSessionCacheEvaluator({
+            completeSimple: async (_model, context) => {
+                seen = context;
+                return makeResponse('{"verdict": "yes", "reason": "all green"}', 900);
+            },
+            model: { id: "sonnet", provider: "anthropic" } as Model<any>,
+            captured,
+        });
+
+        await evaluator.evaluate(makeState(), {
+            latestTurnText: "done",
+            transcript: "SHOULD-NOT-BE-SENT",
+            history: [],
+            turnCount: 1,
+            tokenSpend: 0,
+        });
+
+        expect(JSON.stringify(seen?.messages)).not.toContain("SHOULD-NOT-BE-SENT");
+    });
+
+    test("reports a zero cache read so the caller can abandon the path", async () => {
+        const evaluator = createSessionCacheEvaluator({
+            completeSimple: async () => makeResponse('{"verdict": "no", "reason": "nope"}', 0),
+            model: { id: "sonnet", provider: "anthropic" } as Model<any>,
+            captured,
+        });
+
+        const feedback = await evaluator.evaluate(makeState(), {
+            latestTurnText: "",
+            transcript: "",
+            history: [],
+            turnCount: 1,
+            tokenSpend: 0,
+        });
+
+        expect(feedback.cacheReadTokens).toBe(0);
+    });
+
+    test("handles model errors gracefully", async () => {
+        const evaluator = createSessionCacheEvaluator({
+            completeSimple: async () => {
+                throw new Error("network down");
+            },
+            model: { id: "sonnet", provider: "anthropic" } as Model<any>,
+            captured,
+        });
+
+        const feedback = await evaluator.evaluate(makeState(), {
+            latestTurnText: "",
+            transcript: "",
+            history: [],
+            turnCount: 1,
+            tokenSpend: 0,
+        });
+
+        expect(feedback.verdict).toBe("uncertain");
+        expect(feedback.reason).toContain("network down");
+    });
+});
+
+describe("toLlmMessages", () => {
+    test("drops custom agent messages that never reach the provider", () => {
+        // The `context` event fires before pi's convertToLlm step, so the
+        // array can still contain PizzaPi's own message types (e.g. background
+        // bash execution). Sending those verbatim would not match what pi
+        // actually serialized.
+        const messages = [
+            { role: "user", content: "run it", timestamp: 1 },
+            { role: "bashExecution", command: "ls", output: "a b c", timestamp: 2 },
+            { role: "assistant", content: [{ type: "text", text: "done" }], timestamp: 3 },
+            { role: "toolResult", toolCallId: "t1", toolName: "bash", content: [], isError: false, timestamp: 4 },
+        ] as any[];
+
+        const result = toLlmMessages(messages);
+        expect(result.map((m) => m.role)).toEqual(["user", "assistant", "toolResult"]);
+    });
+
+    test("preserves order and passes through a clean transcript untouched", () => {
+        const messages = [
+            { role: "user", content: "one", timestamp: 1 },
+            { role: "assistant", content: [{ type: "text", text: "two" }], timestamp: 2 },
+        ] as any[];
+        expect(toLlmMessages(messages)).toEqual(messages);
+    });
+});
+
+describe("session context cache tracking", () => {
+    test("a cache read keeps the path viable; a miss disables it once", () => {
+        resetSessionContext("cache-session");
+        captureSessionContext("cache-session", {
+            systemPrompt: "sys",
+            messages: [{ role: "user", content: "hi", timestamp: 1 }],
+            tools: [],
+            capturedAt: 1,
+        });
+
+        expect(isCacheReuseViable("cache-session")).toBe(true);
+        expect(recordCacheOutcome("cache-session", 500)).toBe(false);
+        expect(isCacheReuseViable("cache-session")).toBe(true);
+
+        // First miss disables reuse and reports the downgrade exactly once,
+        // so the warning isn't repeated every evaluation.
+        expect(recordCacheOutcome("cache-session", 0)).toBe(true);
+        expect(isCacheReuseViable("cache-session")).toBe(false);
+        expect(recordCacheOutcome("cache-session", 0)).toBe(false);
+
+        resetSessionContext("cache-session");
+        expect(isCacheReuseViable("cache-session")).toBe(true);
     });
 });
 

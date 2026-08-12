@@ -59,10 +59,20 @@ import {
 import { parseGoalArgs } from "./parser.js";
 import {
     createLlmGoalEvaluator,
+    createSessionCacheEvaluator,
     DEFAULT_EVALUATE_EVERY_N_TURNS,
     keywordGoalEvaluator,
     resolveEvaluatorModel,
 } from "./evaluator.js";
+import {
+    captureSessionContext,
+    getCapturedSessionContext,
+    isCacheReuseViable,
+    recordCacheOutcome,
+    resetSessionContext,
+    snapshotActiveTools,
+    toLlmMessages,
+} from "./session-context.js";
 import { buildTranscript, extractLatestTurnText } from "./transcript.js";
 import type {
     GoalCommandResult,
@@ -297,8 +307,16 @@ function steerContinuation(
  * Resolve the evaluator implementation for this check. Model-resolution
  * failures degrade to an "uncertain" verdict (which never auto-continues)
  * rather than throwing out of the turn handler.
+ *
+ * Preference order for the LLM evaluator:
+ *   1. Reuse the session's own context on the session's model, so the judge
+ *      call reads the conversation from the provider's prompt cache.
+ *   2. A standalone prompt on the cheapest authenticated model, used when
+ *      there is no captured prefix, when a model is explicitly pinned, or
+ *      once a cache miss has proved the prefix doesn't match.
  */
 async function resolveEvaluator(
+    sessionId: string,
     state: GoalState,
     config: GoalConfig,
     ctx: ExtensionContext,
@@ -315,6 +333,29 @@ async function resolveEvaluator(
     });
 
     try {
+        const captured = getCapturedSessionContext(sessionId);
+        const canReuseSession =
+            !config.evaluatorModel &&
+            captured !== undefined &&
+            captured.messages.length > 0 &&
+            isCacheReuseViable(sessionId) &&
+            ctx.model !== undefined &&
+            ctx.modelRegistry.hasConfiguredAuth(ctx.model);
+
+        if (canReuseSession && ctx.model) {
+            const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+            if (auth.ok) {
+                return createSessionCacheEvaluator({
+                    completeSimple,
+                    model: ctx.model,
+                    apiKey: auth.apiKey,
+                    maxTokens: config.evaluatorMaxTokens,
+                    signal: ctx.signal,
+                    captured: captured!,
+                });
+            }
+        }
+
         const resolved = await resolveEvaluatorModel(ctx.modelRegistry, config.evaluatorModel);
         if (!resolved) {
             const reason = "No configured evaluator model with auth is available; skipping LLM evaluation.";
@@ -398,10 +439,19 @@ async function runGoalStopCheck(
     }
 
     const evalContext = buildEvaluationContext(state, event, ctx);
-    const evaluator = await resolveEvaluator(state, config, ctx);
+    const evaluator = await resolveEvaluator(sessionId, state, config, ctx);
 
     try {
         const feedback = await evaluator.evaluate(state, evalContext);
+        // Verify the shared-prefix assumption instead of trusting it. A miss
+        // means we just paid full input price on the session model, so this
+        // session stops reusing the session context from here on.
+        if (feedback.cacheReadTokens !== undefined && recordCacheOutcome(sessionId, feedback.cacheReadTokens)) {
+            log.warn(
+                "Goal evaluator reused the session context but the provider reported no cache read; " +
+                "falling back to a standalone evaluator call for the rest of this session.",
+            );
+        }
         state = recordEvaluation(sessionId, feedback, pi) ?? state;
     } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
@@ -488,6 +538,24 @@ export const goalExtension: ExtensionFactory = (pi) => {
         broadcastGoalStatus(sessionId, getGoal(sessionId), ctx, pi);
     });
 
+    // Snapshot the exact prefix pi sends to the provider so the evaluator can
+    // re-send it and read from the prompt cache. Only captured while a goal is
+    // active, and never modified — this handler always returns undefined.
+    pi.on("context", (event, ctx) => {
+        const sessionId = getSessionId(ctx);
+        const state = getGoal(sessionId);
+        if (!state || state.status !== "active" || state.condition.evaluator !== "llm") return undefined;
+        if (!isCacheReuseViable(sessionId)) return undefined;
+
+        captureSessionContext(sessionId, {
+            systemPrompt: ctx.getSystemPrompt(),
+            messages: toLlmMessages(event.messages),
+            tools: snapshotActiveTools(pi),
+            capturedAt: Date.now(),
+        });
+        return undefined;
+    });
+
     pi.on("turn_end", async (event, ctx) => {
         await runGoalStopCheck(event, ctx, pi);
         broadcastGoalStatus(getSessionId(ctx), getGoal(getSessionId(ctx)), ctx, pi);
@@ -496,6 +564,7 @@ export const goalExtension: ExtensionFactory = (pi) => {
     pi.on("session_shutdown", (_event, ctx) => {
         const sessionId = getSessionId(ctx);
         resetSession(sessionId);
+        resetSessionContext(sessionId);
         emitGoalStatusChanged(pi, null);
     });
 };

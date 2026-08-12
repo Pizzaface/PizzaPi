@@ -568,7 +568,17 @@ export interface PizzaPiConfig {
      * `/goal` command configuration.
      */
     goal?: {
-        /** Model identifier (provider:modelId or just modelId) for the LLM evaluator. When omitted, the evaluator uses the cheapest authenticated text model — its prompt shares no prefix with the session, so there is no cache benefit to using the session model. */
+        /**
+         * Advanced override: pin a specific model (provider:modelId or just
+         * modelId) for the LLM evaluator.
+         *
+         * Leave unset unless you need it. By default the evaluator appends its
+         * judge question to the session's own context and calls the session's
+         * model, so the conversation is read from the provider's prompt cache
+         * rather than re-sent as a fresh transcript. Pinning a different model
+         * opts out of that: the judge gets a standalone, truncated transcript
+         * instead. Useful for keeping evaluation on a local/private provider.
+         */
         evaluatorModel?: string;
         /** Maximum output tokens for the evaluator LLM call. Default: 512. */
         evaluatorMaxTokens?: number;

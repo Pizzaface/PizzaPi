@@ -37,10 +37,18 @@ Reaching the goal (or a budget) only **deactivates the goal**. The session stays
 
 | Evaluator | How it decides | Cost |
 |-----------|----------------|------|
-| `llm` (default) | Sends the goal and a transcript to a small model, which answers yes/no with a reason | One small API call per evaluation |
+| `llm` (default) | Appends a judge question to the session's own conversation and asks the session's model for a yes/no with a reason | One short call, with the conversation served from the provider's prompt cache |
 | `keyword` | Checks whether any `--keyword` appears in the run's output | Free, local |
 
 The LLM evaluator is told to judge on **evidence** — command output, test results, file contents — rather than the agent's claim that it finished. Ending a run with real output ("42 passed") resolves a goal; ending it with "the tests should pass now" does not.
+
+### How the LLM evaluator reuses your session
+
+Rather than assembling a separate transcript, the evaluator re-sends the exact context your session just sent — same system prompt, same tools, same messages — with the judge question appended as one final user message. Providers cache on an exact prefix, so that conversation is served from cache and only the appended question is billed as new input. It also means the judge reads the real conversation at full fidelity, and nothing is shared with a provider your session wasn't already using.
+
+<Aside type="note" title="Verified, not assumed">
+A cache hit depends on reproducing the session's prefix byte for byte. PizzaPi checks the provider's reported cache read on each evaluation; if it comes back zero, the session stops reusing the context and falls back to a standalone prompt on the cheapest authenticated model — so a mismatch costs one evaluation, not a whole session of full-price transcripts.
+</Aside>
 
 ```
 /goal "docker image builds" --evaluator keyword --keyword "Successfully built"
@@ -112,7 +120,9 @@ Defaults for every goal live under `goal` in `~/.pizzapi/config.json`, or in the
 }
 ```
 
-When `evaluatorModel` is unset, the cheapest authenticated text model is used — the evaluator prompt shares nothing with your session context, so there's no cache benefit to reusing the session's (often much pricier) model. Pin a specific judge if you want consistency. If the pinned model has no working credentials, the evaluator falls back to the cheapest authenticated one rather than silently switching itself off.
+There is deliberately **no evaluator model picker**. The evaluator runs on your session's model so it can reuse the cached conversation; choosing a different one would silently give that up.
+
+`evaluatorModel` remains as an advanced escape hatch for the rare case that needs it — pinning a judge (for example a local, fully private model) opts out of cache reuse and sends a standalone, truncated transcript instead. If a pinned model has no working credentials, the evaluator falls back to the cheapest authenticated one rather than silently switching itself off.
 
 Evaluator spend is tracked separately and shows up in the Usage dashboard alongside normal session usage.
 
@@ -122,8 +132,10 @@ See [Configuration](/customization/configuration/) for the full option reference
 
 ## Privacy
 
-<Aside type="caution" title="The LLM evaluator sees your session">
-Each LLM evaluation sends a transcript — user messages, assistant replies, and tool output, up to 60,000 characters — to the evaluator model. Common credential-shaped environment variables (`ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY`, and similar) are redacted on a best-effort basis, but that is a safety net, not a guarantee.
+By default the LLM evaluator sends your conversation to the **same provider and model the session is already using**, so evaluation introduces no new data exposure.
+
+<Aside type="caution" title="Pinning a model changes that">
+Setting `evaluatorModel` to a different provider sends a transcript — user messages, assistant replies, and tool output, up to 60,000 characters — to that provider instead. Common credential-shaped environment variables (`ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY`, and similar) are redacted on a best-effort basis, but that is a safety net, not a guarantee. The same applies to the fallback path after a cache miss.
 
 If a session handles secrets you don't want leaving your machine, use `--evaluator keyword` (fully local) or point `evaluatorModel` at a local provider.
 </Aside>

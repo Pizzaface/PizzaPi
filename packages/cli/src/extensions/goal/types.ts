@@ -93,6 +93,13 @@ export interface GoalEvaluatorFeedback {
     /** Cost of the evaluator call in USD. */
     cost?: number;
 
+    /**
+     * Tokens the provider served from its prompt cache. Only set by the
+     * session-cache evaluator, where a zero means the shared-prefix
+     * assumption failed and the path should be abandoned.
+     */
+    cacheReadTokens?: number;
+
     /** Model used for the evaluation, if an LLM evaluator ran. */
     model?: { provider: string; id: string };
 
