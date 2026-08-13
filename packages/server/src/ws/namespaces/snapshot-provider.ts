@@ -11,6 +11,7 @@
 
 import { getCachedRelayEventsAfterSeq, getLatestCachedSnapshotEvent, type LatestCachedSnapshot } from "../../sessions/redis.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
+import { applySnapshotOverlayToState } from "../sio-registry/snapshot-state.js";
 import type { CachedRelayEvent } from "./viewer-cache.js";
 import { sendCachedDeltaReplayEvents } from "./viewer-cache.js";
 
@@ -64,16 +65,7 @@ function maybeTruncateSnapshotState(state: unknown): unknown {
     return truncateSnapshotMessages(state as Record<string, unknown>);
 }
 
-/** Pull the fresh pending follow-up queue out of the durable lastState blob. */
-function extractLastStateQueue(lastState: string | null | undefined): string[] | null {
-    if (!lastState) return null;
-    try {
-        const parsed = JSON.parse(lastState);
-        const queue = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>).queuedMessages : null;
-        if (Array.isArray(queue)) return queue.filter((m): m is string => typeof m === "string");
-    } catch { /* stale/corrupt lastState — leave the cached queue as-is */ }
-    return null;
-}
+
 
 // ── Dependency injection for testability ─────────────────────────────────────
 
@@ -126,26 +118,26 @@ export async function tryDeltaReplay(
 export async function tryCacheSnapshot(
     sessionId: string,
     deps: SnapshotProviderDeps = defaultDeps,
-    lastState?: string | null,
+    snapshotOverlay?: string | null,
 ): Promise<SnapshotResult | null> {
     const cached = await deps.getLatestCachedSnapshotEvent(sessionId);
     if (!cached) return null;
     const snapshotEvent = cached.event;
-    // The cached session_active predates later queue changes (session_metadata_update
-    // carries them but is intentionally not cached). lastState always holds the freshest
-    // reported queue, so overlay it — otherwise a stale empty queue clobbers the viewer's
-    // restored follow-ups on switch.
-    const freshQueue = extractLastStateQueue(lastState);
 
     return {
         snapshot: { type: "cache-snapshot", source: "Redis cached snapshot event" },
         send(socket, generation) {
             let eventToSend: Record<string, unknown> = snapshotEvent;
             if (snapshotEvent.type === "session_active") {
-                let state = maybeTruncateSnapshotState(snapshotEvent.state);
-                if (freshQueue && state && typeof state === "object" && !Array.isArray(state)) {
-                    state = { ...(state as Record<string, unknown>), queuedMessages: freshQueue };
-                }
+                // The cached session_active predates later metadata changes
+                // (session_metadata_update carries them but is intentionally not
+                // cached). The snapshotOverlay accumulates those patches — queue,
+                // model, todo list — so apply it or a stale snapshot clobbers the
+                // viewer's restored follow-ups on switch.
+                const state = applySnapshotOverlayToState(
+                    maybeTruncateSnapshotState(snapshotEvent.state),
+                    snapshotOverlay,
+                );
                 eventToSend = { ...snapshotEvent, state };
             } else if (Array.isArray(snapshotEvent.messages)) {
                 eventToSend = maybeTruncateSnapshotState(snapshotEvent) as Record<string, unknown>;
@@ -167,6 +159,7 @@ export async function tryCacheSnapshot(
  */
 export function tryMemoryState(
     lastState: string | null | undefined,
+    snapshotOverlay?: string | null,
 ): SnapshotResult | null {
     if (!lastState) return null;
 
@@ -177,13 +170,15 @@ export function tryMemoryState(
         return null;
     }
 
+    const state = applySnapshotOverlayToState(maybeTruncateSnapshotState(parsed), snapshotOverlay);
+
     return {
         snapshot: { type: "memory", source: "In-memory lastState from Redis session hash" },
         send(socket, generation) {
             // Add _metaViaHub hint so the client knows metadata came from hub,
             // matching the original behavior in viewer.ts
             socket.emit("event", {
-                event: { type: "session_active", state: maybeTruncateSnapshotState(parsed), _metaViaHub: true },
+                event: { type: "session_active", state, _metaViaHub: true },
                 generation,
             });
         },
@@ -198,15 +193,18 @@ export async function tryPersistedSnapshot(
     sessionId: string,
     userId: string,
     deps: SnapshotProviderDeps = defaultDeps,
+    snapshotOverlay?: string | null,
 ): Promise<SnapshotResult | null> {
     const snapshot = await deps.getPersistedRelaySessionSnapshot(sessionId, userId);
     if (!snapshot || snapshot.state === null || snapshot.state === undefined) return null;
+
+    const state = applySnapshotOverlayToState(maybeTruncateSnapshotState(snapshot.state), snapshotOverlay);
 
     return {
         snapshot: { type: "persisted", source: "SQLite persisted relay session state" },
         send(socket, generation) {
             socket.emit("event", {
-                event: { type: "session_active", state: maybeTruncateSnapshotState(snapshot.state) },
+                event: { type: "session_active", state },
                 generation,
             });
         },
@@ -222,6 +220,8 @@ export interface GetBestSnapshotOpts {
     userId?: string;
     /** JSON-stringified lastState from Redis session hash */
     lastState?: string | null;
+    /** JSON-stringified metadata overlay (patches since the last full snapshot) */
+    snapshotOverlay?: string | null;
     /** Whether a chunked delivery is in-flight (skip memory state if true) */
     chunkedPending?: boolean;
 }
@@ -245,7 +245,7 @@ export async function getBestSnapshot(
     opts: GetBestSnapshotOpts = {},
     deps: SnapshotProviderDeps = defaultDeps,
 ): Promise<SnapshotResult | null> {
-    const { lastSeq, userId, lastState, chunkedPending } = opts;
+    const { lastSeq, userId, lastState, snapshotOverlay, chunkedPending } = opts;
 
     // ── Priority 1: Delta replay (only when lastSeq is provided) ─────────
     if (lastSeq !== undefined) {
@@ -262,7 +262,7 @@ export async function getBestSnapshot(
 
     // ── Priority 2: Cache snapshot ───────────────────────────────────────
     try {
-        const cached = await tryCacheSnapshot(sessionId, deps, lastState);
+        const cached = await tryCacheSnapshot(sessionId, deps, snapshotOverlay);
         if (cached) return cached;
     } catch {
         // Fall through
@@ -271,7 +271,7 @@ export async function getBestSnapshot(
     // ── Priority 3: Memory state (skip during chunked delivery) ──────────
     if (!chunkedPending) {
         try {
-            const memory = tryMemoryState(lastState);
+            const memory = tryMemoryState(lastState, snapshotOverlay);
             if (memory) return memory;
         } catch {
             // Fall through
@@ -281,7 +281,7 @@ export async function getBestSnapshot(
     // ── Priority 4: Persisted snapshot (SQLite) ──────────────────────────
     if (userId) {
         try {
-            const persisted = await tryPersistedSnapshot(sessionId, userId, deps);
+            const persisted = await tryPersistedSnapshot(sessionId, userId, deps, snapshotOverlay);
             if (persisted) return persisted;
         } catch {
             // Fall through

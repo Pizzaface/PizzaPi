@@ -3,7 +3,7 @@
 
 import type { Server as SocketIOServer } from "socket.io";
 import {
-    getSharedSession,
+    getSharedSessionSummary,
     emitToRelaySession,
     emitToRelaySessionAwaitingAck,
     emitToRunner,
@@ -16,7 +16,7 @@ import {
     getChildSessions,
     getPendingParentDelinkChildren,
     removePendingParentDelinkChild,
-    getSession,
+    getSessionSummary,
     markChildAsDelinked,
     isChildDelinked,
     isChildOfParent,
@@ -39,11 +39,13 @@ export async function countLinkedChildrenForParent(
     parentSessionId: string,
     deps: {
         getChildSessions?: typeof getChildSessions;
-        getSession?: typeof getSession;
+        // Summary-shaped read — only parentSessionId/linkedParentId are needed,
+        // so never pull the multi-MB lastState blob per child.
+        getSession?: (sessionId: string) => Promise<{ parentSessionId: string | null; linkedParentId?: string | null } | null>;
     } = {},
 ): Promise<number> {
     const _getChildSessions = deps.getChildSessions ?? getChildSessions;
-    const _getSession = deps.getSession ?? getSession;
+    const _getSession = deps.getSession ?? getSessionSummary;
 
     const childIds = await _getChildSessions(parentSessionId);
     if (childIds.length === 0) return 0;
@@ -98,7 +100,7 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
         }
 
         // Validate the sender is the parent of the target child session
-        const childSession = await getSharedSession(childSessionId);
+        const childSession = await getSharedSessionSummary(childSessionId);
         if (!childSession) {
             // Child already gone — nothing to clean up (idempotent)
             if (typeof ack === "function") ack({ ok: true });
@@ -116,7 +118,7 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
         }
 
         // Validate same user ownership
-        const parentSession = await getSharedSession(sessionId);
+        const parentSession = await getSharedSessionSummary(sessionId);
         if (!parentSession?.userId || parentSession.userId !== childSession.userId) {
             socket.emit("error", { message: "Target session belongs to a different user" });
             if (typeof ack === "function") ack({ ok: false, error: "Target session belongs to a different user" });
@@ -218,7 +220,7 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
             if (epoch && childIds.length > 0) {
                 // Fetch all session hashes concurrently, then check delink markers
                 // only for the subset that started after the epoch.
-                const sessions = await Promise.all(childIds.map((childId) => getSession(childId)));
+                const sessions = await Promise.all(childIds.map((childId) => getSessionSummary(childId)));
                 const markerCandidates = childIds.filter((_, i) => {
                     const childSession = sessions[i];
                     if (!childSession?.startedAt) return false;
@@ -336,7 +338,7 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
             return;
         }
 
-        const session = await getSharedSession(sessionId);
+        const session = await getSharedSessionSummary(sessionId);
         const parentId = session?.parentSessionId;
         if (!parentId) {
             // parentSessionId is already cleared in Redis (e.g. the child

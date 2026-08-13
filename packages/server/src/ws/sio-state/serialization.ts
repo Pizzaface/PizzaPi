@@ -28,6 +28,7 @@ export function toHashFields(data: Record<string, unknown>): Record<string, stri
 
 export const SESSION_SUMMARY_FIELDS = [
     "sessionId",
+    "collabMode",
     "shareUrl",
     "cwd",
     "startedAt",
@@ -42,12 +43,14 @@ export const SESSION_SUMMARY_FIELDS = [
     "runnerId",
     "runnerName",
     "parentSessionId",
+    "linkedParentId",
 ] as const;
 
 export function parseSessionSummaryFromHash(hash: Record<string, string>): RedisSessionSummaryData | null {
     if (!hash.sessionId) return null;
     return {
         sessionId: hash.sessionId,
+        collabMode: hash.collabMode === "1",
         shareUrl: hash.shareUrl ?? "",
         cwd: hash.cwd ?? "",
         startedAt: hash.startedAt ?? "",
@@ -62,6 +65,7 @@ export function parseSessionSummaryFromHash(hash: Record<string, string>): Redis
         runnerId: hash.runnerId || null,
         runnerName: hash.runnerName || null,
         parentSessionId: hash.parentSessionId || null,
+        linkedParentId: hash.linkedParentId || null,
     };
 }
 
@@ -109,6 +113,7 @@ export function parseSessionFromHash(hash: Record<string, string>): RedisSession
         parentSessionId: hash.parentSessionId || null,
         linkedParentId: hash.linkedParentId || null,
         metaState: hash.metaState || null,
+        snapshotOverlay: hash.snapshotOverlay || null,
     };
 }
 

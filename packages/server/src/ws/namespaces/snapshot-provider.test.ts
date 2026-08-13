@@ -251,20 +251,44 @@ describe("tryCacheSnapshot", () => {
         expect(result).toBeNull();
     });
 
-    test("overlays fresh queuedMessages from lastState onto a stale cached snapshot", async () => {
+    test("applies the snapshot overlay onto a stale cached snapshot", async () => {
         const snapshotEvent = { type: "session_active", state: { messages: [], queuedMessages: [] } };
         const deps = createDeps({
             getLatestCachedSnapshotEvent: mock(async () => ({ event: snapshotEvent, eventsAfter: [] })),
         });
 
-        const lastState = JSON.stringify({ messages: [], queuedMessages: ["follow up 1", "follow up 2"] });
-        const result = await tryCacheSnapshot("sess-14", deps, lastState);
+        const overlay = JSON.stringify({ queuedMessages: ["follow up 1", "follow up 2"], thinkingLevel: "high" });
+        const result = await tryCacheSnapshot("sess-14", deps, overlay);
         const socket = createMockSocket();
         result!.send(socket, 1);
 
-        expect((socket.calls[0].payload as any).event.state.queuedMessages).toEqual(["follow up 1", "follow up 2"]);
+        const sentState = (socket.calls[0].payload as any).event.state;
+        expect(sentState.queuedMessages).toEqual(["follow up 1", "follow up 2"]);
+        expect(sentState.thinkingLevel).toBe("high");
         // Original cached event is left untouched.
         expect(snapshotEvent.state.queuedMessages).toEqual([]);
+    });
+
+    test("overlay model is merged field-wise with the snapshot's model", async () => {
+        const snapshotEvent = {
+            type: "session_active",
+            state: { messages: [], model: { provider: "p", id: "m", contextWindow: 200000 } },
+        };
+        const deps = createDeps({
+            getLatestCachedSnapshotEvent: mock(async () => ({ event: snapshotEvent, eventsAfter: [] })),
+        });
+
+        const overlay = JSON.stringify({ model: { provider: "p", id: "m", thinking: true } });
+        const result = await tryCacheSnapshot("sess-15", deps, overlay);
+        const socket = createMockSocket();
+        result!.send(socket, 1);
+
+        expect((socket.calls[0].payload as any).event.state.model).toEqual({
+            provider: "p",
+            id: "m",
+            contextWindow: 200000,
+            thinking: true,
+        });
     });
 });
 
@@ -277,6 +301,15 @@ describe("tryMemoryState", () => {
 
         expect(result).not.toBeNull();
         expect(result!.snapshot.type).toBe("memory");
+    });
+
+    test("applies the snapshot overlay onto lastState", () => {
+        const state = { messages: [{ role: "user" }], queuedMessages: [] };
+        const result = tryMemoryState(JSON.stringify(state), JSON.stringify({ queuedMessages: ["q1"] }));
+
+        const socket = createMockSocket();
+        result!.send(socket, 1);
+        expect((socket.calls[0].payload as any).event.state.queuedMessages).toEqual(["q1"]);
     });
 
     test("send() emits session_active with _metaViaHub hint", () => {

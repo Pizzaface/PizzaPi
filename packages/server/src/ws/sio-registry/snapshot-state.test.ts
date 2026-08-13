@@ -3,8 +3,75 @@ import {
     buildSnapshotPatchFromCapabilities,
     buildSnapshotPatchFromMetadata,
     mergeSnapshotStatePatch,
+    mergeSnapshotOverlay,
+    applySnapshotOverlayToState,
     shouldPersistSnapshotPatch,
 } from "./snapshot-state.js";
+
+describe("mergeSnapshotOverlay", () => {
+    test("starts a fresh overlay when none exists", () => {
+        expect(mergeSnapshotOverlay(null, { thinkingLevel: "high" })).toEqual({ thinkingLevel: "high" });
+    });
+
+    test("accumulates patches, later values winning", () => {
+        const first = mergeSnapshotOverlay(null, { todoList: [1], thinkingLevel: "low" });
+        const second = mergeSnapshotOverlay(JSON.stringify(first), { thinkingLevel: "high" });
+        expect(second).toEqual({ todoList: [1], thinkingLevel: "high" });
+    });
+
+    test("merges same-model patches field-wise", () => {
+        const first = mergeSnapshotOverlay(null, { model: { provider: "p", id: "m", contextWindow: 1000 } });
+        const second = mergeSnapshotOverlay(JSON.stringify(first), { model: { provider: "p", id: "m", thinking: true } });
+        expect(second.model).toEqual({ provider: "p", id: "m", contextWindow: 1000, thinking: true });
+    });
+
+    test("replaces the model when provider/id change", () => {
+        const first = mergeSnapshotOverlay(null, { model: { provider: "p", id: "m", contextWindow: 1000 } });
+        const second = mergeSnapshotOverlay(JSON.stringify(first), { model: { provider: "p2", id: "m2" } });
+        expect(second.model).toEqual({ provider: "p2", id: "m2" });
+    });
+
+    test("recovers from a corrupt existing overlay", () => {
+        expect(mergeSnapshotOverlay("{not json", { goal: null })).toEqual({ goal: null });
+    });
+});
+
+describe("applySnapshotOverlayToState", () => {
+    test("returns state unchanged for empty/missing/corrupt overlay", () => {
+        const state = { messages: [1] };
+        expect(applySnapshotOverlayToState(state, null)).toBe(state);
+        expect(applySnapshotOverlayToState(state, "")).toBe(state);
+        expect(applySnapshotOverlayToState(state, "{}")).toBe(state);
+        expect(applySnapshotOverlayToState(state, "{broken")).toBe(state);
+    });
+
+    test("overlays metadata without touching messages", () => {
+        const state = { messages: [1, 2], queuedMessages: [], thinkingLevel: "low" };
+        const result = applySnapshotOverlayToState(
+            state,
+            JSON.stringify({ queuedMessages: ["q"], thinkingLevel: "high" }),
+        ) as Record<string, unknown>;
+        expect(result.messages).toEqual([1, 2]);
+        expect(result.queuedMessages).toEqual(["q"]);
+        expect(result.thinkingLevel).toBe("high");
+        // Original untouched
+        expect(state.queuedMessages).toEqual([]);
+    });
+
+    test("merges same-model overlay field-wise with the state's model", () => {
+        const state = { model: { provider: "p", id: "m", contextWindow: 5 } };
+        const result = applySnapshotOverlayToState(
+            state,
+            JSON.stringify({ model: { provider: "p", id: "m", thinking: true } }),
+        ) as Record<string, unknown>;
+        expect(result.model).toEqual({ provider: "p", id: "m", contextWindow: 5, thinking: true });
+    });
+
+    test("passes non-object state through untouched", () => {
+        expect(applySnapshotOverlayToState(null, "{\"a\":1}")).toBeNull();
+        expect(applySnapshotOverlayToState([1], "{\"a\":1}")).toEqual([1]);
+    });
+});
 
 describe("buildSnapshotPatchFromMetadata", () => {
     test("captures reconnect-relevant session metadata including models and commands", () => {

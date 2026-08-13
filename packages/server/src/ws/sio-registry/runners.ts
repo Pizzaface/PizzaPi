@@ -18,7 +18,7 @@ import {
     deleteRunner as deleteRunnerState,
     getAllRunners,
     refreshRunnerTTL,
-    getSession,
+    getSessionSummary,
     updateSessionFields,
     getAllSessionSummaries,
     setPendingRunnerLink,
@@ -328,7 +328,7 @@ export async function getRunnerServices(
 /** Record that a runner spawned a session. */
 export async function recordRunnerSession(runnerId: string, sessionId: string): Promise<void> {
     // Runner-session associations tracked via session.runnerId in Redis
-    const session = await getSession(sessionId);
+    const session = await getSessionSummary(sessionId);
     if (session) {
         await updateSessionFields(sessionId, { runnerId });
     }
@@ -341,7 +341,7 @@ export async function linkSessionToRunner(runnerId: string, sessionId: string): 
     const runner = await getRunnerState(runnerId);
     if (!runner) return;
 
-    const session = await getSession(sessionId);
+    const session = await getSessionSummary(sessionId);
     if (!session) {
         // TUI worker hasn't connected yet — store link for later
         await setPendingRunnerLink(sessionId, runnerId);
@@ -383,7 +383,7 @@ export async function linkSessionToRunner(runnerId: string, sessionId: string): 
 
 /** Remove a runner session association. */
 export async function removeRunnerSession(runnerId: string, sessionId: string): Promise<void> {
-    const session = await getSession(sessionId);
+    const session = await getSessionSummary(sessionId);
     if (session && session.runnerId === runnerId) {
         await updateSessionFields(sessionId, { runnerId: null, runnerName: null });
         await deleteRunnerAssociation(sessionId);

@@ -190,6 +190,13 @@ export interface RedisSessionData {
      *  Absent for sessions created before this feature; callers must use
      *  defaultMetaState() as fallback. */
     metaState?: string | null;
+    /**
+     * JSON-stringified metadata patch accumulated since the last full
+     * session_active snapshot. Written by patchSessionSnapshotState, cleared
+     * by updateSessionState. Applied on top of lastState / cached snapshots
+     * at read time so metadata events never rewrite the multi-MB state blob.
+     */
+    snapshotOverlay?: string | null;
 }
 
 /**
@@ -199,6 +206,7 @@ export interface RedisSessionData {
  */
 export interface RedisSessionSummaryData {
     sessionId: string;
+    collabMode: boolean;
     shareUrl: string;
     cwd: string;
     startedAt: string;
@@ -214,6 +222,8 @@ export interface RedisSessionSummaryData {
     runnerId: string | null;
     runnerName: string | null;
     parentSessionId: string | null;
+    /** See RedisSessionData.linkedParentId. */
+    linkedParentId?: string | null;
 }
 
 export interface RedisRunnerData {
@@ -280,6 +290,7 @@ function toHashFields(data: Record<string, unknown>): Record<string, string> {
 
 const SESSION_SUMMARY_FIELDS = [
     "sessionId",
+    "collabMode",
     "shareUrl",
     "cwd",
     "startedAt",
@@ -294,12 +305,14 @@ const SESSION_SUMMARY_FIELDS = [
     "runnerId",
     "runnerName",
     "parentSessionId",
+    "linkedParentId",
 ] as const;
 
 function parseSessionSummaryFromHash(hash: Record<string, string>): RedisSessionSummaryData | null {
     if (!hash.sessionId) return null;
     return {
         sessionId: hash.sessionId,
+        collabMode: hash.collabMode === "1",
         shareUrl: hash.shareUrl ?? "",
         cwd: hash.cwd ?? "",
         startedAt: hash.startedAt ?? "",
@@ -314,6 +327,7 @@ function parseSessionSummaryFromHash(hash: Record<string, string>): RedisSession
         runnerId: hash.runnerId || null,
         runnerName: hash.runnerName || null,
         parentSessionId: hash.parentSessionId || null,
+        linkedParentId: hash.linkedParentId || null,
     };
 }
 
@@ -361,6 +375,7 @@ function parseSessionFromHash(hash: Record<string, string>): RedisSessionData | 
         parentSessionId: hash.parentSessionId || null,
         linkedParentId: hash.linkedParentId || null,
         metaState: hash.metaState || null,
+        snapshotOverlay: hash.snapshotOverlay || null,
     };
 }
 

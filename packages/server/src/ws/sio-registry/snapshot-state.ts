@@ -78,6 +78,64 @@ export function shouldPersistSnapshotPatch(input: {
     return now - lastWriteAt >= throttleMs;
 }
 
+/**
+ * Merge a metadata patch into the accumulated snapshot overlay (a small JSON
+ * object holding "patches since the last full snapshot"). Never touches the
+ * multi-MB lastState blob.
+ */
+export function mergeSnapshotOverlay(
+    existingRaw: string | null | undefined,
+    patch: Record<string, unknown>,
+): Record<string, unknown> {
+    let existing: Record<string, unknown> = {};
+    if (existingRaw) {
+        try {
+            const parsed = JSON.parse(existingRaw);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                existing = parsed as Record<string, unknown>;
+            }
+        } catch {
+            // Corrupt overlay — start fresh.
+        }
+    }
+
+    const merged = { ...existing, ...patch };
+    if (Object.prototype.hasOwnProperty.call(patch, "model")) {
+        merged.model = mergeModelPatch(existing.model, patch.model);
+    }
+    return merged;
+}
+
+/**
+ * Apply an accumulated snapshot overlay to a session_active-style state object
+ * at read time. Returns the original state when the overlay is empty/invalid.
+ */
+export function applySnapshotOverlayToState(
+    state: unknown,
+    overlayRaw: string | null | undefined,
+): unknown {
+    if (!overlayRaw) return state;
+    if (!state || typeof state !== "object" || Array.isArray(state)) return state;
+
+    let overlay: unknown;
+    try {
+        overlay = JSON.parse(overlayRaw);
+    } catch {
+        return state;
+    }
+    if (!overlay || typeof overlay !== "object" || Array.isArray(overlay)) return state;
+
+    const overlayObj = overlay as Record<string, unknown>;
+    if (Object.keys(overlayObj).length === 0) return state;
+
+    const stateObj = state as Record<string, unknown>;
+    const merged = { ...stateObj, ...overlayObj };
+    if (Object.prototype.hasOwnProperty.call(overlayObj, "model")) {
+        merged.model = mergeModelPatch(stateObj.model, overlayObj.model);
+    }
+    return merged;
+}
+
 export function mergeSnapshotStatePatch(
     rawLastState: string | null | undefined,
     patch: Record<string, unknown>,
