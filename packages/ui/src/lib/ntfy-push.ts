@@ -102,16 +102,27 @@ export async function requestNativePushPermission(): Promise<boolean> {
 }
 
 /**
+ * Outcome of a registration attempt. `unconfigured` is the 503 the server
+ * returns when it has no ntfy instance set up — a distinct, user-visible
+ * state, not a generic failure. `error` covers everything else (network,
+ * malformed response, plugin start failure).
+ */
+export type NtfyStartResult = { ok: true } | { ok: false; reason: "unconfigured" | "error" };
+
+/**
  * Register with the server for native push and start the foreground-service
  * subscribe stream. No-op outside the Android native app. Safe to call on
  * every launch — registration is idempotent (server reuses the topic per
  * user+platform), and starting an already-running service re-configures it.
  *
- * Requires `PIZZAPI_NTFY_URL` to be configured on the server (returns silently
- * if the server reports ntfy is not configured, so the app degrades gracefully).
+ * Requires `PIZZAPI_NTFY_URL` to be configured on the server; returns
+ * `{ ok: false, reason: "unconfigured" }` if the server reports ntfy is not
+ * configured, so callers can degrade gracefully instead of claiming success.
  */
-export async function startNtfyPush(): Promise<void> {
-    if (!androidNative() || isNativePushDisabled()) return;
+export async function startNtfyPush(): Promise<NtfyStartResult> {
+    // ponytail: "nothing to do" reports ok — callers must check platform/disabled
+    // state THEMSELVES before treating ok as "registered". Both current callers do.
+    if (!androidNative() || isNativePushDisabled()) return { ok: true };
     try {
         const res = await fetch(resolveMobileUrl("/api/push/register-native"), {
             method: "POST",
@@ -119,11 +130,12 @@ export async function startNtfyPush(): Promise<void> {
             body: JSON.stringify({ platform: "android" }),
         });
         if (!res.ok) {
-            // 503 = ntfy not configured on the server → degrade silently.
-            if (res.status !== 503) {
-                console.error("ntfy register-native failed:", res.status);
+            // 503 = ntfy not configured on the server → distinct state, not an error.
+            if (res.status === 503) {
+                return { ok: false, reason: "unconfigured" };
             }
-            return;
+            console.error("ntfy register-native failed:", res.status);
+            return { ok: false, reason: "error" };
         }
         const body = (await res.json()) as {
             ntfyPublicUrl?: string;
@@ -133,7 +145,7 @@ export async function startNtfyPush(): Promise<void> {
         };
         if (!body.ntfyPublicUrl || !body.topic) {
             console.error("ntfy register-native returned no topic/url");
-            return;
+            return { ok: false, reason: "error" };
         }
         // Phase 1: subscribe anonymously. ntfy is provisioned with anonymous
         // read-only on `pizzapi-*` (see deployment/mobile-push.mdx), and the
@@ -143,8 +155,10 @@ export async function startNtfyPush(): Promise<void> {
             topic: body.topic,
             token: undefined,
         });
+        return { ok: true };
     } catch (err) {
         console.error("startNtfyPush failed:", err);
+        return { ok: false, reason: "error" };
     }
 }
 
@@ -166,4 +180,41 @@ export async function stopNtfyPush(): Promise<void> {
         // Unregister is best-effort — don't surface.
         console.error("stopNtfyPush (unregister) failed:", err);
     }
+}
+
+// ponytail: module-level guard so re-registering (e.g. HMR, repeated hook
+// mounts) doesn't stack duplicate listeners.
+let tapListenerRegistered = false;
+
+/**
+ * Register the `notificationTapped` listener so tapping a PizzaPi Android
+ * notification navigates to the session in-app instead of opening a browser.
+ * Dispatches the existing `pp-navigate-session` CustomEvent that App.tsx
+ * already listens for. No-op outside the Android native app.
+ *
+ * Safe to call once at app start (see mobile-native.ts). The native side
+ * (NtfyPushPlugin) retains a cold-start tap event until this listener
+ * attaches, so calling this on startup — even if the intent that launched
+ * the app already carried a tap before JS was ready — still delivers it.
+ */
+export function registerNtfyTapListener(): void {
+    if (!androidNative() || tapListenerRegistered) return;
+    tapListenerRegistered = true;
+    void PizzapiNtfy.addListener("notificationTapped", handleNotificationTapped);
+}
+
+/**
+ * Handles a raw `notificationTapped` plugin event by dispatching the
+ * `pp-navigate-session` CustomEvent App.tsx listens for. Exported
+ * (unguarded by the androidNative() check) so it's directly unit-testable.
+ */
+export function handleNotificationTapped(event: Record<string, unknown>): void {
+    const sessionId = typeof event?.sessionId === "string" ? event.sessionId : undefined;
+    if (!sessionId) return;
+    window.dispatchEvent(new CustomEvent("pp-navigate-session", { detail: { sessionId } }));
+}
+
+/** Reset internal flags — exposed for tests. */
+export function _resetNtfyPushState(): void {
+    tapListenerRegistered = false;
 }

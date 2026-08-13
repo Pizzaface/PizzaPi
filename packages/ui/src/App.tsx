@@ -66,6 +66,7 @@ import { CombinedPanel, type CombinedPanelTab } from "@/components/CombinedPanel
 import { DockedPanelGroup, TAB_BAR_HEIGHT } from "@/components/DockedPanelGroup";
 import type { PanelPosition } from "@/hooks/usePanelLayout";
 import { ViewerSocketContext } from "@/lib/viewer-socket-context";
+import { getViewerVisibilityPayload } from "@/lib/viewer-visibility";
 import { HubSocketContext } from "@/lib/hub-socket-context";
 import { shouldStopViewerReconnect } from "@/lib/viewer-connection";
 import { mapUserError } from "@/lib/user-error-message";
@@ -3310,6 +3311,7 @@ export function App() {
           generation: lifecycleRefs.generation.current,
           lastSeq: lastSeqRef.current ?? undefined,
         });
+        nextSocket.emit("viewer_visibility", getViewerVisibilityPayload());
       });
 
       nextSocket.on("connected", (data) => {
@@ -3527,6 +3529,7 @@ export function App() {
     setViewerSwitchGeneration(socket, nextGeneration);
     if (socket.connected) {
       socket.emit("switch_session", { sessionId: relaySessionId, generation: nextGeneration });
+      socket.emit("viewer_visibility", getViewerVisibilityPayload());
     } else {
       socket.connect();
     }
@@ -4392,6 +4395,18 @@ export function App() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [availableServices, dynamicPanels, closeServicePanelById]);
+
+  // Tell the server whether the tab is actually being looked at, so it can
+  // suppress native push while a viewer is visible. "Visible" ignores window
+  // focus on purpose — a session on a second monitor still counts as viewed.
+  React.useEffect(() => {
+    if (!viewerSocket) return;
+    const emitVisibility = () => {
+      viewerSocket.emit("viewer_visibility", getViewerVisibilityPayload());
+    };
+    document.addEventListener("visibilitychange", emitVisibility);
+    return () => document.removeEventListener("visibilitychange", emitVisibility);
+  }, [viewerSocket]);
 
   // Auto-open Tunnel panel when a non-pinned tunnel is registered.
   React.useEffect(() => {

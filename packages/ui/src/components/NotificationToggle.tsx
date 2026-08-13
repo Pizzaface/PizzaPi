@@ -46,14 +46,29 @@ export function usePushState() {
     const [loading, setLoading] = React.useState(true);
     const [supported, setSupported] = React.useState(false);
     const [nativeDenied, setNativeDenied] = React.useState(false);
+    // True when the last registration attempt hit the server's "ntfy not
+    // configured" (503) response — a distinct, user-visible state from a
+    // generic failure or from being subscribed.
+    const [nativeUnconfigured, setNativeUnconfigured] = React.useState(false);
     const [suppressChild, setSuppressChild] = React.useState(false);
     const [suppressChildLoading, setSuppressChildLoading] = React.useState(false);
 
     // Initial load + sync when another instance changes state
     const refreshState = React.useCallback(() => {
         if (native) {
-            hasNativePushPermission().then((granted) => {
-                setSubscribed(granted && !isNativePushDisabled());
+            hasNativePushPermission().then(async (granted) => {
+                if (!granted || isNativePushDisabled()) {
+                    setSubscribed(false);
+                    setNativeUnconfigured(false);
+                    setLoading(false);
+                    return;
+                }
+                // No persistence layer for "did the last registration succeed" —
+                // registration is idempotent and cheap, so verify it live on
+                // every refresh instead of trusting a stale flag.
+                const result = await startNtfyPush();
+                setSubscribed(result.ok);
+                setNativeUnconfigured(!result.ok && result.reason === "unconfigured");
                 setLoading(false);
             });
             return;
@@ -95,13 +110,15 @@ export function usePushState() {
                     setNativePushDisabled(true);
                     await stopNtfyPush();
                     setSubscribed(false);
+                    setNativeUnconfigured(false);
                 } else {
                     const granted = await requestNativePushPermission();
                     setNativeDenied(!granted);
                     if (granted) {
                         setNativePushDisabled(false);
-                        await startNtfyPush();
-                        setSubscribed(true);
+                        const result = await startNtfyPush();
+                        setSubscribed(result.ok);
+                        setNativeUnconfigured(!result.ok && result.reason === "unconfigured");
                     }
                 }
                 window.dispatchEvent(new CustomEvent("pp-push-state-changed"));
@@ -151,11 +168,11 @@ export function usePushState() {
     // system settings, not another prompt.
     const permissionDenied = native ? nativeDenied : getNotificationPermission() === "denied";
 
-    return { subscribed, loading, supported, native, permissionDenied, toggle, suppressChild, suppressChildLoading, toggleSuppressChild };
+    return { subscribed, loading, supported, native, permissionDenied, nativeUnconfigured, toggle, suppressChild, suppressChildLoading, toggleSuppressChild };
 }
 
 export function NotificationToggle() {
-    const { subscribed, loading, supported, native, permissionDenied, toggle, suppressChild, suppressChildLoading, toggleSuppressChild } = usePushState();
+    const { subscribed, loading, supported, native, permissionDenied, nativeUnconfigured, toggle, suppressChild, suppressChildLoading, toggleSuppressChild } = usePushState();
 
     if (!supported) return null;
 
@@ -165,9 +182,11 @@ export function NotificationToggle() {
           ? native
               ? "Notifications blocked — enable in system settings"
               : "Notifications blocked by browser"
-          : subscribed
-            ? "Notifications enabled"
-            : "Enable notifications";
+          : nativeUnconfigured
+            ? "Push not configured on this server"
+            : subscribed
+              ? "Notifications enabled"
+              : "Enable notifications";
 
     // When the browser/OS has denied permission, the button is disabled — so
     // tell the user how to re-enable it rather than leaving a dead end.
@@ -282,7 +301,7 @@ export function NotificationToggle() {
  * Notification toggle rendered as a DropdownMenuItem (for mobile menus).
  */
 export function MobileNotificationMenuItem() {
-    const { subscribed, loading, supported, native, permissionDenied, toggle, suppressChild, suppressChildLoading, toggleSuppressChild } = usePushState();
+    const { subscribed, loading, supported, native, permissionDenied, nativeUnconfigured, toggle, suppressChild, suppressChildLoading, toggleSuppressChild } = usePushState();
 
     if (!supported) return null;
 
@@ -301,7 +320,11 @@ export function MobileNotificationMenuItem() {
                 ) : (
                     <BellOff className="h-4 w-4" />
                 )}
-                {subscribed ? "Disable notifications" : "Enable notifications"}
+                {subscribed
+                    ? "Disable notifications"
+                    : nativeUnconfigured
+                      ? "Push not configured on this server"
+                      : "Enable notifications"}
             </DropdownMenuItem>
             {subscribed && !native && (
                 <DropdownMenuItem

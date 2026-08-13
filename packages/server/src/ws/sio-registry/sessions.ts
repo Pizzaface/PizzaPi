@@ -1155,3 +1155,38 @@ export async function getViewerCount(sessionId: string): Promise<number> {
     const sockets = await io.of("/viewer").adapter.sockets(new Set([viewerSessionRoom(sessionId)]));
     return sockets.size;
 }
+
+/**
+ * True when at least one viewer of this session has its tab currently visible.
+ *
+ * "Visible" deliberately ignores window focus — a session on a second monitor
+ * still counts as being watched. Used to suppress NATIVE (ntfy) push: if the
+ * user can already see the prompt, don't buzz their phone.
+ *
+ * FAIL-OPEN: a socket counts as visible only when it EXPLICITLY reported
+ * `viewerVisible === true`. Unknown (older client, or the window between
+ * joining the room and the first `viewer_visibility` emit) counts as NOT
+ * visible, so we notify.
+ *
+ * The asymmetry is deliberate. Guessing "visible" costs a silently dropped
+ * phone notification — precisely the failure this whole feature exists to fix.
+ * Guessing "hidden" costs at worst one redundant buzz while you're already
+ * looking at the screen. Current clients emit on connect and on every session
+ * switch, so the unknown window is negligible in practice.
+ *
+ * Unlike getViewerCount this needs per-socket data, so it pays for
+ * fetchSockets(). Only called for the low-frequency push-worthy events,
+ * never on the hot relay path.
+ */
+export async function hasVisibleViewer(sessionId: string): Promise<boolean> {
+    const io = getIo();
+    try {
+        const sockets = await io.of("/viewer").in(viewerSessionRoom(sessionId)).fetchSockets();
+        return sockets.some((s) => (s.data as { viewerVisible?: boolean } | undefined)?.viewerVisible === true);
+    } catch (err) {
+        // Adapter hiccup — fall back to "no visible viewer" so a notification is
+        // sent. Over-notifying beats silently dropping the one that mattered.
+        log.error(`hasVisibleViewer failed for ${sessionId}:`, err);
+        return false;
+    }
+}

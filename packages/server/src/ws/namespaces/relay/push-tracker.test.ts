@@ -1,10 +1,14 @@
 import { beforeEach, describe, it, expect, mock } from "bun:test";
 
 const finishedCalls: unknown[][] = [];
+const needsInputCalls: unknown[][] = [];
+
+let viewerCount = 1;
+let visibleViewer = true;
 
 mock.module("../../../push.js", () => ({
     notifyAgentFinished: (...args: unknown[]) => finishedCalls.push(args),
-    notifyAgentNeedsInput: () => {},
+    notifyAgentNeedsInput: (...args: unknown[]) => needsInputCalls.push(args),
     notifyAgentError: () => {},
 }));
 mock.module("../../sio-state/index.js", () => ({
@@ -19,15 +23,24 @@ mock.module("../../sio-registry.js", () => ({
         parentSessionId: null,
         linkedParentId: null,
     }),
-    getViewerCount: async () => 1,
+    getViewerCount: async () => viewerCount,
+    hasVisibleViewer: async () => visibleViewer,
 }));
 
 const { checkPushNotifications, extractLastAssistantText } = await import("./push-tracker.js");
 
-beforeEach(() => finishedCalls.splice(0));
+beforeEach(() => {
+    finishedCalls.splice(0);
+    needsInputCalls.splice(0);
+    viewerCount = 1;
+    visibleViewer = true;
+});
 
 describe("checkPushNotifications", () => {
-    it("keeps native delivery enabled when connected viewers suppress Web Push", async () => {
+    it("viewer connected + tab visible suppresses both web and native", async () => {
+        viewerCount = 1;
+        visibleViewer = true;
+
         await checkPushNotifications("sess-connected", {
             type: "agent_end",
             messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }],
@@ -39,7 +52,67 @@ describe("checkPushNotifications", () => {
             "Connected session",
             false,
             "done",
-            true,
+            { web: true, native: true },
+        ]]);
+    });
+
+    it("viewer connected + tab hidden suppresses web only", async () => {
+        viewerCount = 1;
+        visibleViewer = false;
+
+        await checkPushNotifications("sess-hidden", {
+            type: "agent_end",
+            messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }],
+        });
+
+        expect(finishedCalls).toEqual([[
+            "user-connected",
+            "sess-hidden",
+            "Connected session",
+            false,
+            "done",
+            { web: true, native: false },
+        ]]);
+    });
+
+    it("no viewer at all suppresses neither", async () => {
+        viewerCount = 0;
+        visibleViewer = false;
+
+        await checkPushNotifications("sess-empty", {
+            type: "agent_end",
+            messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }],
+        });
+
+        expect(finishedCalls).toEqual([[
+            "user-connected",
+            "sess-empty",
+            "Connected session",
+            false,
+            "done",
+            { web: false, native: false },
+        ]]);
+    });
+
+    it("plan_mode start produces a needs-input push with no option buttons", async () => {
+        viewerCount = 0;
+        visibleViewer = false;
+
+        await checkPushNotifications("sess-plan", {
+            type: "tool_execution_start",
+            toolName: "plan_mode",
+            toolCallId: "tc-1",
+        });
+
+        expect(needsInputCalls).toEqual([[
+            "user-connected",
+            "sess-plan",
+            "Plan ready for review",
+            "Connected session",
+            undefined,
+            undefined,
+            false,
+            { web: false, native: false },
         ]]);
     });
 });

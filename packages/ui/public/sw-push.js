@@ -143,7 +143,10 @@ function openAppToSession(sessionId) {
                     return;
                 }
             }
-            // No window open — open a new one
-            return self.clients.openWindow("/");
+            // No window open — open one already pointed at the session, so a
+            // cold start lands on the right place instead of the session list.
+            return self.clients.openWindow(
+                sessionId ? "/#/sessions/" + encodeURIComponent(sessionId) : "/",
+            );
         });
 }

@@ -118,6 +118,28 @@ jobs:
       - name: Build Android debug app
         run: bun run build:mobile:android
 
+      # ponytail: this is an artifact-name check on the generated bundle
+      # trees, not a real iOS build — there's no macOS/Xcode runner here.
+      # `cap sync ios` is a pure Node/Bun file-copy + Package.swift codegen
+      # step (no CocoaPods/xcodebuild), so it runs fine on ubuntu-latest and
+      # reuses the mobile/app bundle the Android build above just produced.
+      # Upgrade this to a real Xcode/simulator build on a macOS runner if iOS
+      # ever ships for real.
+      - name: Sync iOS bundle (file copy only, no Xcode)
+        run: bunx cap sync ios
+
+      - name: Guard — no service-worker artifacts in bundled app trees
+        run: |
+          set -euo pipefail
+          HITS=$(find android/app/src/main/assets/public ios/App/App/public \
+            \( -iname 'sw.js' -o -iname 'registerSW.js' -o -iname 'workbox-*' -o -iname 'manifest.webmanifest' \) 2>/dev/null || true)
+          if [ -n "$HITS" ]; then
+            echo "::error::Service-worker/PWA artifacts found in a mobile bundle tree. VITE_MOBILE builds must disable the PWA plugin (see packages/ui/vite.config.ts enablePWA) — a stale service worker in the native shell causes a black screen after rebuilds."
+            echo "$HITS"
+            exit 1
+          fi
+          echo "✅ No sw.js/registerSW.js/workbox-*/manifest.webmanifest in the Android or iOS bundled app trees"
+
   # ───────────────────────────────────────────────────────────────
   # Build + smoke-test compiled binaries per platform
   # ───────────────────────────────────────────────────────────────

@@ -401,26 +401,61 @@ async function sendNtfyToUser(userId: string, payload: PushPayload, isChildSessi
     const base = cfg.url.replace(/\/+$/, "");
     const staleIds: string[] = [];
 
+    // ponytail: single immediate retry on transient failure (network throw or
+    // 5xx) — no backoff, no queue, no retry framework. If ntfy is down for
+    // longer than one extra round-trip, the notification is dropped and only
+    // logged. Upgrade path if that's ever not good enough: a durable outbox
+    // table drained by a background sweep, same shape as email retry queues.
+    async function publishOnce(reg: NativePushRegistrationTable): Promise<Response> {
+        // ntfy JSON publish: POST to the base URL with `topic` in the body.
+        // 10s timeout so a hung ntfy instance can't block forever.
+        return fetch(base, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ topic: reg.topic, ...fields }),
+            signal: AbortSignal.timeout(10_000),
+        });
+    }
+
     await Promise.allSettled(
         registrations.map(async (reg) => {
+            let res: Response;
             try {
-                // ntfy JSON publish: POST to the base URL with `topic` in the body.
-                // 10s timeout so a hung ntfy instance can't block forever.
-                const res = await fetch(base, {
-                    method: "POST",
-                    headers,
-                    body: JSON.stringify({ topic: reg.topic, ...fields }),
-                    signal: AbortSignal.timeout(10_000),
-                });
-                // 403/404 = topic forbidden/unknown → prune the registration.
+                res = await publishOnce(reg);
+            } catch (err) {
+                // Network-level failure (throw) — retry once.
+                try {
+                    res = await publishOnce(reg);
+                } catch (retryErr) {
+                    log.error(`ntfy publish to topic ${reg.topic.slice(0, 16)}… failed after retry:`, retryErr);
+                    return;
+                }
+            }
+
+            // 403/404 = topic forbidden/unknown → prune the registration. Not
+            // transient — a retry can't fix an invalid/forbidden topic.
+            if (res.status === 403 || res.status === 404) {
+                staleIds.push(reg.id);
+                return;
+            }
+            if (res.ok) return;
+
+            if (res.status >= 500) {
+                // Transient server error — retry once.
+                try {
+                    res = await publishOnce(reg);
+                } catch (retryErr) {
+                    log.error(`ntfy publish to topic ${reg.topic.slice(0, 16)}… failed after retry:`, retryErr);
+                    return;
+                }
                 if (res.status === 403 || res.status === 404) {
                     staleIds.push(reg.id);
-                } else if (!res.ok) {
-                    log.error(`ntfy publish to topic ${reg.topic.slice(0, 16)}… failed: ${res.status}`);
+                    return;
                 }
-            } catch (err) {
-                log.error("ntfy publish error:", err);
+                if (res.ok) return;
             }
+
+            log.error(`ntfy publish to topic ${reg.topic.slice(0, 16)}… failed: ${res.status}`);
         }),
     );
 
@@ -558,15 +593,22 @@ function isEventEnabled(enabledEvents: string, eventType: PushEventType): boolea
  *   only ever offered an opt-IN to further suppression, never a guaranteed
  *   "receive despite being a child" opt-out, so there is nothing to preserve
  *   here — it remains stored/toggleable but is now redundant.
- * @param suppressWebPush - Skip browser subscriptions while still delivering
- *   native Android push. Used when a live Socket.IO viewer already covers the
- *   browser path but other registered Android devices still need notification.
+ * @param suppressWebPush - Skip browser subscriptions. Set when ANY viewer
+ *   socket is connected to the session: a connected-but-hidden tab is already
+ *   covered by client-side browser notifications (useBrowserNotifications), so
+ *   sending Web Push too would double-notify.
+ * @param suppressNative - Skip native Android (ntfy) push. Set only when a
+ *   viewer of this session has its tab VISIBLE — the user can see the prompt,
+ *   so their phone shouldn't buzz. Deliberately a separate flag from
+ *   suppressWebPush: a hidden tab still suppresses Web Push (covered by browser
+ *   notifications) but must NOT suppress the phone.
  */
 export async function sendPushToUser(
     userId: string,
     payload: PushPayload,
     isChildSession = false,
     suppressWebPush = false,
+    suppressNative = false,
 ): Promise<void> {
     const subscriptions = await getSubscriptionsForUser(userId);
 
@@ -574,9 +616,11 @@ export async function sendPushToUser(
     // may have only the native app registered, with zero browser subs. Kick it
     // off WITHOUT awaiting here so a slow/hung ntfy instance can't delay browser
     // delivery; it settles alongside the Web Push sends below.
-    const ntfyPromise = sendNtfyToUser(userId, payload, isChildSession).catch((err) => {
-        log.error("ntfy fan-out failed:", err);
-    });
+    const ntfyPromise = suppressNative
+        ? Promise.resolve()
+        : sendNtfyToUser(userId, payload, isChildSession).catch((err) => {
+              log.error("ntfy fan-out failed:", err);
+          });
 
     const payloadStr = JSON.stringify(payload);
     const staleIds: string[] = [];
@@ -623,6 +667,20 @@ export async function sendPushToUser(
 }
 
 /**
+ * Which delivery channels to skip for this notification.
+ *
+ * An object rather than two adjacent booleans: these wrappers already take up
+ * to 8 positional args, and `(..., isChildSession, suppressWebPush, suppressNative)`
+ * is a transposition bug waiting to happen.
+ */
+export interface PushSuppression {
+    /** Skip Web Push — set when any viewer socket is connected to the session. */
+    web?: boolean;
+    /** Skip native ntfy — set only when a viewer's tab is actually VISIBLE. */
+    native?: boolean;
+}
+
+/**
  * Convenience: notify a user that their agent finished working.
  */
 export function notifyAgentFinished(
@@ -631,7 +689,7 @@ export function notifyAgentFinished(
     sessionName?: string | null,
     isChildSession = false,
     replyText?: string,
-    suppressWebPush = false,
+    suppress: PushSuppression = {},
 ): void {
     const label = sessionName ?? sessionId.slice(0, 8);
     const reply = replyText?.trim();
@@ -643,7 +701,7 @@ export function notifyAgentFinished(
             : `Your agent in "${label}" has finished its task.`,
         sessionId,
         sessionName: label,
-    }, isChildSession, suppressWebPush).catch((err) => {
+    }, isChildSession, suppress.web, suppress.native).catch((err) => {
         log.error("notifyAgentFinished failed:", err);
     });
 }
@@ -661,7 +719,7 @@ export function notifyAgentNeedsInput(
     options?: string[],
     toolCallId?: string,
     isChildSession = false,
-    suppressWebPush = false,
+    suppress: PushSuppression = {},
 ): void {
     const label = sessionName ?? sessionId.slice(0, 8);
     const body = question
@@ -704,7 +762,7 @@ export function notifyAgentNeedsInput(
             ...(options && options.length > 0 ? { options } : {}),
             ...(toolCallId ? { toolCallId } : {}),
         },
-    }, isChildSession, suppressWebPush).catch((err) => {
+    }, isChildSession, suppress.web, suppress.native).catch((err) => {
         log.error("notifyAgentNeedsInput failed:", err);
     });
 }
@@ -718,7 +776,7 @@ export function notifyAgentError(
     errorMessage?: string,
     sessionName?: string | null,
     isChildSession = false,
-    suppressWebPush = false,
+    suppress: PushSuppression = {},
 ): void {
     const label = sessionName ?? sessionId.slice(0, 8);
     const body = errorMessage
@@ -730,7 +788,7 @@ export function notifyAgentError(
         body,
         sessionId,
         sessionName: label,
-    }, isChildSession, suppressWebPush).catch((err) => {
+    }, isChildSession, suppress.web, suppress.native).catch((err) => {
         log.error("notifyAgentError failed:", err);
     });
 }

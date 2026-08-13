@@ -546,6 +546,13 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             }
         });
 
+        // ── viewer_visibility — tab visible/hidden, drives native push suppression ──
+        // ponytail: state lives on socket.data (already replicated to other nodes
+        // by the Redis adapter for fetchSockets()), so no new Redis key is needed.
+        socket.on("viewer_visibility", (data) => {
+            socket.data.viewerVisible = data?.visible !== false;
+        });
+
         // ── resync — send fresh snapshot ─────────────────────────────────────
         socket.on("resync", async (data) => {
             const currentSessionId = getCurrentSessionId();

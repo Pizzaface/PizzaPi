@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from "bun:test";
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, spyOn } from "bun:test";
 import { createTestAuthContext, getKysely, runWithAuthContext } from "./auth.js";
 import { unsubscribePush, updateSuppressChildNotifications, getSubscriptionsForUser, isValidPushEndpoint, registerNativePush, unregisterNativePush, getNativeRegistrationsForUser, ensureNativePushRegistrationTable, sendPushToUser } from "./push.js";
 import { mkdtempSync, rmSync } from "fs";
@@ -556,6 +556,66 @@ describe("native push registration", () => {
 
         // The 403 should have pruned the registration.
         const rows = await getNativeRegistrationsForUser("user-F");
+        expect(rows).toHaveLength(0);
+    });
+
+    authIt("sendPushToUser retries once on a 5xx ntfy failure then gives up and logs", async () => {
+        await registerNativePush({ userId: "user-5xx", platform: "android" });
+        process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
+
+        let callCount = 0;
+        const origFetch = globalThis.fetch;
+        const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+        (globalThis as any).fetch = () => {
+            callCount++;
+            return Promise.resolve(new Response("server error", { status: 503 }));
+        };
+        try {
+            await sendPushToUser("user-5xx", {
+                type: "agent_finished",
+                title: "done",
+                body: "x",
+                sessionId: "s",
+            });
+        } finally {
+            (globalThis as any).fetch = origFetch;
+            delete process.env.PIZZAPI_NTFY_URL;
+        }
+
+        // Single retry: one initial attempt + one retry, then give up.
+        expect(callCount).toBe(2);
+        expect(errorSpy).toHaveBeenCalled();
+        errorSpy.mockRestore();
+        // 5xx is transient, not "stale" — the registration must survive.
+        const rows = await getNativeRegistrationsForUser("user-5xx");
+        expect(rows).toHaveLength(1);
+    });
+
+    authIt("sendPushToUser does not retry on 403 (single fetch call) and prunes", async () => {
+        await registerNativePush({ userId: "user-403-noretry", platform: "android" });
+        process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
+
+        let callCount = 0;
+        const origFetch = globalThis.fetch;
+        (globalThis as any).fetch = () => {
+            callCount++;
+            return Promise.resolve(new Response("forbidden", { status: 403 }));
+        };
+        try {
+            await sendPushToUser("user-403-noretry", {
+                type: "agent_finished",
+                title: "done",
+                body: "x",
+                sessionId: "s",
+            });
+        } finally {
+            (globalThis as any).fetch = origFetch;
+            delete process.env.PIZZAPI_NTFY_URL;
+        }
+
+        // 403 is not transient (forbidden topic) — no retry, prune immediately.
+        expect(callCount).toBe(1);
+        const rows = await getNativeRegistrationsForUser("user-403-noretry");
         expect(rows).toHaveLength(0);
     });
 });

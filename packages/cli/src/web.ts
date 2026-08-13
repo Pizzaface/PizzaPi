@@ -801,12 +801,34 @@ function generateComposeFile(opts: {
     const prodUiDependsOnLine = useLocalUiBuild ? "" : "      ui:\n        condition: service_healthy\n";
     const prodServerBuildTarget = useLocalUiBuild ? "runtime" : "runtime-no-ui";
 
+    // ── ntfy (self-hosted push, mirrors docker/compose.yml) ──
+    // PIZZAPI_NTFY_URL is the internal Docker DNS name for the bundled ntfy
+    // service and can always be set. PIZZAPI_NTFY_PUBLIC_URL / _PUBLISH_TOKEN
+    // cannot be auto-derived — read them from the environment (same convention
+    // as PIZZAPI_TRUST_PROXY above) and warn loudly when they're missing so a
+    // `pizza web` deploy doesn't silently ship a dead native-push config.
+    const ntfyPublicUrl = process.env.PIZZAPI_NTFY_PUBLIC_URL?.trim() ?? "";
+    const ntfyPublishToken = process.env.PIZZAPI_NTFY_PUBLISH_TOKEN?.trim() ?? "";
+    const ntfyPublicUrlLine = ntfyPublicUrl
+        ? `      - PIZZAPI_NTFY_PUBLIC_URL=${ntfyPublicUrl}\n`
+        : `      # - PIZZAPI_NTFY_PUBLIC_URL=\n`;
+    const ntfyPublishTokenLine = ntfyPublishToken
+        ? `      - PIZZAPI_NTFY_PUBLISH_TOKEN=${ntfyPublishToken}\n`
+        : `      # - PIZZAPI_NTFY_PUBLISH_TOKEN=\n`;
+    if (!useDevUi && (!ntfyPublicUrl || !ntfyPublishToken)) {
+        log.warn(
+            "ntfy provisioned but PIZZAPI_NTFY_PUBLIC_URL/PIZZAPI_NTFY_PUBLISH_TOKEN unset — " +
+            "Android native push will not work; see deployment/mobile-push.mdx"
+        );
+    }
+    const ntfyServiceBlock = `  ntfy:\n    image: binwiederhier/ntfy:v2.25.0\n    command: serve\n    restart: unless-stopped\n    environment:\n      - NTFY_BASE_URL=${ntfyPublicUrl || "http://localhost:2586"}\n      - NTFY_AUTH_FILE=/var/lib/ntfy/auth.db\n      - NTFY_AUTH_DEFAULT_ACCESS=deny-all\n      - NTFY_BEHIND_PROXY=true\n      - NTFY_CACHE_FILE=/var/lib/ntfy/cache.db\n    volumes:\n      - ntfy-data:/var/lib/ntfy\n    healthcheck:\n      test: ["CMD", "ntfy", "healthy"]\n      interval: 15s\n      timeout: 5s\n      retries: 5\n\n`;
+
     const devServiceBlock = `  dev:\n    build:\n      context: ${repoPath}\n      dockerfile: Dockerfile\n      target: builder\n    command: bun run dev\n    ports:\n      - "${config.port}:7492"\n      - "5173:5173"\n    environment:\n      - PORT=7492\n      - PIZZAPI_REDIS_URL=redis://redis:6379\n      - BETTER_AUTH_SECRET=${config.betterAuthSecret}\n      - AUTH_DB_PATH=/app/data/auth.db\n      - VAPID_PUBLIC_KEY=${config.vapid.publicKey}\n      - VAPID_PRIVATE_KEY=${config.vapid.privateKey}\n      - VAPID_SUBJECT=${config.vapidSubject}\n${extraOriginsLine}${trustProxyLine}${proxyDepthLine}    volumes:\n      - ${repoPath}:/app:Z\n      - /app/node_modules\n      - ${dataDir}:/app/data:Z\n    depends_on:\n      redis:\n        condition: service_healthy\n    restart: unless-stopped\n    stop_grace_period: 30s\n\n`;
 
     const appServiceBlock = useDevUi
         ? devServiceBlock
-        : `${prodUiServiceBlock}  server:\n    build:\n      context: ${repoPath}\n      dockerfile: Dockerfile\n      target: ${prodServerBuildTarget}\n      args:\n        PREBUILT_UI: "${prebuiltUi ? "true" : "false"}"\n        UI_DIST_HASH: "${uiDistHash ?? "none"}"\n    ports:\n      - "${config.port}:7492"\n    environment:\n      - PORT=7492\n      - PIZZAPI_REDIS_URL=redis://redis:6379\n      - BETTER_AUTH_SECRET=${config.betterAuthSecret}\n      - VAPID_PUBLIC_KEY=${config.vapid.publicKey}\n      - VAPID_PRIVATE_KEY=${config.vapid.privateKey}\n      - VAPID_SUBJECT=${config.vapidSubject}\n${extraOriginsLine}${trustProxyLine}${proxyDepthLine}    volumes:\n      - ${dataDir}:/app/data:Z\n${prodUiVolumeLine}    depends_on:\n      redis:\n        condition: service_started\n${prodUiDependsOnLine}    restart: unless-stopped\n    stop_grace_period: 30s\n\n`;
-    const volumesSection = useDevUi ? "" : "volumes:\n  ui-dist:\n";
+        : `${prodUiServiceBlock}${ntfyServiceBlock}  server:\n    build:\n      context: ${repoPath}\n      dockerfile: Dockerfile\n      target: ${prodServerBuildTarget}\n      args:\n        PREBUILT_UI: "${prebuiltUi ? "true" : "false"}"\n        UI_DIST_HASH: "${uiDistHash ?? "none"}"\n    ports:\n      - "${config.port}:7492"\n    environment:\n      - PORT=7492\n      - PIZZAPI_REDIS_URL=redis://redis:6379\n      - BETTER_AUTH_SECRET=${config.betterAuthSecret}\n      - VAPID_PUBLIC_KEY=${config.vapid.publicKey}\n      - VAPID_PRIVATE_KEY=${config.vapid.privateKey}\n      - VAPID_SUBJECT=${config.vapidSubject}\n${extraOriginsLine}${trustProxyLine}${proxyDepthLine}      - PIZZAPI_NTFY_URL=http://ntfy\n${ntfyPublicUrlLine}${ntfyPublishTokenLine}    volumes:\n      - ${dataDir}:/app/data:Z\n${prodUiVolumeLine}    depends_on:\n      redis:\n        condition: service_started\n${prodUiDependsOnLine}      ntfy:\n        condition: service_started\n    restart: unless-stopped\n    stop_grace_period: 30s\n\n`;
+    const volumesSection = useDevUi ? "" : "volumes:\n  ui-dist:\n  ntfy-data:\n";
 
     const compose = template
         .replace(/\{\{REDIS_PLATFORM_LINE}}/g, redisPlatformLine)

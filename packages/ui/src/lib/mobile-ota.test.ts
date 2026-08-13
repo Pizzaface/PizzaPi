@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isSecureOtaOrigin, shouldApplyOta } from "./mobile-ota";
+import { deferReloadUntilBackground, isSecureOtaOrigin, shouldApplyOta } from "./mobile-ota";
 
 const installed = "2026-07-09T10:00:00.000Z";
 const valid = {
@@ -35,6 +35,22 @@ describe("shouldApplyOta", () => {
     test("applies against an empty installed timestamp (fresh install / dev)", () => {
         expect(shouldApplyOta(valid, "")).toBe(true);
     });
+
+    test("kill-switch: rejects a bundle older than minBuildTimestamp", () => {
+        // The offered bundle is newer than what's installed, but ops set a
+        // floor above its own buildTimestamp to strand it.
+        expect(shouldApplyOta({ ...valid, minBuildTimestamp: "2027-01-01T00:00:00.000Z" }, installed)).toBe(false);
+    });
+
+    test("kill-switch: applies a bundle at or above minBuildTimestamp", () => {
+        expect(shouldApplyOta({ ...valid, minBuildTimestamp: valid.buildTimestamp }, installed)).toBe(true);
+        expect(shouldApplyOta({ ...valid, minBuildTimestamp: "2020-01-01T00:00:00.000Z" }, installed)).toBe(true);
+    });
+
+    test("absent minBuildTimestamp still applies (backward compatible)", () => {
+        expect("minBuildTimestamp" in valid).toBe(false);
+        expect(shouldApplyOta(valid, installed)).toBe(true);
+    });
 });
 
 describe("isSecureOtaOrigin", () => {
@@ -53,5 +69,45 @@ describe("isSecureOtaOrigin", () => {
         // Guard against sneaky prefixes that merely contain "https".
         expect(isSecureOtaOrigin("httpshh://x")).toBe(false);
         expect(isSecureOtaOrigin("http://x?https://y")).toBe(false);
+    });
+});
+
+describe("deferReloadUntilBackground", () => {
+    test("does not reload immediately after registering", async () => {
+        let reloadCalls = 0;
+        const appPlugin = {
+            addListener: async () => ({ remove: async () => {} }),
+        };
+        const updater = { reload: async () => { reloadCalls++; } };
+
+        deferReloadUntilBackground(appPlugin, updater);
+        // Let the (fake) addListener promise settle.
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(reloadCalls).toBe(0);
+    });
+
+    test("reloads only once the app backgrounds, not while foregrounded", async () => {
+        let listener: ((state: { isActive: boolean }) => void) | undefined;
+        let reloadCalls = 0;
+        const appPlugin = {
+            addListener: async (_event: "appStateChange", cb: (state: { isActive: boolean }) => void) => {
+                listener = cb;
+                return { remove: async () => {} };
+            },
+        };
+        const updater = { reload: async () => { reloadCalls++; } };
+
+        deferReloadUntilBackground(appPlugin, updater);
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(listener).toBeDefined();
+
+        listener!({ isActive: true }); // still foregrounded — must not reload
+        expect(reloadCalls).toBe(0);
+
+        listener!({ isActive: false }); // backgrounded — now it's safe to reload
+        expect(reloadCalls).toBe(1);
     });
 });

@@ -104,6 +104,16 @@ export interface ViewerClientToServerEvents {
   /** Viewer greeting — triggers TUI capabilities push */
   connected: (data: Record<string, never>) => void;
 
+  /**
+   * Report whether this viewer tab is currently visible (document.visibilityState).
+   * Drives native (ntfy) push suppression: a visible viewer on a session means
+   * the user can already see the prompt, so don't buzz their phone.
+   * Window focus is deliberately NOT considered — a second monitor still counts
+   * as viewing. Web Push suppression is unaffected (any connected viewer
+   * suppresses it, because client-side browser notifications cover hidden tabs).
+   */
+  viewer_visibility: (data: { visible: boolean }) => void;
+
   /** Logically switch the existing viewer socket to a different session. */
   switch_session: (data: {
     sessionId: string;
@@ -187,4 +197,11 @@ export interface ViewerSocketData extends SocketClientMetadata {
   userName?: string;
   /** Latest requested logical session-switch generation for this viewer socket. */
   generation?: number;
+  /**
+   * Whether this viewer tab is currently visible. Undefined for clients that
+   * predate the `viewer_visibility` event. Suppression is fail-open: only an
+   * explicit `true` suppresses native push, so a missing/late signal costs a
+   * redundant buzz rather than a silently dropped notification.
+   */
+  viewerVisible?: boolean;
 }

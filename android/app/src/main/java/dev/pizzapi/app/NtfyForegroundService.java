@@ -1,5 +1,6 @@
 package dev.pizzapi.app;
 
+import android.app.AlarmManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -54,14 +55,17 @@ import java.util.regex.Pattern;
  *       4xx stop retrying and surface an error notification.</li>
  * </ul>
  *
- * <p>Known limitations (see deployment/mobile-push.mdx): no Doze wakelock, no
- * BOOT_COMPLETED restart, and the dataSync FGS 6h/24h cap on Android 15+ stops
- * the service on {@link #onTimeout(int)} (upgrade path noted there).
+ * <p>Known limitations (see deployment/mobile-push.mdx): no Doze wakelock. A
+ * {@link NtfyRestartReceiver} restarts the service from persisted config after
+ * a reboot (BOOT_COMPLETED) and reschedules a restart via AlarmManager when
+ * the dataSync FGS 6h/24h cap fires {@link #onTimeout(int)}.
  */
 public class NtfyForegroundService extends Service {
 
     private static final String TAG = "PizzapiNtfy";
     private static final String CHANNEL_ID = "pizzapi-ntfy";
+    /** MIN-importance channel for the unavoidable foreground-service notification. */
+    private static final String SERVICE_CHANNEL_ID = "pizzapi-ntfy-service";
     private static final int SERVICE_NOTIF_ID = 0x9_0000;
     private static final int FIRST_MESSAGE_NOTIF_ID = 0x9_0001;
     private static final int SUMMARY_NOTIF_ID = 0x8_FFFF;
@@ -79,6 +83,14 @@ public class NtfyForegroundService extends Service {
     private static final String KEY_TOKEN = "token";
     private static final String KEY_LAST_ID = "lastId";
     private static final String KEY_FIRST_START = "firstStart";
+    /** True once {@link #start} has been called and false once {@link #stop} has
+     *  been called; lets {@link NtfyRestartReceiver} tell "user turned push off"
+     *  apart from "service got killed". */
+    private static final String KEY_ENABLED = "enabled";
+    /** Delay before retrying an FGS restart (after reboot restart failure, or
+     *  after an Android 15+ FGS-timeout reschedule). Fixed interval, no backoff
+     *  -- simplest thing that eventually recovers once the OS quota resets. */
+    private static final long RESTART_DELAY_MS = 60 * 60 * 1000L; // 1h
 
     private static final int INITIAL_BACKOFF_MS = 1000;
     private static final int MAX_BACKOFF_MS = 30_000;
@@ -128,7 +140,20 @@ public class NtfyForegroundService extends Service {
 
         // Always enter foreground promptly, even on the stop path, to avoid
         // RemoteServiceException on system-initiated restarts (#6).
-        startForeground(SERVICE_NOTIF_ID, buildServiceNotification("PizzaPi — connecting…"));
+        //
+        // NEVER let this throw: startForeground() can fail with
+        // ForegroundServiceStartNotAllowedException when the platform refuses the
+        // start (e.g. Android 15+ blocking a banned FGS type from BOOT_COMPLETED,
+        // or an exhausted quota). An uncaught throw here is a FATAL crash of the
+        // whole app, which is exactly what happened when this service was still
+        // declared dataSync. Degrade to "no push until next app launch" instead.
+        try {
+            startForeground(SERVICE_NOTIF_ID, buildServiceNotification("PizzaPi — connecting…"));
+        } catch (Exception e) {
+            Log.e(TAG, "startForeground refused: " + e.getMessage() + "; giving up this attempt");
+            stopSelf();
+            return START_NOT_STICKY;
+        }
 
         if (ntfyUrl == null || topic == null || !isValidNtfyUrl(ntfyUrl)) {
             Log.e(TAG, "no valid ntfy config (url=" + ntfyUrl + "); stopping");
@@ -275,7 +300,24 @@ public class NtfyForegroundService extends Service {
         running.set(false);
         // ponytail: no auto re-auth/reconfig — user must fix the config and restart.
         reconnectHandler.post(() -> {
-            updateServiceNotification("PizzaPi — push disabled (error " + code + ")");
+            // Routine connection states are silent, but "push is dead until you fix
+            // the config" is actionable and must stay visible. Post it as a real,
+            // dismissible alert on the ALERT channel rather than reusing the
+            // MIN-importance service pill, which the user would never see.
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null) {
+                Intent intent = new Intent(this, MainActivity.class)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                int piFlags = PendingIntent.FLAG_UPDATE_CURRENT
+                        | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0);
+                nm.notify(SERVICE_NOTIF_ID, new NotificationCompat.Builder(this, CHANNEL_ID)
+                        .setSmallIcon(android.R.drawable.stat_notify_error)
+                        .setContentTitle("PizzaPi push disabled")
+                        .setContentText("Push stopped (error " + code + "). Open PizzaPi to reconnect.")
+                        .setAutoCancel(true)
+                        .setContentIntent(PendingIntent.getActivity(this, 0, intent, piFlags))
+                        .build());
+            }
             stopForeground(STOP_FOREGROUND_DETACH); // keep the notice visible after we stop
             stopSelf();
         });
@@ -420,10 +462,20 @@ public class NtfyForegroundService extends Service {
         nm.notify(id, n);
     }
 
-    /** Build the tap intent: open a valid http/https click URL, else bring the app forward. */
+    /**
+     * Build the tap intent. Our own session click links (…/#/sessions/<id>)
+     * ALWAYS open the app directly via an explicit intent to MainActivity —
+     * never ACTION_VIEW, which would resolve to a browser instead of us. Only
+     * non-session click URLs (or none) fall back to the previous behavior.
+     */
     private PendingIntent buildTapIntent(String clickUrl, int notifId) {
+        String sessionId = sessionIdFromClickUrl(clickUrl);
         Intent intent = null;
-        if (clickUrl != null && !clickUrl.isEmpty()) {
+        if (sessionId != null) {
+            intent = new Intent(this, MainActivity.class)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    .putExtra(NtfyPushPlugin.EXTRA_SESSION_ID, sessionId);
+        } else if (clickUrl != null && !clickUrl.isEmpty()) {
             Uri uri = Uri.parse(clickUrl);
             String scheme = uri.getScheme();
             if (scheme != null) {
@@ -447,11 +499,18 @@ public class NtfyForegroundService extends Service {
         return PendingIntent.getActivity(this, notifId, intent, flags);
     }
 
+    /**
+     * No-op: the foreground-service notification is intentionally static.
+     *
+     * Android will not let a foreground service run without an ongoing
+     * notification, but nothing requires it to narrate itself. Rewriting it with
+     * "connecting…"/"connected"/"reconnecting…" re-posted the notification on
+     * every stream transition, which kept dragging a status pill in front of the
+     * user for information they never asked for. Connection state belongs in
+     * logcat (and the JS connectionState listener), not the shade.
+     */
     private void updateServiceNotification(String text) {
-        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (nm != null) {
-            nm.notify(SERVICE_NOTIF_ID, buildServiceNotification(text));
-        }
+        Log.i(TAG, "connection state: " + text);
     }
 
     private Notification buildServiceNotification(String text) {
@@ -462,12 +521,22 @@ public class NtfyForegroundService extends Service {
                 | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0);
         PendingIntent pi = PendingIntent.getActivity(this, 0, intent, flags);
 
-        return new NotificationCompat.Builder(this, CHANNEL_ID)
+        // Posted on SERVICE_CHANNEL_ID, a dedicated silent channel. Note the
+        // platform CLAMPS foreground-service channels to IMPORTANCE_LOW even when
+        // MIN is requested (verified on device: requested MIN=1, got 2), so this
+        // cannot be hidden from code alone — it is silent, badge-free and
+        // bottom-of-shade, and the user can switch the "Background connection"
+        // channel off in system settings to hide it completely.
+        // The separate channel is the point: silencing this pill can never
+        // silence a real agent alert, which shares CHANNEL_ID.
+        return new NotificationCompat.Builder(this, SERVICE_CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_sys_download)
                 .setContentTitle("PizzaPi")
-                .setContentText(text)
+                .setContentText("Background connection")
                 .setOngoing(true)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setShowWhen(false)
+                .setSilent(true)
+                .setPriority(NotificationCompat.PRIORITY_MIN)
                 .setContentIntent(pi)
                 .build();
     }
@@ -475,11 +544,23 @@ public class NtfyForegroundService extends Service {
     private void createChannel() {
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm != null && nm.getNotificationChannel(CHANNEL_ID) == null) {
+            if (nm == null) return;
+            if (nm.getNotificationChannel(CHANNEL_ID) == null) {
                 NotificationChannel ch = new NotificationChannel(
                         CHANNEL_ID, "PizzaPi notifications", NotificationManager.IMPORTANCE_DEFAULT);
                 ch.setDescription("Agent activity and alerts from your PizzaPi sessions");
                 nm.createNotificationChannel(ch);
+            }
+            // Dedicated channel for the mandatory foreground-service notification.
+            // MIN is requested but the platform clamps FGS channels to LOW; the
+            // value of the split is that the user can disable THIS channel in
+            // system settings without touching real alerts on CHANNEL_ID.
+            if (nm.getNotificationChannel(SERVICE_CHANNEL_ID) == null) {
+                NotificationChannel svc = new NotificationChannel(
+                        SERVICE_CHANNEL_ID, "Background connection", NotificationManager.IMPORTANCE_MIN);
+                svc.setDescription("Keeps push working. Android requires a notification while it runs — turn this channel off to hide it.");
+                svc.setShowBadge(false);
+                nm.createNotificationChannel(svc);
             }
         }
     }
@@ -493,7 +574,43 @@ public class NtfyForegroundService extends Service {
                 .putString(KEY_NTFY_URL, ntfyUrl)
                 .putString(KEY_TOPIC, topic)
                 .putString(KEY_TOKEN, token) // null clears the key
+                .putBoolean(KEY_ENABLED, true)
                 .apply();
+    }
+
+    /** True if we have persisted config AND the user hasn't explicitly stopped push. */
+    static boolean canAutoRestart(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        if (!prefs.getBoolean(KEY_ENABLED, false)) return false;
+        String ntfyUrl = prefs.getString(KEY_NTFY_URL, null);
+        String topic = prefs.getString(KEY_TOPIC, null);
+        return ntfyUrl != null && topic != null && isValidNtfyUrl(ntfyUrl);
+    }
+
+    /**
+     * Schedule a one-shot restart via AlarmManager, targeting
+     * {@link NtfyRestartReceiver}. Used both for the boot-restart-failed retry
+     * and the FGS-timeout reschedule (#onTimeout). Uses an exact alarm so the
+     * receiver qualifies for the Android 8+/12+ background-FGS-start exemption
+     * granted to apps handling an alarm they scheduled (SCHEDULE_EXACT_ALARM is
+     * already declared for @capacitor/local-notifications); falls back to an
+     * inexact alarm if that permission isn't granted, best-effort.
+     */
+    static void scheduleRestart(Context context) {
+        AlarmManager am = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+        if (am == null) return;
+        Intent intent = new Intent(context, NtfyRestartReceiver.class)
+                .setAction(NtfyRestartReceiver.ACTION_RESTART);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT
+                | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0);
+        PendingIntent pi = PendingIntent.getBroadcast(context, 0, intent, flags);
+        long triggerAt = System.currentTimeMillis() + RESTART_DELAY_MS;
+        try {
+            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pi);
+        } catch (SecurityException e) {
+            // Exact-alarm permission not granted; fall back to inexact (#13).
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pi);
+        }
     }
 
     private void stopStream() {
@@ -516,17 +633,25 @@ public class NtfyForegroundService extends Service {
     }
 
     /**
-     * Android 15+ enforces a ~6h/24h runtime cap on dataSync foreground services.
-     * The platform calls this and expects us to stop; not stopping crashes (#7).
+     * Safety net only. The ~6h/24h FGS runtime cap applies to dataSync and
+     * mediaProcessing; this service is remoteMessaging, which the platform does
+     * not currently time out. Kept because the platform calls onTimeout() for
+     * whatever types it decides to cap in future releases, and NOT stopping when
+     * asked is a guaranteed crash (#7).
      */
     @Override
     public void onTimeout(int startId) {
-        Log.w(TAG, "FGS dataSync timeout reached; stopping cleanly");
-        // ponytail: we just stop on the cap. Upgrade path: reschedule via
-        // WorkManager/AlarmManager (or a data-carrying push transport) to resume
-        // after the 24h window resets.
+        Log.w(TAG, "FGS timeout reached; stopping and scheduling a restart");
+        // ponytail: we can't just call startForegroundService() again right here
+        // -- if a quota did trigger this it is still exhausted and the platform
+        // throws ForegroundServiceStartNotAllowedException -- so we schedule a
+        // retry via AlarmManager and let it keep retrying (NtfyRestartReceiver
+        // reschedules itself on failure) until the window frees up. Upgrade path:
+        // a data-message push transport that only wakes us when there is
+        // something to deliver, removing the persistent stream entirely.
         running.set(false);
         stopStream();
+        scheduleRestart(this);
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
     }
@@ -557,8 +682,13 @@ public class NtfyForegroundService extends Service {
         ContextCompat.startForegroundService(context, intent);
     }
 
-    /** Convenience to stop the service. */
+    /** Convenience to stop the service. Marks push disabled so BOOT_COMPLETED /
+     *  timeout-reschedule restarts don't fight a user-initiated stop. */
     public static void stop(Context context) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_ENABLED, false)
+                .apply();
         context.stopService(new Intent(context, NtfyForegroundService.class));
     }
 }
