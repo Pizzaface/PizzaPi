@@ -8,6 +8,8 @@ import { buildPizzaPiExtensionFactories } from "./factories.js";
 import { mcpExtension } from "./mcp-extension.js";
 import { remoteExtension } from "./remote.js";
 import { restartExtension } from "./restart.js";
+import { reloadResourcesExtension } from "./reload-resources.js";
+import { pluginCommandExtension } from "./plugin-command.js";
 
 import { setSessionNameExtension } from "./set-session-name.js";
 import { currentTimeExtension } from "./current-time.js";
@@ -59,6 +61,8 @@ const CORE_EXTENSIONS_HEAD: ExtensionFactory[] = [
 const CORE_EXTENSIONS_TAIL: ExtensionFactory[] = [
     goalExtension,
     restartExtension,
+    reloadResourcesExtension,
+    pluginCommandExtension,
     sessionProcessesExtension,
     setSessionNameExtension,
     currentTimeExtension,

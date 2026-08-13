@@ -226,6 +226,7 @@ All endpoints are scoped to a specific runner and require an authenticated sessi
 | `PUT` | `/api/runners/{runnerId}/skills/{name}` | Update an existing skill (body: `{ content }`) |
 | `DELETE` | `/api/runners/{runnerId}/skills/{name}` | Delete a skill |
 | `POST` | `/api/runners/{runnerId}/skills/refresh` | Re-scan the filesystem and refresh the skill list |
+| `POST` | `/api/runners/{runnerId}/skills/reload` | Re-scan **and** reload skills inside every live session on the runner |
 
 ### Using the Web UI
 
@@ -235,7 +236,23 @@ In the PizzaPi web interface, navigate to a runner's detail page and open the **
 - **Create** a new skill with the in-browser editor
 - **Edit** an existing skill's content (including frontmatter)
 - **Delete** skills you no longer need
-- **Refresh** to re-scan the filesystem if you've added skills outside the UI
+- **Reload** to re-scan the filesystem *and* pick the skills up in the runner's live sessions
+
+## Reloading skills without restarting
+
+Skills are read when a session starts, so a skill added mid-session isn't visible until
+the session reloads its resources. Two ways to do that:
+
+- **In a session:** run `/skills reload`. This re-reads skills, prompt templates, extensions,
+  and context files in place.
+- **From the web UI:** the **Reload** button in a runner's **Skills** tab re-scans the runner's
+  skill directories and sends `/skills reload` to each of that runner's live sessions.
+
+The response reports how many sessions were reloaded:
+
+```json
+{ "ok": true, "skills": [...], "reloaded": 2, "failed": 0, "sessionIds": ["..."], "failedSessionIds": [] }
+```
 
 ### Relationship to File-Based Discovery
 

@@ -7,9 +7,11 @@
  *   discover.ts  Directory discovery and Claude Code marketplace integration
  *   hooks.ts     Hook event mapping (Claude → pi) and tool matcher logic
  *   info.ts      Lightweight PluginInfo serialization for the Web UI / API
+ *   marketplace.ts  Marketplace add/remove + plugin install/enable (write side)
  */
 export * from "./types.js";
 export * from "./parse.js";
 export * from "./discover.js";
 export * from "./hooks.js";
 export * from "./info.js";
+export * from "./marketplace.js";

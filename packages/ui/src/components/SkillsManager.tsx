@@ -425,7 +425,9 @@ export function SkillsManager({ runnerId, skills: initialSkills, onSkillsChange,
     const handleRefresh = async () => {
         setRefreshing(true);
         try {
-            const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/skills/refresh`, {
+            // /reload re-scans from disk AND tells live sessions on this runner
+            // to pick the skills up without restarting.
+            const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/skills/reload`, {
                 method: "POST",
                 credentials: "include",
             });
@@ -463,7 +465,7 @@ export function SkillsManager({ runnerId, skills: initialSkills, onSkillsChange,
                 className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
                 onClick={handleRefresh}
                 disabled={refreshing}
-                title="Re-scan skills from disk"
+                title="Re-scan skills from disk and reload them in this runner's live sessions"
             >
                 <RefreshCw className={cn("h-3 w-3 mr-1", refreshing && "animate-spin")} />
                 Reload

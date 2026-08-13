@@ -337,3 +337,59 @@ describe("runner MCP reload route", () => {
         expect(body.failedSessionIds).toEqual(["sess-1", "sess-2"]);
     });
 });
+
+describe("skills reload route", () => {
+    beforeEach(() => {
+        mockRequireSession.mockReset();
+        mockRequireSession.mockReturnValue(Promise.resolve({ userId: "user-1", userName: "TestUser" } as any));
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+        mockGetConnectedSessionsForRunner.mockReset();
+        mockGetLocalTuiSocket.mockReset();
+    });
+
+    test("POST re-scans and sends /skills reload to every live session", async () => {
+        const emitA = mock(() => {});
+        const emitB = mock(() => {});
+        mockGetConnectedSessionsForRunner.mockReturnValue(Promise.resolve([
+            { sessionId: "sess-1", cwd: "/tmp/a" },
+            { sessionId: "sess-2", cwd: "/tmp/b" },
+        ]));
+        mockGetLocalTuiSocket.mockImplementation((sessionId: string) => (
+            sessionId === "sess-1" ? { emit: emitA } as any : { emit: emitB } as any
+        ));
+
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/skills/reload");
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.reloaded).toBe(2);
+        expect(body.failed).toBe(0);
+        expect(emitA).toHaveBeenCalledWith("input", {
+            text: "/skills reload",
+            attachments: [],
+            deliverAs: "followUp",
+        });
+        expect(emitB).toHaveBeenCalled();
+    });
+
+    test("POST still succeeds when no sessions are live", async () => {
+        mockGetConnectedSessionsForRunner.mockReturnValue(Promise.resolve([]));
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/skills/reload");
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.ok).toBe(true);
+        expect(body.reloaded).toBe(0);
+    });
+
+    test("POST counts sessions whose socket is gone as failed", async () => {
+        mockGetConnectedSessionsForRunner.mockReturnValue(Promise.resolve([{ sessionId: "sess-1", cwd: "/tmp/a" }]));
+        mockGetLocalTuiSocket.mockReturnValue(undefined as any);
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/skills/reload");
+        const res = await handleRunnersRoute(req, url);
+        const body = await res!.json();
+        expect(body.failed).toBe(1);
+        expect(body.failedSessionIds).toEqual(["sess-1"]);
+    });
+});
