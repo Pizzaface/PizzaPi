@@ -140,12 +140,12 @@ describe("shouldPersistSnapshotPatch", () => {
         })).toBe(true);
     });
 
-    test("persists patches that explicitly update messages immediately", () => {
+    test("throttles message-bearing patches like any other (no bypass)", () => {
         expect(shouldPersistSnapshotPatch({
             patch: { messages: [{ role: "user", content: "hi" }] },
             lastWriteAt: 39_000,
             now: 40_000,
             throttleMs: 30_000,
-        })).toBe(true);
+        })).toBe(false);
     });
 });

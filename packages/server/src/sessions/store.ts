@@ -264,6 +264,19 @@ export async function recordRelaySessionState(
     userId: string | null,
     state: unknown,
 ): Promise<void> {
+    return recordRelaySessionStateSerialized(sessionId, userId, JSON.stringify(state ?? null));
+}
+
+/**
+ * Same as {@link recordRelaySessionState} but takes an already-serialized
+ * JSON string (e.g. the `lastState` value stored in Redis) to avoid a
+ * parse/stringify round-trip on multi-MB states.
+ */
+export async function recordRelaySessionStateSerialized(
+    sessionId: string,
+    userId: string | null,
+    serialized: string,
+): Promise<void> {
     // Ownership guard: verify the session's persisted userId before writing.
     // This prevents a user who re-registered an ended session ID (and was
     // subsequently redirected to a fresh ID by the caller-side guard) from
@@ -282,7 +295,6 @@ export async function recordRelaySessionState(
     }
 
     const nowIso = new Date().toISOString();
-    const serialized = JSON.stringify(state ?? null);
 
     await getKysely()
         .insertInto("relay_session_state")

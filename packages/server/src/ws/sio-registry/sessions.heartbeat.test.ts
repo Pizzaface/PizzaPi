@@ -57,6 +57,7 @@ mock.module("../../sessions/store.js", () => ({
     recordRelaySessionStart: noopAsync,
     recordRelaySessionEnd: noopAsync,
     recordRelaySessionState: noopAsync,
+    recordRelaySessionStateSerialized: noopAsync,
     touchRelaySession: noopAsync,
 }));
 

@@ -71,10 +71,10 @@ export function shouldPersistSnapshotPatch(input: {
     now: number;
     throttleMs: number;
 }): boolean {
-    const { patch, lastWriteAt, now, throttleMs } = input;
-    if (Object.prototype.hasOwnProperty.call(patch, "messages")) {
-        return true;
-    }
+    // Throttle applies uniformly — message-bearing patches used to bypass it,
+    // but persisting the merged multi-MB state per patch blocks the event loop
+    // (bun:sqlite is synchronous). endSharedSession() flushes the final state.
+    const { lastWriteAt, now, throttleMs } = input;
     return now - lastWriteAt >= throttleMs;
 }
 
