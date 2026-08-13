@@ -64,6 +64,8 @@ public class NtfyForegroundService extends Service {
 
     private static final String TAG = "PizzapiNtfy";
     private static final String CHANNEL_ID = "pizzapi-ntfy";
+    /** MIN-importance channel for the unavoidable foreground-service notification. */
+    private static final String SERVICE_CHANNEL_ID = "pizzapi-ntfy-service";
     private static final int SERVICE_NOTIF_ID = 0x9_0000;
     private static final int FIRST_MESSAGE_NOTIF_ID = 0x9_0001;
     private static final int SUMMARY_NOTIF_ID = 0x8_FFFF;
@@ -298,7 +300,24 @@ public class NtfyForegroundService extends Service {
         running.set(false);
         // ponytail: no auto re-auth/reconfig — user must fix the config and restart.
         reconnectHandler.post(() -> {
-            updateServiceNotification("PizzaPi — push disabled (error " + code + ")");
+            // Routine connection states are silent, but "push is dead until you fix
+            // the config" is actionable and must stay visible. Post it as a real,
+            // dismissible alert on the ALERT channel rather than reusing the
+            // MIN-importance service pill, which the user would never see.
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null) {
+                Intent intent = new Intent(this, MainActivity.class)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                int piFlags = PendingIntent.FLAG_UPDATE_CURRENT
+                        | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0);
+                nm.notify(SERVICE_NOTIF_ID, new NotificationCompat.Builder(this, CHANNEL_ID)
+                        .setSmallIcon(android.R.drawable.stat_notify_error)
+                        .setContentTitle("PizzaPi push disabled")
+                        .setContentText("Push stopped (error " + code + "). Open PizzaPi to reconnect.")
+                        .setAutoCancel(true)
+                        .setContentIntent(PendingIntent.getActivity(this, 0, intent, piFlags))
+                        .build());
+            }
             stopForeground(STOP_FOREGROUND_DETACH); // keep the notice visible after we stop
             stopSelf();
         });
@@ -480,11 +499,18 @@ public class NtfyForegroundService extends Service {
         return PendingIntent.getActivity(this, notifId, intent, flags);
     }
 
+    /**
+     * No-op: the foreground-service notification is intentionally static.
+     *
+     * Android will not let a foreground service run without an ongoing
+     * notification, but nothing requires it to narrate itself. Rewriting it with
+     * "connecting…"/"connected"/"reconnecting…" re-posted the notification on
+     * every stream transition, which kept dragging a status pill in front of the
+     * user for information they never asked for. Connection state belongs in
+     * logcat (and the JS connectionState listener), not the shade.
+     */
     private void updateServiceNotification(String text) {
-        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (nm != null) {
-            nm.notify(SERVICE_NOTIF_ID, buildServiceNotification(text));
-        }
+        Log.i(TAG, "connection state: " + text);
     }
 
     private Notification buildServiceNotification(String text) {
@@ -495,12 +521,22 @@ public class NtfyForegroundService extends Service {
                 | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0);
         PendingIntent pi = PendingIntent.getActivity(this, 0, intent, flags);
 
-        return new NotificationCompat.Builder(this, CHANNEL_ID)
+        // Posted on SERVICE_CHANNEL_ID, a dedicated silent channel. Note the
+        // platform CLAMPS foreground-service channels to IMPORTANCE_LOW even when
+        // MIN is requested (verified on device: requested MIN=1, got 2), so this
+        // cannot be hidden from code alone — it is silent, badge-free and
+        // bottom-of-shade, and the user can switch the "Background connection"
+        // channel off in system settings to hide it completely.
+        // The separate channel is the point: silencing this pill can never
+        // silence a real agent alert, which shares CHANNEL_ID.
+        return new NotificationCompat.Builder(this, SERVICE_CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_sys_download)
                 .setContentTitle("PizzaPi")
-                .setContentText(text)
+                .setContentText("Background connection")
                 .setOngoing(true)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setShowWhen(false)
+                .setSilent(true)
+                .setPriority(NotificationCompat.PRIORITY_MIN)
                 .setContentIntent(pi)
                 .build();
     }
@@ -508,11 +544,23 @@ public class NtfyForegroundService extends Service {
     private void createChannel() {
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm != null && nm.getNotificationChannel(CHANNEL_ID) == null) {
+            if (nm == null) return;
+            if (nm.getNotificationChannel(CHANNEL_ID) == null) {
                 NotificationChannel ch = new NotificationChannel(
                         CHANNEL_ID, "PizzaPi notifications", NotificationManager.IMPORTANCE_DEFAULT);
                 ch.setDescription("Agent activity and alerts from your PizzaPi sessions");
                 nm.createNotificationChannel(ch);
+            }
+            // Dedicated channel for the mandatory foreground-service notification.
+            // MIN is requested but the platform clamps FGS channels to LOW; the
+            // value of the split is that the user can disable THIS channel in
+            // system settings without touching real alerts on CHANNEL_ID.
+            if (nm.getNotificationChannel(SERVICE_CHANNEL_ID) == null) {
+                NotificationChannel svc = new NotificationChannel(
+                        SERVICE_CHANNEL_ID, "Background connection", NotificationManager.IMPORTANCE_MIN);
+                svc.setDescription("Keeps push working. Android requires a notification while it runs — turn this channel off to hide it.");
+                svc.setShowBadge(false);
+                nm.createNotificationChannel(svc);
             }
         }
     }
