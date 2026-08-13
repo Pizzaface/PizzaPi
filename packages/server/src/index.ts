@@ -30,13 +30,13 @@ import {
 // Truly fatal errors trigger a graceful shutdown with a 10 s drain window
 // rather than an immediate process.exit so in-flight requests can complete.
 
-process.on("uncaughtException", (err: Error) => {
+function handleProcessError(err: Error, origin: string): void {
     const code = (err as NodeJS.ErrnoException).code;
 
     // EPIPE — Redis/socket write to a closed pipe.  Always per-connection;
     // never indicates server-state damage.  Log and continue.
     if (code === "EPIPE") {
-        processLog.warn("Caught EPIPE (Redis connection dropped) — ignoring:", err.message);
+        processLog.warn(`Caught EPIPE (Redis connection dropped) via ${origin} — ignoring:`, err.message);
         return;
     }
 
@@ -46,7 +46,7 @@ process.on("uncaughtException", (err: Error) => {
     // scoped and do NOT corrupt shared server state, so we log at warn
     // level and continue rather than triggering a full shutdown.
     if (code === "ECONNRESET" || code === "ERR_STREAM_DESTROYED" || code === "ENOTCONN") {
-        processLog.warn(`Caught transient network error (${code}) — logging and continuing:`, err.message);
+        processLog.warn(`Caught transient network error (${code}) via ${origin} — logging and continuing:`, err.message);
         return;
     }
 
@@ -62,15 +62,25 @@ process.on("uncaughtException", (err: Error) => {
     // onShutdownSignal is a hoisted function declaration and is callable here
     // even though it is defined later in the file.  We wrap in try/catch as a
     // safety net for the narrow window during startup before httpServer exists.
-    processLog.error("Uncaught fatal exception — initiating graceful shutdown:", err);
+    processLog.error(`Uncaught fatal error (${origin}) — initiating graceful shutdown:`, err);
     try {
-        onShutdownSignal("uncaughtException", 1);
+        onShutdownSignal(origin, 1);
     } catch (shutdownErr) {
         // Server not yet fully initialized (e.g. exception during migrations).
         // Fall back to immediate exit — there is nothing to drain.
         processLog.error("Graceful shutdown unavailable (server not ready) — exiting immediately:", shutdownErr);
         process.exit(1);
     }
+}
+
+process.on("uncaughtException", (err: Error) => handleProcessError(err, "uncaughtException"));
+
+// Bun does NOT route unhandled promise rejections through uncaughtException —
+// an uncaught async EPIPE from a Redis command (e.g. getSession during a
+// disconnect) crashed the whole server. Same classification applies here.
+process.on("unhandledRejection", (reason: unknown) => {
+    const err = reason instanceof Error ? reason : new Error(String(reason));
+    handleProcessError(err, "unhandledRejection");
 });
 
 // Socket.IO imports
