@@ -3,7 +3,7 @@
 
 import type { Server as SocketIOServer } from "socket.io";
 import {
-    getSharedSession,
+    getSharedSessionSummary,
     emitToRelaySession,
     emitToRelaySessionAwaitingAck,
     emitToRunner,
@@ -100,7 +100,7 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
         }
 
         // Validate the sender is the parent of the target child session
-        const childSession = await getSharedSession(childSessionId);
+        const childSession = await getSharedSessionSummary(childSessionId);
         if (!childSession) {
             // Child already gone — nothing to clean up (idempotent)
             if (typeof ack === "function") ack({ ok: true });
@@ -118,7 +118,7 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
         }
 
         // Validate same user ownership
-        const parentSession = await getSharedSession(sessionId);
+        const parentSession = await getSharedSessionSummary(sessionId);
         if (!parentSession?.userId || parentSession.userId !== childSession.userId) {
             socket.emit("error", { message: "Target session belongs to a different user" });
             if (typeof ack === "function") ack({ ok: false, error: "Target session belongs to a different user" });
@@ -338,7 +338,7 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
             return;
         }
 
-        const session = await getSharedSession(sessionId);
+        const session = await getSharedSessionSummary(sessionId);
         const parentId = session?.parentSessionId;
         if (!parentId) {
             // parentSessionId is already cleared in Redis (e.g. the child

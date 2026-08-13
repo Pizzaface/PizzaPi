@@ -609,7 +609,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
         socket.on("input", async (data) => {
             const currentSessionId = getCurrentSessionId();
             if (!currentSessionId) return;
-            const currentSession = await getSharedSession(currentSessionId);
+            const currentSession = await getSharedSessionSummary(currentSessionId);
             if (!currentSession?.collabMode) return;
 
             const tuiSocket = getLocalTuiSocket(currentSessionId);
@@ -652,7 +652,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
         socket.on("model_set", async (data) => {
             const currentSessionId = getCurrentSessionId();
             if (!currentSessionId) return;
-            const currentSession = await getSharedSession(currentSessionId);
+            const currentSession = await getSharedSessionSummary(currentSessionId);
             if (!currentSession?.collabMode) return;
 
             // Hard-block hidden models by name (same rule as the spawn route).
@@ -680,7 +680,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
         socket.on("exec", async (data) => {
             const currentSessionId = getCurrentSessionId();
             if (!currentSessionId) return;
-            const currentSession = await getSharedSession(currentSessionId);
+            const currentSession = await getSharedSessionSummary(currentSessionId);
             if (!currentSession?.collabMode) return;
 
             const tuiSocket = getLocalTuiSocket(currentSessionId);
@@ -700,7 +700,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 if (typeof ack === "function") ack({ ok: false, error: "No active session" });
                 return;
             }
-            const currentSession = await getSharedSession(currentSessionId);
+            const currentSession = await getSharedSessionSummary(currentSessionId);
             if (!currentSession?.collabMode) {
                 if (typeof ack === "function") ack({ ok: false, error: "Session not in collab mode" });
                 return;
@@ -742,7 +742,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             if (!currentSessionId) return;
 
             // Require collab mode — same gate as input/exec/model_set
-            const currentSession = await getSharedSession(currentSessionId);
+            const currentSession = await getSharedSessionSummary(currentSessionId);
             if (!currentSession?.collabMode) return;
 
             // If targetSessionId is explicitly provided, route to that child.
@@ -846,7 +846,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 return;
             }
 
-            const currentSession = await getSharedSession(currentSessionId);
+            const currentSession = await getSharedSessionSummary(currentSessionId);
             if (!currentSession?.collabMode) return;
             const runnerId = currentSession.runnerId;
             if (!runnerId) return;

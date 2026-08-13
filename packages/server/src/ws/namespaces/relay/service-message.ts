@@ -6,7 +6,7 @@
 // instead of a browser viewer.
 
 import type { ServiceEnvelope } from "@pizzapi/protocol";
-import { getSharedSession } from "../../sio-registry/sessions.js";
+import { getSharedSessionSummary } from "../../sio-registry/sessions.js";
 import { emitToRunner } from "../../sio-registry/context.js";
 import type { RelaySocket } from "./types.js";
 import { createLogger } from "@pizzapi/tools";
@@ -85,7 +85,9 @@ export function registerServiceMessageHandler(socket: RelaySocket): void {
             return;
         }
 
-        const session = await getSharedSession(sessionId);
+        // Summary read — only collabMode/runnerId are needed; never pull the
+        // multi-MB lastState blob on this per-message hot path.
+        const session = await getSharedSessionSummary(sessionId);
         if (!session?.collabMode) return;
 
         const runnerId = session.runnerId;

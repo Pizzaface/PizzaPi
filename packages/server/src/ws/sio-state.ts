@@ -206,6 +206,7 @@ export interface RedisSessionData {
  */
 export interface RedisSessionSummaryData {
     sessionId: string;
+    collabMode: boolean;
     shareUrl: string;
     cwd: string;
     startedAt: string;
@@ -289,6 +290,7 @@ function toHashFields(data: Record<string, unknown>): Record<string, string> {
 
 const SESSION_SUMMARY_FIELDS = [
     "sessionId",
+    "collabMode",
     "shareUrl",
     "cwd",
     "startedAt",
@@ -310,6 +312,7 @@ function parseSessionSummaryFromHash(hash: Record<string, string>): RedisSession
     if (!hash.sessionId) return null;
     return {
         sessionId: hash.sessionId,
+        collabMode: hash.collabMode === "1",
         shareUrl: hash.shareUrl ?? "",
         cwd: hash.cwd ?? "",
         startedAt: hash.startedAt ?? "",

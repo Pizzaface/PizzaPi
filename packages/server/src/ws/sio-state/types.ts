@@ -81,6 +81,7 @@ export interface RedisSessionData {
  */
 export interface RedisSessionSummaryData {
     sessionId: string;
+    collabMode: boolean;
     shareUrl: string;
     cwd: string;
     startedAt: string;

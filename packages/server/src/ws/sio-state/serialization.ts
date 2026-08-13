@@ -28,6 +28,7 @@ export function toHashFields(data: Record<string, unknown>): Record<string, stri
 
 export const SESSION_SUMMARY_FIELDS = [
     "sessionId",
+    "collabMode",
     "shareUrl",
     "cwd",
     "startedAt",
@@ -49,6 +50,7 @@ export function parseSessionSummaryFromHash(hash: Record<string, string>): Redis
     if (!hash.sessionId) return null;
     return {
         sessionId: hash.sessionId,
+        collabMode: hash.collabMode === "1",
         shareUrl: hash.shareUrl ?? "",
         cwd: hash.cwd ?? "",
         startedAt: hash.startedAt ?? "",

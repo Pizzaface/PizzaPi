@@ -7,6 +7,7 @@ const mockEmitToRunner = mock((..._args: any[]) => {});
 
 mock.module("../../sio-registry/sessions.js", () => ({
     getSharedSession: mockGetSharedSession,
+    getSharedSessionSummary: mockGetSharedSession,
 }));
 
 mock.module("../../sio-registry/context.js", () => ({
