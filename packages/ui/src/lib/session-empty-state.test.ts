@@ -87,11 +87,18 @@ describe("getSessionEmptyStateUi", () => {
     });
   });
 
-  test("returns non-spinning waiting state for idle empty sessions", () => {
+  test("returns non-spinning waiting state while not yet connected", () => {
     expect(getSessionEmptyStateUi("Waiting for session events")).toEqual({
       title: "Waiting for session events",
       description: "Messages will appear here in real time.",
       shouldSpinLogo: false,
     });
+    expect(getSessionEmptyStateUi("Disconnected")).not.toBeNull();
+    expect(getSessionEmptyStateUi(null)).not.toBeNull();
+  });
+
+  test("returns null for connected sessions that are simply empty", () => {
+    expect(getSessionEmptyStateUi("Connected")).toBeNull();
+    expect(getSessionEmptyStateUi("Snapshot replay")).toBeNull();
   });
 });

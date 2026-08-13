@@ -886,6 +886,7 @@ export function SessionViewer({
               </Conversation>
             ) : (() => {
               const emptyUi = getSessionEmptyStateUi(viewerStatus);
+              if (!emptyUi) return null; // connected + empty session — blank slate
               return (
                 <ConversationEmptyState
                   icon={
