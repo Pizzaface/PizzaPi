@@ -16,7 +16,7 @@ import {
     getChildSessions,
     getPendingParentDelinkChildren,
     removePendingParentDelinkChild,
-    getSession,
+    getSessionSummary,
     markChildAsDelinked,
     isChildDelinked,
     isChildOfParent,
@@ -39,11 +39,13 @@ export async function countLinkedChildrenForParent(
     parentSessionId: string,
     deps: {
         getChildSessions?: typeof getChildSessions;
-        getSession?: typeof getSession;
+        // Summary-shaped read — only parentSessionId/linkedParentId are needed,
+        // so never pull the multi-MB lastState blob per child.
+        getSession?: (sessionId: string) => Promise<{ parentSessionId: string | null; linkedParentId?: string | null } | null>;
     } = {},
 ): Promise<number> {
     const _getChildSessions = deps.getChildSessions ?? getChildSessions;
-    const _getSession = deps.getSession ?? getSession;
+    const _getSession = deps.getSession ?? getSessionSummary;
 
     const childIds = await _getChildSessions(parentSessionId);
     if (childIds.length === 0) return 0;
@@ -218,7 +220,7 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
             if (epoch && childIds.length > 0) {
                 // Fetch all session hashes concurrently, then check delink markers
                 // only for the subset that started after the epoch.
-                const sessions = await Promise.all(childIds.map((childId) => getSession(childId)));
+                const sessions = await Promise.all(childIds.map((childId) => getSessionSummary(childId)));
                 const markerCandidates = childIds.filter((_, i) => {
                     const childSession = sessions[i];
                     if (!childSession?.startedAt) return false;

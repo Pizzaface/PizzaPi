@@ -65,6 +65,13 @@ export interface RedisSessionData {
      *  Absent for sessions created before this feature; callers must use
      *  defaultMetaState() as fallback. */
     metaState?: string | null;
+    /**
+     * JSON-stringified metadata patch accumulated since the last full
+     * session_active snapshot. Written by patchSessionSnapshotState, cleared
+     * by updateSessionState. Applied on top of lastState / cached snapshots
+     * at read time so metadata events never rewrite the multi-MB state blob.
+     */
+    snapshotOverlay?: string | null;
 }
 
 /**
@@ -89,6 +96,8 @@ export interface RedisSessionSummaryData {
     runnerId: string | null;
     runnerName: string | null;
     parentSessionId: string | null;
+    /** See RedisSessionData.linkedParentId. */
+    linkedParentId?: string | null;
 }
 
 export interface RedisRunnerData {

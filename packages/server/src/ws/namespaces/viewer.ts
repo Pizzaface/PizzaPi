@@ -48,6 +48,7 @@ import { isHiddenModel } from "../../routes/model-guard.js";
 import { createLogger } from "@pizzapi/tools";
 import { hydrateViewerFromCache, sendCachedDeltaReplayEvents, sendLatestSnapshotFromCache } from "./viewer-cache.js";
 import { getBestSnapshot } from "./snapshot-provider.js";
+import { applySnapshotOverlayToState } from "../sio-registry/snapshot-state.js";
 
 export { hydrateViewerFromCache, sendCachedDeltaReplayEvents } from "./viewer-cache.js";
 
@@ -460,6 +461,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 const snapshotResult = await getBestSnapshot(nextSessionId, {
                     lastSeq: requestedLastSeq,
                     lastState: freshSession.lastState,
+                    snapshotOverlay: freshSession.snapshotOverlay,
                     chunkedPending: false,
                 });
                 if (snapshotResult) {
@@ -507,8 +509,12 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
 
             if (freshSession.lastState) {
                 try {
+                    const state = applySnapshotOverlayToState(
+                        JSON.parse(freshSession.lastState),
+                        freshSession.snapshotOverlay,
+                    );
                     socket.emit("event", {
-                        event: withMetaViaHubHint({ type: "session_active", state: JSON.parse(freshSession.lastState) }),
+                        event: withMetaViaHubHint({ type: "session_active", state }),
                         seq: freshSeq,
                         generation,
                         sessionId: nextSessionId,

@@ -15,6 +15,7 @@ import {
     setSession,
     getSession,
     getSessionSummary,
+    getSessionField,
     updateSessionFields,
     deleteSession,
     getAllSessionSummaries,
@@ -50,7 +51,7 @@ import { appendRelayEventToCache } from "../../sessions/redis.js";
 import { storeAndReplaceImages, storeAndReplaceImagesInEvent } from "../strip-images.js";
 import { extractMetaFromHeartbeat } from "./meta.js";
 import { truncateSnapshotMessages } from "../namespaces/snapshot-provider.js";
-import { mergeSnapshotStatePatch, shouldPersistSnapshotPatch } from "./snapshot-state.js";
+import { applySnapshotOverlayToState, mergeSnapshotOverlay } from "./snapshot-state.js";
 
 /**
  * Prepare an event for broadcast to viewers.
@@ -552,6 +553,9 @@ export async function updateSessionState(sessionId: string, state: unknown, opts
     const fields: Partial<RedisSessionData> = {
         lastState: JSON.stringify(strippedState ?? null),
         sessionName: nextSessionName,
+        // A full snapshot carries fresh metadata — the accumulated overlay of
+        // "patches since the last snapshot" is now stale. Reset it.
+        snapshotOverlay: null,
     };
 
     if (session.isEphemeral) {
@@ -600,14 +604,18 @@ export async function patchSessionSnapshotState(
     sessionId: string,
     patch: Record<string, unknown>,
 ): Promise<boolean> {
-    const session = await getSession(sessionId);
+    // Metadata patches are frequent (every session_metadata_update /
+    // capabilities event) while lastState blobs run into the MBs. Never
+    // read-modify-write the blob here — accumulate patches in the small
+    // snapshotOverlay field and apply them at read time instead.
+    const session = await getSessionSummary(sessionId);
     if (!session) return false;
 
-    const mergedState = mergeSnapshotStatePatch(session.lastState, patch);
-    if (!mergedState) return false;
+    const existingOverlay = await getSessionField(sessionId, "snapshotOverlay");
+    const mergedOverlay = mergeSnapshotOverlay(existingOverlay, patch);
 
     const fields: Partial<RedisSessionData> = {
-        lastState: JSON.stringify(mergedState),
+        snapshotOverlay: JSON.stringify(mergedOverlay),
     };
 
     if (session.isEphemeral) {
@@ -615,30 +623,15 @@ export async function patchSessionSnapshotState(
     }
 
     await updateSessionFields(sessionId, fields);
-
-    const now = Date.now();
-    const shouldPersistState = shouldPersistSnapshotPatch({
-        patch,
-        lastWriteAt: lastRelaySessionStateWriteTimes.get(sessionId) ?? 0,
-        now,
-        throttleMs: SQLITE_STATE_WRITE_THROTTLE_MS,
-    });
-
-    if (shouldPersistState) {
-        lastRelaySessionStateWriteTimes.set(sessionId, now);
-        void recordRelaySessionState(sessionId, session.userId ?? null, mergedState).catch((error) => {
-            log.error("Failed to persist patched relay session state:", error);
-        });
-    }
-
     return true;
 }
 
-/** Get session last state from Redis. */
+/** Get session last state (with any pending metadata overlay) from Redis. */
 export async function getSessionState(sessionId: string): Promise<unknown | undefined> {
     const session = await getSession(sessionId);
     if (!session?.lastState) return undefined;
-    return safeJsonParse(session.lastState);
+    const state = safeJsonParse(session.lastState);
+    return applySnapshotOverlayToState(state, session.snapshotOverlay);
 }
 
 /** Refresh ephemeral session expiry and SQLite touch. */
@@ -659,7 +652,7 @@ export async function touchSessionActivity(
     }
     lastTouchTimes.set(sessionId, now);
 
-    const session = sessionHint ?? await getSession(sessionId);
+    const session = sessionHint ?? await getSessionSummary(sessionId);
     if (!session) return;
 
     if (session.isEphemeral) {
@@ -854,7 +847,7 @@ export async function getSessionSeq(sessionId: string): Promise<number> {
 
 /** Get the last heartbeat payload for a session. */
 export async function getSessionLastHeartbeat(sessionId: string): Promise<unknown | null> {
-    const session = await getSession(sessionId);
+    const session = await getSessionSummary(sessionId);
     if (!session?.lastHeartbeat) return null;
     return safeJsonParse(session.lastHeartbeat);
 }
@@ -872,7 +865,7 @@ export async function sendSnapshotToViewer(sessionId: string, socket: Socket): P
         socket.emit("event", { event: heartbeat, seq, sessionId });
     }
     if (session.lastState) {
-        const state = safeJsonParse(session.lastState);
+        const state = applySnapshotOverlayToState(safeJsonParse(session.lastState), session.snapshotOverlay);
         // Truncate session_active state for reconnect/hydration delivery so
         // initial page load / reconnect only sends the tail.  Full state
         // is available via load_messages pagination.
@@ -961,9 +954,15 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
 
     // Final durable flush — mid-stream SQLite state writes are throttled, so
     // persist the freshest Redis state before it is deleted (SQLite is the
-    // cold-restore source; prod Redis runs without persistence).
+    // cold-restore source; prod Redis runs without persistence).  Metadata
+    // patches accumulate in snapshotOverlay rather than rewriting lastState,
+    // so fold them in here — this is the one-time cost at session end.
     if (session.lastState) {
-        await recordRelaySessionStateSerialized(sessionId, session.userId ?? null, session.lastState).catch(
+        const finalState = session.snapshotOverlay
+            ? applySnapshotOverlayToState(safeJsonParse(session.lastState), session.snapshotOverlay)
+            : null;
+        const serialized = finalState ? JSON.stringify(finalState) : session.lastState;
+        await recordRelaySessionStateSerialized(sessionId, session.userId ?? null, serialized).catch(
             (error) => {
                 log.error("Failed to flush final relay session state:", error);
             },

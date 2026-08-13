@@ -42,6 +42,7 @@ export const SESSION_SUMMARY_FIELDS = [
     "runnerId",
     "runnerName",
     "parentSessionId",
+    "linkedParentId",
 ] as const;
 
 export function parseSessionSummaryFromHash(hash: Record<string, string>): RedisSessionSummaryData | null {
@@ -62,6 +63,7 @@ export function parseSessionSummaryFromHash(hash: Record<string, string>): Redis
         runnerId: hash.runnerId || null,
         runnerName: hash.runnerName || null,
         parentSessionId: hash.parentSessionId || null,
+        linkedParentId: hash.linkedParentId || null,
     };
 }
 
@@ -109,6 +111,7 @@ export function parseSessionFromHash(hash: Record<string, string>): RedisSession
         parentSessionId: hash.parentSessionId || null,
         linkedParentId: hash.linkedParentId || null,
         metaState: hash.metaState || null,
+        snapshotOverlay: hash.snapshotOverlay || null,
     };
 }
 
