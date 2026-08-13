@@ -16,7 +16,7 @@ import { Capacitor } from "@capacitor/core";
 import { LocalNotifications } from "@capacitor/local-notifications";
 import { Badge } from "@capawesome/capacitor-badge";
 import { getMobileRuntimeConfig } from "./mobile-runtime.js";
-import { startNtfyPush } from "./ntfy-push.js";
+import { registerNtfyTapListener, startNtfyPush } from "./ntfy-push.js";
 import { useNeedsResponseCount } from "../attention/index.js";
 
 /** True only when running inside the bundled Capacitor native shell. */
@@ -83,6 +83,10 @@ export function useMobileNativeActivity(): void {
         // web/iOS. Best-effort — the server returns 503 if ntfy isn't configured,
         // in which case startNtfyPush degrades silently (Web Push still runs).
         void startNtfyPush();
+        // Wire up notification-tap → in-app navigation. Registered before any
+        // tap can be consumed since Capacitor retains a cold-start tap event
+        // until this listener attaches.
+        registerNtfyTapListener();
     }, []);
 
     // Badge reflects "needs your response" — the conventional unread signal.

@@ -430,10 +430,20 @@ public class NtfyForegroundService extends Service {
         nm.notify(id, n);
     }
 
-    /** Build the tap intent: open a valid http/https click URL, else bring the app forward. */
+    /**
+     * Build the tap intent. Our own session click links (…/#/sessions/<id>)
+     * ALWAYS open the app directly via an explicit intent to MainActivity —
+     * never ACTION_VIEW, which would resolve to a browser instead of us. Only
+     * non-session click URLs (or none) fall back to the previous behavior.
+     */
     private PendingIntent buildTapIntent(String clickUrl, int notifId) {
+        String sessionId = sessionIdFromClickUrl(clickUrl);
         Intent intent = null;
-        if (clickUrl != null && !clickUrl.isEmpty()) {
+        if (sessionId != null) {
+            intent = new Intent(this, MainActivity.class)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    .putExtra(NtfyPushPlugin.EXTRA_SESSION_ID, sessionId);
+        } else if (clickUrl != null && !clickUrl.isEmpty()) {
             Uri uri = Uri.parse(clickUrl);
             String scheme = uri.getScheme();
             if (scheme != null) {

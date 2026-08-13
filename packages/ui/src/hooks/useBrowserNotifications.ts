@@ -66,6 +66,9 @@ export function useBrowserNotifications({
   // Track which sessions we've already notified about to avoid spam.
   const notifiedRef = useRef<Set<string>>(new Set());
   const sessionsAwaitingInputRef = useRef<Set<string>>(sessionsAwaitingInput);
+  // Sessions that were awaiting input while actively viewed — once true,
+  // never notify for that awaiting period, even after switching away.
+  const seenWhileActiveRef = useRef<Set<string>>(new Set());
   const originalTitleRef = useRef<string>(document.title);
   const flashIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -88,7 +91,27 @@ export function useBrowserNotifications({
         void closeBrowserInputNotification(sessionId);
       }
     }
+    const seen = seenWhileActiveRef.current;
+    for (const sessionId of Array.from(seen)) {
+      if (!sessionsAwaitingInput.has(sessionId)) {
+        seen.delete(sessionId);
+      }
+    }
   }, [sessionsAwaitingInput]);
+
+  // Mark the active session as "already seen" the moment it's awaiting while
+  // the user is actively viewing it (visible + focused). This must not be
+  // undone by later tab/session switches — the awaiting period is complete.
+  useEffect(() => {
+    if (
+      !document.hidden &&
+      document.hasFocus() &&
+      activeSessionId &&
+      sessionsAwaitingInput.has(activeSessionId)
+    ) {
+      seenWhileActiveRef.current.add(activeSessionId);
+    }
+  }, [sessionsAwaitingInput, activeSessionId]);
 
   // When the service worker reports that a session was opened, clear the
   // matching notification record so a future await can notify again.
@@ -122,6 +145,10 @@ export function useBrowserNotifications({
         for (const sessionId of sessionsAwaitingInput) {
           // Already notified for this session.
           if (notified.has(sessionId)) continue;
+
+          // The user already saw this session's prompt while it was awaiting
+          // and actively viewed — don't notify even after switching away.
+          if (seenWhileActiveRef.current.has(sessionId)) continue;
 
           // If the tab is visible AND focused AND the user is viewing this session,
           // no need to notify — they can see the input prompt directly.
@@ -209,6 +236,14 @@ export function useBrowserNotifications({
         if (activeSessionId) {
           notifiedRef.current.delete(activeSessionId);
           void closeBrowserInputNotification(activeSessionId);
+          // Returning to the tab IS the act of seeing it. Mark it seen here too,
+          // not just in the marking effect: that effect only re-runs on React
+          // state changes, and visibilitychange is a DOM event. Without this,
+          // clearing notifiedRef above would let a later session switch
+          // re-notify for a prompt the user has already read.
+          if (sessionsAwaitingInputRef.current.has(activeSessionId)) {
+            seenWhileActiveRef.current.add(activeSessionId);
+          }
         }
       }
     };

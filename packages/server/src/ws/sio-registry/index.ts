@@ -33,6 +33,7 @@ export {
     removeViewer,
     broadcastToViewers,
     getViewerCount,
+    hasVisibleViewer,
     markPendingRecovery,
     consumePendingRecovery,
     hasPendingRecovery,

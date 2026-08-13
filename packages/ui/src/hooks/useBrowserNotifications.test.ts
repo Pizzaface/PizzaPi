@@ -29,11 +29,45 @@ function shouldNotify(
   isHidden: boolean,
   hasFocus: boolean,
   alreadyNotified: Set<string>,
+  seenWhileActive: Set<string> = new Set(),
 ): boolean {
   if (alreadyNotified.has(sessionId)) return false;
+  if (seenWhileActive.has(sessionId)) return false;
   // Only suppress when the tab is visible AND focused AND viewing this session
   if (!isHidden && hasFocus && sessionId === activeSessionId) return false;
   return true;
+}
+
+// Mirrors the hook's "mark seen while active" effect: a session gets
+// marked as already-seen the moment it's awaiting input while actively
+// viewed (visible + focused).
+function markSeenWhileActive(
+  sessionsAwaitingInput: Set<string>,
+  activeSessionId: string | null,
+  isHidden: boolean,
+  hasFocus: boolean,
+  seenWhileActive: Set<string>,
+): void {
+  if (!isHidden && hasFocus && activeSessionId && sessionsAwaitingInput.has(activeSessionId)) {
+    seenWhileActive.add(activeSessionId);
+  }
+}
+
+// Mirrors the hook's visibilitychange handler: returning to the tab closes the
+// notification, clears the notified record AND marks the session as seen.
+// Marking here is essential — the markSeenWhileActive effect only re-runs on
+// React state changes, and visibilitychange is a DOM event.
+function onVisibilityReturn(
+  activeSessionId: string | null,
+  sessionsAwaitingInput: Set<string>,
+  alreadyNotified: Set<string>,
+  seenWhileActive: Set<string>,
+): void {
+  if (!activeSessionId) return;
+  alreadyNotified.delete(activeSessionId);
+  if (sessionsAwaitingInput.has(activeSessionId)) {
+    seenWhileActive.add(activeSessionId);
+  }
 }
 
 describe("useBrowserNotifications logic", () => {
@@ -57,6 +91,32 @@ describe("useBrowserNotifications logic", () => {
   });
 
   // ── Notification decision logic ────────────────────────────────────────
+
+  test("reading a prompt after returning to the tab, then switching sessions, does not re-notify", () => {
+    const awaiting = new Set(["s1"]);
+    const notified = new Set<string>();
+    const seen = new Set<string>();
+
+    // 1. Tab hidden when the question arrives → notify.
+    expect(shouldNotify("s1", "s1", true, false, notified, seen)).toBe(true);
+    notified.add("s1");
+
+    // 2. User returns to the tab and reads it.
+    onVisibilityReturn("s1", awaiting, notified, seen);
+    expect(notified.has("s1")).toBe(false); // record cleared, notification closed
+    expect(seen.has("s1")).toBe(true); // but now marked as seen
+
+    // 3. User switches to another session while s1 is still awaiting.
+    //    Without the visibilitychange marking this would re-notify.
+    expect(shouldNotify("s1", "s2", false, true, notified, seen)).toBe(false);
+  });
+
+  test("returning to the tab does not mark a session that is not awaiting", () => {
+    const notified = new Set<string>(["s1"]);
+    const seen = new Set<string>();
+    onVisibilityReturn("s1", new Set(), notified, seen);
+    expect(seen.has("s1")).toBe(false);
+  });
 
   test("should notify when tab is hidden", () => {
     expect(shouldNotify("s1", "s1", true, false, new Set())).toBe(true);
@@ -147,6 +207,42 @@ describe("useBrowserNotifications logic", () => {
       sessionId: "session-123",
       type: "browser_input",
     });
+  });
+
+  test("session that starts awaiting while actively viewed does not notify after switching away", () => {
+    const seenWhileActive = new Set<string>();
+    const awaiting = new Set(["s1"]);
+
+    markSeenWhileActive(awaiting, "s1", false, true, seenWhileActive);
+    expect(seenWhileActive.has("s1")).toBe(true);
+
+    expect(shouldNotify("s1", "s1", false, true, new Set(), seenWhileActive)).toBe(false);
+    expect(shouldNotify("s1", "s2", false, true, new Set(), seenWhileActive)).toBe(false);
+    expect(shouldNotify("s1", "s2", true, false, new Set(), seenWhileActive)).toBe(false);
+  });
+
+  test("session that starts awaiting while NOT actively viewed still notifies", () => {
+    const seenWhileActive = new Set<string>();
+    const awaiting = new Set(["s1"]);
+
+    markSeenWhileActive(awaiting, "s2", false, true, seenWhileActive);
+    expect(seenWhileActive.has("s1")).toBe(false);
+
+    expect(shouldNotify("s1", "s2", false, true, new Set(), seenWhileActive)).toBe(true);
+  });
+
+  test("seen-while-active entries are cleared once the session stops awaiting", () => {
+    const seenWhileActive = new Set(["s1", "s2"]);
+    const stillAwaiting = new Set(["s1"]);
+
+    for (const sessionId of Array.from(seenWhileActive)) {
+      if (!stillAwaiting.has(sessionId)) {
+        seenWhileActive.delete(sessionId);
+      }
+    }
+
+    expect(seenWhileActive.has("s1")).toBe(true);
+    expect(seenWhileActive.has("s2")).toBe(false);
   });
 
   test("extracts session id from service worker open-session messages", () => {

@@ -181,3 +181,40 @@ export async function stopNtfyPush(): Promise<void> {
         console.error("stopNtfyPush (unregister) failed:", err);
     }
 }
+
+// ponytail: module-level guard so re-registering (e.g. HMR, repeated hook
+// mounts) doesn't stack duplicate listeners.
+let tapListenerRegistered = false;
+
+/**
+ * Register the `notificationTapped` listener so tapping a PizzaPi Android
+ * notification navigates to the session in-app instead of opening a browser.
+ * Dispatches the existing `pp-navigate-session` CustomEvent that App.tsx
+ * already listens for. No-op outside the Android native app.
+ *
+ * Safe to call once at app start (see mobile-native.ts). The native side
+ * (NtfyPushPlugin) retains a cold-start tap event until this listener
+ * attaches, so calling this on startup — even if the intent that launched
+ * the app already carried a tap before JS was ready — still delivers it.
+ */
+export function registerNtfyTapListener(): void {
+    if (!androidNative() || tapListenerRegistered) return;
+    tapListenerRegistered = true;
+    void PizzapiNtfy.addListener("notificationTapped", handleNotificationTapped);
+}
+
+/**
+ * Handles a raw `notificationTapped` plugin event by dispatching the
+ * `pp-navigate-session` CustomEvent App.tsx listens for. Exported
+ * (unguarded by the androidNative() check) so it's directly unit-testable.
+ */
+export function handleNotificationTapped(event: Record<string, unknown>): void {
+    const sessionId = typeof event?.sessionId === "string" ? event.sessionId : undefined;
+    if (!sessionId) return;
+    window.dispatchEvent(new CustomEvent("pp-navigate-session", { detail: { sessionId } }));
+}
+
+/** Reset internal flags — exposed for tests. */
+export function _resetNtfyPushState(): void {
+    tapListenerRegistered = false;
+}

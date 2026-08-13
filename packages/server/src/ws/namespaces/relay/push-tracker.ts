@@ -10,7 +10,7 @@ import {
     notifyAgentNeedsInput,
     notifyAgentError,
 } from "../../../push.js";
-import { getSharedSession, getViewerCount } from "../../sio-registry.js";
+import { getSharedSession, getViewerCount, hasVisibleViewer } from "../../sio-registry.js";
 
 /**
  * Manage the push-pending Redis key for AskUserQuestion lifecycle.
@@ -66,7 +66,8 @@ export async function checkPushNotifications(
     if (
         event.type !== "agent_end" &&
         event.type !== "cli_error" &&
-        !(event.type === "tool_execution_start" && event.toolName === "AskUserQuestion")
+        !(event.type === "tool_execution_start" && event.toolName === "AskUserQuestion") &&
+        !(event.type === "tool_execution_start" && event.toolName === "plan_mode")
     ) {
         return;
     }
@@ -75,10 +76,22 @@ export async function checkPushNotifications(
     const userId = session?.userId;
     if (!userId) return;
 
-    // Connected viewers receive live session events over Socket.IO, so Web Push
-    // would duplicate their in-app notification. Native Android registrations
-    // still need ntfy fan-out: one connected viewer must not silence other devices.
-    const suppressWebPush = await getViewerCount(sessionId) > 0;
+    // Two different questions, two different answers:
+    //
+    //  • Web Push — suppressed by ANY connected viewer. A connected-but-hidden
+    //    tab is already covered by client-side browser notifications
+    //    (useBrowserNotifications), so Web Push on top would double-notify.
+    //
+    //  • Native (ntfy) — suppressed only when a viewer's tab is actually
+    //    VISIBLE on this session. If the user can see the prompt, their phone
+    //    shouldn't buzz; if every tab is hidden/backgrounded, it should.
+    //    Window focus is ignored on purpose so a second monitor counts as
+    //    viewing.
+    const [viewerCount, visibleViewer] = await Promise.all([
+        getViewerCount(sessionId),
+        hasVisibleViewer(sessionId),
+    ]);
+    const suppress = { web: viewerCount > 0, native: visibleViewer };
 
     const sName = session?.sessionName ?? null;
 
@@ -102,7 +115,7 @@ export async function checkPushNotifications(
     const isChildSession = !!effectiveParentId && await isLinkedChildForSuppression(effectiveParentId, sessionId);
 
     if (event.type === "agent_end") {
-        notifyAgentFinished(userId, sessionId, sName, isChildSession, extractLastAssistantText(event), suppressWebPush);
+        notifyAgentFinished(userId, sessionId, sName, isChildSession, extractLastAssistantText(event), suppress);
     }
 
     if (event.type === "tool_execution_start" && event.toolName === "AskUserQuestion") {
@@ -139,11 +152,20 @@ export async function checkPushNotifications(
         // reject with 400 — so don't show action buttons in any of those cases.
         const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
         const canQuickReply = questionCount <= 1 && session?.collabMode === true && !!toolCallId;
-        notifyAgentNeedsInput(userId, sessionId, question, sName, canQuickReply ? options : undefined, toolCallId, isChildSession, suppressWebPush);
+        notifyAgentNeedsInput(userId, sessionId, question, sName, canQuickReply ? options : undefined, toolCallId, isChildSession, suppress);
+    }
+
+    if (event.type === "tool_execution_start" && event.toolName === "plan_mode") {
+        // Plan review is approve/edit/cancel, which the push answer API does
+        // not model — no quick-reply option buttons here, just a heads-up.
+        // Reuse notifyAgentNeedsInput's generic "waiting for input" plumbing
+        // but with plan-specific copy; pass no options/toolCallId so no
+        // action buttons are rendered.
+        notifyAgentNeedsInput(userId, sessionId, "Plan ready for review", sName, undefined, undefined, isChildSession, suppress);
     }
 
     if (event.type === "cli_error") {
         const errMsg = typeof event.message === "string" ? event.message : undefined;
-        notifyAgentError(userId, sessionId, errMsg, sName, isChildSession, suppressWebPush);
+        notifyAgentError(userId, sessionId, errMsg, sName, isChildSession, suppress);
     }
 }

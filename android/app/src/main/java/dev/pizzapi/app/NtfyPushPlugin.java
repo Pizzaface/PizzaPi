@@ -18,17 +18,24 @@ import androidx.core.content.ContextCompat;
  * <pre>
  *   PizzapiNtfy.start({ ntfyUrl, topic, token? })
  *   PizzapiNtfy.stop()
+ *   PizzapiNtfy.addListener("notificationTapped", ({ sessionId }) =&gt; ...)
  * </pre>
  *
- * <p>Prototype (Phase 2): start/stop only. No JS event callbacks yet
- * (notificationTapped / connectionState) — the service posts notifications
- * directly. Event callbacks are a Phase 3 refinement (needs a static bridge
- * or bound service).
+ * <p>{@code notificationTapped} is emitted by {@link MainActivity} when it
+ * receives the {@link #EXTRA_SESSION_ID} extra from a session notification's
+ * explicit tap intent (see {@code NtfyForegroundService#buildTapIntent}).
+ * Uses Capacitor's {@code notifyListeners(..., retainUntilConsumed=true)} so
+ * a cold-start tap (intent delivered before the JS listener registers) is
+ * held and replayed to the first listener that attaches — no separate
+ * pending-tap plumbing needed.
  */
 @CapacitorPlugin(name = "PizzapiNtfy")
 public class NtfyPushPlugin extends Plugin {
 
     private static final String TAG = "PizzapiNtfyPlugin";
+
+    /** Intent extra (set by NtfyForegroundService, read by MainActivity) carrying the tapped session id. */
+    static final String EXTRA_SESSION_ID = "pizzapi.sessionId";
 
     @PluginMethod
     public void start(PluginCall call) {
@@ -68,5 +75,18 @@ public class NtfyPushPlugin extends Plugin {
             Log.e(TAG, "failed to stop ntfy foreground service", e);
             call.reject("Failed to stop ntfy service: " + e.getMessage());
         }
+    }
+
+    /**
+     * Called by {@link MainActivity} when a notification tap intent carrying
+     * {@link #EXTRA_SESSION_ID} is delivered (cold start via onCreate, or warm
+     * start via onNewIntent). retainUntilConsumed=true means: if the JS
+     * listener hasn't attached yet, Capacitor holds the event and replays it
+     * to the first listener that calls addListener("notificationTapped").
+     */
+    void notifySessionTap(String sessionId) {
+        JSObject data = new JSObject();
+        data.put("sessionId", sessionId);
+        notifyListeners("notificationTapped", data, true);
     }
 }
