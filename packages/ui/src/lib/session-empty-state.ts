@@ -62,14 +62,23 @@ export function classifySessionInput(
 
 /**
  * Copy + animation state for session-specific empty states.
+ *
+ * Returns null when the session is fully hydrated and simply has no messages
+ * yet (a genuinely empty session) — the transcript area should stay blank
+ * instead of implying we're still waiting on data.
  */
-export function getSessionEmptyStateUi(viewerStatus: string | null | undefined): SessionEmptyStateUi {
+export function getSessionEmptyStateUi(viewerStatus: string | null | undefined): SessionEmptyStateUi | null {
   if (isSessionHydrating(viewerStatus)) {
     return {
       title: "Loading session",
       description: "Fetching conversation data…",
       shouldSpinLogo: true,
     };
+  }
+
+  const status = typeof viewerStatus === "string" ? viewerStatus.trim().toLowerCase() : "";
+  if (status === "connected" || status === "snapshot replay") {
+    return null;
   }
 
   return {
