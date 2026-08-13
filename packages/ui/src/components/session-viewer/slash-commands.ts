@@ -169,7 +169,10 @@ export function useSlashCommands(
       {
         name: "skills",
         description: "Show available skills",
+        // `list` first: it is the default action, and the picker executes the
+        // highlighted sub-command on Enter (without it, /skills always reloaded).
         subCommands: [
+          { name: "list", description: "Show available skills" },
           { name: "reload", description: "Reload skills from disk in this session" },
         ],
       },

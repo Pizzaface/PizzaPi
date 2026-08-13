@@ -55,9 +55,19 @@ describe("/skills", () => {
         expect(systemMessages).toHaveLength(0);
     });
 
-    test("the picker advertises the reload sub-command", () => {
+    test("/skills list renders the listing in the browser", () => {
+        const { view, systemMessages } = setup("/skills list");
+        let handled = false;
+        act(() => { handled = view.result.current.executeSlashCommand("/skills list"); });
+        expect(handled).toBe(true);
+        expect(systemMessages).toHaveLength(1);
+    });
+
+    test("the picker offers list first, then reload", () => {
         const { view } = setup("/skills ");
         const skills = view.result.current.supportedWebCommands.find((c) => c.name === "skills");
-        expect(skills?.subCommands?.map((s) => s.name)).toEqual(["reload"]);
+        expect(skills?.subCommands?.map((s) => s.name)).toEqual(["list", "reload"]);
+        // Enter with nothing typed runs the highlighted (first) entry.
+        expect(view.result.current.subCommandMode.filtered[0]?.name).toBe("list");
     });
 });
