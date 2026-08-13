@@ -138,7 +138,20 @@ public class NtfyForegroundService extends Service {
 
         // Always enter foreground promptly, even on the stop path, to avoid
         // RemoteServiceException on system-initiated restarts (#6).
-        startForeground(SERVICE_NOTIF_ID, buildServiceNotification("PizzaPi — connecting…"));
+        //
+        // NEVER let this throw: startForeground() can fail with
+        // ForegroundServiceStartNotAllowedException when the platform refuses the
+        // start (e.g. Android 15+ blocking a banned FGS type from BOOT_COMPLETED,
+        // or an exhausted quota). An uncaught throw here is a FATAL crash of the
+        // whole app, which is exactly what happened when this service was still
+        // declared dataSync. Degrade to "no push until next app launch" instead.
+        try {
+            startForeground(SERVICE_NOTIF_ID, buildServiceNotification("PizzaPi — connecting…"));
+        } catch (Exception e) {
+            Log.e(TAG, "startForeground refused: " + e.getMessage() + "; giving up this attempt");
+            stopSelf();
+            return START_NOT_STICKY;
+        }
 
         if (ntfyUrl == null || topic == null || !isValidNtfyUrl(ntfyUrl)) {
             Log.e(TAG, "no valid ntfy config (url=" + ntfyUrl + "); stopping");
@@ -572,21 +585,22 @@ public class NtfyForegroundService extends Service {
     }
 
     /**
-     * Android 15+ enforces a ~6h/24h runtime cap on dataSync foreground services.
-     * The platform calls this and expects us to stop; not stopping crashes (#7).
+     * Safety net only. The ~6h/24h FGS runtime cap applies to dataSync and
+     * mediaProcessing; this service is remoteMessaging, which the platform does
+     * not currently time out. Kept because the platform calls onTimeout() for
+     * whatever types it decides to cap in future releases, and NOT stopping when
+     * asked is a guaranteed crash (#7).
      */
     @Override
     public void onTimeout(int startId) {
-        Log.w(TAG, "FGS dataSync timeout reached; stopping and scheduling a restart");
-        // ponytail: ceiling is ~6h cumulative runtime within a rolling 24h window
-        // for a dataSync FGS (Android 15+, targetSdk 35). We can't just call
-        // startForegroundService() again right here -- the quota is still
-        // exhausted and the platform throws ForegroundServiceStartNotAllowedException
-        // -- so we schedule a retry via AlarmManager instead and let it keep
-        // retrying (NtfyRestartReceiver reschedules itself on failure) until the
-        // window frees up. Upgrade path: replace the permanent dataSync stream
-        // with WorkManager periodic sync (no FGS cap) or a data-message push
-        // transport (FCM) that only wakes us when there's something to deliver.
+        Log.w(TAG, "FGS timeout reached; stopping and scheduling a restart");
+        // ponytail: we can't just call startForegroundService() again right here
+        // -- if a quota did trigger this it is still exhausted and the platform
+        // throws ForegroundServiceStartNotAllowedException -- so we schedule a
+        // retry via AlarmManager and let it keep retrying (NtfyRestartReceiver
+        // reschedules itself on failure) until the window frees up. Upgrade path:
+        // a data-message push transport that only wakes us when there is
+        // something to deliver, removing the persistent stream entirely.
         running.set(false);
         stopStream();
         scheduleRestart(this);

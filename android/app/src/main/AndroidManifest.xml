@@ -39,12 +39,23 @@
         </provider>
 
         <!-- ntfy foreground service: holds the persistent subscribe stream for
-             Google-free Android background push. dataSync type (Android 14+
-             requires an explicit foregroundServiceType). -->
+             Google-free Android background push. Android 14+ requires an
+             explicit foregroundServiceType.
+
+             remoteMessaging, NOT dataSync. Two hard reasons:
+              1. Android 15+ forbids a BOOT_COMPLETED receiver from starting a
+                 dataSync FGS — it throws ForegroundServiceStartNotAllowedException,
+                 which fatally crashed the app on every boot. The banned list is
+                 dataSync/camera/mediaPlayback/phoneCall/mediaProjection/microphone;
+                 remoteMessaging is not on it.
+              2. dataSync is capped at 6h per 24h (Service.onTimeout); remoteMessaging
+                 is not, so the persistent subscribe stream can actually persist.
+             It is also the honest description: this service exists solely to
+             receive remote messages and surface them as notifications. -->
         <service
             android:name=".NtfyForegroundService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="remoteMessaging" />
 
         <!-- Restarts NtfyForegroundService from persisted config after a reboot
              (BOOT_COMPLETED), or when NtfyForegroundService#scheduleRestart
@@ -81,5 +92,5 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- ntfy foreground service (Google-free background push). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
 </manifest>
