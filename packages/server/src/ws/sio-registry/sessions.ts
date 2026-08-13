@@ -43,6 +43,7 @@ import {
     recordRelaySessionStart,
     recordRelaySessionEnd,
     recordRelaySessionState,
+    recordRelaySessionStateSerialized,
     touchRelaySession,
 } from "../../sessions/store.js";
 import { appendRelayEventToCache } from "../../sessions/redis.js";
@@ -560,9 +561,12 @@ export async function updateSessionState(sessionId: string, state: unknown, opts
     await updateSessionFields(session.sessionId, fields);
 
     const now = Date.now();
-    const stateMessages = stateObj && Array.isArray(stateObj.messages) ? stateObj.messages : null;
+    // Throttle applies to ALL snapshots — including ones with messages. States
+    // average hundreds of KB (up to several MB) and bun:sqlite writes are
+    // synchronous, so unthrottled per-turn writes block the event loop and
+    // stall every connected socket. endSharedSession() flushes the final
+    // state, so at most the trailing throttle window is deferred, not lost.
     const shouldPersistState =
-        stateMessages !== null && stateMessages.length > 0 ||
         now - (lastRelaySessionStateWriteTimes.get(sessionId) ?? 0) >= SQLITE_STATE_WRITE_THROTTLE_MS;
 
     // Skip SQLite write for viewer-recovery events.  The runner re-sent the
@@ -953,6 +957,17 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
         // needed for ended-session replay (viewers re-joining after agent_end).
         // The cache already has a TTL set via pExpire on every append, so it
         // will expire naturally without any explicit delete.
+    }
+
+    // Final durable flush — mid-stream SQLite state writes are throttled, so
+    // persist the freshest Redis state before it is deleted (SQLite is the
+    // cold-restore source; prod Redis runs without persistence).
+    if (session.lastState) {
+        await recordRelaySessionStateSerialized(sessionId, session.userId ?? null, session.lastState).catch(
+            (error) => {
+                log.error("Failed to flush final relay session state:", error);
+            },
+        );
     }
 
     // Delete from Redis
