@@ -26,7 +26,7 @@ describe("ntfy-push (web no-op path)", () => {
             return Promise.resolve(new Response("{}", { status: 200 }));
         };
         try {
-            await expect(startNtfyPush()).resolves.toBeUndefined();
+            await expect(startNtfyPush()).resolves.toEqual({ ok: true });
         } finally {
             (globalThis as any).fetch = origFetch;
         }

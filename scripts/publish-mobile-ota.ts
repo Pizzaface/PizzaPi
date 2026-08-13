@@ -19,6 +19,20 @@
  * Prereq: `bun run build:mobile` (produces mobile/app/). Requires the system
  * `zip` tool.
  *
+ * Kill-switch: set PIZZAPI_MOBILE_OTA_MIN_BUILD_TIMESTAMP when publishing a
+ * fix to include a `minBuildTimestamp` floor in the new manifest, or — to
+ * strand an already-published bad bundle *without* a rebuild — run:
+ *
+ *   PIZZAPI_MOBILE_OTA_DIR=/srv/pizzapi-ota bun scripts/publish-mobile-ota.ts \
+ *     --kill-switch=2026-07-10T00:00:00.000Z
+ *
+ * which patches minBuildTimestamp on the existing manifest.json in place (the
+ * zip/checksum/buildTimestamp are untouched). Clients refuse that bundle until
+ * a bundle with buildTimestamp >= the kill-switch timestamp is published.
+ *
+ * ponytail: no staged rollout percentages, no rollback UI, no signed bundles —
+ * the kill-switch is the whole mitigation. See docs/mobile-ota.md.
+ *
  * ponytail: system `zip` + node:crypto, no new deps. If a device ever rejects
  * the archive, swap the zip step for `@capgo/cli bundle zip` (their format).
  */
@@ -33,6 +47,33 @@ const appDir = join(webDir, "app");
 // Resolve to absolute: the zip step runs after `cd ${appDir}`, so a relative
 // outDir would otherwise be written under mobile/app and then not found.
 const outDir = resolve(process.env.PIZZAPI_MOBILE_OTA_DIR || join(root, "mobile-ota"));
+
+// --kill-switch=<ISO-8601 timestamp>: patch minBuildTimestamp on the existing
+// manifest without rebuilding/rezipping. This is the fast path for stranding
+// an already-published bad bundle.
+const killSwitchArg = process.argv.slice(2).find((a) => a.startsWith("--kill-switch="));
+if (killSwitchArg) {
+    const minBuildTimestamp = killSwitchArg.slice("--kill-switch=".length);
+    if (!minBuildTimestamp) {
+        console.error("--kill-switch requires a value, e.g. --kill-switch=2026-07-10T00:00:00.000Z");
+        process.exit(1);
+    }
+    const manifestPath = join(outDir, "manifest.json");
+    if (!existsSync(manifestPath)) {
+        console.error(`No manifest at ${manifestPath} — publish a bundle first.`);
+        process.exit(1);
+    }
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+    manifest.minBuildTimestamp = minBuildTimestamp;
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    console.log(
+        `Kill-switch set on ${manifestPath}:\n` +
+            `  minBuildTimestamp = ${minBuildTimestamp}\n` +
+            `Clients will refuse bundle ${String(manifest.buildTimestamp ?? "(unknown)")} until a bundle with a ` +
+            `buildTimestamp >= ${minBuildTimestamp} is published.`,
+    );
+    process.exit(0);
+}
 
 if (!existsSync(join(appDir, "index.html"))) {
     console.error(`No built mobile UI at ${appDir}.\nRun: bun run build:mobile`);
@@ -65,12 +106,18 @@ await $`cd ${webDir} && zip -r -q -X ${zipPath} ${entries}`;
 const buf = readFileSync(zipPath);
 const checksum = createHash("sha256").update(buf).digest("hex");
 
+// Optional kill-switch floor to set on this newly-published (good) manifest —
+// e.g. after a fix, PIZZAPI_MOBILE_OTA_MIN_BUILD_TIMESTAMP=<bad build's ts>
+// makes explicit that nothing older is ever eligible again. Optional/absent
+// by default so normal publishes are unaffected.
+const minBuildTimestamp = process.env.PIZZAPI_MOBILE_OTA_MIN_BUILD_TIMESTAMP;
 const manifest = {
     buildTimestamp,
     version: buildTimestamp,
     url: `/api/mobile/ota/${zipName}`,
     checksum,
     bytes: buf.length,
+    ...(minBuildTimestamp ? { minBuildTimestamp } : {}),
 };
 writeFileSync(join(outDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 

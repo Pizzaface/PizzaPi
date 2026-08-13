@@ -45,6 +45,17 @@
             android:name=".NtfyForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Restarts NtfyForegroundService from persisted config after a reboot
+             (BOOT_COMPLETED), or when NtfyForegroundService#scheduleRestart
+             fires an alarm following an Android 15+ FGS-timeout. -->
+        <receiver
+            android:name=".NtfyRestartReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
     </application>
 
     <!-- Permissions -->
@@ -56,11 +67,13 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Haptics. -->
     <uses-permission android:name="android.permission.VIBRATE" />
-    <!-- Local notifications: reschedule after device reboot. -->
+    <!-- Reschedule after device reboot: used by @capacitor/local-notifications
+         and by our own NtfyRestartReceiver (ntfy foreground service restart). -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <!-- Local notifications: exact alarm scheduling (Android 12+). User-grantable
-         via Settings; unlike USE_EXACT_ALARM it needs no restricted Play Console
-         use-case declaration (P1-4/#13). -->
+    <!-- Exact alarm scheduling (Android 12+): used by @capacitor/local-notifications
+         and by NtfyForegroundService#scheduleRestart (FGS-timeout reschedule).
+         User-grantable via Settings; unlike USE_EXACT_ALARM it needs no
+         restricted Play Console use-case declaration (P1-4/#13). -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <!-- Push notifications: keep the device awake to process incoming FCM
          messages. The MessagingService itself is registered by

@@ -30,6 +30,9 @@ import {
 import { sendCumulativeEventAck } from "./ack-tracker.js";
 import { trackPushPendingState, checkPushNotifications } from "./push-tracker.js";
 import type { RelaySocket } from "./types.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("sio/relay");
 
 export interface ChunkedSessionState {
     snapshotId: string;
@@ -464,8 +467,13 @@ export function registerEventHandler(socket: RelaySocket): void {
             (event.type === "tool_execution_start" || event.type === "tool_execution_end")) {
             await trackPushPendingState(sessionId, event);
         }
-        // Push notifications (fire-and-forget — not on hot path)
-        void checkPushNotifications(sessionId, event);
+        // Push notifications (fire-and-forget — not on hot path). Bun does NOT
+        // route unhandled promise rejections through process.on('uncaughtException'),
+        // so an uncaught error here silently vanishes with no push-specific log
+        // line. Catch and log explicitly so push failures are greppable.
+        void checkPushNotifications(sessionId, event).catch((err) => {
+            log.error(`push notification check failed for session ${sessionId} (event=${event.type}):`, err);
+        });
 
         }); // end enqueueSessionEvent
     });

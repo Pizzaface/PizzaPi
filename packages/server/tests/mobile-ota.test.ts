@@ -38,6 +38,24 @@ describe("handleMobileOtaRoute", () => {
         expect(await res?.json()).toEqual({ version: "t", checksum: "abc" });
     });
 
+    it("serves an optional minBuildTimestamp field verbatim (kill-switch passthrough)", async () => {
+        // The route is a static-file passthrough — it doesn't need to know
+        // about minBuildTimestamp at all; the client enforces the gate. This
+        // just guards against someone adding manifest validation that strips
+        // unknown fields.
+        writeFileSync(
+            join(dir, "manifest.json"),
+            JSON.stringify({ version: "t", checksum: "abc", minBuildTimestamp: "2026-07-10T00:00:00.000Z" }),
+        );
+        const res = await get("/api/mobile/ota/manifest.json");
+        expect(res?.status).toBe(200);
+        expect(await res?.json()).toEqual({
+            version: "t",
+            checksum: "abc",
+            minBuildTimestamp: "2026-07-10T00:00:00.000Z",
+        });
+    });
+
     it("serves a bundle zip immutably", async () => {
         const res = await get("/api/mobile/ota/pizzapi-t.zip");
         expect(res?.status).toBe(200);

@@ -14,10 +14,10 @@ The mobile app keeps the user inside the bundled UI after setup. On first launch
 - `capacitor.config.ts` points Capacitor at `mobile/`, which contains both the bootstrap page (`index.html`) and the bundled PWA (`app/`).
 - `mobile/index.html` handles first-run server URL entry, QR scanning, and mobile-link redemption.
 - `scripts/copy-mobile-ui.ts` copies the built `packages/ui/dist` assets into `mobile/app/` during `bun run build:mobile`.
-- `android/` contains the committed Android project.
-- `ios/` contains the committed iOS project.
-- Generated web assets copied into native projects are ignored; run sync/build commands to refresh them.
-- CI builds the Android debug APK on pull requests and pushes.
+- `android/` contains the committed Android project. `ios/` contains the committed iOS project.
+- `bun run build:mobile*` always builds the UI with `VITE_MOBILE=1 VITE_BASE_URL=./`, which disables the Vite PWA plugin (`enablePWA` in `packages/ui/vite.config.ts`) — a service worker registered inside the Capacitor WebView precaches by absolute scope and can serve stale HTML after a rebuild (black screen). The bundled app should therefore never contain `sw.js`, `registerSW.js`, `workbox-*.js`, or `manifest.webmanifest`.
+- `android/app/src/main/assets/public/` and `ios/App/App/public/` (the assets `cap sync` copies into each native project) are **build output, not tracked in git** — both are ignored wholesale by `android/.gitignore` and `ios/.gitignore`. Nothing under either path should ever be committed; run `bun run build:mobile`, `build:mobile:android`, or `build:mobile:ios` to (re)generate them locally.
+- CI builds the Android debug APK on pull requests and pushes, and guards both bundle trees against stale service-worker artifacts (see [CI coverage](#ci-coverage) below).
 - `CapacitorHttp` is enabled so `fetch`/`XHR` run through native networking (the API key is only injected for relay-origin requests).
 
 ## Commands
@@ -40,9 +40,9 @@ bun run build:mobile:ios
   Android builds require an Android SDK. If Gradle says `SDK location not found`, set `ANDROID_HOME` or create `android/local.properties` with `sdk.dir=/path/to/android-sdk`.
 </Aside>
 
-## Android CI
+## CI coverage
 
-`.github/workflows/ci.yml` includes a `mobile-android` job. It installs Java, Android SDK tooling, Bun dependencies, then runs:
+`.github/workflows/ci.yml` includes a `mobile-android` job that runs on every pull request and push. It installs Java, Android SDK tooling, and Bun dependencies, then runs:
 
 ```bash
 bun run build:mobile:android
@@ -50,6 +50,26 @@ bun run build:mobile:android
 
 That intentionally builds a **debug** APK only — signed with Android's throwaway
 debug key, fine for smoke-testing but not distributable.
+
+The same job then runs `bunx cap sync ios` (a plain Node/Bun file-copy + Swift
+Package manifest step — no CocoaPods, no Xcode, so it runs fine on the
+`ubuntu-latest` runner) to populate `ios/App/App/public/` from the same
+`VITE_MOBILE` bundle, and finishes with a guard step that fails the build if
+`sw.js`, `registerSW.js`, `workbox-*`, or `manifest.webmanifest` shows up
+anywhere under `android/app/src/main/assets/public/` or `ios/App/App/public/`.
+That's the regression this whole page exists to prevent: a stale PWA build
+(pre-`VITE_MOBILE`, PWA plugin still enabled) sitting in the native shell and
+black-screening the app on launch.
+
+<Aside type="caution">
+  {/* ponytail: this is an artifact-name check on the generated bundle tree,
+  not a real build for either platform. It doesn't compile, sign, or run
+  anything. Upgrade to a real Xcode/simulator build on a macOS runner if iOS
+  ever ships for real — see the iOS section below. */}
+  The `mobile-android` job's iOS step is a filename check, not a build. It
+  proves the bundle doesn't contain service-worker artifacts; it does **not**
+  prove the Xcode project compiles, links, or runs.
+</Aside>
 
 ## Release signing
 
@@ -136,7 +156,15 @@ on a tag the `versionName` defaults to the tag minus its leading `v`.
 
 ## iOS
 
-iOS is committed and syncable, but not built in CI yet. Add macOS/Xcode CI only when iOS distribution is active; it needs signing/provisioning setup and is slower than the Android smoke check.
+iOS is committed and syncable, and CI now sanity-checks its generated bundle
+(see [CI coverage](#ci-coverage) above), but nothing ever compiles the Xcode
+project in CI. Add macOS/Xcode CI only when iOS distribution is active; it
+needs signing/provisioning setup and is slower than the Android smoke check.
+
+`ios/App/App/public/` (the web assets `cap sync` copies in) is generated and
+gitignored, exactly like Android's `android/app/src/main/assets/public/` — run
+`bun run build:mobile:ios` (or `bun run build:mobile`) to regenerate it
+locally; never hand-edit or commit it.
 
 ## Server URL and Auth
 

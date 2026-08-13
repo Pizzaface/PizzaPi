@@ -104,6 +104,24 @@ describe("web.ts compose template", () => {
         expect(composed).toContain('UI_DIST_HASH: "abc123def456"');
     });
 
+    test("template substitution produces prod compose structure with ntfy service", () => {
+        // Mirrors generateComposeFile's non-dev appServiceBlock: ntfy is provisioned
+        // alongside ui/server, and the server gets PIZZAPI_NTFY_URL pointed at it.
+        const ntfyBlock = `  ntfy:\n    image: binwiederhier/ntfy:v2.25.0\n    command: serve\n    restart: unless-stopped\n    environment:\n      - NTFY_BASE_URL=http://localhost:2586\n      - NTFY_AUTH_FILE=/var/lib/ntfy/auth.db\n      - NTFY_AUTH_DEFAULT_ACCESS=deny-all\n      - NTFY_BEHIND_PROXY=true\n      - NTFY_CACHE_FILE=/var/lib/ntfy/cache.db\n    volumes:\n      - ntfy-data:/var/lib/ntfy\n    healthcheck:\n      test: ["CMD", "ntfy", "healthy"]\n      interval: 15s\n      timeout: 5s\n      retries: 5\n\n`;
+        const prodBlock = `${ntfyBlock}  server:\n    build:\n      context: /home/user/.pizzapi/web/repo\n      dockerfile: Dockerfile\n      target: runtime-no-ui\n      args:\n        PREBUILT_UI: "true"\n        UI_DIST_HASH: "abc123def456"\n    ports:\n      - "7492:7492"\n    environment:\n      - PORT=7492\n      - PIZZAPI_REDIS_URL=redis://redis:6379\n      - BETTER_AUTH_SECRET=Secret123\n      - VAPID_PUBLIC_KEY=BTestPublicKey123\n      - VAPID_PRIVATE_KEY=TestPrivateKey456\n      - VAPID_SUBJECT=mailto:admin@pizzapi.local\n      # - PIZZAPI_EXTRA_ORIGINS=\n      # - PIZZAPI_TRUST_PROXY=\n      # - PIZZAPI_PROXY_DEPTH=\n      - PIZZAPI_NTFY_URL=http://ntfy\n      # - PIZZAPI_NTFY_PUBLIC_URL=\n      # - PIZZAPI_NTFY_PUBLISH_TOKEN=\n    volumes:\n      - /home/user/.pizzapi/web/data:/app/data:Z\n    depends_on:\n      redis:\n        condition: service_started\n      ntfy:\n        condition: service_started\n    restart: unless-stopped\n    stop_grace_period: 30s\n\n`;
+        const composed = COMPOSE_TEMPLATE
+            .replace(/\{\{REDIS_PLATFORM_LINE}}/g, "    platform: linux/arm64\n")
+            .replace(/\{\{APP_SERVICE_BLOCK}}/g, prodBlock)
+            .replace(/\{\{VOLUMES_SECTION}}/g, "volumes:\n  ui-dist:\n  ntfy-data:\n");
+
+        expect(composed).not.toContain("{{");
+        expect(composed).not.toContain("}}");
+        expect(composed).toContain("  ntfy:\n    image: binwiederhier/ntfy:v2.25.0");
+        expect(composed).toContain("PIZZAPI_NTFY_URL=http://ntfy");
+        expect(composed).toContain("ntfy:\n        condition: service_started");
+        expect(composed).toContain("ntfy-data:");
+    });
+
     test("template with no extra origins produces commented-out line", () => {
         const devBlock = `  dev:\n    build:\n      context: /repo\n      dockerfile: Dockerfile\n      target: builder\n    command: bun run dev\n    ports:\n      - "7492:7492"\n      - "5173:5173"\n    environment:\n      - PORT=7492\n      - PIZZAPI_REDIS_URL=redis://redis:6379\n      - BETTER_AUTH_SECRET=Secret\n      - VAPID_PUBLIC_KEY=key\n      - VAPID_PRIVATE_KEY=key\n      - VAPID_SUBJECT=mailto:test@test.com\n      # - PIZZAPI_EXTRA_ORIGINS=\n      # - PIZZAPI_TRUST_PROXY=\n      # - PIZZAPI_PROXY_DEPTH=\n    volumes:\n      - /repo:/app:Z\n      - /app/node_modules\n      - /data:/app/data:Z\n    depends_on:\n      redis:\n        condition: service_healthy\n    restart: unless-stopped\n    stop_grace_period: 30s\n\n`;
         const composed = COMPOSE_TEMPLATE

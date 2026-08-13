@@ -22,6 +22,13 @@ app launch ──► fetch manifest ──► buildTimestamp newer? ──► Ca
 
 - **Freshness key:** the bundle's `buildTimestamp` (same signal as the web
   update banner). ISO-8601 sorts lexically, so "strictly newer" is a plain `>`.
+- **Kill-switch:** an optional `minBuildTimestamp` on the manifest. The client
+  refuses to apply a bundle whose own `buildTimestamp` is older than it, even
+  if that bundle is newer than what's installed. See "Kill-switch" below.
+- **Deferred apply:** after `download`+`set`, the client does not reload right
+  away — it waits for the app to background first (Capacitor `App` plugin's
+  `appStateChange`), so a cold-boot OTA check can't yank the WebView out from
+  under a user mid-draft.
 - **Manual mode:** the app's server URL is chosen at runtime, so Capgo's
   build-time `autoUpdate.updateUrl` can't be used. `packages/ui/src/lib/mobile-ota.ts`
   fetches the manifest and drives `download → set → reload` itself.
@@ -32,7 +39,9 @@ app launch ──► fetch manifest ──► buildTimestamp newer? ──► Ca
   `registerPlugin("CapacitorUpdater")` bridge (by name, like `PizzapiNtfy`) — it
   does **not** import the `@capgo` JS wrapper, so the web build never resolves
   the package and there's no bare-specifier `import()` for the WebView to fail
-  on. On native the proxy routes to the plugin `cap sync` installs.
+  on. On native the proxy routes to the plugin `cap sync` installs. The
+  deferred-reload listener uses the same by-name `registerPlugin("App")`
+  pattern against the Capacitor `App` plugin.
 
 ## Native setup (run on a machine with the Android/iOS toolchain)
 
@@ -68,17 +77,59 @@ launch, installed apps older than that `buildTimestamp` pull and apply it.
 
 When `PIZZAPI_MOBILE_OTA_DIR` is unset the feature is off (every OTA path 404s).
 
+## Kill-switch
+
+If a published bundle turns out to be bad, `minBuildTimestamp` on the manifest
+forces the OTA channel closed until a fixed bundle ships — clients refuse any
+bundle whose own `buildTimestamp` is older than `minBuildTimestamp`, even one
+that's newer than what they have installed. It's optional and absent by
+default, so older manifests/clients are unaffected.
+
+**To strand an already-published bad bundle right now** (no rebuild needed):
+
+```bash
+PIZZAPI_MOBILE_OTA_DIR=/srv/pizzapi-ota bun scripts/publish-mobile-ota.ts --kill-switch=<future-ISO-timestamp>
+```
+
+This patches `minBuildTimestamp` on the existing `manifest.json` in place. The
+OTA channel stays closed until you publish a bundle whose `buildTimestamp` is
+`>= <future-ISO-timestamp>` (a normal `bun run publish:mobile:ota`, since a
+fresh build's timestamp is always "now").
+
+To bake a floor into a fix as you publish it, set
+`PIZZAPI_MOBILE_OTA_MIN_BUILD_TIMESTAMP` before running the normal publish
+script:
+
+```bash
+PIZZAPI_MOBILE_OTA_DIR=/srv/pizzapi-ota PIZZAPI_MOBILE_OTA_MIN_BUILD_TIMESTAMP=<bad-build-timestamp> \
+  bun run publish:mobile:ota
+```
+
+Devices already running the bad bundle aren't force-rolled-back — the
+kill-switch only stops the OTA channel from handing that bundle to anyone
+else. There's no server-side rollback/staged-rollout system; see "Notes /
+limits" for what's intentionally out of scope.
+
 ## Notes / limits
 
 - **HTTPS-only.** OTA ships executable JS, so the client only applies a bundle
   when the relay server URL is `https://` (`isSecureOtaOrigin`). The app allows
   `http://` for LAN/loopback servers and `CapacitorHttp` bypasses mixed-content
   blocking, so plain-http OTA would be MITM-exploitable — those servers update
-  via a new APK instead.
+  via a new APK instead. That failure mode used to be silent; the client now
+  surfaces it once per launch through the existing frontend log/toast bus
+  (`reportWarning("mobile-ota", …)` in `mobile-ota.ts`) instead of a swallowed
+  `return false`.
+- **Deferred reload.** The client downloads/verifies/`set()`s a new bundle as
+  soon as it's found, but doesn't call `CapacitorUpdater.reload()` immediately
+  — it registers a one-shot listener on the Capacitor `App` plugin's
+  `appStateChange` and reloads the next time the app backgrounds. This avoids
+  reloading the WebView (and discarding in-progress input, e.g. a composer
+  draft) right as a cold-launched app resumes.
 - The bundle is public (it's the same UI the server already serves) — no auth on
   the endpoints; integrity comes from the checksum + TLS, not access control.
 - `publish:mobile:ota` uses the system `zip`. If a device ever rejects the
   archive, swap that step for `@capgo/cli bundle zip` (their exact format).
-- Rollback/staged rollout/kill-switch are not implemented — add a
-  `minBuildTimestamp` gate in the manifest if you need to force-expire a bad
-  bundle.
+- **Explicitly out of scope (ponytail):** staged rollout percentages, a manual
+  rollback UI, and signed bundles. The `minBuildTimestamp` kill-switch is the
+  whole mitigation for a bad bundle today — revisit if that's ever not enough.

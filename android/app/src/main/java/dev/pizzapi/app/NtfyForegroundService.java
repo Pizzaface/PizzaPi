@@ -1,5 +1,6 @@
 package dev.pizzapi.app;
 
+import android.app.AlarmManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -54,9 +55,10 @@ import java.util.regex.Pattern;
  *       4xx stop retrying and surface an error notification.</li>
  * </ul>
  *
- * <p>Known limitations (see deployment/mobile-push.mdx): no Doze wakelock, no
- * BOOT_COMPLETED restart, and the dataSync FGS 6h/24h cap on Android 15+ stops
- * the service on {@link #onTimeout(int)} (upgrade path noted there).
+ * <p>Known limitations (see deployment/mobile-push.mdx): no Doze wakelock. A
+ * {@link NtfyRestartReceiver} restarts the service from persisted config after
+ * a reboot (BOOT_COMPLETED) and reschedules a restart via AlarmManager when
+ * the dataSync FGS 6h/24h cap fires {@link #onTimeout(int)}.
  */
 public class NtfyForegroundService extends Service {
 
@@ -79,6 +81,14 @@ public class NtfyForegroundService extends Service {
     private static final String KEY_TOKEN = "token";
     private static final String KEY_LAST_ID = "lastId";
     private static final String KEY_FIRST_START = "firstStart";
+    /** True once {@link #start} has been called and false once {@link #stop} has
+     *  been called; lets {@link NtfyRestartReceiver} tell "user turned push off"
+     *  apart from "service got killed". */
+    private static final String KEY_ENABLED = "enabled";
+    /** Delay before retrying an FGS restart (after reboot restart failure, or
+     *  after an Android 15+ FGS-timeout reschedule). Fixed interval, no backoff
+     *  -- simplest thing that eventually recovers once the OS quota resets. */
+    private static final long RESTART_DELAY_MS = 60 * 60 * 1000L; // 1h
 
     private static final int INITIAL_BACKOFF_MS = 1000;
     private static final int MAX_BACKOFF_MS = 30_000;
@@ -493,7 +503,43 @@ public class NtfyForegroundService extends Service {
                 .putString(KEY_NTFY_URL, ntfyUrl)
                 .putString(KEY_TOPIC, topic)
                 .putString(KEY_TOKEN, token) // null clears the key
+                .putBoolean(KEY_ENABLED, true)
                 .apply();
+    }
+
+    /** True if we have persisted config AND the user hasn't explicitly stopped push. */
+    static boolean canAutoRestart(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        if (!prefs.getBoolean(KEY_ENABLED, false)) return false;
+        String ntfyUrl = prefs.getString(KEY_NTFY_URL, null);
+        String topic = prefs.getString(KEY_TOPIC, null);
+        return ntfyUrl != null && topic != null && isValidNtfyUrl(ntfyUrl);
+    }
+
+    /**
+     * Schedule a one-shot restart via AlarmManager, targeting
+     * {@link NtfyRestartReceiver}. Used both for the boot-restart-failed retry
+     * and the FGS-timeout reschedule (#onTimeout). Uses an exact alarm so the
+     * receiver qualifies for the Android 8+/12+ background-FGS-start exemption
+     * granted to apps handling an alarm they scheduled (SCHEDULE_EXACT_ALARM is
+     * already declared for @capacitor/local-notifications); falls back to an
+     * inexact alarm if that permission isn't granted, best-effort.
+     */
+    static void scheduleRestart(Context context) {
+        AlarmManager am = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+        if (am == null) return;
+        Intent intent = new Intent(context, NtfyRestartReceiver.class)
+                .setAction(NtfyRestartReceiver.ACTION_RESTART);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT
+                | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0);
+        PendingIntent pi = PendingIntent.getBroadcast(context, 0, intent, flags);
+        long triggerAt = System.currentTimeMillis() + RESTART_DELAY_MS;
+        try {
+            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pi);
+        } catch (SecurityException e) {
+            // Exact-alarm permission not granted; fall back to inexact (#13).
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pi);
+        }
     }
 
     private void stopStream() {
@@ -521,12 +567,19 @@ public class NtfyForegroundService extends Service {
      */
     @Override
     public void onTimeout(int startId) {
-        Log.w(TAG, "FGS dataSync timeout reached; stopping cleanly");
-        // ponytail: we just stop on the cap. Upgrade path: reschedule via
-        // WorkManager/AlarmManager (or a data-carrying push transport) to resume
-        // after the 24h window resets.
+        Log.w(TAG, "FGS dataSync timeout reached; stopping and scheduling a restart");
+        // ponytail: ceiling is ~6h cumulative runtime within a rolling 24h window
+        // for a dataSync FGS (Android 15+, targetSdk 35). We can't just call
+        // startForegroundService() again right here -- the quota is still
+        // exhausted and the platform throws ForegroundServiceStartNotAllowedException
+        // -- so we schedule a retry via AlarmManager instead and let it keep
+        // retrying (NtfyRestartReceiver reschedules itself on failure) until the
+        // window frees up. Upgrade path: replace the permanent dataSync stream
+        // with WorkManager periodic sync (no FGS cap) or a data-message push
+        // transport (FCM) that only wakes us when there's something to deliver.
         running.set(false);
         stopStream();
+        scheduleRestart(this);
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
     }
@@ -557,8 +610,13 @@ public class NtfyForegroundService extends Service {
         ContextCompat.startForegroundService(context, intent);
     }
 
-    /** Convenience to stop the service. */
+    /** Convenience to stop the service. Marks push disabled so BOOT_COMPLETED /
+     *  timeout-reschedule restarts don't fight a user-initiated stop. */
     public static void stop(Context context) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_ENABLED, false)
+                .apply();
         context.stopService(new Intent(context, NtfyForegroundService.class));
     }
 }

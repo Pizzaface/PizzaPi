@@ -102,16 +102,27 @@ export async function requestNativePushPermission(): Promise<boolean> {
 }
 
 /**
+ * Outcome of a registration attempt. `unconfigured` is the 503 the server
+ * returns when it has no ntfy instance set up — a distinct, user-visible
+ * state, not a generic failure. `error` covers everything else (network,
+ * malformed response, plugin start failure).
+ */
+export type NtfyStartResult = { ok: true } | { ok: false; reason: "unconfigured" | "error" };
+
+/**
  * Register with the server for native push and start the foreground-service
  * subscribe stream. No-op outside the Android native app. Safe to call on
  * every launch — registration is idempotent (server reuses the topic per
  * user+platform), and starting an already-running service re-configures it.
  *
- * Requires `PIZZAPI_NTFY_URL` to be configured on the server (returns silently
- * if the server reports ntfy is not configured, so the app degrades gracefully).
+ * Requires `PIZZAPI_NTFY_URL` to be configured on the server; returns
+ * `{ ok: false, reason: "unconfigured" }` if the server reports ntfy is not
+ * configured, so callers can degrade gracefully instead of claiming success.
  */
-export async function startNtfyPush(): Promise<void> {
-    if (!androidNative() || isNativePushDisabled()) return;
+export async function startNtfyPush(): Promise<NtfyStartResult> {
+    // ponytail: "nothing to do" reports ok — callers must check platform/disabled
+    // state THEMSELVES before treating ok as "registered". Both current callers do.
+    if (!androidNative() || isNativePushDisabled()) return { ok: true };
     try {
         const res = await fetch(resolveMobileUrl("/api/push/register-native"), {
             method: "POST",
@@ -119,11 +130,12 @@ export async function startNtfyPush(): Promise<void> {
             body: JSON.stringify({ platform: "android" }),
         });
         if (!res.ok) {
-            // 503 = ntfy not configured on the server → degrade silently.
-            if (res.status !== 503) {
-                console.error("ntfy register-native failed:", res.status);
+            // 503 = ntfy not configured on the server → distinct state, not an error.
+            if (res.status === 503) {
+                return { ok: false, reason: "unconfigured" };
             }
-            return;
+            console.error("ntfy register-native failed:", res.status);
+            return { ok: false, reason: "error" };
         }
         const body = (await res.json()) as {
             ntfyPublicUrl?: string;
@@ -133,7 +145,7 @@ export async function startNtfyPush(): Promise<void> {
         };
         if (!body.ntfyPublicUrl || !body.topic) {
             console.error("ntfy register-native returned no topic/url");
-            return;
+            return { ok: false, reason: "error" };
         }
         // Phase 1: subscribe anonymously. ntfy is provisioned with anonymous
         // read-only on `pizzapi-*` (see deployment/mobile-push.mdx), and the
@@ -143,8 +155,10 @@ export async function startNtfyPush(): Promise<void> {
             topic: body.topic,
             token: undefined,
         });
+        return { ok: true };
     } catch (err) {
         console.error("startNtfyPush failed:", err);
+        return { ok: false, reason: "error" };
     }
 }
 

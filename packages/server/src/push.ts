@@ -401,26 +401,61 @@ async function sendNtfyToUser(userId: string, payload: PushPayload, isChildSessi
     const base = cfg.url.replace(/\/+$/, "");
     const staleIds: string[] = [];
 
+    // ponytail: single immediate retry on transient failure (network throw or
+    // 5xx) — no backoff, no queue, no retry framework. If ntfy is down for
+    // longer than one extra round-trip, the notification is dropped and only
+    // logged. Upgrade path if that's ever not good enough: a durable outbox
+    // table drained by a background sweep, same shape as email retry queues.
+    async function publishOnce(reg: NativePushRegistrationTable): Promise<Response> {
+        // ntfy JSON publish: POST to the base URL with `topic` in the body.
+        // 10s timeout so a hung ntfy instance can't block forever.
+        return fetch(base, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ topic: reg.topic, ...fields }),
+            signal: AbortSignal.timeout(10_000),
+        });
+    }
+
     await Promise.allSettled(
         registrations.map(async (reg) => {
+            let res: Response;
             try {
-                // ntfy JSON publish: POST to the base URL with `topic` in the body.
-                // 10s timeout so a hung ntfy instance can't block forever.
-                const res = await fetch(base, {
-                    method: "POST",
-                    headers,
-                    body: JSON.stringify({ topic: reg.topic, ...fields }),
-                    signal: AbortSignal.timeout(10_000),
-                });
-                // 403/404 = topic forbidden/unknown → prune the registration.
+                res = await publishOnce(reg);
+            } catch (err) {
+                // Network-level failure (throw) — retry once.
+                try {
+                    res = await publishOnce(reg);
+                } catch (retryErr) {
+                    log.error(`ntfy publish to topic ${reg.topic.slice(0, 16)}… failed after retry:`, retryErr);
+                    return;
+                }
+            }
+
+            // 403/404 = topic forbidden/unknown → prune the registration. Not
+            // transient — a retry can't fix an invalid/forbidden topic.
+            if (res.status === 403 || res.status === 404) {
+                staleIds.push(reg.id);
+                return;
+            }
+            if (res.ok) return;
+
+            if (res.status >= 500) {
+                // Transient server error — retry once.
+                try {
+                    res = await publishOnce(reg);
+                } catch (retryErr) {
+                    log.error(`ntfy publish to topic ${reg.topic.slice(0, 16)}… failed after retry:`, retryErr);
+                    return;
+                }
                 if (res.status === 403 || res.status === 404) {
                     staleIds.push(reg.id);
-                } else if (!res.ok) {
-                    log.error(`ntfy publish to topic ${reg.topic.slice(0, 16)}… failed: ${res.status}`);
+                    return;
                 }
-            } catch (err) {
-                log.error("ntfy publish error:", err);
+                if (res.ok) return;
             }
+
+            log.error(`ntfy publish to topic ${reg.topic.slice(0, 16)}… failed: ${res.status}`);
         }),
     );
 

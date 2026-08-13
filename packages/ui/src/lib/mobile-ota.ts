@@ -22,9 +22,28 @@
  *
  * ponytail: no retry/scheduler/progress UI — one check on launch. Add a
  * progress bar + periodic re-check only if bundles get large or updates frequent.
+ *
+ * Kill-switch (`minBuildTimestamp`) and deferred-reload notes:
+ *  - `minBuildTimestamp` is an optional, ops-set floor on the manifest. If the
+ *    offered bundle's own `buildTimestamp` is older than it, the client
+ *    refuses to apply it — even though it may still be newer than what's
+ *    installed. That's the kill-switch: bump `minBuildTimestamp` above a bad
+ *    bundle's `buildTimestamp` (see scripts/publish-mobile-ota.ts --kill-switch)
+ *    to strand it until a fixed bundle is published. Absent = no gate (default).
+ *  - The reload that swaps in a newly-downloaded bundle is deferred until the
+ *    app backgrounds (via the Capacitor `App` plugin's `appStateChange`)
+ *    instead of firing immediately after `set()`. A cold-boot OTA check can
+ *    otherwise reload the WebView right as a killed-and-relaunched app
+ *    resumes, discarding whatever the user was mid-typing. Explicitly *not*
+ *    building a scheduler/periodic re-check here — one listener, fires once.
+ *
+ * Explicitly skipped (ponytail — see docs/mobile-ota.md): staged rollout
+ * percentages, a rollback UI, and signed bundles. Add those only if a real
+ * incident shows the manual kill-switch isn't enough.
  */
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { getMobileRuntimeConfig } from "./mobile-runtime.js";
+import { reportWarning } from "./frontend-log.js";
 
 /** Build timestamp baked into THIS bundle (the currently-installed version). */
 declare const __PIZZAPI_BUILD_TIMESTAMP__: string;
@@ -42,6 +61,13 @@ export interface OtaManifest {
     checksum: string;
     /** Optional size in bytes (informational). */
     bytes?: number;
+    /**
+     * Optional kill-switch floor. When present, a bundle whose own
+     * `buildTimestamp` is older than this is refused, regardless of whether
+     * it's newer than what's installed. Absent = no gate (fully backward
+     * compatible with older manifests / clients that don't know the field).
+     */
+    minBuildTimestamp?: string;
 }
 
 /**
@@ -51,14 +77,19 @@ export interface OtaManifest {
 export function shouldApplyOta(manifest: unknown, installedBuildTimestamp: string): boolean {
     if (!manifest || typeof manifest !== "object") return false;
     const m = manifest as Partial<OtaManifest>;
-    return (
+    const fresh =
         typeof m.buildTimestamp === "string" &&
         typeof m.url === "string" &&
         !!m.url &&
         typeof m.checksum === "string" &&
         !!m.checksum &&
-        m.buildTimestamp > installedBuildTimestamp
-    );
+        m.buildTimestamp > installedBuildTimestamp;
+    if (!fresh) return false;
+    // Kill-switch: an absent minBuildTimestamp never blocks anything.
+    if (typeof m.minBuildTimestamp === "string" && (m.buildTimestamp as string) < m.minBuildTimestamp) {
+        return false;
+    }
+    return true;
 }
 
 /** True only inside the bundled native shell — web/PWA is always a no-op. */
@@ -108,6 +139,53 @@ const CapacitorUpdater = registerPlugin<CapgoUpdater>("CapacitorUpdater", {
     web: async () => new CapacitorUpdaterWeb(),
 });
 
+interface AppStateChangeEvent {
+    /** True when foregrounded; false when backgrounded. */
+    isActive: boolean;
+}
+
+/** Minimal shape of the bits of @capacitor/app we call. */
+interface CapacitorAppPlugin {
+    addListener(
+        eventName: "appStateChange",
+        listenerFunc: (state: AppStateChangeEvent) => void,
+    ): Promise<{ remove: () => Promise<void> }>;
+}
+
+// Same by-name registerPlugin pattern as CapacitorUpdater above — @capacitor/app
+// is already pulled in transitively (via @aparajita/capacitor-secure-storage)
+// and `cap sync` installs the native App plugin, so there's no need to add a
+// direct npm dependency or import the @capacitor/app JS wrapper.
+class CapacitorAppWeb implements CapacitorAppPlugin {
+    async addListener(): Promise<{ remove: () => Promise<void> }> {
+        return { remove: async () => {} };
+    }
+}
+
+const CapacitorApp = registerPlugin<CapacitorAppPlugin>("App", {
+    web: async () => new CapacitorAppWeb(),
+});
+
+/**
+ * Register a one-shot listener that applies a newly-downloaded/set OTA bundle
+ * the next time the app leaves the foreground, instead of reloading right
+ * away. Exported (and parameterized on the plugin handles) so tests can pass
+ * fakes without touching Capacitor at all.
+ */
+export function deferReloadUntilBackground(
+    appPlugin: Pick<CapacitorAppPlugin, "addListener">,
+    updater: Pick<CapgoUpdater, "reload">,
+): void {
+    void appPlugin
+        .addListener("appStateChange", (state) => {
+            if (state.isActive) return; // still foregrounded — keep waiting
+            void updater.reload();
+        })
+        .catch((err) => {
+            console.error("mobile-ota: failed to defer reload:", err);
+        });
+}
+
 /**
  * Tell the updater this bundle booted successfully, cancelling the automatic
  * rollback that would otherwise revert a freshly-applied OTA bundle. Call once
@@ -134,8 +212,18 @@ export async function checkAndApplyOtaUpdate(
     const { serverUrl } = getMobileRuntimeConfig();
     if (!serverUrl) return false;
     const base = serverUrl.replace(/\/+$/, "");
-    // Never apply code fetched over an unauthenticated (http) channel.
-    if (!isSecureOtaOrigin(base)) return false;
+    // Never apply code fetched over an unauthenticated (http) channel. LAN/
+    // loopback http servers never receive OTA (see isSecureOtaOrigin) and
+    // otherwise fail silently forever — surface it once via the existing
+    // frontend log/toast bus so it isn't a silent trap.
+    if (!isSecureOtaOrigin(base)) {
+        reportWarning(
+            "mobile-ota",
+            "Mobile OTA updates are disabled for this server (plain http://) — publish a new APK to update it.",
+            { detail: base, toast: false },
+        );
+        return false;
+    }
 
     let manifest: unknown;
     try {
@@ -156,7 +244,10 @@ export async function checkAndApplyOtaUpdate(
             checksum: m.checksum,
         });
         await CapacitorUpdater.set(bundle);
-        await CapacitorUpdater.reload();
+        // Don't reload mid-session: apply on the next backgrounding instead of
+        // yanking the WebView out from under a possibly-just-resumed app (e.g.
+        // discarding an in-progress composer draft).
+        deferReloadUntilBackground(CapacitorApp, CapacitorUpdater);
         return true;
     } catch (err) {
         console.error("mobile-ota: update failed:", err);
