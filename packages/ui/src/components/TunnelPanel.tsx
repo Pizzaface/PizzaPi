@@ -89,6 +89,9 @@ export function TunnelPanel({ sessionId, runnerId }: TunnelPanelProps) {
         port: previewPort,
         runnerId,
         enabled: available && previewPort !== null,
+        // User-app previews get the dedicated tunnel origin when configured —
+        // SPAs see a clean location.pathname instead of the proxy prefix.
+        preferHostOrigin: true,
     });
 
     if (!available) return null;

@@ -6,6 +6,7 @@ import { getTunnelRelay } from "../tunnel-relay.js";
 import { getSession } from "../ws/sio-state/index.js";
 import { getRunnerData } from "../ws/sio-registry.js";
 import { assertTunnelTokenStillValid, verifyTunnelToken } from "./tunnel-token.js";
+import { authorizeTunnelLabel, matchTunnelHost } from "./tunnel-host.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("tunnel-ws");
@@ -47,6 +48,17 @@ export function handleTunnelWsUpgrade(
     const url = req.url ?? "/";
     const pathname = url.split("?")[0];
 
+    // Host-based tunnel (<label>.<domain>) — the label is the credential and
+    // the raw path is forwarded verbatim (HMR/socket.io in tunnelled apps).
+    const hostLabel = matchTunnelHost((req.headers.host ?? "").split(":")[0]);
+    if (hostLabel) {
+        handleHostUpgradeAsync(req, socket, head, hostLabel, url, pathname).catch((err) => {
+            log.error("Unexpected error in host-tunnel upgrade handler:", err);
+            if (!socket.destroyed) rejectUpgrade(socket, 500, "Internal Server Error");
+        });
+        return true;
+    }
+
     const authMatch = pathname.match(AUTH_TUNNEL_PATH_RE);
     if (authMatch) {
         handleAuthUpgradeAsync(req, socket, head, authMatch, url).catch((err) => {
@@ -76,6 +88,33 @@ export function handleTunnelWsUpgrade(
         }
     });
     return true;
+}
+
+async function handleHostUpgradeAsync(
+    req: IncomingMessage,
+    rawSocket: Duplex,
+    head: Buffer,
+    label: string,
+    fullUrl: string,
+    pathname: string,
+): Promise<void> {
+    const auth = await authorizeTunnelLabel(label);
+    if (!auth.ok) {
+        rejectUpgrade(rawSocket, auth.status, auth.message);
+        return;
+    }
+
+    // Reuse the common upgrade path with a synthesized match:
+    // [full, scope, port, path]. scope + runnerId are preauthenticated.
+    await handleUpgradeAsync(
+        req,
+        rawSocket,
+        head,
+        ["", auth.record.scope, String(auth.record.port), pathname] as unknown as RegExpMatchArray,
+        fullUrl,
+        auth.record.userId,
+        auth.runnerId,
+    );
 }
 
 async function handleAuthUpgradeAsync(

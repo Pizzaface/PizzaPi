@@ -1,6 +1,8 @@
 import { Buffer } from "node:buffer";
 import { EventEmitter } from "node:events";
 import http from "node:http";
+import https from "node:https";
+import net from "node:net";
 import type {
   TunnelClientMessage,
   TunnelRequestDataEndMessage,
@@ -125,6 +127,10 @@ export class TunnelClient extends EventEmitter {
   private loopbackHost = new Map<number, LoopbackHost>();
   /** Active local WebSocket connections: wsId → WebSocket */
   private activeWs = new Map<string, WebSocket>();
+  /** Detected protocol per exposed port (TLS probe result). */
+  private portProtocol = new Map<number, "http" | "https">();
+  /** Ports with a TLS probe currently in flight. */
+  private probing = new Set<number>();
 
   constructor(options: TunnelClientOptions) {
     super();
@@ -254,14 +260,71 @@ export class TunnelClient extends EventEmitter {
 
   exposePort(port: number): void {
     this.exposedPorts.add(port);
+    this.probeProtocol(port);
   }
 
   unexposePort(port: number): void {
     this.exposedPorts.delete(port);
+    this.portProtocol.delete(port);
+  }
+
+  /**
+   * One-shot protocol probe: HEAD / over TLS. Success → https. On failure, a
+   * plain TCP connect disambiguates: connectable → the service speaks plain
+   * http (cache it); not connectable → service down, cache nothing so the next
+   * request re-probes.
+   *
+   * NOTE: raw tls.connect is NOT usable here — under Bun it fires secureConnect
+   * (with authorized=true!) against plain-HTTP servers. A real https request is
+   * the only handshake signal that behaves on both runtimes.
+   */
+  private probeProtocol(port: number): void {
+    if (this.portProtocol.has(port) || this.probing.has(port)) return;
+    this.probing.add(port);
+    const host = (this.loopbackHost.get(port) ?? "127.0.0.1").replace(/^\[|\]$/g, "");
+    let settled = false;
+    const done = (proto: "http" | "https" | null): void => {
+      if (settled) return;
+      settled = true;
+      this.probing.delete(port);
+      if (proto) this.portProtocol.set(port, proto);
+    };
+
+    const req = https.request(
+      { host, port, path: "/", method: "HEAD", rejectUnauthorized: false, timeout: 1500 },
+      (res) => {
+        res.resume();
+        done("https");
+      },
+    );
+    req.on("timeout", () => {
+      req.destroy();
+      done(null);
+    });
+    req.on("error", () => {
+      // TLS failed — is anything listening at all? (Bun reports bogus
+      // ECONNREFUSED for TLS-to-plain-HTTP, so error codes can't be trusted.)
+      const sock = net.connect({ host, port });
+      sock.setTimeout(1500, () => {
+        sock.destroy();
+        done(null);
+      });
+      sock.once("connect", () => {
+        sock.destroy();
+        done("http");
+      });
+      sock.once("error", () => done(null));
+    });
+    req.end();
   }
 
   isPortExposed(port: number): boolean {
     return this.exposedPorts.has(port);
+  }
+
+  /** Probe result for an exposed port (undefined while undetected). */
+  detectedProtocol(port: number): "http" | "https" | undefined {
+    return this.portProtocol.get(port);
   }
 
   private send(msg: TunnelClientMessage): void {
@@ -332,6 +395,9 @@ export class TunnelClient extends EventEmitter {
       return;
     }
 
+    const useTls = this.portProtocol.get(port) === "https";
+    if (!this.portProtocol.has(port)) this.probeProtocol(port); // late-started service — fill cache for next request
+
     const targetUrl = `http://127.0.0.1:${port}${requestUrl}`;
     let parsed: URL;
     try {
@@ -361,12 +427,15 @@ export class TunnelClient extends EventEmitter {
     const attempt = (hostname: LoopbackHost, canRetry: boolean): http.ClientRequest => {
     const target = new URL(parsed.toString());
     target.hostname = hostname;
-    const req = http.request(
+    if (useTls) target.protocol = "https:";
+    const req = (useTls ? https : http).request(
       target,
       {
         method,
         headers: forwardHeaders,
         signal: controller.signal,
+        // Local dev HTTPS is almost always self-signed — this stays loopback-only.
+        ...(useTls ? { rejectUnauthorized: false } : {}),
       },
       (response) => {
         this.loopbackHost.set(port, hostname);
@@ -490,7 +559,8 @@ export class TunnelClient extends EventEmitter {
       return;
     }
 
-    const targetUrl = `ws://127.0.0.1:${port}${path}`;
+    const wsUseTls = this.portProtocol.get(port) === "https";
+    const targetUrl = `${wsUseTls ? "wss" : "ws"}://127.0.0.1:${port}${path}`;
     let parsed: URL;
     try {
       parsed = new URL(targetUrl);
@@ -521,6 +591,7 @@ export class TunnelClient extends EventEmitter {
           options?: {
             headers?: Record<string, string>;
             protocols?: string[];
+            tls?: { rejectUnauthorized?: boolean };
           },
         ): WebSocket;
       };
@@ -531,6 +602,9 @@ export class TunnelClient extends EventEmitter {
       const ws = new WebSocketCtor(target.toString(), {
         headers: forwardHeaders,
         protocols,
+        // ponytail: Bun-specific option; if the runtime ignores it, wss to a
+        // self-signed local cert fails — no worse than the pre-TLS behavior.
+        ...(wsUseTls ? { tls: { rejectUnauthorized: false } } : {}),
       });
 
       this.activeWs.set(id, ws);

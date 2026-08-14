@@ -319,6 +319,29 @@ describe("withSecurityHeaders", () => {
         expect(csp).toContain("media-src 'self' data: blob:");
     });
 
+    test("adds frame-src for the tunnel domain when PIZZAPI_TUNNEL_DOMAIN is set", () => {
+        const prev = process.env.PIZZAPI_TUNNEL_DOMAIN;
+        process.env.PIZZAPI_TUNNEL_DOMAIN = "t.localhost:7492";
+        try {
+            const res = withSecurityHeaders(new Response("ok"));
+            expect(res.headers.get("content-security-policy")).toContain("frame-src 'self' http://*.t.localhost:7492");
+        } finally {
+            if (prev === undefined) delete process.env.PIZZAPI_TUNNEL_DOMAIN;
+            else process.env.PIZZAPI_TUNNEL_DOMAIN = prev;
+        }
+    });
+
+    test("omits frame-src when no tunnel domain is configured", () => {
+        const prev = process.env.PIZZAPI_TUNNEL_DOMAIN;
+        delete process.env.PIZZAPI_TUNNEL_DOMAIN;
+        try {
+            const res = withSecurityHeaders(new Response("ok"));
+            expect(res.headers.get("content-security-policy")).not.toContain("frame-src");
+        } finally {
+            if (prev !== undefined) process.env.PIZZAPI_TUNNEL_DOMAIN = prev;
+        }
+    });
+
     test("preserves existing headers", () => {
         const res = withSecurityHeaders(new Response("ok", { headers: { "x-custom": "yes" } }));
         expect(res.headers.get("x-custom")).toBe("yes");

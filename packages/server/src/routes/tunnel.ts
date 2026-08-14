@@ -16,6 +16,7 @@ import { assertTunnelTokenStillValid, createTunnelToken, getAuthTunnelBasePath, 
 import { getTunnelRelay } from "../tunnel-relay.js";
 import { getSession } from "../ws/sio-state/index.js";
 import { getRunnerData } from "../ws/sio-registry.js";
+import { mintTunnelLabel } from "./tunnel-host.js";
 import type { RouteHandler } from "./types.js";
 
 const TUNNEL_MAX_BUFFERED_BYTES = 25 * 1024 * 1024; // ponytail: fixed ceiling, raise if legit large HTML responses appear
@@ -506,7 +507,9 @@ function proxyTunnelRequestViaRelay(
                         }
                     }
 
-                    shouldBuffer = shouldBufferTunnelResponse(responseHeaders.get("content-type"));
+                    // basePath "" → host-based passthrough: the app owns the whole
+                    // origin, so no HTML/JS/CSS rewriting (and no buffering) is needed.
+                    shouldBuffer = basePath !== "" && shouldBufferTunnelResponse(responseHeaders.get("content-type"));
                     const contentLength = responseHeaders.get("content-length");
                     if (shouldBuffer && contentLength) {
                         const length = Number.parseInt(contentLength, 10);
@@ -647,7 +650,8 @@ async function handleTunnelTokenMint(req: Request): Promise<Response> {
         }
         const scoped = `runner:${runnerId}`;
         const { token, expiresAt } = createTunnelToken({ userId: identity.userId, sessionId: scoped, port });
-        return Response.json({ token, expiresAt, url: `${getAuthTunnelBasePath(token, scoped, port)}/` });
+        const hostTunnel = await mintTunnelLabel({ userId: identity.userId, scope: scoped, port });
+        return Response.json({ token, expiresAt, url: `${getAuthTunnelBasePath(token, scoped, port)}/`, ...(hostTunnel ? { hostUrl: hostTunnel.url } : {}) });
     }
 
     const sessionData = await getSession(sessionId);
@@ -658,7 +662,8 @@ async function handleTunnelTokenMint(req: Request): Promise<Response> {
     if (!sessionData.runnerId) return Response.json({ error: "Session has no runner" }, { status: 503 });
 
     const { token, expiresAt } = createTunnelToken({ userId: identity.userId, sessionId, port });
-    return Response.json({ token, expiresAt, url: `${getAuthTunnelBasePath(token, sessionId, port)}/` });
+    const hostTunnel = await mintTunnelLabel({ userId: identity.userId, scope: sessionId, port });
+    return Response.json({ token, expiresAt, url: `${getAuthTunnelBasePath(token, sessionId, port)}/`, ...(hostTunnel ? { hostUrl: hostTunnel.url } : {}) });
 }
 
 async function handleAuthTunnel(req: Request, url: URL, match: RegExpMatchArray): Promise<Response> {
@@ -958,6 +963,8 @@ async function handleRunnerTunnel(req: Request, url: URL, match: RegExpMatchArra
 export {
     getTunnelBasePath,
     getRunnerTunnelBasePath,
+    buildForwardHeaders,
+    tunnelErrorResponse,
     rewriteTunnelUrl,
     rewriteTunnelHtml,
     rewriteInlineModuleScripts,

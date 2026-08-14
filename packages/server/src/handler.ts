@@ -1,6 +1,7 @@
 import { getAuth, getTrustedOrigins, isSignupAllowed, runWithAuthContext, type AuthContext } from "./auth.js";
 import { isValidPassword, PASSWORD_REQUIREMENTS_SUMMARY } from "@pizzapi/protocol";
 import { handleApi } from "./routes/index.js";
+import { getTunnelHostConfig, handleTunnelHostRequest } from "./routes/tunnel-host.js";
 import { serveStaticFile } from "./static.js";
 import { getClientIp, verifyCsrfOrigin } from "./security.js";
 import { createLogger } from "@pizzapi/tools";
@@ -192,12 +193,18 @@ export function withSecurityHeaders(res: Response): Response {
         // would block. The iframe sandbox attribute provides defence-in-depth.
     } else {
         headers.set("X-Frame-Options", "DENY");
+        // When host-based tunnels are configured, the UI iframes the tunnel
+        // origin (<label>.<domain>) — allow it in frame-src.
+        const tunnelHost = getTunnelHostConfig();
+        const frameSrc = tunnelHost
+            ? `frame-src 'self' ${tunnelHost.scheme}://*.${tunnelHost.host}${tunnelHost.portSuffix}; `
+            : "";
         // The sha256 hash whitelists the inline FOUC-prevention <script> in
         // packages/ui/index.html.  If that script changes, regenerate the hash:
         //   python3 -c "import re,hashlib,base64;html=open('packages/ui/index.html').read();m=re.search(r'<script>(.*?)</script>',html,re.DOTALL);print('sha256-'+base64.b64encode(hashlib.sha256(m.group(1).encode()).digest()).decode())"
         headers.set(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-4gSUsZcLv5hWmJpSRF6gl939rcZJHXery+eyOKMEgaQ='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' ws: wss: blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'",
+            `${frameSrc}default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-4gSUsZcLv5hWmJpSRF6gl939rcZJHXery+eyOKMEgaQ='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' ws: wss: blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'`,
         );
     }
 
@@ -226,6 +233,12 @@ async function _handleFetch(req: Request): Promise<Response> {
         );
         return new Response("Expected WebSocket upgrade", { status: 426 });
     }
+
+    // ── Host-based tunnel routing (<label>.<PIZZAPI_TUNNEL_DOMAIN>) ────────
+    // Must run before the body-size guard (tunnel bodies stream to the runner)
+    // and the CSRF gate (label-authenticated, not cookie-authenticated).
+    const tunnelHostRes = await handleTunnelHostRequest(req, url);
+    if (tunnelHostRes) return tunnelHostRes;
 
     // ── Body size guard ────────────────────────────────────────────────
     // Validates Content-Length when present (strict numeric parsing) and falls
