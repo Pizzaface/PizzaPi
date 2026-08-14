@@ -142,20 +142,18 @@ The generated unit is equivalent to:
 ```ini
 # ~/.config/systemd/user/pizzapi-runner.service
 [Unit]
-Description=PizzaPi Runner Daemon
-After=network.target
+Description=PizzaPi Runner
+After=network-online.target
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/pizzapi runner
 Restart=on-failure
 RestartSec=5
-Environment=PIZZAPI_API_KEY=your-64-char-hex-api-key...
-Environment=PIZZAPI_RELAY_URL=wss://relay.example.com
-Environment=PIZZAPI_RUNNER_NAME=my-macbook
+WorkingDirectory=/path/to/project
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 ```
 
 ```bash
@@ -165,6 +163,22 @@ systemctl --user status pizzapi-runner.service
 ```
 
 ### macOS (launchd)
+
+The generated LaunchAgent includes the install-time PATH and working directory:
+
+```xml
+<key>EnvironmentVariables</key>
+<dict>
+    <key>PATH</key><string>/your/install-time-shell-path</string>
+</dict>
+<key>WorkingDirectory</key><string>/path/to/project</string>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key>
+<dict>
+    <key>SuccessfulExit</key><false/>
+    <key>Crashed</key><true/>
+</dict>
+```
 
 See the dedicated [macOS Setup](/PizzaPi/deployment/mac-setup/) guide for a full walkthrough, including the LaunchAgent plist and load/unload commands. The key points:
 
