@@ -15,7 +15,7 @@ import { join } from "path";
 import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv, resolveExplicitProjectTrust } from "./config.js";
 import { isPackageCommand, runPackageCommand } from "./package-commands.js";
 import { getOAuthAccessToken, getAnthropicKeychainToken } from "./runner/usage-auth.js";
-import { c, usageBar, colorPct, colorRemaining } from "./cli-colors.js";
+import { c, usageBar, colorPct } from "./cli-colors.js";
 import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride } from "./skills.js";
 import { getPluginSkillPaths, getPluginPromptTemplatePaths } from "./extensions/claude-plugins.js";
 import { buildPizzaPiExtensionFactories } from "./extensions/factories.js";
@@ -48,6 +48,11 @@ async function main() {
 
     // `runner` → outer supervisor (spawns daemon as a child process so that a
     //   crash in the PTY layer only kills the child, not the supervisor).
+    if (args[0] === "runner" && args[1] === "install") {
+        const { runInstall } = await import("./runner/install.js");
+        process.exit(runInstall(args.slice(2)));
+    }
+
     if (args[0] === "runner" && args[1] === "stop") {
         const { runStop } = await import("./runner/stop.js");
         const code = await runStop();
@@ -310,12 +315,12 @@ async function main() {
                                 ? (1 - bucket.remainingFraction) * 100
                                 : null;
                             const bar = usedPct !== null ? usageBar(usedPct) : "";
-                            const remainingStr = bucket.remainingFraction != null
-                                ? ` ${colorRemaining(bucket.remainingFraction * 100)} remaining`
+                            const usedStr = usedPct !== null
+                                ? ` ${colorPct(usedPct)} used`
                                 : "";
                             const amt = bucket.remainingAmount != null ? c.dim(` (${bucket.remainingAmount} left)`) : "";
                             const reset = bucket.resetTime ? c.dim(`  resets ${new Date(bucket.resetTime).toLocaleString()}`) : "";
-                            log.info(`  ${label.padEnd(28)} ${bar}${remainingStr}${amt}${reset}`);
+                            log.info(`  ${label.padEnd(28)} ${bar}${usedStr}${amt}${reset}`);
                         }
                     }
                     printedAny = true;
@@ -377,6 +382,7 @@ async function main() {
         log.info(`  ${c.cmd("pizza local")} ${c.dim("[flags]")}         Start local relay + runner in one command`);
         log.info(`  ${c.cmd("pizza web")} ${c.dim("[flags]")}           Manage the PizzaPi web hub (Docker)`);
         log.info(`  ${c.cmd("pizza runner")} ${c.dim("[args]")}         Manage the background runner daemon`);
+        log.info(`  ${c.cmd("pizza runner install")} [--activate] [--dry-run]  Install a persistent runner service`);
         log.info(`  ${c.cmd("pizza runner stop")}           Stop the runner daemon`);
         log.info(`  ${c.cmd("pizza runner status")} ${c.dim("[--json]")}  Health check the runner daemon (exit 0 = healthy)`);
         log.info(`  ${c.cmd("pizza runner pair")} ${c.dim("[--force]")}   Pair (or re-pair) the runner with a fresh API key`);
@@ -573,6 +579,9 @@ async function main() {
         // via pi's own flow mid-process).
         const rtProjectTrusted = resolveExplicitProjectTrust(opts.cwd, opts.agentDir);
         const rtSettingsManager = SettingsManager.create(opts.cwd, opts.agentDir, { projectTrusted: rtProjectTrusted });
+        const rtAgentsFilesOverride = createAgentsFilesOverride(opts.cwd, {
+            sendAgentsMd: config.sendAgentsMd !== false,
+        });
         const services = await createAgentSessionServices({
             cwd: opts.cwd,
             agentDir: opts.agentDir,
@@ -591,7 +600,7 @@ async function main() {
                     systemPromptOverride: () => config.systemPrompt,
                 }),
                 appendSystemPrompt: [maybeBuildSystemPrompt(config, { cwd: opts.cwd }), config.appendSystemPrompt].filter(Boolean) as string[],
-                ...(agentsFilesOverride && { agentsFilesOverride }),
+                ...(rtAgentsFilesOverride && { agentsFilesOverride: rtAgentsFilesOverride }),
             },
         });
         const result = await createAgentSessionFromServices({

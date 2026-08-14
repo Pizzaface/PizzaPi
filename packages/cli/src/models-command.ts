@@ -9,7 +9,7 @@
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { join } from "path";
 import { c } from "./cli-colors.js";
-import { defaultAgentDir, expandHome, loadConfig } from "./config.js";
+import { defaultAgentDir, expandHome, loadConfig } from "./config/io.js";
 import { createLogger } from "@pizzapi/tools";
 import { fetchOllamaCloudModels, registerOllamaCloudProvider, type OllamaCloudModel } from "./ollama-cloud-models.js";
 import { mergeModelLists, readSessionModelsCache } from "./session-models-cache.js";
@@ -24,8 +24,9 @@ interface ModelListEntry {
     reasoning: boolean;
 }
 
-export async function runModelsCommand(args: string[], cwd: string): Promise<number> {
+export async function runModelsCommand(args: string[], cwd: string, logger = log): Promise<number> {
     const showJson = args.includes("--json");
+    const env = { ...process.env };
 
     const config = loadConfig(cwd);
     const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
@@ -51,12 +52,12 @@ export async function runModelsCommand(args: string[], cwd: string): Promise<num
         }));
 
     let ollamaEntries: ModelListEntry[] = [];
-    if (runtime.hasConfiguredAuth("ollama-cloud") || process.env.OLLAMA_API_KEY) {
+    if (runtime.hasConfiguredAuth("ollama-cloud") || env.OLLAMA_API_KEY) {
         try {
-            const live = await fetchOllamaCloudModels();
+            const live = await fetchOllamaCloudModels({ home: env.HOME });
             ollamaEntries = live.map(toModelListEntry);
         } catch (err) {
-            log.warn(
+            logger.warn(
                 `Could not refresh Ollama Cloud models: ${err instanceof Error ? err.message : String(err)}`,
             );
         }
@@ -66,17 +67,17 @@ export async function runModelsCommand(args: string[], cwd: string): Promise<num
     // session's snapshot (extension-registered providers like claude-subscription).
     const allEntries = mergeModelLists(
         mergeModelLists(staticEntries, ollamaEntries),
-        readSessionModelsCache() ?? [],
+        readSessionModelsCache(env.HOME) ?? [],
     );
 
     if (showJson) {
-        log.info(JSON.stringify({ models: allEntries }, null, 2));
+        logger.info(JSON.stringify({ models: allEntries }, null, 2));
         return 0;
     }
 
     if (allEntries.length === 0) {
-        log.info("No configured models found.");
-        log.info(`Checked credentials in ${join(agentDir, "auth.json")}`);
+        logger.info("No configured models found.");
+        logger.info(`Checked credentials in ${join(agentDir, "auth.json")}`);
         return 0;
     }
 
@@ -89,18 +90,18 @@ export async function runModelsCommand(args: string[], cwd: string): Promise<num
 
     const modelWidth = Math.max(...allEntries.map((m) => m.id.length), "model".length);
 
-    log.info("");
+    logger.info("");
     for (const [provider, models] of byProvider) {
-        log.info(c.label(provider));
+        logger.info(c.label(provider));
         for (const model of models) {
             const noteParts: string[] = [];
             if (model.reasoning) noteParts.push(c.accent("reasoning"));
             if (model.contextWindow) noteParts.push(c.dim(`${model.contextWindow.toLocaleString()} ctx`));
             if (model.name && model.name !== model.id) noteParts.push(c.dim(model.name));
             const notes = noteParts.join(c.dim(" • "));
-            log.info(`  ${c.cmd(model.id.padEnd(modelWidth))}  ${notes}`);
+            logger.info(`  ${c.cmd(model.id.padEnd(modelWidth))}  ${notes}`);
         }
-        log.info("");
+        logger.info("");
     }
     return 0;
 }

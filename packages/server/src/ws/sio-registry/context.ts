@@ -184,22 +184,19 @@ export const lastTouchTimes = new Map<string, number>();
 /** Export for use in cleanup paths that need cluster-wide runner notification. */
 export function emitToRunner(runnerId: string, eventName: string, data: unknown): void {
     if (!io) return;
-    // Primary path: cluster-wide via per-runner room (joined on registration).
-    // Reaches runners on any relay node through the Redis adapter.
+    const room = runnerRoom(runnerId);
+    const local = localRunnerSockets.get(runnerId);
+    // The room reaches joined runners on any relay node through the Redis
+    // adapter. Unjoined local sockets need the direct fallback, but joined
+    // sockets must not receive the event twice.
+    let roomEmitSucceeded = false;
     try {
-        io.of("/runner")
-            .to(runnerRoom(runnerId))
-            .emit(eventName, data);
+        io.of("/runner").to(room).emit(eventName, data);
+        roomEmitSucceeded = true;
     } catch (err) {
         log.warn("emitToRunner room emit failed:", (err as Error)?.message);
     }
-    // Compatibility fallback: direct local socket emit.
-    // Handles runners on this node that haven't joined the room yet
-    // (e.g. older daemon versions during a rolling deploy, or runners that
-    // connected before this server was upgraded).  The daemon's handler is
-    // idempotent via endedSessionIds, so double-delivery is safe.
-    const local = localRunnerSockets.get(runnerId);
-    if (local?.connected) {
+    if (local?.connected && (!roomEmitSucceeded || !local.rooms?.has(room))) {
         try { local.emit(eventName, data); } catch { /* best-effort */ }
     }
 }

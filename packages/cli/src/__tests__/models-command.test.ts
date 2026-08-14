@@ -2,12 +2,19 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { _setGlobalConfigDir } from "../config.js";
+import { _setGlobalConfigDir } from "../config/io.js";
 import { runModelsCommand } from "../models-command.js";
 
 const originalFetch = globalThis.fetch;
 const originalHome = process.env.HOME;
 const originalKey = process.env.OLLAMA_API_KEY;
+const ENV_KEYS = [
+    "PIZZAPI_HIDDEN_MODELS",
+    "PIZZAPI_SESSION_PROVIDER",
+    "PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER",
+    "PI_CODING_AGENT_DIR",
+] as const;
+const originalEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
 
 /**
  * Isolation notes (see daemon-list-configured-models.test.ts for the fuller
@@ -26,16 +33,11 @@ describe("models command", () => {
     let agentDir: string;
 
     async function runAndCaptureJson(cwd: string): Promise<{ code: number; models: any[] }> {
-        const originalLog = console.log;
-        let captured = "";
-        console.log = ((...args: unknown[]) => { captured += args.join(" "); }) as typeof console.log;
-        try {
-            const code = await runModelsCommand(["--json"], cwd);
-            const parsed = JSON.parse(captured.slice(captured.indexOf("{")));
-            return { code, models: parsed.models };
-        } finally {
-            console.log = originalLog;
-        }
+        const output: string[] = [];
+        const logger = { info: (message: string) => output.push(message), warn: (message: string) => output.push(message), error: (message: string) => output.push(message) };
+        const code = await runModelsCommand(["--json"], cwd, logger);
+        const captured = output.find((line) => line.startsWith("{")) ?? "{}";
+        return { code, models: JSON.parse(captured).models ?? [] };
     }
 
     function mockFetch(overrides?: { modelsFails?: boolean }) {
@@ -65,6 +67,7 @@ describe("models command", () => {
         _setGlobalConfigDir(join(tmpDir, "global-unused"));
         process.env.HOME = home;
         delete process.env.OLLAMA_API_KEY;
+        for (const key of ENV_KEYS) delete process.env[key];
         mockFetch();
     });
 
@@ -74,6 +77,11 @@ describe("models command", () => {
         process.env.HOME = originalHome;
         if (originalKey === undefined) delete process.env.OLLAMA_API_KEY;
         else process.env.OLLAMA_API_KEY = originalKey;
+        for (const key of ENV_KEYS) {
+            const value = originalEnv.get(key);
+            if (value === undefined) delete process.env[key];
+            else process.env[key] = value;
+        }
         rmSync(tmpDir, { recursive: true, force: true });
     });
 

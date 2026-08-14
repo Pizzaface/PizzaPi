@@ -515,7 +515,7 @@ describe("loadConfig mcpServers deep-merge", () => {
     expect(config.mcpServers.godmother.command).toBe("godmother");
   });
 
-  test("project-only mcpServers loads with warning (warn-and-load default)", () => {
+  test("project-only mcpServers is excluded by default", () => {
     writeFileSync(join(globalDir, "config.json"), JSON.stringify({}));
 
     const projectDir = join(tempDir, "project");
@@ -530,9 +530,7 @@ describe("loadConfig mcpServers deep-merge", () => {
     );
 
     const config = loadConfig(projectDir) as any;
-    // Project MCP servers load by default (warning is emitted but loading is not blocked)
-    expect(config.mcpServers).toBeDefined();
-    expect(config.mcpServers.playwright.command).toBe("npx");
+    expect(config.mcpServers).toBeUndefined();
   });
 
   test("project-only mcpServers passes through when allowProjectMcp: true", () => {
@@ -656,7 +654,7 @@ describe("loadConfig mcpServers deep-merge", () => {
     expect(config.mcp.servers[0].name).toBe("playwright");
   });
 
-  test("mcp.servers from project loads with warning (warn-and-load default)", () => {
+  test("mcp.servers from project is excluded by default", () => {
     writeFileSync(
       join(globalDir, "config.json"),
       JSON.stringify({
@@ -682,10 +680,7 @@ describe("loadConfig mcpServers deep-merge", () => {
     const config = loadConfig(projectDir) as any;
     // mcpServers from global still loads
     expect(config.mcpServers.godmother.command).toBe("godmother");
-    // mcp.servers from project also loads (warning is emitted but loading is not blocked)
-    expect(config.mcp).toBeDefined();
-    const names = config.mcp.servers.map((s: any) => s.name);
-    expect(names).toContain("playwright");
+    expect(config.mcp).toBeUndefined();
   });
 
   test("project mcpServers allowed via PIZZAPI_ALLOW_PROJECT_MCP env var", () => {
@@ -1013,7 +1008,7 @@ describe("loadConfig transport field blocking", () => {
     expect(warn).toHaveBeenCalledTimes(2);
     const messages = warn.mock.calls.map((call) => String(call[2]));
     expect(messages).toContain("Project config .pizzapi/config.json contains 'apiKey' — global config value will be used instead. Set it in ~/.pizzapi/config.json only.");
-    expect(messages).toContain('Project MCP servers found in .pizzapi/config.json. Set "allowProjectMcp": true in ~/.pizzapi/config.json or PIZZAPI_ALLOW_PROJECT_MCP=1 to suppress this warning.');
+    expect(messages).toContain('Project MCP servers found in .pizzapi/config.json. Set "allowProjectMcp": true in ~/.pizzapi/config.json or PIZZAPI_ALLOW_PROJECT_MCP=1 to enable loading.');
   });
 
   test("global relayUrl is preserved when project also sets relayUrl", () => {

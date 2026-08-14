@@ -43,8 +43,8 @@ You can also override any setting with **environment variables**.
   // Append to the default system prompt without replacing it
   "appendSystemPrompt": "Always write tests for new code.",
 
-  // Send AGENTS.md files automatically as context. Set false to omit them
-  // unless the agent explicitly reads them with tools. Default: true.
+  // Send AGENTS.md and rules/*.md files automatically as context. Set false
+  // to omit them unless the agent explicitly reads them with tools. Default: true.
   "sendAgentsMd": true,
 
   // Override the agent config directory (skills, extensions, etc.)
@@ -62,8 +62,8 @@ You can also override any setting with **environment variables**.
   // Must be in the GLOBAL config (project configs cannot self-authorize).
   "allowProjectHooks": false,
 
-  // Trust gate: suppress the security warning for project-local MCP servers.
-  // Project MCP servers are loaded by default (with a warning); set this to true to silence.
+  // Trust gate: allow project-local MCP servers to load.
+  // Project MCP servers are excluded by default; set this to true to enable loading.
   // Must be in the GLOBAL config.
   "allowProjectMcp": false,
 
@@ -138,19 +138,19 @@ You can also override any setting with **environment variables**.
 | `systemPrompt` | `string` | *(pi default)* | Fully replace the default system prompt |
 | `appendSystemPrompt` | `string` | — | Append to the default system prompt |
 | `builtinSystemPrompt` | `boolean` | `true` | Set to `false` to skip PizzaPi's built-in system prompt additions (subagents, plan mode, sigils, tunnels, PizzaPi config guidance) for a vanilla pi prompt |
-| `sendAgentsMd` | `boolean` | `true` | Set to `false` to omit AGENTS.md files from automatic prompt context. The agent can still read them explicitly with tools. |
+| `sendAgentsMd` | `boolean` | `true` | Set to `false` to omit AGENTS.md and rules/*.md files from automatic prompt context. The agent can still read them explicitly with tools. |
 | `agentDir` | `string` | `~/.pizzapi` | Agent config directory (skills, extensions, etc.) |
 | `skills` | `string[]` | `[]` | Additional skill directories. Supports `~` expansion. |
 | `hooks` | `object` | — | Lifecycle hook scripts. See [Hooks](/PizzaPi/customization/hooks/). |
 | `envOverrides` | `Record<string, string>` | — | Environment variables to inject into runner worker sessions. |
 | `allowProjectHooks` | `boolean` | `false` | Trust gate: allow project-local hooks to run. **Global config only.** |
-| `allowProjectMcp` | `boolean` | `false` | Silences the warning for project-local MCP server definitions. **Global config only.** |
+| `allowProjectMcp` | `boolean` | `false` | Allows project-local MCP server definitions to load; otherwise they are excluded. **Global config only.** |
 | `trustedPlugins` | `string[]` | `[]` | Trusted Claude Code plugin paths. **Global config only.** Managed via `pizza plugins trust`. |
 | `disabledMcpServers` | `string[]` | `[]` | MCP server names to skip during initialization. Both global and project lists are merged (union). |
 | `oauthClientName` | `string` | `"PizzaPi"` | Global default `client_name` for MCP OAuth registration. Can also be set per-server in `mcpServers` entries. Per-server values take precedence. See [Client Name Override](/PizzaPi/customization/mcp-servers/#client-name-override). |
 | `oauthClientId` | `string` | — | Global default pre-registered OAuth `client_id` for MCP servers. Per-server values take precedence. |
 | `oauthClientSecret` | `string` | — | Global default pre-registered OAuth `client_secret` for MCP servers. Per-server values take precedence. |
-| `oauthCallbackPort` | `number` | `0` | Global default local callback port for MCP OAuth redirect URI. `0` means OS-assigned ephemeral port. Per-server values take precedence. |
+| `oauthCallbackPort` | `number` | `0` | Global default local callback port for MCP OAuth redirect URI. A single OAuth server honors this port; multiple OAuth servers without per-server ports use OS-assigned ephemeral ports to avoid collisions. `0` means OS-assigned ephemeral port. Per-server values take precedence. |
 | `mcpTimeout` | `number` | `30000` | Timeout (ms) for each MCP server's `tools/list` call during startup. Set to `0` to disable. |
 | `toolSearch` | `object` | — | Dynamic MCP tool discovery config. See [Tool Search](/PizzaPi/customization/tool-search/). |
 | `bash.backgroundAfterSeconds` | `number` | `15` | Seconds a `bash` command streams output in the foreground before it auto-backgrounds. `0` = background immediately. See [Bash auto-backgrounding](#bash-auto-backgrounding). |
@@ -341,7 +341,7 @@ Every config option can also be set as an environment variable. Environment vari
 | `PIZZAPI_API_KEY` | `apiKey` | |
 | `PIZZAPI_RELAY_URL` | `relayUrl` | Set to `off` to disable relay for this invocation |
 | `PIZZAPI_ALLOW_PROJECT_HOOKS` | — | Set to `1` to enable project-local hooks |
-| `PIZZAPI_ALLOW_PROJECT_MCP` | — | Set to `1` to silence the project-local MCP warning |
+| `PIZZAPI_ALLOW_PROJECT_MCP` | — | Set to `1` to enable loading project-local MCP servers |
 | `PIZZAPI_NO_MCP` | — | Set to `1` to skip MCP servers ([Safe Mode](/PizzaPi/security/sandbox/)) |
 | `PIZZAPI_NO_PLUGINS` | — | Set to `1` to skip plugin loading ([Safe Mode](/PizzaPi/security/sandbox/)) |
 | `PIZZAPI_NO_HOOKS` | — | Set to `1` to skip hook execution ([Safe Mode](/PizzaPi/security/sandbox/)) |

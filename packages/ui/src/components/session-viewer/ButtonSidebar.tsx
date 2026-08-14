@@ -26,6 +26,7 @@ export interface CommonButtonProps {
   onDragStart?: (buttonId: ToolbarButtonId) => void;
   /** Metadata for runner service panel buttons (ids of the form "service:<id>"). */
   servicePanels?: ServicePanelButtonMeta[];
+  disabledServiceIds?: Set<string>;
   onToggleServicePanel?: (serviceId: string) => void;
   onToggleTerminal?: () => void;
   onToggleFileExplorer?: () => void;
@@ -94,13 +95,14 @@ function ToolbarButton({
   planModeEnabled,
   tokenUsage,
   servicePanels,
+  disabledServiceIds,
   onToggleServicePanel,
 }: ToolbarButtonRenderProps): React.ReactElement | null {
   if (id.startsWith("service:")) {
     const serviceId = id.slice("service:".length);
     const meta = servicePanels?.find((p) => p.serviceId === serviceId);
-    // Service not available on this runner right now — render nothing.
-    if (!meta) return null;
+    // Service not available or disabled on this runner — render nothing.
+    if (!meta || disabledServiceIds?.has(serviceId)) return null;
     return (
       <DraggableToolbarButton key={id} buttonId={id} onDragStart={onDragStart}>
         <Tooltip>
@@ -207,9 +209,12 @@ function ToolbarButton({
 }
 
 /** Drop service ids whose panel isn't available on the current runner. */
-function renderableIds(ids: ToolbarButtonId[], servicePanels?: ServicePanelButtonMeta[]): ToolbarButtonId[] {
+function renderableIds(ids: ToolbarButtonId[], servicePanels?: ServicePanelButtonMeta[], disabledServiceIds?: Set<string>): ToolbarButtonId[] {
   return ids.filter(
-    (id) => !id.startsWith("service:") || servicePanels?.some((p) => `service:${p.serviceId}` === id),
+    (id) => !id.startsWith("service:") || (
+      !disabledServiceIds?.has(id.slice("service:".length)) &&
+      servicePanels?.some((p) => `service:${p.serviceId}` === id)
+    ),
   );
 }
 
@@ -222,9 +227,9 @@ export function ButtonRail({
   groups: { top: ToolbarButtonId[]; middle: ToolbarButtonId[]; bottom: ToolbarButtonId[] };
 }): React.ReactElement | null {
   const groups = {
-    top: renderableIds(rawGroups.top, rest.servicePanels),
-    middle: renderableIds(rawGroups.middle, rest.servicePanels),
-    bottom: renderableIds(rawGroups.bottom, rest.servicePanels),
+    top: renderableIds(rawGroups.top, rest.servicePanels, rest.disabledServiceIds),
+    middle: renderableIds(rawGroups.middle, rest.servicePanels, rest.disabledServiceIds),
+    bottom: renderableIds(rawGroups.bottom, rest.servicePanels, rest.disabledServiceIds),
   };
   if (groups.top.length === 0 && groups.middle.length === 0 && groups.bottom.length === 0) {
     return null;
@@ -267,7 +272,7 @@ export function ButtonStrip({
   position: "center-top" | "center-bottom";
   buttonIds: ToolbarButtonId[];
 }): React.ReactElement | null {
-  const buttonIds = renderableIds(rawButtonIds, rest.servicePanels);
+  const buttonIds = renderableIds(rawButtonIds, rest.servicePanels, rest.disabledServiceIds);
   if (buttonIds.length === 0) return null;
 
   const tooltipSide = position === "center-top" ? "bottom" : "top";

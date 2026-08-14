@@ -11,6 +11,7 @@ import { useAtMentionFiles, type Entry } from "@/hooks/useAtMentionFiles";
 import { useAtMentionSearch } from "@/hooks/useAtMentionSearch";
 import { Bot, ChevronLeft, File, Folder, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { pathSegments } from "@/lib/path";
 import { useDocumentPopoverKeyboardNavigation } from "@/components/session-viewer/popover-keyboard";
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
@@ -339,8 +340,8 @@ export function AtMentionPopover({
             <>
               <span className="font-mono text-muted-foreground truncate flex-1">
                 {isAtRoot
-                  ? (sessionCwd ? sessionCwd.split("/").filter(Boolean).pop() ?? "/" : "/")
-                  : `${sessionCwd ? sessionCwd.split("/").filter(Boolean).pop() + "/" : "/"}${path}`}
+                  ? (sessionCwd ? pathSegments(sessionCwd).pop() ?? "/" : "/")
+                  : `${sessionCwd ? pathSegments(sessionCwd).pop() + "/" : "/"}${path}`}
               </span>
               {query && (
                 <span className="text-muted-foreground/60">

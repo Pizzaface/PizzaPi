@@ -188,6 +188,38 @@ export interface AgentFile {
     content: string;
 }
 
+/** Load direct markdown rule files from a directory in lexicographic order. */
+export function loadRulesDir(dir: string): AgentFile[] {
+    if (!existsSync(dir)) return [];
+    let entries: string[];
+    try {
+        entries = readdirSync(dir).sort();
+    } catch {
+        return [];
+    }
+
+    const files: AgentFile[] = [];
+    for (const entry of entries) {
+        if (!entry.endsWith(".md")) continue;
+        const path = join(dir, entry);
+        try {
+            if (statSync(path).isFile()) files.push({ path, content: readFileSync(path, "utf-8") });
+        } catch {
+            // Skip unreadable or concurrently removed files.
+        }
+    }
+    return files;
+}
+
+/** Load global and project modular rules, in override-friendly order. */
+export function loadRules(cwd: string): { global: AgentFile[]; project: AgentFile[] } {
+    // TODO: also discover Claude Code's ~/.claude/rules/ for compatibility.
+    return {
+        global: loadRulesDir(join(homedir(), ".pizzapi", "rules")),
+        project: loadRulesDir(join(cwd, ".pizzapi", "rules")),
+    };
+}
+
 /**
  * Load project-level agent files that the upstream `DefaultResourceLoader`
  * does NOT discover on its own.
@@ -267,18 +299,38 @@ export function createAgentsFilesOverride(
     options: AgentsFilesOverrideOptions = {},
 ): ((base: { agentsFiles: AgentFile[] }) => { agentsFiles: AgentFile[] }) | null {
     const sendAgentsMd = options.sendAgentsMd !== false;
-    const additionalFiles = loadProjectAgentFiles(cwd)
-        .filter((file) => sendAgentsMd || !isAgentsMdPath(file.path));
+    const rules = loadRules(cwd);
+    const projectFiles = loadProjectAgentFiles(cwd);
+    const additionalFiles = [
+        ...(sendAgentsMd ? rules.global : []),
+        ...(sendAgentsMd ? projectFiles : projectFiles.filter((file) => !isAgentsMdPath(file.path))),
+        ...(sendAgentsMd ? rules.project : []),
+    ];
     if (additionalFiles.length === 0 && sendAgentsMd) return null;
 
     return (base) => {
         const baseFiles = sendAgentsMd
             ? base.agentsFiles
             : base.agentsFiles.filter((file) => !isAgentsMdPath(file.path));
-        const seenPaths = new Set(baseFiles.map(f => f.path));
-        const deduped = additionalFiles.filter(f => !seenPaths.has(f.path));
+        const seenPaths = new Set<string>();
+        const unique = (files: AgentFile[]) => files.filter((file) => {
+            if (seenPaths.has(file.path)) return false;
+            seenPaths.add(file.path);
+            return true;
+        });
+        if (!sendAgentsMd) return { agentsFiles: unique([...baseFiles, ...additionalFiles]) };
+
+        // Keep upstream global context first, then global rules, then project context.
+        const globalRoot = join(homedir(), ".pizzapi") + "/";
+        const globalFiles = baseFiles.filter((file) => file.path.startsWith(globalRoot));
+        const projectFiles = baseFiles.filter((file) => !file.path.startsWith(globalRoot));
         return {
-            agentsFiles: [...baseFiles, ...deduped],
+            agentsFiles: unique([
+                ...globalFiles,
+                ...additionalFiles.filter((file) => rules.global.some((rule) => rule.path === file.path)),
+                ...projectFiles,
+                ...additionalFiles.filter((file) => !rules.global.some((rule) => rule.path === file.path)),
+            ]),
         };
     };
 }

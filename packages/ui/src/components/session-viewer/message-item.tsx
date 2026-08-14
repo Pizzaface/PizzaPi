@@ -16,8 +16,25 @@ import { MessageCopyButton } from "@/components/ai-elements/conversation";
 import { exportToMarkdown } from "@/lib/export-markdown";
 import { cn } from "@/lib/utils";
 import { useConversationScrollRef } from "@/components/ai-elements/conversation";
+import { useSessionActions } from "@/components/session-viewer/session-actions-context";
 
 // ── SessionMessageItem ───────────────────────────────────────────────────────
+
+function getQuoteText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+
+  return content
+    .filter(
+      (part): part is { type: "text"; text: string } =>
+        typeof part === "object" &&
+        part !== null &&
+        (part as { type?: unknown }).type === "text" &&
+        typeof (part as { text?: unknown }).text === "string",
+    )
+    .map((part) => part.text)
+    .join("");
+}
 
 interface SessionMessageItemProps {
   message: RelayMessage;
@@ -50,6 +67,16 @@ export const SessionMessageItem = React.memo(
     onActionSigilResponse,
   }: SessionMessageItemProps) => {
     const [customExpanded, setCustomExpanded] = React.useState(false);
+    const quoteContentRef = React.useRef<HTMLDivElement>(null);
+    const sessionActions = useSessionActions();
+    const quoteMessage = React.useCallback(() => {
+      const content = quoteContentRef.current;
+      const selection = window.getSelection();
+      const selected = selection?.toString().trim();
+      const hasSelection = !!selection?.rangeCount && !!content && content.contains(selection.getRangeAt(0).commonAncestorContainer);
+      const text = hasSelection && selected ? selected : getQuoteText(message.content);
+      sessionActions?.quote?.(text, message.timestamp);
+    }, [message]);
 
     // System messages with structured command result data → standalone card
     if (message.role === "system" && isCommandResult(message.content)) {
@@ -184,6 +211,15 @@ export const SessionMessageItem = React.memo(
                 <span>• {new Date(message.timestamp).toLocaleTimeString()}</span>
               )}
               {message.isError && <span className="text-destructive">• Error</span>}
+              {message.role === "assistant" && sessionActions?.quote && (
+                <button
+                  type="button"
+                  className="rounded px-1.5 py-0.5 text-[10px] normal-case text-muted-foreground opacity-0 transition-opacity hover:bg-muted/60 hover:text-foreground group-hover/msg:opacity-100 focus-visible:opacity-100"
+                  onClick={quoteMessage}
+                >
+                  Quote
+                </button>
+              )}
               <MessageCopyButton
                 text={exportToMarkdown([message])}
                 className="ml-auto opacity-0 group-hover/msg:opacity-100 focus-visible:opacity-100 transition-opacity"
@@ -228,7 +264,8 @@ export const SessionMessageItem = React.memo(
                   </div>
                 )}
               </div>
-            ) : renderContent(
+            ) : <div ref={quoteContentRef}>
+              {renderContent(
               message.content,
               activeToolCalls,
               message.role,
@@ -245,7 +282,8 @@ export const SessionMessageItem = React.memo(
               message.details,
               onTriggerResponse,
               onActionSigilResponse,
-            )}
+              )}
+            </div>}
             {message.stopReason === "error" && message.errorMessage && (
               <div className="mt-2 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                 <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" />

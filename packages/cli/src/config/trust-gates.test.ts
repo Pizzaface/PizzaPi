@@ -117,9 +117,9 @@ describe("allowProjectHooks (enforced gate)", () => {
     });
 });
 
-// ── 2. allowProjectMcp — WARN-ONLY (not enforced) ───────────────────────────
+// ── 2. allowProjectMcp — ENFORCED ────────────────────────────────────────────
 
-describe("allowProjectMcp (warn-only gate — CRITICAL: servers load regardless)", () => {
+describe("allowProjectMcp (enforced gate)", () => {
     test("isProjectMcpTrusted defaults to false with no config", () => {
         expect(isProjectMcpTrusted({})).toBe(false);
     });
@@ -133,12 +133,7 @@ describe("allowProjectMcp (warn-only gate — CRITICAL: servers load regardless)
         expect(isProjectMcpTrusted({ allowProjectMcp: false })).toBe(true);
     });
 
-    // CRITICAL: this is the "warn-and-load" behavior (see io.ts loadConfig,
-    // ~"P0 fix: warn-and-load by default"). The flag only silences the
-    // warning — it does NOT gate whether the servers are merged into config.
-    // A future unification must preserve this unless a deliberate behavior
-    // change is made and documented.
-    test("mcpServers format: project servers ARE MERGED even when untrusted (flag absent)", () => {
+    test("mcpServers format: project servers are dropped when untrusted, global servers remain", () => {
         writeGlobalConfig({
             mcpServers: { globalServer: { command: "global-cmd" } },
         });
@@ -149,11 +144,10 @@ describe("allowProjectMcp (warn-only gate — CRITICAL: servers load regardless)
         const config = loadConfig(projectDir);
         expect((config as any).mcpServers).toEqual({
             globalServer: { command: "global-cmd" },
-            projectServer: { command: "project-cmd" },
         });
     });
 
-    test("mcpServers format: project servers ARE MERGED even when allowProjectMcp: false explicitly", () => {
+    test("mcpServers format: project servers are dropped when allowProjectMcp: false", () => {
         writeGlobalConfig({
             allowProjectMcp: false,
             mcpServers: { globalServer: { command: "global-cmd" } },
@@ -163,10 +157,10 @@ describe("allowProjectMcp (warn-only gate — CRITICAL: servers load regardless)
         });
 
         const config = loadConfig(projectDir);
-        expect((config as any).mcpServers).toHaveProperty("projectServer");
+        expect((config as any).mcpServers).not.toHaveProperty("projectServer");
     });
 
-    test("mcp.servers (array) format: project servers ARE MERGED even when untrusted", () => {
+    test("mcp.servers (array) format: project servers are dropped when untrusted", () => {
         writeGlobalConfig({
             mcp: { servers: [{ name: "global-srv", command: "g" }] },
         });
@@ -176,11 +170,12 @@ describe("allowProjectMcp (warn-only gate — CRITICAL: servers load regardless)
 
         const config = loadConfig(projectDir);
         const names = ((config as any).mcp.servers as Array<{ name: string }>).map((s) => s.name);
-        expect(names.sort()).toEqual(["global-srv", "project-srv"]);
+        expect(names).toEqual(["global-srv"]);
     });
 
-    test("mcp.servers (array) format: project entry with same name overwrites global entry, still merged when untrusted", () => {
+    test("mcp.servers (array) format: trusted project entry overwrites global entry", () => {
         writeGlobalConfig({
+            allowProjectMcp: true,
             mcp: { servers: [{ name: "shared", command: "global-version" }] },
         });
         writeProjectConfig({
@@ -193,7 +188,7 @@ describe("allowProjectMcp (warn-only gate — CRITICAL: servers load regardless)
         expect(servers[0].command).toBe("project-version");
     });
 
-    test("warns once (console.warn) when project mcpServers present and flag not set, but STILL loads them on every call — the warning itself is deduped, not the loading", () => {
+    test("warns once when project mcpServers present and flag not set, and drops them", () => {
         const warnCalls: unknown[][] = [];
         const orig = console.warn;
         console.warn = (...args: unknown[]) => { warnCalls.push(args); };
@@ -204,24 +199,23 @@ describe("allowProjectMcp (warn-only gate — CRITICAL: servers load regardless)
             });
 
             const config = loadConfig(projectDir);
-            expect((config as any).mcpServers).toHaveProperty("projectServer");
+            expect((config as any).mcpServers).not.toHaveProperty("projectServer");
             const joined = warnCalls.map((a) => a.join(" ")).join("\n");
             expect(joined).toContain("Project MCP servers found");
             expect(warnCalls.length).toBe(1);
 
-            // Second load of the SAME project: servers are still merged (the
-            // gate never blocks loading — see describe title), but the warning
-            // does not fire again. warnLoadConfigOnce dedupes per (projectPath,
-            // code, message) for the lifetime of the process.
+            // Second load of the SAME project: the warning does not fire again.
+            // warnLoadConfigOnce dedupes per (projectPath, code, message) for
+            // the lifetime of the process.
             const config2 = loadConfig(projectDir);
-            expect((config2 as any).mcpServers).toHaveProperty("projectServer");
+            expect((config2 as any).mcpServers).not.toHaveProperty("projectServer");
             expect(warnCalls.length).toBe(1);
         } finally {
             console.warn = orig;
         }
     });
 
-    test("no warning when allowProjectMcp: true (still loads, silences the warning)", () => {
+    test("allowProjectMcp: true loads project servers without warning", () => {
         const warnCalls: unknown[][] = [];
         const orig = console.warn;
         console.warn = (...args: unknown[]) => { warnCalls.push(args); };

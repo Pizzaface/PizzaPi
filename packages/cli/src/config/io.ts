@@ -292,21 +292,19 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
     const hasProjectMcp =
         (rawProjectMcpServers !== undefined && Object.keys(rawProjectMcpServers).length > 0) ||
         (Array.isArray(rawProjectMcp?.servers) && rawProjectMcp.servers.length > 0);
-    // P0 fix: warn-and-load by default. allowProjectMcp/PIZZAPI_ALLOW_PROJECT_MCP silences
-    // the warning rather than being required to enable loading.
     if (hasProjectMcp && !projectMcpTrusted) {
         warnLoadConfigOnce(
             projectPath,
             "project-mcp-untrusted",
             "Project MCP servers found in .pizzapi/config.json. " +
                 'Set "allowProjectMcp": true in ~/.pizzapi/config.json or ' +
-                "PIZZAPI_ALLOW_PROJECT_MCP=1 to suppress this warning.",
+                "PIZZAPI_ALLOW_PROJECT_MCP=1 to enable loading.",
         );
     }
 
-    // Always include project MCP servers (trust flag only silences the warning above).
-    const projectMcpServers = rawProjectMcpServers;
-    const projectMcp = rawProjectMcp;
+    // Project MCP servers are loaded only when explicitly trusted.
+    const projectMcpServers = projectMcpTrusted ? rawProjectMcpServers : undefined;
+    const projectMcp = projectMcpTrusted ? rawProjectMcp : undefined;
 
     // Always overwrite or delete mcpServers — the initial { ...global, ...project } spread
     // may have placed project.mcpServers into config before the trust gate could block it.

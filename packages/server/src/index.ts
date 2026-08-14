@@ -6,7 +6,7 @@ import {
 } from "./sessions/store.js";
 import { deleteRelayEventCaches, initializeRelayRedisCache } from "./sessions/redis.js";
 import { sweepExpiredSessions, sweepOrphanedRunners } from "./ws/sio-registry.js";
-import { sweepExpiredAttachments, rehydrateExtractedAttachments } from "./attachments/store.js";
+import { sweepExpiredAttachments, rehydrateAttachments, rehydrateExtractedAttachments } from "./attachments/store.js";
 import { sweepExpiredSetupClaims } from "./setup-claims.js";
 import { sweepExpiredMobileLinks } from "./mobile-links.js";
 import { runAllMigrations } from "./migrations.js";
@@ -119,8 +119,12 @@ void initializeRelayRedisCache();
 // Rehydrate extracted image attachments from SQLite so URLs in persisted
 // session state survive server restarts.
 try {
-    const count = await runWithAuthContext(authContext, () => rehydrateExtractedAttachments());
-    if (count > 0) startupLog.info(`Rehydrated ${count} extracted image attachment(s) from database.`);
+    const [uploadCount, extractedCount] = await runWithAuthContext(authContext, async () => [
+        await rehydrateAttachments(),
+        await rehydrateExtractedAttachments(),
+    ]);
+    if (uploadCount > 0) startupLog.info(`Rehydrated ${uploadCount} uploaded attachment(s) from database.`);
+    if (extractedCount > 0) startupLog.info(`Rehydrated ${extractedCount} extracted image attachment(s) from database.`);
 } catch (err) {
     startupLog.error("Failed to rehydrate extracted attachments:", err);
 }

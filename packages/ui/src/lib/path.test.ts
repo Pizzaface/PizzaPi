@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { extractWorktreeName, formatPathTail, worktreeRoots } from "./path";
+import { extractWorktreeName, formatPathTail, pathSegments, worktreeRoots } from "./path";
+
+describe("pathSegments", () => {
+    test("splits Unix, Windows, and mixed separators", () => {
+        expect(pathSegments("/home/user/project")).toEqual(["home", "user", "project"]);
+        expect(pathSegments("C:\\Users\\me\\project")).toEqual(["C:", "Users", "me", "project"]);
+        expect(pathSegments("/home\\user/project\\src")).toEqual(["home", "user", "project", "src"]);
+    });
+});
 
 describe("formatPathTail", () => {
     test("returns empty string for empty input", () => {

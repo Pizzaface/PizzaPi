@@ -21,7 +21,7 @@ import { sendCachedDeltaReplayEvents } from "./viewer-cache.js";
  * Discriminated union describing where a snapshot came from.
  */
 export interface Snapshot {
-    type: "cache-delta" | "cache-snapshot" | "memory" | "persisted";
+    type: "cache-delta" | "cache-snapshot" | "memory" | "persisted" | "already-current";
     /** Human-readable description of the source */
     source: string;
 }
@@ -224,6 +224,8 @@ export interface GetBestSnapshotOpts {
     snapshotOverlay?: string | null;
     /** Whether a chunked delivery is in-flight (skip memory state if true) */
     chunkedPending?: boolean;
+    /** Authoritative current seq, used to distinguish an empty replay from a gap. */
+    latestSeq?: number;
 }
 
 /**
@@ -253,7 +255,18 @@ export async function getBestSnapshot(
             const delta = await tryDeltaReplay(sessionId, lastSeq, deps);
             if (delta) return delta;
         } catch {
-            // Fall through — delta source failed
+            // An unavailable delta source is not proof that the client is
+            // current, even when latestSeq happens to match.
+            return null;
+        }
+        // Empty replay is a valid no-op only when the authoritative server
+        // seq equals the client's cursor. A higher seq means the cache has a
+        // genuine gap and must recover through the runner.
+        if (opts.latestSeq === lastSeq) {
+            return {
+                snapshot: { type: "already-current", source: "Viewer already at latest cached seq" },
+                send() {},
+            };
         }
         // When lastSeq is provided but delta fails, do NOT fall through to
         // snapshot — a snapshot has no seq and would roll back the client.

@@ -4,6 +4,7 @@ import type { CommandResultData } from "./rendering";
 import type { SandboxViolationEntry } from "./cards/CommandResultCard";
 import type { ResumeSessionOption, ForkMessageOption } from "@/lib/types";
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
+import { loadAgents } from "./agent-loader";
 import {
   type IncompleteTriggerItem,
   type TriggerHistoryEntry,
@@ -31,6 +32,7 @@ export interface SubCommandMode {
 }
 
 export interface SlashCommandDeps {
+  promptRef: React.RefObject<HTMLTextAreaElement | null>;
   sessionId: string | null;
   sessionIdRef: React.MutableRefObject<string | null>;
   compactingRef: React.MutableRefObject<boolean>;
@@ -110,6 +112,7 @@ export function useSlashCommands(
   deps: SlashCommandDeps,
 ): SlashCommandState {
   const {
+    promptRef,
     sessionId,
     sessionIdRef,
     compactingRef,
@@ -349,11 +352,11 @@ export function useSlashCommands(
       // and resent — mirrors the TUI fork flow.
       setInput(dispatched === false ? "" : message.text);
       requestAnimationFrame(() => {
-        const ta = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+        const ta = promptRef.current;
         if (ta) { const len = ta.value.length; ta.setSelectionRange(len, len); ta.focus(); }
       });
     },
-    [onExec, setInput],
+    [onExec, setInput, promptRef],
   );
 
   // Sub-command mode (e.g. "/mcp " shows mcp sub-commands)
@@ -648,12 +651,24 @@ export function useSlashCommands(
           const agentName = args.trim();
           if (onSpawnAgentSession && runnerId) {
             const dispatchSessionId = sessionId;
-            const agentsList = runnerInfo?.agents ?? null;
-            if (agentsList !== null) {
-              const match = agentsList.find(
-                (a) => a.name.toLowerCase() === agentName.toLowerCase(),
-              );
-              if (match) {
+            loadAgents(runnerId)
+              .then((agents) => {
+                if (dispatchSessionId !== sessionIdRef.current) return;
+                const match = agents.find(
+                  (a) => a.name.toLowerCase() === agentName.toLowerCase(),
+                );
+                if (!match) {
+                  onAppendSystemMessage?.(`**Agents** — Agent "${agentName}" not found.`);
+                  return;
+                }
+                if (match.content !== undefined) {
+                  onSpawnAgentSession?.({
+                    name: match.name,
+                    description: match.description,
+                    systemPrompt: match.content,
+                  });
+                  return;
+                }
                 fetch(
                   `/api/runners/${encodeURIComponent(runnerId)}/agents/${encodeURIComponent(match.name)}`,
                   { credentials: "include" },
@@ -672,40 +687,11 @@ export function useSlashCommands(
                     if (dispatchSessionId !== sessionIdRef.current) return;
                     onSpawnAgentSession?.({ name: match.name, description: match.description });
                   });
-              } else {
-                onAppendSystemMessage?.(`**Agents** — Agent "${agentName}" not found.`);
-              }
-            } else {
-              fetch(`/api/runners/${encodeURIComponent(runnerId)}/agents`, {
-                credentials: "include",
               })
-                .then((res) =>
-                  res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)),
-                )
-                .then((data: unknown) => {
-                  if (dispatchSessionId !== sessionIdRef.current) return;
-                  const raw = data as {
-                    agents?: Array<{ name: string; description?: string; content?: string }>;
-                  };
-                  const agents = Array.isArray(raw?.agents) ? raw.agents : [];
-                  const match = agents.find(
-                    (a) => a.name.toLowerCase() === agentName.toLowerCase(),
-                  );
-                  if (match) {
-                    onSpawnAgentSession?.({
-                      name: match.name,
-                      description: match.description,
-                      systemPrompt: match.content,
-                    });
-                  } else {
-                    onAppendSystemMessage?.(`**Agents** — Agent "${agentName}" not found.`);
-                  }
-                })
-                .catch((err: Error) => {
-                  if (dispatchSessionId !== sessionIdRef.current) return;
-                  onAppendSystemMessage?.(`**Agents** — Failed to load: ${err.message}`);
-                });
-            }
+              .catch((err: Error) => {
+                if (dispatchSessionId !== sessionIdRef.current) return;
+                onAppendSystemMessage?.(`**Agents** — Failed to load: ${err.message}`);
+              });
           }
         }
         setInput("");

@@ -150,6 +150,34 @@ function isMcpDomainAllowed(url: string, serverName: string): boolean {
 // Client factory
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Keep a global fixed port for a single OAuth server, but let the OS allocate
+ * ports when several servers are initialized together. Per-server settings
+ * always win, including an explicit port 0.
+ */
+export function resolveOAuthCallbackPort(
+  perServerPort: number | undefined,
+  globalPort: number | undefined,
+  oauthServerCount: number,
+): number {
+  return perServerPort ?? (oauthServerCount > 1 ? 0 : (globalPort ?? 0));
+}
+
+export function countOAuthServers(config: PizzaPiConfig & McpConfig, disabled: Set<string>): number {
+  const globalOAuthConfigured = Boolean(config.oauthClientName || config.oauthClientId || config.oauthClientSecret);
+  const requiresOAuth = (server: { oauthClientName?: string; oauthClientId?: string; oauthClientSecret?: string }): boolean =>
+    globalOAuthConfigured || Boolean(server.oauthClientName || server.oauthClientId || server.oauthClientSecret);
+
+  const preferred = (config.mcp?.servers ?? []).filter(
+    server => server && server.transport === "streamable" && !disabled.has(server.name) && requiresOAuth(server),
+  ).length;
+  const compatibility = Object.entries(config.mcpServers ?? {}).filter(([name, def]) => {
+    if (disabled.has(name) || !def || typeof def !== "object" || resolveMcpCompatTransport(def as Record<string, unknown>) !== "streamable") return false;
+    return requiresOAuth(def as { oauthClientName?: string; oauthClientId?: string; oauthClientSecret?: string });
+  }).length;
+  return preferred + compatibility;
+}
+
 export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConfig): Promise<McpClient[]> {
   // Clean up stale OAuth providers from previous loads (e.g. /mcp reload).
   // This stops any active re-emit timers and prevents unbounded growth.
@@ -163,6 +191,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
   const oauthClientId = config.oauthClientId;
   const oauthClientSecret = config.oauthClientSecret;
   const oauthCallbackPort = config.oauthCallbackPort;
+  const oauthServerCount = countOAuthServers(config, disabled);
 
   const clients: McpClient[] = [];
 
@@ -211,7 +240,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
         clientName: s.oauthClientName || oauthClientName,
         clientId: sClientId,
         clientSecret: sClientSecret,
-        callbackPort: s.oauthCallbackPort ?? oauthCallbackPort,
+        callbackPort: resolveOAuthCallbackPort(s.oauthCallbackPort, oauthCallbackPort, oauthServerCount),
         deferRelayWaitTimeoutUntilAnchor: deferOAuthRelayWaitTimeoutUntilAnchor,
       });
       activeOAuthProviders.push(provider);
@@ -277,7 +306,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
           clientName: d.oauthClientName || oauthClientName,
           clientId: dClientId,
           clientSecret: dClientSecret,
-          callbackPort: d.oauthCallbackPort ?? oauthCallbackPort,
+          callbackPort: resolveOAuthCallbackPort(d.oauthCallbackPort, oauthCallbackPort, oauthServerCount),
           deferRelayWaitTimeoutUntilAnchor: deferOAuthRelayWaitTimeoutUntilAnchor,
         });
         activeOAuthProviders.push(provider);

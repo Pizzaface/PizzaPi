@@ -5,6 +5,10 @@ import {
     deleteRunnerSecret,
     getRunnerSecret,
     _resetRunnerSecretsForTesting,
+    initSioRegistry,
+    localRunnerSockets,
+    runnerRoom,
+    emitToRunner,
 } from "./context";
 import {
     _injectRedisForTesting,
@@ -41,6 +45,85 @@ function resetState() {
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+describe("emitToRunner", () => {
+    test("delivers service_message to a local runner once via its room", () => {
+        let roomDeliveries = 0;
+        const localSocket = { connected: true, rooms: new Set([runnerRoom("runner-local")]), emit: mock(() => {}) } as any;
+        localRunnerSockets.set("runner-local", localSocket);
+        initSioRegistry({
+            of: () => ({
+                to: (room: string) => ({
+                    emit: (event: string, data: unknown) => {
+                        expect(room).toBe(runnerRoom("runner-local"));
+                        expect(event).toBe("service_message");
+                        expect(data).toEqual({ requestId: "req-1" });
+                        roomDeliveries++;
+                    },
+                }),
+            }),
+        } as any);
+
+        emitToRunner("runner-local", "service_message", { requestId: "req-1" });
+
+        expect(roomDeliveries).toBe(1);
+        expect(localSocket.emit).not.toHaveBeenCalled();
+        localRunnerSockets.clear();
+    });
+
+    test("delivers to an unjoined local runner exactly once via direct fallback", () => {
+        let UNJOINED_LOCAL_DELIVERIES = 0;
+        const localSocket = {
+            connected: true,
+            rooms: new Set<string>(),
+            emit: mock(() => {
+                UNJOINED_LOCAL_DELIVERIES++;
+            }),
+        } as any;
+        localRunnerSockets.set("runner-unjoined", localSocket);
+        initSioRegistry({
+            of: () => ({
+                to: (room: string) => ({
+                    emit: (event: string, data: unknown) => {
+                        expect(room).toBe(runnerRoom("runner-unjoined"));
+                        expect(event).toBe("session_ended");
+                        expect(data).toEqual({ sessionId: "session-1" });
+                        // An unjoined local socket is not reached by the room emit.
+                    },
+                }),
+            }),
+        } as any);
+
+        emitToRunner("runner-unjoined", "session_ended", { sessionId: "session-1" });
+
+        expect(UNJOINED_LOCAL_DELIVERIES).toBe(1);
+        expect(localSocket.emit).toHaveBeenCalledTimes(1);
+        localRunnerSockets.clear();
+    });
+
+    test("falls back directly when a joined local runner room emit fails", () => {
+        const localSocket = {
+            connected: true,
+            rooms: new Set([runnerRoom("runner-failed-room")]),
+            emit: mock(() => {}),
+        } as any;
+        localRunnerSockets.set("runner-failed-room", localSocket);
+        initSioRegistry({
+            of: () => ({
+                to: () => ({
+                    emit: () => {
+                        throw new Error("adapter unavailable");
+                    },
+                }),
+            }),
+        } as any);
+
+        emitToRunner("runner-failed-room", "service_message", { requestId: "req-2" });
+
+        expect(localSocket.emit).toHaveBeenCalledTimes(1);
+        localRunnerSockets.clear();
+    });
+});
 
 describe("runner secret persistence", () => {
     beforeEach(resetState);

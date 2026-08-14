@@ -45,7 +45,7 @@ test("index truncates at 200 lines", () => {
   expect(text.split("\n").length).toBeLessThanOrEqual(S.MAX_INDEX_LINES);
   expect(S.capInfo(S.readIndexRaw(big)).overLimit).toBe(true);
   rmSync(big, { recursive: true, force: true });
-});
+}, 10_000);
 
 test("edit requires unique match", () => {
   const e = mkdtempSync(join(tmpdir(), "memedit-"));

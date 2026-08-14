@@ -95,6 +95,16 @@ export async function storeSessionAttachment(input: {
         filePath: targetPath,
     };
 
+    try {
+        await persistUploadedAttachment(record);
+    } catch (err) {
+        try {
+            await rm(targetPath, { force: true });
+        } catch (cleanupErr) {
+            log.error("Failed to clean up uploaded attachment after persistence failure:", cleanupErr);
+        }
+        throw err;
+    }
     attachments.set(attachmentId, record);
     return record;
 }
@@ -136,8 +146,11 @@ export async function deleteStoredAttachment(attachmentId: string): Promise<void
     try {
         await rm(record.filePath, { force: true });
     } catch {}
-    void removePersistedAttachment(attachmentId).catch(() => {});
-    void removePersistedSessionRefs(attachmentId).catch(() => {});
+    void Promise.all([
+        removePersistedAttachment(attachmentId),
+        removePersistedUploadedAttachment(attachmentId),
+        removePersistedSessionRefs(attachmentId),
+    ]).catch(() => {});
 }
 
 // ── Extracted image storage ──────────────────────────────────────────────────
@@ -327,6 +340,21 @@ function hasAnyDurableSessionRef(
 
 export async function ensureExtractedAttachmentTable(): Promise<void> {
     await getKysely().schema
+        .createTable("attachment")
+        .ifNotExists()
+        .addColumn("attachmentId", "text", (col) => col.primaryKey())
+        .addColumn("sessionId", "text", (col) => col.notNull())
+        .addColumn("ownerUserId", "text", (col) => col.notNull())
+        .addColumn("uploaderUserId", "text", (col) => col.notNull())
+        .addColumn("filename", "text", (col) => col.notNull())
+        .addColumn("mimeType", "text", (col) => col.notNull())
+        .addColumn("size", "integer", (col) => col.notNull())
+        .addColumn("createdAt", "text", (col) => col.notNull())
+        .addColumn("expiresAt", "text", (col) => col.notNull())
+        .addColumn("filePath", "text", (col) => col.notNull())
+        .execute();
+
+    await getKysely().schema
         .createTable("extracted_attachment")
         .ifNotExists()
         .addColumn("attachmentId", "text", (col) => col.primaryKey())
@@ -409,6 +437,32 @@ async function removePersistedSessionRefs(attachmentId: string): Promise<void> {
 }
 
 /** Persist an extracted attachment record to SQLite (upsert). */
+async function persistUploadedAttachment(record: StoredAttachment): Promise<void> {
+    await getKysely()
+        .insertInto("attachment" as any)
+        .values({
+            attachmentId: record.attachmentId,
+            sessionId: record.sessionId,
+            ownerUserId: record.ownerUserId,
+            uploaderUserId: record.uploaderUserId,
+            filename: record.filename,
+            mimeType: record.mimeType,
+            size: record.size,
+            createdAt: record.createdAt,
+            expiresAt: record.expiresAt,
+            filePath: record.filePath,
+        })
+        .onConflict((oc) => oc.column("attachmentId").doUpdateSet({ expiresAt: record.expiresAt }))
+        .execute();
+}
+
+async function removePersistedUploadedAttachment(attachmentId: string): Promise<void> {
+    await getKysely()
+        .deleteFrom("attachment" as any)
+        .where("attachmentId", "=", attachmentId)
+        .execute();
+}
+
 async function persistExtractedAttachment(record: StoredAttachment): Promise<void> {
     await getKysely()
         .insertInto("extracted_attachment")
@@ -444,6 +498,40 @@ async function removePersistedAttachment(attachmentId: string): Promise<void> {
  * Rehydrate the in-memory attachment registry from SQLite on server startup.
  * Only loads non-expired records whose files still exist on disk.
  */
+export async function rehydrateAttachments(): Promise<number> {
+    const rows = await getKysely().selectFrom("attachment" as any).selectAll().execute();
+    let loaded = 0;
+    for (const row of rows as Array<Record<string, string | number>>) {
+        const expiresAtMs = Date.parse(String(row.expiresAt));
+        if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
+            try { await rm(String(row.filePath), { force: true }); } catch {}
+            await removePersistedUploadedAttachment(String(row.attachmentId));
+            continue;
+        }
+        try {
+            await access(String(row.filePath));
+        } catch {
+            await removePersistedUploadedAttachment(String(row.attachmentId));
+            continue;
+        }
+        attachments.set(String(row.attachmentId), {
+            attachmentId: String(row.attachmentId),
+            sessionId: String(row.sessionId),
+            ownerUserId: String(row.ownerUserId),
+            uploaderUserId: String(row.uploaderUserId),
+            filename: String(row.filename),
+            mimeType: String(row.mimeType),
+            size: Number(row.size),
+            createdAt: String(row.createdAt),
+            expiresAt: String(row.expiresAt),
+            expiresAtMs,
+            filePath: String(row.filePath),
+        });
+        loaded++;
+    }
+    return loaded;
+}
+
 export async function rehydrateExtractedAttachments(): Promise<number> {
     const nowMs = Date.now();
     const nowIso = new Date(nowMs).toISOString();

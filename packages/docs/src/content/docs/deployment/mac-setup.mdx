@@ -30,6 +30,14 @@ A LaunchDaemon runs outside your login session, so the keychain is locked and in
 
 ## Setting Up the LaunchAgent
 
+The quickest setup is:
+
+```bash
+pizzapi runner install --activate
+```
+
+Use `pizzapi runner install --dry-run` to preview the generated `~/Library/LaunchAgents/com.pizzapi.runner.plist` without writing it. The manual steps below are useful when you need to customize the plist.
+
 <Steps>
 
 1. ### Install PizzaPi and connect to a relay

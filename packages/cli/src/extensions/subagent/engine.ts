@@ -220,6 +220,9 @@ export async function runSingleAgent(
         };
     }
 
+    // Do not create relay listeners or an AgentSession for work already cancelled.
+    if (signal?.aborted) throw new Error("Subagent was aborted");
+
     // Resolve effective tools — apply disallowedTools filtering to both explicit and default toolsets
     let effectiveToolNames: string[] | undefined;
     if (agent.tools && agent.tools.length > 0) {
