@@ -188,6 +188,37 @@ export interface AgentFile {
     content: string;
 }
 
+/** Load direct markdown rule files from a directory in lexicographic order. */
+export function loadRulesDir(dir: string): AgentFile[] {
+    if (!existsSync(dir)) return [];
+    let entries: string[];
+    try {
+        entries = readdirSync(dir).sort();
+    } catch {
+        return [];
+    }
+
+    const files: AgentFile[] = [];
+    for (const entry of entries) {
+        if (!entry.endsWith(".md")) continue;
+        const path = join(dir, entry);
+        try {
+            if (statSync(path).isFile()) files.push({ path, content: readFileSync(path, "utf-8") });
+        } catch {
+            // Skip unreadable or concurrently removed files.
+        }
+    }
+    return files;
+}
+
+/** Load global and project modular rules, in override-friendly order. */
+export function loadRules(cwd: string): { global: AgentFile[]; project: AgentFile[] } {
+    return {
+        global: loadRulesDir(join(homedir(), ".pizzapi", "rules")),
+        project: loadRulesDir(join(cwd, ".pizzapi", "rules")),
+    };
+}
+
 /**
  * Load project-level agent files that the upstream `DefaultResourceLoader`
  * does NOT discover on its own.
@@ -267,8 +298,11 @@ export function createAgentsFilesOverride(
     options: AgentsFilesOverrideOptions = {},
 ): ((base: { agentsFiles: AgentFile[] }) => { agentsFiles: AgentFile[] }) | null {
     const sendAgentsMd = options.sendAgentsMd !== false;
-    const additionalFiles = loadProjectAgentFiles(cwd)
-        .filter((file) => sendAgentsMd || !isAgentsMdPath(file.path));
+    const rules = loadRules(cwd);
+    const additionalFiles = [
+        ...loadProjectAgentFiles(cwd),
+        ...(sendAgentsMd ? [...rules.global, ...rules.project] : []),
+    ].filter((file) => sendAgentsMd || !isAgentsMdPath(file.path));
     if (additionalFiles.length === 0 && sendAgentsMd) return null;
 
     return (base) => {

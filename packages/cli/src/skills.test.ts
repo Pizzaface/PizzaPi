@@ -15,6 +15,7 @@ import {
     buildInteractiveSkillPaths,
     buildWorkerSkillPaths,
     loadProjectAgentFiles,
+    loadRulesDir,
     createAgentsFilesOverride,
 } from "./skills.js";
 
@@ -543,6 +544,28 @@ describe("loadProjectAgentFiles", () => {
     test("returns empty array when nothing exists", () => {
         const files = loadProjectAgentFiles(dir);
         expect(files).toEqual([]);
+    });
+});
+
+describe("loadRulesDir", () => {
+    test("discovers markdown rules in lexicographic order", () => {
+        const dir = makeTmpDir();
+        try {
+            writeFileSync(join(dir, "z-last.md"), "last", "utf-8");
+            writeFileSync(join(dir, "a-first.md"), "first", "utf-8");
+            writeFileSync(join(dir, "ignore.txt"), "ignore", "utf-8");
+            mkdirSync(join(dir, "nested.md"));
+            expect(loadRulesDir(dir).map(file => [file.path, file.content])).toEqual([
+                [join(dir, "a-first.md"), "first"],
+                [join(dir, "z-last.md"), "last"],
+            ]);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("returns empty array for a missing directory", () => {
+        expect(loadRulesDir(join(makeTmpDir(), "missing"))).toEqual([]);
     });
 });
 

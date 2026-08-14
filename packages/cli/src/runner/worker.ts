@@ -3,7 +3,7 @@ import { SHELL_PROC_CAPTURE_PREFIX } from "./session-procs.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv, resolveExplicitProjectTrust } from "../config.js";
-import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride } from "../skills.js";
+import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride, loadRules } from "../skills.js";
 import { getPluginSkillPaths, getPluginPromptTemplatePaths } from "../extensions/claude-plugins.js";
 import { setRegisteredCommandsProvider } from "../extensions/command-introspection.js";
 import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
@@ -229,6 +229,10 @@ function injectContextTrackingEntries(
     };
 
     if (config.sendAgentsMd !== false) {
+        const rules = loadRules(cwd);
+        for (const file of rules.global) appendContextTelemetry("context:global-rules", file.content);
+        for (const file of rules.project) appendContextTelemetry("context:project-rules", file.content);
+
         // ── Global rules (from ~/.pizzapi/AGENTS.md) ──────────────────────────
         const globalAgentsPath = join(agentDir, "AGENTS.md");
         if (existsSync(globalAgentsPath)) {
