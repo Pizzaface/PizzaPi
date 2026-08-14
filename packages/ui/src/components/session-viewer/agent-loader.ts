@@ -1,11 +1,13 @@
 import type { AgentEntry } from "./agent-loading";
 
-const agentsCache = new Map<string, AgentEntry[]>();
+const AGENTS_CACHE_TTL_MS = 5_000;
+const agentsCache = new Map<string, { agents: AgentEntry[]; expiresAt: number }>();
 const agentsPending = new Map<string, Promise<AgentEntry[]>>();
 
 export function loadAgents(runnerId: string): Promise<AgentEntry[]> {
   const cached = agentsCache.get(runnerId);
-  if (cached) return Promise.resolve(cached);
+  if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.agents);
+  if (cached) agentsCache.delete(runnerId);
 
   const pending = agentsPending.get(runnerId);
   if (pending) return pending;
@@ -15,7 +17,7 @@ export function loadAgents(runnerId: string): Promise<AgentEntry[]> {
     .then((data: unknown) => {
       const raw = data as { agents?: AgentEntry[] };
       const agents = Array.isArray(raw?.agents) ? raw.agents : [];
-      agentsCache.set(runnerId, agents);
+      agentsCache.set(runnerId, { agents, expiresAt: Date.now() + AGENTS_CACHE_TTL_MS });
       return agents;
     })
     .finally(() => {
