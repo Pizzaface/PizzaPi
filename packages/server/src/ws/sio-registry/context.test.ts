@@ -49,7 +49,7 @@ function resetState() {
 describe("emitToRunner", () => {
     test("delivers service_message to a local runner once via its room", () => {
         let roomDeliveries = 0;
-        const localSocket = { connected: true, emit: mock(() => {}) } as any;
+        const localSocket = { connected: true, rooms: new Set([runnerRoom("runner-local")]), emit: mock(() => {}) } as any;
         localRunnerSockets.set("runner-local", localSocket);
         initSioRegistry({
             of: () => ({
@@ -68,6 +68,38 @@ describe("emitToRunner", () => {
 
         expect(roomDeliveries).toBe(1);
         expect(localSocket.emit).not.toHaveBeenCalled();
+        localRunnerSockets.clear();
+    });
+
+    test("delivers to an unjoined local runner exactly once via direct fallback", () => {
+        let roomDeliveries = 0;
+        let UNJOINED_LOCAL_DELIVERIES = 0;
+        const localSocket = {
+            connected: true,
+            rooms: new Set<string>(),
+            emit: mock(() => {
+                UNJOINED_LOCAL_DELIVERIES++;
+            }),
+        } as any;
+        localRunnerSockets.set("runner-unjoined", localSocket);
+        initSioRegistry({
+            of: () => ({
+                to: (room: string) => ({
+                    emit: (event: string, data: unknown) => {
+                        expect(room).toBe(runnerRoom("runner-unjoined"));
+                        expect(event).toBe("session_ended");
+                        expect(data).toEqual({ sessionId: "session-1" });
+                        roomDeliveries++;
+                    },
+                }),
+            }),
+        } as any);
+
+        emitToRunner("runner-unjoined", "session_ended", { sessionId: "session-1" });
+
+        expect(roomDeliveries).toBe(1);
+        expect(UNJOINED_LOCAL_DELIVERIES).toBe(1);
+        expect(localSocket.emit).toHaveBeenCalledTimes(1);
         localRunnerSockets.clear();
     });
 });

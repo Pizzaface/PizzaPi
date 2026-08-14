@@ -184,15 +184,18 @@ export const lastTouchTimes = new Map<string, number>();
 /** Export for use in cleanup paths that need cluster-wide runner notification. */
 export function emitToRunner(runnerId: string, eventName: string, data: unknown): void {
     if (!io) return;
-    // The per-runner room includes local sockets and reaches runners on any
-    // relay node through the Redis adapter. Do not also emit to the local
-    // socket: that delivers the same event twice.
+    const room = runnerRoom(runnerId);
+    const local = localRunnerSockets.get(runnerId);
+    // The room reaches joined runners on any relay node through the Redis
+    // adapter. Unjoined local sockets need the direct fallback, but joined
+    // sockets must not receive the event twice.
     try {
-        io.of("/runner")
-            .to(runnerRoom(runnerId))
-            .emit(eventName, data);
+        io.of("/runner").to(room).emit(eventName, data);
     } catch (err) {
         log.warn("emitToRunner room emit failed:", (err as Error)?.message);
+    }
+    if (local?.connected && !local.rooms?.has(room)) {
+        try { local.emit(eventName, data); } catch { /* best-effort */ }
     }
 }
 
