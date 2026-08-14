@@ -212,6 +212,7 @@ pi automatically loads **context files** at startup to give the agent project-sp
 | File | Location | Purpose |
 |------|----------|---------|
 | `AGENTS.md` or `CLAUDE.md` | `~/.pizzapi/`, parent directories, current directory | Project instructions, conventions, common commands |
+| `rules/*.md` | `~/.pizzapi/rules/` (global), `.pizzapi/rules/` (project) | Modular instructions, sorted lexicographically within each directory |
 | `SYSTEM.md` | `.pizzapi/SYSTEM.md` (project) or `~/.pizzapi/SYSTEM.md` (global) | Replace the default system prompt entirely |
 | `APPEND_SYSTEM.md` | Same locations | Append to the system prompt without replacing it |
 
@@ -222,6 +223,8 @@ pi automatically loads **context files** at startup to give the agent project-sp
 ### How Context Files Load
 
 1. Global `AGENTS.md` from `~/.pizzapi/`
-2. Walk up from the current working directory, loading each `AGENTS.md` or `CLAUDE.md` found (the current directory is included)
+2. Global `~/.pizzapi/rules/*.md`, sorted lexicographically
+3. Walk up from the current working directory, loading each `AGENTS.md` or `CLAUDE.md` found (the current directory is included)
+4. Project `.pizzapi/rules/*.md`, sorted lexicographically
 
 All files are concatenated and included in the system prompt. This means you can have repository-wide instructions in the repo root and more specific instructions in subdirectories.

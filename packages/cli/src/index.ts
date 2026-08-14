@@ -573,6 +573,9 @@ async function main() {
         // via pi's own flow mid-process).
         const rtProjectTrusted = resolveExplicitProjectTrust(opts.cwd, opts.agentDir);
         const rtSettingsManager = SettingsManager.create(opts.cwd, opts.agentDir, { projectTrusted: rtProjectTrusted });
+        const rtAgentsFilesOverride = createAgentsFilesOverride(opts.cwd, {
+            sendAgentsMd: config.sendAgentsMd !== false,
+        });
         const services = await createAgentSessionServices({
             cwd: opts.cwd,
             agentDir: opts.agentDir,
@@ -591,7 +594,7 @@ async function main() {
                     systemPromptOverride: () => config.systemPrompt,
                 }),
                 appendSystemPrompt: [maybeBuildSystemPrompt(config, { cwd: opts.cwd }), config.appendSystemPrompt].filter(Boolean) as string[],
-                ...(agentsFilesOverride && { agentsFilesOverride }),
+                ...(rtAgentsFilesOverride && { agentsFilesOverride: rtAgentsFilesOverride }),
             },
         });
         const result = await createAgentSessionFromServices({
