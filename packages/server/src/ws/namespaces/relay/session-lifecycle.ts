@@ -15,6 +15,7 @@ import {
 } from "../../sio-state/index.js";
 import { socketAckedSeqs } from "./ack-tracker.js";
 import { clearThinkingMaps } from "./thinking-tracker.js";
+import { forgetViewerGate } from "./viewer-gate.js";
 import { pendingChunkedStates, enqueueSessionEvent } from "./event-pipeline.js";
 import type { RelaySocket } from "./types.js";
 import { createLogger } from "@pizzapi/tools";
@@ -72,6 +73,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
         }
 
         clearThinkingMaps(sessionId);
+        forgetViewerGate(sessionId);
         // Defer chunked-state cleanup until all previously-queued
         // session_messages_chunk handlers have finished.  If we deleted
         // pendingChunkedStates immediately, any chunks still queued in
@@ -123,6 +125,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             }
 
             clearThinkingMaps(sessionId);
+            forgetViewerGate(sessionId);
             // Drain chunk handlers before deleting their assembly state or the
             // last queued chunk can lose the durable checkpoint on disconnect.
             await enqueueSessionEvent(sessionId, async () => {

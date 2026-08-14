@@ -15,6 +15,7 @@ import {
     consumePendingRecovery,
 } from "../../sio-registry.js";
 import { appendRelayEventToCache } from "../../../sessions/redis.js";
+import { isDeltaEvent, shouldPublishDelta } from "./viewer-gate.js";
 import { storeAndReplaceImagesInEvent, stripImagesFromPipelineEvent } from "../../strip-images.js";
 import { updateSessionMetaState, broadcastToSessionMeta, getSessionMetaState } from "../../sio-registry/meta.js";
 import { buildSnapshotPatchFromCapabilities, buildSnapshotPatchFromMetadata } from "../../sio-registry/snapshot-state.js";
@@ -455,6 +456,12 @@ export function registerEventHandler(socket: RelaySocket): void {
             const isMetadataOnlyUpdate = event.type === "session_metadata_update";
             if (event.type === "session_messages_chunk" || isChunkedSessionActive || isMetadataOnlyUpdate) {
                 await broadcastSessionEventToViewers(sessionId, eventToPublish);
+            } else if (isDeltaEvent(event.type) && !shouldPublishDelta(sessionId)) {
+                // Nobody is watching: drop the delta instead of rPushing a
+                // cumulative partial into the event cache and PUBLISHing it to
+                // an empty room. Skipping publish also skips incrementSeq, so
+                // no seq gap is created, and the next delta after a viewer
+                // attaches carries the whole message so far. See viewer-gate.ts.
             } else {
                 // Publish to viewers via Redis cache + Socket.IO rooms
                 await publishSessionEvent(sessionId, eventToPublish);
