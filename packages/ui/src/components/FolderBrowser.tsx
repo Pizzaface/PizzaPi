@@ -17,9 +17,22 @@ export interface BreadcrumbSegment {
 
 export function breadcrumbSegments(currentPath: string): BreadcrumbSegment[] {
     const parts = pathSegments(currentPath);
-    const windows = currentPath.includes("\\");
+    const windows = currentPath.includes("\\") || /^[A-Za-z]:/.test(currentPath);
+    const separator = currentPath.includes("\\") ? "\\" : "/";
+    const unc = /^[\\/]{2}/.test(currentPath) && parts.length >= 2;
+
+    if (unc) {
+        const root = `${separator}${separator}${parts[0]}${separator}${parts[1]}`;
+        const result: BreadcrumbSegment[] = [{ label: root, path: root }];
+        let acc = root;
+        for (const part of parts.slice(2)) {
+            acc += `${separator}${part}`;
+            result.push({ label: part, path: acc });
+        }
+        return result;
+    }
+
     if (windows && /^[A-Za-z]:$/.test(parts[0] ?? "")) {
-        const separator = "\\";
         const result: BreadcrumbSegment[] = [{ label: parts[0], path: `${parts[0]}${separator}` }];
         let acc = `${parts[0]}${separator}`;
         for (const part of parts.slice(1)) {
@@ -39,12 +52,19 @@ export function breadcrumbSegments(currentPath: string): BreadcrumbSegment[] {
 }
 
 export function parentPath(currentPath: string): string {
-    const windows = currentPath.includes("\\");
+    const windows = currentPath.includes("\\") || /^[A-Za-z]:/.test(currentPath);
+    const separator = currentPath.includes("\\") ? "\\" : "/";
+    const parts = pathSegments(currentPath);
+    const unc = /^[\\/]{2}/.test(currentPath) && parts.length >= 2;
     if (currentPath === "/" || (windows && /^[A-Za-z]:\\?$/.test(currentPath))) return currentPath;
+    if (unc) {
+        if (parts.length <= 2) return currentPath;
+        return `${separator}${separator}${parts.slice(0, -1).join(separator)}`;
+    }
 
     const parent = currentPath.replace(/[\\/][^\\/]+[\\/]?$/, "");
-    if (windows && /^[A-Za-z]:$/.test(parent)) return `${parent}${"\\"}`;
-    return parent || (windows ? `${pathSegments(currentPath)[0] ?? ""}${"\\"}` : "/");
+    if (windows && /^[A-Za-z]:$/.test(parent)) return `${parent}${separator}`;
+    return parent || (windows ? `${parts[0] ?? ""}${separator}` : "/");
 }
 
 export interface FolderBrowserProps {

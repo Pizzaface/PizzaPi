@@ -16,6 +16,18 @@ describe("FolderBrowser Windows paths", () => {
         expect(parentPath("C:\\Users")).toBe("C:\\");
         expect(parentPath("C:\\")).toBe("C:\\");
     });
+
+    test("keeps UNC share roots in breadcrumbs", () => {
+        expect(breadcrumbSegments("\\\\server\\share\\project")).toEqual([
+            { label: "\\\\server\\share", path: "\\\\server\\share" },
+            { label: "project", path: "\\\\server\\share\\project" },
+        ]);
+    });
+
+    test("does not navigate above a UNC share root", () => {
+        expect(parentPath("\\\\server\\share\\project")).toBe("\\\\server\\share");
+        expect(parentPath("\\\\server\\share")).toBe("\\\\server\\share");
+    });
 });
 
 describe("FolderBrowser POSIX paths", () => {
