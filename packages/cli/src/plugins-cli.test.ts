@@ -1,39 +1,36 @@
-import { describe, test, expect, afterAll } from "bun:test";
-import { resolve } from "path";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join, resolve } from "path";
 import {
     getTrustedPlugins,
     isPluginTrusted,
     trustPlugin,
     untrustPlugin,
+    _setGlobalConfigDir,
 } from "./config.js";
 
 /**
  * Tests for the plugin trust config helpers.
  *
- * These use unique path names to avoid collisions with any real trusted
- * plugins. All test paths are cleaned up in afterAll.
- *
- * NOTE: Bun caches homedir() from process start, so overriding
- * process.env.HOME doesn't change where config is written. These
- * tests write to the real ~/.pizzapi/config.json but only touch the
- * trustedPlugins array with unique test paths that are removed after.
+ * Each test uses an isolated temporary global config directory.
  */
 
-const TEST_PREFIX = "/tmp/__plugins-cli-test__";
-const testPaths: string[] = [];
+let tmpHome: string;
+
+beforeEach(() => {
+    tmpHome = mkdtempSync(join(tmpdir(), "pizzapi-plugins-cli-"));
+    _setGlobalConfigDir(tmpHome);
+});
+
+afterEach(() => {
+    _setGlobalConfigDir(null);
+    rmSync(tmpHome, { recursive: true, force: true });
+});
 
 function testPath(suffix: string): string {
-    const p = `${TEST_PREFIX}-${suffix}-${Date.now()}`;
-    testPaths.push(p);
-    return p;
+    return `/tmp/__plugins-cli-test__-${suffix}-${Date.now()}`;
 }
-
-afterAll(() => {
-    // Clean up any test paths that were trusted
-    for (const p of testPaths) {
-        untrustPlugin(p);
-    }
-});
 
 describe("plugin trust config helpers", () => {
     test("isPluginTrusted returns false for unknown plugin", () => {
