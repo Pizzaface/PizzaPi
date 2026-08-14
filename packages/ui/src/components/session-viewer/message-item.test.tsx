@@ -26,10 +26,35 @@ const win = new Window({ url: "http://localhost/" });
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 const { SessionMessageItem } = await import("./message-item");
+const { SessionActionsProvider } = await import("./session-actions-context");
 
 afterEach(() => cleanup());
 
 describe("SessionMessageItem custom messages", () => {
+  test("quotes selected assistant text through session actions", () => {
+    const message: RelayMessage = {
+      key: "assistant-quote",
+      role: "assistant",
+      timestamp: 1_700_000_000_000,
+      content: "Select this sentence",
+    };
+    let quoted = "";
+    const view = render(
+      <SessionActionsProvider value={{ abort: () => {}, quote: (text) => { quoted = text; } }}>
+        <SessionMessageItem message={message} isLast={false} />
+      </SessionActionsProvider>,
+    );
+    const text = view.getByText("Select this sentence");
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+
+    fireEvent.click(view.getByRole("button", { name: "Quote" }));
+
+    expect(quoted).toBe("Select this sentence");
+  });
+
   test("shows the full custom message key and collapses content by default", () => {
     const message: RelayMessage = {
       key: "custom-1",

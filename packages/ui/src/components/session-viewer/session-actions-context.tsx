@@ -3,6 +3,8 @@ import { createContext, useContext } from "react";
 export interface SessionActions {
   /** Send an abort exec command to kill the current agent turn (and any running bash commands). */
   abort: () => void;
+  /** Insert a quoted message into the composer. */
+  quote?: (text: string, timestamp?: number) => void;
 }
 
 const SessionActionsContext = createContext<SessionActions | null>(null);

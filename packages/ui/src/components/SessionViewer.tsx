@@ -403,6 +403,20 @@ export function SessionViewer({
 
   // ── Session actions + MCP toggle context ─────────────────────────────────
   const { sessionActions, handleMcpToggle } = useSessionActionsSetup(onExec);
+  const sessionActionsWithQuote = React.useMemo(() => {
+    if (!sessionActions) return null;
+    return {
+      ...sessionActions,
+      quote: (text: string, messageTimestamp?: number) => {
+        const timestamp = new Date(messageTimestamp ?? Date.now()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        const quote = `> @assistant [${timestamp}]: ${text.replace(/\n/g, "\n> ")}`;
+        setInput((current) => current ? `${current}\n${quote}` : quote);
+        requestAnimationFrame(() => {
+          document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]")?.focus();
+        });
+      },
+    };
+  }, [sessionActions, setInput]);
 
   // ── Compacting guard reset ────────────────────────────────────────────────
   React.useEffect(() => {
@@ -557,7 +571,7 @@ export function SessionViewer({
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <SessionActionsProvider value={sessionActions}>
+    <SessionActionsProvider value={sessionActionsWithQuote}>
       <McpToggleContext.Provider value={onExec ? handleMcpToggle : null}>
         <div className="flex flex-col flex-1 min-h-0">
 
