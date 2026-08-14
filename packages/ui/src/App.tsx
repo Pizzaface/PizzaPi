@@ -4339,7 +4339,7 @@ export function App() {
   }, [activeSessionId, activeSessionInfo?.runnerId, liveSessions]);
 
   // Runner service panels — dynamically discovered
-  const { services: availableServices, panels: dynamicPanels, triggerDefs: runnerTriggerDefs, sigilDefs: runnerSigilDefs } = useRunnerServices(viewerSocket, activeRunnerInfo);
+  const { services: availableServices, disabledServices: disabledServiceIds, panels: dynamicPanels, triggerDefs: runnerTriggerDefs, sigilDefs: runnerSigilDefs } = useRunnerServices(viewerSocket, activeRunnerInfo);
   const triggerCounts = useTriggerCount(activeSessionId, viewerSocket);
   const attentionSessionNames = React.useMemo(() => {
     const names = new Map<string, string>();
@@ -4476,7 +4476,7 @@ export function App() {
   }, [activeServicePanels, closeServicePanelById, toggleServicePanel, handleCombinedTabChange, combinedActiveTab, setEphemeralServicePanelPosition, getServicePanelPosition, setServicePanelPosition]);
 
   // ── Service panel buttons in rails/strips ────────────────────────────
-  const visibleServicePanels = useVisibleServicePanels(availableServices, dynamicPanels);
+  const visibleServicePanels = useVisibleServicePanels(availableServices, dynamicPanels, disabledServiceIds);
   const railServicePanels = React.useMemo(
     () => visibleServicePanels.map((p) => ({ ...p, active: activeServicePanels.has(p.serviceId) })),
     [visibleServicePanels, activeServicePanels],
@@ -5038,6 +5038,7 @@ export function App() {
               groups={{ top: buttonPositions.slots["left-top"], middle: buttonPositions.slots["left-middle"], bottom: buttonPositions.slots["left-bottom"] }}
               onDragStart={handleButtonDragStart}
               servicePanels={railServicePanels}
+              disabledServiceIds={disabledServiceIds}
               onToggleServicePanel={handleToggleServicePanelFromDock}
               onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
               onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
@@ -5119,6 +5120,7 @@ export function App() {
                 buttonIds={buttonPositions.slots["center-top"]}
                 onDragStart={handleButtonDragStart}
                 servicePanels={railServicePanels}
+                disabledServiceIds={disabledServiceIds}
                 onToggleServicePanel={handleToggleServicePanelFromDock}
                 onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
                 onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
@@ -5224,6 +5226,7 @@ export function App() {
                         extraHeaderButtons={
                           <ServicePanelButtons
                             availableServices={availableServices}
+                            disabledServiceIds={disabledServiceIds}
                             dynamicPanels={dynamicPanels}
                             activePanelIds={activeServicePanels}
                             onTogglePanel={handleToggleServicePanel}
@@ -5234,6 +5237,7 @@ export function App() {
                         extraOverflowItems={
                           <ServicePanelOverflowItems
                             availableServices={availableServices}
+                            disabledServiceIds={disabledServiceIds}
                             dynamicPanels={dynamicPanels}
                             activePanelIds={activeServicePanels}
                             onTogglePanel={handleToggleServicePanel}
@@ -5384,6 +5388,7 @@ export function App() {
               groups={{ top: buttonPositions.slots["right-top"], middle: buttonPositions.slots["right-middle"], bottom: buttonPositions.slots["right-bottom"] }}
               onDragStart={handleButtonDragStart}
               servicePanels={railServicePanels}
+              disabledServiceIds={disabledServiceIds}
               onToggleServicePanel={handleToggleServicePanelFromDock}
               onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
               onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}
@@ -5426,6 +5431,7 @@ export function App() {
             buttonIds={buttonPositions.slots["center-bottom"]}
             onDragStart={handleButtonDragStart}
             servicePanels={railServicePanels}
+            disabledServiceIds={disabledServiceIds}
             onToggleServicePanel={handleToggleServicePanelFromDock}
             onToggleTerminal={() => openPanelFromDockedButton("terminal", showTerminal, setShowTerminal, handleTerminalPositionChange)}
             onToggleFileExplorer={() => openPanelFromDockedButton("files", showFileExplorer, setShowFileExplorer, handleFilesPositionChange)}

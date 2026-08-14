@@ -23,6 +23,14 @@
 
 import { describe, expect, test } from "bun:test";
 import { resolveNewPanelPosition, resolveActiveTabIdFromIds, resolvePanelToggleAction } from "../../utils/servicePanelUtils";
+import { filterDisabledServicePanels } from "./ServicePanels";
+
+describe("filterDisabledServicePanels", () => {
+    test("omits disabled service panel buttons", () => {
+        const panels = [{ serviceId: "enabled" }, { serviceId: "disabled" }];
+        expect(filterDisabledServicePanels(panels, new Set(["disabled"]))).toEqual([{ serviceId: "enabled" }]);
+    });
+});
 
 // ── Adding bug: new panel should join the current active group ────────────────
 
