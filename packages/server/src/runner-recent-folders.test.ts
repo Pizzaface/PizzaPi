@@ -56,14 +56,22 @@ describe("recordRecentFolder", () => {
         expect(folders).toEqual(["/code/often", "/code/once"]);
     });
 
-    authTest("prunes oldest entries beyond cap of 50", async () => {
-        // Insert 52 distinct paths
-        for (let i = 1; i <= 52; i++) {
+    authTest("prunes lowest-usage entries beyond cap of 50", async () => {
+        // Boost two older folders, then add two new folders past the cap.
+        for (let i = 1; i <= 50; i++) {
             await recordRecentFolder(USER, RUNNER, `/code/project-${i}`);
         }
+        await recordRecentFolder(USER, RUNNER, "/code/project-1");
+        await recordRecentFolder(USER, RUNNER, "/code/project-2");
+        await recordRecentFolder(USER, RUNNER, "/code/project-51");
+        await recordRecentFolder(USER, RUNNER, "/code/project-52");
+
         const folders = await getRecentFolders(USER, RUNNER);
         expect(folders).toHaveLength(50);
         expect(new Set(folders).size).toBe(50);
+        expect(folders).toContain("/code/project-1");
+        expect(folders).toContain("/code/project-2");
+        expect(folders).not.toContain("/code/project-3");
     });
 
     authTest("cap is per (userId, runnerId) pair", async () => {

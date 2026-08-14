@@ -20,7 +20,11 @@ export async function ensureRunnerRecentFoldersTable(): Promise<void> {
         await getKysely().schema.alterTable("runner_recent_folder")
             .addColumn("usageCount", "integer", (col) => col.notNull().defaultTo(1))
             .execute();
-    } catch {
+    } catch (err: unknown) {
+        const message = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+        if (!message.includes("duplicate column name") || !message.includes("usagecount")) {
+            throw err;
+        }
         // Column already exists.
     }
 
