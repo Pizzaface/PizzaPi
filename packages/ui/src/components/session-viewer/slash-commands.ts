@@ -32,6 +32,7 @@ export interface SubCommandMode {
 }
 
 export interface SlashCommandDeps {
+  promptRef: React.RefObject<HTMLTextAreaElement | null>;
   sessionId: string | null;
   sessionIdRef: React.MutableRefObject<string | null>;
   compactingRef: React.MutableRefObject<boolean>;
@@ -111,6 +112,7 @@ export function useSlashCommands(
   deps: SlashCommandDeps,
 ): SlashCommandState {
   const {
+    promptRef,
     sessionId,
     sessionIdRef,
     compactingRef,
@@ -350,11 +352,11 @@ export function useSlashCommands(
       // and resent — mirrors the TUI fork flow.
       setInput(dispatched === false ? "" : message.text);
       requestAnimationFrame(() => {
-        const ta = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+        const ta = promptRef.current;
         if (ta) { const len = ta.value.length; ta.setSelectionRange(len, len); ta.focus(); }
       });
     },
-    [onExec, setInput],
+    [onExec, setInput, promptRef],
   );
 
   // Sub-command mode (e.g. "/mcp " shows mcp sub-commands)
