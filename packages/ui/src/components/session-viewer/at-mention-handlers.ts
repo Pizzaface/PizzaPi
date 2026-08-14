@@ -42,6 +42,7 @@ export interface AtMentionResult extends AtMentionState, AtMentionHandlers {}
 export function useAtMentionHandlers(
   sessionId: string | null,
   inputRef: React.MutableRefObject<string>,
+  promptRef: React.RefObject<HTMLTextAreaElement | null>,
   setInput: (value: string) => void,
   runnerId: string | undefined,
   runnerInfo: import("@pizzapi/protocol").RunnerInfo | null | undefined,
@@ -114,7 +115,7 @@ export function useAtMentionHandlers(
   /** Select a file entry: insert @{relativePath} into the textarea. */
   const handleAtMentionSelectFile = React.useCallback(
     (relativePath: string) => {
-      const textarea = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+      const textarea = promptRef.current;
       if (!textarea) return;
       const cursorPosition = textarea.selectionStart;
       const value = inputRef.current;
@@ -129,7 +130,7 @@ export function useAtMentionHandlers(
       resetAtMentionState();
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [atMentionTriggerOffset, resetAtMentionState, setInput, inputRef],
+    [atMentionTriggerOffset, resetAtMentionState, setInput, inputRef, promptRef],
   );
 
   /** Drill into a directory, updating the textarea text to reflect the new path. */
@@ -138,7 +139,7 @@ export function useAtMentionHandlers(
       setAtMentionPath(newPath);
       setAtMentionQuery("");
       setAtMentionHighlightedIndex(0);
-      const textarea = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+      const textarea = promptRef.current;
       if (textarea) {
         const cursorPosition = textarea.selectionStart;
         const value = inputRef.current;
@@ -153,7 +154,7 @@ export function useAtMentionHandlers(
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [atMentionTriggerOffset, setInput, inputRef],
+    [atMentionTriggerOffset, setInput, inputRef, promptRef],
   );
 
   /** Navigate up one directory level. */
@@ -179,7 +180,7 @@ export function useAtMentionHandlers(
   /** Select an agent entry: insert @agentName into the textarea. */
   const handleAtMentionSelectAgent = React.useCallback(
     (agentName: string) => {
-      const textarea = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+      const textarea = promptRef.current;
       if (!textarea) return;
       const cursorPosition = textarea.selectionStart;
       const value = inputRef.current;
@@ -194,7 +195,7 @@ export function useAtMentionHandlers(
       resetAtMentionState();
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [atMentionTriggerOffset, resetAtMentionState, setInput, inputRef],
+    [atMentionTriggerOffset, resetAtMentionState, setInput, inputRef, promptRef],
   );
 
   return {

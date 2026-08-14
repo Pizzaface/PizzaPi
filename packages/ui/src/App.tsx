@@ -271,6 +271,7 @@ function createInitialSessionState(): SessionState {
 
 export function App() {
   const { data: session, isPending } = usePizzaPiSession();
+  const promptRef = React.useRef<HTMLTextAreaElement>(null);
   // Drive the native badge from the attention store.
   // No-op outside the bundled Capacitor app.
   useMobileNativeActivity();
@@ -4137,7 +4138,7 @@ export function App() {
       // Cmd/Ctrl + K — Focus the prompt textarea
       if (meta && !e.shiftKey && !e.altKey && e.key === "k") {
         e.preventDefault();
-        document.querySelector<HTMLElement>("[data-pp-prompt]")?.focus();
+        promptRef.current?.focus();
         return;
       }
 
@@ -5171,6 +5172,7 @@ export function App() {
                       <SigilProvider sigilDefs={runnerSigilDefs} panels={dynamicPanels} runnerId={activeSessionInfo?.runnerId ?? undefined}>
                       <PizzaPiNavProvider actions={pizzaPiNavActions}>
                       <SessionViewer
+                        promptRef={promptRef}
                         sessionId={activeSessionId}
                         sessionName={sessionName}
                         messages={messages}

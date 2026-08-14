@@ -182,12 +182,16 @@ export function SessionViewer({
   onLoadMoreServerMessages,
   loadingOlderMessages,
   toolbarPositions,
+  promptRef: externalPromptRef,
 }: BaseSessionViewerProps & {
   hasMoreServerMessages?: boolean;
+  promptRef?: React.RefObject<HTMLTextAreaElement | null>;
   onLoadMoreServerMessages?: () => void;
   loadingOlderMessages?: boolean;
 }) {
   const inHeader = (id: ToolbarButtonId) => (toolbarPositions?.[id] ?? "top") === "top";
+  const localPromptRef = React.useRef<HTMLTextAreaElement>(null);
+  const promptRef = externalPromptRef ?? localPromptRef;
 
   // ── Misc local state ──────────────────────────────────────────────────────
   const [composerError, setComposerError] = React.useState<string | null>(null);
@@ -228,7 +232,7 @@ export function SessionViewer({
           setEditingQueuedId(null);
           setEditingQueuedText("");
           requestAnimationFrame(() => {
-            document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]")?.focus();
+            promptRef.current?.focus();
           });
           return true;
         }
@@ -307,6 +311,7 @@ export function SessionViewer({
 
   // ── Slash commands ────────────────────────────────────────────────────────
   const slashCmd = useSlashCommands(input, setInput, {
+    promptRef,
     sessionId,
     sessionIdRef,
     compactingRef,
@@ -372,7 +377,7 @@ export function SessionViewer({
   });
 
   // ── @-mention handlers ────────────────────────────────────────────────────
-  const atMention = useAtMentionHandlers(sessionId, inputRef, setInput, runnerId, runnerInfo);
+  const atMention = useAtMentionHandlers(sessionId, inputRef, promptRef, setInput, runnerId, runnerInfo);
 
   const {
     atMentionOpen,
@@ -1212,7 +1217,7 @@ export function SessionViewer({
                                 setCommandOpen(false);
                                 setCommandHighlightedIndex(0);
                                 requestAnimationFrame(() => {
-                                  const ta = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+                                  const ta = promptRef.current;
                                   if (ta) { const len = ta.value.length; ta.setSelectionRange(len, len); ta.focus(); }
                                 });
                                 return;
@@ -1255,7 +1260,7 @@ export function SessionViewer({
                                 setInput(`/${cmd.name} `);
                                 setCommandQuery("");
                                 setCommandOpen(keepPopoverOpenNames.has(cmd.name.toLowerCase()));
-                                requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]")?.focus());
+                                requestAnimationFrame(() => promptRef.current?.focus());
                               }}>
                                 <div className="flex w-full items-center justify-between gap-2">
                                   <div className="flex items-center gap-1.5 min-w-0">
@@ -1278,7 +1283,7 @@ export function SessionViewer({
                                 setInput(`/${cmd.name} `);
                                 setCommandQuery("");
                                 setCommandOpen(false);
-                                requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]")?.focus());
+                                requestAnimationFrame(() => promptRef.current?.focus());
                               }}>
                                 <div className="flex w-full items-center justify-between gap-2">
                                   <span className="font-mono text-sm truncate">/{cmd.name}</span>
@@ -1295,7 +1300,7 @@ export function SessionViewer({
                                 setInput(`/${skill.name} `);
                                 setCommandQuery("");
                                 setCommandOpen(false);
-                                requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]")?.focus());
+                                requestAnimationFrame(() => promptRef.current?.focus());
                               }}>
                                 <div className="flex w-full items-center justify-between gap-2">
                                   <div className="flex items-center gap-1.5 min-w-0">
@@ -1394,6 +1399,7 @@ export function SessionViewer({
               <PromptInputBody>
                 <div className="flex w-full items-end">
                   <PromptInputTextarea
+                    ref={promptRef}
                     data-pp-prompt=""
                     aria-label="Message"
                     value={input}
@@ -1577,7 +1583,7 @@ export function SessionViewer({
                               setCommandOpen(false);
                               setCommandHighlightedIndex(0);
                               requestAnimationFrame(() => {
-                                const ta = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+                                const ta = promptRef.current;
                                 if (ta) { const len = ta.value.length; ta.setSelectionRange(len, len); ta.focus(); }
                               });
                               return;
@@ -1632,7 +1638,7 @@ export function SessionViewer({
                               setCommandOpen(highlighted.name === "resume" || keepPopoverOpenNames.has(highlighted.name.toLowerCase()));
                               setCommandHighlightedIndex(0);
                               requestAnimationFrame(() => {
-                                const ta = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+                                const ta = promptRef.current;
                                 if (ta) { const len = ta.value.length; ta.setSelectionRange(len, len); }
                               });
                               return;
@@ -1648,7 +1654,7 @@ export function SessionViewer({
                             setCommandQuery("");
                             setCommandHighlightedIndex(0);
                             requestAnimationFrame(() => {
-                              const ta = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+                              const ta = promptRef.current;
                               if (ta) { const len = ta.value.length; ta.setSelectionRange(len, len); ta.focus(); }
                             });
                           }
@@ -1664,7 +1670,7 @@ export function SessionViewer({
                             setCommandOpen(false);
                             setCommandHighlightedIndex(0);
                             requestAnimationFrame(() => {
-                              const ta = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+                              const ta = promptRef.current;
                               if (ta) { const len = ta.value.length; ta.setSelectionRange(len, len); ta.focus(); }
                             });
                           }
