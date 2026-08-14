@@ -70,6 +70,11 @@ export function worktreeRoots(cwds: Iterable<string>): string[] {
   );
 }
 
+/** Split a filesystem path into non-empty segments, regardless of platform separator. */
+export function pathSegments(path: string): string[] {
+  return path.split(/[\\/]+/).filter(Boolean);
+}
+
 export function formatPathTail(path: string, maxSegments = 2): string {
   if (!path) return "";
   const normalized = path.replace(/\\/g, "/");
@@ -86,7 +91,7 @@ export function formatPathTail(path: string, maxSegments = 2): string {
     rest = normalized.slice(1);
   }
 
-  const parts = rest.split("/").filter(Boolean);
+  const parts = pathSegments(rest);
   if (parts.length === 0) return normalized;
   if (parts.length === 1) return normalized;
 

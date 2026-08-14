@@ -24,7 +24,7 @@ import {
     TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { formatPathTail } from "@/lib/path";
+import { formatPathTail, pathSegments } from "@/lib/path";
 import { filterFolders } from "@/lib/filterFolders";
 import {
     Webhook as WebhookIcon,
@@ -637,7 +637,7 @@ function CreateWebhookForm({
                                     {virtualizer.getVirtualItems().map((item) => {
                                         const folder = filteredFolders[item.index];
                                         const basename =
-                                            folder.split("/").filter(Boolean).pop() || folder;
+                                            pathSegments(folder).pop() || folder;
                                         const tail = formatPathTail(folder, 2);
                                         const isSelected = cwd === folder;
                                         return (
