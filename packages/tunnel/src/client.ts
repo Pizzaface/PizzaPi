@@ -497,6 +497,9 @@ export class TunnelClient extends EventEmitter {
         return;
       }
       this.activeRequests.delete(id);
+      // The cached protocol may be stale (service restarted as HTTP↔HTTPS) —
+      // clear it so the next request re-probes.
+      this.portProtocol.delete(port);
       this.send({
         type: "response-start",
         id,
@@ -560,6 +563,7 @@ export class TunnelClient extends EventEmitter {
     }
 
     const wsUseTls = this.portProtocol.get(port) === "https";
+    if (!this.portProtocol.has(port)) this.probeProtocol(port); // late-started service — fill cache for next attempt
     const targetUrl = `${wsUseTls ? "wss" : "ws"}://127.0.0.1:${port}${path}`;
     let parsed: URL;
     try {
@@ -648,6 +652,7 @@ export class TunnelClient extends EventEmitter {
           connect(otherLoopback(hostname), false);
           return;
         }
+        if (!opened) this.portProtocol.delete(port); // stale protocol cache — re-probe next time
         this.send({ type: "ws-error", id, message: "WebSocket connection error" });
       });
     } catch (error) {

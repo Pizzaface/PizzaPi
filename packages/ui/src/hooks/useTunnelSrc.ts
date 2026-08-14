@@ -64,7 +64,10 @@ export async function resolveTunnelHref(
     }
 
     const data = await mint();
-    if (data.hostUrl) return data.hostUrl;
+    // Mobile: only user-app previews opt into the tunnel origin — the domain
+    // may not resolve off-machine (e.g. t.localhost). Service panels keep the
+    // signed relay URL, which is always reachable.
+    if (preferHostOrigin && data.hostUrl) return data.hostUrl;
     if (!data.url) throw new Error("token response missing url");
     return resolveMobileUrl(data.url);
 }

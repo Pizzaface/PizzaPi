@@ -106,6 +106,8 @@ async function handleHostUpgradeAsync(
 
     // Reuse the common upgrade path with a synthesized match:
     // [full, scope, port, path]. scope + runnerId are preauthenticated.
+    // fullUrl is forwarded verbatim — host tunnels must not strip the app's
+    // own apiKey/tunnelToken query params.
     await handleUpgradeAsync(
         req,
         rawSocket,
@@ -114,6 +116,7 @@ async function handleHostUpgradeAsync(
         fullUrl,
         auth.record.userId,
         auth.runnerId,
+        fullUrl,
     );
 }
 
@@ -185,6 +188,7 @@ async function handleUpgradeAsync(
     fullUrl: string,
     preauthenticatedUserId?: string,
     preauthenticatedRunnerId?: string,
+    rawPathWithQuery?: string,
 ): Promise<void> {
     let sessionId: string;
     try {
@@ -198,15 +202,20 @@ async function handleUpgradeAsync(
     const proxyPath = match[3] ?? "/";
 
     let pathWithQuery: string;
-    const qIdx = fullUrl.indexOf("?");
-    if (qIdx >= 0) {
-        const qs = new URLSearchParams(fullUrl.slice(qIdx + 1));
-        qs.delete("apiKey");
-        qs.delete("tunnelToken");
-        const qsStr = qs.toString();
-        pathWithQuery = qsStr ? `${proxyPath}?${qsStr}` : proxyPath;
+    if (rawPathWithQuery !== undefined) {
+        // Host-based tunnel — forward verbatim; auth never rode the query string.
+        pathWithQuery = rawPathWithQuery;
     } else {
-        pathWithQuery = proxyPath;
+        const qIdx = fullUrl.indexOf("?");
+        if (qIdx >= 0) {
+            const qs = new URLSearchParams(fullUrl.slice(qIdx + 1));
+            qs.delete("apiKey");
+            qs.delete("tunnelToken");
+            const qsStr = qs.toString();
+            pathWithQuery = qsStr ? `${proxyPath}?${qsStr}` : proxyPath;
+        } else {
+            pathWithQuery = proxyPath;
+        }
     }
 
     if (!sessionId || !Number.isFinite(port) || port < 1 || port > 65535) {

@@ -26,6 +26,7 @@ function fakeRedis() {
             set: async (key: string, value: string, _opts?: unknown) => { store.set(key, value); return "OK"; },
             get: async (key: string) => store.get(key) ?? null,
             expire: async (key: string) => store.has(key),
+            del: async (key: string) => { store.delete(key); return 1; },
         } as never,
     };
 }
@@ -82,7 +83,7 @@ describe("matchTunnelHost", () => {
 });
 
 describe("mint + resolve labels", () => {
-    test("mints a label and resolves the stored record, refreshing TTL", async () => {
+    test("mints a label and resolves the stored record with an absolute expiry", async () => {
         process.env.PIZZAPI_TUNNEL_DOMAIN = "t.localhost:7492";
         const { client } = fakeRedis();
         _injectRedisForTesting(client);
@@ -93,7 +94,21 @@ describe("mint + resolve labels", () => {
         expect(minted!.url).toBe(`http://${minted!.label}.t.localhost:7492/`);
 
         const record = await resolveTunnelLabel(minted!.label);
-        expect(record).toEqual({ userId: "u1", scope: "runner:r1", port: 3000 });
+        expect(record).toMatchObject({ userId: "u1", scope: "runner:r1", port: 3000 });
+        expect(record!.maxExp).toBeGreaterThan(Math.floor(Date.now() / 1000));
+    });
+
+    test("rejects and deletes labels past their absolute expiry", async () => {
+        process.env.PIZZAPI_TUNNEL_DOMAIN = "t.localhost";
+        const { client, store } = fakeRedis();
+        _injectRedisForTesting(client);
+        const label = "c".repeat(32);
+        store.set(`tunnel-host-label:${label}`, JSON.stringify({
+            userId: "u1", scope: "runner:r1", port: 3000,
+            maxExp: Math.floor(Date.now() / 1000) - 10,
+        }));
+        expect(await resolveTunnelLabel(label)).toBeNull();
+        expect(store.has(`tunnel-host-label:${label}`)).toBe(false);
     });
 
     test("returns null when unconfigured", async () => {

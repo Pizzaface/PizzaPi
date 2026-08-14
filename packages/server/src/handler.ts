@@ -179,6 +179,10 @@ export function withSecurityHeaders(res: Response): Response {
     headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
 
     if (isTunnel) {
+        // The tunnel URL is the bearer credential (token in path, or label in
+        // hostname) — never leak it via Referer to resources the tunneled app
+        // references.
+        headers.set("Referrer-Policy", "no-referrer");
         // Tunnel responses: allow same-origin framing for the web UI iframe.
         // Token-authenticated mobile iframes are cross-origin (https://localhost → relay),
         // so omit frame/CSP blockers only for that scoped tunnel-token path.
