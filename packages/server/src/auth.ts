@@ -118,6 +118,7 @@ export interface RunnerRecentFolderTable {
     runnerId: string;
     path: string;
     lastUsedAt: string;
+    usageCount: number;
 }
 
 export interface RunnerTriggerListenerTable {

@@ -11,7 +11,7 @@ import { FolderOpen, FolderSearch, Loader2, X, ChevronLeft, Monitor } from "luci
 import { SiApple, SiLinux } from "react-icons/si";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
-import { filterFolders } from "@/lib/filterFolders";
+import { filterFolders, getInitialFolder } from "@/lib/filterFolders";
 import { FolderBrowser } from "@/components/FolderBrowser";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -68,6 +68,10 @@ export interface NewSessionWizardDialogProps {
 const ROW_HEIGHT = 36;
 const OVERSCAN = 8;
 const LIST_MAX_HEIGHT = 360;
+
+function persistFolder(runnerId: string, folder: string): void {
+    try { localStorage.setItem(`pp.newSession.lastFolder.${runnerId}`, folder); } catch { /* ignore */ }
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -187,6 +191,7 @@ export function NewSessionWizardDialog({
                 if (cancelled) return;
                 const folders = Array.isArray(body?.folders) ? (body.folders as string[]) : [];
                 setRecentFolders(folders);
+                if (!cwd.trim()) setCwd(getInitialFolder(selectedRunnerId, folders, initialCwd));
             })
             .catch(() => {
                 if (cancelled) return;
@@ -254,6 +259,7 @@ export function NewSessionWizardDialog({
 
     function handleSelectRecent(folder: string) {
         setCwd(folder);
+        if (selectedRunnerId) persistFolder(selectedRunnerId, folder);
     }
 
     async function handleRemoveRecent(folder: string) {
@@ -290,6 +296,7 @@ export function NewSessionWizardDialog({
         setSpawnError(null);
         try {
             await onSpawn(selectedRunnerId, cwd.trim() || undefined);
+            if (cwd.trim()) persistFolder(selectedRunnerId, cwd.trim());
         } catch (err) {
             setSpawnError(err instanceof Error ? err.message : String(err));
         } finally {

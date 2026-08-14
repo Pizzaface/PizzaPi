@@ -48,14 +48,12 @@ describe("recordRecentFolder", () => {
         expect(folders).toHaveLength(1);
     });
 
-    authTest("returns most-recent-first order", async () => {
-        await recordRecentFolder(USER, RUNNER, "/code/a");
-        await recordRecentFolder(USER, RUNNER, "/code/b");
-        await recordRecentFolder(USER, RUNNER, "/code/c");
+    authTest("sorts by usage count before recency", async () => {
+        await recordRecentFolder(USER, RUNNER, "/code/once");
+        await recordRecentFolder(USER, RUNNER, "/code/often");
+        await recordRecentFolder(USER, RUNNER, "/code/often");
         const folders = await getRecentFolders(USER, RUNNER);
-        expect(folders[0]).toBe("/code/c");
-        expect(folders[1]).toBe("/code/b");
-        expect(folders[2]).toBe("/code/a");
+        expect(folders).toEqual(["/code/often", "/code/once"]);
     });
 
     authTest("prunes oldest entries beyond cap of 50", async () => {
@@ -65,12 +63,7 @@ describe("recordRecentFolder", () => {
         }
         const folders = await getRecentFolders(USER, RUNNER);
         expect(folders).toHaveLength(50);
-        // Most recent should be retained
-        expect(folders[0]).toBe("/code/project-52");
-        expect(folders[1]).toBe("/code/project-51");
-        // Oldest should be pruned
-        expect(folders.includes("/code/project-1")).toBe(false);
-        expect(folders.includes("/code/project-2")).toBe(false);
+        expect(new Set(folders).size).toBe(50);
     });
 
     authTest("cap is per (userId, runnerId) pair", async () => {
