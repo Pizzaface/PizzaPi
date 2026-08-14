@@ -48,6 +48,11 @@ async function main() {
 
     // `runner` → outer supervisor (spawns daemon as a child process so that a
     //   crash in the PTY layer only kills the child, not the supervisor).
+    if (args[0] === "runner" && args[1] === "install") {
+        const { runInstall } = await import("./runner/install.js");
+        process.exit(runInstall(args.slice(2)));
+    }
+
     if (args[0] === "runner" && args[1] === "stop") {
         const { runStop } = await import("./runner/stop.js");
         const code = await runStop();
@@ -377,6 +382,7 @@ async function main() {
         log.info(`  ${c.cmd("pizza local")} ${c.dim("[flags]")}         Start local relay + runner in one command`);
         log.info(`  ${c.cmd("pizza web")} ${c.dim("[flags]")}           Manage the PizzaPi web hub (Docker)`);
         log.info(`  ${c.cmd("pizza runner")} ${c.dim("[args]")}         Manage the background runner daemon`);
+        log.info(`  ${c.cmd("pizza runner install")} [--activate] [--dry-run]  Install a persistent runner service`);
         log.info(`  ${c.cmd("pizza runner stop")}           Stop the runner daemon`);
         log.info(`  ${c.cmd("pizza runner status")} ${c.dim("[--json]")}  Health check the runner daemon (exit 0 = healthy)`);
         log.info(`  ${c.cmd("pizza runner pair")} ${c.dim("[--force]")}   Pair (or re-pair) the runner with a fresh API key`);

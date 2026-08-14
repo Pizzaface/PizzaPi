@@ -59,7 +59,7 @@ pizzapi runner stop
 ```
 
 <Aside type="tip">
-  For persistent operation, run the runner under a process manager like `systemd`, `pm2`, or inside a `tmux`/`screen` session.
+  For persistent operation, run `pizzapi runner install` to generate a user service for macOS or Linux. Add `--activate` to enable it immediately, or `--dry-run` to preview the generated file.
 </Aside>
 
 ---
@@ -125,15 +125,28 @@ pizzapi runner          ← supervisor (PID tracked in ~/.pizzapi/runner.json)
 
 ### systemd (Linux)
 
+The installer generates the user unit and can activate it for you:
+
+```bash
+pizzapi runner install --activate
+```
+
+To preview without writing:
+
+```bash
+pizzapi runner install --dry-run
+```
+
+The generated unit is equivalent to:
+
 ```ini
-# /etc/systemd/system/pizzapi-runner.service
+# ~/.config/systemd/user/pizzapi-runner.service
 [Unit]
 Description=PizzaPi Runner Daemon
 After=network.target
 
 [Service]
 Type=simple
-User=youruser
 ExecStart=/usr/local/bin/pizzapi runner
 Restart=on-failure
 RestartSec=5
@@ -146,9 +159,9 @@ WantedBy=multi-user.target
 ```
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now pizzapi-runner
-sudo systemctl status pizzapi-runner
+systemctl --user daemon-reload
+systemctl --user enable --now pizzapi-runner.service
+systemctl --user status pizzapi-runner.service
 ```
 
 ### macOS (launchd)
