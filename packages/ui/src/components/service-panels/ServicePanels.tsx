@@ -25,6 +25,10 @@ export interface VisibleServicePanel {
     icon: React.ReactNode;
 }
 
+export function filterDisabledServicePanels<T extends { serviceId: string }>(panels: T[], disabledServiceIds: Set<string>): T[] {
+    return panels.filter((panel) => !disabledServiceIds.has(panel.serviceId));
+}
+
 /**
  * Merged, hidden-filtered list of service panels for the current runner.
  * Static registry panels win over dynamic panels with the same serviceId.
@@ -32,6 +36,7 @@ export interface VisibleServicePanel {
 export function useVisibleServicePanels(
     availableServices: Set<string>,
     dynamicPanels: ServicePanelInfo[] = [],
+    disabledServiceIds: Set<string> = new Set(),
 ): VisibleServicePanel[] {
     const hiddenPanels = useHiddenServicePanels();
     return React.useMemo(() => {
@@ -42,14 +47,15 @@ export function useVisibleServicePanels(
         const dynamics = dynamicPanels
             .filter(p => !staticIds.has(p.serviceId) && !hiddenPanels.has(p.serviceId))
             .map(p => ({ serviceId: p.serviceId, label: p.label, icon: <DynamicLucideIcon name={p.icon} /> }));
-        return [...statics, ...dynamics];
-    }, [availableServices, dynamicPanels, hiddenPanels]);
+        return filterDisabledServicePanels([...statics, ...dynamics], disabledServiceIds);
+    }, [availableServices, dynamicPanels, disabledServiceIds, hiddenPanels]);
 }
 
 // ── Buttons for the header bar ────────────────────────────────────────────────
 
 interface ServicePanelButtonsProps {
     availableServices: Set<string>;
+    disabledServiceIds?: Set<string>;
     /** Dynamic panels announced by runner services at runtime. */
     dynamicPanels?: ServicePanelInfo[];
     activePanelIds: Set<string>;
@@ -62,13 +68,14 @@ interface ServicePanelButtonsProps {
 
 export function ServicePanelButtons({
     availableServices,
+    disabledServiceIds,
     dynamicPanels = [],
     activePanelIds,
     onTogglePanel,
     onButtonDragStart,
     toolbarPositions,
 }: ServicePanelButtonsProps) {
-    const visiblePanels = useVisibleServicePanels(availableServices, dynamicPanels);
+    const visiblePanels = useVisibleServicePanels(availableServices, dynamicPanels, disabledServiceIds);
     const inHeader = (serviceId: string) =>
         (toolbarPositions?.[`service:${serviceId}` as ServiceButtonId] ?? "top") === "top";
 
@@ -113,11 +120,12 @@ export function ServicePanelButtons({
  */
 export function ServicePanelOverflowItems({
     availableServices,
+    disabledServiceIds,
     dynamicPanels = [],
     activePanelIds,
     onTogglePanel,
-}: Pick<ServicePanelButtonsProps, "availableServices" | "dynamicPanels" | "activePanelIds" | "onTogglePanel">) {
-    const visiblePanels = useVisibleServicePanels(availableServices, dynamicPanels);
+}: Pick<ServicePanelButtonsProps, "availableServices" | "disabledServiceIds" | "dynamicPanels" | "activePanelIds" | "onTogglePanel">) {
+    const visiblePanels = useVisibleServicePanels(availableServices, dynamicPanels, disabledServiceIds);
     if (visiblePanels.length === 0) return null;
     return (
         <>
