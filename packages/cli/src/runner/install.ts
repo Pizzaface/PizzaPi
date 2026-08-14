@@ -7,6 +7,15 @@ export type RunnerPlatform = "darwin" | "linux";
 export type ServiceFile = { path: string; content: string };
 
 const LABEL = "com.pizzapi.runner";
+const RUNNER_ENV_VARS = [
+    "PIZZAPI_RUNNER_API_KEY",
+    "PIZZAPI_API_KEY",
+    "PIZZAPI_API_TOKEN",
+    "PIZZAPI_RELAY_URL",
+    "PIZZAPI_RUNNER_NAME",
+] as const;
+
+type RunnerEnvironment = Partial<Pick<NodeJS.ProcessEnv, (typeof RUNNER_ENV_VARS)[number]>>;
 
 function xml(value: string): string {
     return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
@@ -28,19 +37,21 @@ export function generateRunnerServiceFiles(
     command = runnerCommand(),
     cwd = process.cwd(),
     path = process.env.PATH ?? "",
+    env: RunnerEnvironment = process.env as RunnerEnvironment,
 ): ServiceFile[] {
+    const environment = RUNNER_ENV_VARS.flatMap((name) => env[name] === undefined ? [] : [[name, env[name]] as const]);
     if (platform === "darwin") {
         const logDir = join(home, ".pizzapi", "logs");
         const args = command.map((arg) => `        <string>${xml(arg)}</string>`).join("\n");
         return [{
             path: join(home, "Library", "LaunchAgents", `${LABEL}.plist`),
-            content: `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n    <key>Label</key><string>${LABEL}</string>\n    <key>ProgramArguments</key>\n    <array>\n${args}\n    </array>\n    <key>EnvironmentVariables</key>\n    <dict>\n        <key>PATH</key><string>${xml(path)}</string>\n    </dict>\n    <key>WorkingDirectory</key><string>${xml(cwd)}</string>\n    <key>RunAtLoad</key><true/>\n    <key>KeepAlive</key>\n    <dict>\n        <key>SuccessfulExit</key><false/>\n        <key>Crashed</key><true/>\n    </dict>\n    <key>StandardOutPath</key><string>${xml(join(logDir, "runner.log"))}</string>\n    <key>StandardErrorPath</key><string>${xml(join(logDir, "runner-error.log"))}</string>\n</dict>\n</plist>\n`,
+            content: `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n    <key>Label</key><string>${LABEL}</string>\n    <key>ProgramArguments</key>\n    <array>\n${args}\n    </array>\n    <key>EnvironmentVariables</key>\n    <dict>\n        <key>PATH</key><string>${xml(path)}</string>${environment.map(([name, value]) => `\n        <key>${xml(name)}</key><string>${xml(value)}</string>`).join("")}\n    </dict>\n    <key>WorkingDirectory</key><string>${xml(cwd)}</string>\n    <key>RunAtLoad</key><true/>\n    <key>KeepAlive</key>\n    <dict>\n        <key>SuccessfulExit</key><false/>\n        <key>Crashed</key><true/>\n    </dict>\n    <key>StandardOutPath</key><string>${xml(join(logDir, "runner.log"))}</string>\n    <key>StandardErrorPath</key><string>${xml(join(logDir, "runner-error.log"))}</string>\n</dict>\n</plist>\n`,
         }];
     }
 
     return [{
         path: join(home, ".config", "systemd", "user", "pizzapi-runner.service"),
-        content: `[Unit]\nDescription=PizzaPi Runner\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart=${command.map(shell).join(" ")}\nRestart=on-failure\nRestartSec=5\nWorkingDirectory=${shell(cwd)}\n\n[Install]\nWantedBy=default.target\n`,
+        content: `[Unit]\nDescription=PizzaPi Runner\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart=${command.map(shell).join(" ")}\nRestart=on-failure\nRestartSec=5\nWorkingDirectory=${shell(cwd)}${environment.map(([name, value]) => `\nEnvironment=${shell(`${name}=${value}`)}`).join("")}\n\n[Install]\nWantedBy=default.target\n`,
     }];
 }
 

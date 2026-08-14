@@ -6,18 +6,28 @@ import { generateRunnerServiceFiles, runInstall } from "./install.js";
 
 describe("runner install", () => {
     test("generates macOS and Linux service files", () => {
-        const mac = generateRunnerServiceFiles("darwin", "/tmp/pizzapi-home", ["/bin/pizza", "runner"], "/tmp/project", "/bun/bin:/usr/bin")[0];
+        const mac = generateRunnerServiceFiles("darwin", "/tmp/pizzapi-home", ["/bin/pizza", "runner"], "/tmp/project", "/bun/bin:/usr/bin", {
+            PIZZAPI_API_KEY: "key&value",
+            PIZZAPI_RELAY_URL: "https://relay.example",
+        })[0];
         expect(mac.path).toContain("Library/LaunchAgents/com.pizzapi.runner.plist");
         expect(mac.content).toContain("ProgramArguments");
         expect(mac.content).toContain("<key>PATH</key><string>/bun/bin:/usr/bin</string>");
+        expect(mac.content).toContain("<key>PIZZAPI_API_KEY</key><string>key&amp;value</string>");
+        expect(mac.content).toContain("<key>PIZZAPI_RELAY_URL</key><string>https://relay.example</string>");
         expect(mac.content).toContain("<key>WorkingDirectory</key><string>/tmp/project</string>");
         expect(mac.content).toContain("<key>SuccessfulExit</key><false/>");
         expect(mac.content).not.toContain("<key>KeepAlive</key><true/>");
 
-        const linux = generateRunnerServiceFiles("linux", "/tmp/pizzapi-home", ["/bin/pizza", "runner"], "/tmp/project")[0];
+        const linux = generateRunnerServiceFiles("linux", "/tmp/pizzapi-home", ["/bin/pizza", "runner"], "/tmp/project", "", {
+            PIZZAPI_API_KEY: "key with spaces",
+            PIZZAPI_RELAY_URL: "https://relay.example?x=1",
+        })[0];
         expect(linux.path).toContain("systemd/user/pizzapi-runner.service");
         expect(linux.content).toContain("ExecStart");
         expect(linux.content).toContain("WantedBy=default.target");
+        expect(linux.content).toContain("Environment='PIZZAPI_API_KEY=key with spaces'");
+        expect(linux.content).toContain("Environment='PIZZAPI_RELAY_URL=https://relay.example?x=1'");
         expect(linux.content).toContain("WorkingDirectory='/tmp/project'");
     });
 
