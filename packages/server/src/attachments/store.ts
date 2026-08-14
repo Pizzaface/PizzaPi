@@ -95,7 +95,16 @@ export async function storeSessionAttachment(input: {
         filePath: targetPath,
     };
 
-    await persistUploadedAttachment(record);
+    try {
+        await persistUploadedAttachment(record);
+    } catch (err) {
+        try {
+            await rm(targetPath, { force: true });
+        } catch (cleanupErr) {
+            log.error("Failed to clean up uploaded attachment after persistence failure:", cleanupErr);
+        }
+        throw err;
+    }
     attachments.set(attachmentId, record);
     return record;
 }
