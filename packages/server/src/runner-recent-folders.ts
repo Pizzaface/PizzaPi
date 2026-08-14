@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { getKysely } from "./auth.js";
 
 const MAX_RECENT_FOLDERS = 50;
@@ -11,7 +12,21 @@ export async function ensureRunnerRecentFoldersTable(): Promise<void> {
         .addColumn("runnerId", "text", (col) => col.notNull())
         .addColumn("path", "text", (col) => col.notNull())
         .addColumn("lastUsedAt", "text", (col) => col.notNull())
+        .addColumn("usageCount", "integer", (col) => col.notNull().defaultTo(1))
         .execute();
+
+    // Existing installations need the new counter without a destructive migration.
+    try {
+        await getKysely().schema.alterTable("runner_recent_folder")
+            .addColumn("usageCount", "integer", (col) => col.notNull().defaultTo(1))
+            .execute();
+    } catch (err: unknown) {
+        const message = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+        if (!message.includes("duplicate column name") || !message.includes("usagecount")) {
+            throw err;
+        }
+        // Column already exists.
+    }
 
     await getKysely().schema
         .createIndex("runner_recent_folder_user_runner_idx")
@@ -43,7 +58,7 @@ export async function recordRecentFolder(
     if (existing) {
         await getKysely()
             .updateTable("runner_recent_folder")
-            .set({ lastUsedAt: nowIso })
+            .set({ lastUsedAt: nowIso, usageCount: sql`usageCount + 1` })
             .where("id", "=", existing.id)
             .execute();
         return;
@@ -58,15 +73,17 @@ export async function recordRecentFolder(
             runnerId,
             path: normalizedPath,
             lastUsedAt: nowIso,
+            usageCount: 1,
         })
         .execute();
 
     // Prune oldest entries beyond the cap for this (userId, runnerId) pair.
     const all = await getKysely()
         .selectFrom("runner_recent_folder")
-        .select(["id", "lastUsedAt"])
+        .select(["id", "lastUsedAt", "usageCount"])
         .where("userId", "=", userId)
         .where("runnerId", "=", runnerId)
+        .orderBy("usageCount", "desc")
         .orderBy("lastUsedAt", "desc")
         .execute();
 
@@ -106,6 +123,7 @@ export async function getRecentFolders(
         .select("path")
         .where("userId", "=", userId)
         .where("runnerId", "=", runnerId)
+        .orderBy("usageCount", "desc")
         .orderBy("lastUsedAt", "desc")
         .limit(MAX_RECENT_FOLDERS)
         .execute();
