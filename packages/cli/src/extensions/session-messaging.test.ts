@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { messageBus } from "./session-message-bus.js";
 import { sessionMessagingExtension } from "./session-messaging.js";
 
@@ -15,14 +15,26 @@ function getWaitTool() {
 describe("wait_for_message", () => {
     beforeEach(() => messageBus.resetForTests());
 
-    test("waits indefinitely by default", async () => {
+    test("waits indefinitely by default without scheduling a timeout", async () => {
+        const setTimeoutSpy = spyOn(globalThis, "setTimeout");
+        try {
+            const tool = getWaitTool();
+            const pending = tool.execute("call", {}, new AbortController().signal);
+
+            expect(setTimeoutSpy.mock.calls.some(([delay]) => typeof delay === "number" && delay > 0)).toBe(false);
+
+            messageBus.receive({ fromSessionId: "sender", message: "hello", ts: new Date().toISOString() });
+            expect((await pending).content[0].text).toContain("hello");
+        } finally {
+            setTimeoutSpy.mockRestore();
+        }
+    });
+
+    test("returns timedOut for an explicit timeout", async () => {
         const tool = getWaitTool();
-        const pending = tool.execute("call", {}, new AbortController().signal);
 
-        await Bun.sleep(25);
-        expect(await Promise.race([pending.then(() => true), Bun.sleep(0).then(() => false)])).toBe(false);
+        const result = await tool.execute("call", { timeout: 0.02 }, new AbortController().signal);
 
-        messageBus.receive({ fromSessionId: "sender", message: "hello", ts: new Date().toISOString() });
-        expect((await pending).content[0].text).toContain("hello");
+        expect(result.details).toMatchObject({ received: false, timedOut: true });
     });
 });
