@@ -795,12 +795,22 @@ export function App() {
   }, []);
 
   // Stale-connection detection: track the last time any event arrived from the relay.
-  // If the socket believes it's connected but nothing has arrived for STALE_THRESHOLD_MS
-  // (NAT timeout, middlebox drop, background tab, etc.) we force-reconnect.
+  // Heartbeats currently arrive every 10s. Hidden tabs get a longer grace period
+  // because browser timer throttling can delay both heartbeat delivery and checks.
   const lastViewerEventAtRef = React.useRef<number>(0);
   const staleCheckTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
-  const STALE_THRESHOLD_MS = 45_000; // ~4.5 × 10s heartbeat interval
+  const HEARTBEAT_INTERVAL_MS = 10_000;
+  const [isPageHidden, setIsPageHidden] = React.useState(() => document.visibilityState === "hidden");
+  const staleThresholdMs = (isPageHidden ? 18 : 3) * HEARTBEAT_INTERVAL_MS;
+  const staleThresholdMsRef = React.useRef(staleThresholdMs);
+  staleThresholdMsRef.current = staleThresholdMs;
   const STALE_CHECK_INTERVAL_MS = 15_000;
+
+  React.useEffect(() => {
+    const handleVisibilityChange = () => setIsPageHidden(document.visibilityState === "hidden");
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, []);
   // How long to ignore runner queue syncs after a local queue mutation.
   const QUEUE_SYNC_SUPPRESS_MS = 5_000;
 
@@ -3286,7 +3296,7 @@ export function App() {
       const nextSocket = socket;
 
       // Stale-connection watchdog: if the socket thinks it's connected but
-      // no event has arrived for STALE_THRESHOLD_MS, force a reconnect.
+      // no event has arrived for the current visibility-aware threshold, reconnect.
       // Only armed when the agent is active — idle sessions produce no events,
       // so silence is expected and not a sign of a broken connection.
       staleCheckTimerRef.current = setInterval(() => {
@@ -3294,7 +3304,7 @@ export function App() {
         if (!nextSocket.connected) return;
         if (!agentActiveRef.current) return;
         const elapsed = Date.now() - lastViewerEventAtRef.current;
-        if (elapsed > STALE_THRESHOLD_MS) {
+        if (elapsed > staleThresholdMsRef.current) {
           log.warn(`Stale connection detected (${Math.round(elapsed / 1000)}s since last event). Reconnecting…`);
           nextSocket.disconnect();
           nextSocket.connect();
