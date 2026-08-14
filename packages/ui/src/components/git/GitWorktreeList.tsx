@@ -121,7 +121,7 @@ export function GitWorktreeList({
     const totalChanges = worktrees.reduce((sum, w) => sum + w.changeCount, 0);
 
     return (
-        <div className={cn("border-t border-border", className)}>
+        <div className={cn("flex min-h-0 max-h-[40%] shrink-0 flex-col border-t border-border", className)}>
             {/* Header toggle */}
             <button
                 type="button"
@@ -156,7 +156,7 @@ export function GitWorktreeList({
 
             {/* Worktree rows */}
             {expanded && (
-                <div className="pb-1">
+                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-1 [scrollbar-width:thin]">
                     {sorted.map((wt) => (
                         <WorktreeRow
                             key={wt.path}

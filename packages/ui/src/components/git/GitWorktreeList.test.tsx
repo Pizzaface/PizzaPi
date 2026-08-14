@@ -58,6 +58,10 @@ describe("GitWorktreeList", () => {
         fireEvent.click(getByText("Worktrees"));
         expect(getByText("feat/x")).toBeTruthy();
         expect(getByText("main worktree")).toBeTruthy();
+
+        const root = getByText("Worktrees").closest("div");
+        expect(root?.className).toContain("max-h-[40%]");
+        expect(root?.querySelector(".overflow-y-auto")).toBeTruthy();
     });
 
     test("prune button calls onPrune", () => {
