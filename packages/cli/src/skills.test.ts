@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import {
     parseSkillFrontmatterFromString,
@@ -631,6 +631,43 @@ describe("createAgentsFilesOverride", () => {
         const result = override(base);
         expect(result.agentsFiles).toHaveLength(2);
         expect(result.agentsFiles[1].path).toBe(join(dir, ".agents", "extra.md"));
+    });
+
+    test("orders global context before project context and project rules", () => {
+        writeFileSync(join(dir, "AGENTS.md"), "# Project context", "utf-8");
+        mkdirSync(join(dir, ".pizzapi", "rules"), { recursive: true });
+        writeFileSync(join(dir, ".pizzapi", "rules", "01-rule.md"), "# Project rule", "utf-8");
+        const override = createAgentsFilesOverride(dir)!;
+        const globalContext = join(homedir(), ".pizzapi", "AGENTS.md");
+        const result = override({
+            agentsFiles: [
+                { path: globalContext, content: "# Global context" },
+                { path: join(dir, "AGENTS.md"), content: "# Project context (base)" },
+            ],
+        });
+        expect(result.agentsFiles.map(file => file.content)).toEqual([
+            "# Global context",
+            "# Project context (base)",
+            "# Project rule",
+        ]);
+    });
+
+    test("deduplicates rules already present in the base files", () => {
+        mkdirSync(join(dir, ".pizzapi", "rules"), { recursive: true });
+        const rulePath = join(dir, ".pizzapi", "rules", "rule.md");
+        writeFileSync(rulePath, "# Rule", "utf-8");
+        const override = createAgentsFilesOverride(dir)!;
+        const result = override({ agentsFiles: [{ path: rulePath, content: "# Rule (base)" }] });
+        expect(result.agentsFiles).toEqual([{ path: rulePath, content: "# Rule (base)" }]);
+    });
+
+    test("excludes rules along with AGENTS.md when sending is disabled", () => {
+        writeFileSync(join(dir, "AGENTS.md"), "# Agents", "utf-8");
+        mkdirSync(join(dir, ".pizzapi", "rules"), { recursive: true });
+        writeFileSync(join(dir, ".pizzapi", "rules", "rule.md"), "# Rule", "utf-8");
+        const override = createAgentsFilesOverride(dir, { sendAgentsMd: false })!;
+        const result = override({ agentsFiles: [{ path: "/repo/CLAUDE.md", content: "# Claude" }] });
+        expect(result.agentsFiles.map(file => file.content)).toEqual(["# Claude"]);
     });
 });
 
