@@ -37,6 +37,74 @@ Tunnels support two URL schemes:
 
 The agent automatically prefers runner-based URLs when a runner ID is available, falling back to session-based URLs otherwise.
 
+### Dedicated tunnel origin (recommended for SPAs)
+
+The path-prefix schemes above share the relay's origin, so a tunnelled app sees
+`/api/tunnel/…` in `location.pathname`. Client-side routers (React Router,
+Next.js, SvelteKit) read that path and render their 404 page. The proxy's
+HTML/JS rewriting compensates for asset loading, but `window.location` cannot
+be forged — SPA routing under a path prefix is fundamentally lossy.
+
+Set `PIZZAPI_TUNNEL_DOMAIN` on the relay to give each tunnel its **own origin**
+instead:
+
+```bash
+PIZZAPI_TUNNEL_DOMAIN=t.localhost:7492   # value: [scheme://]host[:port]
+```
+
+Each tunnel gets an opaque random subdomain — `https://<label>.<domain>/` — and
+the relay proxies the path **verbatim**: no rewriting, no injected interceptor,
+no prefix. SPA routing, `location.href`, forms, and WebSockets all work
+unmodified. Transport is unchanged: every request still flows through the relay
+and the runner's encrypted tunnel channel; the label is Redis-backed (1 hour
+sliding TTL), unguessable (128-bit), and ownership is re-verified per request.
+
+DNS options:
+
+| Deployment | Setting | Notes |
+|-----------|---------|-------|
+| Same machine | `t.localhost:<port>` | Browsers resolve `*.localhost` to loopback — zero DNS, zero certs |
+| LAN / tailnet | `<ip-with-dashes>.sslip.io` | e.g. `100-64-1-2.sslip.io` — public wildcard DNS to any IP, no setup |
+| Real domain | `https://t.example.com` | Wildcard DNS record `*.t.example.com` + wildcard TLS (Caddy below) |
+
+With `pizza web`, pass the variable once — it persists in the web config:
+
+```bash
+PIZZAPI_TUNNEL_DOMAIN=t.localhost:7492 pizza web
+```
+
+For HTTPS on a LAN/tailnet, put Caddy in front with its internal CA via a
+`compose.override.yml` next to the generated compose file:
+
+```yaml
+services:
+  caddy:
+    image: caddy:2-alpine
+    ports: ["8444:8444"]
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro", "caddy-data:/data"]
+volumes:
+  caddy-data:
+```
+
+```text title="Caddyfile"
+*.t.example.com:8444 {
+  tls internal
+  reverse_proxy server:7492
+}
+```
+
+The relay only reads the `Host` header, so any TLS-terminating proxy works.
+Trust Caddy's root CA once per device. When `PIZZAPI_TUNNEL_DOMAIN` is unset,
+tunnels fall back to the path-prefix schemes above.
+
+<Aside type="caution">
+  Use a **separate registrable domain** from the relay itself (e.g. relay on
+  `pizza.example.com`, tunnels on `t.example.net`). Host tunnels forward the
+  app's own cookies end-to-end, so the tunnel domain must not share the relay's
+  cookie scope — the relay refuses tunnel domains that overlap the
+  `PIZZAPI_BASE_URL` host. `*.localhost` is exempt for local development.
+</Aside>
+
 ---
 
 ## Tools
@@ -212,4 +280,5 @@ Agent:
 - **No offline support** — tunnels are inherently a network feature. Without a relay, use direct `localhost` access on the runner machine.
 - **Request timeout** — service message round-trips time out after **10 seconds**. If the runner daemon is unresponsive, tunnel creation fails with a timeout error.
 - **Single-user access** — only the session/runner owner can access tunnel URLs. There is no sharing with other authenticated users.
-- **Content rewriting limits** — while the proxy rewrites HTML, JS modules, and CSS, some edge cases (e.g. paths constructed entirely at runtime from string concatenation, binary protocol WebSockets) may not be intercepted. Most modern frameworks (Vite, Next.js, webpack) work out of the box.
+- **Content rewriting limits** (path-prefix mode only) — while the proxy rewrites HTML, JS modules, and CSS, some edge cases (e.g. paths constructed entirely at runtime from string concatenation, SPA routers reading `location.pathname`) may not be intercepted. Configure `PIZZAPI_TUNNEL_DOMAIN` to bypass rewriting entirely — apps on a dedicated tunnel origin run unmodified.
+- **Local HTTPS targets** — the runner probes each exposed port and speaks TLS to local HTTPS services automatically (self-signed certs accepted, loopback only).

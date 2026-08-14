@@ -16,6 +16,7 @@ import { assertTunnelTokenStillValid, createTunnelToken, getAuthTunnelBasePath, 
 import { getTunnelRelay } from "../tunnel-relay.js";
 import { getSession } from "../ws/sio-state/index.js";
 import { getRunnerData } from "../ws/sio-registry.js";
+import { mintTunnelLabel } from "./tunnel-host.js";
 import type { RouteHandler } from "./types.js";
 
 const TUNNEL_MAX_BUFFERED_BYTES = 25 * 1024 * 1024; // ponytail: fixed ceiling, raise if legit large HTML responses appear
@@ -359,6 +360,19 @@ function applyResponseHeadersByBasePath(responseHeaders: Headers, basePath: stri
     if (location) {
         responseHeaders.set("location", rewriteUrlByBasePath(location, basePath));
     }
+    if (basePath === "") {
+        // Host-based tunnel: force cookies host-only. A malicious local app
+        // could otherwise Set-Cookie with Domain=.<tunnel domain> (poisoning
+        // sibling tunnels) or a parent registrable domain shared with the
+        // relay (cookie tossing / session fixation).
+        const setCookies = responseHeaders.getSetCookie?.() ?? [];
+        if (setCookies.length > 0) {
+            responseHeaders.delete("set-cookie");
+            for (const cookie of setCookies) {
+                responseHeaders.append("set-cookie", cookie.replace(/;\s*domain=[^;]*/gi, ""));
+            }
+        }
+    }
     responseHeaders.set("x-pizzapi-tunnel", "1");
     if (allowCrossOriginFrame) responseHeaders.set("x-pizzapi-tunnel-frame", "cross-origin");
 }
@@ -486,6 +500,8 @@ function proxyTunnelRequestViaRelay(
                 method: req.method.toUpperCase(),
                 url: pathWithQuery,
                 headers: forwardHeaders,
+                // Host-based tunnels forward the app's own credentials end-to-end.
+                preserveAuth: basePath === "" || undefined,
             },
             {
                 onResponseStart: (code, _statusMessage, headers) => {
@@ -506,7 +522,9 @@ function proxyTunnelRequestViaRelay(
                         }
                     }
 
-                    shouldBuffer = shouldBufferTunnelResponse(responseHeaders.get("content-type"));
+                    // basePath "" → host-based passthrough: the app owns the whole
+                    // origin, so no HTML/JS/CSS rewriting (and no buffering) is needed.
+                    shouldBuffer = basePath !== "" && shouldBufferTunnelResponse(responseHeaders.get("content-type"));
                     const contentLength = responseHeaders.get("content-length");
                     if (shouldBuffer && contentLength) {
                         const length = Number.parseInt(contentLength, 10);
@@ -647,7 +665,8 @@ async function handleTunnelTokenMint(req: Request): Promise<Response> {
         }
         const scoped = `runner:${runnerId}`;
         const { token, expiresAt } = createTunnelToken({ userId: identity.userId, sessionId: scoped, port });
-        return Response.json({ token, expiresAt, url: `${getAuthTunnelBasePath(token, scoped, port)}/` });
+        const hostTunnel = await mintTunnelLabel({ userId: identity.userId, scope: scoped, port });
+        return Response.json({ token, expiresAt, url: `${getAuthTunnelBasePath(token, scoped, port)}/`, ...(hostTunnel ? { hostUrl: hostTunnel.url } : {}) });
     }
 
     const sessionData = await getSession(sessionId);
@@ -658,7 +677,8 @@ async function handleTunnelTokenMint(req: Request): Promise<Response> {
     if (!sessionData.runnerId) return Response.json({ error: "Session has no runner" }, { status: 503 });
 
     const { token, expiresAt } = createTunnelToken({ userId: identity.userId, sessionId, port });
-    return Response.json({ token, expiresAt, url: `${getAuthTunnelBasePath(token, sessionId, port)}/` });
+    const hostTunnel = await mintTunnelLabel({ userId: identity.userId, scope: sessionId, port });
+    return Response.json({ token, expiresAt, url: `${getAuthTunnelBasePath(token, sessionId, port)}/`, ...(hostTunnel ? { hostUrl: hostTunnel.url } : {}) });
 }
 
 async function handleAuthTunnel(req: Request, url: URL, match: RegExpMatchArray): Promise<Response> {
@@ -876,11 +896,16 @@ const HOP_BY_HOP_HEADERS = new Set([
 
 const STRIP_AUTH_HEADERS = new Set(["cookie", "authorization", "x-api-key", "referer"]);
 
-function buildForwardHeaders(req: Request): Record<string, string> {
+function buildForwardHeaders(req: Request, keepCredentials = false): Record<string, string> {
     const forwardHeaders: Record<string, string> = {};
     req.headers.forEach((v, k) => {
         const lk = k.toLowerCase();
-        if (!HOP_BY_HOP_HEADERS.has(lk) && !STRIP_AUTH_HEADERS.has(lk)) forwardHeaders[k] = v;
+        if (HOP_BY_HOP_HEADERS.has(lk)) return;
+        // Path-based tunnels share the relay origin — cookies/authorization may
+        // be relay credentials and must not reach the local app. Host-based
+        // tunnels have a dedicated origin: those headers belong to the app.
+        if (!keepCredentials && STRIP_AUTH_HEADERS.has(lk)) return;
+        forwardHeaders[k] = v;
     });
     return forwardHeaders;
 }
@@ -958,6 +983,8 @@ async function handleRunnerTunnel(req: Request, url: URL, match: RegExpMatchArra
 export {
     getTunnelBasePath,
     getRunnerTunnelBasePath,
+    buildForwardHeaders,
+    tunnelErrorResponse,
     rewriteTunnelUrl,
     rewriteTunnelHtml,
     rewriteInlineModuleScripts,

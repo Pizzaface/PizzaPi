@@ -1,6 +1,7 @@
 import { getAuth, getTrustedOrigins, isSignupAllowed, runWithAuthContext, type AuthContext } from "./auth.js";
 import { isValidPassword, PASSWORD_REQUIREMENTS_SUMMARY } from "@pizzapi/protocol";
 import { handleApi } from "./routes/index.js";
+import { getTunnelHostConfig, handleTunnelHostRequest } from "./routes/tunnel-host.js";
 import { serveStaticFile } from "./static.js";
 import { getClientIp, verifyCsrfOrigin } from "./security.js";
 import { createLogger } from "@pizzapi/tools";
@@ -178,6 +179,10 @@ export function withSecurityHeaders(res: Response): Response {
     headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
 
     if (isTunnel) {
+        // The tunnel URL is the bearer credential (token in path, or label in
+        // hostname) — never leak it via Referer to resources the tunneled app
+        // references.
+        headers.set("Referrer-Policy", "no-referrer");
         // Tunnel responses: allow same-origin framing for the web UI iframe.
         // Token-authenticated mobile iframes are cross-origin (https://localhost → relay),
         // so omit frame/CSP blockers only for that scoped tunnel-token path.
@@ -192,12 +197,18 @@ export function withSecurityHeaders(res: Response): Response {
         // would block. The iframe sandbox attribute provides defence-in-depth.
     } else {
         headers.set("X-Frame-Options", "DENY");
+        // When host-based tunnels are configured, the UI iframes the tunnel
+        // origin (<label>.<domain>) — allow it in frame-src.
+        const tunnelHost = getTunnelHostConfig();
+        const frameSrc = tunnelHost
+            ? `frame-src 'self' ${tunnelHost.scheme}://*.${tunnelHost.host}${tunnelHost.portSuffix}; `
+            : "";
         // The sha256 hash whitelists the inline FOUC-prevention <script> in
         // packages/ui/index.html.  If that script changes, regenerate the hash:
         //   python3 -c "import re,hashlib,base64;html=open('packages/ui/index.html').read();m=re.search(r'<script>(.*?)</script>',html,re.DOTALL);print('sha256-'+base64.b64encode(hashlib.sha256(m.group(1).encode()).digest()).decode())"
         headers.set(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-4gSUsZcLv5hWmJpSRF6gl939rcZJHXery+eyOKMEgaQ='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' ws: wss: blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'",
+            `${frameSrc}default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-4gSUsZcLv5hWmJpSRF6gl939rcZJHXery+eyOKMEgaQ='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' ws: wss: blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'`,
         );
     }
 
@@ -217,6 +228,14 @@ export async function handleFetch(req: Request, authContext: AuthContext): Promi
 
 async function _handleFetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
+
+    // ── Host-based tunnel routing (<label>.<PIZZAPI_TUNNEL_DOMAIN>) ────────
+    // Must run first: before the /_tunnel branch (the app owns its whole
+    // origin, including a /_tunnel path), before the body-size guard (tunnel
+    // bodies stream to the runner), and before the CSRF gate
+    // (label-authenticated, not cookie-authenticated).
+    const tunnelHostRes = await handleTunnelHostRequest(req, url);
+    if (tunnelHostRes) return tunnelHostRes;
 
     if (url.pathname === "/_tunnel") {
         tunnelLog.warn(

@@ -6,6 +6,7 @@ import { getTunnelRelay } from "../tunnel-relay.js";
 import { getSession } from "../ws/sio-state/index.js";
 import { getRunnerData } from "../ws/sio-registry.js";
 import { assertTunnelTokenStillValid, verifyTunnelToken } from "./tunnel-token.js";
+import { authorizeTunnelLabel, matchTunnelHost } from "./tunnel-host.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("tunnel-ws");
@@ -47,6 +48,17 @@ export function handleTunnelWsUpgrade(
     const url = req.url ?? "/";
     const pathname = url.split("?")[0];
 
+    // Host-based tunnel (<label>.<domain>) — the label is the credential and
+    // the raw path is forwarded verbatim (HMR/socket.io in tunnelled apps).
+    const hostLabel = matchTunnelHost((req.headers.host ?? "").split(":")[0]);
+    if (hostLabel) {
+        handleHostUpgradeAsync(req, socket, head, hostLabel, url, pathname).catch((err) => {
+            log.error("Unexpected error in host-tunnel upgrade handler:", err);
+            if (!socket.destroyed) rejectUpgrade(socket, 500, "Internal Server Error");
+        });
+        return true;
+    }
+
     const authMatch = pathname.match(AUTH_TUNNEL_PATH_RE);
     if (authMatch) {
         handleAuthUpgradeAsync(req, socket, head, authMatch, url).catch((err) => {
@@ -76,6 +88,36 @@ export function handleTunnelWsUpgrade(
         }
     });
     return true;
+}
+
+async function handleHostUpgradeAsync(
+    req: IncomingMessage,
+    rawSocket: Duplex,
+    head: Buffer,
+    label: string,
+    fullUrl: string,
+    pathname: string,
+): Promise<void> {
+    const auth = await authorizeTunnelLabel(label);
+    if (!auth.ok) {
+        rejectUpgrade(rawSocket, auth.status, auth.message);
+        return;
+    }
+
+    // Reuse the common upgrade path with a synthesized match:
+    // [full, scope, port, path]. scope + runnerId are preauthenticated.
+    // fullUrl is forwarded verbatim — host tunnels must not strip the app's
+    // own apiKey/tunnelToken query params.
+    await handleUpgradeAsync(
+        req,
+        rawSocket,
+        head,
+        ["", auth.record.scope, String(auth.record.port), pathname] as unknown as RegExpMatchArray,
+        fullUrl,
+        auth.record.userId,
+        auth.runnerId,
+        fullUrl,
+    );
 }
 
 async function handleAuthUpgradeAsync(
@@ -146,6 +188,7 @@ async function handleUpgradeAsync(
     fullUrl: string,
     preauthenticatedUserId?: string,
     preauthenticatedRunnerId?: string,
+    rawPathWithQuery?: string,
 ): Promise<void> {
     let sessionId: string;
     try {
@@ -159,15 +202,20 @@ async function handleUpgradeAsync(
     const proxyPath = match[3] ?? "/";
 
     let pathWithQuery: string;
-    const qIdx = fullUrl.indexOf("?");
-    if (qIdx >= 0) {
-        const qs = new URLSearchParams(fullUrl.slice(qIdx + 1));
-        qs.delete("apiKey");
-        qs.delete("tunnelToken");
-        const qsStr = qs.toString();
-        pathWithQuery = qsStr ? `${proxyPath}?${qsStr}` : proxyPath;
+    if (rawPathWithQuery !== undefined) {
+        // Host-based tunnel — forward verbatim; auth never rode the query string.
+        pathWithQuery = rawPathWithQuery;
     } else {
-        pathWithQuery = proxyPath;
+        const qIdx = fullUrl.indexOf("?");
+        if (qIdx >= 0) {
+            const qs = new URLSearchParams(fullUrl.slice(qIdx + 1));
+            qs.delete("apiKey");
+            qs.delete("tunnelToken");
+            const qsStr = qs.toString();
+            pathWithQuery = qsStr ? `${proxyPath}?${qsStr}` : proxyPath;
+        } else {
+            pathWithQuery = proxyPath;
+        }
     }
 
     if (!sessionId || !Number.isFinite(port) || port < 1 || port > 65535) {
@@ -214,12 +262,15 @@ async function handleUpgradeAsync(
         ? req.headers["sec-websocket-protocol"].split(",").map((s) => s.trim()).filter(Boolean)
         : undefined;
 
+    // Host-based tunnels (rawPathWithQuery set) run on a dedicated origin —
+    // Cookie/Authorization there belong to the tunneled app, not the relay.
+    const isHostTunnel = rawPathWithQuery !== undefined;
     const forwardHeaders: Record<string, string> = {};
     for (const [key, value] of Object.entries(req.headers)) {
         if (value === undefined) continue;
         const lowerKey = key.toLowerCase();
         if (HOP_BY_HOP.has(lowerKey)) continue;
-        if (lowerKey === "cookie" || lowerKey === "authorization" || lowerKey === "x-api-key" || lowerKey === "referer") continue;
+        if (!isHostTunnel && (lowerKey === "cookie" || lowerKey === "authorization" || lowerKey === "x-api-key" || lowerKey === "referer")) continue;
         forwardHeaders[key] = Array.isArray(value) ? value.join(", ") : value;
     }
 
@@ -280,6 +331,7 @@ async function handleUpgradeAsync(
             path: pathWithQuery,
             protocols,
             headers: forwardHeaders,
+            preserveAuth: isHostTunnel || undefined,
         },
         {
             onOpened: (protocol) => {

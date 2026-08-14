@@ -135,6 +135,12 @@ These variables control which subsystems are loaded by runner-spawned worker ses
 | `PIZZAPI_PROXY_DEPTH` | Number of intermediate proxy hops between the server and the original client, for `X-Forwarded-For` parsing. `0` (default) = single proxy — use the right-most XFF entry. `1` = two proxies (e.g. CDN + local reverse proxy) — use the second-from-right entry. `N` = N+1 total proxies — use the entry N positions from the right. Only meaningful when proxy trust is enabled. See [Self-Hosting](/PizzaPi/guides/self-hosting/#multi-proxy-chains). | `0` |
 | `PIZZAPI_TRUST_MOBILE_ORIGINS` | Set to `false` to disable the default trust of Capacitor mobile origins (`capacitor://localhost`, `https://localhost`). | `true` |
 
+### Tunnels
+
+| Variable | Description | Default |
+|---|---|---|
+| `PIZZAPI_TUNNEL_DOMAIN` | Dedicated origin for tunnels, as `[scheme://]host[:port]` (e.g. `t.localhost:7492`, `https://t.example.com`). Each tunnel is served at an opaque subdomain `<label>.<domain>` with the path proxied verbatim — no prefix, no content rewriting, SPA client-side routing works. Requires wildcard DNS for the domain (`*.localhost` resolves in browsers automatically). Scheme defaults to `http` for `*.localhost`, `https` otherwise. Unset → path-prefix tunnels (`/api/tunnel/…`). See [Tunnels](/PizzaPi/features/tunnels/#dedicated-tunnel-origin-recommended-for-spas). | `unset` |
+
 ### Attachments
 
 | Variable | Description | Default |

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import http, { type Server as HttpServer } from "node:http";
+import https from "node:https";
 import { once } from "node:events";
 import { TunnelClient } from "./client.js";
 import { TunnelRelay } from "./server.js";
@@ -129,6 +130,7 @@ async function proxyHttpRequestThroughTunnel(
     url?: string;
     headers?: Record<string, string>;
     requestBody?: Buffer;
+    preserveAuth?: boolean;
   },
 ): Promise<{
   statusCode: number;
@@ -155,6 +157,7 @@ async function proxyHttpRequestThroughTunnel(
         method: options.method ?? "GET",
         url: options.url ?? "/",
         headers: options.headers ?? {},
+        preserveAuth: options.preserveAuth,
       },
       {
         onResponseStart(code, message, responseHeaders) {
@@ -209,6 +212,58 @@ afterEach(async () => {
   closeServer(localHttpServer);
   localHttpServer = undefined;
 });
+
+/** TEST-ONLY self-signed key/cert for the local HTTPS target (CN=127.0.0.1, throwaway). */
+const TEST_TLS_KEY = `-----BEGIN PRIVATE KEY-----
+MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDbuPAsFhV7ArRF
+q/Opp3kcLSMsGBbIeeaH/RkxfhcpwsfqUGZjD8RsNlFVWp7K3Ym3r4i29P+OdZF9
+5NfHOlVF/Ob3JgH4IXklwOESjt2lXdJb84YnWGvAG0lNvpZvKNKJh/AUDWpNib7Z
+pByZgnhVyKeE8dXgKZB4cYhr8838gov+T1hJmqhShMO2p8SfD9Ww5GBcUwJmhfMn
+AjUjxj5LWQ4I4cULMNwCysb5VekSs/ptdb3zZaYWiTPU8/C28zpOTaLCsbrLoj05
+KulXWa+zXO64g/5s3pW/iIgQQfzwC68vOC2SuOrFVFiSXaxeQ1e7fK5+Kbp+DL8j
+T93Hfca3AgMBAAECggEAE15FBY3YzOQbIf0bWHwjx+EOtadV8swUDy63Vs6Hmi3K
+U5RMwjS0mtla6Aw57SYEKsX1ZjNIh7VDYvaWMsConafCcEzQZaAFvtc2v90KGraf
+gW2BCNzZerCtEIZZWmkdzfPGrO3VzgnzYdn+j2WZ1+39HlH3CXCAhK11Wha+tKBf
+gRMIQwFwqMr4ktQ1vKDGm1mH6dusGZ01GETx539zY3YIqjrZc/Az9xeH9qu1Yl+M
+UVd45F8mN/W7ZfEpREqeVzSJCgNERL8/zu2WYz5yqihmKGhQO6jWec4pU9vTGmQa
+YhPVHIjoEvhwFDPANZzdNpq+LXdZnRynfiousaVRMQKBgQD2SPqVhzqkmSSTBNFI
++fdQ5BMyRSiT2HxxG+htOkyacDqwr81cLcVJzylJ1YmlJ6FhYezdhSbUk0vRj1Kh
+TUqP/q8EogXJ0bFTTnjVIIfyy19/lfVUlAwDvbx4QkWbr3zwv/E3vghwHyLTq/ar
+IL3rM3mZRZA4B3BfGiXpXsXPaQKBgQDkY7nTSV4fuFQe47NF2vVeG9J/buF+UVut
+q9MXyjfiNYtIMtvKc/gMt0PDUt+gwHIm2oh3rhl66z8B8tPRirjPzuTYEMs2272S
+69SKfqi1H93eake7tOGK2BHZkFa8tL0meaMUesaylBc9LBIrlotH86bgNnL/XPD8
+x/4t2OBBHwKBgQCbdnu/Uaph5k2hBER7tVY5WI8Jh4BSuy/qUjyIXmmmfzt89qxC
+CJ5ltgARHFsTxo1nJGJZfsiBHS2Z7ceyDFEJzjF6UjAnMlemB33cwvkt+NSie+1t
+4zomTmme2+6GlOLgMbk5f5ph9DWOuhkt8rAPvOGAL9oWlBOJ5L6TroBdKQKBgQDJ
+2FkionTNE9tEcXi/BARWZ8BhX11qhfzAQFsPa2h4Q1oVNN2Kz3Mpyc3ZkiSRrYM1
+U23IV9WtDLtivXj2d+NdxTv6uNzgXtPsRQBSZh4z9TXgm41KF1I9ozgjT61YmWOR
+3W6Dav6wVLE1Hv3wB9yQeoXBIl3/0eQpg5bgbgvDgQKBgQDSITQTGwRU4J5ZugYH
+BYcFDIXelfmZKDSP9RvKQ6UrfQ6TM1c2YPFF9A1CTd3YR49LV048Dw93KevI4l7Y
+pgm/W6QdCuTr8+UIhnqiraQLnj97Tazl8/tUxU/Xfpx4A8OIbCxt/aiFSWNKmkZv
+0yFIfoGqmschletmGuLWNLjb7Q==
+-----END PRIVATE KEY-----
+`;
+
+const TEST_TLS_CERT = `-----BEGIN CERTIFICATE-----
+MIIDCzCCAfOgAwIBAgIUGrqepgvJDGf9ey1vD8z+qHH84OIwDQYJKoZIhvcNAQEL
+BQAwFDESMBAGA1UEAwwJMTI3LjAuMC4xMCAXDTI2MDgxNDE1NTMwOVoYDzIxMjYw
+NzIxMTU1MzA5WjAUMRIwEAYDVQQDDAkxMjcuMC4wLjEwggEiMA0GCSqGSIb3DQEB
+AQUAA4IBDwAwggEKAoIBAQDbuPAsFhV7ArRFq/Opp3kcLSMsGBbIeeaH/Rkxfhcp
+wsfqUGZjD8RsNlFVWp7K3Ym3r4i29P+OdZF95NfHOlVF/Ob3JgH4IXklwOESjt2l
+XdJb84YnWGvAG0lNvpZvKNKJh/AUDWpNib7ZpByZgnhVyKeE8dXgKZB4cYhr8838
+gov+T1hJmqhShMO2p8SfD9Ww5GBcUwJmhfMnAjUjxj5LWQ4I4cULMNwCysb5VekS
+s/ptdb3zZaYWiTPU8/C28zpOTaLCsbrLoj05KulXWa+zXO64g/5s3pW/iIgQQfzw
+C68vOC2SuOrFVFiSXaxeQ1e7fK5+Kbp+DL8jT93Hfca3AgMBAAGjUzBRMB0GA1Ud
+DgQWBBRKQhEuEyMIWrbqFQy91P7vkWteHTAfBgNVHSMEGDAWgBRKQhEuEyMIWrbq
+FQy91P7vkWteHTAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQBi
+sqpVdF8stf/34LXIsCuN97LCxk/xmGyI+GmDNnJNIYhMl1jHQuKcj1uCvwX0YkyJ
+/8l1wWCg9hXDRIxEri82JJT/mPUEp3HL8/FJSsS1sGtkqagAWvk517XWqJFNVfYy
+GF/9v6EEn1YGy9AqUCQhPQefUwKopPfkoV7HNt3BRz4s/310CU/GWI2xeLUF9CB7
+aUC/dN6t+M/BRoZdmDYTuCuTeMAiubcXfhxzgbFZyIg2WRJGtCr7sVuEziz5glxJ
+dNHBvEns4bIRcEPL85e+YSoft/9yf+yP63vPqhzMKqJMAhONF9oFKzy0tQA5uhGp
+mXM3Nz6SR/nKB433Db85
+-----END CERTIFICATE-----
+`;
 
 describe("Streaming tunnel integration", () => {
   test("HTTP request streams through tunnel with status, headers, and all chunks", async () => {
@@ -350,5 +405,50 @@ describe("Streaming tunnel integration", () => {
     expect(response.statusCode).toBe(502);
     expect(response.statusMessage).toBe("Bad Gateway");
     expect(response.body.toString("utf-8")).toBe(`Local service not available on port ${unusedPort}`);
+  });
+  test("cookie/authorization stripped by default, forwarded with preserveAuth", async () => {
+    const seen: Array<{ cookie?: string; auth?: string }> = [];
+    localHttpServer = http.createServer((req, res) => {
+      seen.push({ cookie: req.headers.cookie, auth: req.headers.authorization });
+      res.writeHead(200);
+      res.end("ok");
+    });
+    const localPort = await listen(localHttpServer);
+    await startRelayAndClient([localPort]);
+
+    const credHeaders = { cookie: "app=1", authorization: "Bearer tok" };
+    await proxyHttpRequestThroughTunnel(localPort, { id: "req-strip", headers: credHeaders });
+    await proxyHttpRequestThroughTunnel(localPort, { id: "req-keep", headers: credHeaders, preserveAuth: true });
+
+    expect(seen[0]).toEqual({ cookie: undefined, auth: undefined });
+    expect(seen[1]).toEqual({ cookie: "app=1", auth: "Bearer tok" });
+  });
+
+  test("HTTPS local target is auto-detected and proxied (self-signed)", async () => {
+    let seenMethod = "";
+    const localHttpsServer = https.createServer(
+      { key: TEST_TLS_KEY, cert: TEST_TLS_CERT },
+      (req, res) => {
+        seenMethod = req.method ?? "";
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.end("secure-ok");
+      },
+    );
+    localHttpServer = localHttpsServer as unknown as HttpServer;
+    const localPort = await listen(localHttpServer);
+
+    await startRelayAndClient([localPort]);
+    // exposePort kicks the protocol probe; wait for it to settle on https.
+    await waitUntil(() => client!.detectedProtocol(localPort) === "https");
+
+    const response = await proxyHttpRequestThroughTunnel(localPort, {
+      id: "req-https-1",
+      method: "GET",
+      url: "/secure",
+    });
+
+    expect(seenMethod).toBe("GET");
+    expect(response.statusCode).toBe(200);
+    expect(response.body.toString("utf-8")).toBe("secure-ok");
   });
 });
