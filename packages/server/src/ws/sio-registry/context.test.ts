@@ -5,6 +5,10 @@ import {
     deleteRunnerSecret,
     getRunnerSecret,
     _resetRunnerSecretsForTesting,
+    initSioRegistry,
+    localRunnerSockets,
+    runnerRoom,
+    emitToRunner,
 } from "./context";
 import {
     _injectRedisForTesting,
@@ -41,6 +45,32 @@ function resetState() {
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+describe("emitToRunner", () => {
+    test("delivers service_message to a local runner once via its room", () => {
+        let roomDeliveries = 0;
+        const localSocket = { connected: true, emit: mock(() => {}) } as any;
+        localRunnerSockets.set("runner-local", localSocket);
+        initSioRegistry({
+            of: () => ({
+                to: (room: string) => ({
+                    emit: (event: string, data: unknown) => {
+                        expect(room).toBe(runnerRoom("runner-local"));
+                        expect(event).toBe("service_message");
+                        expect(data).toEqual({ requestId: "req-1" });
+                        roomDeliveries++;
+                    },
+                }),
+            }),
+        } as any);
+
+        emitToRunner("runner-local", "service_message", { requestId: "req-1" });
+
+        expect(roomDeliveries).toBe(1);
+        expect(localSocket.emit).not.toHaveBeenCalled();
+        localRunnerSockets.clear();
+    });
+});
 
 describe("runner secret persistence", () => {
     beforeEach(resetState);
