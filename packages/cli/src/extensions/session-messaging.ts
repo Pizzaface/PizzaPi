@@ -69,9 +69,9 @@ export const sessionMessagingExtension: ExtensionFactory = (pi) => {
         label: "Wait for Message",
         description:
             "Wait for a message from another agent session. Blocks until a message " +
-            "arrives or the timeout expires. Use this to receive messages in a " +
+            "arrives or the optional timeout expires. Use this to receive messages in a " +
             "conversation with another agent. If fromSessionId is omitted, waits " +
-            "for a message from any session.",
+            "for a message from any session. Without a timeout, waits indefinitely.",
         parameters: {
             type: "object",
             properties: {
@@ -84,8 +84,8 @@ export const sessionMessagingExtension: ExtensionFactory = (pi) => {
                 timeout: {
                     type: "number",
                     description:
-                        "Maximum time to wait in seconds. Defaults to 120. " +
-                        "Returns null if no message arrives within this time.",
+                        "Optional maximum time to wait in seconds. Without a timeout, " +
+                        "waits indefinitely. Returns null if no message arrives within this time.",
                 },
             },
             required: [],
@@ -99,29 +99,26 @@ export const sessionMessagingExtension: ExtensionFactory = (pi) => {
             });
 
             const fromSessionId = params.fromSessionId?.trim() || null;
-            const timeoutSec = typeof params.timeout === "number" && params.timeout > 0 ? params.timeout : 120;
+            const timeoutSec = typeof params.timeout === "number" && params.timeout > 0 ? params.timeout : undefined;
 
-            // Create a timeout abort signal, merged with the tool's signal.
-            const timeoutController = new AbortController();
-            const timer = setTimeout(() => timeoutController.abort(), timeoutSec * 1000);
-
-            // Merge the tool abort signal with our timeout.
+            // Merge the tool abort signal with an optional timeout.
+            const timeoutController = timeoutSec === undefined ? undefined : new AbortController();
             const mergedController = new AbortController();
             const onToolAbort = () => mergedController.abort();
             const onTimeoutAbort = () => mergedController.abort();
             signal?.addEventListener("abort", onToolAbort, { once: true });
-            timeoutController.signal.addEventListener("abort", onTimeoutAbort, { once: true });
+            timeoutController?.signal.addEventListener("abort", onTimeoutAbort, { once: true });
+            const timer = timeoutSec === undefined ? undefined : setTimeout(() => timeoutController!.abort(), timeoutSec * 1000);
 
             try {
                 const msg = await messageBus.waitForMessage(fromSessionId, mergedController.signal);
-                clearTimeout(timer);
 
                 if (!msg) {
                     return ok(
-                        timeoutController.signal.aborted
+                        timeoutController?.signal.aborted
                             ? `No message received within ${timeoutSec} seconds.`
                             : "Wait was cancelled.",
-                        { received: false, timedOut: timeoutController.signal.aborted },
+                        { received: false, timedOut: timeoutController?.signal.aborted ?? false },
                     );
                 }
 
@@ -135,9 +132,9 @@ export const sessionMessagingExtension: ExtensionFactory = (pi) => {
                     },
                 );
             } finally {
-                clearTimeout(timer);
+                if (timer !== undefined) clearTimeout(timer);
                 signal?.removeEventListener("abort", onToolAbort);
-                timeoutController.signal.removeEventListener("abort", onTimeoutAbort);
+                timeoutController?.signal.removeEventListener("abort", onTimeoutAbort);
             }
         },
 
