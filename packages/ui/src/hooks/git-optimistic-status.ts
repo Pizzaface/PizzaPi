@@ -43,7 +43,9 @@ function applyOptimisticStage(change: GitChange): GitChange | null {
 
     // Staging a deletion replaces the index state; an added-then-deleted path disappears.
     if (worktreeStatus === "D") {
-        return indexStatus === "A" ? null : { ...change, status: "D " };
+        if (indexStatus === "A") return null;
+        if (change.originalPath) return { status: "D ", path: change.originalPath };
+        return { ...change, status: "D " };
     }
 
     const hasExistingIndexStatus = indexStatus !== " " && indexStatus !== "?" && indexStatus !== "!";
