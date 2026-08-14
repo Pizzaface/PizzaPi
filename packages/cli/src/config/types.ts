@@ -510,9 +510,11 @@ export interface PizzaPiConfig {
      * Global default local callback port for MCP OAuth redirect URI.
      *
      * When set, the local OAuth callback server binds to this fixed port
-     * instead of an OS-assigned ephemeral port. Useful when you need a
-     * predictable `http://localhost:PORT/callback` redirect URI for
-     * pre-registered OAuth clients.
+     * instead of an OS-assigned ephemeral port for a single OAuth server.
+     * When multiple OAuth servers initialize, servers without an explicit
+     * per-server port use OS-assigned ephemeral ports to avoid collisions.
+     * Useful when you need a predictable `http://localhost:PORT/callback`
+     * redirect URI for a pre-registered OAuth client.
      *
      * Can also be set per-server via `oauthCallbackPort` in individual
      * `mcpServers` entries — per-server values take precedence.
