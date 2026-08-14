@@ -4181,7 +4181,7 @@ export function App() {
   }, [isMac, agentActive, sendRemoteExec]);
 
   const handleNewSession = React.useCallback((initialCwd?: string) => {
-    setLifecycleSpawnParams({ runnerId: undefined, preselectedRunnerId: null, cwd: initialCwd ?? "" });
+    setLifecycleSpawnParams({ runnerId: undefined, preselectedRunnerId: null, cwd: typeof initialCwd === "string" ? initialCwd : "" });
     setNewSessionOpen(true);
   }, [setLifecycleSpawnParams]);
 
@@ -4965,6 +4965,7 @@ export function App() {
               onOpenSession={handleOpenSession}
               onNewSession={handleNewSession}
               sessionModes={sessionModes}
+              sessionModesRunnerId={activeRunnerInfo?.runnerId}
               onClearSelection={handleClearSelection}
               onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); lifecycleClearSelection(); }}
               activeSessionId={activeSessionId}

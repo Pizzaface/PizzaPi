@@ -432,6 +432,7 @@ function runnerDataToInfo(r: RedisRunnerData, sessionCount = 0): RunnerInfo {
     const panels = r.panels ? safeJsonParse(r.panels) ?? undefined : undefined;
     const triggerDefs = r.triggerDefs ? safeJsonParse(r.triggerDefs) ?? undefined : undefined;
     const sigilDefs = r.sigilDefs ? safeJsonParse(r.sigilDefs) ?? undefined : undefined;
+    const sessionModes = r.sessionModes ? safeJsonParse(r.sessionModes) ?? undefined : undefined;
     const warnings: string[] | undefined = r.warnings ? safeJsonParse(r.warnings) ?? undefined : undefined;
     return {
         runnerId: r.runnerId,
@@ -449,6 +450,7 @@ function runnerDataToInfo(r: RedisRunnerData, sessionCount = 0): RunnerInfo {
         ...(panels ? { panels } : {}),
         ...(triggerDefs && triggerDefs.length > 0 ? { triggerDefs } : {}),
         ...(sigilDefs && sigilDefs.length > 0 ? { sigilDefs } : {}),
+        ...(sessionModes && sessionModes.length > 0 ? { sessionModes } : {}),
         ...(warnings && warnings.length > 0 ? { warnings } : {}),
     };
 }

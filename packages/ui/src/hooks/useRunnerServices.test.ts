@@ -12,7 +12,7 @@ import { describe, expect, test, mock } from "bun:test";
 const actualViewerSwitchModule = await import("../lib/viewer-switch");
 mock.module("@/lib/viewer-switch", () => actualViewerSwitchModule);
 
-const { attachServiceAnnounceListener, seedServiceCache } = await import("./useRunnerServices");
+const { attachServiceAnnounceListener, seedServiceCache, runnerInfoToServices } = await import("./useRunnerServices");
 
 // The internal cache keys used by the module
 const SERVICE_IDS_KEY = "__serviceIds";
@@ -40,6 +40,24 @@ function createMockSocket(): any {
     };
     return socket;
 }
+
+describe("runnerInfoToServices", () => {
+    test("preserves session modes from runner-info rehydration", () => {
+        const services = runnerInfoToServices({
+            runnerId: "runner-1",
+            name: "Runner",
+            roots: [],
+            sessionCount: 0,
+            skills: [],
+            agents: [],
+            plugins: [],
+            hooks: [],
+            serviceIds: ["workspace"],
+            sessionModes: [{ id: "work", label: "Work", workspace: "/work" }],
+        });
+        expect(services.sessionModes).toEqual([{ id: "work", label: "Work", workspace: "/work" }]);
+    });
+});
 
 describe("attachServiceAnnounceListener", () => {
     test("populates socket cache on service_announce", () => {

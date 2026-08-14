@@ -65,6 +65,15 @@ describe("session mode filtering", () => {
     it("keeps all unclaimed sessions in Code mode", () => {
         expect(filterSessionsByMode(sessions, null, modes).map((s) => s.sessionId)).toEqual(["code", "work-child"]);
     });
+
+    it("only claims sessions from the mode's runner", () => {
+        const scopedSessions = [
+            { sessionId: "runner-a", cwd: "/work", runnerId: "runner-a" },
+            { sessionId: "runner-b", cwd: "/work", runnerId: "runner-b" },
+        ];
+        expect(filterSessionsByMode(scopedSessions, "work", modes, "runner-a").map((s) => s.sessionId)).toEqual(["runner-a"]);
+        expect(filterSessionsByMode(scopedSessions, null, modes, "runner-a").map((s) => s.sessionId)).toEqual(["runner-b"]);
+    });
 });
 
 // ── Session sort tests ────────────────────────────────────────────────────────

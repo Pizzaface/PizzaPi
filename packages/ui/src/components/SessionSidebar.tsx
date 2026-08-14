@@ -111,20 +111,24 @@ export interface SessionSidebarProps {
     /** Set of session IDs that are actively compacting their context window. */
     sessionsCompacting?: Set<string>;
     sessionModes?: ServiceModeDef[];
+    sessionModesRunnerId?: string | null;
 }
 
 /** Filter by the selected mode without changing the runner/project/session tree. */
-export function filterSessionsByMode<T extends { cwd: string }>(
+export function filterSessionsByMode<T extends { cwd: string; runnerId?: string | null }>(
     sessions: T[],
     selectedModeId: string | null,
     modes: ServiceModeDef[],
+    modeRunnerId?: string | null,
 ): T[] {
+    const belongsToModeRunner = (session: T) =>
+        !modeRunnerId || session.runnerId === modeRunnerId;
     if (!selectedModeId) {
         const claimed = new Set(modes.map((mode) => mode.workspace));
-        return sessions.filter((session) => !claimed.has(session.cwd));
+        return sessions.filter((session) => !belongsToModeRunner(session) || !claimed.has(session.cwd));
     }
     const mode = modes.find((candidate) => candidate.id === selectedModeId);
-    return mode ? sessions.filter((session) => session.cwd === mode.workspace) : sessions;
+    return mode ? sessions.filter((session) => belongsToModeRunner(session) && session.cwd === mode.workspace) : sessions;
 }
 
 function formatRelativeDate(isoString: string): string {
@@ -218,6 +222,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     sessionsAwaitingInput,
     sessionsCompacting,
     sessionModes = [],
+    sessionModesRunnerId,
 }: SessionSidebarProps) {
     const [collapsed, setCollapsed] = React.useState(false);
 
@@ -827,9 +832,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
     const [selectedMode, setSelectedMode] = React.useState<string | null>(null);
     const activeMode = sessionModes.find((mode) => mode.id === selectedMode) ?? null;
+    React.useEffect(() => {
+        if (selectedMode && !sessionModes.some((mode) => mode.id === selectedMode)) setSelectedMode(null);
+    }, [selectedMode, sessionModes]);
     const visibleSessions = React.useMemo(
-        () => filterSessionsByMode(liveSessions, selectedMode, sessionModes),
-        [liveSessions, selectedMode, sessionModes],
+        () => filterSessionsByMode(liveSessions, selectedMode, sessionModes, sessionModesRunnerId),
+        [liveSessions, selectedMode, sessionModes, sessionModesRunnerId],
     );
 
     const liveGroups = React.useMemo(() => {
@@ -1148,7 +1156,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     <div className="px-3 pt-2 flex-shrink-0 space-y-2">
                         <div className="flex rounded-md border border-sidebar-border/60 p-0.5" role="group" aria-label="Session mode">
                             <button
-                                className={cn("flex-1 rounded px-2 py-1 text-xs font-medium", !selectedMode && "bg-sidebar-accent text-sidebar-foreground")}
+                                className={cn("flex flex-1 items-center justify-center gap-1 rounded px-2 py-1 text-xs font-medium", !selectedMode && "bg-sidebar-accent text-sidebar-foreground")}
                                 onClick={() => setSelectedMode(null)}
                                 aria-pressed={!selectedMode}
                             >
@@ -1158,7 +1166,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                             {sessionModes.map((mode) => (
                                 <button
                                     key={mode.id}
-                                    className={cn("flex-1 rounded px-2 py-1 text-xs font-medium", selectedMode === mode.id && "bg-sidebar-accent text-sidebar-foreground")}
+                                    className={cn("flex flex-1 items-center justify-center gap-1 rounded px-2 py-1 text-xs font-medium", selectedMode === mode.id && "bg-sidebar-accent text-sidebar-foreground")}
                                     onClick={() => setSelectedMode(mode.id)}
                                     aria-pressed={selectedMode === mode.id}
                                 >

@@ -178,7 +178,7 @@ function hasRunnerServiceMetadata(runnerInfo: RunnerInfo | null | undefined): bo
     );
 }
 
-function runnerInfoToServices(runnerInfo: RunnerInfo | null | undefined): RunnerServicesState {
+export function runnerInfoToServices(runnerInfo: RunnerInfo | null | undefined): RunnerServicesState {
     return {
         services: new Set(runnerInfo?.serviceIds ?? []),
         disabledServices: new Set(runnerInfo?.disabledServiceIds ?? []),
