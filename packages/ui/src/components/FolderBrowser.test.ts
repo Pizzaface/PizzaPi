@@ -17,3 +17,14 @@ describe("FolderBrowser Windows paths", () => {
         expect(parentPath("C:\\")).toBe("C:\\");
     });
 });
+
+describe("FolderBrowser POSIX paths", () => {
+    test("navigates up through slash-separated paths", () => {
+        expect(parentPath("/usr/local")).toBe("/usr");
+        expect(parentPath("/usr")).toBe("/");
+    });
+
+    test("keeps the POSIX root stable", () => {
+        expect(parentPath("/")).toBe("/");
+    });
+});
