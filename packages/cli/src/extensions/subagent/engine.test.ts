@@ -12,7 +12,20 @@ import { describe, test, expect, mock } from "bun:test";
 delete process.env.PIZZAPI_HIDDEN_MODELS;
 
 const createAgentSessionCalls: unknown[] = [];
+const socketIoCalls: unknown[] = [];
 const fakeRuntime = Object.freeze({ id: "parent-runtime" });
+
+mock.module("socket.io-client", () => ({
+    io: mock(() => {
+        socketIoCalls.push(true);
+        return {
+            on: mock(() => {}),
+            emit: mock(() => {}),
+            disconnect: mock(() => {}),
+            removeAllListeners: mock(() => {}),
+        };
+    }),
+}));
 
 mock.module("@earendil-works/pi-coding-agent", () => ({
     createAgentSession: mock(async (options: unknown) => {
@@ -47,6 +60,46 @@ const noopAgent = {
 };
 
 describe("runSingleAgent model runtime reuse", () => {
+    test("does not create a mirror or session when already aborted", async () => {
+        const envKeys = {
+            apiKey: "PIZZAPI_API_KEY",
+            relayUrl: "PIZZAPI_RELAY_URL",
+            sessionId: "PIZZAPI_SESSION_ID",
+        } as const;
+        const previous = Object.fromEntries(Object.entries(envKeys).map(([key, env]) => [key, process.env[env]]));
+        process.env.PIZZAPI_API_KEY = "key";
+        process.env.PIZZAPI_RELAY_URL = "wss://relay.example";
+        process.env.PIZZAPI_SESSION_ID = "parent-session";
+        const controller = new AbortController();
+        controller.abort();
+        const sessionsBefore = createAgentSessionCalls.length;
+        const socketsBefore = socketIoCalls.length;
+
+        try {
+            await expect(
+                runSingleAgent(
+                    process.cwd(),
+                    [noopAgent],
+                    "noop",
+                    "cancelled task",
+                    undefined,
+                    undefined,
+                    controller.signal,
+                    undefined,
+                    (r) => ({ mode: "single", results: r }) as any,
+                ),
+            ).rejects.toThrow("Subagent was aborted");
+            expect(createAgentSessionCalls).toHaveLength(sessionsBefore);
+            expect(socketIoCalls).toHaveLength(socketsBefore);
+        } finally {
+            for (const [key, env] of Object.entries(envKeys)) {
+                const value = previous[key];
+                if (value === undefined) delete process.env[env];
+                else process.env[env] = value;
+            }
+        }
+    });
+
     test("passes the parent's live ModelRuntime so OAuth/subscription providers work", async () => {
         const registry: any = {
             find: () => undefined,
