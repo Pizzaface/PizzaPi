@@ -28,33 +28,9 @@ const SNAPSHOT_THROTTLE_MS = 1_000;
  *  ponytail: flat cap, switch to the chunked-delivery path if it ever bites. */
 const MAX_MIRRORED_MESSAGES = 200;
 
-/** Liveness heartbeat cadence — same as the remote extension's. */
-const HEARTBEAT_MS = 10_000;
-
-/**
- * Live agent events forwarded verbatim, exactly as the remote extension
- * forwards them for a normal linked session, so the web UI streams token
- * deltas and tool cards instead of waiting for whole-message snapshots.
- * `agent_end` is deliberately excluded: its `messages` are run-scoped and both
- * the UI and the server treat them as a full snapshot (transcript truncation).
- */
-const STREAMED_EVENTS = new Set([
-    "agent_start",
-    "turn_start",
-    "turn_end",
-    "message_start",
-    "message_update",
-    "message_end",
-    "tool_execution_start",
-    "tool_execution_update",
-    "tool_execution_end",
-]);
-
 export interface SubagentMirror {
     /** Relay session id of the mirrored child (exposed for tests/telemetry). */
     readonly sessionId: string;
-    /** Forward a live agent event verbatim (streaming deltas, tool cards). */
-    forward(event: { type?: string }): void;
     /** Push a transcript snapshot (throttled). */
     update(result: SingleResult): void;
     /** Push a final snapshot, end the relay session, and disconnect. */
@@ -232,23 +208,6 @@ export function createSubagentMirror(opts: MirrorOptions): SubagentMirror | null
         if (pending) flushPending();
     });
 
-    // Keep the child session visibly alive between snapshots — a long tool call
-    // would otherwise leave the UI without a heartbeat for minutes.
-    const heartbeatTimer = setInterval(() => {
-        if (closed || !token) return;
-        emit({
-            type: "heartbeat",
-            active: true,
-            isCompacting: false,
-            ts: now(),
-            model: null,
-            sessionName,
-            uptime: null,
-            cwd: opts.cwd,
-        });
-    }, HEARTBEAT_MS);
-    (heartbeatTimer as { unref?: () => void }).unref?.();
-
     socket.on("connect_error", (err: unknown) => {
         log.warn("subagent mirror connect failed:", err);
     });
@@ -257,7 +216,6 @@ export function createSubagentMirror(opts: MirrorOptions): SubagentMirror | null
         if (closed) return;
         closed = true;
         clearThrottle();
-        clearInterval(heartbeatTimer);
         pending = null;
         try {
             socket.removeAllListeners();
@@ -269,10 +227,6 @@ export function createSubagentMirror(opts: MirrorOptions): SubagentMirror | null
 
     return {
         sessionId,
-        forward(event) {
-            if (closed || !event?.type || !STREAMED_EVENTS.has(event.type)) return;
-            emit(event);
-        },
         update(result) {
             if (closed) return;
             pending = result;

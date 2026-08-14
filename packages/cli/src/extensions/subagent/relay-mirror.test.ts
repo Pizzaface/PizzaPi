@@ -174,41 +174,6 @@ describe("createSubagentMirror", () => {
         expect(fake.emitted.filter((e) => e.event === "event").length).toBeGreaterThan(afterFirst);
     });
 
-    test("forwards live agent events verbatim, drops unstreamed ones", () => {
-        const fake = makeFakeSocket();
-        const mirror = createSubagentMirror({
-            agentName: "a",
-            task: "t",
-            cwd: "/repo",
-            env: ENV,
-            socketFactory: () => fake.socket,
-        })!;
-
-        // Before registration nothing is forwarded (the snapshot flush covers it).
-        mirror.forward({ type: "message_update" } as any);
-        expect(fake.emitted.some((e) => e.event === "event")).toBe(false);
-
-        fake.fire("connect");
-        fake.fire("registered", { token: "tok" });
-
-        mirror.forward({ type: "message_update", message: { role: "assistant" } } as any);
-        mirror.forward({ type: "tool_execution_start", toolName: "read" } as any);
-        // agent_end carries run-scoped messages the UI treats as a full snapshot.
-        mirror.forward({ type: "agent_end", messages: [] } as any);
-
-        const types = fake.emitted
-            .filter((e) => e.event === "event")
-            .map((e) => e.payload.event.type);
-        expect(types).toContain("message_update");
-        expect(types).toContain("tool_execution_start");
-        expect(types).not.toContain("agent_end");
-
-        mirror.finish(result());
-        const count = fake.emitted.length;
-        mirror.forward({ type: "message_update" } as any);
-        expect(fake.emitted.length).toBe(count);
-    });
-
     test("finish emits a final snapshot, ends the session, and disconnects", () => {
         const fake = makeFakeSocket();
         const mirror = createSubagentMirror({
