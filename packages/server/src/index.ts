@@ -345,11 +345,14 @@ const existingUpgradeListeners = httpServer.listeners("upgrade").slice();
 httpServer.removeAllListeners("upgrade");
 
 httpServer.on("upgrade", (req, socket, head) => {
-    if (runWithAuthContext(authContext, () => handleTunnelRelayUpgrade(req, socket, head))) {
+    // Viewer tunnel upgrades first: host-based tunnels own their whole origin
+    // (including a /_tunnel path), so the label check must precede the relay
+    // endpoint. Path-based checks (/api/tunnel/*) are disjoint from /_tunnel.
+    if (runWithAuthContext(authContext, () => handleTunnelWsUpgrade(req, socket, head))) {
         return;
     }
 
-    if (runWithAuthContext(authContext, () => handleTunnelWsUpgrade(req, socket, head))) {
+    if (runWithAuthContext(authContext, () => handleTunnelRelayUpgrade(req, socket, head))) {
         return;
     }
 

@@ -64,12 +64,23 @@ export async function resolveTunnelHref(
     }
 
     const data = await mint();
-    // Mobile: only user-app previews opt into the tunnel origin — the domain
-    // may not resolve off-machine (e.g. t.localhost). Service panels keep the
-    // signed relay URL, which is always reachable.
-    if (preferHostOrigin && data.hostUrl) return data.hostUrl;
+    // Mobile: only user-app previews opt into the tunnel origin, and only when
+    // it can plausibly work off-machine — https and not *.localhost (which
+    // resolves to the phone itself). Everything else keeps the signed relay
+    // URL, which is always reachable.
+    if (preferHostOrigin && data.hostUrl && isMobileReachableHostUrl(data.hostUrl)) return data.hostUrl;
     if (!data.url) throw new Error("token response missing url");
     return resolveMobileUrl(data.url);
+}
+
+/** A tunnel-origin URL a phone can plausibly reach: https, not *.localhost. */
+function isMobileReachableHostUrl(hostUrl: string): boolean {
+    try {
+        const u = new URL(hostUrl);
+        return u.protocol === "https:" && u.hostname !== "localhost" && !u.hostname.endsWith(".localhost");
+    } catch {
+        return false;
+    }
 }
 
 export interface UseTunnelSrcResult {

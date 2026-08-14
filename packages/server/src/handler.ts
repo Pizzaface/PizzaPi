@@ -229,6 +229,14 @@ export async function handleFetch(req: Request, authContext: AuthContext): Promi
 async function _handleFetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
 
+    // ── Host-based tunnel routing (<label>.<PIZZAPI_TUNNEL_DOMAIN>) ────────
+    // Must run first: before the /_tunnel branch (the app owns its whole
+    // origin, including a /_tunnel path), before the body-size guard (tunnel
+    // bodies stream to the runner), and before the CSRF gate
+    // (label-authenticated, not cookie-authenticated).
+    const tunnelHostRes = await handleTunnelHostRequest(req, url);
+    if (tunnelHostRes) return tunnelHostRes;
+
     if (url.pathname === "/_tunnel") {
         tunnelLog.warn(
             `/_tunnel reached HTTP handler without WebSocket upgrade method=${req.method} `
@@ -237,12 +245,6 @@ async function _handleFetch(req: Request): Promise<Response> {
         );
         return new Response("Expected WebSocket upgrade", { status: 426 });
     }
-
-    // ── Host-based tunnel routing (<label>.<PIZZAPI_TUNNEL_DOMAIN>) ────────
-    // Must run before the body-size guard (tunnel bodies stream to the runner)
-    // and the CSRF gate (label-authenticated, not cookie-authenticated).
-    const tunnelHostRes = await handleTunnelHostRequest(req, url);
-    if (tunnelHostRes) return tunnelHostRes;
 
     // ── Body size guard ────────────────────────────────────────────────
     // Validates Content-Length when present (strict numeric parsing) and falls

@@ -271,8 +271,8 @@ export class TunnelClient extends EventEmitter {
   /**
    * One-shot protocol probe: HEAD / over TLS. Success → https. On failure, a
    * plain TCP connect disambiguates: connectable → the service speaks plain
-   * http (cache it); not connectable → service down, cache nothing so the next
-   * request re-probes.
+   * http (cache it); not connectable → try the other loopback family, then
+   * cache nothing so the next request re-probes.
    *
    * NOTE: raw tls.connect is NOT usable here — under Bun it fires secureConnect
    * (with authorized=true!) against plain-HTTP servers. A real https request is
@@ -281,41 +281,55 @@ export class TunnelClient extends EventEmitter {
   private probeProtocol(port: number): void {
     if (this.portProtocol.has(port) || this.probing.has(port)) return;
     this.probing.add(port);
-    const host = (this.loopbackHost.get(port) ?? "127.0.0.1").replace(/^\[|\]$/g, "");
     let settled = false;
-    const done = (proto: "http" | "https" | null): void => {
+    const done = (proto: "http" | "https" | null, family?: LoopbackHost): void => {
       if (settled) return;
       settled = true;
       this.probing.delete(port);
-      if (proto) this.portProtocol.set(port, proto);
+      if (proto) {
+        this.portProtocol.set(port, proto);
+        if (family) this.loopbackHost.set(port, family);
+      }
     };
 
-    const req = https.request(
-      { host, port, path: "/", method: "HEAD", rejectUnauthorized: false, timeout: 1500 },
-      (res) => {
-        res.resume();
-        done("https");
-      },
-    );
-    req.on("timeout", () => {
-      req.destroy();
-      done(null);
-    });
-    req.on("error", () => {
-      // TLS failed — is anything listening at all? (Bun reports bogus
-      // ECONNREFUSED for TLS-to-plain-HTTP, so error codes can't be trusted.)
-      const sock = net.connect({ host, port });
-      sock.setTimeout(1500, () => {
-        sock.destroy();
+    const tryFamily = (bracketHost: LoopbackHost, canRetry: boolean): void => {
+      if (settled) return;
+      const host = bracketHost.replace(/^\[|\]$/g, "");
+      const req = https.request(
+        { host, port, path: "/", method: "HEAD", rejectUnauthorized: false, timeout: 1500 },
+        (res) => {
+          res.resume();
+          done("https", bracketHost);
+        },
+      );
+      req.on("timeout", () => {
+        req.destroy();
         done(null);
       });
-      sock.once("connect", () => {
-        sock.destroy();
-        done("http");
+      req.on("error", () => {
+        // TLS failed — is anything listening at all? (Bun reports bogus
+        // ECONNREFUSED for TLS-to-plain-HTTP, so error codes can't be trusted.)
+        const sock = net.connect({ host, port });
+        sock.setTimeout(1500, () => {
+          sock.destroy();
+          done(null);
+        });
+        sock.once("connect", () => {
+          sock.destroy();
+          done("http", bracketHost);
+        });
+        sock.once("error", () => {
+          // Nothing on this family — an IPv6-only HTTPS service would
+          // otherwise never be detected (the http path's family retry only
+          // converges for plaintext services).
+          if (canRetry) tryFamily(otherLoopback(bracketHost), false);
+          else done(null);
+        });
       });
-      sock.once("error", () => done(null));
-    });
-    req.end();
+      req.end();
+    };
+
+    tryFamily(this.loopbackHost.get(port) ?? "127.0.0.1", true);
   }
 
   isPortExposed(port: number): boolean {
@@ -395,8 +409,13 @@ export class TunnelClient extends EventEmitter {
       return;
     }
 
+    // ponytail: requests never await the probe — an undetected port defaults to
+    // plain http, so the first request(s) to a late-started HTTPS service 502
+    // once, the error clears/refills the cache, and the next request works.
+    // Upgrade path if that ever matters: make the probe a per-port promise and
+    // buffer request-data messages until it settles.
     const useTls = this.portProtocol.get(port) === "https";
-    if (!this.portProtocol.has(port)) this.probeProtocol(port); // late-started service — fill cache for next request
+    if (!this.portProtocol.has(port)) this.probeProtocol(port);
 
     const targetUrl = `http://127.0.0.1:${port}${requestUrl}`;
     let parsed: URL;
