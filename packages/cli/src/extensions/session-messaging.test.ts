@@ -21,7 +21,7 @@ describe("wait_for_message", () => {
             const tool = getWaitTool();
             const pending = tool.execute("call", {}, new AbortController().signal);
 
-            expect(setTimeoutSpy.mock.calls.some(([delay]) => typeof delay === "number" && delay > 0)).toBe(false);
+            expect(setTimeoutSpy.mock.calls.some(([, delay]) => typeof delay === "number" && delay > 0)).toBe(false);
 
             messageBus.receive({ fromSessionId: "sender", message: "hello", ts: new Date().toISOString() });
             expect((await pending).content[0].text).toContain("hello");
