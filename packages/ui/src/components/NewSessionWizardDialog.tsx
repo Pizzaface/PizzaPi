@@ -170,7 +170,7 @@ export function NewSessionWizardDialog({
         setBrowsing(false);
         autoAdvancedRef.current = false;
         setRunnerStepSkipped(false);
-    }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [open, isPreselected, preselectedRunnerId, initialCwd]);
 
     // Fetch recent folders when entering Step 2
     React.useEffect(() => {
@@ -191,7 +191,9 @@ export function NewSessionWizardDialog({
                 if (cancelled) return;
                 const folders = Array.isArray(body?.folders) ? (body.folders as string[]) : [];
                 setRecentFolders(folders);
-                if (!cwd.trim()) setCwd(getInitialFolder(selectedRunnerId, folders, initialCwd));
+                setCwd((current) =>
+                    current.trim() ? current : getInitialFolder(selectedRunnerId, folders, initialCwd),
+                );
             })
             .catch(() => {
                 if (cancelled) return;
@@ -204,7 +206,7 @@ export function NewSessionWizardDialog({
         return () => {
             cancelled = true;
         };
-    }, [open, step, selectedRunnerId]);
+    }, [open, step, selectedRunnerId, initialCwd]);
 
     // Auto-advance past the runner picker when there is exactly one connected
     // runner — selecting the only option is a wasted click. Back still returns
