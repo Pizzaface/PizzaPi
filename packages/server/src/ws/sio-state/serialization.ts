@@ -136,6 +136,7 @@ export function parseRunnerFromHash(hash: Record<string, string>): RedisRunnerDa
         panels: hash.panels || undefined,
         triggerDefs: hash.triggerDefs || undefined,
         sigilDefs: hash.sigilDefs || undefined,
+        sessionModes: hash.sessionModes || undefined,
     };
 }
 

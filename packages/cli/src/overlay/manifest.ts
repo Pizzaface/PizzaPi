@@ -28,7 +28,7 @@ const PREFERRED_MCP_TRANSPORT_KEYS: Record<string, Set<string>> = {
     http: new Set(["url", "headers"]),
     streamable: new Set(["url", "headers", "oauthClientName", "oauthClientId", "oauthClientSecret", "oauthCallbackPort"]),
 };
-const SERVICE_KEYS = new Set(["id", "label", "entry", "icon", "panel", "triggers", "sigils"]);
+const SERVICE_KEYS = new Set(["id", "label", "entry", "icon", "panel", "triggers", "sigils", "sessionModes"]);
 const PANEL_KEYS = new Set(["dir", "requires"]);
 const PANEL_VARIABLES: ReadonlySet<PanelVariable> = new Set(["PWD", "SESSION_ID", "HOME", "USER", "PROJECT_DIR"]);
 const SERVICE_ID_RE = /^[a-z][a-z0-9-]{0,63}$/;
@@ -41,6 +41,7 @@ const TRIGGER_PARAM_KEYS = new Set(["name", "label", "type", "description", "req
 const TRIGGER_KEYS = new Set(["type", "label", "description", "schema", "params"]);
 /** Allowed keys on a sigil definition, mirrored from ServiceSigilDef (excludes daemon-populated serviceId/resolvePort). */
 const SIGIL_KEYS = new Set(["type", "label", "description", "icon", "resolve", "schema", "aliases", "variants"]);
+const SESSION_MODE_KEYS = new Set(["id", "label", "icon", "workspace"]);
 
 export interface PackageProvenance {
     /** Normalized package identity, e.g. "npm:@acme/pi-github". */
@@ -531,6 +532,24 @@ function validateTriggerDef(entry: unknown, field: string, push: PushFn): void {
     }
 }
 
+function validateSessionModeDef(entry: unknown, field: string, push: PushFn): void {
+    if (!isPlainObject(entry)) {
+        push(field, "must be an object", `Fix ${field} to a { id, label, workspace } session mode definition object.`);
+        return;
+    }
+    for (const key of Object.keys(entry)) {
+        if (!SESSION_MODE_KEYS.has(key)) {
+            push(`${field}.${key}`, `unknown session mode key "${key}"`, `Remove "${key}" — allowed keys: ${[...SESSION_MODE_KEYS].join(", ")}.`);
+        }
+    }
+    if (typeof entry.id !== "string" || entry.id.length === 0) push(`${field}.id`, "must be a non-empty string", "Set id to a unique mode identifier.");
+    if (typeof entry.label !== "string" || entry.label.length === 0) push(`${field}.label`, "must be a non-empty string", "Set label to a human-readable mode name.");
+    if (entry.icon !== undefined && typeof entry.icon !== "string") push(`${field}.icon`, "must be a string", "Set icon to a Lucide icon name, or omit it.");
+    if (typeof entry.workspace !== "string" || !/^~(?:\/|$)/.test(entry.workspace)) {
+        push(`${field}.workspace`, "must be a home-relative path beginning with ~/", "Set workspace to a path such as ~/Documents/Workspace.");
+    }
+}
+
 function validateSigilDef(entry: unknown, field: string, push: PushFn): void {
     if (!isPlainObject(entry)) {
         push(field, "must be an object", `Fix ${field} to a { type, label } sigil definition object.`);
@@ -627,6 +646,7 @@ function validateServices(
 
     const result: PizzaPiServiceDeclaration[] = [];
     const seenIds = new Set<string>();
+    const seenSessionModeIds = new Set<string>();
 
     value.forEach((raw, i) => {
         const field = `services[${i}]`;
@@ -737,6 +757,21 @@ function validateServices(
         // array (inline or sidecar-parsed) is written back onto `raw` so
         // downstream consumers (daemon package-service discovery) always see
         // a literal ServiceTriggerDef[]/ServiceSigilDef[], never a sidecar path.
+        if (raw.sessionModes !== undefined) {
+            if (!Array.isArray(raw.sessionModes)) {
+                push(`${field}.sessionModes`, "must be an array of session mode definitions", "Set sessionModes to an array of { id, label, workspace } objects.");
+            } else {
+                raw.sessionModes.forEach((mode, modeIndex) => {
+                    const modeField = `${field}.sessionModes[${modeIndex}]`;
+                    validateSessionModeDef(mode, modeField, push);
+                    if (isPlainObject(mode) && typeof mode.id === "string") {
+                        if (seenSessionModeIds.has(mode.id)) push(`${modeField}.id`, `duplicate session mode id "${mode.id}"`, "Give each session mode a unique id across the package.");
+                        seenSessionModeIds.add(mode.id);
+                    }
+                });
+            }
+        }
+
         for (const sidecarField of ["triggers", "sigils"] as const) {
             const sidecarValue = raw[sidecarField];
             if (sidecarValue === undefined) continue;

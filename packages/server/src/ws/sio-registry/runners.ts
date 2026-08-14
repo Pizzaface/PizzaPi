@@ -261,6 +261,7 @@ export async function updateRunnerServices(
     triggerDefs?: Array<{ type: string; label: string; description?: string; schema?: Record<string, unknown> }>,
     sigilDefs?: Array<{ type: string; label: string; description?: string; icon?: string; serviceId?: string; resolve?: string; schema?: Record<string, unknown>; aliases?: string[] }>,
     disabledServiceIds?: string[],
+    sessionModes?: Array<{ id: string; label: string; icon?: string; workspace: string; serviceId?: string }>,
 ): Promise<void> {
     const fields: Record<string, string> = {
         serviceIds: JSON.stringify(serviceIds),
@@ -279,6 +280,11 @@ export async function updateRunnerServices(
         fields.sigilDefs = JSON.stringify(sigilDefs);
     } else {
         fields.sigilDefs = "[]";
+    }
+    if (sessionModes && sessionModes.length > 0) {
+        fields.sessionModes = JSON.stringify(sessionModes);
+    } else {
+        fields.sessionModes = "[]";
     }
     if (disabledServiceIds && disabledServiceIds.length > 0) {
         fields.disabledServiceIds = JSON.stringify(disabledServiceIds);
@@ -301,6 +307,7 @@ export async function getRunnerServices(
     panels?: Array<{ serviceId: string; port: number; label: string; icon: string }>;
     triggerDefs?: ServiceTriggerDef[];
     sigilDefs?: ServiceSigilDef[];
+    sessionModes?: Array<{ id: string; label: string; icon?: string; workspace: string; serviceId?: string }>;
 } | null> {
     const runner = await getRunnerState(runnerId);
     if (!runner) return null;
@@ -316,12 +323,14 @@ export async function getRunnerServices(
     const panels = runner.panels ? safeJsonParse(runner.panels) ?? undefined : undefined;
     const triggerDefs = runner.triggerDefs ? safeJsonParse(runner.triggerDefs) ?? undefined : undefined;
     const sigilDefs = runner.sigilDefs ? safeJsonParse(runner.sigilDefs) ?? undefined : undefined;
+    const sessionModes = runner.sessionModes ? safeJsonParse(runner.sessionModes) ?? undefined : undefined;
     return {
         serviceIds,
         disabledServiceIds,
         ...(panels && panels.length > 0 ? { panels } : {}),
         ...(triggerDefs && triggerDefs.length > 0 ? { triggerDefs } : {}),
         ...(sigilDefs && sigilDefs.length > 0 ? { sigilDefs } : {}),
+        ...(sessionModes && sessionModes.length > 0 ? { sessionModes } : {}),
     };
 }
 
@@ -423,6 +432,7 @@ function runnerDataToInfo(r: RedisRunnerData, sessionCount = 0): RunnerInfo {
     const panels = r.panels ? safeJsonParse(r.panels) ?? undefined : undefined;
     const triggerDefs = r.triggerDefs ? safeJsonParse(r.triggerDefs) ?? undefined : undefined;
     const sigilDefs = r.sigilDefs ? safeJsonParse(r.sigilDefs) ?? undefined : undefined;
+    const sessionModes = r.sessionModes ? safeJsonParse(r.sessionModes) ?? undefined : undefined;
     const warnings: string[] | undefined = r.warnings ? safeJsonParse(r.warnings) ?? undefined : undefined;
     return {
         runnerId: r.runnerId,
@@ -440,6 +450,7 @@ function runnerDataToInfo(r: RedisRunnerData, sessionCount = 0): RunnerInfo {
         ...(panels ? { panels } : {}),
         ...(triggerDefs && triggerDefs.length > 0 ? { triggerDefs } : {}),
         ...(sigilDefs && sigilDefs.length > 0 ? { sigilDefs } : {}),
+        ...(sessionModes && sessionModes.length > 0 ? { sessionModes } : {}),
         ...(warnings && warnings.length > 0 ? { warnings } : {}),
     };
 }

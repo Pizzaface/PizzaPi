@@ -5,6 +5,8 @@
  */
 
 import { describe, it, expect } from "bun:test";
+import { filterSessionsByMode } from "./SessionSidebar";
+import type { ServiceModeDef } from "@pizzapi/protocol";
 
 // ── Minimal type stubs ────────────────────────────────────────────────────────
 
@@ -47,6 +49,40 @@ function makeProjectComparator(pinnedSessionIds: Set<string>) {
         return latestTs(b) - latestTs(a);
     };
 }
+
+describe("session mode filtering", () => {
+    const modes: ServiceModeDef[] = [{ id: "work", label: "Work", workspace: "/work" }];
+    const sessions = [
+        { sessionId: "code", cwd: "/code", runnerId: "runner-a" },
+        { sessionId: "work", cwd: "/work", runnerId: "runner-a" },
+        { sessionId: "work-child", cwd: "/work-other", runnerId: "runner-a" },
+    ];
+
+    it("fails closed when the mode runner is unknown", () => {
+        expect(filterSessionsByMode(sessions, "work", modes).map((s) => s.sessionId)).toEqual([]);
+    });
+
+    it("keeps all unclaimed sessions in Code mode", () => {
+        expect(filterSessionsByMode(sessions, null, modes, "runner-a").map((s) => s.sessionId)).toEqual(["code", "work-child"]);
+    });
+
+    it("matches a selected mode by exact cwd on its runner", () => {
+        const scopedSessions = [
+            { sessionId: "runner-a", cwd: "/work", runnerId: "runner-a" },
+            { sessionId: "runner-b", cwd: "/work", runnerId: "runner-b" },
+        ];
+        expect(filterSessionsByMode(scopedSessions, "work", modes, "runner-a").map((s) => s.sessionId)).toEqual(["runner-a"]);
+    });
+
+    it("only claims sessions from the mode's runner", () => {
+        const scopedSessions = [
+            { sessionId: "runner-a", cwd: "/work", runnerId: "runner-a" },
+            { sessionId: "runner-b", cwd: "/work", runnerId: "runner-b" },
+        ];
+        expect(filterSessionsByMode(scopedSessions, "work", modes, "runner-a").map((s) => s.sessionId)).toEqual(["runner-a"]);
+        expect(filterSessionsByMode(scopedSessions, null, modes, "runner-a").map((s) => s.sessionId)).toEqual(["runner-b"]);
+    });
+});
 
 // ── Session sort tests ────────────────────────────────────────────────────────
 

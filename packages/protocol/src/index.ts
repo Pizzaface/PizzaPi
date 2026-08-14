@@ -20,6 +20,7 @@ export type {
   ServiceTriggerDef,
   ServiceTriggerParamDef,
   ServiceSigilDef,
+  ServiceModeDef,
   JsonValue,
   TriggerFilter,
   TriggerFilterMode,

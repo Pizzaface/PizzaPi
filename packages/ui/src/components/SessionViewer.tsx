@@ -871,7 +871,7 @@ export function SessionViewer({
                   </p>
                 </div>
                 {onNewSession && (
-                  <Button size="sm" onClick={onNewSession}>
+                  <Button size="sm" onClick={() => onNewSession()}>
                     <Plus className="size-4" />
                     New session
                   </Button>

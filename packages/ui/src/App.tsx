@@ -4198,8 +4198,8 @@ export function App() {
     return () => window.removeEventListener("keydown", handler);
   }, [isMac, agentActive, sendRemoteExec]);
 
-  const handleNewSession = React.useCallback(() => {
-    setLifecycleSpawnParams({ runnerId: undefined, preselectedRunnerId: null, cwd: "" });
+  const handleNewSession = React.useCallback((initialCwd?: string) => {
+    setLifecycleSpawnParams({ runnerId: undefined, preselectedRunnerId: null, cwd: typeof initialCwd === "string" ? initialCwd : "" });
     setNewSessionOpen(true);
   }, [setLifecycleSpawnParams]);
 
@@ -4357,7 +4357,7 @@ export function App() {
   }, [activeSessionId, activeSessionInfo?.runnerId, liveSessions]);
 
   // Runner service panels — dynamically discovered
-  const { services: availableServices, disabledServices: disabledServiceIds, panels: dynamicPanels, triggerDefs: runnerTriggerDefs, sigilDefs: runnerSigilDefs } = useRunnerServices(viewerSocket, activeRunnerInfo);
+  const { services: availableServices, disabledServices: disabledServiceIds, panels: dynamicPanels, triggerDefs: runnerTriggerDefs, sigilDefs: runnerSigilDefs, sessionModes } = useRunnerServices(viewerSocket, activeRunnerInfo);
   const triggerCounts = useTriggerCount(activeSessionId, viewerSocket);
   const attentionSessionNames = React.useMemo(() => {
     const names = new Map<string, string>();
@@ -4982,6 +4982,8 @@ export function App() {
             <SessionSidebar
               onOpenSession={handleOpenSession}
               onNewSession={handleNewSession}
+              sessionModes={sessionModes}
+              sessionModesRunnerId={activeSessionInfo?.runnerId}
               onClearSelection={handleClearSelection}
               onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); lifecycleClearSelection(); }}
               activeSessionId={activeSessionId}

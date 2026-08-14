@@ -255,6 +255,8 @@ export interface RedisRunnerData {
     triggerDefs?: string;
     /** JSON-stringified ServiceSigilDef[] — sigil defs from last service_announce */
     sigilDefs?: string;
+    /** JSON-stringified ServiceModeDef[] — session modes from last service_announce */
+    sessionModes?: string;
     /** JSON-stringified string[] — active warnings from the runner daemon */
     warnings?: string;
 }
@@ -398,6 +400,7 @@ function parseRunnerFromHash(hash: Record<string, string>): RedisRunnerData | nu
         panels: hash.panels || undefined,
         triggerDefs: hash.triggerDefs || undefined,
         sigilDefs: hash.sigilDefs || undefined,
+        sessionModes: hash.sessionModes || undefined,
     };
 }
 

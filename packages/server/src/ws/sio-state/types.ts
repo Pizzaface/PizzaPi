@@ -128,6 +128,8 @@ export interface RedisRunnerData {
     triggerDefs?: string;
     /** JSON-stringified ServiceSigilDef[] — sigil defs from last service_announce */
     sigilDefs?: string;
+    /** JSON-stringified ServiceModeDef[] — session modes from last service_announce */
+    sessionModes?: string;
     /** JSON-stringified string[] — disabled runner service IDs */
     disabledServiceIds?: string;
     /** JSON-stringified string[] — active warnings from the runner daemon */

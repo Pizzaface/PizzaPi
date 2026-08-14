@@ -466,6 +466,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
             panels: services?.panels ?? [],
             triggerDefs: services?.triggerDefs ?? [],
             sigilDefs: services?.sigilDefs ?? [],
+            sessionModes: services?.sessionModes ?? [],
         });
     }
 

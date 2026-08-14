@@ -36,7 +36,7 @@ import type { PizzaPiConfig } from "../config.js";
 import { findSessionPathById } from "./session-list-cache.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type { ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } from "@pizzapi/protocol";
+import type { ServiceModeDef, ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } from "@pizzapi/protocol";
 import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
 import { extractHookSummary } from "./hook-summary.js";
 import { defaultStatePath, acquireStateAndIdentity, releaseStateLock, patchRunnerState } from "./runner-state.js";
@@ -97,6 +97,8 @@ export type PanelEntry = {
     triggers?: ServiceTriggerDef[];
     /** Sigil types declared in this service's manifest */
     sigils?: ServiceSigilDef[];
+    /** Session modes declared by this service; workspace is resolved per runner. */
+    sessionModes?: ServiceModeDef[];
     /**
      * Whether this service has a UI panel shown to users.
      * false = service has trigger/sigil defs but no panel (e.g. the time service).
@@ -281,7 +283,8 @@ export function panelEntryFromManifest(
     if (!manifest) return null;
     const hasTriggers = !!(manifest.triggers && manifest.triggers.length > 0);
     const hasSigils = !!(manifest.sigils && manifest.sigils.length > 0);
-    if (!manifest.panel && !hasTriggers && !hasSigils) return null;
+    const hasSessionModes = !!(manifest.sessionModes && manifest.sessionModes.length > 0);
+    if (!manifest.panel && !hasTriggers && !hasSigils && !hasSessionModes) return null;
     return {
         serviceId,
         label: manifest.label,
@@ -290,6 +293,7 @@ export function panelEntryFromManifest(
         ...(existingPort !== undefined ? { port: existingPort } : {}),
         ...(hasTriggers ? { triggers: manifest.triggers } : {}),
         ...(hasSigils ? { sigils: manifest.sigils } : {}),
+        ...(hasSessionModes ? { sessionModes: manifest.sessionModes } : {}),
         ...(manifest.panel?.requires ? { requires: manifest.panel.requires } : {}),
     };
 }
@@ -938,10 +942,15 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             // Collect all trigger defs and sigil defs across all services with manifests
             const allTriggerDefs: ServiceTriggerDef[] = [];
             const allSigilDefs: ServiceSigilDef[] = [];
+            const allSessionModes: ServiceModeDef[] = [];
             for (const entry of panelEntries.values()) {
                 if (!activeServiceIds.has(entry.serviceId)) continue;
                 if (entry.triggers && entry.triggers.length > 0) {
                     allTriggerDefs.push(...entry.triggers);
+                }
+                if (entry.sessionModes && entry.sessionModes.length > 0) {
+                    // Resolve home-relative workspaces on each runner; matching is exact cwd equality.
+                    allSessionModes.push(...entry.sessionModes.map((mode) => ({ ...mode, serviceId: entry.serviceId, workspace: expandHome(mode.workspace) })));
                 }
                 if (entry.sigils && entry.sigils.length > 0) {
                     // Stamp serviceId and (if available) resolvePort onto each sigil def.
@@ -962,6 +971,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 ...(panels.length > 0 ? { panels } : {}),
                 ...(allTriggerDefs.length > 0 ? { triggerDefs: allTriggerDefs } : {}),
                 ...(allSigilDefs.length > 0 ? { sigilDefs: allSigilDefs } : {}),
+                ...(allSessionModes.length > 0 ? { sessionModes: allSessionModes } : {}),
             });
         };
 
