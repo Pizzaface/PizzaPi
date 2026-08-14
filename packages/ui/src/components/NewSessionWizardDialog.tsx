@@ -11,7 +11,7 @@ import { FolderOpen, FolderSearch, Loader2, X, ChevronLeft, Monitor } from "luci
 import { SiApple, SiLinux } from "react-icons/si";
 import { cn } from "@/lib/utils";
 import { formatPathTail, pathSegments } from "@/lib/path";
-import { filterFolders, getInitialFolder } from "@/lib/filterFolders";
+import { filterFolders } from "@/lib/filterFolders";
 import { FolderBrowser } from "@/components/FolderBrowser";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -190,10 +190,8 @@ export function NewSessionWizardDialog({
             .then((body: any) => {
                 if (cancelled) return;
                 const folders = Array.isArray(body?.folders) ? (body.folders as string[]) : [];
+                // Leave cwd alone: an empty field shows the complete recent-project list.
                 setRecentFolders(folders);
-                setCwd((current) =>
-                    current.trim() ? current : getInitialFolder(selectedRunnerId, folders, initialCwd),
-                );
             })
             .catch(() => {
                 if (cancelled) return;

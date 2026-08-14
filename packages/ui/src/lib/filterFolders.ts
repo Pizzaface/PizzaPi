@@ -15,12 +15,3 @@ export function filterFolders(folders: string[], query: string): string[] {
         return f.toLowerCase().includes(q) || basename.toLowerCase().includes(q);
     });
 }
-
-export function getInitialFolder(runnerId: string, folders: string[], initialCwd?: string): string {
-    if (initialCwd?.trim()) return initialCwd;
-    try {
-        const persisted = localStorage.getItem(`pp.newSession.lastFolder.${runnerId}`);
-        if (persisted && folders.includes(persisted)) return persisted;
-    } catch { /* storage may be unavailable */ }
-    return folders[0] ?? "";
-}

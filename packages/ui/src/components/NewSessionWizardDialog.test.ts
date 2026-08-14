@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { filterFolders, getInitialFolder } from "../lib/filterFolders.js";
+import { filterFolders } from "../lib/filterFolders.js";
 
 /**
  * Unit tests for the recent-project filtering logic used in NewSessionWizardDialog.
@@ -17,30 +17,6 @@ const FOLDERS = [
     "/tmp/scratch",
     "/home/src-archive/old",
 ];
-
-describe("getInitialFolder", () => {
-    test("preselects the top-ranked folder", () => {
-        expect(getInitialFolder("runner-1", ["/code/often", "/code/once"])).toBe("/code/often");
-    });
-
-    test("keeps an explicit initial folder", () => {
-        expect(getInitialFolder("runner-1", ["/code/often"], "/custom/path")).toBe("/custom/path");
-    });
-
-    test("prefers a persisted explicit selection", () => {
-        const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
-        Object.defineProperty(globalThis, "localStorage", {
-            configurable: true,
-            value: { getItem: () => "/code/explicit" },
-        });
-        try {
-            expect(getInitialFolder("runner-1", ["/code/top", "/code/explicit"])).toBe("/code/explicit");
-        } finally {
-            if (previous) Object.defineProperty(globalThis, "localStorage", previous);
-            else delete (globalThis as any).localStorage;
-        }
-    });
-});
 
 describe("filterFolders", () => {
     test("empty query returns all folders", () => {
