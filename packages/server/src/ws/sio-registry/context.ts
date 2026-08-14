@@ -189,12 +189,14 @@ export function emitToRunner(runnerId: string, eventName: string, data: unknown)
     // The room reaches joined runners on any relay node through the Redis
     // adapter. Unjoined local sockets need the direct fallback, but joined
     // sockets must not receive the event twice.
+    let roomEmitSucceeded = false;
     try {
         io.of("/runner").to(room).emit(eventName, data);
+        roomEmitSucceeded = true;
     } catch (err) {
         log.warn("emitToRunner room emit failed:", (err as Error)?.message);
     }
-    if (local?.connected && !local.rooms?.has(room)) {
+    if (local?.connected && (!roomEmitSucceeded || !local.rooms?.has(room))) {
         try { local.emit(eventName, data); } catch { /* best-effort */ }
     }
 }
