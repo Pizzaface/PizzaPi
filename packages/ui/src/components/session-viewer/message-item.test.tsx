@@ -55,6 +55,33 @@ describe("SessionMessageItem custom messages", () => {
     expect(quoted).toBe("Select this sentence");
   });
 
+  test("quotes text parts from an assistant message when nothing is selected", () => {
+    const message: RelayMessage = {
+      key: "assistant-quote-parts",
+      role: "assistant",
+      timestamp: 1_700_000_000_000,
+      content: [
+        { type: "text", text: "First part" },
+        { type: "toolCall", toolName: "ignored" },
+        { type: "text", text: " second part" },
+        { type: "toolResult", result: "ignored" },
+      ],
+    };
+    let quoted = "";
+    window.getSelection()?.removeAllRanges();
+
+    const view = render(
+      <SessionActionsProvider value={{ abort: () => {}, quote: (text) => { quoted = text; } }}>
+        <SessionMessageItem message={message} isLast={false} />
+      </SessionActionsProvider>,
+    );
+
+    fireEvent.click(view.getByRole("button", { name: "Quote" }));
+
+    expect(quoted).not.toContain("## 🤖 Assistant");
+    expect(quoted).toContain("First part second part");
+  });
+
   test("shows the full custom message key and collapses content by default", () => {
     const message: RelayMessage = {
       key: "custom-1",

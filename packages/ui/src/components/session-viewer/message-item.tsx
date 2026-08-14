@@ -20,6 +20,22 @@ import { useSessionActions } from "@/components/session-viewer/session-actions-c
 
 // ── SessionMessageItem ───────────────────────────────────────────────────────
 
+function getQuoteText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+
+  return content
+    .filter(
+      (part): part is { type: "text"; text: string } =>
+        typeof part === "object" &&
+        part !== null &&
+        (part as { type?: unknown }).type === "text" &&
+        typeof (part as { text?: unknown }).text === "string",
+    )
+    .map((part) => part.text)
+    .join("");
+}
+
 interface SessionMessageItemProps {
   message: RelayMessage;
   activeToolCalls?: Map<string, string>;
@@ -58,7 +74,7 @@ export const SessionMessageItem = React.memo(
       const selection = window.getSelection();
       const selected = selection?.toString().trim();
       const hasSelection = !!selection?.rangeCount && !!content && content.contains(selection.getRangeAt(0).commonAncestorContainer);
-      const text = hasSelection && selected ? selected : typeof message.content === "string" ? message.content : exportToMarkdown([message]);
+      const text = hasSelection && selected ? selected : getQuoteText(message.content);
       sessionActions?.quote?.(text, message.timestamp);
     }, [message]);
 
