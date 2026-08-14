@@ -6,16 +6,26 @@ import { runQrSetup, qrCodeUrl, renderQrCode, requestHeadlessPairing } from "./s
 import { _setGlobalConfigDir } from "./config/io.js";
 
 const originalHome = process.env.HOME;
+const originalCredentialEnv = {
+    PIZZAPI_API_KEY: process.env.PIZZAPI_API_KEY,
+    PIZZAPI_RELAY_URL: process.env.PIZZAPI_RELAY_URL,
+};
 let tmpDir: string;
 
 beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-setup-test-"));
     process.env.HOME = tmpDir;
+    delete process.env.PIZZAPI_API_KEY;
+    delete process.env.PIZZAPI_RELAY_URL;
     _setGlobalConfigDir(tmpDir + "/.pizzapi");
 });
 
 afterEach(() => {
     process.env.HOME = originalHome;
+    if (originalCredentialEnv.PIZZAPI_API_KEY === undefined) delete process.env.PIZZAPI_API_KEY;
+    else process.env.PIZZAPI_API_KEY = originalCredentialEnv.PIZZAPI_API_KEY;
+    if (originalCredentialEnv.PIZZAPI_RELAY_URL === undefined) delete process.env.PIZZAPI_RELAY_URL;
+    else process.env.PIZZAPI_RELAY_URL = originalCredentialEnv.PIZZAPI_RELAY_URL;
     _setGlobalConfigDir(null);
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 });

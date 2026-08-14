@@ -47,6 +47,9 @@ describe("shouldAutoPair", () => {
 
 describe("resolveExistingApiKey", () => {
     const originalEnv = { ...process.env };
+    beforeEach(() => {
+        for (const k of ["PIZZAPI_RUNNER_API_KEY", "PIZZAPI_API_KEY", "PIZZAPI_API_TOKEN"]) delete process.env[k];
+    });
     afterEach(() => {
         for (const k of ["PIZZAPI_RUNNER_API_KEY", "PIZZAPI_API_KEY", "PIZZAPI_API_TOKEN"]) delete process.env[k];
         Object.assign(process.env, originalEnv);
