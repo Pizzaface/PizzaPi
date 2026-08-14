@@ -13,11 +13,13 @@ import { cn } from "@/lib/utils";
 import { useHubSocket } from "@/lib/hub-socket-context";
 import { extractWorktreeName, formatPathTail, worktreeRoots } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare, Copy } from "lucide-react";
+import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
+import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, Code2, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare, Copy } from "lucide-react";
 import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSessionIds, getGroupCwd } from "@/lib/session-tree";
 import { pruneSwipeOffsets } from "@/lib/swipe-reveal";
 import { getSessionVisualState } from "@/lib/session-visual-state";
 import { parseHubSessionsPayload } from "@/lib/hub-sessions";
+import type { ServiceModeDef } from "@pizzapi/protocol";
 
 interface HubSession {
     sessionId: string;
@@ -74,7 +76,7 @@ export type { HubSession };
 
 export interface SessionSidebarProps {
     onOpenSession: (sessionId: string) => void;
-    onNewSession: () => void;
+    onNewSession: (initialCwd?: string) => void;
     onClearSelection: () => void;
     onShowRunners: () => void;
     activeSessionId: string | null;
@@ -108,6 +110,21 @@ export interface SessionSidebarProps {
     sessionsAwaitingInput?: Set<string>;
     /** Set of session IDs that are actively compacting their context window. */
     sessionsCompacting?: Set<string>;
+    sessionModes?: ServiceModeDef[];
+}
+
+/** Filter by the selected mode without changing the runner/project/session tree. */
+export function filterSessionsByMode<T extends { cwd: string }>(
+    sessions: T[],
+    selectedModeId: string | null,
+    modes: ServiceModeDef[],
+): T[] {
+    if (!selectedModeId) {
+        const claimed = new Set(modes.map((mode) => mode.workspace));
+        return sessions.filter((session) => !claimed.has(session.cwd));
+    }
+    const mode = modes.find((candidate) => candidate.id === selectedModeId);
+    return mode ? sessions.filter((session) => session.cwd === mode.workspace) : sessions;
 }
 
 function formatRelativeDate(isoString: string): string {
@@ -200,6 +217,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     onShowSessions,
     sessionsAwaitingInput,
     sessionsCompacting,
+    sessionModes = [],
 }: SessionSidebarProps) {
     const [collapsed, setCollapsed] = React.useState(false);
 
@@ -807,10 +825,17 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         projects: ProjectGroup[];
     }
 
+    const [selectedMode, setSelectedMode] = React.useState<string | null>(null);
+    const activeMode = sessionModes.find((mode) => mode.id === selectedMode) ?? null;
+    const visibleSessions = React.useMemo(
+        () => filterSessionsByMode(liveSessions, selectedMode, sessionModes),
+        [liveSessions, selectedMode, sessionModes],
+    );
+
     const liveGroups = React.useMemo(() => {
         // Step 1: group sessions by runnerId.
         const runnerMap = new Map<string, { label: string; sessions: HubSession[] }>();
-        for (const s of liveSessions) {
+        for (const s of visibleSessions) {
             const key = s.runnerId ?? "__local__";
             if (!runnerMap.has(key)) {
                 const label = s.runnerName?.trim() || (s.runnerId ? `Runner ${s.runnerId.slice(0, 8)}…` : "Local");
@@ -822,7 +847,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         // Pre-parse timestamps once so comparators don't re-parse on every
         // comparison (O(log n) per sort) and every heartbeat memo recomputation.
         const tsBySession = new Map<string, number>();
-        for (const s of liveSessions) {
+        for (const s of visibleSessions) {
             tsBySession.set(s.sessionId, Date.parse(s.lastHeartbeatAt ?? s.startedAt));
         }
 
@@ -888,7 +913,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         });
 
         return result;
-    }, [liveSessions, pinnedSessionIds]);
+    }, [visibleSessions, pinnedSessionIds]);
 
     // Find session name for the confirm dialog
     const confirmSession = confirmEndSessionId
@@ -1108,7 +1133,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                             variant="ghost"
                             size="icon"
                             className="h-9 w-9 md:h-8 md:w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
-                            onClick={onNewSession}
+                            onClick={() => onNewSession()}
                             aria-label="New session"
                             title="New session"
                         >
@@ -1119,6 +1144,36 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             )}
 
             <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+                {sessionModes.length > 0 && !showRunners && !selectMode && (
+                    <div className="px-3 pt-2 flex-shrink-0 space-y-2">
+                        <div className="flex rounded-md border border-sidebar-border/60 p-0.5" role="group" aria-label="Session mode">
+                            <button
+                                className={cn("flex-1 rounded px-2 py-1 text-xs font-medium", !selectedMode && "bg-sidebar-accent text-sidebar-foreground")}
+                                onClick={() => setSelectedMode(null)}
+                                aria-pressed={!selectedMode}
+                            >
+                                <Code2 className="h-3.5 w-3.5" />
+                                Code
+                            </button>
+                            {sessionModes.map((mode) => (
+                                <button
+                                    key={mode.id}
+                                    className={cn("flex-1 rounded px-2 py-1 text-xs font-medium", selectedMode === mode.id && "bg-sidebar-accent text-sidebar-foreground")}
+                                    onClick={() => setSelectedMode(mode.id)}
+                                    aria-pressed={selectedMode === mode.id}
+                                >
+                                    {mode.icon ? <DynamicLucideIcon name={mode.icon} className="h-3.5 w-3.5" /> : <FolderOpen className="h-3.5 w-3.5" />}
+                                    {mode.label}
+                                </button>
+                            ))}
+                        </div>
+                        <Button className="w-full" variant="outline" size="sm" onClick={() => onNewSession(activeMode?.workspace)}>
+                            <Plus className="h-4 w-4" />
+                            {activeMode ? `New in ${activeMode.label}` : "New"}
+                        </Button>
+                    </div>
+                )}
+
                 {/* Sessions / Runners nav tabs */}
                 <div className="mx-3 mt-2 mb-1 flex-shrink-0 flex border-b border-sidebar-border/50">
                     <button

@@ -5,6 +5,8 @@
  */
 
 import { describe, it, expect } from "bun:test";
+import { filterSessionsByMode } from "./SessionSidebar";
+import type { ServiceModeDef } from "@pizzapi/protocol";
 
 // ── Minimal type stubs ────────────────────────────────────────────────────────
 
@@ -47,6 +49,23 @@ function makeProjectComparator(pinnedSessionIds: Set<string>) {
         return latestTs(b) - latestTs(a);
     };
 }
+
+describe("session mode filtering", () => {
+    const modes: ServiceModeDef[] = [{ id: "work", label: "Work", workspace: "/work" }];
+    const sessions = [
+        { sessionId: "code", cwd: "/code" },
+        { sessionId: "work", cwd: "/work" },
+        { sessionId: "work-child", cwd: "/work-other" },
+    ];
+
+    it("matches a selected mode by exact cwd", () => {
+        expect(filterSessionsByMode(sessions, "work", modes).map((s) => s.sessionId)).toEqual(["work"]);
+    });
+
+    it("keeps all unclaimed sessions in Code mode", () => {
+        expect(filterSessionsByMode(sessions, null, modes).map((s) => s.sessionId)).toEqual(["code", "work-child"]);
+    });
+});
 
 // ── Session sort tests ────────────────────────────────────────────────────────
 
