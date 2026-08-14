@@ -1,4 +1,5 @@
 import * as React from "react";
+import { loadAgents } from "./agent-loader";
 
 export interface AgentEntry {
   name: string;
@@ -59,12 +60,9 @@ export function useAgentLoading({
     // Fetch full agent data in background (REST list doesn't include content,
     // but this keeps the list current and enables content-based spawning)
     setAgentsLoading(true);
-    fetch(`/api/runners/${encodeURIComponent(runnerId)}/agents`, { credentials: "include" })
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
-      .then((data: unknown) => {
+    loadAgents(runnerId)
+      .then((agents) => {
         if (stale) return;
-        const raw = data as { agents?: AgentEntry[] };
-        const agents = Array.isArray(raw?.agents) ? raw.agents : [];
         setAgentsList(agents);
       })
       .catch(() => {
