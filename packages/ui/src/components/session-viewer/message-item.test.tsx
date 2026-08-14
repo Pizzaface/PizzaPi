@@ -55,7 +55,7 @@ describe("SessionMessageItem custom messages", () => {
     expect(quoted).toBe("Select this sentence");
   });
 
-  test("quotes text parts from an assistant message when nothing is selected", () => {
+  test("does not quote an assistant message when nothing is selected", () => {
     const message: RelayMessage = {
       key: "assistant-quote-parts",
       role: "assistant",
@@ -78,8 +78,7 @@ describe("SessionMessageItem custom messages", () => {
 
     fireEvent.click(view.getByRole("button", { name: "Quote" }));
 
-    expect(quoted).not.toContain("## 🤖 Assistant");
-    expect(quoted).toContain("First part second part");
+    expect(quoted).toBe("");
   });
 
   test("shows the full custom message key and collapses content by default", () => {

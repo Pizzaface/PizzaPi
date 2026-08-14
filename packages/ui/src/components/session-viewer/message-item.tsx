@@ -20,22 +20,6 @@ import { useSessionActions } from "@/components/session-viewer/session-actions-c
 
 // ── SessionMessageItem ───────────────────────────────────────────────────────
 
-function getQuoteText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-
-  return content
-    .filter(
-      (part): part is { type: "text"; text: string } =>
-        typeof part === "object" &&
-        part !== null &&
-        (part as { type?: unknown }).type === "text" &&
-        typeof (part as { text?: unknown }).text === "string",
-    )
-    .map((part) => part.text)
-    .join("");
-}
-
 interface SessionMessageItemProps {
   message: RelayMessage;
   activeToolCalls?: Map<string, string>;
@@ -72,11 +56,14 @@ export const SessionMessageItem = React.memo(
     const quoteMessage = React.useCallback(() => {
       const content = quoteContentRef.current;
       const selection = window.getSelection();
-      const selected = selection?.toString().trim();
-      const hasSelection = !!selection?.rangeCount && !!content && content.contains(selection.getRangeAt(0).commonAncestorContainer);
-      const text = hasSelection && selected ? selected : getQuoteText(message.content);
+      if (!content || !selection?.rangeCount) return;
+
+      const range = selection.getRangeAt(0);
+      const text = selection.toString().trim();
+      if (!text || !content.contains(range.commonAncestorContainer)) return;
+
       sessionActions?.quote?.(text, message.timestamp);
-    }, [message]);
+    }, [message.timestamp, sessionActions]);
 
     // System messages with structured command result data → standalone card
     if (message.role === "system" && isCommandResult(message.content)) {
