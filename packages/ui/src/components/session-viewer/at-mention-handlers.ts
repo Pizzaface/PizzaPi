@@ -1,4 +1,5 @@
 import * as React from "react";
+import { loadAgents } from "./agent-loader";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 
 export interface AtMentionState {
@@ -82,14 +83,9 @@ export function useAtMentionHandlers(
     if (atMentionAgentsFetchedForRef.current === runnerId) return;
     atMentionAgentsFetchedForRef.current = runnerId;
     let stale = false;
-    fetch(`/api/runners/${encodeURIComponent(runnerId)}/agents`, { credentials: "include" })
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
-      .then((data: unknown) => {
+    loadAgents(runnerId)
+      .then((agents) => {
         if (stale) return;
-        const raw = data as { agents?: Array<{ name: string; description?: string }> };
-        const agents = Array.isArray(raw?.agents)
-          ? raw.agents.map((a) => ({ name: a.name, description: a.description }))
-          : [];
         setAtMentionAgents(agents);
       })
       .catch(() => {
