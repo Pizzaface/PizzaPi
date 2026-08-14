@@ -97,6 +97,14 @@ The relay only reads the `Host` header, so any TLS-terminating proxy works.
 Trust Caddy's root CA once per device. When `PIZZAPI_TUNNEL_DOMAIN` is unset,
 tunnels fall back to the path-prefix schemes above.
 
+<Aside type="caution">
+  Use a **separate registrable domain** from the relay itself (e.g. relay on
+  `pizza.example.com`, tunnels on `t.example.net`). Host tunnels forward the
+  app's own cookies end-to-end, so the tunnel domain must not share the relay's
+  cookie scope — the relay refuses tunnel domains that overlap the
+  `PIZZAPI_BASE_URL` host. `*.localhost` is exempt for local development.
+</Aside>
+
 ---
 
 ## Tools

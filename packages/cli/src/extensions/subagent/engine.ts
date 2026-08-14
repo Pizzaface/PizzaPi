@@ -353,6 +353,10 @@ export async function runSingleAgent(
 
         // Subscribe to events to track messages and usage
         const unsubscribe = session.subscribe((event) => {
+            // Stream to the relay child session the same way a linked session
+            // does; snapshots below stay as hydration for late/reconnecting viewers.
+            mirror?.forward(event);
+
             if (event.type === "message_end" && "message" in event) {
                 const msg = event.message as Message;
                 currentResult.messages.push(msg);

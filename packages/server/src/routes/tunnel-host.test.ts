@@ -10,10 +10,13 @@ import {
 import { proxyTunnelRequestViaRelay } from "./tunnel";
 
 const ORIGINAL_DOMAIN = process.env.PIZZAPI_TUNNEL_DOMAIN;
+const ORIGINAL_BASE_URL = process.env.PIZZAPI_BASE_URL;
 
 afterEach(() => {
     if (ORIGINAL_DOMAIN === undefined) delete process.env.PIZZAPI_TUNNEL_DOMAIN;
     else process.env.PIZZAPI_TUNNEL_DOMAIN = ORIGINAL_DOMAIN;
+    if (ORIGINAL_BASE_URL === undefined) delete process.env.PIZZAPI_BASE_URL;
+    else process.env.PIZZAPI_BASE_URL = ORIGINAL_BASE_URL;
     _injectRedisForTesting(null);
 });
 
@@ -44,6 +47,21 @@ describe("getTunnelHostConfig", () => {
         expect(getTunnelHostConfig()).toEqual({ scheme: "http", host: "t.localhost", portSuffix: "" });
         process.env.PIZZAPI_TUNNEL_DOMAIN = "t.example.com";
         expect(getTunnelHostConfig()).toEqual({ scheme: "https", host: "t.example.com", portSuffix: "" });
+    });
+
+    test("refuses a tunnel domain overlapping the relay host (cookie scope)", () => {
+        process.env.PIZZAPI_BASE_URL = "https://pizza.example.com";
+        process.env.PIZZAPI_TUNNEL_DOMAIN = "t.pizza.example.com";
+        expect(getTunnelHostConfig()).toBeNull();
+        process.env.PIZZAPI_TUNNEL_DOMAIN = "pizza.example.com";
+        expect(getTunnelHostConfig()).toBeNull();
+        // Sibling registrable domain — allowed.
+        process.env.PIZZAPI_TUNNEL_DOMAIN = "t.example.net";
+        expect(getTunnelHostConfig()).not.toBeNull();
+        // *.localhost is exempt for local dev.
+        process.env.PIZZAPI_BASE_URL = "http://localhost:7492";
+        process.env.PIZZAPI_TUNNEL_DOMAIN = "t.localhost";
+        expect(getTunnelHostConfig()).not.toBeNull();
     });
 
     test("parses explicit scheme and port", () => {

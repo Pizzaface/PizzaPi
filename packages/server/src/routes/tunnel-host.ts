@@ -56,6 +56,33 @@ export interface TunnelLabelRecord {
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
+let overlapWarned = false;
+
+/**
+ * Host tunnels forward the app's cookies end-to-end, so the tunnel domain must
+ * not sit in the relay host's cookie scope (or vice versa): parent-domain
+ * relay/SSO cookies would leak to local apps, and apps could toss cookies back
+ * at the relay. Fail closed on direct subtree overlap with PIZZAPI_BASE_URL.
+ *
+ * ponytail: dot-boundary suffix check, not full eTLD+1 — disjoint subtrees of a
+ * shared registrable domain (app.example.com vs t.example.com) aren't caught;
+ * the docs require a separate registrable domain. Add a public-suffix list if
+ * that ever bites. *.localhost is exempt (dev quick start; auth cookies are
+ * host-only and exposure is local).
+ */
+function overlapsRelayHost(host: string): boolean {
+    if (host === "localhost" || host.endsWith(".localhost")) return false;
+    const base = process.env.PIZZAPI_BASE_URL;
+    if (!base) return false;
+    let relayHost: string;
+    try {
+        relayHost = new URL(base).hostname.toLowerCase();
+    } catch {
+        return false;
+    }
+    return host === relayHost || host.endsWith(`.${relayHost}`) || relayHost.endsWith(`.${host}`);
+}
+
 export function getTunnelHostConfig(): TunnelHostConfig | null {
     const raw = process.env.PIZZAPI_TUNNEL_DOMAIN?.trim();
     if (!raw) return null;
@@ -73,6 +100,17 @@ export function getTunnelHostConfig(): TunnelHostConfig | null {
 
     if (!scheme) {
         scheme = host === "localhost" || host.endsWith(".localhost") ? "http" : "https";
+    }
+
+    if (overlapsRelayHost(host)) {
+        if (!overlapWarned) {
+            overlapWarned = true;
+            log.error(
+                `PIZZAPI_TUNNEL_DOMAIN (${host}) overlaps the relay host from PIZZAPI_BASE_URL — `
+                + "host tunnels disabled. Use a separate registrable domain so relay cookies cannot leak to tunneled apps.",
+            );
+        }
+        return null;
     }
 
     return { scheme, host, portSuffix };
