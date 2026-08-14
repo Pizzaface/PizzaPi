@@ -71,6 +71,8 @@ export interface RunnerInfo {
   triggerDefs?: ServiceTriggerDef[];
   /** Sigil types declared by services on this runner (from service_announce). */
   sigilDefs?: ServiceSigilDef[];
+  /** Session modes declared by services on this runner. */
+  sessionModes?: ServiceModeDef[];
   /** Active warnings from the runner daemon (e.g. tunnel connection failures). */
   warnings?: string[];
 }
@@ -232,6 +234,19 @@ export type TriggerFilterMode = "and" | "or";
  * Declared in a service's sigils.json (or manifest.json) and forwarded via
  * service_announce so the UI knows how to render [[type:id]] tokens.
  */
+export interface ServiceModeDef {
+  /** Stable mode identifier within the runner. */
+  id: string;
+  /** Human-readable mode label. */
+  label: string;
+  /** Optional Lucide icon name. */
+  icon?: string;
+  /** Home-relative workspace path, resolved by the runner. */
+  workspace: string;
+  /** Service that declared this mode. */
+  serviceId?: string;
+}
+
 export interface ServiceSigilDef {
   /** Sigil type name, e.g. "pr", "commit", "cost" */
   type: string;
@@ -294,6 +309,8 @@ export interface ServiceAnnounceData {
   triggerDefs?: ServiceTriggerDef[];
   /** Sigil types declared by services on this runner. */
   sigilDefs?: ServiceSigilDef[];
+  /** Session modes declared by services on this runner. */
+  sessionModes?: ServiceModeDef[];
   /** Runner ID associated with this announce when the data was routed via a session. */
   runnerId?: string;
   /** Hint that the payload is a reference to runner metadata, not a standalone source. */
@@ -308,6 +325,7 @@ export interface ServiceAnnounceDelta {
     panels: ServicePanelInfo[];
     triggerDefs: ServiceTriggerDef[];
     sigilDefs: ServiceSigilDef[];
+    sessionModes?: ServiceModeDef[];
   };
   removed: {
     /** Service IDs that were removed. */
@@ -318,11 +336,14 @@ export interface ServiceAnnounceDelta {
     triggerDefs: string[];
     /** Sigil types that were removed. */
     sigilDefs: string[];
+    /** Session mode IDs that were removed. */
+    sessionModes?: string[];
   };
   updated: {
     panels: ServicePanelInfo[];
     triggerDefs: ServiceTriggerDef[];
     sigilDefs: ServiceSigilDef[];
+    sessionModes?: ServiceModeDef[];
   };
   /** Runner ID associated with this delta when routed via a session. */
   runnerId?: string;

@@ -1,4 +1,4 @@
-import type { ServiceSigilDef, ServiceTriggerDef } from "@pizzapi/protocol";
+import type { ServiceModeDef, ServiceSigilDef, ServiceTriggerDef } from "@pizzapi/protocol";
 
 /**
  * `pi.pizzapi` package manifest overlay — schema version 1.
@@ -23,6 +23,7 @@ export interface PizzaPiServiceDeclaration {
   };
   triggers?: string | ServiceTriggerDef[];
   sigils?: string | ServiceSigilDef[];
+  sessionModes?: ServiceModeDef[];
 }
 
 export type PanelVariable = "PWD" | "SESSION_ID" | "HOME" | "USER" | "PROJECT_DIR";

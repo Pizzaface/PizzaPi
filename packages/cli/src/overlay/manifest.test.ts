@@ -365,6 +365,19 @@ describe("readOverlayManifest", () => {
         expect(result.issues.some((i) => i.field === "services[0].triggers[0].params[1].multiselect")).toBe(true);
     });
 
+    test("valid sessionModes are accepted and malformed modes are actionable", () => {
+        const validDir = fixturePkg({ schemaVersion: 1, services: [{ id: "svc", label: "x", entry: "./service.ts", sessionModes: [{ id: "work", label: "Work", workspace: "~/Documents/Workspace" }] }] });
+        dirs.push(validDir);
+        const valid = readOverlayManifest(validDir, provenance);
+        expect(valid.overlay?.services?.[0].sessionModes).toHaveLength(1);
+        const invalidDir = fixturePkg({ schemaVersion: 1, services: [{ id: "svc", label: "x", entry: "./service.ts", sessionModes: [{ id: "work", label: "Work", workspace: "~/x" }, { id: "work", label: "", workspace: "" }] }] });
+        dirs.push(invalidDir);
+        const invalid = readOverlayManifest(invalidDir, provenance);
+        expect(invalid.issues.some((i) => i.field.endsWith("sessionModes[1].id") && i.message.includes("duplicate"))).toBe(true);
+        expect(invalid.issues.some((i) => i.field.endsWith("sessionModes[1].label"))).toBe(true);
+        expect(invalid.issues.some((i) => i.field.endsWith("sessionModes[1].workspace"))).toBe(true);
+    });
+
     test("valid inline trigger and sigil definitions are accepted", () => {
         const dir = fixturePkg({
             schemaVersion: 1,

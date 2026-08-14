@@ -3,7 +3,7 @@
  * Kept in its own module so tests can import just this helper
  * without pulling in the full runner namespace and its transitive deps.
  */
-import type { ServiceAnnounceData, ServiceAnnounceDelta, ServicePanelInfo, ServiceTriggerDef, ServiceSigilDef } from "@pizzapi/protocol";
+import type { ServiceAnnounceData, ServiceAnnounceDelta, ServiceModeDef, ServicePanelInfo, ServiceTriggerDef, ServiceSigilDef } from "@pizzapi/protocol";
 
 export function chooseServiceAnnounceSeed(
     current: ServiceAnnounceData | null | undefined,
@@ -79,6 +79,10 @@ export function isSameServiceAnnounce(
             return false;
         }
     }
+
+    const aModes = a.sessionModes ?? [];
+    const bModes = b.sessionModes ?? [];
+    if (JSON.stringify(aModes) !== JSON.stringify(bModes)) return false;
 
     // Compare sigil defs
     const aSigils = a.sigilDefs ?? [];
@@ -211,6 +215,21 @@ export function computeServiceAnnounceDelta(
         if (!nextTriggerMap.has(trigger.type)) removedTriggerTypes.push(trigger.type);
     }
 
+    // Session modes — keyed by id
+    const prevModes = previous.sessionModes ?? [];
+    const nextModes = next.sessionModes ?? [];
+    const prevModeMap = new Map(prevModes.map((m) => [m.id, m]));
+    const nextModeMap = new Map(nextModes.map((m) => [m.id, m]));
+    const addedModes: ServiceModeDef[] = [];
+    const updatedModes: ServiceModeDef[] = [];
+    const removedModeIds: string[] = [];
+    for (const mode of nextModes) {
+        const prev = prevModeMap.get(mode.id);
+        if (!prev) addedModes.push(mode);
+        else if (JSON.stringify(prev) !== JSON.stringify(mode)) updatedModes.push(mode);
+    }
+    for (const mode of prevModes) if (!nextModeMap.has(mode.id)) removedModeIds.push(mode.id);
+
     // SigilDefs — keyed by type
     const prevSigils = previous.sigilDefs ?? [];
     const nextSigils = next.sigilDefs ?? [];
@@ -236,17 +255,20 @@ export function computeServiceAnnounceDelta(
             panels: addedPanels,
             triggerDefs: addedTriggers,
             sigilDefs: addedSigils,
+            sessionModes: addedModes,
         },
         removed: {
             serviceIds: removedServiceIds,
             panels: removedPanelIds,
             triggerDefs: removedTriggerTypes,
             sigilDefs: removedSigilTypes,
+            sessionModes: removedModeIds,
         },
         updated: {
             panels: updatedPanels,
             triggerDefs: updatedTriggers,
             sigilDefs: updatedSigils,
+            sessionModes: updatedModes,
         },
     };
 }
@@ -260,12 +282,15 @@ export function isEmptyDelta(delta: ServiceAnnounceDelta): boolean {
         delta.added.panels.length === 0 &&
         delta.added.triggerDefs.length === 0 &&
         delta.added.sigilDefs.length === 0 &&
+        (delta.added.sessionModes ?? []).length === 0 &&
         delta.removed.serviceIds.length === 0 &&
         delta.removed.panels.length === 0 &&
         delta.removed.triggerDefs.length === 0 &&
         delta.removed.sigilDefs.length === 0 &&
+        (delta.removed.sessionModes ?? []).length === 0 &&
         delta.updated.panels.length === 0 &&
         delta.updated.triggerDefs.length === 0 &&
-        delta.updated.sigilDefs.length === 0
+        delta.updated.sigilDefs.length === 0 &&
+        (delta.updated.sessionModes ?? []).length === 0
     );
 }

@@ -248,6 +248,7 @@ export async function discoverPackageServices(
                 ...(decl.panel ? { panel: { dir: panelDir, requires: decl.panel.requires } } : {}),
                 ...(Array.isArray(decl.triggers) && decl.triggers.length > 0 ? { triggers: decl.triggers } : {}),
                 ...(Array.isArray(decl.sigils) && decl.sigils.length > 0 ? { sigils: decl.sigils } : {}),
+                ...(Array.isArray(decl.sessionModes) && decl.sessionModes.length > 0 ? { sessionModes: decl.sessionModes } : {}),
             };
 
             services.push({

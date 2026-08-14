@@ -18,7 +18,7 @@
  * just no longer contribute runner services.
  */
 import type { ServiceHandler } from "./service-handler.js";
-import type { ServiceTriggerDef, ServiceSigilDef } from "@pizzapi/protocol";
+import type { ServiceModeDef, ServiceTriggerDef, ServiceSigilDef } from "@pizzapi/protocol";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -43,6 +43,7 @@ export interface ServiceManifest {
     triggers?: ServiceTriggerDef[];
     /** Sigil types this service defines. */
     sigils?: ServiceSigilDef[];
+    sessionModes?: ServiceModeDef[];
 }
 
 export interface ServicePluginResult {

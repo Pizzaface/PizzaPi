@@ -20,6 +20,7 @@ const DISABLED_SERVICE_IDS_KEY = "__disabledServiceIds";
 const PANELS_KEY = "__panels";
 const TRIGGER_DEFS_KEY = "__triggerDefs";
 const SIGIL_DEFS_KEY = "__sigilDefs";
+const SESSION_MODES_KEY = "__sessionModes";
 
 // Minimal mock socket with on/off/emit — uses a plain object with
 // index-writable properties so `(socket as any)[KEY] = value` works.
@@ -51,6 +52,7 @@ describe("attachServiceAnnounceListener", () => {
             panels: [{ serviceId: "github", port: 3001, label: "GitHub", icon: "git-branch" }],
             triggerDefs: [{ type: "github:pr_comment", label: "PR Comment" }],
             sigilDefs: [{ type: "pr", label: "Pull Request", serviceId: "github" }],
+            sessionModes: [{ id: "work", label: "Work", workspace: "/Users/test/work" }],
         });
 
         expect(socket[SERVICE_IDS_KEY]).toEqual(["github", "godmother"]);
@@ -58,6 +60,13 @@ describe("attachServiceAnnounceListener", () => {
         expect(socket[PANELS_KEY]).toHaveLength(1);
         expect(socket[TRIGGER_DEFS_KEY]).toHaveLength(1);
         expect(socket[SIGIL_DEFS_KEY]).toHaveLength(1);
+        expect(socket[SESSION_MODES_KEY]).toEqual([{ id: "work", label: "Work", workspace: "/Users/test/work" }]);
+        socket.emit("service_announce_delta", {
+            added: { serviceIds: [], panels: [], triggerDefs: [], sigilDefs: [], sessionModes: [{ id: "other", label: "Other", workspace: "/Users/test/other" }] },
+            updated: { panels: [], triggerDefs: [], sigilDefs: [], sessionModes: [] },
+            removed: { serviceIds: [], panels: [], triggerDefs: [], sigilDefs: [], sessionModes: ["work"] },
+        });
+        expect(socket[SESSION_MODES_KEY]).toEqual([{ id: "other", label: "Other", workspace: "/Users/test/other" }]);
     });
 
     test("clears socket cache on disconnect", () => {
@@ -93,6 +102,7 @@ describe("seedServiceCache", () => {
             panels: [{ serviceId: "github", port: 3001, label: "GitHub", icon: "git-branch" }],
             triggerDefs: [{ type: "github:pr_comment", label: "PR Comment" }],
             sigilDefs: [{ type: "pr", label: "Pull Request", serviceId: "github" }],
+            sessionModes: [{ id: "work", label: "Work", workspace: "/Users/test/work" }],
         });
 
         const next = createMockSocket();
@@ -103,6 +113,7 @@ describe("seedServiceCache", () => {
         expect(next[PANELS_KEY]).toHaveLength(1);
         expect(next[TRIGGER_DEFS_KEY]).toHaveLength(1);
         expect(next[SIGIL_DEFS_KEY]).toHaveLength(1);
+        expect(next[SESSION_MODES_KEY]).toHaveLength(1);
     });
 
     test("does not copy when prevSocket is null", () => {
