@@ -50,12 +50,12 @@ function homeDir(): string {
     return process.env.HOME || homedir();
 }
 
-function cachePath(): string {
-    return join(homeDir(), ".pizzapi", "ollama-cloud-models-cache.json");
+function cachePath(home = homeDir()): string {
+    return join(home, ".pizzapi", "ollama-cloud-models-cache.json");
 }
 
-function readCache(): OllamaCloudCacheEntry | null {
-    const path = cachePath();
+function readCache(home?: string): OllamaCloudCacheEntry | null {
+    const path = cachePath(home);
     if (!existsSync(path)) return null;
     try {
         const raw = JSON.parse(readFileSync(path, "utf-8"));
@@ -75,10 +75,10 @@ function readCache(): OllamaCloudCacheEntry | null {
     return null;
 }
 
-function writeCache(entry: OllamaCloudCacheEntry): void {
-    const dir = join(homeDir(), ".pizzapi");
+function writeCache(entry: OllamaCloudCacheEntry, home?: string): void {
+    const dir = join(home ?? homeDir(), ".pizzapi");
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-    writeFileSync(cachePath(), JSON.stringify(entry, null, 2), { mode: 0o600 });
+    writeFileSync(cachePath(home), JSON.stringify(entry, null, 2), { mode: 0o600 });
 }
 
 function isOllamaCloudModel(value: unknown): value is OllamaCloudModel {
@@ -194,12 +194,12 @@ export function registerOllamaCloudProvider(runtime: { registerProvider(provider
 }
 
 export async function fetchOllamaCloudModels(
-    { signal, force }: { signal?: AbortSignal; force?: boolean } = {},
+    { signal, force, home }: { signal?: AbortSignal; force?: boolean; home?: string } = {},
 ): Promise<OllamaCloudModel[]> {
     // force skips the freshness short-circuit so the runner's 12h refresh loop
     // always re-fetches and rewrites the cache.
     if (!force) {
-        const cached = readCache();
+        const cached = readCache(home);
         if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
             return cached.models;
         }
@@ -220,7 +220,7 @@ export async function fetchOllamaCloudModels(
         }),
     );
 
-    writeCache({ models, fetchedAt: Date.now() });
+    writeCache({ models, fetchedAt: Date.now() }, home);
     return models;
 }
 
