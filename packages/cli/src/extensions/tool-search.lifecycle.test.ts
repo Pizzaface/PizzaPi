@@ -24,7 +24,8 @@ describe("toolSearchExtension lifecycle sync", () => {
 
     mkdirSync(globalConfigDir, { recursive: true });
     mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
-    writeFileSync(join(globalConfigDir, "config.json"), JSON.stringify({}), "utf-8");
+    // allowProjectMcp: these tests exercise project-level mcpServers, which loadConfig gates on trust.
+    writeFileSync(join(globalConfigDir, "config.json"), JSON.stringify({ allowProjectMcp: true }), "utf-8");
     writeFileSync(
       join(projectDir, ".pizzapi", "config.json"),
       JSON.stringify({
