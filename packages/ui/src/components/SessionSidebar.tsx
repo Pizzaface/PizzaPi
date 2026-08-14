@@ -122,7 +122,7 @@ export function filterSessionsByMode<T extends { cwd: string; runnerId?: string 
     modeRunnerId?: string | null,
 ): T[] {
     const belongsToModeRunner = (session: T) =>
-        !modeRunnerId || session.runnerId === modeRunnerId;
+        Boolean(modeRunnerId) && session.runnerId === modeRunnerId;
     if (!selectedModeId) {
         const claimed = new Set(modes.map((mode) => mode.workspace));
         return sessions.filter((session) => !belongsToModeRunner(session) || !claimed.has(session.cwd));

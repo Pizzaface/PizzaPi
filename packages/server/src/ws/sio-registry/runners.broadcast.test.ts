@@ -436,6 +436,33 @@ describe("runners broadcast", () => {
         expect(data.panels[0].serviceId).toBe("dashboard");
     });
 
+    it("rehydrates sessionModes through the runner info broadcast path", async () => {
+        const socket = { join: mock(async () => {}), data: {} } as any;
+        const result = await registerRunner(socket, {
+            name: "modes-runner",
+            roots: [],
+            skills: [],
+            agents: [],
+            plugins: [],
+            hooks: [],
+            version: "1.0.0",
+            platform: "linux",
+            userId: "user9",
+            userName: "User Nine",
+        });
+        expect(result instanceof Error).toBe(false);
+        const runnerId = result as string;
+        const sessionModes = [{ id: "work", label: "Work", workspace: "/work", serviceId: "workspace" }];
+
+        await updateRunnerServices(runnerId, ["workspace"], undefined, undefined, undefined, undefined, sessionModes);
+
+        const updated = emitCalls.find(
+            (c) => c.namespace === "/runners" && c.event === "runner_updated",
+        );
+        expect(updated).toBeDefined();
+        expect((updated!.data as any).sessionModes).toEqual(sessionModes);
+    });
+
     it("updateRunnerServices with no panels stores empty array", async () => {
         const socket = { join: mock(async () => {}), data: {} } as any;
         const result = await registerRunner(socket, {

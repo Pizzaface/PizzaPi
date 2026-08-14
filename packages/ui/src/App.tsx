@@ -4965,7 +4965,7 @@ export function App() {
               onOpenSession={handleOpenSession}
               onNewSession={handleNewSession}
               sessionModes={sessionModes}
-              sessionModesRunnerId={activeRunnerInfo?.runnerId}
+              sessionModesRunnerId={activeSessionInfo?.runnerId}
               onClearSelection={handleClearSelection}
               onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); lifecycleClearSelection(); }}
               activeSessionId={activeSessionId}

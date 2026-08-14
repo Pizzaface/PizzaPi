@@ -53,17 +53,25 @@ function makeProjectComparator(pinnedSessionIds: Set<string>) {
 describe("session mode filtering", () => {
     const modes: ServiceModeDef[] = [{ id: "work", label: "Work", workspace: "/work" }];
     const sessions = [
-        { sessionId: "code", cwd: "/code" },
-        { sessionId: "work", cwd: "/work" },
-        { sessionId: "work-child", cwd: "/work-other" },
+        { sessionId: "code", cwd: "/code", runnerId: "runner-a" },
+        { sessionId: "work", cwd: "/work", runnerId: "runner-a" },
+        { sessionId: "work-child", cwd: "/work-other", runnerId: "runner-a" },
     ];
 
-    it("matches a selected mode by exact cwd", () => {
-        expect(filterSessionsByMode(sessions, "work", modes).map((s) => s.sessionId)).toEqual(["work"]);
+    it("fails closed when the mode runner is unknown", () => {
+        expect(filterSessionsByMode(sessions, "work", modes).map((s) => s.sessionId)).toEqual([]);
     });
 
     it("keeps all unclaimed sessions in Code mode", () => {
-        expect(filterSessionsByMode(sessions, null, modes).map((s) => s.sessionId)).toEqual(["code", "work-child"]);
+        expect(filterSessionsByMode(sessions, null, modes, "runner-a").map((s) => s.sessionId)).toEqual(["code", "work-child"]);
+    });
+
+    it("matches a selected mode by exact cwd on its runner", () => {
+        const scopedSessions = [
+            { sessionId: "runner-a", cwd: "/work", runnerId: "runner-a" },
+            { sessionId: "runner-b", cwd: "/work", runnerId: "runner-b" },
+        ];
+        expect(filterSessionsByMode(scopedSessions, "work", modes, "runner-a").map((s) => s.sessionId)).toEqual(["runner-a"]);
     });
 
     it("only claims sessions from the mode's runner", () => {
