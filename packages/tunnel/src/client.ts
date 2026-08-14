@@ -399,7 +399,7 @@ export class TunnelClient extends EventEmitter {
   }
 
   private handleRequestStart(msg: TunnelRequestStartMessage): void {
-    const { id, port, method, url: requestUrl, headers } = msg;
+    const { id, port, method, url: requestUrl, headers, preserveAuth } = msg;
 
     if (!this.exposedPorts.has(port)) {
       this.log.warn("[tunnel-client] Request for unexposed port", port);
@@ -436,9 +436,11 @@ export class TunnelClient extends EventEmitter {
     const forwardHeaders: Record<string, string> = {};
     for (const [key, value] of Object.entries(headers)) {
       const lowerKey = key.toLowerCase();
-      if (!HOP_BY_HOP.has(lowerKey) && !STRIP_AUTH.has(lowerKey)) {
-        forwardHeaders[key] = value;
-      }
+      if (HOP_BY_HOP.has(lowerKey)) continue;
+      // Host-based tunnels forward the app's own credentials (preserveAuth);
+      // path-based tunnels strip them — they may be relay credentials.
+      if (!preserveAuth && STRIP_AUTH.has(lowerKey)) continue;
+      forwardHeaders[key] = value;
     }
     forwardHeaders.host = `127.0.0.1:${port}`;
 
@@ -574,7 +576,7 @@ export class TunnelClient extends EventEmitter {
   }
 
   private handleWsOpen(msg: TunnelWsOpenMessage): void {
-    const { id, port, path, protocols, headers } = msg;
+    const { id, port, path, protocols, headers, preserveAuth } = msg;
 
     if (!this.exposedPorts.has(port)) {
       this.send({ type: "ws-error", id, message: `Port ${port} is not exposed` });
@@ -600,9 +602,9 @@ export class TunnelClient extends EventEmitter {
     const forwardHeaders: Record<string, string> = {};
     for (const [key, value] of Object.entries(headers)) {
       const lowerKey = key.toLowerCase();
-      if (!HOP_BY_HOP.has(lowerKey) && !STRIP_AUTH.has(lowerKey)) {
-        forwardHeaders[key] = value;
-      }
+      if (HOP_BY_HOP.has(lowerKey)) continue;
+      if (!preserveAuth && STRIP_AUTH.has(lowerKey)) continue;
+      forwardHeaders[key] = value;
     }
     forwardHeaders.host = `127.0.0.1:${port}`;
 

@@ -129,6 +129,7 @@ export class TunnelRelay {
       method: string;
       url: string;
       headers: Record<string, string>;
+      preserveAuth?: boolean;
     },
     callbacks: {
       onResponseStart: (statusCode: number, statusMessage: string, headers: Record<string, string | string[]>) => void;
@@ -168,6 +169,7 @@ export class TunnelRelay {
       method: request.method,
       url: request.url,
       headers: request.headers,
+      preserveAuth: request.preserveAuth,
     });
 
     return {
@@ -205,6 +207,7 @@ export class TunnelRelay {
       path: string;
       protocols?: string[];
       headers: Record<string, string>;
+      preserveAuth?: boolean;
     },
     callbacks: {
       onOpened: (protocol?: string) => void;
@@ -243,6 +246,7 @@ export class TunnelRelay {
       path: request.path,
       protocols: request.protocols,
       headers: request.headers,
+      preserveAuth: request.preserveAuth,
     });
 
     return {

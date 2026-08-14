@@ -360,6 +360,19 @@ function applyResponseHeadersByBasePath(responseHeaders: Headers, basePath: stri
     if (location) {
         responseHeaders.set("location", rewriteUrlByBasePath(location, basePath));
     }
+    if (basePath === "") {
+        // Host-based tunnel: force cookies host-only. A malicious local app
+        // could otherwise Set-Cookie with Domain=.<tunnel domain> (poisoning
+        // sibling tunnels) or a parent registrable domain shared with the
+        // relay (cookie tossing / session fixation).
+        const setCookies = responseHeaders.getSetCookie?.() ?? [];
+        if (setCookies.length > 0) {
+            responseHeaders.delete("set-cookie");
+            for (const cookie of setCookies) {
+                responseHeaders.append("set-cookie", cookie.replace(/;\s*domain=[^;]*/gi, ""));
+            }
+        }
+    }
     responseHeaders.set("x-pizzapi-tunnel", "1");
     if (allowCrossOriginFrame) responseHeaders.set("x-pizzapi-tunnel-frame", "cross-origin");
 }
@@ -487,6 +500,8 @@ function proxyTunnelRequestViaRelay(
                 method: req.method.toUpperCase(),
                 url: pathWithQuery,
                 headers: forwardHeaders,
+                // Host-based tunnels forward the app's own credentials end-to-end.
+                preserveAuth: basePath === "" || undefined,
             },
             {
                 onResponseStart: (code, _statusMessage, headers) => {
@@ -881,11 +896,16 @@ const HOP_BY_HOP_HEADERS = new Set([
 
 const STRIP_AUTH_HEADERS = new Set(["cookie", "authorization", "x-api-key", "referer"]);
 
-function buildForwardHeaders(req: Request): Record<string, string> {
+function buildForwardHeaders(req: Request, keepCredentials = false): Record<string, string> {
     const forwardHeaders: Record<string, string> = {};
     req.headers.forEach((v, k) => {
         const lk = k.toLowerCase();
-        if (!HOP_BY_HOP_HEADERS.has(lk) && !STRIP_AUTH_HEADERS.has(lk)) forwardHeaders[k] = v;
+        if (HOP_BY_HOP_HEADERS.has(lk)) return;
+        // Path-based tunnels share the relay origin — cookies/authorization may
+        // be relay credentials and must not reach the local app. Host-based
+        // tunnels have a dedicated origin: those headers belong to the app.
+        if (!keepCredentials && STRIP_AUTH_HEADERS.has(lk)) return;
+        forwardHeaders[k] = v;
     });
     return forwardHeaders;
 }

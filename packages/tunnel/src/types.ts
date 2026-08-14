@@ -31,6 +31,12 @@ export interface TunnelRequestStartMessage {
   method: string;
   url: string;
   headers: Record<string, string>;
+  /**
+   * Host-based tunnels: forward the app's own Cookie/Authorization to the
+   * local service (the tunnel origin is dedicated — those credentials belong
+   * to the app, not the relay). Old runners ignore this and keep stripping.
+   */
+  preserveAuth?: boolean;
 }
 
 export interface TunnelRequestDataMessage {
@@ -81,6 +87,8 @@ export interface TunnelWsOpenMessage {
   path: string;
   protocols?: string[];
   headers: Record<string, string>;
+  /** See TunnelRequestStartMessage.preserveAuth. */
+  preserveAuth?: boolean;
 }
 
 export interface TunnelWsOpenedMessage {

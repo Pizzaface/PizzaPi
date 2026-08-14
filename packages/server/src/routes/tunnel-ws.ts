@@ -262,12 +262,15 @@ async function handleUpgradeAsync(
         ? req.headers["sec-websocket-protocol"].split(",").map((s) => s.trim()).filter(Boolean)
         : undefined;
 
+    // Host-based tunnels (rawPathWithQuery set) run on a dedicated origin —
+    // Cookie/Authorization there belong to the tunneled app, not the relay.
+    const isHostTunnel = rawPathWithQuery !== undefined;
     const forwardHeaders: Record<string, string> = {};
     for (const [key, value] of Object.entries(req.headers)) {
         if (value === undefined) continue;
         const lowerKey = key.toLowerCase();
         if (HOP_BY_HOP.has(lowerKey)) continue;
-        if (lowerKey === "cookie" || lowerKey === "authorization" || lowerKey === "x-api-key" || lowerKey === "referer") continue;
+        if (!isHostTunnel && (lowerKey === "cookie" || lowerKey === "authorization" || lowerKey === "x-api-key" || lowerKey === "referer")) continue;
         forwardHeaders[key] = Array.isArray(value) ? value.join(", ") : value;
     }
 
@@ -328,6 +331,7 @@ async function handleUpgradeAsync(
             path: pathWithQuery,
             protocols,
             headers: forwardHeaders,
+            preserveAuth: isHostTunnel || undefined,
         },
         {
             onOpened: (protocol) => {

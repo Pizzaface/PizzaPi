@@ -236,9 +236,10 @@ export async function handleTunnelHostRequest(req: Request, url: URL): Promise<R
         return tunnelErrorResponse(`Runner ${auth.runnerId} not connected`);
     }
 
-    // Forward the path verbatim — the app owns the whole origin.
+    // Forward the path verbatim — the app owns the whole origin. Credentials
+    // (Cookie/Authorization) belong to the app on a dedicated origin — keep them.
     const pathWithQuery = `${url.pathname}${url.search}`;
-    const forwardHeaders = buildForwardHeaders(req);
+    const forwardHeaders = buildForwardHeaders(req, true);
     // Help well-behaved apps generate correct absolute URLs.
     forwardHeaders["x-forwarded-host"] = url.host;
     forwardHeaders["x-forwarded-proto"] = config.scheme;

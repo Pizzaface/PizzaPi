@@ -224,6 +224,15 @@ describe("passthrough proxy mode (basePath \"\")", () => {
         expect(res.headers.get("location")).toBe("/next");
     });
 
+    test("strips Domain attributes from Set-Cookie — cookies must stay host-only", async () => {
+        const res = await runProxy("", "text/plain", {
+            "set-cookie": "session=abc; Domain=.t.example.com; Path=/; HttpOnly",
+        });
+        const cookies = res.headers.getSetCookie();
+        expect(cookies).toHaveLength(1);
+        expect(cookies[0]).toBe("session=abc; Path=/; HttpOnly");
+    });
+
     test("marks the response for cross-origin framing", async () => {
         const res = await runProxy("ok", "text/plain");
         expect(res.headers.get("x-pizzapi-tunnel")).toBe("1");

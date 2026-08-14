@@ -130,6 +130,7 @@ async function proxyHttpRequestThroughTunnel(
     url?: string;
     headers?: Record<string, string>;
     requestBody?: Buffer;
+    preserveAuth?: boolean;
   },
 ): Promise<{
   statusCode: number;
@@ -156,6 +157,7 @@ async function proxyHttpRequestThroughTunnel(
         method: options.method ?? "GET",
         url: options.url ?? "/",
         headers: options.headers ?? {},
+        preserveAuth: options.preserveAuth,
       },
       {
         onResponseStart(code, message, responseHeaders) {
@@ -404,6 +406,24 @@ describe("Streaming tunnel integration", () => {
     expect(response.statusMessage).toBe("Bad Gateway");
     expect(response.body.toString("utf-8")).toBe(`Local service not available on port ${unusedPort}`);
   });
+  test("cookie/authorization stripped by default, forwarded with preserveAuth", async () => {
+    const seen: Array<{ cookie?: string; auth?: string }> = [];
+    localHttpServer = http.createServer((req, res) => {
+      seen.push({ cookie: req.headers.cookie, auth: req.headers.authorization });
+      res.writeHead(200);
+      res.end("ok");
+    });
+    const localPort = await listen(localHttpServer);
+    await startRelayAndClient([localPort]);
+
+    const credHeaders = { cookie: "app=1", authorization: "Bearer tok" };
+    await proxyHttpRequestThroughTunnel(localPort, { id: "req-strip", headers: credHeaders });
+    await proxyHttpRequestThroughTunnel(localPort, { id: "req-keep", headers: credHeaders, preserveAuth: true });
+
+    expect(seen[0]).toEqual({ cookie: undefined, auth: undefined });
+    expect(seen[1]).toEqual({ cookie: "app=1", auth: "Bearer tok" });
+  });
+
   test("HTTPS local target is auto-detected and proxied (self-signed)", async () => {
     let seenMethod = "";
     const localHttpsServer = https.createServer(
