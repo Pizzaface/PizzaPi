@@ -62,8 +62,8 @@ You can also override any setting with **environment variables**.
   // Must be in the GLOBAL config (project configs cannot self-authorize).
   "allowProjectHooks": false,
 
-  // Trust gate: suppress the security warning for project-local MCP servers.
-  // Project MCP servers are loaded by default (with a warning); set this to true to silence.
+  // Trust gate: allow project-local MCP servers to load.
+  // Project MCP servers are excluded by default; set this to true to enable loading.
   // Must be in the GLOBAL config.
   "allowProjectMcp": false,
 
@@ -144,7 +144,7 @@ You can also override any setting with **environment variables**.
 | `hooks` | `object` | — | Lifecycle hook scripts. See [Hooks](/PizzaPi/customization/hooks/). |
 | `envOverrides` | `Record<string, string>` | — | Environment variables to inject into runner worker sessions. |
 | `allowProjectHooks` | `boolean` | `false` | Trust gate: allow project-local hooks to run. **Global config only.** |
-| `allowProjectMcp` | `boolean` | `false` | Silences the warning for project-local MCP server definitions. **Global config only.** |
+| `allowProjectMcp` | `boolean` | `false` | Allows project-local MCP server definitions to load; otherwise they are excluded. **Global config only.** |
 | `trustedPlugins` | `string[]` | `[]` | Trusted Claude Code plugin paths. **Global config only.** Managed via `pizza plugins trust`. |
 | `disabledMcpServers` | `string[]` | `[]` | MCP server names to skip during initialization. Both global and project lists are merged (union). |
 | `oauthClientName` | `string` | `"PizzaPi"` | Global default `client_name` for MCP OAuth registration. Can also be set per-server in `mcpServers` entries. Per-server values take precedence. See [Client Name Override](/PizzaPi/customization/mcp-servers/#client-name-override). |
@@ -341,7 +341,7 @@ Every config option can also be set as an environment variable. Environment vari
 | `PIZZAPI_API_KEY` | `apiKey` | |
 | `PIZZAPI_RELAY_URL` | `relayUrl` | Set to `off` to disable relay for this invocation |
 | `PIZZAPI_ALLOW_PROJECT_HOOKS` | — | Set to `1` to enable project-local hooks |
-| `PIZZAPI_ALLOW_PROJECT_MCP` | — | Set to `1` to silence the project-local MCP warning |
+| `PIZZAPI_ALLOW_PROJECT_MCP` | — | Set to `1` to enable loading project-local MCP servers |
 | `PIZZAPI_NO_MCP` | — | Set to `1` to skip MCP servers ([Safe Mode](/PizzaPi/security/sandbox/)) |
 | `PIZZAPI_NO_PLUGINS` | — | Set to `1` to skip plugin loading ([Safe Mode](/PizzaPi/security/sandbox/)) |
 | `PIZZAPI_NO_HOOKS` | — | Set to `1` to skip hook execution ([Safe Mode](/PizzaPi/security/sandbox/)) |
