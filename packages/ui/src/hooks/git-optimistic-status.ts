@@ -26,7 +26,7 @@ export function cloneStatusSnapshot(status: GitStatus | null): GitStatus | null 
     };
 }
 
-function applyOptimisticStage(change: GitChange): GitChange {
+function applyOptimisticStage(change: GitChange): GitChange | null {
     if (!hasUnstagedChanges(change.status)) return change;
 
     if (change.status === "??") {
@@ -39,6 +39,11 @@ function applyOptimisticStage(change: GitChange): GitChange {
     const worktreeStatus = change.status[1];
     if (worktreeStatus === " " || worktreeStatus === "?" || worktreeStatus === "!") {
         return change;
+    }
+
+    // Staging a deletion replaces the index state; an added-then-deleted path disappears.
+    if (worktreeStatus === "D") {
+        return indexStatus === "A" ? null : { ...change, status: "D " };
     }
 
     const hasExistingIndexStatus = indexStatus !== " " && indexStatus !== "?" && indexStatus !== "!";

@@ -39,11 +39,13 @@ describe("applyOptimisticMutation", () => {
         ]);
     });
 
-    test("optimistically stageAll stages all unstaged changes", () => {
+    test("optimistically stageAll stages mixed index/worktree changes like Git", () => {
         const status = makeStatus([
-            { status: " M", path: "src/a.ts" },
-            { status: "MM", path: "src/b.ts" },
+            { status: "MD", path: "src/modified-then-deleted.ts" },
+            { status: "MM", path: "src/modified-twice.ts" },
+            { status: "AD", path: "src/added-then-deleted.ts" },
             { status: "AM", path: "src/already-added.ts" },
+            { status: " M", path: "src/a.ts" },
             { status: "??", path: "src/c.ts" },
             { status: "M ", path: "src/staged.ts" },
         ]);
@@ -54,9 +56,10 @@ describe("applyOptimisticMutation", () => {
         });
 
         expect(next?.changes).toEqual([
-            { status: "M ", path: "src/a.ts" },
-            { status: "M ", path: "src/b.ts" },
+            { status: "D ", path: "src/modified-then-deleted.ts" },
+            { status: "M ", path: "src/modified-twice.ts" },
             { status: "A ", path: "src/already-added.ts" },
+            { status: "M ", path: "src/a.ts" },
             { status: "A ", path: "src/c.ts" },
             { status: "M ", path: "src/staged.ts" },
         ]);
