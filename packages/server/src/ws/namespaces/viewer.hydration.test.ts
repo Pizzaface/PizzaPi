@@ -24,6 +24,7 @@ function createMockSocket(): { emit: ReturnType<typeof mock>; calls: EmittedCall
 function createDeps(overrides: Partial<ViewerCacheDeps> = {}): ViewerCacheDeps {
     return {
         getCachedRelayEventsAfterSeq: overrides.getCachedRelayEventsAfterSeq ?? mock(async () => [] as CachedRelayEvent[]),
+        getLatestCachedRelayEventSeq: overrides.getLatestCachedRelayEventSeq ?? mock(async () => null),
         getLatestCachedSnapshotEvent: overrides.getLatestCachedSnapshotEvent ?? mock(async () => null),
     };
 }
@@ -111,18 +112,31 @@ describe("hydrateViewerFromCache — delta resume path", () => {
         expect(getLatestCachedSnapshotEvent).not.toHaveBeenCalled();
     });
 
-    test("returns false (runner recovery) when delta returns no events after lastSeq", async () => {
-        // When lastSeq is provided but delta replay yields nothing, we must NOT fall back
-        // to a snapshot — it has no seq and could roll back the client transcript.
-        // Return false so the caller triggers runner-driven recovery instead.
-        const snapshot = { type: "session_active", state: { messages: [] } };
+    test("returns true without emitting when the client is already at the latest seq", async () => {
+        const getLatestCachedRelayEventSeq = mock(async () => 5);
         const deps = createDeps({
             getCachedRelayEventsAfterSeq: mock(async () => []),
-            getLatestCachedSnapshotEvent: mock(async () => ({ event: snapshot, eventsAfter: [] })),
+            getLatestCachedRelayEventSeq,
         });
 
         const { emit, calls } = createMockSocket();
         const result = await hydrateViewerFromCache({ emit }, "sess-011", { lastSeq: 5 }, deps);
+
+        expect(result).toBe(true);
+        expect(calls.length).toBe(0);
+        expect(getLatestCachedRelayEventSeq).toHaveBeenCalledWith("sess-011");
+    });
+
+    test("returns false for a genuine gap when the cache has newer events", async () => {
+        const snapshot = { type: "session_active", state: { messages: [] } };
+        const deps = createDeps({
+            getCachedRelayEventsAfterSeq: mock(async () => []),
+            getLatestCachedRelayEventSeq: mock(async () => 8),
+            getLatestCachedSnapshotEvent: mock(async () => ({ event: snapshot, eventsAfter: [] })),
+        });
+
+        const { emit, calls } = createMockSocket();
+        const result = await hydrateViewerFromCache({ emit }, "sess-012", { lastSeq: 5 }, deps);
 
         expect(result).toBe(false);
         expect(calls.length).toBe(0);

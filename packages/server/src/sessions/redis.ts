@@ -190,6 +190,15 @@ export async function getCachedRelayEvents(sessionId: string): Promise<CachedRel
  * This avoids parsing the entire event list on each viewer switch when the
  * newest snapshot is near the tail (common case).
  */
+export async function getLatestCachedRelayEventSeq(sessionId: string): Promise<number | null> {
+    const events = await getCachedRelayEvents(sessionId);
+    for (let index = events.length - 1; index >= 0; index--) {
+        const event = events[index];
+        if (event && isSequencedCachedRelayEvent(event)) return event.seq;
+    }
+    return null;
+}
+
 export async function getCachedRelayEventsAfterSeq(
     sessionId: string,
     afterSeq: number,

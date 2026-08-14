@@ -463,6 +463,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                     lastState: freshSession.lastState,
                     snapshotOverlay: freshSession.snapshotOverlay,
                     chunkedPending: false,
+                    latestSeq: freshSeq,
                 });
                 if (snapshotResult) {
                     // Cache hit — viewer is fully hydrated.  Suppress the
