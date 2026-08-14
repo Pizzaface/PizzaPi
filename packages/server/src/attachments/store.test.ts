@@ -1,5 +1,25 @@
-import { describe, expect, test } from "bun:test";
-import { normalizeExtractedImageMimeType, sanitizeFilename, sanitizeStoredFilename, attachmentMaxFileSizeBytes } from "./store";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+const tempDir = mkdtempSync(join(tmpdir(), "pizzapi-attachments-"));
+process.env.AUTH_DB_PATH = join(tempDir, "auth.db");
+process.env.PIZZAPI_ATTACHMENT_DIR = join(tempDir, "uploads");
+
+const store = await import("./store.js");
+const { normalizeExtractedImageMimeType, sanitizeFilename, sanitizeStoredFilename, attachmentMaxFileSizeBytes } = store;
+const { createTestAuthContext, runWithAuthContext } = await import("../auth.js");
+const authContext = createTestAuthContext({ dbPath: process.env.AUTH_DB_PATH });
+await runWithAuthContext(authContext, () => store.ensureExtractedAttachmentTable());
+
+// A separate module instance provides the fresh in-memory Map used after restart.
+const restartedStore = await (async (specifier: string) => import(specifier))("./store.js?restart");
+
+afterAll(async () => {
+    await authContext.db.destroy();
+    rmSync(tempDir, { recursive: true, force: true });
+});
 
 describe("normalizeExtractedImageMimeType", () => {
     test("passes through plain image types", () => {
@@ -112,5 +132,32 @@ describe.skip("attachmentMaxFileSizeBytes", () => {
         } else {
             delete process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
         }
+    });
+});
+
+describe("attachment metadata persistence", () => {
+    test("rehydrates uploaded metadata into a fresh store after a simulated restart", async () => {
+        const uploaded = await runWithAuthContext(authContext, () => store.storeSessionAttachment({
+            sessionId: "session-restart-test",
+            ownerUserId: "user-restart-test",
+            uploaderUserId: "user-restart-test",
+            file: new File(["attachment contents"], "report.txt", { type: "text/plain" }),
+        }));
+
+        const loaded = await runWithAuthContext(authContext, async () => {
+            expect(await restartedStore.rehydrateAttachments()).toBe(1);
+            return restartedStore.getStoredAttachment(uploaded.attachmentId);
+        });
+
+        expect(loaded).toMatchObject({
+            attachmentId: uploaded.attachmentId,
+            sessionId: "session-restart-test",
+            ownerUserId: "user-restart-test",
+            uploaderUserId: "user-restart-test",
+            filename: "report.txt",
+            mimeType: uploaded.mimeType,
+            size: uploaded.size,
+            filePath: uploaded.filePath,
+        });
     });
 });
