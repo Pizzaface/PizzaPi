@@ -10,6 +10,43 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { pathSegments } from "@/lib/path";
 
+export interface BreadcrumbSegment {
+    label: string;
+    path: string;
+}
+
+export function breadcrumbSegments(currentPath: string): BreadcrumbSegment[] {
+    const parts = pathSegments(currentPath);
+    const windows = currentPath.includes("\\");
+    if (windows && /^[A-Za-z]:$/.test(parts[0] ?? "")) {
+        const separator = "\\";
+        const result: BreadcrumbSegment[] = [{ label: parts[0], path: `${parts[0]}${separator}` }];
+        let acc = `${parts[0]}${separator}`;
+        for (const part of parts.slice(1)) {
+            acc += `${part}${separator}`;
+            result.push({ label: part, path: acc.slice(0, -1) });
+        }
+        return result;
+    }
+
+    const result: BreadcrumbSegment[] = [{ label: "/", path: "/" }];
+    let acc = "";
+    for (const part of parts) {
+        acc += `/${part}`;
+        result.push({ label: part, path: acc });
+    }
+    return result;
+}
+
+export function parentPath(currentPath: string): string {
+    const windows = currentPath.includes("\\");
+    if (currentPath === "/" || (windows && /^[A-Za-z]:\\?$/.test(currentPath))) return currentPath;
+
+    const parent = currentPath.replace(/[\\/][^\\/]+[\\/]?$/, "");
+    if (windows && /^[A-Za-z]:$/.test(parent)) return `${parent}${"\\"}`;
+    return parent || (windows ? `${pathSegments(currentPath)[0] ?? ""}${"\\"}` : "/");
+}
+
 export interface FolderBrowserProps {
     runnerId: string;
     /** Called when the user selects (confirms) a directory. */
@@ -83,22 +120,10 @@ export function FolderBrowser({
     }
 
     function navigateUp() {
-        if (currentPath === "/") return;
-        const parent = currentPath.replace(/\/[^/]+\/?$/, "") || "/";
-        navigateTo(parent);
+        navigateTo(parentPath(currentPath));
     }
 
-    // Build breadcrumb segments
-    const segments = React.useMemo(() => {
-        const parts = pathSegments(currentPath);
-        const result: { label: string; path: string }[] = [{ label: "/", path: "/" }];
-        let acc = "";
-        for (const part of parts) {
-            acc += "/" + part;
-            result.push({ label: part, path: acc });
-        }
-        return result;
-    }, [currentPath]);
+    const segments = React.useMemo(() => breadcrumbSegments(currentPath), [currentPath]);
 
     return (
         <div className="flex flex-col gap-2">
@@ -109,7 +134,7 @@ export function FolderBrowser({
                     size="sm"
                     className="h-6 w-6 p-0 flex-shrink-0"
                     onClick={navigateUp}
-                    disabled={disabled || currentPath === "/"}
+                    disabled={disabled || parentPath(currentPath) === currentPath}
                     title="Go up"
                 >
                     <ArrowUp className="h-3 w-3" />
