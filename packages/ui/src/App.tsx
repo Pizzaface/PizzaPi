@@ -68,7 +68,7 @@ import type { PanelPosition } from "@/hooks/usePanelLayout";
 import { ViewerSocketContext } from "@/lib/viewer-socket-context";
 import { getViewerVisibilityPayload } from "@/lib/viewer-visibility";
 import { HubSocketContext } from "@/lib/hub-socket-context";
-import { shouldStopViewerReconnect } from "@/lib/viewer-connection";
+import { resetStaleBaselineOnVisibilityChange, shouldStopViewerReconnect } from "@/lib/viewer-connection";
 import { mapUserError } from "@/lib/user-error-message";
 import { classifySessionInput } from "@/lib/session-empty-state";
 import { getConfirmedMetaSubscriptionTargets } from "@/lib/meta-subscriptions";
@@ -807,7 +807,14 @@ export function App() {
   const STALE_CHECK_INTERVAL_MS = 15_000;
 
   React.useEffect(() => {
-    const handleVisibilityChange = () => setIsPageHidden(document.visibilityState === "hidden");
+    const handleVisibilityChange = () => {
+      lastViewerEventAtRef.current = resetStaleBaselineOnVisibilityChange(
+        document.visibilityState,
+        lastViewerEventAtRef.current,
+        Date.now(),
+      );
+      setIsPageHidden(document.visibilityState === "hidden");
+    };
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, []);
