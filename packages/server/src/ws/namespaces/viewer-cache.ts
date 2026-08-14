@@ -5,7 +5,12 @@
 // loading the full namespace module or relying on global mock.module state.
 // ============================================================================
 
-import { getCachedRelayEventsAfterSeq, getLatestCachedSnapshotEvent, type LatestCachedSnapshot } from "../../sessions/redis.js";
+import {
+    getCachedRelayEventsAfterSeq,
+    getLatestCachedRelayEventSeq,
+    getLatestCachedSnapshotEvent,
+    type LatestCachedSnapshot,
+} from "../../sessions/redis.js";
 
 type ViewerEventEmitter = {
     emit: any;
@@ -18,11 +23,13 @@ export type CachedRelayEvent = {
 
 export interface ViewerCacheDeps {
     getCachedRelayEventsAfterSeq: (sessionId: string, afterSeq: number) => Promise<CachedRelayEvent[]>;
+    getLatestCachedRelayEventSeq: (sessionId: string) => Promise<number | null>;
     getLatestCachedSnapshotEvent: (sessionId: string) => Promise<LatestCachedSnapshot | null>;
 }
 
 const defaultViewerCacheDeps: ViewerCacheDeps = {
     getCachedRelayEventsAfterSeq,
+    getLatestCachedRelayEventSeq,
     getLatestCachedSnapshotEvent,
 };
 
@@ -100,11 +107,13 @@ export async function hydrateViewerFromCache(
                 deps,
             );
             if (deltaOk) return true;
-            // Delta replay was requested but unavailable (seq gap too large /
-            // events evicted).  Return false so the caller triggers runner
-            // recovery rather than treating the snapshot fallback as
-            // authoritative — a snapshot has no seq, so it can roll back the
-            // client's transcript or cause missed updates.
+            // An empty replay is safe only when the cache confirms the client
+            // already has the newest stored event. Otherwise this is a real
+            // gap (or an unavailable cache), so runner recovery is required.
+            const latestSeq = await deps.getLatestCachedRelayEventSeq(sessionId);
+            if (latestSeq === opts.lastSeq) return true;
+            // A snapshot has no seq and could roll back the client's
+            // transcript or cause missed updates.
             return false;
         }
 

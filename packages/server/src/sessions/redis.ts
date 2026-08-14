@@ -185,11 +185,38 @@ export async function getCachedRelayEvents(sessionId: string): Promise<CachedRel
 
 /**
  * Read only the newest portion(s) of the relay cache and return the latest
- * full snapshot event (session_active/agent_end), if present.
+ * sequenced event.
  *
  * This avoids parsing the entire event list on each viewer switch when the
  * newest snapshot is near the tail (common case).
  */
+export async function getLatestCachedRelayEventSeq(sessionId: string): Promise<number | null> {
+    if (isRedisDisabled()) return null;
+
+    const redis = await getClient();
+    if (!redis) return null;
+
+    try {
+        const key = eventsKey(sessionId);
+        const length = await redis.lLen(key);
+        if (!Number.isFinite(length) || length <= 0) return null;
+
+        const chunkSize = snapshotScanChunkSize();
+        for (let end = length - 1; end >= 0; end -= chunkSize) {
+            const start = Math.max(0, end - chunkSize + 1);
+            const rows = await redis.lRange(key, start, end);
+            for (let i = rows.length - 1; i >= 0; i--) {
+                const parsed = parseCachedRelayEventRow(rows[i]);
+                if (parsed && isSequencedCachedRelayEvent(parsed)) return parsed.seq;
+            }
+        }
+        return null;
+    } catch (error) {
+        logUnavailableOnce("Failed to read latest relay event sequence from Redis", error);
+        return null;
+    }
+}
+
 export async function getCachedRelayEventsAfterSeq(
     sessionId: string,
     afterSeq: number,
