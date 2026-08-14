@@ -221,6 +221,9 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunWorkflow
                     () => ({ mode: "single", agentScope: "user", projectAgentsDir: null, results: [] }),
                     resolveModelOpt(agentOpts?.model) ?? modelDefault,
                     ctx.modelRegistry,
+                    // No relay child session per agent — a workflow can fan out
+                    // to 1000 agents and already streams its own progress card.
+                    false,
                 );
 
                 info.model = result.model;

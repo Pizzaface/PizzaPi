@@ -203,6 +203,9 @@ export async function runSingleAgent(
     makeDetails: (results: SingleResult[]) => SubagentDetails,
     modelOverride?: ModelOverride,
     modelRegistry?: ModelRegistryLike,
+    /** Mirror the run as a relay child session. Off for bulk fan-out callers
+     *  (workflows render their own progress card and can run 1000 agents). */
+    mirrorToRelay = true,
 ): Promise<SingleResult> {
     const agent = agents.find((a) => a.name === agentName);
 
@@ -277,7 +280,7 @@ export async function runSingleAgent(
 
         // Build session options — resolve tools fail-closed
         const sessionCwd = cwd ?? defaultCwd;
-        mirror = createSubagentMirror({ agentName, task, cwd: sessionCwd, step });
+        if (mirrorToRelay) mirror = createSubagentMirror({ agentName, task, cwd: sessionCwd, step });
         let tools: string[];
         if (isPlanMode) {
             // Plan mode: restrict to read-only tools regardless of agent config
@@ -351,8 +354,22 @@ export async function runSingleAgent(
             throw new Error("Subagent was aborted");
         }
 
+        if (resolvedModel) {
+            mirror?.setModel({
+                provider: resolvedModel.provider,
+                id: resolvedModel.id,
+                name: resolvedModel.name,
+                reasoning: resolvedModel.reasoning,
+                contextWindow: resolvedModel.contextWindow,
+            });
+        }
+
         // Subscribe to events to track messages and usage
         const unsubscribe = session.subscribe((event) => {
+            // Stream to the relay child session the same way a linked session
+            // does; snapshots below stay as hydration for late/reconnecting viewers.
+            mirror?.forward(event);
+
             if (event.type === "message_end" && "message" in event) {
                 const msg = event.message as Message;
                 currentResult.messages.push(msg);

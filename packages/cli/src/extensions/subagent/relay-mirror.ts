@@ -21,20 +21,67 @@ import type { SingleResult } from "./types.js";
 
 const log = createLogger("subagent-mirror");
 
-/** Minimum gap between session_active snapshots, in ms. */
-const SNAPSHOT_THROTTLE_MS = 1_000;
+/** Minimum gap between session_active snapshots, in ms.
+ *  Matches the remote extension's heartbeat cadence: a viewer attaching
+ *  mid-run sees state at most this stale, which is the accepted trade for not
+ *  shipping a subagent's whole transcript every second with nobody watching. */
+const SNAPSHOT_THROTTLE_MS = 10_000;
 
 /** Newest-N transcript cap, so a runaway subagent can't blow up the socket.
  *  ponytail: flat cap, switch to the chunked-delivery path if it ever bites. */
 const MAX_MIRRORED_MESSAGES = 200;
 
+/** Liveness heartbeat cadence. Slower than a linked session's 10s — a subagent
+ *  has no inbound controls, so this only keeps the sidebar entry from looking
+ *  stalled. Well under the server's 2-minute staleness sweep. */
+const HEARTBEAT_MS = 30_000;
+
+/**
+ * Live agent events forwarded verbatim, exactly as the remote extension
+ * forwards them for a normal linked session, so the web UI streams token
+ * deltas and tool cards instead of waiting for whole-message snapshots.
+ * `agent_end` is deliberately excluded: its `messages` are run-scoped and both
+ * the UI and the server treat them as a full snapshot (transcript truncation).
+ *
+ * Deltas stay in: snapshots carry only COMPLETED messages (the engine appends
+ * to `currentResult.messages` on message_end), so dropping `message_update`
+ * leaves a watcher staring at an empty bubble for a whole generation — minutes
+ * on a reasoning model. Suppressing deltas for sessions nobody is watching is
+ * the relay's job, not the mirror's: it needs viewer presence, which lives
+ * server-side.
+ */
+const STREAMED_EVENTS = new Set([
+    "agent_start",
+    "turn_start",
+    "turn_end",
+    "message_start",
+    "message_update",
+    "message_end",
+    "tool_execution_start",
+    "tool_execution_update",
+    "tool_execution_end",
+]);
+
 export interface SubagentMirror {
     /** Relay session id of the mirrored child (exposed for tests/telemetry). */
     readonly sessionId: string;
+    /** Forward a live agent event verbatim (streaming deltas, tool cards). */
+    forward(event: { type?: string }): void;
+    /** Report the resolved model so the UI shows a real provider/model chip. */
+    setModel(model: MirrorModel | null): void;
     /** Push a transcript snapshot (throttled). */
     update(result: SingleResult): void;
     /** Push a final snapshot, end the relay session, and disconnect. */
     finish(result: SingleResult): void;
+}
+
+/** Model info as the web UI expects it (MetaModelInfo shape). */
+export interface MirrorModel {
+    provider: string;
+    id: string;
+    name?: string;
+    reasoning?: boolean;
+    contextWindow?: number;
 }
 
 export interface MirrorEnv {
@@ -145,9 +192,12 @@ export function createSubagentMirror(opts: MirrorOptions): SubagentMirror | null
         }
     };
 
+    let model: MirrorModel | null = null;
+
     const snapshot = (result: SingleResult, active: boolean) => {
-        // Subagent results only carry a model id, not a provider.
-        const model = result.model ? { provider: "", id: result.model, name: result.model } : null;
+        // Fall back to the id-only model the assistant messages report when the
+        // caller never resolved one (e.g. session creation failed early).
+        if (!model && result.model) model = { provider: "", id: result.model, name: result.model };
         emit({
             type: "session_active",
             state: {
@@ -170,6 +220,18 @@ export function createSubagentMirror(opts: MirrorOptions): SubagentMirror | null
             sessionName,
             uptime: null,
             cwd: opts.cwd,
+        });
+        emit({
+            type: "token_usage_updated",
+            tokenUsage: {
+                input: result.usage.input,
+                output: result.usage.output,
+                cacheRead: result.usage.cacheRead,
+                cacheWrite: result.usage.cacheWrite,
+                cost: result.usage.cost,
+                contextTokens: result.usage.contextTokens || null,
+            },
+            providerUsage: {},
         });
     };
 
@@ -208,6 +270,23 @@ export function createSubagentMirror(opts: MirrorOptions): SubagentMirror | null
         if (pending) flushPending();
     });
 
+    // Keep the child session visibly alive between snapshots — a long tool call
+    // would otherwise leave the UI without a heartbeat for minutes.
+    const heartbeatTimer = setInterval(() => {
+        if (closed || !token) return;
+        emit({
+            type: "heartbeat",
+            active: true,
+            isCompacting: false,
+            ts: now(),
+            model: null,
+            sessionName,
+            uptime: null,
+            cwd: opts.cwd,
+        });
+    }, HEARTBEAT_MS);
+    (heartbeatTimer as { unref?: () => void }).unref?.();
+
     socket.on("connect_error", (err: unknown) => {
         log.warn("subagent mirror connect failed:", err);
     });
@@ -216,6 +295,7 @@ export function createSubagentMirror(opts: MirrorOptions): SubagentMirror | null
         if (closed) return;
         closed = true;
         clearThrottle();
+        clearInterval(heartbeatTimer);
         pending = null;
         try {
             socket.removeAllListeners();
@@ -227,6 +307,15 @@ export function createSubagentMirror(opts: MirrorOptions): SubagentMirror | null
 
     return {
         sessionId,
+        forward(event) {
+            if (closed || !event?.type || !STREAMED_EVENTS.has(event.type)) return;
+            emit(event);
+        },
+        setModel(next) {
+            if (closed) return;
+            model = next;
+            emit({ type: "model_changed", model: next });
+        },
         update(result) {
             if (closed) return;
             pending = result;
