@@ -51,19 +51,58 @@ export const SessionMessageItem = React.memo(
     onActionSigilResponse,
   }: SessionMessageItemProps) => {
     const [customExpanded, setCustomExpanded] = React.useState(false);
+    const [quotePopover, setQuotePopover] = React.useState<{
+      text: string;
+      top: number;
+      left: number;
+    } | null>(null);
     const quoteContentRef = React.useRef<HTMLDivElement>(null);
     const sessionActions = useSessionActions();
-    const quoteMessage = React.useCallback(() => {
+    const updateQuotePopover = React.useCallback(() => {
       const content = quoteContentRef.current;
       const selection = window.getSelection();
-      if (!content || !selection?.rangeCount) return;
+      if (!sessionActions?.quote || !content || !selection?.rangeCount) {
+        setQuotePopover((current) => (current ? null : current));
+        return;
+      }
 
       const range = selection.getRangeAt(0);
       const text = selection.toString().trim();
-      if (!text || !content.contains(range.commonAncestorContainer)) return;
+      if (!text || !content.contains(range.commonAncestorContainer)) {
+        setQuotePopover((current) => (current ? null : current));
+        return;
+      }
 
-      sessionActions?.quote?.(text, message.timestamp);
-    }, [message.timestamp, sessionActions]);
+      const rect = range.getBoundingClientRect();
+      const popoverWidth = 76;
+      const popoverHeight = 32;
+      const gap = 6;
+      const left = Math.min(
+        Math.max(8, rect.left),
+        Math.max(8, window.innerWidth - popoverWidth - 8),
+      );
+      const top =
+        rect.bottom + gap + popoverHeight <= window.innerHeight
+          ? rect.bottom + gap
+          : Math.max(8, rect.top - gap - popoverHeight);
+      setQuotePopover({ text, top, left });
+    }, [sessionActions]);
+
+    React.useEffect(() => {
+      if (message.role !== "assistant") return;
+      document.addEventListener("selectionchange", updateQuotePopover);
+      window.addEventListener("scroll", updateQuotePopover, true);
+      return () => {
+        document.removeEventListener("selectionchange", updateQuotePopover);
+        window.removeEventListener("scroll", updateQuotePopover, true);
+      };
+    }, [message.role, updateQuotePopover]);
+
+    const quoteMessage = React.useCallback(() => {
+      if (!quotePopover) return;
+      sessionActions?.quote?.(quotePopover.text, message.timestamp);
+      setQuotePopover(null);
+    }, [message.timestamp, quotePopover, sessionActions]);
 
     // System messages with structured command result data → standalone card
     if (message.role === "system" && isCommandResult(message.content)) {
@@ -198,15 +237,6 @@ export const SessionMessageItem = React.memo(
                 <span>• {new Date(message.timestamp).toLocaleTimeString()}</span>
               )}
               {message.isError && <span className="text-destructive">• Error</span>}
-              {message.role === "assistant" && sessionActions?.quote && (
-                <button
-                  type="button"
-                  className="rounded px-1.5 py-0.5 text-[10px] normal-case text-muted-foreground opacity-0 transition-opacity hover:bg-muted/60 hover:text-foreground group-hover/msg:opacity-100 focus-visible:opacity-100"
-                  onClick={quoteMessage}
-                >
-                  Quote
-                </button>
-              )}
               <MessageCopyButton
                 text={exportToMarkdown([message])}
                 className="ml-auto opacity-0 group-hover/msg:opacity-100 focus-visible:opacity-100 transition-opacity"
@@ -251,24 +281,44 @@ export const SessionMessageItem = React.memo(
                   </div>
                 )}
               </div>
-            ) : <div ref={quoteContentRef}>
+            ) : <div
+              ref={quoteContentRef}
+              onMouseUp={message.role === "assistant" ? updateQuotePopover : undefined}
+              onTouchEnd={message.role === "assistant" ? updateQuotePopover : undefined}
+            >
               {renderContent(
-              message.content,
-              activeToolCalls,
-              message.role,
-              message.toolName,
-              message.isError,
-              message.toolInput,
-              message.toolCallId ?? message.key,
-              // Only treat thinking as still-streaming when the agent is active,
-              // this is the last message, AND the message has no timestamp yet
-              agentActive && isLast && message.timestamp === undefined,
-              message.thinking,
-              message.thinkingDuration,
-              undefined, // subAgentTurns
-              message.details,
-              onTriggerResponse,
-              onActionSigilResponse,
+                message.content,
+                activeToolCalls,
+                message.role,
+                message.toolName,
+                message.isError,
+                message.toolInput,
+                message.toolCallId ?? message.key,
+                // Only treat thinking as still-streaming when the agent is active,
+                // this is the last message, AND the message has no timestamp yet
+                agentActive && isLast && message.timestamp === undefined,
+                message.thinking,
+                message.thinkingDuration,
+                undefined, // subAgentTurns
+                message.details,
+                onTriggerResponse,
+                onActionSigilResponse,
+              )}
+              {quotePopover && (
+                <div
+                  className="fixed z-50 rounded-md border border-border bg-popover p-0.5 text-popover-foreground shadow-md"
+                  style={{ top: quotePopover.top, left: quotePopover.left }}
+                >
+                  <button
+                    type="button"
+                    className="rounded px-2 py-1 text-xs font-medium hover:bg-muted focus-visible:bg-muted focus-visible:outline-none"
+                    aria-label="Quote selected text"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={quoteMessage}
+                  >
+                    Quote
+                  </button>
+                </div>
               )}
             </div>}
             {message.stopReason === "error" && message.errorMessage && (

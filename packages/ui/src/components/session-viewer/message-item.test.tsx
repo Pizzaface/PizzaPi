@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import React from "react";
 import type { RelayMessage } from "./types";
 
@@ -47,10 +47,13 @@ describe("SessionMessageItem custom messages", () => {
     const text = view.getByText("Select this sentence");
     const range = document.createRange();
     range.selectNodeContents(text);
-    window.getSelection()?.removeAllRanges();
-    window.getSelection()?.addRange(range);
+    act(() => {
+      window.getSelection()?.removeAllRanges();
+      window.getSelection()?.addRange(range);
+      fireEvent.mouseUp(text);
+    });
 
-    fireEvent.click(view.getByRole("button", { name: "Quote" }));
+    fireEvent.click(view.getByRole("button", { name: "Quote selected text" }));
 
     expect(quoted).toBe("Select this sentence");
   });
@@ -76,8 +79,7 @@ describe("SessionMessageItem custom messages", () => {
       </SessionActionsProvider>,
     );
 
-    fireEvent.click(view.getByRole("button", { name: "Quote" }));
-
+    expect(view.queryByRole("button", { name: "Quote selected text" })).toBeNull();
     expect(quoted).toBe("");
   });
 
