@@ -213,6 +213,7 @@ export function loadRulesDir(dir: string): AgentFile[] {
 
 /** Load global and project modular rules, in override-friendly order. */
 export function loadRules(cwd: string): { global: AgentFile[]; project: AgentFile[] } {
+    // TODO: also discover Claude Code's ~/.claude/rules/ for compatibility.
     return {
         global: loadRulesDir(join(homedir(), ".pizzapi", "rules")),
         project: loadRulesDir(join(cwd, ".pizzapi", "rules")),
@@ -299,20 +300,37 @@ export function createAgentsFilesOverride(
 ): ((base: { agentsFiles: AgentFile[] }) => { agentsFiles: AgentFile[] }) | null {
     const sendAgentsMd = options.sendAgentsMd !== false;
     const rules = loadRules(cwd);
+    const projectFiles = loadProjectAgentFiles(cwd);
     const additionalFiles = [
-        ...loadProjectAgentFiles(cwd),
-        ...(sendAgentsMd ? [...rules.global, ...rules.project] : []),
-    ].filter((file) => sendAgentsMd || !isAgentsMdPath(file.path));
+        ...(sendAgentsMd ? rules.global : []),
+        ...(sendAgentsMd ? projectFiles : projectFiles.filter((file) => !isAgentsMdPath(file.path))),
+        ...(sendAgentsMd ? rules.project : []),
+    ];
     if (additionalFiles.length === 0 && sendAgentsMd) return null;
 
     return (base) => {
         const baseFiles = sendAgentsMd
             ? base.agentsFiles
             : base.agentsFiles.filter((file) => !isAgentsMdPath(file.path));
-        const seenPaths = new Set(baseFiles.map(f => f.path));
-        const deduped = additionalFiles.filter(f => !seenPaths.has(f.path));
+        const seenPaths = new Set<string>();
+        const unique = (files: AgentFile[]) => files.filter((file) => {
+            if (seenPaths.has(file.path)) return false;
+            seenPaths.add(file.path);
+            return true;
+        });
+        if (!sendAgentsMd) return { agentsFiles: unique([...baseFiles, ...additionalFiles]) };
+
+        // Keep upstream global context first, then global rules, then project context.
+        const globalRoot = join(homedir(), ".pizzapi") + "/";
+        const globalFiles = baseFiles.filter((file) => file.path.startsWith(globalRoot));
+        const projectFiles = baseFiles.filter((file) => !file.path.startsWith(globalRoot));
         return {
-            agentsFiles: [...baseFiles, ...deduped],
+            agentsFiles: unique([
+                ...globalFiles,
+                ...additionalFiles.filter((file) => rules.global.some((rule) => rule.path === file.path)),
+                ...projectFiles,
+                ...additionalFiles.filter((file) => !rules.global.some((rule) => rule.path === file.path)),
+            ]),
         };
     };
 }
