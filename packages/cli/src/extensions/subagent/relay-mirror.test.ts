@@ -143,9 +143,12 @@ describe("createSubagentMirror", () => {
 
         fake.fire("registered", { token: "tok" });
         const events = fake.emitted.filter((e) => e.event === "event");
-        expect(events.length).toBe(2); // session_active + heartbeat
+        expect(events.map((e) => e.payload.event.type)).toEqual([
+            "session_active",
+            "heartbeat",
+            "token_usage_updated",
+        ]);
         expect(events[0].payload.token).toBe("tok");
-        expect(events[0].payload.event.type).toBe("session_active");
         expect(events[0].payload.event.state.messages.length).toBe(1);
         expect(events[1].payload.event).toMatchObject({ type: "heartbeat", active: true });
     });
@@ -172,6 +175,66 @@ describe("createSubagentMirror", () => {
         clock += 2000;
         mirror.update(result());
         expect(fake.emitted.filter((e) => e.event === "event").length).toBeGreaterThan(afterFirst);
+    });
+
+    test("forwards live agent events verbatim, drops unstreamed ones", () => {
+        const fake = makeFakeSocket();
+        const mirror = createSubagentMirror({
+            agentName: "a",
+            task: "t",
+            cwd: "/repo",
+            env: ENV,
+            socketFactory: () => fake.socket,
+        })!;
+
+        // Before registration nothing is forwarded (the snapshot flush covers it).
+        mirror.forward({ type: "message_update" } as any);
+        expect(fake.emitted.some((e) => e.event === "event")).toBe(false);
+
+        fake.fire("connect");
+        fake.fire("registered", { token: "tok" });
+
+        mirror.forward({ type: "message_update", message: { role: "assistant" } } as any);
+        mirror.forward({ type: "tool_execution_start", toolName: "read" } as any);
+        // agent_end carries run-scoped messages the UI treats as a full snapshot.
+        mirror.forward({ type: "agent_end", messages: [] } as any);
+
+        const types = fake.emitted
+            .filter((e) => e.event === "event")
+            .map((e) => e.payload.event.type);
+        expect(types).toContain("message_update");
+        expect(types).toContain("tool_execution_start");
+        expect(types).not.toContain("agent_end");
+
+        mirror.finish(result());
+        const count = fake.emitted.length;
+        mirror.forward({ type: "message_update" } as any);
+        expect(fake.emitted.length).toBe(count);
+    });
+
+    test("setModel emits a real provider/model chip and sticks in snapshots", () => {
+        const fake = makeFakeSocket();
+        const mirror = createSubagentMirror({
+            agentName: "a",
+            task: "t",
+            cwd: "/repo",
+            env: ENV,
+            socketFactory: () => fake.socket,
+        })!;
+        fake.fire("connect");
+        fake.fire("registered", { token: "tok" });
+
+        mirror.setModel({ provider: "claude-subscription", id: "claude-haiku-4-5", name: "Haiku" });
+        mirror.finish(result({ usage: { input: 10, output: 5, cacheRead: 1, cacheWrite: 2, cost: 0.5, contextTokens: 99, turns: 1 } }));
+
+        const events = fake.emitted.filter((e) => e.event === "event").map((e) => e.payload.event);
+        expect(events.find((e) => e.type === "model_changed").model.provider).toBe("claude-subscription");
+        expect(events.find((e) => e.type === "session_active").state.model.id).toBe("claude-haiku-4-5");
+        expect(events.find((e) => e.type === "token_usage_updated").tokenUsage).toMatchObject({
+            input: 10,
+            cost: 0.5,
+            contextTokens: 99,
+        });
     });
 
     test("finish emits a final snapshot, ends the session, and disconnects", () => {

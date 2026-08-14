@@ -351,8 +351,22 @@ export async function runSingleAgent(
             throw new Error("Subagent was aborted");
         }
 
+        if (resolvedModel) {
+            mirror?.setModel({
+                provider: resolvedModel.provider,
+                id: resolvedModel.id,
+                name: resolvedModel.name,
+                reasoning: resolvedModel.reasoning,
+                contextWindow: resolvedModel.contextWindow,
+            });
+        }
+
         // Subscribe to events to track messages and usage
         const unsubscribe = session.subscribe((event) => {
+            // Stream to the relay child session the same way a linked session
+            // does; snapshots below stay as hydration for late/reconnecting viewers.
+            mirror?.forward(event);
+
             if (event.type === "message_end" && "message" in event) {
                 const msg = event.message as Message;
                 currentResult.messages.push(msg);
