@@ -21,15 +21,20 @@ import type { SingleResult } from "./types.js";
 
 const log = createLogger("subagent-mirror");
 
-/** Minimum gap between session_active snapshots, in ms. */
-const SNAPSHOT_THROTTLE_MS = 1_000;
+/** Minimum gap between session_active snapshots, in ms.
+ *  Matches the remote extension's heartbeat cadence: a viewer attaching
+ *  mid-run sees state at most this stale, which is the accepted trade for not
+ *  shipping a subagent's whole transcript every second with nobody watching. */
+const SNAPSHOT_THROTTLE_MS = 10_000;
 
 /** Newest-N transcript cap, so a runaway subagent can't blow up the socket.
  *  ponytail: flat cap, switch to the chunked-delivery path if it ever bites. */
 const MAX_MIRRORED_MESSAGES = 200;
 
-/** Liveness heartbeat cadence — same as the remote extension's. */
-const HEARTBEAT_MS = 10_000;
+/** Liveness heartbeat cadence. Slower than a linked session's 10s — a subagent
+ *  has no inbound controls, so this only keeps the sidebar entry from looking
+ *  stalled. Well under the server's 2-minute staleness sweep. */
+const HEARTBEAT_MS = 30_000;
 
 /**
  * Live agent events forwarded verbatim, exactly as the remote extension
@@ -37,6 +42,13 @@ const HEARTBEAT_MS = 10_000;
  * deltas and tool cards instead of waiting for whole-message snapshots.
  * `agent_end` is deliberately excluded: its `messages` are run-scoped and both
  * the UI and the server treat them as a full snapshot (transcript truncation).
+ *
+ * Deltas stay in: snapshots carry only COMPLETED messages (the engine appends
+ * to `currentResult.messages` on message_end), so dropping `message_update`
+ * leaves a watcher staring at an empty bubble for a whole generation — minutes
+ * on a reasoning model. Suppressing deltas for sessions nobody is watching is
+ * the relay's job, not the mirror's: it needs viewer presence, which lives
+ * server-side.
  */
 const STREAMED_EVENTS = new Set([
     "agent_start",

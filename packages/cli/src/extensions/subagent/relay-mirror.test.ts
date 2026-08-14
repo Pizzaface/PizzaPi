@@ -172,7 +172,8 @@ describe("createSubagentMirror", () => {
         mirror.update(result());
         expect(fake.emitted.filter((e) => e.event === "event").length).toBe(afterFirst);
 
-        clock += 2000;
+        // Past SNAPSHOT_THROTTLE_MS (10s).
+        clock += 11_000;
         mirror.update(result());
         expect(fake.emitted.filter((e) => e.event === "event").length).toBeGreaterThan(afterFirst);
     });
@@ -261,6 +262,81 @@ describe("createSubagentMirror", () => {
         mirror.update(result());
         mirror.finish(result());
         expect(fake.emitted.length).toBe(count);
+    });
+
+    test("setModel emits a provider/model chip that sticks in later snapshots", () => {
+        const fake = makeFakeSocket();
+        const mirror = createSubagentMirror({
+            agentName: "a",
+            task: "t",
+            cwd: "/repo",
+            env: ENV,
+            socketFactory: () => fake.socket,
+        })!;
+        fake.fire("connect");
+        fake.fire("registered", { token: "tok" });
+
+        mirror.setModel({ provider: "claude-subscription", id: "claude-haiku-4-5", name: "Haiku" });
+        mirror.finish(result({ model: "ignored-bare-id" }));
+
+        const events = fake.emitted.filter((e) => e.event === "event").map((e) => e.payload.event);
+        expect(events.find((e) => e.type === "model_changed").model).toMatchObject({
+            provider: "claude-subscription",
+            id: "claude-haiku-4-5",
+        });
+        // The resolved model wins over the bare id from assistant messages.
+        expect(events.find((e) => e.type === "session_active").state.model).toMatchObject({
+            provider: "claude-subscription",
+            id: "claude-haiku-4-5",
+        });
+    });
+
+    test("falls back to the bare assistant model id when none was resolved", () => {
+        const fake = makeFakeSocket();
+        const mirror = createSubagentMirror({
+            agentName: "a",
+            task: "t",
+            cwd: "/repo",
+            env: ENV,
+            socketFactory: () => fake.socket,
+        })!;
+        fake.fire("connect");
+        fake.fire("registered", { token: "tok" });
+        mirror.finish(result({ model: "claude-haiku-4-5" }));
+
+        const active = fake.emitted.find(
+            (e) => e.event === "event" && e.payload.event.type === "session_active",
+        )!;
+        expect(active.payload.event.state.model).toMatchObject({ provider: "", id: "claude-haiku-4-5" });
+    });
+
+    test("snapshots carry token usage for the UI usage bar", () => {
+        const fake = makeFakeSocket();
+        const mirror = createSubagentMirror({
+            agentName: "a",
+            task: "t",
+            cwd: "/repo",
+            env: ENV,
+            socketFactory: () => fake.socket,
+        })!;
+        fake.fire("connect");
+        fake.fire("registered", { token: "tok" });
+
+        mirror.finish(
+            result({
+                usage: { input: 10, output: 5, cacheRead: 1, cacheWrite: 2, cost: 0.5, contextTokens: 99, turns: 1 },
+            }),
+        );
+
+        const usage = fake.emitted.find(
+            (e) => e.event === "event" && e.payload.event.type === "token_usage_updated",
+        )!;
+        expect(usage.payload.event.tokenUsage).toMatchObject({
+            input: 10,
+            output: 5,
+            cost: 0.5,
+            contextTokens: 99,
+        });
     });
 
     test("caps the mirrored transcript", () => {
