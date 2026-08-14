@@ -163,13 +163,18 @@ export function resolveOAuthCallbackPort(
   return perServerPort ?? (oauthServerCount > 1 ? 0 : (globalPort ?? 0));
 }
 
-function countOAuthServers(config: PizzaPiConfig & McpConfig, disabled: Set<string>): number {
+export function countOAuthServers(config: PizzaPiConfig & McpConfig, disabled: Set<string>): number {
+  const globalOAuthConfigured = Boolean(config.oauthClientName || config.oauthClientId || config.oauthClientSecret);
+  const requiresOAuth = (server: { oauthClientName?: string; oauthClientId?: string; oauthClientSecret?: string }): boolean =>
+    globalOAuthConfigured || Boolean(server.oauthClientName || server.oauthClientId || server.oauthClientSecret);
+
   const preferred = (config.mcp?.servers ?? []).filter(
-    server => server && server.transport === "streamable" && !disabled.has(server.name),
+    server => server && server.transport === "streamable" && !disabled.has(server.name) && requiresOAuth(server),
   ).length;
-  const compatibility = Object.entries(config.mcpServers ?? {}).filter(([name, def]) =>
-    !disabled.has(name) && def && typeof def === "object" && resolveMcpCompatTransport(def as Record<string, unknown>) === "streamable",
-  ).length;
+  const compatibility = Object.entries(config.mcpServers ?? {}).filter(([name, def]) => {
+    if (disabled.has(name) || !def || typeof def !== "object" || resolveMcpCompatTransport(def as Record<string, unknown>) !== "streamable") return false;
+    return requiresOAuth(def as { oauthClientName?: string; oauthClientId?: string; oauthClientSecret?: string });
+  }).length;
   return preferred + compatibility;
 }
 

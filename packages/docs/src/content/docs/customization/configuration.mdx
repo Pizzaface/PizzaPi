@@ -150,7 +150,7 @@ You can also override any setting with **environment variables**.
 | `oauthClientName` | `string` | `"PizzaPi"` | Global default `client_name` for MCP OAuth registration. Can also be set per-server in `mcpServers` entries. Per-server values take precedence. See [Client Name Override](/PizzaPi/customization/mcp-servers/#client-name-override). |
 | `oauthClientId` | `string` | — | Global default pre-registered OAuth `client_id` for MCP servers. Per-server values take precedence. |
 | `oauthClientSecret` | `string` | — | Global default pre-registered OAuth `client_secret` for MCP servers. Per-server values take precedence. |
-| `oauthCallbackPort` | `number` | `0` | Global default local callback port for MCP OAuth redirect URI. `0` means OS-assigned ephemeral port. Per-server values take precedence. |
+| `oauthCallbackPort` | `number` | `0` | Global default local callback port for MCP OAuth redirect URI. A single OAuth server honors this port; multiple OAuth servers without per-server ports use OS-assigned ephemeral ports to avoid collisions. `0` means OS-assigned ephemeral port. Per-server values take precedence. |
 | `mcpTimeout` | `number` | `30000` | Timeout (ms) for each MCP server's `tools/list` call during startup. Set to `0` to disable. |
 | `toolSearch` | `object` | — | Dynamic MCP tool discovery config. See [Tool Search](/PizzaPi/customization/tool-search/). |
 | `bash.backgroundAfterSeconds` | `number` | `15` | Seconds a `bash` command streams output in the foreground before it auto-backgrounds. `0` = background immediately. See [Bash auto-backgrounding](#bash-auto-backgrounding). |
