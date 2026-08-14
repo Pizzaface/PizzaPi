@@ -438,26 +438,37 @@ describe("getBestSnapshot — priority ordering", () => {
         expect(result!.snapshot.type).toBe("cache-delta");
     });
 
-    test("priority 1 fail: returns null (not snapshot) when lastSeq provided but delta empty", async () => {
-        // This is the critical invariant: when lastSeq is provided but delta
-        // fails, do NOT fall back to snapshot — it has no seq and would roll
-        // back the client's transcript. Return null for runner recovery.
+    test("returns an already-current no-op when the empty delta matches latestSeq", async () => {
         const deps = createDeps({
             getCachedRelayEventsAfterSeq: mock(async () => []),
-            getLatestCachedSnapshotEvent: mock(async () => ({
-                event: { type: "session_active", state: { messages: [] } },
-                eventsAfter: [],
-                })),
-            getPersistedRelaySessionSnapshot: mock(async () => ({
-                state: { messages: [] },
-            })),
         });
 
-        const result = await getBestSnapshot("sess-31", {
-            lastSeq: 10,
-            userId: "u1",
-            lastState: '{"messages":[]}',
-        }, deps);
+        const result = await getBestSnapshot("sess-31", { lastSeq: 10, latestSeq: 10 }, deps);
+
+        expect(result?.snapshot.type).toBe("already-current");
+        const socket = createMockSocket();
+        result?.send(socket);
+        expect(socket.calls).toHaveLength(0);
+    });
+
+    test("returns null when latestSeq is newer than the client's cursor", async () => {
+        const deps = createDeps({
+            getCachedRelayEventsAfterSeq: mock(async () => []),
+        });
+
+        const result = await getBestSnapshot("sess-32", { lastSeq: 10, latestSeq: 11 }, deps);
+
+        expect(result).toBeNull();
+    });
+
+    test("returns null when delta replay is unavailable", async () => {
+        const deps = createDeps({
+            getCachedRelayEventsAfterSeq: mock(async () => {
+                throw new Error("Redis unavailable");
+            }),
+        });
+
+        const result = await getBestSnapshot("sess-33", { lastSeq: 10, latestSeq: 10 }, deps);
 
         expect(result).toBeNull();
     });

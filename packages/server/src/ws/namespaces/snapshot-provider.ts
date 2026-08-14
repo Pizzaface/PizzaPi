@@ -255,7 +255,9 @@ export async function getBestSnapshot(
             const delta = await tryDeltaReplay(sessionId, lastSeq, deps);
             if (delta) return delta;
         } catch {
-            // Fall through — delta source failed
+            // An unavailable delta source is not proof that the client is
+            // current, even when latestSeq happens to match.
+            return null;
         }
         // Empty replay is a valid no-op only when the authoritative server
         // seq equals the client's cursor. A higher seq means the cache has a
