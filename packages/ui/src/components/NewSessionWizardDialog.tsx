@@ -10,7 +10,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { FolderOpen, FolderSearch, Loader2, X, ChevronLeft, Monitor } from "lucide-react";
 import { SiApple, SiLinux } from "react-icons/si";
 import { cn } from "@/lib/utils";
-import { formatPathTail } from "@/lib/path";
+import { formatPathTail, pathSegments } from "@/lib/path";
 import { filterFolders, getInitialFolder } from "@/lib/filterFolders";
 import { FolderBrowser } from "@/components/FolderBrowser";
 import { Button } from "@/components/ui/button";
@@ -490,7 +490,7 @@ export function NewSessionWizardDialog({
                                             {virtualizer.getVirtualItems().map((item) => {
                                                 const folder = filteredFolders[item.index];
                                                 const basename =
-                                                    folder.split("/").filter(Boolean).pop() || folder;
+                                                    pathSegments(folder).pop() || folder;
                                                 const tail = formatPathTail(folder, 2);
                                                 const isSelected = cwd === folder;
                                                 return (

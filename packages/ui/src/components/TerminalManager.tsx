@@ -25,6 +25,7 @@ import { Label } from "@/components/ui/label";
 import { TerminalIcon, Plus, ChevronLeft, X, GripHorizontal, PanelBottom, PanelRight, PanelLeft } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { pathSegments } from "@/lib/path";
 
 interface RunnerInfo {
   runnerId: string;
@@ -182,7 +183,7 @@ export function TerminalManager({
       // Count existing session tabs to pick a numeric label
       const siblingCount = tabs.filter((t) => t.sessionId === (sessionId ?? null)).length;
       const baseName = cwdToUse?.trim()
-        ? (cwdToUse.trim().split("/").pop() || "terminal")
+        ? (pathSegments(cwdToUse.trim()).pop() || "terminal")
         : "terminal";
       const label = siblingCount === 0 ? baseName : `${baseName} ${siblingCount + 1}`;
 
@@ -230,7 +231,7 @@ export function TerminalManager({
 
       const runner = effectiveRunners.find((r) => r.runnerId === selectedRunnerId);
       const label = cwd.trim()
-        ? (cwd.trim().split("/").pop() || "terminal")
+        ? (pathSegments(cwd.trim()).pop() || "terminal")
         : (runner?.name || "terminal");
 
       onTabAdd({
@@ -739,7 +740,7 @@ function NewTerminalDialog({
                       className="px-2 py-0.5 truncate max-w-[200px]"
                       title={folder}
                     >
-                      {folder.split("/").filter(Boolean).pop() || folder}
+                      {pathSegments(folder).pop() || folder}
                     </button>
                     <button
                       onClick={async (e) => {

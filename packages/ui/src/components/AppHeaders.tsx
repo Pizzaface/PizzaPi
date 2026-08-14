@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { signOut } from "@/lib/auth-client";
 import { useTheme, type ThemeMode } from "@/components/ThemeProvider";
+import { pathSegments } from "@/lib/path";
 
 const THEME_CYCLE: ThemeMode[] = ["auto", "light", "dark"];
 const THEME_ICON: Record<ThemeMode, React.ReactNode> = {
@@ -407,7 +408,7 @@ export const MobileHeader = React.memo(function MobileHeader({
                       <div className="flex-1 min-w-0">
                         <div className="text-sm font-medium truncate">{label}</div>
                         {s.cwd && (
-                          <div className="text-[0.65rem] text-muted-foreground truncate">{s.cwd.split("/").slice(-2).join("/")}</div>
+                          <div className="text-[0.65rem] text-muted-foreground truncate">{pathSegments(s.cwd).slice(-2).join("/")}</div>
                         )}
                       </div>
                       {/* Checkmark for active */}

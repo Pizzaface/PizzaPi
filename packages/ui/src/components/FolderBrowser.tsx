@@ -8,6 +8,7 @@ import * as React from "react";
 import { Folder, FolderOpen, ChevronRight, Loader2, AlertCircle, ArrowUp } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { pathSegments } from "@/lib/path";
 
 export interface FolderBrowserProps {
     runnerId: string;
@@ -89,7 +90,7 @@ export function FolderBrowser({
 
     // Build breadcrumb segments
     const segments = React.useMemo(() => {
-        const parts = currentPath.split("/").filter(Boolean);
+        const parts = pathSegments(currentPath);
         const result: { label: string; path: string }[] = [{ label: "/", path: "/" }];
         let acc = "";
         for (const part of parts) {
