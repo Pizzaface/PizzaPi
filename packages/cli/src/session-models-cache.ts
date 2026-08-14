@@ -28,9 +28,8 @@ export interface SessionModelEntry {
     thinkingLevels?: string[];
 }
 
-function cachePath(): string {
-    // Same convention as ollama-cloud-models cache: HOME env first so tests can redirect.
-    return join(process.env.HOME || homedir(), ".pizzapi", "session-models-cache.json");
+function cachePath(home = process.env.HOME || homedir()): string {
+    return join(home, ".pizzapi", "session-models-cache.json");
 }
 
 function isEntry(value: unknown): value is SessionModelEntry {
@@ -46,8 +45,8 @@ function isEntry(value: unknown): value is SessionModelEntry {
 }
 
 /** Read the cached session model snapshot. Returns null if missing, corrupt, or stale. */
-export function readSessionModelsCache(): SessionModelEntry[] | null {
-    const path = cachePath();
+export function readSessionModelsCache(home?: string): SessionModelEntry[] | null {
+    const path = cachePath(home);
     if (!existsSync(path)) return null;
     try {
         const raw = JSON.parse(readFileSync(path, "utf-8"));

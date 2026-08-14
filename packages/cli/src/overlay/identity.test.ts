@@ -1,10 +1,27 @@
-import { describe, test, expect } from "bun:test";
+import { afterEach, beforeEach, describe, test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { computePackageIdentity, packageScopeBaseDir } from "./identity.js";
+
+const originalHome = process.env.HOME;
+const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+beforeEach(() => {
+    // The upstream comparator reads HOME at call time while our resolver uses
+    // os.homedir()'s startup value. Keep both sides on the same home directory.
+    process.env.HOME = homedir();
+    delete process.env.PI_CODING_AGENT_DIR;
+});
+
+afterEach(() => {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+});
 
 describe("computePackageIdentity", () => {
     test("npm: strips version, keeps scope", () => {
