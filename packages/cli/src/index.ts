@@ -15,7 +15,7 @@ import { join } from "path";
 import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv, resolveExplicitProjectTrust } from "./config.js";
 import { isPackageCommand, runPackageCommand } from "./package-commands.js";
 import { getOAuthAccessToken, getAnthropicKeychainToken } from "./runner/usage-auth.js";
-import { c, usageBar, colorPct, colorRemaining } from "./cli-colors.js";
+import { c, usageBar, colorPct } from "./cli-colors.js";
 import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride } from "./skills.js";
 import { getPluginSkillPaths, getPluginPromptTemplatePaths } from "./extensions/claude-plugins.js";
 import { buildPizzaPiExtensionFactories } from "./extensions/factories.js";
@@ -310,12 +310,12 @@ async function main() {
                                 ? (1 - bucket.remainingFraction) * 100
                                 : null;
                             const bar = usedPct !== null ? usageBar(usedPct) : "";
-                            const remainingStr = bucket.remainingFraction != null
-                                ? ` ${colorRemaining(bucket.remainingFraction * 100)} remaining`
+                            const usedStr = usedPct !== null
+                                ? ` ${colorPct(usedPct)} used`
                                 : "";
                             const amt = bucket.remainingAmount != null ? c.dim(` (${bucket.remainingAmount} left)`) : "";
                             const reset = bucket.resetTime ? c.dim(`  resets ${new Date(bucket.resetTime).toLocaleString()}`) : "";
-                            log.info(`  ${label.padEnd(28)} ${bar}${remainingStr}${amt}${reset}`);
+                            log.info(`  ${label.padEnd(28)} ${bar}${usedStr}${amt}${reset}`);
                         }
                     }
                     printedAny = true;
