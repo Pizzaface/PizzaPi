@@ -74,8 +74,9 @@ export default function PptxPreview({ content, full = false }: { content: string
   );
 
   return (
-    <div className={cn("flex flex-col", full && "h-full min-h-0")}>
-      <div className={cn("relative flex items-start justify-center overflow-auto bg-muted/20 p-3", full && "min-h-0 flex-1")}>
+    <div className="flex h-full min-h-0 flex-col">
+      {/* Letterbox the slide so the whole slide always fits — no inner scrollbar. */}
+      <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-muted/20 p-3">
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center gap-2 text-sm text-muted-foreground">
             <Loader2Icon className="size-4 animate-spin" /> Rendering slides…
@@ -84,8 +85,10 @@ export default function PptxPreview({ content, full = false }: { content: string
         {error && !loading && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">Slides unavailable — {error}</div>
         )}
-        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
-        <canvas ref={canvasRef} className={cn("h-auto max-w-full rounded shadow-sm", (loading || error) && "invisible")} />
+        <canvas
+          ref={canvasRef}
+          className={cn("max-h-full max-w-full rounded object-contain shadow-sm", (loading || error) && "invisible")}
+        />
       </div>
 
       {slideCount > 1 && !error && (
