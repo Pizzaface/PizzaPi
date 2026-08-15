@@ -14,3 +14,17 @@ export const ModeUiContext = React.createContext<ResolvedModeUi | null>(null);
 export function useModeUi(): ResolvedModeUi | null {
   return React.useContext(ModeUiContext);
 }
+
+/** What an artifact card needs from the host to fetch and open a file. */
+export interface ArtifactHost {
+  /** Runner that owns the session's filesystem. */
+  runnerId?: string;
+  /** Open a path in the file explorer, when the host offers one. */
+  onOpenFile?: (path: string) => void;
+}
+
+export const ArtifactHostContext = React.createContext<ArtifactHost | null>(null);
+
+export function useArtifactHost(): ArtifactHost | null {
+  return React.useContext(ArtifactHostContext);
+}

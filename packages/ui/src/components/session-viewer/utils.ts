@@ -66,6 +66,16 @@ export function normalizeToolName(toolName?: string): string {
   return (toolName ?? "").trim().toLowerCase();
 }
 
+/**
+ * Tool name with any namespace stripped, so "mcp__fs__write", "plugin.write"
+ * and "write" all reduce to "write".
+ */
+export function baseToolName(toolName?: string): string {
+  const norm = normalizeToolName(toolName);
+  const afterDot = norm.includes(".") ? norm.slice(norm.lastIndexOf(".") + 1) : norm;
+  return afterDot.includes("__") ? afterDot.slice(afterDot.lastIndexOf("__") + 2) : afterDot;
+}
+
 export function extractTextFromToolContent(content: unknown): string | null {
   if (typeof content === "string") return content;
 

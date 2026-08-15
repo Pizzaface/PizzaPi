@@ -6,7 +6,7 @@
  * Pure functions so they can be tested without mounting the message tree.
  */
 
-import { normalizeToolName } from "@/components/session-viewer/utils";
+import { baseToolName } from "@/components/session-viewer/utils";
 
 export interface ActivitySummary {
   /** Lucide icon name for the activity line. */
@@ -15,13 +15,6 @@ export interface ActivitySummary {
   label: string;
   /** Optional secondary text, e.g. the search query. */
   detail?: string;
-}
-
-/** Strip an MCP/plugin namespace so "mcp__x__read" and "read" summarize alike. */
-function baseToolName(toolName?: string): string {
-  const norm = normalizeToolName(toolName);
-  const afterDot = norm.includes(".") ? norm.slice(norm.lastIndexOf(".") + 1) : norm;
-  return afterDot.includes("__") ? afterDot.slice(afterDot.lastIndexOf("__") + 2) : afterDot;
 }
 
 /** Best-effort object view of a tool's input, which may arrive as a JSON string. */

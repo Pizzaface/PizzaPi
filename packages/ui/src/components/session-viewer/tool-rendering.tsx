@@ -25,7 +25,9 @@ import {
 } from "@/components/ai-elements/reasoning";
 import { FileTypeCard } from "@/components/ai-elements/file-type-card";
 import { ActivityToolCard } from "@/components/session-viewer/ActivityToolCard";
-import { useModeUi } from "@/components/session-viewer/ModeUiContext";
+import { ArtifactCard } from "@/components/session-viewer/ArtifactCard";
+import { detectArtifact } from "@/components/session-viewer/artifact-detection";
+import { useArtifactHost, useModeUi } from "@/components/session-viewer/ModeUiContext";
 import { EditFileCard } from "@/components/ai-elements/edit-file-card";
 import {
   estimateBase64Bytes,
@@ -1167,6 +1169,16 @@ function ModeAwareToolCard({
   children: React.ReactNode;
 }) {
   const modeUi = useModeUi();
+  const artifactHost = useArtifactHost();
+  const artifact = detectArtifact(toolName, toolInput, modeUi);
+
+  // A finished deliverable is the point of the message, so it renders in full
+  // rather than collapsed behind an activity line. While the write is still
+  // streaming there is no file to preview yet.
+  if (artifact && !isStreaming && !isError) {
+    return <ArtifactCard path={artifact.path} kind={artifact.kind} runnerId={artifactHost?.runnerId} onOpen={artifactHost?.onOpenFile} />;
+  }
+
   if (modeUi?.toolRendering !== "activity") return <>{children}</>;
   return (
     <ActivityToolCard toolName={toolName} toolInput={toolInput} isError={isError} isStreaming={isStreaming}>

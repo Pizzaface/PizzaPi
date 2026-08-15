@@ -102,7 +102,7 @@ import { SessionMessageItem, PaginationSentinel } from "@/components/session-vie
 import { GoalStatusBadge } from "@/components/session-viewer/goal-status-badge";
 import { DraggableToolbarButton } from "@/components/session-viewer/DraggableToolbarButton";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
-import { ModeUiContext } from "@/components/session-viewer/ModeUiContext";
+import { ArtifactHostContext, ModeUiContext, type ArtifactHost } from "@/components/session-viewer/ModeUiContext";
 import type { ToolbarButtonId } from "@/hooks/useButtonPosition";
 
 // ── Public re-exports (existing consumers import these from SessionViewer) ────
@@ -153,6 +153,7 @@ export function SessionViewer({
   modeUi,
   modeLabel,
   modeIcon,
+  onOpenArtifact,
   isTerminalOpen,
   isFileExplorerOpen,
   isGitOpen,
@@ -413,6 +414,12 @@ export function SessionViewer({
 
   // ── Session actions + MCP toggle context ─────────────────────────────────
   const { sessionActions, handleMcpToggle } = useSessionActionsSetup(onExec);
+
+  // What artifact cards need to fetch a preview and open the real file.
+  const artifactHost = React.useMemo<ArtifactHost>(
+    () => ({ runnerId, onOpenFile: onOpenArtifact }),
+    [runnerId, onOpenArtifact],
+  );
   const sessionActionsWithQuote = React.useMemo(() => {
     if (!sessionActions) return null;
     return {
@@ -584,6 +591,7 @@ export function SessionViewer({
     <SessionActionsProvider value={sessionActionsWithQuote}>
       <McpToggleContext.Provider value={onExec ? handleMcpToggle : null}>
         <ModeUiContext.Provider value={modeUi ?? null}>
+        <ArtifactHostContext.Provider value={artifactHost}>
         <div className="flex flex-col flex-1 min-h-0">
 
           {/* ── Session info bar ─────────────────────────────────────────── */}
@@ -1852,6 +1860,7 @@ export function SessionViewer({
           </Dialog>
 
         </div>
+        </ArtifactHostContext.Provider>
         </ModeUiContext.Provider>
       </McpToggleContext.Provider>
     </SessionActionsProvider>

@@ -98,6 +98,8 @@ export interface SessionViewerProps {
   modeLabel?: string;
   /** Lucide icon name for the mode this session belongs to. */
   modeIcon?: string;
+  /** Open a deliverable in the file explorer. Omitted when the mode hides files. */
+  onOpenArtifact?: (path: string) => void;
   /** Toggle the triggers panel */
   onToggleTriggers?: () => void;
   /** Whether to show the triggers button */

@@ -5255,6 +5255,7 @@ export function App() {
                         modeUi={modeUi}
                         modeLabel={activeMode?.label}
                         modeIcon={activeMode?.icon}
+                        onOpenArtifact={modeUi.files ? handleOpenFileInExplorer : undefined}
                         onToggleTriggers={() => setShowTriggers((v) => !v)}
                         showTriggersButton={!!activeSessionId}
                         isTriggersOpen={showTriggers}
