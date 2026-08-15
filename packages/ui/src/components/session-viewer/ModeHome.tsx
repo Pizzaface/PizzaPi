@@ -5,6 +5,7 @@ import type { ResolvedModeUi, ServiceModeSuggestion } from "@pizzapi/protocol";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
+import { ModeSchedule, type ScheduledInstruction } from "@/components/session-viewer/ModeSchedule";
 
 export interface ModeHomeSession {
   sessionId: string;
@@ -30,6 +31,7 @@ export function ModeHome({
   onStartTask,
   onOpenSession,
   busy,
+  scheduled,
 }: {
   modeLabel: string;
   modeIcon?: string;
@@ -40,6 +42,12 @@ export function ModeHome({
   onOpenSession: (sessionId: string) => void;
   /** A task is being started — the composer is locked until it resolves. */
   busy?: boolean;
+  /** Standing scheduled work, when the mode declares `scheduled`. */
+  scheduled?: {
+    instructions: ScheduledInstruction[];
+    loading?: boolean;
+    onCancel: (instruction: ScheduledInstruction) => void;
+  };
 }) {
   const [draft, setDraft] = React.useState("");
   const inputRef = React.useRef<HTMLTextAreaElement>(null);
@@ -122,6 +130,16 @@ export function ModeHome({
               </button>
             ))}
           </div>
+        )}
+
+        {modeUi.scheduled && scheduled && (
+          <ModeSchedule
+            instructions={scheduled.instructions}
+            loading={scheduled.loading}
+            sessionNoun={modeUi.sessionNoun}
+            onOpenSession={onOpenSession}
+            onCancel={scheduled.onCancel}
+          />
         )}
 
         {modeUi.recent && recentSessions.length > 0 && (

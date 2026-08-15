@@ -165,6 +165,7 @@ const LazyTriggersPanel = React.lazy(() => import("@/components/TriggersPanel").
 const LazyTerminalManager = React.lazy(() => import("@/components/TerminalManager").then((m) => ({ default: m.TerminalManager })));
 const LazyFileExplorer = React.lazy(() => import("@/components/FileExplorer").then((m) => ({ default: m.FileExplorer })));
 const LazyGitPanel = React.lazy(() => import("@/components/git").then((m) => ({ default: m.GitPanel })));
+import { fetchScheduledInstructions, type ScheduledInstruction } from "@/components/session-viewer/ModeSchedule";
 const LazyChangePasswordDialog = React.lazy(() => import("@/components/ChangePasswordDialog").then((m) => ({ default: m.ChangePasswordDialog })));
 const LazyShortcutsDialog = React.lazy(() => import("@/components/ShortcutsDialog").then((m) => ({ default: m.ShortcutsDialog })));
 
@@ -4399,6 +4400,50 @@ export function App() {
       .slice(0, 5);
   }, [liveSessions, selectedMode, effectiveSessionModes]);
 
+  // Standing scheduled work for the selected mode. Subscriptions live per
+  // session, so this fans out over the mode's sessions.
+  const [scheduledInstructions, setScheduledInstructions] = React.useState<ScheduledInstruction[]>([]);
+  const [scheduledLoading, setScheduledLoading] = React.useState(false);
+  const scheduledSessions = React.useMemo(
+    () => selectedModeSessions.map((s) => ({ sessionId: s.sessionId, sessionName: s.sessionName ?? null })),
+    [selectedModeSessions],
+  );
+  const wantsSchedule = !!selectedMode && selectedModeUi.scheduled;
+
+  const reloadScheduled = React.useCallback((signal?: AbortSignal) => {
+    if (!wantsSchedule || scheduledSessions.length === 0) {
+      setScheduledInstructions([]);
+      return Promise.resolve();
+    }
+    setScheduledLoading(true);
+    return fetchScheduledInstructions(scheduledSessions, signal)
+      .then((found) => { if (!signal?.aborted) setScheduledInstructions(found); })
+      .catch((err) => { if (!signal?.aborted) console.error("Failed to load scheduled work:", err); })
+      .finally(() => { if (!signal?.aborted) setScheduledLoading(false); });
+  }, [wantsSchedule, scheduledSessions]);
+
+  React.useEffect(() => {
+    const controller = new AbortController();
+    void reloadScheduled(controller.signal);
+    return () => controller.abort();
+  }, [reloadScheduled]);
+
+  const handleCancelScheduled = React.useCallback(async (instruction: ScheduledInstruction) => {
+    const query = instruction.subscriptionId ? `?subscriptionId=${encodeURIComponent(instruction.subscriptionId)}` : "";
+    try {
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(instruction.sessionId)}/trigger-subscriptions/${encodeURIComponent(instruction.triggerType)}${query}`,
+        { method: "DELETE", credentials: "include" },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // Drop it locally so the row goes away even if a refetch is slow.
+      setScheduledInstructions((prev) => prev.filter((entry) => entry !== instruction));
+    } catch (err) {
+      console.error("Failed to cancel scheduled work:", err);
+      setLifecycleStatus("Could not cancel that scheduled item");
+    }
+  }, [setLifecycleStatus]);
+
   /** Start a task in the selected mode's workspace with the composed prompt. */
   const handleStartModeTask = React.useCallback(async (prompt: string) => {
     if (!selectedMode) return;
@@ -5327,6 +5372,11 @@ export function App() {
                           busy: startingTask,
                           onStartTask: (prompt: string) => { void handleStartModeTask(prompt); },
                           onOpenSession: handleOpenSession,
+                          scheduled: selectedModeUi.scheduled ? {
+                            instructions: scheduledInstructions,
+                            loading: scheduledLoading,
+                            onCancel: handleCancelScheduled,
+                          } : undefined,
                         } : undefined}
                         onToggleTriggers={() => setShowTriggers((v) => !v)}
                         showTriggersButton={!!activeSessionId}

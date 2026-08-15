@@ -7,6 +7,7 @@ import type { CommandResultData } from "@/components/session-viewer/rendering";
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import type { MetaGoalStatus, ResolvedModeUi } from "@pizzapi/protocol";
 import type { ModeHomeSession } from "@/components/session-viewer/ModeHome";
+import type { ScheduledInstruction } from "@/components/session-viewer/ModeSchedule";
 
 export type { RelayMessage, TodoItem, TokenUsage, QueuedMessage, ResumeSessionOption, ForkMessageOption };
 
@@ -113,6 +114,11 @@ export interface SessionViewerProps {
     busy?: boolean;
     onStartTask: (prompt: string) => void;
     onOpenSession: (sessionId: string) => void;
+    scheduled?: {
+      instructions: ScheduledInstruction[];
+      loading?: boolean;
+      onCancel: (instruction: ScheduledInstruction) => void;
+    };
   };
   /** Toggle the triggers panel */
   onToggleTriggers?: () => void;

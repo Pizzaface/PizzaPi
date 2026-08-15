@@ -898,6 +898,7 @@ export function SessionViewer({
                 busy={modeHome.busy}
                 onStartTask={modeHome.onStartTask}
                 onOpenSession={modeHome.onOpenSession}
+                scheduled={modeHome.scheduled}
               />
             ) : !sessionId ? (
               <ConversationEmptyState>

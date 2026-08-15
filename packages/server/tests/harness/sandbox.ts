@@ -766,7 +766,7 @@ async function main() {
         name: "sandbox-runner",
         roots: ["/Users/jordan/Documents/Projects/PizzaPi", "/Users/jordan/Documents/Workspace"],
         platform: "darwin",
-        serviceIds: ["terminal", "file-explorer", "git", "tunnel", "system-monitor", GODMOTHER_LITE_SERVICE_ID],
+        serviceIds: ["terminal", "file-explorer", "git", "tunnel", "time", "system-monitor", GODMOTHER_LITE_SERVICE_ID],
         // A knowledge-work mode exercising the declarative mode UI contract.
         sessionModes: [{
             id: "work",
@@ -797,6 +797,26 @@ async function main() {
             { serviceId: GODMOTHER_LITE_SERVICE_ID, port: godmotherLitePort, label: "Godmother Lite", icon: "sparkles" },
         ],
         triggerDefs: [
+            {
+                type: "time:cron",
+                label: "Cron Schedule",
+                description: "Fires on a recurring 5-field cron schedule",
+                schema: { type: "object", properties: { cron: { type: "string" } } },
+                params: [
+                    { name: "cron", label: "Cron expression", type: "string", required: true },
+                    { name: "message", label: "Message", type: "string", required: false },
+                ],
+            },
+            {
+                type: "time:at",
+                label: "Scheduled Time",
+                description: "Fires once at a specific time",
+                schema: { type: "object", properties: { at: { type: "string" } } },
+                params: [
+                    { name: "at", label: "At", type: "string", required: true },
+                    { name: "message", label: "Message", type: "string", required: false },
+                ],
+            },
             {
                 type: "godmother-lite:idea_moved",
                 label: "Idea Status Changed",
