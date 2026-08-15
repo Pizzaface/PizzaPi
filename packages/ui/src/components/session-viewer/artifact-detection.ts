@@ -29,6 +29,20 @@ function toolArgs(toolInput: unknown): Record<string, unknown> {
 /** How an artifact should be previewed. */
 export type ArtifactKind = "markdown" | "image" | "pdf" | "csv" | "html" | "download";
 
+const ARTIFACT_KINDS: ReadonlySet<ArtifactKind> = new Set(["markdown", "image", "pdf", "csv", "html", "download"]);
+
+function isArtifactKind(value: string): value is ArtifactKind {
+  return ARTIFACT_KINDS.has(value as ArtifactKind);
+}
+
+/**
+ * Tools whose call IS the model handing a deliverable to the user.
+ *
+ * An artifact is an intentional act, not a sniffed file write — a mode ships a
+ * tool like this so the model can say "here is your document" explicitly.
+ */
+const PRESENT_ARTIFACT_TOOLS: ReadonlySet<string> = new Set(["present_artifact", "present-artifact", "presentartifact"]);
+
 const KIND_BY_EXTENSION: Record<string, ArtifactKind> = {
   md: "markdown",
   markdown: "markdown",
@@ -71,18 +85,40 @@ export function writtenPath(toolName: string | undefined, toolInput: unknown): s
   return path && path.trim().length > 0 ? path.trim() : null;
 }
 
+/** What an artifact card renders. */
+export interface DetectedArtifact {
+  path: string;
+  kind: ArtifactKind;
+  /** Human label from an explicit hand-off; falls back to the filename. */
+  title?: string;
+}
+
 /**
  * The artifact a tool call produced, or null.
  *
- * Only fires for modes with artifacts enabled, and only for extensions the
- * mode claims — a coding session writing `.ts` is not producing a deliverable.
+ * Two paths. An explicit hand-off (`present_artifact`) is the model choosing to
+ * deliver something to the user — honored regardless of extension, because
+ * intent beats the allowlist. Otherwise the legacy implicit case: a write to a
+ * deliverable path in an artifact-enabled mode (a coding session writing `.ts`
+ * is not producing a deliverable).
  */
 export function detectArtifact(
   toolName: string | undefined,
   toolInput: unknown,
   modeUi: ResolvedModeUi | null | undefined,
-): { path: string; kind: ArtifactKind } | null {
+): DetectedArtifact | null {
   if (!modeUi?.artifacts) return null;
+
+  const base = baseToolName(toolName);
+  if (base && PRESENT_ARTIFACT_TOOLS.has(base)) {
+    const args = toolArgs(toolInput);
+    const path = typeof args.path === "string" ? args.path.trim() : "";
+    if (!path) return null;
+    const kind = typeof args.kind === "string" && isArtifactKind(args.kind) ? args.kind : artifactKindFor(path);
+    const title = typeof args.title === "string" && args.title.trim() ? args.title.trim() : undefined;
+    return { path, kind, title };
+  }
+
   const path = writtenPath(toolName, toolInput);
   if (!path || !isArtifactPath(path, modeUi)) return null;
   return { path, kind: artifactKindFor(path) };

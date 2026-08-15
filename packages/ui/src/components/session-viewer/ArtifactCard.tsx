@@ -34,6 +34,18 @@ function mimeFor(kind: ArtifactKind, path: string): string {
   return "application/octet-stream";
 }
 
+/**
+ * Resolve a deliverable path for the read-file API, which takes paths verbatim
+ * (no cwd resolution). A model can present a relative path — join it to the
+ * session cwd so the file actually loads. POSIX runners only; a Windows drive
+ * or UNC path is already absolute.
+ */
+export function resolveArtifactPath(path: string, cwd: string | undefined): string {
+  if (/^([/\\]|[a-zA-Z]:[/\\])/.test(path)) return path;
+  if (!cwd) return path;
+  return `${cwd.replace(/[/\\]+$/, "")}/${path}`;
+}
+
 /** Bytes read from a runner file, plus the state around loading them. */
 interface ArtifactContent {
   content: string | null;
@@ -170,21 +182,28 @@ async function downloadArtifact(opts: {
 export function ArtifactCard({
   path,
   kind,
+  title,
   runnerId,
+  cwd,
   onOpen,
 }: {
   path: string;
   kind: ArtifactKind;
+  /** Human label from an explicit hand-off; falls back to the filename. */
+  title?: string;
   /** Runner that owns the file; without it the card cannot fetch a preview. */
   runnerId?: string;
+  /** Session cwd, used to resolve a relative deliverable path. */
+  cwd?: string;
   /** Open the file in the file explorer panel, when the host supports it. */
   onOpen?: (path: string) => void;
 }) {
+  const resolvedPath = resolveArtifactPath(path, cwd);
   const fileName = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
   const previewable = kind !== "download";
 
   const { content, dataUrl, size, error: fetchError, loading, truncated } = useArtifactContent(
-    path,
+    resolvedPath,
     kind,
     runnerId,
     previewable,
@@ -196,7 +215,7 @@ export function ArtifactCard({
 
   const download = () =>
     downloadArtifact({
-      path,
+      path: resolvedPath,
       kind,
       runnerId,
       fileName,
@@ -221,7 +240,7 @@ export function ArtifactCard({
         </Button>
       )}
       {onOpen && (
-        <Button size="icon" variant="ghost" className="size-7" onClick={() => onOpen(path)} aria-label={`Open ${fileName}`}>
+        <Button size="icon" variant="ghost" className="size-7" onClick={() => onOpen(resolvedPath)} aria-label={`Open ${fileName}`}>
           <ExternalLinkIcon className="size-3.5" />
         </Button>
       )}
@@ -246,14 +265,15 @@ export function ArtifactCard({
           <button
             type="button"
             className={cn(
-              "truncate text-left text-sm font-medium",
+              "flex min-w-0 items-baseline gap-1.5 text-left",
               previewable && runnerId && "hover:underline cursor-pointer",
             )}
-            title={path}
+            title={resolvedPath}
             onClick={previewable && runnerId ? () => setExpanded(true) : undefined}
             disabled={!(previewable && runnerId)}
           >
-            {fileName}
+            <span className="truncate text-sm font-medium">{title ?? fileName}</span>
+            {title && <span className="shrink-0 truncate text-[0.7rem] text-muted-foreground">{fileName}</span>}
           </button>
           {size !== undefined && <span className="shrink-0 text-[0.65rem] tabular-nums text-muted-foreground">{formatSize(size)}</span>}
           {actions}
@@ -300,8 +320,9 @@ export function ArtifactCard({
 
       {expanded && (
         <ArtifactViewer
-          path={path}
+          path={resolvedPath}
           kind={kind}
+          title={title}
           runnerId={runnerId}
           onOpen={onOpen}
           onClose={() => setExpanded(false)}
@@ -320,12 +341,14 @@ export function ArtifactCard({
 function ArtifactViewer({
   path,
   kind,
+  title,
   runnerId,
   onOpen,
   onClose,
 }: {
   path: string;
   kind: ArtifactKind;
+  title?: string;
   runnerId?: string;
   onOpen?: (path: string) => void;
   onClose: () => void;
@@ -358,8 +381,9 @@ function ArtifactViewer({
         <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
           <DynamicLucideIcon name={KIND_ICON[kind]} className="size-4 shrink-0 text-muted-foreground" />
           <span className="truncate text-sm font-medium" title={path}>
-            {fileName}
+            {title ?? fileName}
           </span>
+          {title && <span className="shrink-0 truncate text-xs text-muted-foreground">{fileName}</span>}
           {size !== undefined && <span className="shrink-0 text-[0.65rem] tabular-nums text-muted-foreground">{formatSize(size)}</span>}
           <div className="ml-auto flex shrink-0 items-center gap-1">
             {onOpen && (

@@ -74,6 +74,46 @@ describe("detectArtifact", () => {
     });
 });
 
+describe("detectArtifact — explicit present_artifact hand-off", () => {
+    test("honors an explicit hand-off with a title", () => {
+        expect(detectArtifact("present_artifact", { path: "/w/report.pdf", title: "Q3 Report" }, workUi)).toEqual({
+            path: "/w/report.pdf",
+            kind: "pdf",
+            title: "Q3 Report",
+        });
+    });
+
+    test("an explicit kind overrides the extension guess", () => {
+        expect(detectArtifact("present_artifact", { path: "/w/page", kind: "html" }, workUi)?.kind).toBe("html");
+    });
+
+    test("a bogus kind falls back to the extension", () => {
+        expect(detectArtifact("present_artifact", { path: "/w/a.csv", kind: "nonsense" }, workUi)?.kind).toBe("csv");
+    });
+
+    test("explicit intent beats the extension allowlist", () => {
+        // A narrow mode only claims pdf, but an explicit hand-off of a docx is
+        // still a deliverable — the model chose to present it.
+        const narrow = resolveModeUi({ ...workMode, ui: { artifacts: { enabled: true, extensions: ["pdf"] } } });
+        expect(detectArtifact("present_artifact", { path: "/w/deck.pptx" }, narrow)).toEqual({
+            path: "/w/deck.pptx",
+            kind: "download",
+        });
+    });
+
+    test("the MCP-prefixed form is recognized", () => {
+        expect(detectArtifact("mcp__pizzawork__present_artifact", { path: "/w/a.md" }, workUi)?.path).toBe("/w/a.md");
+    });
+
+    test("still requires artifacts to be enabled", () => {
+        expect(detectArtifact("present_artifact", { path: "/w/a.md" }, codingUi)).toBeNull();
+    });
+
+    test("a hand-off with no path is ignored", () => {
+        expect(detectArtifact("present_artifact", { title: "nothing" }, workUi)).toBeNull();
+    });
+});
+
 describe("tool input arriving as a JSON string", () => {
     test("still produces an artifact", () => {
         // Some providers serialize tool input; dropping those silently lost a
