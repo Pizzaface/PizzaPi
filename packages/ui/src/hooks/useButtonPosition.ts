@@ -19,7 +19,6 @@ export type ToolbarButtonId =
   | "git"
   | "triggers"
   | "analyzer"
-  | "artifacts"
   | "export"
   | "duplicate"
   | "delete"
@@ -27,7 +26,7 @@ export type ToolbarButtonId =
 
 const ALL_BUTTON_IDS: readonly ToolbarButtonId[] = [
   "effort", "plan", "tokens",
-  "terminal", "files", "git", "triggers", "analyzer", "artifacts",
+  "terminal", "files", "git", "triggers", "analyzer",
   "export", "duplicate", "delete",
 ];
 

@@ -70,7 +70,6 @@ import {
   Zap,
   Pencil,
   BarChart3,
-  FileBox,
 } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import { McpToggleContext } from "@/components/session-viewer/McpToggleContext";
@@ -166,9 +165,6 @@ export function SessionViewer({
   onToggleAnalyzer,
   showAnalyzerButton,
   isAnalyzerOpen,
-  onToggleArtifacts,
-  showArtifactsButton,
-  isArtifactsOpen,
   triggerCount,
   todoList = [],
   goal,
@@ -793,18 +789,6 @@ export function SessionViewer({
                   </Tooltip>
                   </DraggableToolbarButton>
                 )}
-                {(showArtifactsButton && onToggleArtifacts && inHeader("artifacts")) && (
-                  <DraggableToolbarButton buttonId="artifacts" onDragStart={onButtonDragStart}>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button className="hidden md:inline-flex h-7 w-7" onClick={onToggleArtifacts} size="icon" type="button" variant="outline" aria-label="Toggle artifacts panel">
-                        <FileBox className="size-3.5" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Artifacts · click-and-hold to reposition</TooltipContent>
-                  </Tooltip>
-                  </DraggableToolbarButton>
-                )}
                 {extraHeaderButtons}
                 {inHeader("export") && (
                 <DraggableToolbarButton buttonId="export" onDragStart={onButtonDragStart}>
@@ -850,9 +834,6 @@ export function SessionViewer({
                   showAnalyzerButton={showAnalyzerButton}
                   onToggleAnalyzer={onToggleAnalyzer}
                   isAnalyzerOpen={isAnalyzerOpen}
-                  showArtifactsButton={showArtifactsButton}
-                  onToggleArtifacts={onToggleArtifacts}
-                  isArtifactsOpen={isArtifactsOpen}
                   triggerCount={triggerCount}
                   onDuplicateSession={onDuplicateSession}
                   messages={sortedMessages}
