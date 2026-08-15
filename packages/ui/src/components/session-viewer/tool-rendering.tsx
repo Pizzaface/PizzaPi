@@ -27,6 +27,8 @@ import { FileTypeCard } from "@/components/ai-elements/file-type-card";
 import { ActivityToolCard } from "@/components/session-viewer/ActivityToolCard";
 import { ArtifactCard } from "@/components/session-viewer/ArtifactCard";
 import { detectArtifact } from "@/components/session-viewer/artifact-detection";
+import { PresentedCard } from "@/components/session-viewer/PresentedCard";
+import { detectPresentedCard } from "@/components/session-viewer/presented-card";
 import { useArtifactHost, useModeUi } from "@/components/session-viewer/ModeUiContext";
 import { EditFileCard } from "@/components/ai-elements/edit-file-card";
 import {
@@ -1197,6 +1199,14 @@ function ModeAwareToolCard({
 }) {
   const modeUi = useModeUi();
   const artifactHost = useArtifactHost();
+
+  // An explicit read-only entity the model presented (contact/place/event).
+  // Renders regardless of mode — the tool only exists if a package registered it.
+  const presentedCard = detectPresentedCard(toolName, toolInput);
+  if (presentedCard && !isStreaming && !isError) {
+    return <PresentedCard card={presentedCard} />;
+  }
+
   const artifact = detectArtifact(toolName, toolInput, modeUi);
 
   // A finished deliverable is the point of the message, so it renders in full
