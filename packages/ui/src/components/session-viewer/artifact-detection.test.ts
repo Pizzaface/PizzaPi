@@ -19,13 +19,13 @@ describe("extensionOf / artifactKindFor", () => {
         expect(artifactKindFor("/w/a.xlsx")).toBe("xlsx");
         expect(artifactKindFor("/w/a.xls")).toBe("xlsx");
         expect(artifactKindFor("/w/a.ods")).toBe("xlsx");
+        expect(artifactKindFor("/w/a.pptx")).toBe("pptx");
         expect(artifactKindFor("/w/a.html")).toBe("html");
         expect(artifactKindFor("/w/a.png")).toBe("image");
     });
 
     test("formats browsers cannot render inline fall back to download", () => {
         expect(artifactKindFor("/w/a.docx")).toBe("download");
-        expect(artifactKindFor("/w/a.pptx")).toBe("download");
         expect(artifactKindFor("/w/Makefile")).toBe("download");
     });
 
@@ -98,8 +98,8 @@ describe("detectArtifact — explicit present_artifact hand-off", () => {
         // A narrow mode only claims pdf, but an explicit hand-off of a docx is
         // still a deliverable — the model chose to present it.
         const narrow = resolveModeUi({ ...workMode, ui: { artifacts: { enabled: true, extensions: ["pdf"] } } });
-        expect(detectArtifact("present_artifact", { path: "/w/deck.pptx" }, narrow)).toEqual({
-            path: "/w/deck.pptx",
+        expect(detectArtifact("present_artifact", { path: "/w/notes.docx" }, narrow)).toEqual({
+            path: "/w/notes.docx",
             kind: "download",
         });
     });

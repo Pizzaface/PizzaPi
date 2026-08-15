@@ -18,11 +18,14 @@ const KIND_ICON: Record<ArtifactKind, string> = {
   csv: "table",
   xlsx: "sheet",
   html: "code",
+  pptx: "presentation",
   download: "file",
 };
 
 /** Lazy so SheetJS's parser stays out of the main bundle until a sheet is viewed. */
 const XlsxPreview = React.lazy(() => import("@/components/session-viewer/XlsxPreview"));
+/** Lazy so the pptx renderer stays out of the main bundle until a deck is viewed. */
+const PptxPreview = React.lazy(() => import("@/components/session-viewer/PptxPreview"));
 
 /** Text kinds are fetched as utf8; everything else needs base64. */
 function encodingFor(kind: ArtifactKind): "utf8" | "base64" {
@@ -298,7 +301,7 @@ export function ArtifactCard({
           {actions}
         </div>
 
-        <div className={cn("max-h-96 overflow-auto", (kind === "pdf" || kind === "xlsx") && "max-h-none")}>
+        <div className={cn("max-h-96 overflow-auto", (kind === "pdf" || kind === "xlsx" || kind === "pptx") && "max-h-none")}>
           {loading && (
             <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
               <Loader2Icon className="size-4 animate-spin" /> Loading preview…
@@ -539,6 +542,22 @@ function ArtifactPreview({
         }
       >
         <XlsxPreview content={content} full={full} />
+      </React.Suspense>
+    );
+  }
+
+  if (kind === "pptx") {
+    return (
+      <React.Suspense
+        fallback={
+          <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+            <Loader2Icon className="size-4 animate-spin" /> Loading slides…
+          </div>
+        }
+      >
+        <div className={full ? "h-full" : "h-[28rem]"}>
+          <PptxPreview content={content} full={full} />
+        </div>
       </React.Suspense>
     );
   }
