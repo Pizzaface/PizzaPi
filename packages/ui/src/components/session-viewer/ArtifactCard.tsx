@@ -7,7 +7,7 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
 import { formatSize } from "@/components/file-explorer/utils";
-import { parseCsv } from "@/components/session-viewer/csv";
+import { CsvTable } from "@/components/session-viewer/csv-table";
 import type { ArtifactKind } from "@/components/session-viewer/artifact-detection";
 
 /** Icon per artifact kind, so a deliverable is identifiable before it loads. */
@@ -522,41 +522,7 @@ function ArtifactPreview({
     );
   }
 
-  if (kind === "csv") return <CsvPreview content={content} full={full} />;
+  if (kind === "csv") return <CsvTable content={content} full={full} />;
 
   return null;
-}
-
-/** First rows of a CSV/TSV, as a table. */
-function CsvPreview({ content, full = false }: { content: string; full?: boolean }) {
-  const { header, rows, truncated } = React.useMemo(() => parseCsv(content, full ? 500 : 50), [content, full]);
-  if (!header) return <div className="px-3 py-6 text-center text-sm text-muted-foreground">Empty file.</div>;
-
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs">
-        <thead className="sticky top-0 bg-muted/60">
-          <tr>
-            {header.map((cell, i) => (
-              <th key={i} className="border-b border-border px-2 py-1.5 text-left font-medium">
-                {cell}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, r) => (
-            <tr key={r} className="odd:bg-muted/20">
-              {header.map((_, c) => (
-                <td key={c} className="border-b border-border/50 px-2 py-1 tabular-nums">
-                  {row[c] ?? ""}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {truncated && <div className="px-3 py-2 text-center text-[0.65rem] text-muted-foreground">Showing the first {rows.length} rows.</div>}
-    </div>
-  );
 }
