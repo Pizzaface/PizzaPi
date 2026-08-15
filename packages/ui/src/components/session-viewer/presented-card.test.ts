@@ -58,6 +58,7 @@ describe("detectPresentedCard — schema.org entities", () => {
     const card = present({
       "@type": "LocalBusiness",
       name: "Bob's Handyman",
+      description: "Factory-authorized appliance repair serving the tri-cities.",
       telephone: "(555) 123-4567",
       url: "https://bobs.example",
       address: { streetAddress: "1 Main St", addressLocality: "Springfield" },
@@ -69,12 +70,26 @@ describe("detectPresentedCard — schema.org entities", () => {
     expect(card.rating).toEqual({ value: 4.5, max: 5, count: 87 });
     expect(card.price).toBe("$$");
     expect(card.address).toBe("1 Main St, Springfield");
+    // The long description is its own block, never the subtitle.
+    expect(card.description).toBe("Factory-authorized appliance repair serving the tri-cities.");
+    expect(card.subtitle).toBeUndefined();
+    // Address is not duplicated as a generic field.
+    expect(card.fields.find((f) => f.label === "Address")).toBeUndefined();
     const labels = card.actions.map((a) => a.label);
     expect(labels).toContain("Call");
     expect(labels).toContain("Website");
     expect(labels).toContain("Directions");
     expect(card.actions.find((a) => a.label === "Call")?.href).toBe("tel:5551234567");
-    expect(card.actions.find((a) => a.label === "Directions")?.href).toContain("google.com/maps");
+    // Directions searches by name + address, not just the city.
+    const dir = card.actions.find((a) => a.label === "Directions")!.href;
+    expect(dir).toContain("Bob");
+    expect(dir).toContain("Springfield");
+  });
+
+  test("directions use name + city when only a city-level address is given", () => {
+    const card = present({ "@type": "LocalBusiness", name: "American Appliance", address: "Bristol, TN", telephone: "555-1" })!;
+    const dir = card.actions.find((a) => a.label === "Directions")!.href;
+    expect(decodeURIComponent(dir)).toContain("American Appliance, Bristol, TN");
   });
 
   test("Person: subtitle from jobTitle, call/email actions", () => {

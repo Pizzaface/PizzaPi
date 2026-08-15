@@ -48,6 +48,8 @@ export interface PresentedCard {
   schemaType?: string;
   title: string;
   subtitle?: string;
+  /** Longer prose (schema.org description), shown as a clamped block. */
+  description?: string;
   image?: string;
   /** Default Lucide icon for the kind, overridable by the entity. */
   icon: string;
@@ -204,9 +206,22 @@ function parsePrice(entity: Record<string, unknown>): string {
   return symbol ? `${symbol}${price}` : currency ? `${price} ${currency}` : String(price);
 }
 
-/** Directions link for an address / geo, key-free via Google Maps query. */
-function directionsHref(address: string, geo?: { lat: number; lng: number }): string | undefined {
-  const query = geo ? `${geo.lat},${geo.lng}` : address;
+/**
+ * Directions link for a place, key-free via a Google Maps query.
+ *
+ * Prefer the name + address so Maps lands on the actual business listing
+ * ("American Appliance, Bristol, TN") rather than dropping a pin on the city
+ * centroid. Falls back to precise geo coordinates only when there's no name or
+ * address to search by.
+ */
+function directionsHref(name: string, address: string, geo?: { lat: number; lng: number }): string | undefined {
+  // With an address, search by name + address so Maps finds the listing.
+  // Without one, precise geo coordinates beat an ambiguous bare name.
+  const query = address
+    ? [name, address].map((p) => p.trim()).filter(Boolean).join(", ")
+    : geo
+      ? `${geo.lat},${geo.lng}`
+      : name.trim();
   if (!query) return undefined;
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
 }
@@ -282,13 +297,15 @@ export function normalizeSchemaEntity(raw: unknown): PresentedCard | null {
   }
   const image = httpImage(entity.image ?? entity.photo ?? entity.logo ?? entity.thumbnailUrl);
 
-  // Subtitle: the most useful one-liner per kind.
+  const description = str(entity.description);
+
+  // Subtitle: a SHORT one-liner per kind — never the long description, which
+  // gets its own clamped block.
   const subtitle = firstString(
     kind === "person" ? entity.jobTitle : undefined,
     kind === "person" ? (entity.worksFor as Record<string, unknown> | undefined)?.name : undefined,
     kind === "product" ? (entity.brand as Record<string, unknown> | undefined)?.name ?? entity.brand : undefined,
-    entity.description,
-    typeof schemaType === "string" && kind !== "generic" ? undefined : str(schemaType),
+    kind === "business" ? (entity.category ?? entity.servesCuisine) : undefined,
   );
 
   const badges: string[] = [];
@@ -303,15 +320,12 @@ export function normalizeSchemaEntity(raw: unknown): PresentedCard | null {
     const v = str(value);
     if (v) fields.push({ label, value: v });
   };
-  if (address) addField("Address", address);
+  // Address renders on its own line (with a pin); phone/email become Call/Email
+  // actions — so neither is repeated here.
   if (kind === "event") {
     addField("Starts", formatDate(entity.startDate));
     addField("Ends", formatDate(entity.endDate));
     addField("Where", firstString((entity.location as Record<string, unknown> | undefined)?.name, formatAddress(entity.location)));
-  }
-  if (kind === "person") {
-    addField("Phone", entity.telephone);
-    addField("Email", entity.email);
   }
   // Author-supplied extra fields always win a spot.
   fields.push(...normalizeFields(entity.fields));
@@ -328,7 +342,9 @@ export function normalizeSchemaEntity(raw: unknown): PresentedCard | null {
   if (url && isSafeActionHref(url)) {
     pushAction(actions, { label: kind === "product" ? "View" : "Website", href: url, icon: kind === "product" ? "external-link" : "globe" });
   }
-  const dir = (kind === "place" || kind === "business" || address || geo) ? directionsHref(address, geo) : undefined;
+  const dir = (kind === "place" || kind === "business" || address || geo)
+    ? directionsHref(title, address, geo)
+    : undefined;
   pushAction(actions, dir ? { label: "Directions", href: dir, icon: "map-pin" } : undefined);
   for (const a of normalizeActions(entity.actions)) pushAction(actions, a);
 
@@ -337,6 +353,7 @@ export function normalizeSchemaEntity(raw: unknown): PresentedCard | null {
     schemaType: typeof schemaType === "string" ? schemaType : undefined,
     title,
     subtitle: subtitle || undefined,
+    description: description || undefined,
     image,
     icon: firstString(entity.icon) || KIND_ICON[kind],
     rating,
