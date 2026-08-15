@@ -28,6 +28,7 @@ const TEXT_MIME_TYPES = new Set([
     "application/x-toml",
     "application/xhtml+xml",
     "application/ld+json",
+    "image/svg+xml",
 ]);
 const TEXT_FILE_EXTENSIONS = new Set([
     ".txt", ".md", ".markdown", ".json", ".jsonl", ".yaml", ".yml",
@@ -38,6 +39,7 @@ const TEXT_FILE_EXTENSIONS = new Set([
     ".c", ".h", ".cpp", ".hpp", ".cc", ".cs", ".swift", ".m",
     ".html", ".htm", ".css", ".scss", ".sass", ".less",
     ".sql", ".graphql", ".gql",
+    ".svg",
     ".r", ".R", ".lua", ".pl", ".pm", ".ex", ".exs", ".erl",
     ".hs", ".ml", ".mli", ".clj", ".cljs", ".elm", ".dart",
     ".vue", ".svelte", ".astro",
@@ -182,7 +184,8 @@ export async function buildUserMessageFromRemoteInput(
             }
         }
 
-        if (dataBase64 && mediaType.startsWith("image/")) {
+        // Only raster images are sent as native image parts. SVG is text and is handled below.
+        if (dataBase64 && mediaType.startsWith("image/") && mediaType !== "image/svg+xml") {
             parts.push({
                 type: "image",
                 mimeType: mediaType,
@@ -193,23 +196,28 @@ export async function buildUserMessageFromRemoteInput(
 
         const label = filename || mediaType || "attachment";
 
-        if (isTextMimeType(mediaType, filename)) {
-            if (savedPath) {
-                // File is saved on the runner — reference by path instead of inlining.
-                parts.push({ type: "text", text: `[Attached file saved to runner: ${savedPath}]` });
-            } else if (dataBase64) {
-                // No session storage available — fall back to inlining.
-                const decoded = Buffer.from(dataBase64, "base64").toString("utf-8");
-                parts.push({ type: "text", text: `--- ${label} ---\n${decoded}\n--- end ${label} ---` });
-            } else {
-                // Attachment bytes unavailable (relay fetch failed or data URL invalid) — keep a
-                // visible placeholder so the agent/user knows the file was sent but not decoded.
-                parts.push({ type: "text", text: `[Attached file: ${label} — content unavailable]` });
-            }
+        if (savedPath) {
+            // File is saved on the runner — reference by path regardless of type.
+            parts.push({ type: "text", text: `[Attached file saved to runner: ${savedPath}]` });
             continue;
         }
 
-        parts.push({ type: "text", text: `[Attachment provided by web client: ${label} — binary content not included]` });
+        if (isTextMimeType(mediaType, filename) && dataBase64) {
+            // No session storage available — fall back to inlining.
+            const decoded = Buffer.from(dataBase64, "base64").toString("utf-8");
+            parts.push({ type: "text", text: `--- ${label} ---\n${decoded}\n--- end ${label} ---` });
+            continue;
+        }
+
+        if (dataBase64) {
+            // Binary content is available but won't be dumped into the prompt as UTF-8.
+            parts.push({ type: "text", text: `[Attached file: ${label} (${mediaType}) — binary content not shown]` });
+            continue;
+        }
+
+        // Attachment bytes unavailable (relay fetch failed or data URL invalid) — keep a
+        // visible placeholder so the agent/user knows the file was sent but not decoded.
+        parts.push({ type: "text", text: `[Attached file: ${label} — content unavailable]` });
     }
 
     return parts.length > 0 ? parts : text;
