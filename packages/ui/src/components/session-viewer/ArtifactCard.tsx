@@ -16,12 +16,17 @@ const KIND_ICON: Record<ArtifactKind, string> = {
   image: "image",
   pdf: "file-type-2",
   csv: "table",
+  xlsx: "sheet",
   html: "code",
   download: "file",
 };
 
+/** Lazy so SheetJS's parser stays out of the main bundle until a sheet is viewed. */
+const XlsxPreview = React.lazy(() => import("@/components/session-viewer/XlsxPreview"));
+
 /** Text kinds are fetched as utf8; everything else needs base64. */
 function encodingFor(kind: ArtifactKind): "utf8" | "base64" {
+  // xlsx is binary; everything but text kinds needs base64.
   return kind === "markdown" || kind === "csv" || kind === "html" ? "utf8" : "base64";
 }
 
@@ -293,7 +298,7 @@ export function ArtifactCard({
           {actions}
         </div>
 
-        <div className={cn("max-h-96 overflow-auto", kind === "pdf" && "max-h-none")}>
+        <div className={cn("max-h-96 overflow-auto", (kind === "pdf" || kind === "xlsx") && "max-h-none")}>
           {loading && (
             <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
               <Loader2Icon className="size-4 animate-spin" /> Loading preview…
@@ -523,6 +528,20 @@ function ArtifactPreview({
   }
 
   if (kind === "csv") return <CsvTable content={content} full={full} />;
+
+  if (kind === "xlsx") {
+    return (
+      <React.Suspense
+        fallback={
+          <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+            <Loader2Icon className="size-4 animate-spin" /> Loading sheet…
+          </div>
+        }
+      >
+        <XlsxPreview content={content} full={full} />
+      </React.Suspense>
+    );
+  }
 
   return null;
 }

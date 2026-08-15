@@ -46,7 +46,25 @@ export function CsvTable({ content, full = false }: { content: string; full?: bo
     () => parseCsv(content, full ? 100_000 : 50),
     [content, full],
   );
+  return <SpreadsheetTable header={header} rows={rows} truncated={truncated} full={full} />;
+}
 
+/**
+ * The sortable spreadsheet itself, over already-parsed data. Shared by the CSV
+ * preview and the XLSX viewer so every tabular format sorts and scrolls the
+ * same way.
+ */
+export function SpreadsheetTable({
+  header,
+  rows,
+  truncated = false,
+  full = false,
+}: {
+  header: string[] | null;
+  rows: CsvRow[];
+  truncated?: boolean;
+  full?: boolean;
+}) {
   // Which columns are numeric (every non-empty cell parses as a number).
   const numericColumns = React.useMemo(() => {
     if (!header) return [] as boolean[];

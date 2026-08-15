@@ -16,6 +16,9 @@ describe("extensionOf / artifactKindFor", () => {
         expect(artifactKindFor("/w/a.md")).toBe("markdown");
         expect(artifactKindFor("/w/a.PDF")).toBe("pdf");
         expect(artifactKindFor("/w/a.csv")).toBe("csv");
+        expect(artifactKindFor("/w/a.xlsx")).toBe("xlsx");
+        expect(artifactKindFor("/w/a.xls")).toBe("xlsx");
+        expect(artifactKindFor("/w/a.ods")).toBe("xlsx");
         expect(artifactKindFor("/w/a.html")).toBe("html");
         expect(artifactKindFor("/w/a.png")).toBe("image");
     });
