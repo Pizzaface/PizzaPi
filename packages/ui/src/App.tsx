@@ -4124,10 +4124,11 @@ export function App() {
     return () => window.removeEventListener("pp-navigate-session", handler);
   }, [handleOpenSession]);
 
-  const handleClearSelection = React.useCallback(() => {
+  const handleClearSelection = React.useCallback((keepSidebarOpen?: boolean) => {
     setShowRunners(false);
     clearSelection();
-    setSidebarOpen(false);
+    // ponytail: mode switching clears the session but stays in the sidebar.
+    if (!keepSidebarOpen) setSidebarOpen(false);
   }, [clearSelection]);
 
   // Global keyboard shortcuts
