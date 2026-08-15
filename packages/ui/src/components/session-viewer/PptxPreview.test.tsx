@@ -60,6 +60,20 @@ describe("PptxPreview", () => {
     expect(loaded).toBeGreaterThan(0);
   });
 
+  test("navigation controls do not submit a containing form", async () => {
+    let submitted = false;
+    const { getByText, getByLabelText } = render(
+      <form onSubmit={(event) => { event.preventDefault(); submitted = true; }}>
+        <PptxPreview content="FORM" />
+      </form>,
+    );
+    await waitFor(() => expect(getByText("1 / 3")).toBeDefined());
+
+    fireEvent.click(getByLabelText("Next slide"));
+    await waitFor(() => expect(getByText("2 / 3")).toBeDefined());
+    expect(submitted).toBe(false);
+  });
+
   test("next/prev navigate and render the target slide", async () => {
     const before = rendered.length;
     const { getByText, getByLabelText } = render(<PptxPreview content="BBBB" />);
