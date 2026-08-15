@@ -17,7 +17,7 @@ const win = new Window({ url: "http://localhost/" });
 (globalThis as any).Node = (win as any).Node;
 (globalThis as any).getComputedStyle = (win as any).getComputedStyle;
 
-const { PresentedCard } = await import("./PresentedCard");
+const { PresentedCard, PresentedCardGroup } = await import("./PresentedCard");
 
 afterEach(() => cleanup());
 
@@ -48,5 +48,24 @@ describe("PresentedCard", () => {
     const link = getByText("Call").closest("a") as HTMLAnchorElement | null;
     expect(link?.getAttribute("href")).toBe("tel:+15551234");
     expect(link?.getAttribute("rel")).toContain("noopener");
+  });
+
+  test("a group of several shows a count header and every title", () => {
+    const cards: PresentedCardData[] = [
+      { kind: "business", title: "Alpha Co", icon: "store", badges: [], fields: [], actions: [] },
+      { kind: "business", title: "Bravo Co", icon: "store", badges: [], fields: [], actions: [] },
+      { kind: "business", title: "Charlie Co", icon: "store", badges: [], fields: [], actions: [] },
+    ];
+    const { getByText } = render(<PresentedCardGroup cards={cards} />);
+    expect(getByText("3 results")).toBeDefined();
+    expect(getByText("Alpha Co")).toBeDefined();
+    expect(getByText("Bravo Co")).toBeDefined();
+    expect(getByText("Charlie Co")).toBeDefined();
+  });
+
+  test("a group of one renders no count header", () => {
+    const { queryByText, getByText } = render(<PresentedCardGroup cards={[card]} />);
+    expect(getByText("Bob's Handyman")).toBeDefined();
+    expect(queryByText(/results$/)).toBeNull();
   });
 });

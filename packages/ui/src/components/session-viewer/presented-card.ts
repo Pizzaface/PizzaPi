@@ -378,14 +378,37 @@ function formatDate(value: unknown): string {
   });
 }
 
-/** The card a tool call is presenting, or null. */
-export function detectPresentedCard(toolName: string | undefined, toolInput: unknown): PresentedCard | null {
+/**
+ * The entities a present_card call is showing, in order.
+ *
+ * Accepts one or many: an `entities`/`cards`/`items` array, a single `entity`
+ * (object or array), or — for the legacy flat shape — the args themselves.
+ */
+function pickEntities(args: Record<string, unknown>): unknown[] {
+  for (const key of ["entities", "cards", "items"]) {
+    if (Array.isArray(args[key])) return args[key] as unknown[];
+  }
+  const entity = args.entity;
+  if (Array.isArray(entity)) return entity;
+  if (entity && typeof entity === "object") return [entity];
+  return [args];
+}
+
+/** Every card a tool call is presenting (0, 1, or many). */
+export function detectPresentedCards(toolName: string | undefined, toolInput: unknown): PresentedCard[] {
   const base = baseToolName(toolName);
-  if (!base || !PRESENT_CARD_TOOLS.has(base)) return null;
+  if (!base || !PRESENT_CARD_TOOLS.has(base)) return [];
 
   const args = toolArgs(toolInput);
-  // Prefer an explicit `entity` (schema.org JSON-LD); fall back to the args
-  // themselves (a flat { title, fields, actions } or a bare entity).
-  const entity = args.entity && typeof args.entity === "object" ? args.entity : args;
-  return normalizeSchemaEntity(entity);
+  const cards: PresentedCard[] = [];
+  for (const entity of pickEntities(args)) {
+    const card = normalizeSchemaEntity(entity);
+    if (card) cards.push(card);
+  }
+  return cards;
+}
+
+/** The first card a tool call is presenting, or null. */
+export function detectPresentedCard(toolName: string | undefined, toolInput: unknown): PresentedCard | null {
+  return detectPresentedCards(toolName, toolInput)[0] ?? null;
 }

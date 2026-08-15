@@ -14,9 +14,37 @@ import type { PresentedCard as PresentedCardData, CardRating } from "@/component
  * stars, price/hours badges, address, derived call/email/directions actions)
  * come from the normalizer, so this component just lays them out.
  */
+/** A single card, standalone (owns its vertical margin). */
 export function PresentedCard({ card }: { card: PresentedCardData }) {
   return (
-    <div className="my-2 overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+    <div className="my-2">
+      <PresentedCardBody card={card} />
+    </div>
+  );
+}
+
+/**
+ * One or many cards from a single present_card call. Multiple entities (e.g. a
+ * search returning several businesses) stack with a count header.
+ */
+export function PresentedCardGroup({ cards }: { cards: PresentedCardData[] }) {
+  if (cards.length === 0) return null;
+  if (cards.length === 1) return <PresentedCard card={cards[0]!} />;
+  return (
+    <div className="my-2 space-y-2">
+      <div className="px-0.5 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground">
+        {cards.length} results
+      </div>
+      {cards.map((card, i) => (
+        <PresentedCardBody key={i} card={card} />
+      ))}
+    </div>
+  );
+}
+
+function PresentedCardBody({ card }: { card: PresentedCardData }) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
       <div className="flex items-start gap-3 border-b border-border bg-muted/40 px-3 py-2.5">
         {card.image ? (
           <img
