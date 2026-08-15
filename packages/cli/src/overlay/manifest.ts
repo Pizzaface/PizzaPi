@@ -553,8 +553,12 @@ function validateSessionModeDef(entry: unknown, field: string, push: PushFn): vo
     if (typeof entry.id !== "string" || entry.id.length === 0) push(`${field}.id`, "must be a non-empty string", "Set id to a unique mode identifier.");
     if (typeof entry.label !== "string" || entry.label.length === 0) push(`${field}.label`, "must be a non-empty string", "Set label to a human-readable mode name.");
     if (entry.icon !== undefined && typeof entry.icon !== "string") push(`${field}.icon`, "must be a string", "Set icon to a Lucide icon name, or omit it.");
-    if (typeof entry.workspace !== "string" || !/^~(?:\/|$)/.test(entry.workspace)) {
+    // The workspace becomes a spawn cwd, so it is a trust boundary: `~/../x`
+    // would expand by plain string substitution and escape the home directory.
+    if (typeof entry.workspace !== "string" || !/^~\/[^/]/.test(entry.workspace)) {
         push(`${field}.workspace`, "must be a home-relative path beginning with ~/", "Set workspace to a path such as ~/Documents/Workspace.");
+    } else if (entry.workspace.split("/").some((segment) => segment === "." || segment === "..")) {
+        push(`${field}.workspace`, "must not contain . or .. path segments", "Point workspace at a fixed path inside the home directory.");
     }
     if (entry.ui !== undefined) validateSessionModeUi(entry.ui, `${field}.ui`, push);
 }

@@ -668,9 +668,17 @@ export function renderGroupedToolExecution(
     })();
 
     if (editPath && oldText !== null && newText !== null) {
-      card = <DiffView path={editPath} oldText={oldText} newText={newText} />;
+      card = (
+        <ModeAwareDiff path={editPath}>
+          <DiffView path={editPath} oldText={oldText} newText={newText} />
+        </ModeAwareDiff>
+      );
     } else if (editPath && editsArray) {
-      card = <MultiDiffView path={editPath} edits={editsArray} />;
+      card = (
+        <ModeAwareDiff path={editPath}>
+          <MultiDiffView path={editPath} edits={editsArray} />
+        </ModeAwareDiff>
+      );
     } else {
       const pendingPath = editPath ?? "file";
       const pendingName = pendingPath.split(/[\\/]/).filter(Boolean).pop() ?? "file";
@@ -1155,6 +1163,25 @@ export function renderGroupedToolExecution(
  * mode arrives by context, and only components can read context. Modes that
  * want "detailed" — and every session outside a mode — pass straight through.
  */
+/**
+ * Show a diff only when the active mode wants diffs.
+ *
+ * A documents mode edits prose, not source; a red/green hunk view is the wrong
+ * way to read that, so it degrades to naming the file that changed.
+ */
+function ModeAwareDiff({ path, children }: { path: string; children: React.ReactNode }) {
+  const modeUi = useModeUi();
+  if (modeUi && !modeUi.diffs) {
+    const fileName = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+    return (
+      <EditFileCard path={path} fileName={fileName} additions={0} deletions={0}>
+        <div className="flex items-center justify-center py-6 text-sm text-muted-foreground">Updated {fileName}</div>
+      </EditFileCard>
+    );
+  }
+  return <>{children}</>;
+}
+
 function ModeAwareToolCard({
   toolName,
   toolInput,

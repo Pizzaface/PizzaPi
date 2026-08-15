@@ -4,7 +4,7 @@
  */
 import { afterEach, beforeEach, describe, test, expect } from "bun:test";
 import { Window } from "happy-dom";
-import { render, cleanup, waitFor } from "@testing-library/react";
+import { render, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import React from "react";
 
 const win = new Window({ url: "http://localhost/" });
@@ -20,7 +20,7 @@ const win = new Window({ url: "http://localhost/" });
 const { ArtifactCard } = await import("./ArtifactCard");
 
 const originalFetch = globalThis.fetch;
-let requests: Array<{ path: string; encoding: string }> = [];
+let requests: Array<{ path: string; encoding: string; rejectTruncated?: boolean }> = [];
 
 beforeEach(() => {
     requests = [];
@@ -78,6 +78,26 @@ describe("ArtifactCard", () => {
         const { getByText } = render(<ArtifactCard path="/w/a.csv" kind="csv" />);
         await waitFor(() => expect(getByText(/No runner available/i)).toBeDefined());
         expect(requests.length).toBe(0);
+    });
+
+    test("a truncated preview says so and never becomes the downloaded file", async () => {
+        // Regression: a preview is capped by the read API, so building a
+        // download from it would silently save a corrupt prefix.
+        globalThis.fetch = (async (_input: any, init?: RequestInit) => {
+            const body = JSON.parse(String(init?.body ?? "{}"));
+            requests.push({ path: body.path, encoding: body.encoding, rejectTruncated: body.rejectTruncated });
+            return new Response(JSON.stringify({ content: "a,b\n1,2\n", size: 999999, truncated: true }), {
+                headers: { "content-type": "application/json" },
+            });
+        }) as typeof fetch;
+
+        const { getByText, getByLabelText } = render(<ArtifactCard path="/w/big.csv" kind="csv" runnerId="r1" />);
+        await waitFor(() => expect(getByText(/download for the whole thing/i)).toBeDefined());
+
+        fireEvent.click(getByLabelText("Download big.csv"));
+        await waitFor(() => expect(requests.length).toBe(2));
+        // The download refetches the whole file and refuses a truncated one.
+        expect(requests[1]).toEqual({ path: "/w/big.csv", encoding: "base64", rejectTruncated: true });
     });
 
     test("a failed read reports instead of hanging on a spinner", async () => {

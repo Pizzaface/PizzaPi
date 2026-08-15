@@ -73,3 +73,18 @@ describe("detectArtifact", () => {
         expect(detectArtifact("write", { file_path: "/w/script.ts" }, workUi)).toBeNull();
     });
 });
+
+describe("tool input arriving as a JSON string", () => {
+    test("still produces an artifact", () => {
+        // Some providers serialize tool input; dropping those silently lost a
+        // perfectly good deliverable.
+        expect(detectArtifact("write", JSON.stringify({ file_path: "/w/report.pdf" }), workUi)).toEqual({
+            path: "/w/report.pdf",
+            kind: "pdf",
+        });
+    });
+
+    test("non-JSON strings are ignored rather than throwing", () => {
+        expect(detectArtifact("write", "not json", workUi)).toBeNull();
+    });
+});

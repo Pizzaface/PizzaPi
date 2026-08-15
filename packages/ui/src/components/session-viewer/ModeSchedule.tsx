@@ -23,7 +23,8 @@ export interface ScheduledInstruction {
 export async function fetchScheduledInstructions(
   sessions: Array<{ sessionId: string; sessionName: string | null }>,
   signal?: AbortSignal,
-): Promise<ScheduledInstruction[]> {
+): Promise<{ instructions: ScheduledInstruction[]; failed: number }> {
+  let failed = 0;
   const results = await Promise.all(
     sessions.map(async (session) => {
       try {
@@ -31,7 +32,10 @@ export async function fetchScheduledInstructions(
           `/api/sessions/${encodeURIComponent(session.sessionId)}/trigger-subscriptions`,
           { credentials: "include", signal },
         );
-        if (!res.ok) return [];
+        if (!res.ok) {
+          failed++;
+          return [];
+        }
         const data = (await res.json()) as { subscriptions?: Array<{ subscriptionId?: string; triggerType: string; params?: Record<string, unknown> }> };
         return (data.subscriptions ?? [])
           .filter((sub) => isScheduledTrigger(sub.triggerType))
@@ -42,13 +46,15 @@ export async function fetchScheduledInstructions(
             triggerType: sub.triggerType,
             params: sub.params,
           }));
-      } catch {
-        // One unreachable session must not blank the whole schedule.
+      } catch (err) {
+        // One unreachable session must not blank the whole schedule, but the
+        // gap is reported rather than passed off as "nothing scheduled".
+        if (!signal?.aborted) failed++;
         return [];
       }
     }),
   );
-  return results.flat();
+  return { instructions: results.flat(), failed };
 }
 
 /**
@@ -58,23 +64,37 @@ export async function fetchScheduledInstructions(
  * you are not looking at — so a mode that uses it needs somewhere to see and
  * cancel it.
  */
+/**
+ * Stable identity for a scheduled row.
+ *
+ * One function so the row key, the in-flight marker and the disabled check
+ * cannot disagree — they did, which left legacy entries (no subscriptionId)
+ * clickable while a DELETE was already in flight.
+ */
+function instructionKey(instruction: ScheduledInstruction, index: number): string {
+  return instruction.subscriptionId ?? `${instruction.sessionId}:${instruction.triggerType}:${index}`;
+}
+
 export function ModeSchedule({
   instructions,
   loading,
+  failed = 0,
   sessionNoun,
   onOpenSession,
   onCancel,
 }: {
   instructions: ScheduledInstruction[];
   loading?: boolean;
+  /** Sessions whose schedule could not be read. */
+  failed?: number;
   sessionNoun: string;
   onOpenSession: (sessionId: string) => void;
   onCancel: (instruction: ScheduledInstruction) => void;
 }) {
   const [cancelling, setCancelling] = React.useState<string | null>(null);
 
-  const cancel = async (instruction: ScheduledInstruction) => {
-    const key = instruction.subscriptionId ?? `${instruction.sessionId}:${instruction.triggerType}`;
+  const cancel = async (instruction: ScheduledInstruction, index: number) => {
+    const key = instructionKey(instruction, index);
     setCancelling(key);
     try {
       await onCancel(instruction);
@@ -91,7 +111,15 @@ export function ModeSchedule({
     );
   }
 
-  if (instructions.length === 0) return null;
+  if (instructions.length === 0 && failed === 0) return null;
+
+  if (instructions.length === 0) {
+    return (
+      <div className="mt-8 text-xs text-muted-foreground">
+        Could not check scheduled work for {failed} {failed === 1 ? sessionNoun : `${sessionNoun}s`}.
+      </div>
+    );
+  }
 
   return (
     <div className="mt-8">
@@ -100,7 +128,7 @@ export function ModeSchedule({
       </h3>
       <div className="overflow-hidden rounded-lg border border-border">
         {instructions.map((instruction, i) => {
-          const key = instruction.subscriptionId ?? `${instruction.sessionId}:${instruction.triggerType}:${i}`;
+          const key = instructionKey(instruction, i);
           const message = scheduleMessage(instruction.params);
           return (
             <div key={key} className={cn("flex items-center gap-3 px-3 py-2", i > 0 && "border-t border-border")}>
@@ -123,7 +151,7 @@ export function ModeSchedule({
                 variant="ghost"
                 className="size-7 shrink-0"
                 disabled={cancelling === key}
-                onClick={() => void cancel(instruction)}
+                onClick={() => void cancel(instruction, i)}
                 aria-label={`Cancel ${describeSchedule(instruction.triggerType, instruction.params)}`}
               >
                 {cancelling === key ? <Loader2Icon className="size-3.5 animate-spin" /> : <XIcon className="size-3.5" />}
@@ -132,6 +160,11 @@ export function ModeSchedule({
           );
         })}
       </div>
+      {failed > 0 && (
+        <p className="mt-1.5 text-[0.65rem] text-muted-foreground">
+          Could not check {failed} more {failed === 1 ? sessionNoun : `${sessionNoun}s`} — this list may be incomplete.
+        </p>
+      )}
     </div>
   );
 }

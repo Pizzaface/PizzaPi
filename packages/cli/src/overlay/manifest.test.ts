@@ -378,6 +378,19 @@ describe("readOverlayManifest", () => {
         expect(invalid.issues.some((i) => i.field.endsWith("sessionModes[1].workspace"))).toBe(true);
     });
 
+    test("workspaces that escape the home directory are rejected", () => {
+        for (const workspace of ["~/../elsewhere", "~/Documents/../../etc", "~/./x", "~", "~/", "/absolute"]) {
+            const dir = fixturePkg({
+                schemaVersion: 1,
+                services: [{ id: "svc", label: "x", entry: "./service.ts", sessionModes: [{ id: "m", label: "M", workspace }] }],
+            });
+            dirs.push(dir);
+            const result = readOverlayManifest(dir, provenance);
+            expect(result.overlay).toBeNull();
+            expect(result.issues.some((i) => i.field.endsWith("sessionModes[0].workspace"))).toBe(true);
+        }
+    });
+
     test("a full mode ui block is accepted and survives parsing", () => {
         const dir = fixturePkg({
             schemaVersion: 1,

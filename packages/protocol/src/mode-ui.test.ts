@@ -144,6 +144,15 @@ describe("findSessionMode", () => {
         expect(findSessionMode(session, modes, "runner-a")).toBeNull();
         expect(findSessionMode(session, modes, "runner-b")?.id).toBe("work");
     });
+
+    test("a session with no runner does not inherit a runner's mode", () => {
+        // Paths only mean anything on the machine that announced the mode; a
+        // runnerless session cannot be shown to be on it.
+        expect(findSessionMode({ cwd: "/home/j/Workspace" }, modes, "runner-a")).toBeNull();
+        expect(findSessionMode({ cwd: "/home/j/Workspace", runnerId: null }, modes, "runner-a")).toBeNull();
+        // With no mode owner to compare against, containment still applies.
+        expect(findSessionMode({ cwd: "/home/j/Workspace" }, modes)?.id).toBe("work");
+    });
 });
 
 describe("isArtifactPath", () => {

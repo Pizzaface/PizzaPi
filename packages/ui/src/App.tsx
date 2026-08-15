@@ -4374,9 +4374,12 @@ export function App() {
   // The mode the active session belongs to, and what that mode says the UI
   // should look like. No mode (or a mode without a `ui` block) resolves to the
   // standard coding UI, so this is inert for every existing session.
+  // Compared against the runner that ANNOUNCED the modes, not the session's own
+  // runner — otherwise the check compares a value to itself and always passes,
+  // letting one runner's mode style another runner's identically-pathed session.
   const activeMode = React.useMemo(
-    () => findSessionMode(activeSessionInfo, effectiveSessionModes, activeSessionInfo?.runnerId),
-    [activeSessionInfo, effectiveSessionModes],
+    () => findSessionMode(activeSessionInfo, effectiveSessionModes, modesSource.runnerId),
+    [activeSessionInfo, effectiveSessionModes, modesSource.runnerId],
   );
   const modeUi = React.useMemo(() => resolveModeUi(activeMode), [activeMode]);
 
@@ -4390,34 +4393,44 @@ export function App() {
   const selectedModeUi = React.useMemo(() => resolveModeUi(selectedMode), [selectedMode]);
   const [startingTask, setStartingTask] = React.useState(false);
 
-  /** Sessions belonging to the selected mode, newest first. */
-  const selectedModeSessions = React.useMemo(() => {
+  /** Every session in the selected mode, newest first. */
+  const selectedModeAllSessions = React.useMemo(() => {
     if (!selectedMode) return [];
     return liveSessions
-      .filter((session) => findSessionMode(session, effectiveSessionModes, session.runnerId)?.id === selectedMode.id)
+      .filter((session) => findSessionMode(session, effectiveSessionModes, modesSource.runnerId)?.id === selectedMode.id)
       .slice()
-      .sort((a, b) => Date.parse(b.lastHeartbeatAt ?? b.startedAt) - Date.parse(a.lastHeartbeatAt ?? a.startedAt))
-      .slice(0, 5);
-  }, [liveSessions, selectedMode, effectiveSessionModes]);
+      .sort((a, b) => Date.parse(b.lastHeartbeatAt ?? b.startedAt) - Date.parse(a.lastHeartbeatAt ?? a.startedAt));
+  }, [liveSessions, selectedMode, effectiveSessionModes, modesSource.runnerId]);
+
+  /** The handful shown under "Recent" — display only, never the search scope. */
+  const selectedModeSessions = React.useMemo(() => selectedModeAllSessions.slice(0, 5), [selectedModeAllSessions]);
 
   // Standing scheduled work for the selected mode. Subscriptions live per
   // session, so this fans out over the mode's sessions.
   const [scheduledInstructions, setScheduledInstructions] = React.useState<ScheduledInstruction[]>([]);
   const [scheduledLoading, setScheduledLoading] = React.useState(false);
+  const [scheduledFailed, setScheduledFailed] = React.useState(0);
+  // Every mode session, not just the recent five: a schedule owned by an older
+  // task would otherwise be invisible and impossible to cancel from here.
   const scheduledSessions = React.useMemo(
-    () => selectedModeSessions.map((s) => ({ sessionId: s.sessionId, sessionName: s.sessionName ?? null })),
-    [selectedModeSessions],
+    () => selectedModeAllSessions.map((s) => ({ sessionId: s.sessionId, sessionName: s.sessionName ?? null })),
+    [selectedModeAllSessions],
   );
   const wantsSchedule = !!selectedMode && selectedModeUi.scheduled;
 
   const reloadScheduled = React.useCallback((signal?: AbortSignal) => {
     if (!wantsSchedule || scheduledSessions.length === 0) {
       setScheduledInstructions([]);
+      setScheduledFailed(0);
       return Promise.resolve();
     }
     setScheduledLoading(true);
     return fetchScheduledInstructions(scheduledSessions, signal)
-      .then((found) => { if (!signal?.aborted) setScheduledInstructions(found); })
+      .then(({ instructions, failed }) => {
+        if (signal?.aborted) return;
+        setScheduledInstructions(instructions);
+        setScheduledFailed(failed);
+      })
       .catch((err) => { if (!signal?.aborted) console.error("Failed to load scheduled work:", err); })
       .finally(() => { if (!signal?.aborted) setScheduledLoading(false); });
   }, [wantsSchedule, scheduledSessions]);
@@ -4445,17 +4458,19 @@ export function App() {
   }, [setLifecycleStatus]);
 
   /** Start a task in the selected mode's workspace with the composed prompt. */
+  // `startingTask` state lands a render too late to stop a double submit, so a
+  // ref gates the second caller synchronously.
+  const startingTaskRef = React.useRef(false);
   const handleStartModeTask = React.useCallback(async (prompt: string) => {
-    if (!selectedMode) return;
-    // A mode is announced by exactly one runner; prefer a runner already
-    // hosting sessions in this mode, else the runner that announced it.
-    const runnerId = selectedModeSessions[0]?.runnerId
-      ?? liveSessions.find((s) => s.runnerId)?.runnerId
-      ?? activeRunnerInfo?.runnerId;
+    if (!selectedMode || startingTaskRef.current) return;
+    // The mode's workspace only exists on the runner that announced it, so the
+    // task must start there — never on whichever runner happens to be first.
+    const runnerId = modesSource.runnerId;
     if (!runnerId) {
       setLifecycleStatus("No runner available to start this task");
       return;
     }
+    startingTaskRef.current = true;
     setStartingTask(true);
     try {
       const sessionId = await lifecycleSpawnSession(runnerId, selectedMode.workspace, undefined, { prompt });
@@ -4465,9 +4480,10 @@ export function App() {
       console.error("Failed to start mode task:", err);
       setLifecycleStatus(mapped.userMessage);
     } finally {
+      startingTaskRef.current = false;
       setStartingTask(false);
     }
-  }, [selectedMode, selectedModeSessions, liveSessions, activeRunnerInfo?.runnerId, lifecycleSpawnSession, handleOpenSession, setLifecycleStatus]);
+  }, [selectedMode, modesSource.runnerId, lifecycleSpawnSession, handleOpenSession, setLifecycleStatus]);
 
   // Hiding a surface has to close it too: switching from a coding session to a
   // Work task with the git panel open would otherwise strand a panel the mode
@@ -4477,6 +4493,19 @@ export function App() {
     if (!modeUi.terminal) setShowTerminal(false);
     if (!modeUi.files) setShowFileExplorer(false);
   }, [modeUi.git, modeUi.terminal, modeUi.files, setShowGit, setShowTerminal, setShowFileExplorer]);
+
+  // The same surfaces also exist as service panels. Filtering them here both
+  // hides their buttons and feeds the "close panels that went away" effect
+  // below, so a hidden panel cannot stay open.
+  const modeVisibleServices = React.useMemo(() => {
+    const hidden = new Set<string>();
+    if (!modeUi.git) hidden.add("git");
+    if (!modeUi.terminal) hidden.add("terminal");
+    if (!modeUi.files) hidden.add("file-explorer");
+    if (!modeUi.processes) hidden.add("process");
+    if (hidden.size === 0) return availableServices;
+    return new Set([...availableServices].filter((id) => !hidden.has(id)));
+  }, [availableServices, modeUi.git, modeUi.terminal, modeUi.files, modeUi.processes]);
   const attentionSessionNames = React.useMemo(() => {
     const names = new Map<string, string>();
     for (const session of liveSessions) {
@@ -4521,7 +4550,7 @@ export function App() {
     const current = activeServicePanelsRef.current;
     if (current.size === 0) return;
     const staticAvailable = new Set(
-      SERVICE_PANELS.filter(p => availableServices.has(p.serviceId)).map(p => p.serviceId),
+      SERVICE_PANELS.filter(p => modeVisibleServices.has(p.serviceId)).map(p => p.serviceId),
     );
     const dynamicAvailable = new Set(dynamicPanels.map(p => p.serviceId));
     for (const id of current) {
@@ -4530,7 +4559,7 @@ export function App() {
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [availableServices, dynamicPanels, closeServicePanelById]);
+  }, [modeVisibleServices, dynamicPanels, closeServicePanelById]);
 
   // Tell the server whether the tab is actually being looked at, so it can
   // suppress native push while a viewer is visible. "Visible" ignores window
@@ -5101,7 +5130,7 @@ export function App() {
               onOpenSession={handleOpenSession}
               onNewSession={handleNewSession}
               sessionModes={effectiveSessionModes}
-              sessionModesRunnerId={activeSessionInfo?.runnerId ?? modesSource.runnerId}
+              sessionModesRunnerId={modesSource.runnerId}
               onSelectedModeChange={setSelectedModeId}
               onClearSelection={handleClearSelection}
               onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); lifecycleClearSelection(); }}
@@ -5375,6 +5404,7 @@ export function App() {
                           scheduled: selectedModeUi.scheduled ? {
                             instructions: scheduledInstructions,
                             loading: scheduledLoading,
+                            failed: scheduledFailed,
                             onCancel: handleCancelScheduled,
                           } : undefined,
                         } : undefined}
@@ -5390,7 +5420,7 @@ export function App() {
                         loadingOlderMessages={loadingOlderMessages}
                         extraHeaderButtons={
                           <ServicePanelButtons
-                            availableServices={availableServices}
+                            availableServices={modeVisibleServices}
                             disabledServiceIds={disabledServiceIds}
                             dynamicPanels={dynamicPanels}
                             activePanelIds={activeServicePanels}
@@ -5401,7 +5431,7 @@ export function App() {
                         }
                         extraOverflowItems={
                           <ServicePanelOverflowItems
-                            availableServices={availableServices}
+                            availableServices={modeVisibleServices}
                             disabledServiceIds={disabledServiceIds}
                             dynamicPanels={dynamicPanels}
                             activePanelIds={activeServicePanels}

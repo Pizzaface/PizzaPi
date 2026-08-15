@@ -1179,7 +1179,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                 <button
                                     key={mode.id}
                                     className={cn("flex flex-1 items-center justify-center gap-1 rounded px-2 py-1 text-xs font-medium", selectedMode === mode.id && "bg-sidebar-accent text-sidebar-foreground")}
-                                    onClick={() => setSelectedMode(mode.id)}
+                                    onClick={() => {
+                                        setSelectedMode(mode.id);
+                                        // Switching mode means "show me this mode", and its home
+                                        // only renders when no session is open.
+                                        if (selectedMode !== mode.id) onClearSelection();
+                                    }}
                                     aria-pressed={selectedMode === mode.id}
                                 >
                                     {mode.icon ? <DynamicLucideIcon name={mode.icon} className="h-3.5 w-3.5" /> : <FolderOpen className="h-3.5 w-3.5" />}

@@ -117,6 +117,7 @@ export interface SessionViewerProps {
     scheduled?: {
       instructions: ScheduledInstruction[];
       loading?: boolean;
+      failed?: number;
       onCancel: (instruction: ScheduledInstruction) => void;
     };
   };

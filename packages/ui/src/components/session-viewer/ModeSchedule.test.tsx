@@ -46,12 +46,13 @@ describe("fetchScheduledInstructions", () => {
     });
 
     test("collects time-based subscriptions across sessions and drops the rest", async () => {
-        const found = await fetchScheduledInstructions([
+        const { instructions, failed } = await fetchScheduledInstructions([
             { sessionId: "sess-1", sessionName: "One" },
             { sessionId: "sess-2", sessionName: "Two" },
         ]);
-        expect(found.map((f) => f.subscriptionId)).toEqual(["a", "c"]);
-        expect(found[0]!.sessionName).toBe("One");
+        expect(instructions.map((f) => f.subscriptionId)).toEqual(["a", "c"]);
+        expect(instructions[0]!.sessionName).toBe("One");
+        expect(failed).toBe(0);
     });
 
     test("an unreachable session does not blank the whole schedule", async () => {
@@ -62,16 +63,18 @@ describe("fetchScheduledInstructions", () => {
             }));
         }) as typeof fetch;
 
-        const found = await fetchScheduledInstructions([
+        const { instructions, failed } = await fetchScheduledInstructions([
             { sessionId: "sess-1", sessionName: "One" },
             { sessionId: "sess-2", sessionName: "Two" },
         ]);
-        expect(found.map((f) => f.subscriptionId)).toEqual(["c"]);
+        expect(instructions.map((f) => f.subscriptionId)).toEqual(["c"]);
+        // The unreachable session is reported, not passed off as "nothing scheduled".
+        expect(failed).toBe(1);
     });
 
     test("a non-ok response contributes nothing", async () => {
         globalThis.fetch = (async () => new Response("nope", { status: 500 })) as typeof fetch;
-        expect(await fetchScheduledInstructions([{ sessionId: "s", sessionName: null }])).toEqual([]);
+        expect(await fetchScheduledInstructions([{ sessionId: "s", sessionName: null }])).toEqual({ instructions: [], failed: 1 });
     });
 });
 
@@ -98,6 +101,20 @@ describe("ModeSchedule", () => {
             <ModeSchedule instructions={[]} sessionNoun="task" onOpenSession={noop} onCancel={noop} />,
         );
         expect(container.textContent).toBe("");
+    });
+
+    test("an all-failed check is not shown as an empty schedule", () => {
+        const { getByText } = render(
+            <ModeSchedule instructions={[]} failed={2} sessionNoun="task" onOpenSession={noop} onCancel={noop} />,
+        );
+        expect(getByText(/Could not check scheduled work for 2 tasks/i)).toBeDefined();
+    });
+
+    test("a partial failure warns that the list may be incomplete", () => {
+        const { getByText } = render(
+            <ModeSchedule instructions={[instruction]} failed={1} sessionNoun="task" onOpenSession={noop} onCancel={noop} />,
+        );
+        expect(getByText(/list may be incomplete/i)).toBeDefined();
     });
 
     test("shows a loading state instead of an empty list", () => {

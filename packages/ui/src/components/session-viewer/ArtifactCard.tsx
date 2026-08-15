@@ -58,13 +58,18 @@ export function ArtifactCard({
   const [size, setSize] = React.useState<number | undefined>(undefined);
   const [error, setError] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(false);
+  // A preview may be a prefix of the file (the read API caps text at 512 KiB,
+  // binary at 10 MiB). Downloads must never be built from a prefix.
+  const [truncated, setTruncated] = React.useState(false);
 
   const fileName = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
   const previewable = kind !== "download";
 
   React.useEffect(() => {
     if (!runnerId || !previewable) return;
-    let cancelled = false;
+    // Abort rather than just ignoring the result: the server propagates
+    // cancellation to the runner, so switching sessions stops the reads.
+    const controller = new AbortController();
     setLoading(true);
     setError(null);
 
@@ -72,25 +77,25 @@ export function ArtifactCard({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
+      signal: controller.signal,
       body: JSON.stringify({ path, encoding: encodingFor(kind) }),
     })
       .then((res) => (res.ok ? res.json() : res.json().then((d: any) => Promise.reject(new Error(d.error || `HTTP ${res.status}`)))))
       .then((data: any) => {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         setContent(typeof data.content === "string" ? data.content : "");
+        setTruncated(data.truncated === true);
         if (typeof data.size === "number") setSize(data.size);
       })
       .catch((err: unknown) => {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         setError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       });
 
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [runnerId, path, kind, previewable]);
 
   const dataUrl = React.useMemo(
@@ -105,8 +110,9 @@ export function ArtifactCard({
    * bytes are only ever needed if the user actually asks for the file.
    */
   const download = async () => {
-    let href = dataUrl;
-    if (!href && content !== null && encodingFor(kind) === "utf8") {
+    // Only reuse loaded content when it is known to be the whole file.
+    let href = !truncated ? dataUrl : null;
+    if (!href && !truncated && content !== null && encodingFor(kind) === "utf8") {
       href = `data:text/plain;charset=utf-8,${encodeURIComponent(content)}`;
     }
 
@@ -118,9 +124,14 @@ export function ArtifactCard({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
-          body: JSON.stringify({ path, encoding: "base64" }),
+          // Fail loudly rather than saving a prefix under the real filename:
+          // a truncated docx/pptx/pdf is a corrupt file, not a partial one.
+          body: JSON.stringify({ path, encoding: "base64", rejectTruncated: true }),
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) {
+          const detail = await res.json().catch(() => null) as { error?: string } | null;
+          throw new Error(detail?.error || `HTTP ${res.status}`);
+        }
         const data = (await res.json()) as { content?: string };
         if (!data.content) throw new Error("empty response");
         href = `data:application/octet-stream;base64,${data.content}`;
@@ -189,7 +200,14 @@ export function ArtifactCard({
         )}
 
         {!loading && !error && content !== null && (
-          <ArtifactPreview kind={kind} content={content} dataUrl={dataUrl} fileName={fileName} />
+          <>
+            <ArtifactPreview kind={kind} content={content} dataUrl={dataUrl} fileName={fileName} />
+            {truncated && (
+              <div className="border-t border-border px-3 py-1.5 text-center text-[0.65rem] text-muted-foreground">
+                Preview shows the start of this file — download for the whole thing.
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

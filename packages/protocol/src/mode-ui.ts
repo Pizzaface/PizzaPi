@@ -150,8 +150,10 @@ export function findSessionMode(
 ): ServiceModeDef | null {
   if (!session?.cwd || modes.length === 0) return null;
   // A mode belongs to the runner that announced it; never apply another
-  // runner's mode chrome to a session just because the paths line up.
-  if (modesRunnerId && session.runnerId && session.runnerId !== modesRunnerId) return null;
+  // runner's mode to a session just because the paths line up. A session with
+  // no runner (local/relay-only) cannot be shown to be on that runner, so it
+  // does not qualify either — paths are only meaningful per machine.
+  if (modesRunnerId && session.runnerId !== modesRunnerId) return null;
   const cwd = session.cwd;
   let best: ServiceModeDef | null = null;
   for (const mode of modes) {

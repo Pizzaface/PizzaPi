@@ -8,6 +8,24 @@
 import { isArtifactPath, type ResolvedModeUi } from "@pizzapi/protocol";
 import { baseToolName, parseToolInputArgs } from "@/components/session-viewer/utils";
 
+/**
+ * Tool input as an object, including the JSON-string form some providers send.
+ * parseToolInputArgs() only handles objects, which would silently drop the
+ * artifact for a perfectly good write.
+ */
+function toolArgs(toolInput: unknown): Record<string, unknown> {
+  if (typeof toolInput === "string") {
+    try {
+      const parsed = JSON.parse(toolInput);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+    return {};
+  }
+  return parseToolInputArgs(toolInput);
+}
+
 /** How an artifact should be previewed. */
 export type ArtifactKind = "markdown" | "image" | "pdf" | "csv" | "html" | "download";
 
@@ -48,7 +66,7 @@ export function writtenPath(toolName: string | undefined, toolInput: unknown): s
   const base = baseToolName(toolName);
   const isWrite = base === "write" || base === "write_file" || base === "edit";
   if (!isWrite) return null;
-  const args = parseToolInputArgs(toolInput);
+  const args = toolArgs(toolInput);
   const path = typeof args.file_path === "string" ? args.file_path : typeof args.path === "string" ? args.path : null;
   return path && path.trim().length > 0 ? path.trim() : null;
 }

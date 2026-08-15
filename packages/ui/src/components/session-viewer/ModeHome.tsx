@@ -46,6 +46,7 @@ export function ModeHome({
   scheduled?: {
     instructions: ScheduledInstruction[];
     loading?: boolean;
+    failed?: number;
     onCancel: (instruction: ScheduledInstruction) => void;
   };
 }) {
@@ -56,7 +57,9 @@ export function ModeHome({
     if (busy) return;
     const text = draft.trim();
     if (!text) return;
-    setDraft("");
+    // The draft is kept, not cleared: a successful start opens the new task and
+    // unmounts this view, while a failed one would otherwise throw away what
+    // the user typed.
     onStartTask(text);
   };
 
@@ -136,6 +139,7 @@ export function ModeHome({
           <ModeSchedule
             instructions={scheduled.instructions}
             loading={scheduled.loading}
+            failed={scheduled.failed}
             sessionNoun={modeUi.sessionNoun}
             onOpenSession={onOpenSession}
             onCancel={scheduled.onCancel}
