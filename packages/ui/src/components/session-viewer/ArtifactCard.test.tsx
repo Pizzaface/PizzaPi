@@ -122,6 +122,15 @@ describe("ArtifactCard", () => {
         expect(queryByLabelText("Expand a.csv")).toBeNull();
     });
 
+    test("expand routes to the host side panel with the resolved path", () => {
+        const opened: Array<{ path: string; kind: string; title?: string }> = [];
+        const { getByLabelText } = render(
+            <ArtifactCard path="report.csv" kind="csv" runnerId="r1" cwd="/w/space" title="Q3" onExpand={(a) => opened.push(a)} />,
+        );
+        fireEvent.click(getByLabelText("Expand report.csv"));
+        expect(opened).toEqual([{ path: "/w/space/report.csv", kind: "csv", title: "Q3" }]);
+    });
+
     test("shows an explicit title alongside the filename", () => {
         const { getByText } = render(<ArtifactCard path="/w/q3.csv" kind="csv" title="Q3 Report" runnerId="r1" />);
         expect(getByText("Q3 Report")).toBeDefined();
