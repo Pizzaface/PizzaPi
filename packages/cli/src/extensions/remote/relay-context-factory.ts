@@ -86,6 +86,7 @@ export function createRelayContext(
         pendingAskUserQuestion: null,
         pendingPlanMode: null,
         pendingPluginTrust: null,
+        pendingApproval: null,
 
         lastMcpStartupReport: null,
         goalState: null,

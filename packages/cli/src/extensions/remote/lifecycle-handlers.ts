@@ -45,6 +45,7 @@ import { setTodoUpdateCallback, setTodoMetaEmitter, type TodoItem } from "../upd
 import { setPlanModeChangeCallback, setPlanModeMetaEmitter } from "../plan-mode/index.js";
 import { registerAskUserTool } from "../remote-ask-user.js";
 import { registerPlanModeTool } from "../remote-plan-mode.js";
+import { registerApprovalBridge } from "../remote-approval.js";
 import { isDisabled } from "./connection.js";
 import { emitSessionActive, emitSessionMetadataUpdate } from "./chunked-delivery.js";
 import { shouldAutoClose } from "./auto-close.js";
@@ -169,6 +170,9 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
     // ── Register tools ────────────────────────────────────────────────────────
     registerAskUserTool(rctx);
     registerPlanModeTool(rctx);
+    // Extension-driven approvals: publish ui.confirm handler + listen on the
+    // event bus for requestApproval() calls from package extensions.
+    registerApprovalBridge(rctx);
 
     // ── Wire up todo / plan-mode callbacks ────────────────────────────────────
 

@@ -6,7 +6,7 @@ import type { RelayContext } from "./remote-types.js";
 import type {
   MetaTodoItem, MetaPendingQuestion, MetaPendingPlan, MetaRetryState,
   MetaPluginTrustPrompt, MetaMcpReport, MetaTokenUsage, MetaProviderUsage, MetaModelInfo,
-  MetaGoalStatus,
+  MetaGoalStatus, MetaPendingApproval,
 } from "@pizzapi/protocol";
 
 type ForwardCtx = Pick<RelayContext, "forwardEvent">;
@@ -43,6 +43,12 @@ export function emitPluginTrustRequired(rctx: ForwardCtx, prompt: MetaPluginTrus
 }
 export function emitPluginTrustResolved(rctx: ForwardCtx, promptId: string): void {
   rctx.forwardEvent({ type: "plugin_trust_resolved", promptId });
+}
+export function emitApprovalPending(rctx: ForwardCtx, approval: MetaPendingApproval): void {
+  rctx.forwardEvent({ type: "approval_pending", approval });
+}
+export function emitApprovalCleared(rctx: ForwardCtx, promptId: string): void {
+  rctx.forwardEvent({ type: "approval_cleared", promptId });
 }
 export function emitMcpStartupReport(rctx: ForwardCtx, report: MetaMcpReport): void {
   rctx.forwardEvent({ type: "mcp_startup_report", report, ts: Date.now() });

@@ -55,6 +55,59 @@ export interface MetaPluginTrustPrompt {
   pluginSummaries: string[];
 }
 
+// ── Extension approvals ──────────────────────────────────────────────────────
+// A round-trip an extension drives to get an explicit decision from the web UI
+// before a gated tool runs. Shared by the CLI (which emits it), the server
+// (which relays it), and the UI (which renders the approval card).
+
+export interface ApprovalField {
+  key: string;
+  label: string;
+  value: string;
+  /** When true, the user can edit this value before approving. */
+  editable?: boolean;
+  /** Render as a multi-line textarea (e.g. an email body). */
+  multiline?: boolean;
+}
+
+export interface ApprovalAction {
+  /** Returned as ApprovalDecision.action. "approve"/"reject" are conventional. */
+  id: string;
+  label: string;
+  style?: "primary" | "danger" | "default";
+}
+
+/** What an extension asks the user to decide on. */
+export interface ApprovalRequest {
+  title: string;
+  /** Markdown summary / preview shown above the fields. */
+  message?: string;
+  /** The tool this approval gates, for display. */
+  toolName?: string;
+  /** Lucide icon name for the card header. */
+  icon?: string;
+  fields?: ApprovalField[];
+  /** Custom actions. Defaults to Approve + Reject when omitted. */
+  actions?: ApprovalAction[];
+}
+
+/** The user's answer to an ApprovalRequest. */
+export interface ApprovalDecision {
+  /** Action id chosen ("approve", "reject", or a custom action id). */
+  action: string;
+  /** Convenience flag: true for the "approve" action. */
+  approved: boolean;
+  /** Edited values for editable fields, keyed by field key. */
+  edits?: Record<string, string>;
+  /** True when no approval UI was reachable (headless / disconnected). */
+  unavailable?: boolean;
+}
+
+/** The pending approval the web UI renders (request + its id). */
+export interface MetaPendingApproval extends ApprovalRequest {
+  promptId: string;
+}
+
 export interface MetaMcpReport {
   slow?: boolean;
   showSlowWarning?: boolean;
@@ -85,6 +138,7 @@ export interface SessionMetaState {
   isCompacting:       boolean;
   retryState:         MetaRetryState | null;
   pendingPluginTrust: MetaPluginTrustPrompt | null;
+  pendingApproval:    MetaPendingApproval | null;
   mcpStartupReport:   MetaMcpReport | null;
   tokenUsage:         MetaTokenUsage | null;
   providerUsage:      MetaProviderUsage | null;
@@ -105,6 +159,7 @@ export function defaultMetaState(): SessionMetaState {
     isCompacting: false,
     retryState: null,
     pendingPluginTrust: null,
+    pendingApproval: null,
     mcpStartupReport: null,
     tokenUsage: null,
     providerUsage: null,
@@ -128,6 +183,8 @@ export type MetaRelayEvent =
   | { type: "retry_state_changed";     state: MetaRetryState | null }
   | { type: "plugin_trust_required";   prompt: MetaPluginTrustPrompt }
   | { type: "plugin_trust_resolved";   promptId: string }
+  | { type: "approval_pending";        approval: MetaPendingApproval }
+  | { type: "approval_cleared";        promptId: string }
   | { type: "mcp_startup_report";      report: MetaMcpReport; ts: number }
   | { type: "token_usage_updated";     tokenUsage: MetaTokenUsage; providerUsage: MetaProviderUsage }
   | { type: "thinking_level_changed";  level: string | null }
@@ -139,7 +196,8 @@ export const META_RELAY_EVENT_TYPES = new Set<string>([
   "todo_updated", "question_pending", "question_cleared",
   "plan_pending", "plan_cleared", "plan_mode_toggled",
   "compact_started", "compact_ended", "retry_state_changed",
-  "plugin_trust_required", "plugin_trust_resolved", "mcp_startup_report",
+  "plugin_trust_required", "plugin_trust_resolved",
+  "approval_pending", "approval_cleared", "mcp_startup_report",
   "token_usage_updated", "thinking_level_changed", "auth_source_changed", "model_changed",
   "goal_updated",
 ]);
@@ -161,6 +219,8 @@ export function metaEventToPatch(event: MetaRelayEvent): Partial<SessionMetaStat
     case "retry_state_changed":    return { retryState: event.state };
     case "plugin_trust_required":  return { pendingPluginTrust: event.prompt };
     case "plugin_trust_resolved":  return { pendingPluginTrust: null };
+    case "approval_pending":       return { pendingApproval: event.approval };
+    case "approval_cleared":       return { pendingApproval: null };
     case "mcp_startup_report":
       // Old CLI emits a flat format with no nested `report` field.
       // Return an empty patch rather than { mcpStartupReport: undefined },

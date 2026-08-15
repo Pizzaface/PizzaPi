@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ApprovalRequest, ApprovalDecision } from "@pizzapi/protocol";
 
 export interface PizzaPiHostInfo {
   apiVersion: 1;
@@ -53,6 +54,42 @@ export function sendServiceMessage(
   payload?: Record<string, unknown>,
 ): void {
   pi.events.emit("pizzapi:service_message", { serviceId, type, payload: payload ?? {} });
+}
+
+const UNAVAILABLE: ApprovalDecision = { action: "unavailable", approved: false, unavailable: true };
+
+function isApprovalDecision(value: unknown): value is ApprovalDecision {
+  return !!value && typeof value === "object" && typeof (value as { action?: unknown }).action === "string";
+}
+
+/**
+ * Ask the user to approve an action before it runs, and wait for the decision.
+ *
+ * The intended use is inside a pi `tool_call` handler: gate a high-stakes tool
+ * (send email, create event, purchase) by presenting an approval card in the
+ * web UI, then `block` the tool when the user rejects. Because pi refuses to
+ * run a blocked tool, this is real enforcement, not a cooperative convention.
+ *
+ * Resolves with `{ unavailable: true }` when no PizzaPi host / web viewer can
+ * render the approval (headless, disconnected) so the caller decides how to
+ * fail — a security-sensitive gate should treat `unavailable` as "do not run".
+ */
+export function requestApproval(pi: PizzaPiHostAPI, request: ApprovalRequest): Promise<ApprovalDecision> {
+  if (!detectPizzaPiHost(pi)) return Promise.resolve(UNAVAILABLE);
+  return new Promise<ApprovalDecision>((resolve) => {
+    let settled = false;
+    const settle = (decision: ApprovalDecision) => {
+      if (settled) return;
+      settled = true;
+      resolve(decision);
+    };
+    pi.events.emit("pizzapi:approval:request", {
+      request,
+      respond(decision: unknown) {
+        settle(isApprovalDecision(decision) ? decision : UNAVAILABLE);
+      },
+    });
+  });
 }
 
 /**

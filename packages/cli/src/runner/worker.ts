@@ -11,6 +11,7 @@ import { createBootTimer } from "./boot-timing.js";
 import { headlessFork } from "./worker-fork.js";
 import { SessionHost } from "./session-host.js";
 import { setRemoteSessionHost } from "../extensions/remote/session-host-ref.js";
+import { getApprovalHandler } from "../extensions/remote-approval.js";
 import { applySettingsDefaultModel, flushPendingExtensionProviders } from "./apply-default-model.js";
 import { findCachedOllamaCloudModel } from "../ollama-cloud-models.js";
 import { setLogComponent, setLogSessionId, logInfo, logWarn, logError, logAuth } from "./logger.js";
@@ -744,9 +745,35 @@ async function main(): Promise<void> {
         // methods (setStatus, setFooter, setHeader, setTitle, etc.) are no-ops
         // so extensions don't crash when calling them in headless mode.
         uiContext: {
-            select: async () => undefined,
-            confirm: async () => false,
-            input: async () => undefined,
+            // Route pi's standard extension prompts to the web-UI approval
+            // round-trip (getApprovalHandler is populated once the remote
+            // extension's approval bridge registers). Falls back to the safe
+            // default when no viewer is connected.
+            select: async (title: string, options: string[]) => {
+                const h = getApprovalHandler();
+                if (!h) return undefined;
+                const decision = await h({
+                    title,
+                    actions: options.map((o) => ({ id: o, label: o })),
+                });
+                return decision.unavailable || decision.action === "reject" ? undefined : decision.action;
+            },
+            confirm: async (title: string, message: string) => {
+                const h = getApprovalHandler();
+                if (!h) return false;
+                const decision = await h({ title, message });
+                return decision.approved;
+            },
+            input: async (title: string, placeholder?: string) => {
+                const h = getApprovalHandler();
+                if (!h) return undefined;
+                const decision = await h({
+                    title,
+                    fields: [{ key: "value", label: title, value: "", editable: true, multiline: true }],
+                });
+                if (!decision.approved) return undefined;
+                return decision.edits?.value ?? placeholder ?? "";
+            },
             notify: (message: string, type?: "info" | "warning" | "error") => {
                 (session.extensionRunner as any).emit({
                     type: "ui_notify",
