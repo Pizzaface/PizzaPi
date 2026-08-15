@@ -102,13 +102,13 @@ export default function PptxPreview({ content, full = false }: { content: string
 
       {slideCount > 1 && (
         <div className="flex shrink-0 items-center justify-center gap-3 border-t border-border px-3 py-1.5">
-          <Button size="icon" variant="ghost" className="size-7" disabled={current <= 0 || navigating} onClick={() => void goTo(current - 1)} aria-label="Previous slide">
+          <Button type="button" size="icon" variant="ghost" className="size-7" disabled={current <= 0 || navigating} onClick={() => void goTo(current - 1)} aria-label="Previous slide">
             <ChevronLeftIcon className="size-4" />
           </Button>
           <span className="text-xs tabular-nums text-muted-foreground">
             {current + 1} / {slideCount}
           </span>
-          <Button size="icon" variant="ghost" className="size-7" disabled={current >= slideCount - 1 || navigating} onClick={() => void goTo(current + 1)} aria-label="Next slide">
+          <Button type="button" size="icon" variant="ghost" className="size-7" disabled={current >= slideCount - 1 || navigating} onClick={() => void goTo(current + 1)} aria-label="Next slide">
             <ChevronRightIcon className="size-4" />
           </Button>
         </div>
