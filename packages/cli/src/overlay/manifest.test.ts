@@ -379,7 +379,7 @@ describe("readOverlayManifest", () => {
     });
 
     test("workspaces that escape the home directory are rejected", () => {
-        for (const workspace of ["~/../elsewhere", "~/Documents/../../etc", "~/./x", "~", "~/", "/absolute"]) {
+        for (const workspace of ["~/../elsewhere", "~/Documents/../../etc", "~/./x", "~", "~/", "/absolute", "~/..\\elsewhere", "~\\x"]) {
             const dir = fixturePkg({
                 schemaVersion: 1,
                 services: [{ id: "svc", label: "x", entry: "./service.ts", sessionModes: [{ id: "m", label: "M", workspace }] }],

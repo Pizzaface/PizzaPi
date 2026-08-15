@@ -4358,17 +4358,23 @@ export function App() {
   }, [activeSessionId, activeSessionInfo?.runnerId, liveSessions]);
 
   // Runner service panels — dynamically discovered
-  const { services: availableServices, disabledServices: disabledServiceIds, panels: dynamicPanels, triggerDefs: runnerTriggerDefs, sigilDefs: runnerSigilDefs, sessionModes } = useRunnerServices(viewerSocket, activeRunnerInfo);
+  const { services: availableServices, disabledServices: disabledServiceIds, panels: dynamicPanels, triggerDefs: runnerTriggerDefs, sigilDefs: runnerSigilDefs } = useRunnerServices(viewerSocket, activeRunnerInfo);
   const triggerCounts = useTriggerCount(activeSessionId, viewerSocket);
 
   // Modes come from the active session's runner, but the mode home exists for
   // when nothing is open — so with no active session fall back to a connected
   // runner that declares modes, or the picker never appears.
+  // Modes and their owning runner are read from the SAME runner object. Taking
+  // the modes from one source and the runner id from another means a
+  // cross-runner switch can briefly pair the old runner's modes with the new
+  // runner's id — and a mode that hides chrome closes those panels for good.
   const modesSource = React.useMemo(() => {
-    if (sessionModes.length > 0) return { modes: sessionModes, runnerId: activeRunnerInfo?.runnerId ?? null };
+    if (activeRunnerInfo) {
+      return { modes: activeRunnerInfo.sessionModes ?? [], runnerId: activeRunnerInfo.runnerId };
+    }
     const runner = feedRunners.find((candidate) => (candidate.sessionModes?.length ?? 0) > 0);
     return { modes: runner?.sessionModes ?? [], runnerId: runner?.runnerId ?? null };
-  }, [sessionModes, feedRunners, activeRunnerInfo?.runnerId]);
+  }, [activeRunnerInfo, feedRunners]);
   const effectiveSessionModes = modesSource.modes;
 
   // The mode the active session belongs to, and what that mode says the UI
@@ -4422,6 +4428,9 @@ export function App() {
     if (!wantsSchedule || scheduledSessions.length === 0) {
       setScheduledInstructions([]);
       setScheduledFailed(0);
+      // Clear here too: an aborted in-flight load skips its own finally, so
+      // without this the home can sit on "Checking scheduled work" forever.
+      setScheduledLoading(false);
       return Promise.resolve();
     }
     setScheduledLoading(true);
@@ -4641,7 +4650,7 @@ export function App() {
   }, [activeServicePanels, closeServicePanelById, toggleServicePanel, handleCombinedTabChange, combinedActiveTab, setEphemeralServicePanelPosition, getServicePanelPosition, setServicePanelPosition]);
 
   // ── Service panel buttons in rails/strips ────────────────────────────
-  const visibleServicePanels = useVisibleServicePanels(availableServices, dynamicPanels, disabledServiceIds);
+  const visibleServicePanels = useVisibleServicePanels(modeVisibleServices, dynamicPanels, disabledServiceIds);
   const railServicePanels = React.useMemo(
     () => visibleServicePanels.map((p) => ({ ...p, active: activeServicePanels.has(p.serviceId) })),
     [visibleServicePanels, activeServicePanels],

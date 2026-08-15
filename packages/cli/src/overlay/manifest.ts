@@ -555,9 +555,11 @@ function validateSessionModeDef(entry: unknown, field: string, push: PushFn): vo
     if (entry.icon !== undefined && typeof entry.icon !== "string") push(`${field}.icon`, "must be a string", "Set icon to a Lucide icon name, or omit it.");
     // The workspace becomes a spawn cwd, so it is a trust boundary: `~/../x`
     // would expand by plain string substitution and escape the home directory.
-    if (typeof entry.workspace !== "string" || !/^~\/[^/]/.test(entry.workspace)) {
+    // Backslashes count as separators too — on Windows `~/..\x` escapes just as
+    // effectively, and a home-relative path never legitimately contains one.
+    if (typeof entry.workspace !== "string" || !/^~\/[^/\\]/.test(entry.workspace)) {
         push(`${field}.workspace`, "must be a home-relative path beginning with ~/", "Set workspace to a path such as ~/Documents/Workspace.");
-    } else if (entry.workspace.split("/").some((segment) => segment === "." || segment === "..")) {
+    } else if (entry.workspace.split(/[/\\]/).some((segment) => segment === "." || segment === "..")) {
         push(`${field}.workspace`, "must not contain . or .. path segments", "Point workspace at a fixed path inside the home directory.");
     }
     if (entry.ui !== undefined) validateSessionModeUi(entry.ui, `${field}.ui`, push);

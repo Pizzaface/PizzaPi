@@ -1169,7 +1169,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         <div className="flex rounded-md border border-sidebar-border/60 p-0.5" role="group" aria-label="Session mode">
                             <button
                                 className={cn("flex flex-1 items-center justify-center gap-1 rounded px-2 py-1 text-xs font-medium", !selectedMode && "bg-sidebar-accent text-sidebar-foreground")}
-                                onClick={() => setSelectedMode(null)}
+                                onClick={() => {
+                                    // Leaving a mode must also leave its session, or its
+                                    // transcript stays on screen while the sidebar filters
+                                    // it away.
+                                    if (selectedMode !== null) onClearSelection();
+                                    setSelectedMode(null);
+                                }}
                                 aria-pressed={!selectedMode}
                             >
                                 <Code2 className="h-3.5 w-3.5" />

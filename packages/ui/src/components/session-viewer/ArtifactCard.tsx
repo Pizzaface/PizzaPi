@@ -66,7 +66,12 @@ export function ArtifactCard({
   const previewable = kind !== "download";
 
   React.useEffect(() => {
-    if (!runnerId || !previewable) return;
+    if (!runnerId || !previewable) {
+      // A previous run may have been aborted mid-flight, which skips its own
+      // finally — clear here or the card is stuck on "Loading preview…".
+      setLoading(false);
+      return;
+    }
     // Abort rather than just ignoring the result: the server propagates
     // cancellation to the runner, so switching sessions stops the reads.
     const controller = new AbortController();
