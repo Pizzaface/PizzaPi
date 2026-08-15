@@ -15,6 +15,7 @@ import {
   META_RELAY_EVENT_TYPES,
   type MetaGoalStatus,
   type MetaMcpReport,
+  type MetaPendingApproval,
   type MetaModelInfo,
   type MetaPendingPlan,
   type MetaPendingQuestion,
@@ -137,6 +138,46 @@ function normalizePluginTrustPrompt(value: unknown): MetaPluginTrustPrompt | nul
 
 function normalizeMcpReport(value: unknown): MetaMcpReport | null {
   return isPlainObject(value) ? (value as MetaMcpReport) : null;
+}
+
+function normalizePendingApproval(value: unknown): MetaPendingApproval | null {
+  if (!isPlainObject(value)) return null;
+  const promptId = typeof value.promptId === "string" ? value.promptId : "";
+  const title = typeof value.title === "string" ? value.title : "";
+  if (!promptId || !title) return null;
+  const fields = Array.isArray(value.fields)
+    ? value.fields.filter(
+        (f): f is { key: string; label: string; value: string } =>
+          isPlainObject(f) && typeof f.key === "string" && typeof f.label === "string",
+      ).map((f) => ({
+        key: f.key,
+        label: f.label,
+        value: typeof (f as Record<string, unknown>).value === "string" ? (f as Record<string, unknown>).value as string : "",
+        editable: (f as Record<string, unknown>).editable === true,
+        multiline: (f as Record<string, unknown>).multiline === true,
+      }))
+    : undefined;
+  const validStyles = new Set(["primary", "danger", "default"]);
+  const actions = Array.isArray(value.actions)
+    ? value.actions.filter(
+        (a): a is { id: string; label: string; style?: unknown } =>
+          isPlainObject(a) && typeof a.id === "string" && typeof a.label === "string",
+      ).map((a) => {
+        const style = typeof a.style === "string" && validStyles.has(a.style)
+          ? (a.style as "primary" | "danger" | "default")
+          : undefined;
+        return { id: a.id, label: a.label, ...(style ? { style } : {}) };
+      })
+    : undefined;
+  return {
+    promptId,
+    title,
+    message: typeof value.message === "string" ? value.message : undefined,
+    toolName: typeof value.toolName === "string" ? value.toolName : undefined,
+    icon: typeof value.icon === "string" ? value.icon : undefined,
+    ...(fields && fields.length > 0 ? { fields } : {}),
+    ...(actions && actions.length > 0 ? { actions } : {}),
+  };
 }
 
 function normalizeTokenUsage(value: unknown): MetaTokenUsage | null {
@@ -278,6 +319,7 @@ export function normalizeSessionMetaState(raw: unknown): SessionMetaState | null
     authSource: raw.authSource === null || typeof raw.authSource === "string" ? raw.authSource : base.authSource,
     model: normalizeModel(raw.model),
     goal: normalizeGoal(raw.goal),
+    pendingApproval: normalizePendingApproval(raw.pendingApproval),
   };
 }
 

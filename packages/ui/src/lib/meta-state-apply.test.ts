@@ -26,6 +26,18 @@ describe("metaEventToStatePatch", () => {
   test("retry_state_changed null clears state", () => {
     expect(metaEventToStatePatch({ type: "retry_state_changed", state: null }).retryState).toBeNull();
   });
+  test("approval_pending sets pendingApproval + status", () => {
+    const approval = { promptId: "a1", title: "Send this email?" };
+    const patch = metaEventToStatePatch({ type: "approval_pending", approval });
+    expect(patch.setPendingApproval).toBe(true);
+    expect(patch.pendingApproval).toEqual(approval);
+    expect(patch.viewerStatusOverride).toBe("Waiting for approval…");
+  });
+  test("approval_cleared clears pendingApproval", () => {
+    const patch = metaEventToStatePatch({ type: "approval_cleared", promptId: "a1" });
+    expect(patch.setPendingApproval).toBe(true);
+    expect(patch.pendingApproval).toBeNull();
+  });
   test("plugin_trust_resolved clears trust prompt", () => {
     expect(metaEventToStatePatch({ type: "plugin_trust_resolved", promptId: "p1" }).pluginTrustPrompt).toBeNull();
   });

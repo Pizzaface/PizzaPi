@@ -212,6 +212,7 @@ interface SessionState {
   pendingQuestion: { toolCallId: string; questions: Array<{ question: string; options: string[]; type?: QuestionType }>; display: QuestionDisplayMode } | null;
   pendingPlan: { toolCallId: string; title: string; description: string | null; steps: Array<{ title: string; description?: string }> } | null;
   pluginTrustPrompt: { promptId: string; pluginNames: string[]; pluginSummaries: string[] } | null;
+  pendingApproval: import("@pizzapi/protocol").MetaPendingApproval | null;
   activeToolCalls: Map<string, string>;
   mcpOAuthPastes: Array<{ serverName: string; authUrl: string; nonce: string; ts: number }>;
   messageQueue: QueuedMessage[];
@@ -244,6 +245,7 @@ function createInitialSessionState(): SessionState {
     pendingQuestion: null,
     pendingPlan: null,
     pluginTrustPrompt: null,
+    pendingApproval: null,
     activeToolCalls: new Map(),
     mcpOAuthPastes: [],
     messageQueue: [],
@@ -316,7 +318,7 @@ export function App() {
   const [sessionState, setSessionState] = React.useState<SessionState>(createInitialSessionState);
   const {
     viewerSocket, messages, retryState,
-    pendingQuestion, pendingPlan, pluginTrustPrompt, activeToolCalls,
+    pendingQuestion, pendingPlan, pluginTrustPrompt, pendingApproval, activeToolCalls,
     mcpOAuthPastes, messageQueue, activeModel, sessionName, availableModels,
     modelSelectorOpen, isChangingModel, agentActive, effortLevel, authSource,
     tokenUsage, providerUsage, usageRefreshing, lastHeartbeatAt,
@@ -352,6 +354,11 @@ export function App() {
     (v: React.SetStateAction<SessionState["pendingPlan"]>) =>
       setSessionState((p: SessionState) => ({ ...p, pendingPlan: typeof v === "function" ? v(p.pendingPlan) : v })),
     []
+  );
+  const setPendingApproval = React.useCallback(
+    (v: React.SetStateAction<SessionState["pendingApproval"]>) =>
+      setSessionState((p: SessionState) => ({ ...p, pendingApproval: typeof v === "function" ? v(p.pendingApproval) : v })),
+    [],
   );
   const setPluginTrustPrompt = React.useCallback(
     (v: React.SetStateAction<SessionState["pluginTrustPrompt"]>) =>
@@ -1495,6 +1502,11 @@ export function App() {
       }
     }
 
+    if (Object.prototype.hasOwnProperty.call(state, "pendingApproval")) {
+      const ap = state.pendingApproval;
+      setPendingApproval(ap && typeof ap.promptId === "string" && typeof ap.title === "string" ? ap : null);
+    }
+
     if (Object.prototype.hasOwnProperty.call(state, "tokenUsage")) {
       const usage = state.tokenUsage as TokenUsage | null;
       setTokenUsage(usage);
@@ -1639,6 +1651,10 @@ export function App() {
       } else {
         setPluginTrustPrompt(null);
       }
+    }
+
+    if (patch.setPendingApproval) {
+      setPendingApproval(patch.pendingApproval ?? null);
     }
 
     if (patch.tokenUsage !== undefined) {
@@ -2157,6 +2173,7 @@ export function App() {
       patchSessionCache({ messages: withInjected });
       setPendingQuestion(null);
       setPendingPlan(null);
+      setPendingApproval(null);
       setRetryState(null);
       setActiveToolCalls(new Map());
       // Clear message queue — the agent processed any queued steer/followUp
@@ -3285,6 +3302,7 @@ export function App() {
     // authoritative values from the runner.
     setPendingQuestion(null);
     setPendingPlan(null);
+    setPendingApproval(null);
 
     let socket = viewerWsRef.current;
     if (!socket) {
@@ -5360,6 +5378,14 @@ export function App() {
                         pendingPlan={pendingPlan}
                         pluginTrustPrompt={pluginTrustPrompt}
                         onPluginTrustResponse={respondPluginTrust}
+                        pendingApproval={pendingApproval}
+                        onApprovalDecision={async (decision) => {
+                          const promptId = pendingApproval?.promptId;
+                          const payload = JSON.stringify({ ...decision, ...(promptId ? { promptId } : {}) });
+                          const ok = await sendSessionInput(payload);
+                          if (ok !== false) setPendingApproval(null);
+                          return ok;
+                        }}
                         availableCommands={availableCommands}
                         resumeSessions={resumeSessions}
                         resumeSessionsLoading={resumeSessionsLoading}

@@ -98,6 +98,13 @@ export interface PendingPlanMode {
     resolve: (response: { action: PlanModeAction; editSuggestion?: string } | null) => void;
 }
 
+// ── Extension approval types ──────────────────────────────────────────────
+
+export interface PendingApproval {
+    promptId: string;
+    resolve: (decision: import("@pizzapi/protocol").ApprovalDecision | null) => void;
+}
+
 // ── Model info ───────────────────────────────────────────────────────────────
 
 export interface RelayModelInfo {
@@ -217,6 +224,7 @@ export interface RelayContext {
     pendingAskUserQuestion: PendingAskUserQuestion | null;
     pendingPlanMode: PendingPlanMode | null;
     pendingPluginTrust: PendingPluginTrust | null;
+    pendingApproval: PendingApproval | null;
 
     // Cached state
     lastMcpStartupReport: McpStartupReportSummary | null;

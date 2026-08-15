@@ -36,6 +36,10 @@ export interface SessionViewerProps {
   pluginTrustPrompt?: { promptId: string; pluginNames: string[]; pluginSummaries: string[] } | null;
   /** Respond to the plugin trust prompt */
   onPluginTrustResponse?: (trusted: boolean) => void;
+  /** Pending extension approval (gated tool call) — shown as an approval card */
+  pendingApproval?: import("@pizzapi/protocol").MetaPendingApproval | null;
+  /** Send an approval decision back to the worker over the input channel */
+  onApprovalDecision?: (decision: import("@pizzapi/protocol").ApprovalDecision) => boolean | void | Promise<boolean | void>;
   availableCommands?: Array<{ name: string; description?: string; source?: string }>;
   resumeSessions?: ResumeSessionOption[];
   resumeSessionsLoading?: boolean;

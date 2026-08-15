@@ -103,6 +103,7 @@ export type {
   SessionMetaState, MetaRelayEvent, MetaTodoItem, MetaTokenUsage, MetaProviderUsage,
   MetaModelInfo, MetaPendingQuestion, MetaPendingPlan, MetaRetryState,
   MetaPluginTrustPrompt, MetaMcpReport, MetaGoalStatus,
+  MetaPendingApproval, ApprovalRequest, ApprovalDecision, ApprovalField, ApprovalAction,
 } from "./meta.js";
 export { defaultMetaState, isMetaRelayEvent, metaEventToPatch, META_RELAY_EVENT_TYPES } from "./meta.js";
 
