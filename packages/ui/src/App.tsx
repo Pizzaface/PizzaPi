@@ -4360,14 +4360,69 @@ export function App() {
   const { services: availableServices, disabledServices: disabledServiceIds, panels: dynamicPanels, triggerDefs: runnerTriggerDefs, sigilDefs: runnerSigilDefs, sessionModes } = useRunnerServices(viewerSocket, activeRunnerInfo);
   const triggerCounts = useTriggerCount(activeSessionId, viewerSocket);
 
+  // Modes come from the active session's runner, but the mode home exists for
+  // when nothing is open — so with no active session fall back to a connected
+  // runner that declares modes, or the picker never appears.
+  const modesSource = React.useMemo(() => {
+    if (sessionModes.length > 0) return { modes: sessionModes, runnerId: activeRunnerInfo?.runnerId ?? null };
+    const runner = feedRunners.find((candidate) => (candidate.sessionModes?.length ?? 0) > 0);
+    return { modes: runner?.sessionModes ?? [], runnerId: runner?.runnerId ?? null };
+  }, [sessionModes, feedRunners, activeRunnerInfo?.runnerId]);
+  const effectiveSessionModes = modesSource.modes;
+
   // The mode the active session belongs to, and what that mode says the UI
   // should look like. No mode (or a mode without a `ui` block) resolves to the
   // standard coding UI, so this is inert for every existing session.
   const activeMode = React.useMemo(
-    () => findSessionMode(activeSessionInfo, sessionModes, activeSessionInfo?.runnerId),
-    [activeSessionInfo, sessionModes],
+    () => findSessionMode(activeSessionInfo, effectiveSessionModes, activeSessionInfo?.runnerId),
+    [activeSessionInfo, effectiveSessionModes],
   );
   const modeUi = React.useMemo(() => resolveModeUi(activeMode), [activeMode]);
+
+  // Mode selected in the sidebar, which drives the mode home shown when no
+  // session is open. Independent of the active session's own mode.
+  const [selectedModeId, setSelectedModeId] = React.useState<string | null>(null);
+  const selectedMode = React.useMemo(
+    () => effectiveSessionModes.find((mode) => mode.id === selectedModeId) ?? null,
+    [effectiveSessionModes, selectedModeId],
+  );
+  const selectedModeUi = React.useMemo(() => resolveModeUi(selectedMode), [selectedMode]);
+  const [startingTask, setStartingTask] = React.useState(false);
+
+  /** Sessions belonging to the selected mode, newest first. */
+  const selectedModeSessions = React.useMemo(() => {
+    if (!selectedMode) return [];
+    return liveSessions
+      .filter((session) => findSessionMode(session, effectiveSessionModes, session.runnerId)?.id === selectedMode.id)
+      .slice()
+      .sort((a, b) => Date.parse(b.lastHeartbeatAt ?? b.startedAt) - Date.parse(a.lastHeartbeatAt ?? a.startedAt))
+      .slice(0, 5);
+  }, [liveSessions, selectedMode, effectiveSessionModes]);
+
+  /** Start a task in the selected mode's workspace with the composed prompt. */
+  const handleStartModeTask = React.useCallback(async (prompt: string) => {
+    if (!selectedMode) return;
+    // A mode is announced by exactly one runner; prefer a runner already
+    // hosting sessions in this mode, else the runner that announced it.
+    const runnerId = selectedModeSessions[0]?.runnerId
+      ?? liveSessions.find((s) => s.runnerId)?.runnerId
+      ?? activeRunnerInfo?.runnerId;
+    if (!runnerId) {
+      setLifecycleStatus("No runner available to start this task");
+      return;
+    }
+    setStartingTask(true);
+    try {
+      const sessionId = await lifecycleSpawnSession(runnerId, selectedMode.workspace, undefined, { prompt });
+      handleOpenSession(sessionId);
+    } catch (err) {
+      const mapped = mapUserError({ error: err, context: "session_spawn" });
+      console.error("Failed to start mode task:", err);
+      setLifecycleStatus(mapped.userMessage);
+    } finally {
+      setStartingTask(false);
+    }
+  }, [selectedMode, selectedModeSessions, liveSessions, activeRunnerInfo?.runnerId, lifecycleSpawnSession, handleOpenSession, setLifecycleStatus]);
 
   // Hiding a surface has to close it too: switching from a coding session to a
   // Work task with the git panel open would otherwise strand a panel the mode
@@ -5000,8 +5055,9 @@ export function App() {
             <SessionSidebar
               onOpenSession={handleOpenSession}
               onNewSession={handleNewSession}
-              sessionModes={sessionModes}
-              sessionModesRunnerId={activeSessionInfo?.runnerId}
+              sessionModes={effectiveSessionModes}
+              sessionModesRunnerId={activeSessionInfo?.runnerId ?? modesSource.runnerId}
+              onSelectedModeChange={setSelectedModeId}
               onClearSelection={handleClearSelection}
               onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); lifecycleClearSelection(); }}
               activeSessionId={activeSessionId}
@@ -5256,6 +5312,22 @@ export function App() {
                         modeLabel={activeMode?.label}
                         modeIcon={activeMode?.icon}
                         onOpenArtifact={modeUi.files ? handleOpenFileInExplorer : undefined}
+                        modeHome={selectedMode ? {
+                          label: selectedMode.label,
+                          icon: selectedMode.icon,
+                          ui: selectedModeUi,
+                          recentSessions: selectedModeSessions.map((s) => ({
+                            sessionId: s.sessionId,
+                            sessionName: s.sessionName ?? null,
+                            cwd: s.cwd,
+                            lastHeartbeatAt: s.lastHeartbeatAt ?? null,
+                            startedAt: s.startedAt,
+                            isActive: s.isActive ?? false,
+                          })),
+                          busy: startingTask,
+                          onStartTask: (prompt: string) => { void handleStartModeTask(prompt); },
+                          onOpenSession: handleOpenSession,
+                        } : undefined}
                         onToggleTriggers={() => setShowTriggers((v) => !v)}
                         showTriggersButton={!!activeSessionId}
                         isTriggersOpen={showTriggers}

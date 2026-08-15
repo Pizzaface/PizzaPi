@@ -112,6 +112,8 @@ export interface SessionSidebarProps {
     sessionsCompacting?: Set<string>;
     sessionModes?: ServiceModeDef[];
     sessionModesRunnerId?: string | null;
+    /** Notified when the user switches session mode (null = no mode filter). */
+    onSelectedModeChange?: (modeId: string | null) => void;
 }
 
 /** Filter by the selected mode without changing the runner/project/session tree. */
@@ -228,6 +230,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     sessionsCompacting,
     sessionModes = [],
     sessionModesRunnerId,
+    onSelectedModeChange,
 }: SessionSidebarProps) {
     const [collapsed, setCollapsed] = React.useState(false);
 
@@ -840,6 +843,10 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     React.useEffect(() => {
         if (selectedMode && !sessionModes.some((mode) => mode.id === selectedMode)) setSelectedMode(null);
     }, [selectedMode, sessionModes]);
+    // Mirror the selection outward so the host can show that mode's home view.
+    React.useEffect(() => {
+        onSelectedModeChange?.(selectedMode);
+    }, [selectedMode, onSelectedModeChange]);
     const visibleSessions = React.useMemo(
         () => filterSessionsByMode(liveSessions, selectedMode, sessionModes, sessionModesRunnerId),
         [liveSessions, selectedMode, sessionModes, sessionModesRunnerId],

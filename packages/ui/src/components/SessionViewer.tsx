@@ -103,6 +103,7 @@ import { GoalStatusBadge } from "@/components/session-viewer/goal-status-badge";
 import { DraggableToolbarButton } from "@/components/session-viewer/DraggableToolbarButton";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
 import { ArtifactHostContext, ModeUiContext, type ArtifactHost } from "@/components/session-viewer/ModeUiContext";
+import { ModeHome } from "@/components/session-viewer/ModeHome";
 import type { ToolbarButtonId } from "@/hooks/useButtonPosition";
 
 // ── Public re-exports (existing consumers import these from SessionViewer) ────
@@ -154,6 +155,7 @@ export function SessionViewer({
   modeLabel,
   modeIcon,
   onOpenArtifact,
+  modeHome,
   isTerminalOpen,
   isFileExplorerOpen,
   isGitOpen,
@@ -887,7 +889,17 @@ export function SessionViewer({
 
           {/* ── Conversation area ─────────────────────────────────────────── */}
           <div className="relative flex flex-col flex-1 min-h-0">
-            {!sessionId ? (
+            {!sessionId && modeHome ? (
+              <ModeHome
+                modeLabel={modeHome.label}
+                modeIcon={modeHome.icon}
+                modeUi={modeHome.ui}
+                recentSessions={modeHome.recentSessions}
+                busy={modeHome.busy}
+                onStartTask={modeHome.onStartTask}
+                onOpenSession={modeHome.onOpenSession}
+              />
+            ) : !sessionId ? (
               <ConversationEmptyState>
                 <MessageSquare className="size-8 opacity-40 text-muted-foreground" aria-hidden="true" />
                 <div className="space-y-1">
@@ -952,7 +964,12 @@ export function SessionViewer({
           </div>
 
           {/* ── Composer area ─────────────────────────────────────────────── */}
-          <div className="border-t border-border bg-background px-3 py-2 pp-safe-bottom">
+          {/* The mode home carries its own composer; a second, disabled one
+              below it would just be dead chrome. */}
+          <div className={cn(
+            "border-t border-border bg-background px-3 py-2 pp-safe-bottom",
+            !sessionId && modeHome && "hidden",
+          )}>
 
             {/* Message queue */}
             {sessionId && messageQueue && messageQueue.length > 0 && (

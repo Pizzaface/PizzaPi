@@ -6,6 +6,7 @@ import type { QuestionDisplayMode } from "@/lib/ask-user-questions";
 import type { CommandResultData } from "@/components/session-viewer/rendering";
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import type { MetaGoalStatus, ResolvedModeUi } from "@pizzapi/protocol";
+import type { ModeHomeSession } from "@/components/session-viewer/ModeHome";
 
 export type { RelayMessage, TodoItem, TokenUsage, QueuedMessage, ResumeSessionOption, ForkMessageOption };
 
@@ -100,6 +101,19 @@ export interface SessionViewerProps {
   modeIcon?: string;
   /** Open a deliverable in the file explorer. Omitted when the mode hides files. */
   onOpenArtifact?: (path: string) => void;
+  /**
+   * Mode home shown instead of the empty state when a mode is selected and no
+   * session is open. Omitted when no mode is selected.
+   */
+  modeHome?: {
+    label: string;
+    icon?: string;
+    ui: ResolvedModeUi;
+    recentSessions: ModeHomeSession[];
+    busy?: boolean;
+    onStartTask: (prompt: string) => void;
+    onOpenSession: (sessionId: string) => void;
+  };
   /** Toggle the triggers panel */
   onToggleTriggers?: () => void;
   /** Whether to show the triggers button */
