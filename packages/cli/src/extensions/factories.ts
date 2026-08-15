@@ -31,6 +31,7 @@ import { toolSearchExtension } from "./tool-search.js";
 import { ollamaWebToolsExtension } from "./ollama-web-tools.js";
 import { ollamaCloudProviderExtension } from "./ollama-cloud-provider.js";
 import { sessionAnalysisExtension } from "./session-analysis.js";
+import { fallbackModelsExtension } from "./fallback-models.js";
 import { providerRequestLogExtension } from "./provider-request-log.js";
 import { createResourcePathsExtension } from "./resource-paths.js";
 import { hostAnnounceExtension } from "./host-announce.js";
@@ -89,6 +90,7 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
     // Diagnostic (off unless PIZZAPI_LOG_PROVIDER_REQUEST is set): log the
     // resolved provider/api and request shape for each outbound turn.
     factories.push(named(providerRequestLogExtension, "provider-request-log"));
+    factories.push(named(fallbackModelsExtension, "fallback-models"));
 
     // triggersExtension provides tell_child, respond_to_trigger, escalate_trigger tools.
     // session_complete is fired from remoteExtension's shutdown handler (before disconnect).
