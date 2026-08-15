@@ -77,7 +77,7 @@ export type { HubSession };
 export interface SessionSidebarProps {
     onOpenSession: (sessionId: string) => void;
     onNewSession: (initialCwd?: string) => void;
-    onClearSelection: () => void;
+    onClearSelection: (keepSidebarOpen?: boolean) => void;
     onShowRunners: () => void;
     activeSessionId: string | null;
     showRunners?: boolean;
@@ -1173,7 +1173,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                     // Leaving a mode must also leave its session, or its
                                     // transcript stays on screen while the sidebar filters
                                     // it away.
-                                    if (selectedMode !== null) onClearSelection();
+                                    if (selectedMode !== null) onClearSelection(true);
                                     setSelectedMode(null);
                                 }}
                                 aria-pressed={!selectedMode}
@@ -1189,7 +1189,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                         setSelectedMode(mode.id);
                                         // Switching mode means "show me this mode", and its home
                                         // only renders when no session is open.
-                                        if (selectedMode !== mode.id) onClearSelection();
+                                        if (selectedMode !== mode.id) onClearSelection(true);
                                     }}
                                     aria-pressed={selectedMode === mode.id}
                                 >
