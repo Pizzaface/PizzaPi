@@ -66,6 +66,17 @@ describe("session mode filtering", () => {
         expect(filterSessionsByMode(sessions, null, modes, "runner-a").map((s) => s.sessionId)).toEqual(["code", "work-child"]);
     });
 
+    it("claims sessions working inside the mode workspace", () => {
+        const nested = [
+            { sessionId: "root", cwd: "/work", runnerId: "runner-a" },
+            { sessionId: "nested", cwd: "/work/clients/acme", runnerId: "runner-a" },
+            { sessionId: "sibling", cwd: "/work-other", runnerId: "runner-a" },
+        ];
+        expect(filterSessionsByMode(nested, "work", modes, "runner-a").map((s) => s.sessionId)).toEqual(["root", "nested"]);
+        // ...and the same sessions must not also show up unfiltered.
+        expect(filterSessionsByMode(nested, null, modes, "runner-a").map((s) => s.sessionId)).toEqual(["sibling"]);
+    });
+
     it("matches a selected mode by exact cwd on its runner", () => {
         const scopedSessions = [
             { sessionId: "runner-a", cwd: "/work", runnerId: "runner-a" },

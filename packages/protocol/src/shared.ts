@@ -245,6 +245,100 @@ export interface ServiceModeDef {
   workspace: string;
   /** Service that declared this mode. */
   serviceId?: string;
+  /** Declarative UI contract — how PizzaPi should render sessions in this mode. */
+  ui?: ServiceModeUi;
+}
+
+/**
+ * Declarative UI contribution for a session mode.
+ *
+ * Everything here is rendered natively by the PizzaPi UI (web + PWA); modes
+ * declare intent, they do not ship code. Every field is optional and the
+ * defaults reproduce today's coding-agent UI, so an existing mode that omits
+ * `ui` is unchanged.
+ */
+export interface ServiceModeUi {
+  /**
+   * Chrome preset. "coding" (default) keeps git/terminal/process affordances;
+   * "work" hides them for non-coding modes. Individual flags in `chrome`
+   * override the preset.
+   */
+  preset?: "coding" | "work";
+  /** Per-surface chrome overrides, applied on top of `preset`. */
+  chrome?: ServiceModeChrome;
+  /**
+   * How tool calls render in the transcript.
+   * "detailed" (default) shows command/diff blocks; "activity" collapses each
+   * call to a human-language line that expands on demand.
+   */
+  toolRendering?: "detailed" | "activity";
+  /** Noun overrides, e.g. { session: "task", sessions: "tasks" }. */
+  vocabulary?: ServiceModeVocabulary;
+  /** Tailwind-compatible accent color token or hex, used for mode identity. */
+  accent?: string;
+  /** Placeholder text for the composer in this mode. */
+  composerPlaceholder?: string;
+  /** Mode home configuration (composer-first landing view). */
+  home?: ServiceModeHome;
+  /** Deliverable/artifact preview configuration. */
+  artifacts?: ServiceModeArtifacts;
+  /** Show the scheduled-instructions surface (time:cron / time:at) for this mode. */
+  scheduled?: boolean;
+}
+
+/** Per-surface chrome toggles for a mode. */
+export interface ServiceModeChrome {
+  /** Show the git panel/button. */
+  git?: boolean;
+  /** Show the terminal affordance. */
+  terminal?: boolean;
+  /** Show the process/shell panel. */
+  processes?: boolean;
+  /** Render file edits as diffs. */
+  diffs?: boolean;
+  /** Show the file explorer. */
+  files?: boolean;
+}
+
+/** Noun overrides so a mode can speak its own language. */
+export interface ServiceModeVocabulary {
+  /** Singular noun for a session, e.g. "task". */
+  session?: string;
+  /** Plural noun for sessions, e.g. "tasks". */
+  sessions?: string;
+  /** Label for the new-session action, e.g. "New task". */
+  newSession?: string;
+}
+
+/** Composer-first landing view for a mode. */
+export interface ServiceModeHome {
+  /** Headline shown above the composer. */
+  greeting?: string;
+  /** Suggestion chips that prefill the composer. */
+  suggestions?: ServiceModeSuggestion[];
+  /** Show the recent-sessions list on the home view. Defaults to true. */
+  recent?: boolean;
+}
+
+/** A single suggestion chip on a mode home. */
+export interface ServiceModeSuggestion {
+  /** Short button label. */
+  label: string;
+  /** Optional Lucide icon name. */
+  icon?: string;
+  /** Prompt text sent (or prefilled) when the chip is chosen. */
+  prompt: string;
+}
+
+/** Deliverable preview configuration for a mode. */
+export interface ServiceModeArtifacts {
+  /** Enable artifact cards + the artifacts panel. */
+  enabled: boolean;
+  /**
+   * File extensions (without the dot) treated as deliverables.
+   * Defaults to a document-centric set when omitted.
+   */
+  extensions?: string[];
 }
 
 export interface ServiceSigilDef {

@@ -19,7 +19,7 @@ import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSe
 import { pruneSwipeOffsets } from "@/lib/swipe-reveal";
 import { getSessionVisualState } from "@/lib/session-visual-state";
 import { parseHubSessionsPayload } from "@/lib/hub-sessions";
-import type { ServiceModeDef } from "@pizzapi/protocol";
+import { cwdInWorkspace, type ServiceModeDef } from "@pizzapi/protocol";
 
 interface HubSession {
     sessionId: string;
@@ -123,12 +123,17 @@ export function filterSessionsByMode<T extends { cwd: string; runnerId?: string 
 ): T[] {
     const belongsToModeRunner = (session: T) =>
         Boolean(modeRunnerId) && session.runnerId === modeRunnerId;
+    // Containment, not equality: a task working in ~/Workspace/clients/acme is
+    // still a Work task, so it must not leak into the unfiltered list.
     if (!selectedModeId) {
-        const claimed = new Set(modes.map((mode) => mode.workspace));
-        return sessions.filter((session) => !belongsToModeRunner(session) || !claimed.has(session.cwd));
+        return sessions.filter(
+            (session) => !belongsToModeRunner(session) || !modes.some((mode) => cwdInWorkspace(session.cwd, mode.workspace)),
+        );
     }
     const mode = modes.find((candidate) => candidate.id === selectedModeId);
-    return mode ? sessions.filter((session) => belongsToModeRunner(session) && session.cwd === mode.workspace) : sessions;
+    return mode
+        ? sessions.filter((session) => belongsToModeRunner(session) && cwdInWorkspace(session.cwd, mode.workspace))
+        : sessions;
 }
 
 function formatRelativeDate(isoString: string): string {

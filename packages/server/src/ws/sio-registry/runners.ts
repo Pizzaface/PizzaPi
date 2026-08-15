@@ -26,7 +26,7 @@ import {
     deleteRunnerAssociation,
 } from "../sio-state/index.js";
 import { updateRelaySessionRunner } from "../../sessions/store.js";
-import type { RunnerInfo, RunnerSkill, RunnerAgent, RunnerHook, ServiceTriggerDef, ServiceSigilDef } from "@pizzapi/protocol";
+import type { RunnerInfo, RunnerSkill, RunnerAgent, RunnerHook, ServiceTriggerDef, ServiceSigilDef, ServiceModeDef } from "@pizzapi/protocol";
 import {
     localTuiSockets,
     localRunnerSockets,
@@ -261,7 +261,7 @@ export async function updateRunnerServices(
     triggerDefs?: Array<{ type: string; label: string; description?: string; schema?: Record<string, unknown> }>,
     sigilDefs?: Array<{ type: string; label: string; description?: string; icon?: string; serviceId?: string; resolve?: string; schema?: Record<string, unknown>; aliases?: string[] }>,
     disabledServiceIds?: string[],
-    sessionModes?: Array<{ id: string; label: string; icon?: string; workspace: string; serviceId?: string }>,
+    sessionModes?: ServiceModeDef[],
 ): Promise<void> {
     const fields: Record<string, string> = {
         serviceIds: JSON.stringify(serviceIds),
@@ -307,7 +307,7 @@ export async function getRunnerServices(
     panels?: Array<{ serviceId: string; port: number; label: string; icon: string }>;
     triggerDefs?: ServiceTriggerDef[];
     sigilDefs?: ServiceSigilDef[];
-    sessionModes?: Array<{ id: string; label: string; icon?: string; workspace: string; serviceId?: string }>;
+    sessionModes?: ServiceModeDef[];
 } | null> {
     const runner = await getRunnerState(runnerId);
     if (!runner) return null;

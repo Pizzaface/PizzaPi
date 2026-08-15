@@ -378,6 +378,87 @@ describe("readOverlayManifest", () => {
         expect(invalid.issues.some((i) => i.field.endsWith("sessionModes[1].workspace"))).toBe(true);
     });
 
+    test("a full mode ui block is accepted and survives parsing", () => {
+        const dir = fixturePkg({
+            schemaVersion: 1,
+            services: [{
+                id: "svc",
+                label: "x",
+                entry: "./service.ts",
+                sessionModes: [{
+                    id: "work",
+                    label: "Work",
+                    workspace: "~/Documents/Workspace",
+                    ui: {
+                        preset: "work",
+                        chrome: { git: false, files: true },
+                        toolRendering: "activity",
+                        vocabulary: { session: "task", sessions: "tasks" },
+                        accent: "#7c3aed",
+                        composerPlaceholder: "What do you need?",
+                        home: {
+                            greeting: "Good morning",
+                            suggestions: [{ label: "Daily report", icon: "file-text", prompt: "Write my daily report" }],
+                            recent: true,
+                        },
+                        artifacts: { enabled: true, extensions: ["pdf", "docx"] },
+                        scheduled: true,
+                    },
+                }],
+            }],
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.issues).toEqual([]);
+        const mode = result.overlay?.services?.[0].sessionModes?.[0];
+        expect(mode?.ui?.preset).toBe("work");
+        expect(mode?.ui?.chrome?.git).toBe(false);
+        expect(mode?.ui?.home?.suggestions?.[0]?.prompt).toBe("Write my daily report");
+        expect(mode?.ui?.artifacts?.extensions).toEqual(["pdf", "docx"]);
+    });
+
+    test("malformed mode ui fields are rejected with actionable fields", () => {
+        const dir = fixturePkg({
+            schemaVersion: 1,
+            services: [{
+                id: "svc",
+                label: "x",
+                entry: "./service.ts",
+                sessionModes: [{
+                    id: "work",
+                    label: "Work",
+                    workspace: "~/Workspace",
+                    ui: {
+                        preset: "casual",
+                        toolRendering: "terse",
+                        chrome: { git: "no", bogus: true },
+                        vocabulary: { session: "", nope: "x" },
+                        scheduled: "yes",
+                        home: { suggestions: [{ label: "x" }] },
+                        artifacts: { extensions: [""] },
+                        mystery: 1,
+                    },
+                }],
+            }],
+        });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.overlay).toBeNull();
+        const fields = result.issues.map((i) => i.field);
+        expect(fields).toContain("services[0].sessionModes[0].ui.preset");
+        expect(fields).toContain("services[0].sessionModes[0].ui.toolRendering");
+        expect(fields).toContain("services[0].sessionModes[0].ui.chrome.git");
+        expect(fields).toContain("services[0].sessionModes[0].ui.chrome.bogus");
+        expect(fields).toContain("services[0].sessionModes[0].ui.vocabulary.session");
+        expect(fields).toContain("services[0].sessionModes[0].ui.vocabulary.nope");
+        expect(fields).toContain("services[0].sessionModes[0].ui.scheduled");
+        // A suggestion without a prompt is useless — the chip would do nothing.
+        expect(fields).toContain("services[0].sessionModes[0].ui.home.suggestions[0].prompt");
+        expect(fields).toContain("services[0].sessionModes[0].ui.artifacts.enabled");
+        expect(fields).toContain("services[0].sessionModes[0].ui.artifacts.extensions");
+        expect(fields).toContain("services[0].sessionModes[0].ui.mystery");
+    });
+
     test("valid inline trigger and sigil definitions are accepted", () => {
         const dir = fixturePkg({
             schemaVersion: 1,
