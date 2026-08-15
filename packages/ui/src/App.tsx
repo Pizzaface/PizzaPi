@@ -59,7 +59,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { X, TerminalIcon, FolderTree, GitBranch, EyeOff, Zap, BarChart3 } from "lucide-react";
+import { X, TerminalIcon, FolderTree, GitBranch, EyeOff, Zap, BarChart3, FileBox } from "lucide-react";
 import type { TriggerHistoryEntry } from "@/components/TriggersPanel";
 import type { ProviderUsageMap } from "@/components/UsageIndicator";
 import { CombinedPanel, type CombinedPanelTab } from "@/components/CombinedPanel";
@@ -165,6 +165,7 @@ const LazyTriggersPanel = React.lazy(() => import("@/components/TriggersPanel").
 const LazyTerminalManager = React.lazy(() => import("@/components/TerminalManager").then((m) => ({ default: m.TerminalManager })));
 const LazyFileExplorer = React.lazy(() => import("@/components/FileExplorer").then((m) => ({ default: m.FileExplorer })));
 const LazyGitPanel = React.lazy(() => import("@/components/git").then((m) => ({ default: m.GitPanel })));
+const LazyArtifactsPanel = React.lazy(() => import("@/components/session-viewer/ArtifactsPanel").then((m) => ({ default: m.ArtifactsPanel })));
 import { fetchScheduledInstructions, type ScheduledInstruction } from "@/components/session-viewer/ModeSchedule";
 const LazyChangePasswordDialog = React.lazy(() => import("@/components/ChangePasswordDialog").then((m) => ({ default: m.ChangePasswordDialog })));
 const LazyShortcutsDialog = React.lazy(() => import("@/components/ShortcutsDialog").then((m) => ({ default: m.ShortcutsDialog })));
@@ -643,6 +644,12 @@ export function App() {
   const [analyzerPosition, setAnalyzerPosition] = React.useState<PanelPosition>("center-bottom");
   const handleAnalyzerPositionChange = React.useCallback((pos: PanelPosition) => {
     setAnalyzerPosition(pos);
+  }, []);
+
+  const [showArtifacts, setShowArtifacts] = React.useState(false);
+  const [artifactsPosition, setArtifactsPosition] = React.useState<PanelPosition>("right-bottom");
+  const handleArtifactsPositionChange = React.useCallback((pos: PanelPosition) => {
+    setArtifactsPosition(pos);
   }, []);
 
   const buttonPositions = useButtonPosition();
@@ -4787,6 +4794,27 @@ export function App() {
     };
   }, [showAnalyzer, activeSessionId, activeSessionInfo?.runnerId, analysis, startPanelDragWith, handleAnalyzerPositionChange]);
 
+  const artifactsPanelTab = React.useMemo<CombinedPanelTab | null>(() => {
+    if (!showArtifacts || !activeSessionId) return null;
+    return {
+      id: "artifacts",
+      label: "Artifacts",
+      icon: <FileBox className="size-3.5" />,
+      onClose: () => setShowArtifacts(false),
+      onDragStart: (e) => startPanelDragWith(e, handleArtifactsPositionChange),
+      content: (
+        <Suspense fallback={<PanelFallback label="Artifacts" />}>
+          <LazyArtifactsPanel
+            messages={messages}
+            modeUi={modeUi}
+            runnerId={activeSessionInfo?.runnerId ?? undefined}
+            onOpenArtifact={modeUi?.files ? handleOpenFileInExplorer : undefined}
+          />
+        </Suspense>
+      ),
+    };
+  }, [showArtifacts, activeSessionId, messages, modeUi, activeSessionInfo?.runnerId, startPanelDragWith, handleArtifactsPositionChange, handleOpenFileInExplorer]);
+
   const servicePanelTabs = React.useMemo<CombinedPanelTab[]>(() => {
     // Use tunnelSessionId (runner-stable) instead of activeSessionId so
     // iframe service panels don't reload on same-runner session switches.
@@ -4838,9 +4866,10 @@ export function App() {
     if (gitPanelTab) groups[gitPosition].push(gitPanelTab);
     if (triggersPanelTab) groups[triggersPosition].push(triggersPanelTab);
     if (analyzerPanelTab) groups[analyzerPosition].push(analyzerPanelTab);
+    if (artifactsPanelTab) groups[artifactsPosition].push(artifactsPanelTab);
     for (const tab of servicePanelTabs) groups[getServicePanelPosition(tab.id)].push(tab);
     return groups;
-  }, [terminalPanelTab, terminalPosition, filesPanelTab, filesPosition, gitPanelTab, gitPosition, triggersPanelTab, triggersPosition, analyzerPanelTab, analyzerPosition, servicePanelTabs, getServicePanelPosition]);
+  }, [terminalPanelTab, terminalPosition, filesPanelTab, filesPosition, gitPanelTab, gitPosition, triggersPanelTab, triggersPosition, analyzerPanelTab, analyzerPosition, artifactsPanelTab, artifactsPosition, servicePanelTabs, getServicePanelPosition]);
   panelGroupsRef.current = panelGroups;
 
   // ── Derived column zone arrays ─────────────────────────────────────────────
@@ -4907,8 +4936,8 @@ export function App() {
   const centerBottomCollapsed = isGroupCollapsed(centerBottomTabIds);
 
   const mobilePanelTabs = React.useMemo(() => {
-    return [terminalPanelTab, filesPanelTab, gitPanelTab, triggersPanelTab, analyzerPanelTab, ...servicePanelTabs].filter(Boolean) as CombinedPanelTab[];
-  }, [terminalPanelTab, filesPanelTab, gitPanelTab, triggersPanelTab, analyzerPanelTab, servicePanelTabs]);
+    return [terminalPanelTab, filesPanelTab, gitPanelTab, triggersPanelTab, analyzerPanelTab, artifactsPanelTab, ...servicePanelTabs].filter(Boolean) as CombinedPanelTab[];
+  }, [terminalPanelTab, filesPanelTab, gitPanelTab, triggersPanelTab, analyzerPanelTab, artifactsPanelTab, servicePanelTabs]);
 
   const resolveActiveTabId = React.useCallback((tabs: CombinedPanelTab[]) => {
     return resolveActiveTabIdFromIds(tabs.map((t) => t.id), combinedActiveTab);
@@ -5223,6 +5252,7 @@ export function App() {
               onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
               onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
               onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
+              onToggleArtifacts={() => openPanelFromDockedButton("artifacts", showArtifacts, setShowArtifacts, handleArtifactsPositionChange)}
               onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
               onExport={handleExport}
               onExec={sendRemoteExec}
@@ -5305,6 +5335,7 @@ export function App() {
                 onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
                 onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
                 onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
+                onToggleArtifacts={() => openPanelFromDockedButton("artifacts", showArtifacts, setShowArtifacts, handleArtifactsPositionChange)}
                 onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
                 onExport={handleExport}
                 onExec={sendRemoteExec}
@@ -5424,6 +5455,9 @@ export function App() {
                         onToggleAnalyzer={() => setShowAnalyzer((v) => !v)}
                         showAnalyzerButton={!!activeSessionId}
                         isAnalyzerOpen={showAnalyzer}
+                        onToggleArtifacts={() => setShowArtifacts((v) => !v)}
+                        showArtifactsButton={modeUi?.artifacts && !!activeSessionId}
+                        isArtifactsOpen={showArtifacts}
                         triggerCount={triggerCounts}
                         hasMoreServerMessages={paginationStateRef.current?.hasMore ?? false}
                         onLoadMoreServerMessages={requestOlderMessages}
@@ -5600,6 +5634,7 @@ export function App() {
               onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
               onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
               onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
+              onToggleArtifacts={() => openPanelFromDockedButton("artifacts", showArtifacts, setShowArtifacts, handleArtifactsPositionChange)}
               onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
               onExport={handleExport}
               onExec={sendRemoteExec}
@@ -5643,6 +5678,7 @@ export function App() {
             onToggleGit={() => openPanelFromDockedButton("git", showGit, setShowGit, handleGitPositionChange)}
             onToggleTriggers={() => openPanelFromDockedButton("triggers", showTriggers, setShowTriggers, handleTriggersPositionChange)}
             onToggleAnalyzer={() => openPanelFromDockedButton("analyzer", showAnalyzer, setShowAnalyzer, handleAnalyzerPositionChange)}
+            onToggleArtifacts={() => openPanelFromDockedButton("artifacts", showArtifacts, setShowArtifacts, handleArtifactsPositionChange)}
             onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
             onExport={handleExport}
             onExec={sendRemoteExec}
