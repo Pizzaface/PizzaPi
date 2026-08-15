@@ -1,35 +1,46 @@
 import * as React from "react";
+import { StarIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
-import type { PresentedCard as PresentedCardData } from "@/components/session-viewer/presented-card";
+import type { PresentedCard as PresentedCardData, CardRating } from "@/components/session-viewer/presented-card";
 
 /**
- * A read-only entity the model chose to present — a contact, place, or event.
+ * A read-only entity the model presented — a person, business, place, event,
+ * or product — normalized from a schema.org entity into one unified card.
  *
- * The display sibling of ArtifactCard: no fetch, no interaction beyond safe
- * links; everything renders from the tool input the model supplied.
+ * No fetch, no interaction beyond safe links; the type-specific bits (rating
+ * stars, price/hours badges, address, derived call/email/directions actions)
+ * come from the normalizer, so this component just lays them out.
  */
 export function PresentedCard({ card }: { card: PresentedCardData }) {
   return (
     <div className="my-2 overflow-hidden rounded-xl border border-border bg-card shadow-sm">
-      <div className="flex items-center gap-3 border-b border-border bg-muted/40 px-3 py-2.5">
+      <div className="flex items-start gap-3 border-b border-border bg-muted/40 px-3 py-2.5">
         {card.image ? (
           <img
             src={card.image}
             alt=""
             referrerPolicy="no-referrer"
-            className="size-9 shrink-0 rounded-full object-cover"
+            className={cn("size-10 shrink-0 object-cover", card.kind === "person" ? "rounded-full" : "rounded-md")}
           />
-        ) : card.icon ? (
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted">
-            <DynamicLucideIcon name={card.icon} className="size-4 text-muted-foreground" />
+        ) : (
+          <div className="flex size-10 shrink-0 items-center justify-center rounded-md bg-muted">
+            <DynamicLucideIcon name={card.icon} className="size-5 text-muted-foreground" />
           </div>
-        ) : null}
+        )}
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium">{card.title}</div>
           {card.subtitle && <div className="truncate text-xs text-muted-foreground">{card.subtitle}</div>}
+          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+            {card.rating && <RatingStars rating={card.rating} />}
+            {card.badges.map((badge, i) => (
+              <span key={i} className="rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+                {badge}
+              </span>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -57,5 +68,31 @@ export function PresentedCard({ card }: { card: PresentedCardData }) {
         </div>
       )}
     </div>
+  );
+}
+
+/** Five-star rating with a half-star for the fraction, plus the count. */
+function RatingStars({ rating }: { rating: CardRating }) {
+  const outOfFive = Math.max(0, Math.min(5, (rating.value / rating.max) * 5));
+  const full = Math.floor(outOfFive);
+  const half = outOfFive - full >= 0.5;
+  return (
+    <span className="flex items-center gap-0.5 text-amber-500" title={`${rating.value} / ${rating.max}`}>
+      {Array.from({ length: 5 }).map((_, i) => {
+        const filled = i < full;
+        const isHalf = i === full && half;
+        return (
+          <span key={i} className="relative inline-flex">
+            <StarIcon className="size-3.5" strokeWidth={1.5} />
+            {(filled || isHalf) && (
+              <span className={cn("absolute inset-0 overflow-hidden", isHalf && "w-1/2")}>
+                <StarIcon className="size-3.5 fill-amber-500" strokeWidth={1.5} />
+              </span>
+            )}
+          </span>
+        );
+      })}
+      {rating.count != null && <span className="ml-0.5 text-[0.65rem] text-muted-foreground">({rating.count})</span>}
+    </span>
   );
 }

@@ -22,20 +22,25 @@ const { PresentedCard } = await import("./PresentedCard");
 afterEach(() => cleanup());
 
 const card: PresentedCardData = {
+  kind: "business",
   title: "Bob's Handyman",
   subtitle: "Handyman",
-  icon: "wrench",
+  icon: "store",
+  rating: { value: 4.5, max: 5, count: 12 },
+  badges: ["$$"],
   fields: [{ label: "Phone", value: "555-1234" }],
   actions: [{ label: "Call", href: "tel:+15551234", icon: "phone" }],
 };
 
 describe("PresentedCard", () => {
-  test("renders title, subtitle, fields", () => {
-    const { getByText } = render(<PresentedCard card={card} />);
+  test("renders title, subtitle, fields, rating, and badges", () => {
+    const { getByText, getByTitle } = render(<PresentedCard card={card} />);
     expect(getByText("Bob's Handyman")).toBeDefined();
     expect(getByText("Handyman")).toBeDefined();
     expect(getByText("Phone")).toBeDefined();
     expect(getByText("555-1234")).toBeDefined();
+    expect(getByText("$$")).toBeDefined();
+    expect(getByTitle("4.5 / 5")).toBeDefined();
   });
 
   test("renders actions as safe links", () => {
