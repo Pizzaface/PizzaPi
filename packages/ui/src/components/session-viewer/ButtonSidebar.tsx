@@ -10,6 +10,7 @@ import {
   GitBranch,
   Zap,
   BarChart3,
+  FileBox,
   Download,
   Copy,
   OctagonX,
@@ -33,6 +34,7 @@ export interface CommonButtonProps {
   onToggleGit?: () => void;
   onToggleTriggers?: () => void;
   onToggleAnalyzer?: () => void;
+  onToggleArtifacts?: () => void;
   onDuplicateSession?: () => void;
   onExport?: () => void;
   onExec?: (payload: unknown) => boolean | void;
@@ -53,6 +55,7 @@ const ICONS: Record<string, React.ReactNode> = {
   git: <GitBranch className="size-4" />,
   triggers: <Zap className="size-4" />,
   analyzer: <BarChart3 className="size-4" />,
+  artifacts: <FileBox className="size-4" />,
   export: <Download className="size-4" />,
   duplicate: <Copy className="size-4" />,
   delete: <OctagonX className="size-4" />,
@@ -67,6 +70,7 @@ const LABELS: Record<string, string> = {
   git: "Git",
   triggers: "Triggers",
   analyzer: "Context & Cache Analysis",
+  artifacts: "Artifacts",
   export: "Export",
   duplicate: "Duplicate",
   delete: "End",
@@ -87,6 +91,7 @@ function ToolbarButton({
   onToggleGit,
   onToggleTriggers,
   onToggleAnalyzer,
+  onToggleArtifacts,
   onDuplicateSession,
   onExport,
   onExec,
@@ -186,6 +191,7 @@ function ToolbarButton({
                 case "git": onToggleGit?.(); break;
                 case "triggers": onToggleTriggers?.(); break;
                 case "analyzer": onToggleAnalyzer?.(); break;
+                case "artifacts": onToggleArtifacts?.(); break;
                 case "duplicate": onDuplicateSession?.(); break;
                 case "export": onExport?.(); break;
                 case "delete":

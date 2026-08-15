@@ -29,6 +29,7 @@ import {
   TerminalIcon,
   Zap,
   BarChart3,
+  FileBox,
 } from "lucide-react";
 
 // ── HeartbeatStaleBadge ──────────────────────────────────────────────────────
@@ -181,6 +182,9 @@ export interface HeaderOverflowMenuProps {
   showAnalyzerButton?: boolean;
   onToggleAnalyzer?: () => void;
   isAnalyzerOpen?: boolean;
+  showArtifactsButton?: boolean;
+  onToggleArtifacts?: () => void;
+  isArtifactsOpen?: boolean;
   triggerCount?: TriggerCounts;
   onDuplicateSession?: () => void;
   messages: RelayMessage[];
@@ -209,6 +213,9 @@ export function HeaderOverflowMenu({
   showAnalyzerButton,
   onToggleAnalyzer,
   isAnalyzerOpen,
+  showArtifactsButton,
+  onToggleArtifacts,
+  isArtifactsOpen,
   triggerCount,
   onDuplicateSession,
   messages,
@@ -304,12 +311,20 @@ export function HeaderOverflowMenu({
             {isAnalyzerOpen && <Check className="size-3 ml-auto text-primary" />}
           </DropdownMenuItem>
         )}
+        {showArtifactsButton && onToggleArtifacts && (
+          <DropdownMenuItem onSelect={onToggleArtifacts}>
+            <FileBox className="size-3.5 mr-2 shrink-0" />
+            Artifacts
+            {isArtifactsOpen && <Check className="size-3 ml-auto text-primary" />}
+          </DropdownMenuItem>
+        )}
         {extraItems}
         {(showTerminalButton ||
           showFileExplorerButton ||
           showGitButton ||
           showTriggersButton ||
           showAnalyzerButton ||
+          showArtifactsButton ||
           extraItems) && <DropdownMenuSeparator />}
         <DropdownMenuItem onSelect={handleCopyExport}>
           <Copy className="size-3.5 mr-2 shrink-0" />
