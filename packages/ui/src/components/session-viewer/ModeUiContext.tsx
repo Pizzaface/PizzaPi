@@ -19,6 +19,8 @@ export function useModeUi(): ResolvedModeUi | null {
 export interface ArtifactHost {
   /** Runner that owns the session's filesystem. */
   runnerId?: string;
+  /** Session working directory, to resolve relative deliverable paths. */
+  cwd?: string;
   /** Open a path in the file explorer, when the host offers one. */
   onOpenFile?: (path: string) => void;
 }

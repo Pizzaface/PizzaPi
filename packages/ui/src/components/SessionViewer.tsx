@@ -419,8 +419,8 @@ export function SessionViewer({
 
   // What artifact cards need to fetch a preview and open the real file.
   const artifactHost = React.useMemo<ArtifactHost>(
-    () => ({ runnerId, onOpenFile: onOpenArtifact }),
-    [runnerId, onOpenArtifact],
+    () => ({ runnerId, cwd: sessionCwd, onOpenFile: onOpenArtifact }),
+    [runnerId, sessionCwd, onOpenArtifact],
   );
   const sessionActionsWithQuote = React.useMemo(() => {
     if (!sessionActions) return null;

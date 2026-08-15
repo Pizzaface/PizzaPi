@@ -1203,7 +1203,16 @@ function ModeAwareToolCard({
   // rather than collapsed behind an activity line. While the write is still
   // streaming there is no file to preview yet.
   if (artifact && !isStreaming && !isError) {
-    return <ArtifactCard path={artifact.path} kind={artifact.kind} runnerId={artifactHost?.runnerId} onOpen={artifactHost?.onOpenFile} />;
+    return (
+      <ArtifactCard
+        path={artifact.path}
+        kind={artifact.kind}
+        title={artifact.title}
+        runnerId={artifactHost?.runnerId}
+        cwd={artifactHost?.cwd}
+        onOpen={artifactHost?.onOpenFile}
+      />
+    );
   }
 
   if (modeUi?.toolRendering !== "activity") return <>{children}</>;

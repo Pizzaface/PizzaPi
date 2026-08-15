@@ -121,4 +121,22 @@ describe("ArtifactCard", () => {
         const { queryByLabelText } = render(<ArtifactCard path="/w/a.csv" kind="csv" />);
         expect(queryByLabelText("Expand a.csv")).toBeNull();
     });
+
+    test("shows an explicit title alongside the filename", () => {
+        const { getByText } = render(<ArtifactCard path="/w/q3.csv" kind="csv" title="Q3 Report" runnerId="r1" />);
+        expect(getByText("Q3 Report")).toBeDefined();
+        expect(getByText("q3.csv")).toBeDefined();
+    });
+
+    test("resolves a relative deliverable path against the session cwd", async () => {
+        render(<ArtifactCard path="report.csv" kind="csv" runnerId="r1" cwd="/w/space" />);
+        await waitFor(() => expect(requests.length).toBe(1));
+        expect(requests[0]!.path).toBe("/w/space/report.csv");
+    });
+
+    test("leaves an absolute deliverable path untouched", async () => {
+        render(<ArtifactCard path="/w/abs.csv" kind="csv" runnerId="r1" cwd="/other" />);
+        await waitFor(() => expect(requests.length).toBe(1));
+        expect(requests[0]!.path).toBe("/w/abs.csv");
+    });
 });
