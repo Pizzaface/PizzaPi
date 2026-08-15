@@ -27,6 +27,7 @@ export default function PptxPreview({ content, full = false }: { content: string
   const [slideCount, setSlideCount] = React.useState(0);
   const [current, setCurrent] = React.useState(0);
   const [loading, setLoading] = React.useState(true);
+  const [navigating, setNavigating] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
@@ -66,11 +67,19 @@ export default function PptxPreview({ content, full = false }: { content: string
   const goTo = React.useCallback(
     async (index: number) => {
       const renderer = rendererRef.current;
-      if (!renderer || !canvasRef.current || index < 0 || index >= slideCount) return;
-      await renderer.renderSlide(index, canvasRef.current, RENDER_WIDTH);
-      setCurrent(index);
+      if (!renderer || !canvasRef.current || index < 0 || index >= slideCount || navigating) return;
+      setNavigating(true);
+      setError(null);
+      try {
+        await renderer.renderSlide(index, canvasRef.current, RENDER_WIDTH);
+        setCurrent(index);
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setNavigating(false);
+      }
     },
-    [slideCount],
+    [slideCount, navigating],
   );
 
   return (
@@ -91,15 +100,15 @@ export default function PptxPreview({ content, full = false }: { content: string
         />
       </div>
 
-      {slideCount > 1 && !error && (
+      {slideCount > 1 && (
         <div className="flex shrink-0 items-center justify-center gap-3 border-t border-border px-3 py-1.5">
-          <Button size="icon" variant="ghost" className="size-7" disabled={current <= 0} onClick={() => void goTo(current - 1)} aria-label="Previous slide">
+          <Button size="icon" variant="ghost" className="size-7" disabled={current <= 0 || navigating} onClick={() => void goTo(current - 1)} aria-label="Previous slide">
             <ChevronLeftIcon className="size-4" />
           </Button>
           <span className="text-xs tabular-nums text-muted-foreground">
             {current + 1} / {slideCount}
           </span>
-          <Button size="icon" variant="ghost" className="size-7" disabled={current >= slideCount - 1} onClick={() => void goTo(current + 1)} aria-label="Next slide">
+          <Button size="icon" variant="ghost" className="size-7" disabled={current >= slideCount - 1 || navigating} onClick={() => void goTo(current + 1)} aria-label="Next slide">
             <ChevronRightIcon className="size-4" />
           </Button>
         </div>
