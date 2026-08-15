@@ -151,7 +151,9 @@ async function askPlanMode(
     ctx: ExtensionContext,
 ): Promise<{ action: PlanModeAction; editSuggestion?: string } | null> {
     const canAskViaWeb = rctx.isConnected();
-    const canAskViaTui = ctx.hasUI;
+    // hasUI is also true in RPC mode (runner workers), where ctx.ui routes to
+    // the web approval card — asking there would double-prompt. TUI-only race.
+    const canAskViaTui = ctx.hasUI && (ctx as { mode?: string }).mode === "tui";
 
     if (!canAskViaWeb && !canAskViaTui) {
         return null;
