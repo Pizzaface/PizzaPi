@@ -1,5 +1,5 @@
 import * as React from "react";
-import { StarIcon } from "lucide-react";
+import { StarIcon, MapPinIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -31,32 +31,47 @@ export function PresentedCard({ card }: { card: PresentedCardData }) {
           </div>
         )}
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium">{card.title}</div>
+          <div className="font-medium leading-tight">{card.title}</div>
           {card.subtitle && <div className="truncate text-xs text-muted-foreground">{card.subtitle}</div>}
-          <div className="mt-1 flex flex-wrap items-center gap-1.5">
-            {card.rating && <RatingStars rating={card.rating} />}
-            {card.badges.map((badge, i) => (
-              <span key={i} className="rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
-                {badge}
-              </span>
-            ))}
-          </div>
+          {(card.rating || card.badges.length > 0) && (
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+              {card.rating && <RatingStars rating={card.rating} />}
+              {card.badges.map((badge, i) => (
+                <span key={i} className="rounded bg-muted px-1.5 py-0.5 text-[0.65rem] font-medium text-muted-foreground">
+                  {badge}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
-      {card.fields.length > 0 && (
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 px-3 py-2.5 text-sm">
-          {card.fields.map((field, i) => (
-            <React.Fragment key={i}>
-              <dt className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">{field.label}</dt>
-              <dd className="min-w-0 break-words">{field.value}</dd>
-            </React.Fragment>
-          ))}
-        </dl>
+      {(card.description || card.address || card.fields.length > 0) && (
+        <div className="space-y-2 px-3 py-2.5">
+          {card.description && (
+            <p className="text-sm leading-snug text-muted-foreground line-clamp-3">{card.description}</p>
+          )}
+          {card.address && (
+            <div className="flex items-start gap-1.5 text-sm">
+              <MapPinIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 break-words">{card.address}</span>
+            </div>
+          )}
+          {card.fields.length > 0 && (
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-sm">
+              {card.fields.map((field, i) => (
+                <React.Fragment key={i}>
+                  <dt className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">{field.label}</dt>
+                  <dd className="min-w-0 break-words">{field.value}</dd>
+                </React.Fragment>
+              ))}
+            </dl>
+          )}
+        </div>
       )}
 
       {card.actions.length > 0 && (
-        <div className={cn("flex flex-wrap gap-2 px-3 pb-3", card.fields.length === 0 && "pt-3")}>
+        <div className={cn("flex flex-wrap gap-2 px-3 pb-3", !card.description && !card.address && card.fields.length === 0 && "pt-3")}>
           {card.actions.map((action, i) => (
             <Button key={i} asChild size="sm" variant="outline" className="gap-1.5">
               <a href={action.href} target="_blank" rel="noopener noreferrer nofollow">
