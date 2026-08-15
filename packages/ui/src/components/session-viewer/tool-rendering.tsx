@@ -1222,6 +1222,7 @@ function ModeAwareToolCard({
         runnerId={artifactHost?.runnerId}
         cwd={artifactHost?.cwd}
         onOpen={artifactHost?.onOpenFile}
+        onExpand={artifactHost?.onOpenArtifact}
       />
     );
   }

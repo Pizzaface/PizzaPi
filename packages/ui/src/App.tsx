@@ -59,7 +59,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { X, TerminalIcon, FolderTree, GitBranch, EyeOff, Zap, BarChart3 } from "lucide-react";
+import { X, TerminalIcon, FolderTree, GitBranch, EyeOff, Zap, BarChart3, FileText } from "lucide-react";
+import { ArtifactViewerContent } from "@/components/session-viewer/ArtifactCard";
 import type { TriggerHistoryEntry } from "@/components/TriggersPanel";
 import type { ProviderUsageMap } from "@/components/UsageIndicator";
 import { CombinedPanel, type CombinedPanelTab } from "@/components/CombinedPanel";
@@ -650,6 +651,13 @@ export function App() {
   const [analyzerPosition, setAnalyzerPosition] = React.useState<PanelPosition>("center-bottom");
   const handleAnalyzerPositionChange = React.useCallback((pos: PanelPosition) => {
     setAnalyzerPosition(pos);
+  }, []);
+
+  // Single-artifact side viewer (Claude-style): one artifact at a time, not a list.
+  const [artifactViewer, setArtifactViewer] = React.useState<{ path: string; kind: import("@/components/session-viewer/artifact-detection").ArtifactKind; title?: string } | null>(null);
+  const [artifactViewerPosition, setArtifactViewerPosition] = React.useState<PanelPosition>("right-middle");
+  const handleArtifactViewerPositionChange = React.useCallback((pos: PanelPosition) => {
+    setArtifactViewerPosition(pos);
   }, []);
 
   const buttonPositions = useButtonPosition();
@@ -2174,6 +2182,7 @@ export function App() {
       setPendingQuestion(null);
       setPendingPlan(null);
       setPendingApproval(null);
+      setArtifactViewer(null);
       setRetryState(null);
       setActiveToolCalls(new Map());
       // Clear message queue — the agent processed any queued steer/followUp
@@ -4804,6 +4813,27 @@ export function App() {
     };
   }, [showAnalyzer, activeSessionId, activeSessionInfo?.runnerId, analysis, startPanelDragWith, handleAnalyzerPositionChange]);
 
+  const artifactViewerPanelTab = React.useMemo<CombinedPanelTab | null>(() => {
+    if (!artifactViewer || !activeSessionId) return null;
+    const fileName = artifactViewer.path.split(/[\\/]/).filter(Boolean).pop() ?? artifactViewer.path;
+    return {
+      id: "artifact-viewer",
+      label: artifactViewer.title ?? fileName,
+      icon: <FileText className="size-3.5" />,
+      onClose: () => setArtifactViewer(null),
+      onDragStart: (e) => startPanelDragWith(e, handleArtifactViewerPositionChange),
+      content: (
+        <ArtifactViewerContent
+          path={artifactViewer.path}
+          kind={artifactViewer.kind}
+          title={artifactViewer.title}
+          runnerId={activeSessionInfo?.runnerId ?? undefined}
+          onOpen={modeUi.files ? handleOpenFileInExplorer : undefined}
+        />
+      ),
+    };
+  }, [artifactViewer, activeSessionId, activeSessionInfo?.runnerId, modeUi.files, handleOpenFileInExplorer, startPanelDragWith, handleArtifactViewerPositionChange]);
+
   const servicePanelTabs = React.useMemo<CombinedPanelTab[]>(() => {
     // Use tunnelSessionId (runner-stable) instead of activeSessionId so
     // iframe service panels don't reload on same-runner session switches.
@@ -4855,9 +4885,10 @@ export function App() {
     if (gitPanelTab) groups[gitPosition].push(gitPanelTab);
     if (triggersPanelTab) groups[triggersPosition].push(triggersPanelTab);
     if (analyzerPanelTab) groups[analyzerPosition].push(analyzerPanelTab);
+    if (artifactViewerPanelTab) groups[artifactViewerPosition].push(artifactViewerPanelTab);
     for (const tab of servicePanelTabs) groups[getServicePanelPosition(tab.id)].push(tab);
     return groups;
-  }, [terminalPanelTab, terminalPosition, filesPanelTab, filesPosition, gitPanelTab, gitPosition, triggersPanelTab, triggersPosition, analyzerPanelTab, analyzerPosition, servicePanelTabs, getServicePanelPosition]);
+  }, [terminalPanelTab, terminalPosition, filesPanelTab, filesPosition, gitPanelTab, gitPosition, triggersPanelTab, triggersPosition, analyzerPanelTab, analyzerPosition, artifactViewerPanelTab, artifactViewerPosition, servicePanelTabs, getServicePanelPosition]);
   panelGroupsRef.current = panelGroups;
 
   // ── Derived column zone arrays ─────────────────────────────────────────────
@@ -4924,8 +4955,8 @@ export function App() {
   const centerBottomCollapsed = isGroupCollapsed(centerBottomTabIds);
 
   const mobilePanelTabs = React.useMemo(() => {
-    return [terminalPanelTab, filesPanelTab, gitPanelTab, triggersPanelTab, analyzerPanelTab, ...servicePanelTabs].filter(Boolean) as CombinedPanelTab[];
-  }, [terminalPanelTab, filesPanelTab, gitPanelTab, triggersPanelTab, analyzerPanelTab, servicePanelTabs]);
+    return [terminalPanelTab, filesPanelTab, gitPanelTab, triggersPanelTab, analyzerPanelTab, artifactViewerPanelTab, ...servicePanelTabs].filter(Boolean) as CombinedPanelTab[];
+  }, [terminalPanelTab, filesPanelTab, gitPanelTab, triggersPanelTab, analyzerPanelTab, artifactViewerPanelTab, servicePanelTabs]);
 
   const resolveActiveTabId = React.useCallback((tabs: CombinedPanelTab[]) => {
     return resolveActiveTabIdFromIds(tabs.map((t) => t.id), combinedActiveTab);
@@ -5421,6 +5452,7 @@ export function App() {
                         modeLabel={activeMode?.label}
                         modeIcon={activeMode?.icon}
                         onOpenArtifact={modeUi.files ? handleOpenFileInExplorer : undefined}
+                        onOpenArtifactViewer={(a) => { setArtifactViewer(a); handleCombinedTabChange("artifact-viewer"); }}
                         modeHome={selectedMode ? {
                           label: selectedMode.label,
                           icon: selectedMode.icon,

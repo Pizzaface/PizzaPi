@@ -106,6 +106,8 @@ export interface SessionViewerProps {
   modeIcon?: string;
   /** Open a deliverable in the file explorer. Omitted when the mode hides files. */
   onOpenArtifact?: (path: string) => void;
+  /** Open one artifact in a docked side panel (Claude-style single-artifact view). */
+  onOpenArtifactViewer?: (artifact: { path: string; kind: import("@/components/session-viewer/artifact-detection").ArtifactKind; title?: string }) => void;
   /**
    * Mode home shown instead of the empty state when a mode is selected and no
    * session is open. Omitted when no mode is selected.

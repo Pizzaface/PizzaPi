@@ -186,6 +186,7 @@ export function ArtifactCard({
   runnerId,
   cwd,
   onOpen,
+  onExpand,
 }: {
   path: string;
   kind: ArtifactKind;
@@ -197,6 +198,12 @@ export function ArtifactCard({
   cwd?: string;
   /** Open the file in the file explorer panel, when the host supports it. */
   onOpen?: (path: string) => void;
+  /**
+   * Open this one artifact in the host's docked side panel. When provided the
+   * expand affordance uses it (Claude-style side view) instead of the inline
+   * fallback dialog. Path is already cwd-resolved.
+   */
+  onExpand?: (artifact: { path: string; kind: ArtifactKind; title?: string }) => void;
 }) {
   const resolvedPath = resolveArtifactPath(path, cwd);
   const fileName = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
@@ -212,6 +219,13 @@ export function ArtifactCard({
   const [downloading, setDownloading] = React.useState(false);
   const [expanded, setExpanded] = React.useState(false);
   const error = fetchError ?? downloadError;
+
+  // Prefer the host's docked side panel; fall back to an inline dialog only
+  // when no host handler is wired (e.g. isolated render contexts).
+  const openViewer = React.useCallback(() => {
+    if (onExpand) onExpand({ path: resolvedPath, kind, title });
+    else setExpanded(true);
+  }, [onExpand, resolvedPath, kind, title]);
 
   const download = () =>
     downloadArtifact({
@@ -233,7 +247,7 @@ export function ArtifactCard({
           size="icon"
           variant="ghost"
           className="size-7"
-          onClick={() => setExpanded(true)}
+          onClick={openViewer}
           aria-label={`Expand ${fileName}`}
         >
           <Maximize2Icon className="size-3.5" />
@@ -269,7 +283,7 @@ export function ArtifactCard({
               previewable && runnerId && "hover:underline cursor-pointer",
             )}
             title={resolvedPath}
-            onClick={previewable && runnerId ? () => setExpanded(true) : undefined}
+            onClick={previewable && runnerId ? openViewer : undefined}
             disabled={!(previewable && runnerId)}
           >
             <span className="truncate text-sm font-medium">{title ?? fileName}</span>
@@ -307,7 +321,7 @@ export function ArtifactCard({
               {truncated && (
                 <button
                   type="button"
-                  onClick={() => setExpanded(true)}
+                  onClick={openViewer}
                   className="w-full border-t border-border px-3 py-1.5 text-center text-[0.65rem] text-muted-foreground hover:bg-muted/40"
                 >
                   Preview shows the start of this file — expand or download for the whole thing.
@@ -333,12 +347,13 @@ export function ArtifactCard({
 }
 
 /**
- * A deliverable shown large, in a focused overlay beside the transcript.
+ * A deliverable shown large — header + full preview, filling its container.
  *
- * Refetches its own content so opening the viewer works even when the inline
- * preview was truncated — the viewer is where a full read happens.
+ * Rendered as the host's docked side panel (Claude-style, one artifact at a
+ * time) and, as a fallback, inside a dialog. Refetches its own content so the
+ * viewer works even when the inline preview was truncated.
  */
-function ArtifactViewer({
+export function ArtifactViewerContent({
   path,
   kind,
   title,
@@ -351,7 +366,9 @@ function ArtifactViewer({
   title?: string;
   runnerId?: string;
   onOpen?: (path: string) => void;
-  onClose: () => void;
+  /** When provided, renders a close button (dialog use); the docked panel
+   * relies on its own tab chrome and omits this. */
+  onClose?: () => void;
 }) {
   const fileName = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
   const { content, dataUrl, size, error, loading, truncated } = useArtifactContent(path, kind, runnerId, true);
@@ -372,61 +389,87 @@ function ArtifactViewer({
     });
 
   return (
+    <div className="flex h-full flex-col">
+      <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+        <DynamicLucideIcon name={KIND_ICON[kind]} className="size-4 shrink-0 text-muted-foreground" />
+        <span className="truncate text-sm font-medium" title={path}>
+          {title ?? fileName}
+        </span>
+        {title && <span className="shrink-0 truncate text-xs text-muted-foreground">{fileName}</span>}
+        {size !== undefined && <span className="shrink-0 text-[0.65rem] tabular-nums text-muted-foreground">{formatSize(size)}</span>}
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          {onOpen && (
+            <Button size="icon" variant="ghost" className="size-7" onClick={() => onOpen(path)} aria-label={`Open ${fileName}`}>
+              <ExternalLinkIcon className="size-4" />
+            </Button>
+          )}
+          <Button
+            size="icon"
+            variant="ghost"
+            className="size-7"
+            onClick={() => void download()}
+            disabled={downloading}
+            aria-label={`Download ${fileName}`}
+          >
+            {downloading ? <Loader2Icon className="size-4 animate-spin" /> : <DownloadIcon className="size-4" />}
+          </Button>
+          {onClose && (
+            <Button size="icon" variant="ghost" className="size-7" onClick={onClose} aria-label="Close">
+              <span className="text-lg leading-none">×</span>
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto">
+        {loading && (
+          <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
+            <Loader2Icon className="size-4 animate-spin" /> Loading…
+          </div>
+        )}
+        {!loading && error && (
+          <div className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground">
+            Unavailable — {error}
+          </div>
+        )}
+        {!loading && !error && content !== null && (
+          <ArtifactPreview kind={kind} content={content} dataUrl={dataUrl} fileName={fileName} full />
+        )}
+        {(downloadError && !error) && (
+          <div className="border-t border-border px-4 py-1.5 text-center text-[0.65rem] text-destructive">
+            Download failed — {downloadError}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Inline fallback: the viewer in a centered dialog (used when the host has no
+ * docked panel to open the artifact into). */
+function ArtifactViewer({
+  path,
+  kind,
+  title,
+  runnerId,
+  onOpen,
+  onClose,
+}: {
+  path: string;
+  kind: ArtifactKind;
+  title?: string;
+  runnerId?: string;
+  onOpen?: (path: string) => void;
+  onClose: () => void;
+}) {
+  return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent
         showCloseButton={false}
-        className="flex h-[90vh] w-[min(1100px,95vw)] max-w-[95vw] flex-col gap-0 p-0"
+        className="h-[90vh] w-[min(1100px,95vw)] max-w-[95vw] gap-0 p-0"
         aria-describedby={undefined}
       >
-        <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
-          <DynamicLucideIcon name={KIND_ICON[kind]} className="size-4 shrink-0 text-muted-foreground" />
-          <span className="truncate text-sm font-medium" title={path}>
-            {title ?? fileName}
-          </span>
-          {title && <span className="shrink-0 truncate text-xs text-muted-foreground">{fileName}</span>}
-          {size !== undefined && <span className="shrink-0 text-[0.65rem] tabular-nums text-muted-foreground">{formatSize(size)}</span>}
-          <div className="ml-auto flex shrink-0 items-center gap-1">
-            {onOpen && (
-              <Button size="icon" variant="ghost" className="size-8" onClick={() => onOpen(path)} aria-label={`Open ${fileName}`}>
-                <ExternalLinkIcon className="size-4" />
-              </Button>
-            )}
-            <Button
-              size="icon"
-              variant="ghost"
-              className="size-8"
-              onClick={() => void download()}
-              disabled={downloading}
-              aria-label={`Download ${fileName}`}
-            >
-              {downloading ? <Loader2Icon className="size-4 animate-spin" /> : <DownloadIcon className="size-4" />}
-            </Button>
-            <Button size="icon" variant="ghost" className="size-8" onClick={onClose} aria-label="Close">
-              <span className="text-lg leading-none">×</span>
-            </Button>
-          </div>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-auto">
-          {loading && (
-            <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-              <Loader2Icon className="size-4 animate-spin" /> Loading…
-            </div>
-          )}
-          {!loading && error && (
-            <div className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground">
-              Unavailable — {error}
-            </div>
-          )}
-          {!loading && !error && content !== null && (
-            <ArtifactPreview kind={kind} content={content} dataUrl={dataUrl} fileName={fileName} full />
-          )}
-          {(downloadError && !error) && (
-            <div className="border-t border-border px-4 py-1.5 text-center text-[0.65rem] text-destructive">
-              Download failed — {downloadError}
-            </div>
-          )}
-        </div>
+        <ArtifactViewerContent path={path} kind={kind} title={title} runnerId={runnerId} onOpen={onOpen} onClose={onClose} />
       </DialogContent>
     </Dialog>
   );
