@@ -5,7 +5,7 @@ import type { TriggerCounts } from "@/hooks/useTriggerCount";
 import type { QuestionDisplayMode } from "@/lib/ask-user-questions";
 import type { CommandResultData } from "@/components/session-viewer/rendering";
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
-import type { MetaGoalStatus } from "@pizzapi/protocol";
+import type { MetaGoalStatus, ResolvedModeUi } from "@pizzapi/protocol";
 
 export type { RelayMessage, TodoItem, TokenUsage, QueuedMessage, ResumeSessionOption, ForkMessageOption };
 
@@ -88,6 +88,16 @@ export interface SessionViewerProps {
   isFileExplorerOpen?: boolean;
   /** Whether the git panel is currently open (used for mobile overflow menu state indicator) */
   isGitOpen?: boolean;
+  /**
+   * Resolved UI contract for the mode this session belongs to.
+   * Omitted for sessions outside any mode — callers should treat that as the
+   * standard coding UI (see resolveModeUi in @pizzapi/protocol).
+   */
+  modeUi?: ResolvedModeUi;
+  /** Label of the mode this session belongs to, when it is in one. */
+  modeLabel?: string;
+  /** Lucide icon name for the mode this session belongs to. */
+  modeIcon?: string;
   /** Toggle the triggers panel */
   onToggleTriggers?: () => void;
   /** Whether to show the triggers button */

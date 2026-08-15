@@ -125,6 +125,84 @@ src/config.ts:8:    trustedOrigins: ["http://localhost:5173"],`)],
     return events;
 }
 
+/**
+ * A knowledge-work conversation: research, documents, spreadsheets — the
+ * deliverable-shaped work a Work-mode session actually does. Used to exercise
+ * activity-style tool rendering and artifact cards.
+ */
+function workModeConversation(): unknown[] {
+    const events: unknown[] = [];
+    const toolId = (n: number) => `tool_work_${n}_${Date.now()}`;
+
+    events.push(buildAssistantMessage(
+        "I'll pull together the Q3 supplier review. Let me start with what we already have on file.",
+    ));
+
+    const searchId = toolId(1);
+    events.push({
+        type: "message_update",
+        role: "assistant",
+        content: [buildToolUseEvent("session_search", { query: "supplier review" }, searchId)],
+        messageId: `msg_work_${Date.now()}_1`,
+    });
+    events.push({
+        type: "tool_result_message",
+        content: [buildToolResultEvent(searchId, "3 prior sessions matched: Q1 supplier review, vendor pricing notes, logistics recap.")],
+    });
+
+    const webId = toolId(2);
+    events.push({
+        type: "message_update",
+        role: "assistant",
+        content: [buildToolUseEvent("web_search", { query: "freight rates Q3 2026" }, webId)],
+        messageId: `msg_work_${Date.now()}_2`,
+    });
+    events.push({
+        type: "tool_result_message",
+        content: [buildToolResultEvent(webId, "Container spot rates fell 12% quarter-over-quarter; carriers cite softening demand.")],
+    });
+
+    events.push(buildAssistantMessage(
+        "Freight is down 12% this quarter, which changes the pricing picture. Writing this up now.",
+    ));
+
+    const writeId = toolId(3);
+    events.push({
+        type: "message_update",
+        role: "assistant",
+        content: [buildToolUseEvent("write", {
+            file_path: "/Users/jordan/Documents/Workspace/q3-supplier-review.md",
+            content: "# Q3 Supplier Review\n\nFreight rates fell 12% QoQ.",
+        }, writeId)],
+        messageId: `msg_work_${Date.now()}_3`,
+    });
+    events.push({
+        type: "tool_result_message",
+        content: [buildToolResultEvent(writeId, "Wrote 4.2 KB to /Users/jordan/Documents/Workspace/q3-supplier-review.md")],
+    });
+
+    const sheetId = toolId(4);
+    events.push({
+        type: "message_update",
+        role: "assistant",
+        content: [buildToolUseEvent("write", {
+            file_path: "/Users/jordan/Documents/Workspace/supplier-costs.csv",
+            content: "supplier,q2,q3\nNorthwind,102400,94100\n",
+        }, sheetId)],
+        messageId: `msg_work_${Date.now()}_4`,
+    });
+    events.push({
+        type: "tool_result_message",
+        content: [buildToolResultEvent(sheetId, "Wrote 1.1 KB to /Users/jordan/Documents/Workspace/supplier-costs.csv")],
+    });
+
+    events.push(buildAssistantMessage(
+        "Done. Two deliverables:\n\n- **q3-supplier-review.md** — the write-up, with the freight change called out\n- **supplier-costs.csv** — per-supplier Q2 vs Q3 spend\n\nNorthwind is the only supplier whose costs fell faster than the freight index, so they're worth a closer look before renewal.",
+    ));
+
+    return events;
+}
+
 function toolHeavyConversation(): unknown[] {
     const events: unknown[] = [];
     const toolId = (n: number) => `tool_heavy_${n}_${Date.now()}`;
@@ -287,6 +365,7 @@ const SCENARIOS: Record<string, { name: string; builder: () => unknown[] }> = {
     review: { name: "Code Review", builder: codeReviewConversation },
     tools: { name: "Tool-Heavy (Dark Mode)", builder: toolHeavyConversation },
     subagent: { name: "Subagent Spawn", builder: subagentConversation },
+    work: { name: "Work Mode (Deliverables)", builder: workModeConversation },
 };
 
 // ── Models pool ──────────────────────────────────────────────────────────────
@@ -685,9 +764,34 @@ async function main() {
     // and service_announce reaches viewers.
     const defaultRunner = await createMockRunner(server, {
         name: "sandbox-runner",
-        roots: ["/Users/jordan/Documents/Projects/PizzaPi"],
+        roots: ["/Users/jordan/Documents/Projects/PizzaPi", "/Users/jordan/Documents/Workspace"],
         platform: "darwin",
         serviceIds: ["terminal", "file-explorer", "git", "tunnel", "system-monitor", GODMOTHER_LITE_SERVICE_ID],
+        // A knowledge-work mode exercising the declarative mode UI contract.
+        sessionModes: [{
+            id: "work",
+            label: "Work",
+            icon: "briefcase",
+            workspace: "/Users/jordan/Documents/Workspace",
+            ui: {
+                preset: "work",
+                toolRendering: "activity",
+                vocabulary: { session: "task", sessions: "tasks" },
+                accent: "#7c3aed",
+                composerPlaceholder: "What do you need done?",
+                home: {
+                    greeting: "What are we working on?",
+                    suggestions: [
+                        { label: "Daily report", icon: "sun", prompt: "Write my daily report" },
+                        { label: "Research a topic", icon: "telescope", prompt: "Research " },
+                        { label: "Make a document", icon: "file-text", prompt: "Draft a document about " },
+                        { label: "Build a spreadsheet", icon: "table", prompt: "Build a spreadsheet of " },
+                    ],
+                },
+                artifacts: { enabled: true },
+                scheduled: true,
+            },
+        }],
         panels: [
             { serviceId: "system-monitor", port: monitorPort, label: "System Monitor", icon: "activity" },
             { serviceId: GODMOTHER_LITE_SERVICE_ID, port: godmotherLitePort, label: "Godmother Lite", icon: "sparkles" },
@@ -789,6 +893,27 @@ async function main() {
     }), 0);
     defaultRunner.emitSessionReady(s3.sessionId);
     console.log(`  🔗 Session 3: code-review-subagent (Haiku 4.5) → child of S1`);
+
+    // Session 4: Work mode — exercises the declarative mode UI contract.
+    const s4 = await scenario.addSession({
+        cwd: "/Users/jordan/Documents/Workspace",
+        collabMode: true,
+    });
+    sessionCounter++;
+    s4.relay.emitEvent(s4.sessionId, s4.token, buildHeartbeat({
+        active: false,
+        sessionName: "Q3 supplier review",
+        model: MODELS[0],
+        cwd: "/Users/jordan/Documents/Workspace",
+    }), 0);
+    s4.relay.emitEvent(s4.sessionId, s4.token, { type: "model_changed", model: MODELS[0] });
+    const workConvo = workModeConversation();
+    for (let i = 0; i < workConvo.length; i++) {
+        s4.relay.emitEvent(s4.sessionId, s4.token, workConvo[i], i + 1);
+        await sleep(40);
+    }
+    defaultRunner.emitSessionReady(s4.sessionId);
+    console.log(`  💼 Session 4: Q3 supplier review (Work mode) — ${workConvo.length} events`);
 
     // ── Start Vite dev server for HMR ──────────────────────────────────
     const vitePort = await getFreePort();

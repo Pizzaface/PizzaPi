@@ -24,6 +24,8 @@ import {
   ReasoningContent,
 } from "@/components/ai-elements/reasoning";
 import { FileTypeCard } from "@/components/ai-elements/file-type-card";
+import { ActivityToolCard } from "@/components/session-viewer/ActivityToolCard";
+import { useModeUi } from "@/components/session-viewer/ModeUiContext";
 import { EditFileCard } from "@/components/ai-elements/edit-file-card";
 import {
   estimateBase64Bytes,
@@ -1121,6 +1123,12 @@ export function renderGroupedToolExecution(
     );
   }
 
+  const body = (
+    <ModeAwareToolCard toolName={toolName} toolInput={toolInput} isError={isError} isStreaming={isStreaming}>
+      {card}
+    </ModeAwareToolCard>
+  );
+
   if (thinking) {
     return (
       <div className="flex flex-col gap-2">
@@ -1130,10 +1138,39 @@ export function renderGroupedToolExecution(
                <ReasoningContent>{thinking}</ReasoningContent>
             </Reasoning>
          </div>
-         {card}
+         {body}
       </div>
     );
   }
 
-  return card;
+  return body;
+}
+
+/**
+ * Renders a tool card the way the active mode asks for.
+ *
+ * A component (not a branch inside renderGroupedToolExecution) because the
+ * mode arrives by context, and only components can read context. Modes that
+ * want "detailed" — and every session outside a mode — pass straight through.
+ */
+function ModeAwareToolCard({
+  toolName,
+  toolInput,
+  isError,
+  isStreaming,
+  children,
+}: {
+  toolName?: string;
+  toolInput: unknown;
+  isError?: boolean;
+  isStreaming: boolean;
+  children: React.ReactNode;
+}) {
+  const modeUi = useModeUi();
+  if (modeUi?.toolRendering !== "activity") return <>{children}</>;
+  return (
+    <ActivityToolCard toolName={toolName} toolInput={toolInput} isError={isError} isStreaming={isStreaming}>
+      {children}
+    </ActivityToolCard>
+  );
 }

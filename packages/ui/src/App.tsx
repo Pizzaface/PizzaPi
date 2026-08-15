@@ -23,7 +23,7 @@ import type {
   HubClientToServerEvents,
   SessionMetaState,
 } from "@pizzapi/protocol";
-import { SOCKET_PROTOCOL_VERSION, parseViewerEventEnvelope, parseViewerConnectedEnvelope, parseHubStateSnapshot, parseHubMetaEvent, parseSpawnResponse } from "@pizzapi/protocol";
+import { SOCKET_PROTOCOL_VERSION, parseViewerEventEnvelope, parseViewerConnectedEnvelope, parseHubStateSnapshot, parseHubMetaEvent, parseSpawnResponse, findSessionMode, resolveModeUi } from "@pizzapi/protocol";
 import { cn } from "@/lib/utils";
 import { pulseStreamingHaptic, cancelHaptic, startToolHaptic, stopToolHaptic } from "@/lib/haptics";
 import { shouldCenterTopSpanFullWidth, shouldCenterBottomSpanFullWidth } from "@/utils/panelLayoutHelpers";
@@ -4359,6 +4359,24 @@ export function App() {
   // Runner service panels — dynamically discovered
   const { services: availableServices, disabledServices: disabledServiceIds, panels: dynamicPanels, triggerDefs: runnerTriggerDefs, sigilDefs: runnerSigilDefs, sessionModes } = useRunnerServices(viewerSocket, activeRunnerInfo);
   const triggerCounts = useTriggerCount(activeSessionId, viewerSocket);
+
+  // The mode the active session belongs to, and what that mode says the UI
+  // should look like. No mode (or a mode without a `ui` block) resolves to the
+  // standard coding UI, so this is inert for every existing session.
+  const activeMode = React.useMemo(
+    () => findSessionMode(activeSessionInfo, sessionModes, activeSessionInfo?.runnerId),
+    [activeSessionInfo, sessionModes],
+  );
+  const modeUi = React.useMemo(() => resolveModeUi(activeMode), [activeMode]);
+
+  // Hiding a surface has to close it too: switching from a coding session to a
+  // Work task with the git panel open would otherwise strand a panel the mode
+  // says does not exist, with no button left to close it.
+  React.useEffect(() => {
+    if (!modeUi.git) setShowGit(false);
+    if (!modeUi.terminal) setShowTerminal(false);
+    if (!modeUi.files) setShowFileExplorer(false);
+  }, [modeUi.git, modeUi.terminal, modeUi.files, setShowGit, setShowTerminal, setShowFileExplorer]);
   const attentionSessionNames = React.useMemo(() => {
     const names = new Map<string, string>();
     for (const session of liveSessions) {
@@ -5226,14 +5244,17 @@ export function App() {
                         onEditQueuedMessage={editQueuedMessage}
                         onClearMessageQueue={clearMessageQueue}
                         onToggleTerminal={() => setShowTerminal((v) => !v)}
-                        showTerminalButton
+                        showTerminalButton={modeUi.terminal}
                         isTerminalOpen={showTerminal}
                         onToggleFileExplorer={() => setShowFileExplorer((v) => !v)}
-                        showFileExplorerButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
+                        showFileExplorerButton={modeUi.files && !!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
                         isFileExplorerOpen={showFileExplorer}
                         onToggleGit={() => setShowGit((v) => !v)}
-                        showGitButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
+                        showGitButton={modeUi.git && !!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
                         isGitOpen={showGit}
+                        modeUi={modeUi}
+                        modeLabel={activeMode?.label}
+                        modeIcon={activeMode?.icon}
                         onToggleTriggers={() => setShowTriggers((v) => !v)}
                         showTriggersButton={!!activeSessionId}
                         isTriggersOpen={showTriggers}

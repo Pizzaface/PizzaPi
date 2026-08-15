@@ -101,6 +101,8 @@ import { ComposerSubmitButton } from "@/components/session-viewer/composer-submi
 import { SessionMessageItem, PaginationSentinel } from "@/components/session-viewer/message-item";
 import { GoalStatusBadge } from "@/components/session-viewer/goal-status-badge";
 import { DraggableToolbarButton } from "@/components/session-viewer/DraggableToolbarButton";
+import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
+import { ModeUiContext } from "@/components/session-viewer/ModeUiContext";
 import type { ToolbarButtonId } from "@/hooks/useButtonPosition";
 
 // ── Public re-exports (existing consumers import these from SessionViewer) ────
@@ -148,6 +150,9 @@ export function SessionViewer({
   showFileExplorerButton,
   onToggleGit,
   showGitButton,
+  modeUi,
+  modeLabel,
+  modeIcon,
   isTerminalOpen,
   isFileExplorerOpen,
   isGitOpen,
@@ -578,6 +583,7 @@ export function SessionViewer({
   return (
     <SessionActionsProvider value={sessionActionsWithQuote}>
       <McpToggleContext.Provider value={onExec ? handleMcpToggle : null}>
+        <ModeUiContext.Provider value={modeUi ?? null}>
         <div className="flex flex-col flex-1 min-h-0">
 
           {/* ── Session info bar ─────────────────────────────────────────── */}
@@ -621,6 +627,18 @@ export function SessionViewer({
                 <span className="text-sm font-medium truncate leading-none">
                   {sessionName || `Session ${sessionId.slice(0, 8)}…`}
                 </span>
+                {modeLabel && (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[0.65rem] font-medium flex-shrink-0"
+                    style={modeUi?.accent
+                      ? { borderColor: `${modeUi.accent}59`, backgroundColor: `${modeUi.accent}1a`, color: modeUi.accent }
+                      : undefined}
+                    title={`${modeLabel} mode`}
+                  >
+                    {modeIcon ? <DynamicLucideIcon name={modeIcon} className="size-3" /> : null}
+                    {modeLabel}
+                  </span>
+                )}
                 {activeModel?.provider && (
                   <span
                     className="hidden sm:inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[0.65rem] text-muted-foreground flex-shrink-0"
@@ -1721,10 +1739,12 @@ export function SessionViewer({
                             ? deliveryMode === "steer"
                               ? "Type to steer the agent…"
                               : "Type a follow-up message…"
-                            : isTouchDevice
-                              ? "Send a message…"
-                              : "Send a message to this session…"
-                        : "Pick a session to chat"
+                            : modeUi?.composerPlaceholder
+                              ? modeUi.composerPlaceholder
+                              : isTouchDevice
+                                ? "Send a message…"
+                                : `Send a message to this ${modeUi?.sessionNoun ?? "session"}`
+                        : `Pick a ${modeUi?.sessionNoun ?? "session"} to chat`
                     }
                     className="min-h-12 max-h-36"
                   />
@@ -1832,6 +1852,7 @@ export function SessionViewer({
           </Dialog>
 
         </div>
+        </ModeUiContext.Provider>
       </McpToggleContext.Provider>
     </SessionActionsProvider>
   );
