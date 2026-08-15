@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { detectPresentedCard, isSafeActionHref, schemaKind, formatAddress } from "./presented-card";
+import { detectPresentedCard, detectPresentedCards, isSafeActionHref, schemaKind, formatAddress } from "./presented-card";
 
 const present = (entity: unknown) => detectPresentedCard("present_card", { entity });
 
@@ -153,5 +153,36 @@ describe("detectPresentedCard — schema.org entities", () => {
   test("recognizes the MCP-prefixed form and JSON-string input", () => {
     expect(detectPresentedCard("mcp__pizzawork__present_card", { entity: { name: "Prefixed" } })?.title).toBe("Prefixed");
     expect(detectPresentedCard("present_card", JSON.stringify({ entity: { name: "Stringy" } }))?.title).toBe("Stringy");
+  });
+});
+
+describe("detectPresentedCards - one or many", () => {
+  test("non-present tool yields no cards", () => {
+    expect(detectPresentedCards("bash", { entities: [{ name: "x" }] })).toEqual([]);
+  });
+
+  test("a single entity yields one card", () => {
+    const cards = detectPresentedCards("present_card", { entity: { "@type": "Person", name: "Ada" } });
+    expect(cards.map((c) => c.title)).toEqual(["Ada"]);
+  });
+
+  test("an entities array yields many, preserving order and dropping untitled", () => {
+    const cards = detectPresentedCards("present_card", {
+      entities: [
+        { "@type": "LocalBusiness", name: "Alpha" },
+        { "@type": "LocalBusiness" },
+        { "@type": "LocalBusiness", name: "Bravo" },
+      ],
+    });
+    expect(cards.map((c) => c.title)).toEqual(["Alpha", "Bravo"]);
+  });
+
+  test("entity given as an array is also accepted", () => {
+    const cards = detectPresentedCards("present_card", { entity: [{ name: "One" }, { name: "Two" }] });
+    expect(cards.map((c) => c.title)).toEqual(["One", "Two"]);
+  });
+
+  test("detectPresentedCard returns the first of many", () => {
+    expect(detectPresentedCard("present_card", { entities: [{ name: "First" }, { name: "Second" }] })?.title).toBe("First");
   });
 });
