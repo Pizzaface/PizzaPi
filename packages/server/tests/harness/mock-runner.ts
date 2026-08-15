@@ -19,6 +19,7 @@ import type {
     ServicePanelInfo,
     ServiceTriggerDef,
     ServiceSigilDef,
+    ServiceModeDef,
 } from "@pizzapi/protocol";
 
 import type { TestServer } from "./types.js";
@@ -108,6 +109,8 @@ export interface MockRunnerOptions {
     triggerDefs?: ServiceTriggerDef[];
     /** Sigil types declared by announced services (e.g. package-origin manifests). */
     sigilDefs?: ServiceSigilDef[];
+    /** Session modes declared by announced services (workspaces already home-expanded). */
+    sessionModes?: ServiceModeDef[];
 }
 
 export interface MockRunner {
@@ -142,6 +145,7 @@ export interface MockRunner {
         panels?: ServicePanelInfo[],
         triggerDefs?: ServiceTriggerDef[],
         sigilDefs?: ServiceSigilDef[],
+        sessionModes?: ServiceModeDef[],
     ): void;
     /** Disabled service IDs currently applied (mutated by reconfigure_services, mirrors real daemon). */
     readonly disabledServiceIds: ReadonlySet<string>;
@@ -299,6 +303,7 @@ export async function createMockRunner(
     let currentPanels: ServicePanelInfo[] = opts?.panels ?? [];
     let currentTriggerDefs: ServiceTriggerDef[] = opts?.triggerDefs ?? [];
     let currentSigilDefs: ServiceSigilDef[] = opts?.sigilDefs ?? [];
+    let currentSessionModes: ServiceModeDef[] = opts?.sessionModes ?? [];
     const disabledServiceIdsSet = new Set<string>();
     // The daemon never unloads these runtime-pinned built-ins on reconfigure.
     const nonDisableableServiceIds = new Set(["terminal", "file-explorer", "git", "time", "tunnel"]);
@@ -313,6 +318,7 @@ export async function createMockRunner(
             ...(currentPanels.length > 0 ? { panels: currentPanels.filter((panel) => activeServiceIds.has(panel.serviceId)) } : {}),
             ...(currentTriggerDefs.length > 0 ? { triggerDefs: currentTriggerDefs.filter((trigger) => activeServiceIds.has(trigger.type.split(":")[0])) } : {}),
             ...(currentSigilDefs.length > 0 ? { sigilDefs: currentSigilDefs.filter((sigil) => activeServiceIds.has(sigil.serviceId ?? sigil.type.split(":")[0])) } : {}),
+            ...(currentSessionModes.length > 0 ? { sessionModes: currentSessionModes.filter((mode) => !mode.serviceId || activeServiceIds.has(mode.serviceId)) } : {}),
         });
     };
 
@@ -416,15 +422,10 @@ export async function createMockRunner(
                         }
                     }
                 }
-                // Announce services after registration (like real daemon)
-                if (currentServiceIds.length > 0) {
-                    (socket as any).emit("service_announce", {
-                        serviceIds: currentServiceIds,
-                        ...(currentPanels.length > 0 ? { panels: currentPanels } : {}),
-                        ...(currentTriggerDefs.length > 0 ? { triggerDefs: currentTriggerDefs } : {}),
-                        ...(currentSigilDefs.length > 0 ? { sigilDefs: currentSigilDefs } : {}),
-                    });
-                }
+                // Announce services after registration (like real daemon).
+                // Uses the shared builder so a newly announced field can't be
+                // dropped from the registration path only.
+                if (currentServiceIds.length > 0) emitServiceAnnounce();
                 resolve();
             });
         });
@@ -1240,11 +1241,13 @@ export async function createMockRunner(
             panels?: ServicePanelInfo[],
             triggerDefs?: ServiceTriggerDef[],
             sigilDefs?: ServiceSigilDef[],
+            sessionModes?: ServiceModeDef[],
         ): void {
             currentServiceIds = serviceIds;
             currentPanels = panels ?? [];
             currentTriggerDefs = triggerDefs ?? [];
             currentSigilDefs = sigilDefs ?? [];
+            currentSessionModes = sessionModes ?? currentSessionModes;
             emitServiceAnnounce();
         },
 

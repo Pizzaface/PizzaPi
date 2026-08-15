@@ -137,6 +137,7 @@ are confined to the package root.
 | `panel.requires` | No | `[]` | Vars resolved and passed to the panel iframe as query params. One or more of `PWD`, `SESSION_ID`, `HOME`, `USER`, `PROJECT_DIR` |
 | `triggers` | No | `[]` | Inline `ServiceTriggerDef[]` **or** a path to a JSON file |
 | `sigils` | No | `[]` | Inline `ServiceSigilDef[]` **or** a path to a JSON file |
+| `sessionModes` | No | `[]` | `ServiceModeDef[]` — workspaces with their own UI identity (see [Session modes](#session-modes)) |
 
 ### Split files
 
@@ -384,6 +385,65 @@ To resolve sigils, expose a matching HTTP route. If the service has **no panel**
 call `announceSigilServer(port)` (instead of `announcePanel`) so the tunnel routes
 resolve calls without listing the service in the panels grid. Sigil defs are
 advertised via `service_announce`, the same as triggers.
+
+---
+
+## Session modes
+
+A session mode claims a workspace directory and gives it its own UI identity.
+Every session whose cwd is inside that directory belongs to the mode — including
+sessions started from a terminal, not just from the mode picker.
+
+Use a mode when the package is for a **kind of work**, not a kind of tool: the
+coding chrome (git, terminal, diffs) is wrong for a research or documents
+workspace, and a mode is how you turn it off.
+
+```json
+"sessionModes": [{
+  "id": "work",
+  "label": "Work",
+  "icon": "briefcase",
+  "workspace": "~/Documents/Workspace",
+  "ui": {
+    "preset": "work",
+    "toolRendering": "activity",
+    "vocabulary": { "session": "task", "sessions": "tasks" },
+    "accent": "#7c3aed",
+    "composerPlaceholder": "What do you need done?",
+    "home": {
+      "greeting": "What are we working on?",
+      "suggestions": [
+        { "label": "Daily report", "icon": "sun", "prompt": "Write my daily report" }
+      ]
+    },
+    "artifacts": { "enabled": true },
+    "scheduled": true
+  }
+}]
+```
+
+`workspace` must be home-relative (`~/...`); the runner expands it. Everything
+under `ui` is optional — omit it and the mode renders exactly like today's
+coding UI.
+
+| `ui` field | Effect |
+|-----------|--------|
+| `preset` | `"work"` hides git/terminal/process chrome; `"coding"` (default) keeps it |
+| `chrome` | Per-flag overrides on top of the preset: `git`, `terminal`, `processes`, `diffs`, `files` |
+| `toolRendering` | `"activity"` collapses tool calls to human-language lines that expand on click |
+| `vocabulary` | Rename the noun: `session` → `"task"`, plus `sessions`, `newSession` |
+| `accent` | Color for the mode badge |
+| `composerPlaceholder` | Composer placeholder text |
+| `home` | Composer-first landing: `greeting`, `suggestions[]`, `recent` |
+| `artifacts` | `{ enabled, extensions? }` — inline previews for deliverables |
+| `scheduled` | Surface standing `time:cron` / `time:at` instructions |
+
+Suggestions **prefill** the composer rather than sending, so a partial opening
+(`"Research "`) is a good prompt. Artifact previews cover Markdown, images,
+PDF, CSV and sandboxed HTML; other extensions render a download card.
+
+Declaring a mode does **not** require any service code — a service whose only
+job is to declare a mode can have a no-op `init`/`dispose`.
 
 ---
 

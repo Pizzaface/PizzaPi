@@ -24,6 +24,10 @@ import {
   ReasoningContent,
 } from "@/components/ai-elements/reasoning";
 import { FileTypeCard } from "@/components/ai-elements/file-type-card";
+import { ActivityToolCard } from "@/components/session-viewer/ActivityToolCard";
+import { ArtifactCard } from "@/components/session-viewer/ArtifactCard";
+import { detectArtifact } from "@/components/session-viewer/artifact-detection";
+import { useArtifactHost, useModeUi } from "@/components/session-viewer/ModeUiContext";
 import { EditFileCard } from "@/components/ai-elements/edit-file-card";
 import {
   estimateBase64Bytes,
@@ -664,9 +668,17 @@ export function renderGroupedToolExecution(
     })();
 
     if (editPath && oldText !== null && newText !== null) {
-      card = <DiffView path={editPath} oldText={oldText} newText={newText} />;
+      card = (
+        <ModeAwareDiff path={editPath}>
+          <DiffView path={editPath} oldText={oldText} newText={newText} />
+        </ModeAwareDiff>
+      );
     } else if (editPath && editsArray) {
-      card = <MultiDiffView path={editPath} edits={editsArray} />;
+      card = (
+        <ModeAwareDiff path={editPath}>
+          <MultiDiffView path={editPath} edits={editsArray} />
+        </ModeAwareDiff>
+      );
     } else {
       const pendingPath = editPath ?? "file";
       const pendingName = pendingPath.split(/[\\/]/).filter(Boolean).pop() ?? "file";
@@ -1121,6 +1133,12 @@ export function renderGroupedToolExecution(
     );
   }
 
+  const body = (
+    <ModeAwareToolCard toolName={toolName} toolInput={toolInput} isError={isError} isStreaming={isStreaming}>
+      {card}
+    </ModeAwareToolCard>
+  );
+
   if (thinking) {
     return (
       <div className="flex flex-col gap-2">
@@ -1130,10 +1148,68 @@ export function renderGroupedToolExecution(
                <ReasoningContent>{thinking}</ReasoningContent>
             </Reasoning>
          </div>
-         {card}
+         {body}
       </div>
     );
   }
 
-  return card;
+  return body;
+}
+
+/**
+ * Renders a tool card the way the active mode asks for.
+ *
+ * A component (not a branch inside renderGroupedToolExecution) because the
+ * mode arrives by context, and only components can read context. Modes that
+ * want "detailed" — and every session outside a mode — pass straight through.
+ */
+/**
+ * Show a diff only when the active mode wants diffs.
+ *
+ * A documents mode edits prose, not source; a red/green hunk view is the wrong
+ * way to read that, so it degrades to naming the file that changed.
+ */
+function ModeAwareDiff({ path, children }: { path: string; children: React.ReactNode }) {
+  const modeUi = useModeUi();
+  if (modeUi && !modeUi.diffs) {
+    const fileName = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+    return (
+      <EditFileCard path={path} fileName={fileName} additions={0} deletions={0}>
+        <div className="flex items-center justify-center py-6 text-sm text-muted-foreground">Updated {fileName}</div>
+      </EditFileCard>
+    );
+  }
+  return <>{children}</>;
+}
+
+function ModeAwareToolCard({
+  toolName,
+  toolInput,
+  isError,
+  isStreaming,
+  children,
+}: {
+  toolName?: string;
+  toolInput: unknown;
+  isError?: boolean;
+  isStreaming: boolean;
+  children: React.ReactNode;
+}) {
+  const modeUi = useModeUi();
+  const artifactHost = useArtifactHost();
+  const artifact = detectArtifact(toolName, toolInput, modeUi);
+
+  // A finished deliverable is the point of the message, so it renders in full
+  // rather than collapsed behind an activity line. While the write is still
+  // streaming there is no file to preview yet.
+  if (artifact && !isStreaming && !isError) {
+    return <ArtifactCard path={artifact.path} kind={artifact.kind} runnerId={artifactHost?.runnerId} onOpen={artifactHost?.onOpenFile} />;
+  }
+
+  if (modeUi?.toolRendering !== "activity") return <>{children}</>;
+  return (
+    <ActivityToolCard toolName={toolName} toolInput={toolInput} isError={isError} isStreaming={isStreaming}>
+      {children}
+    </ActivityToolCard>
+  );
 }

@@ -19,7 +19,7 @@ import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSe
 import { pruneSwipeOffsets } from "@/lib/swipe-reveal";
 import { getSessionVisualState } from "@/lib/session-visual-state";
 import { parseHubSessionsPayload } from "@/lib/hub-sessions";
-import type { ServiceModeDef } from "@pizzapi/protocol";
+import { cwdInWorkspace, type ServiceModeDef } from "@pizzapi/protocol";
 
 interface HubSession {
     sessionId: string;
@@ -112,6 +112,8 @@ export interface SessionSidebarProps {
     sessionsCompacting?: Set<string>;
     sessionModes?: ServiceModeDef[];
     sessionModesRunnerId?: string | null;
+    /** Notified when the user switches session mode (null = no mode filter). */
+    onSelectedModeChange?: (modeId: string | null) => void;
 }
 
 /** Filter by the selected mode without changing the runner/project/session tree. */
@@ -123,12 +125,17 @@ export function filterSessionsByMode<T extends { cwd: string; runnerId?: string 
 ): T[] {
     const belongsToModeRunner = (session: T) =>
         Boolean(modeRunnerId) && session.runnerId === modeRunnerId;
+    // Containment, not equality: a task working in ~/Workspace/clients/acme is
+    // still a Work task, so it must not leak into the unfiltered list.
     if (!selectedModeId) {
-        const claimed = new Set(modes.map((mode) => mode.workspace));
-        return sessions.filter((session) => !belongsToModeRunner(session) || !claimed.has(session.cwd));
+        return sessions.filter(
+            (session) => !belongsToModeRunner(session) || !modes.some((mode) => cwdInWorkspace(session.cwd, mode.workspace)),
+        );
     }
     const mode = modes.find((candidate) => candidate.id === selectedModeId);
-    return mode ? sessions.filter((session) => belongsToModeRunner(session) && session.cwd === mode.workspace) : sessions;
+    return mode
+        ? sessions.filter((session) => belongsToModeRunner(session) && cwdInWorkspace(session.cwd, mode.workspace))
+        : sessions;
 }
 
 function formatRelativeDate(isoString: string): string {
@@ -223,6 +230,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     sessionsCompacting,
     sessionModes = [],
     sessionModesRunnerId,
+    onSelectedModeChange,
 }: SessionSidebarProps) {
     const [collapsed, setCollapsed] = React.useState(false);
 
@@ -835,6 +843,10 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     React.useEffect(() => {
         if (selectedMode && !sessionModes.some((mode) => mode.id === selectedMode)) setSelectedMode(null);
     }, [selectedMode, sessionModes]);
+    // Mirror the selection outward so the host can show that mode's home view.
+    React.useEffect(() => {
+        onSelectedModeChange?.(selectedMode);
+    }, [selectedMode, onSelectedModeChange]);
     const visibleSessions = React.useMemo(
         () => filterSessionsByMode(liveSessions, selectedMode, sessionModes, sessionModesRunnerId),
         [liveSessions, selectedMode, sessionModes, sessionModesRunnerId],
@@ -1157,7 +1169,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         <div className="flex rounded-md border border-sidebar-border/60 p-0.5" role="group" aria-label="Session mode">
                             <button
                                 className={cn("flex flex-1 items-center justify-center gap-1 rounded px-2 py-1 text-xs font-medium", !selectedMode && "bg-sidebar-accent text-sidebar-foreground")}
-                                onClick={() => setSelectedMode(null)}
+                                onClick={() => {
+                                    // Leaving a mode must also leave its session, or its
+                                    // transcript stays on screen while the sidebar filters
+                                    // it away.
+                                    if (selectedMode !== null) onClearSelection();
+                                    setSelectedMode(null);
+                                }}
                                 aria-pressed={!selectedMode}
                             >
                                 <Code2 className="h-3.5 w-3.5" />
@@ -1167,7 +1185,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                 <button
                                     key={mode.id}
                                     className={cn("flex flex-1 items-center justify-center gap-1 rounded px-2 py-1 text-xs font-medium", selectedMode === mode.id && "bg-sidebar-accent text-sidebar-foreground")}
-                                    onClick={() => setSelectedMode(mode.id)}
+                                    onClick={() => {
+                                        setSelectedMode(mode.id);
+                                        // Switching mode means "show me this mode", and its home
+                                        // only renders when no session is open.
+                                        if (selectedMode !== mode.id) onClearSelection();
+                                    }}
                                     aria-pressed={selectedMode === mode.id}
                                 >
                                     {mode.icon ? <DynamicLucideIcon name={mode.icon} className="h-3.5 w-3.5" /> : <FolderOpen className="h-3.5 w-3.5" />}

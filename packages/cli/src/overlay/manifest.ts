@@ -41,7 +41,15 @@ const TRIGGER_PARAM_KEYS = new Set(["name", "label", "type", "description", "req
 const TRIGGER_KEYS = new Set(["type", "label", "description", "schema", "params"]);
 /** Allowed keys on a sigil definition, mirrored from ServiceSigilDef (excludes daemon-populated serviceId/resolvePort). */
 const SIGIL_KEYS = new Set(["type", "label", "description", "icon", "resolve", "schema", "aliases", "variants"]);
-const SESSION_MODE_KEYS = new Set(["id", "label", "icon", "workspace"]);
+const SESSION_MODE_KEYS = new Set(["id", "label", "icon", "workspace", "ui"]);
+const MODE_UI_KEYS = new Set(["preset", "chrome", "toolRendering", "vocabulary", "accent", "composerPlaceholder", "home", "artifacts", "scheduled"]);
+const MODE_CHROME_KEYS = new Set(["git", "terminal", "processes", "diffs", "files"]);
+const MODE_VOCABULARY_KEYS = new Set(["session", "sessions", "newSession"]);
+const MODE_HOME_KEYS = new Set(["greeting", "suggestions", "recent"]);
+const MODE_SUGGESTION_KEYS = new Set(["label", "icon", "prompt"]);
+const MODE_ARTIFACT_KEYS = new Set(["enabled", "extensions"]);
+const MODE_PRESETS = new Set(["coding", "work"]);
+const MODE_TOOL_RENDERING = new Set(["detailed", "activity"]);
 
 export interface PackageProvenance {
     /** Normalized package identity, e.g. "npm:@acme/pi-github". */
@@ -545,8 +553,142 @@ function validateSessionModeDef(entry: unknown, field: string, push: PushFn): vo
     if (typeof entry.id !== "string" || entry.id.length === 0) push(`${field}.id`, "must be a non-empty string", "Set id to a unique mode identifier.");
     if (typeof entry.label !== "string" || entry.label.length === 0) push(`${field}.label`, "must be a non-empty string", "Set label to a human-readable mode name.");
     if (entry.icon !== undefined && typeof entry.icon !== "string") push(`${field}.icon`, "must be a string", "Set icon to a Lucide icon name, or omit it.");
-    if (typeof entry.workspace !== "string" || !/^~(?:\/|$)/.test(entry.workspace)) {
+    // The workspace becomes a spawn cwd, so it is a trust boundary: `~/../x`
+    // would expand by plain string substitution and escape the home directory.
+    // Backslashes count as separators too — on Windows `~/..\x` escapes just as
+    // effectively, and a home-relative path never legitimately contains one.
+    if (typeof entry.workspace !== "string" || !/^~\/[^/\\]/.test(entry.workspace)) {
         push(`${field}.workspace`, "must be a home-relative path beginning with ~/", "Set workspace to a path such as ~/Documents/Workspace.");
+    } else if (entry.workspace.split(/[/\\]/).some((segment) => segment === "." || segment === "..")) {
+        push(`${field}.workspace`, "must not contain . or .. path segments", "Point workspace at a fixed path inside the home directory.");
+    }
+    if (entry.ui !== undefined) validateSessionModeUi(entry.ui, `${field}.ui`, push);
+}
+
+/** Validate the declarative UI contract on a session mode. */
+function validateSessionModeUi(entry: unknown, field: string, push: PushFn): void {
+    if (!isPlainObject(entry)) {
+        push(field, "must be an object", `Fix ${field} to a mode UI object, or omit it.`);
+        return;
+    }
+    for (const key of Object.keys(entry)) {
+        if (!MODE_UI_KEYS.has(key)) {
+            push(`${field}.${key}`, `unknown mode ui key "${key}"`, `Remove "${key}" — allowed keys: ${[...MODE_UI_KEYS].join(", ")}.`);
+        }
+    }
+    if (entry.preset !== undefined && (typeof entry.preset !== "string" || !MODE_PRESETS.has(entry.preset))) {
+        push(`${field}.preset`, "must be \"coding\" or \"work\"", "Set preset to one of: coding, work.");
+    }
+    if (entry.toolRendering !== undefined && (typeof entry.toolRendering !== "string" || !MODE_TOOL_RENDERING.has(entry.toolRendering))) {
+        push(`${field}.toolRendering`, "must be \"detailed\" or \"activity\"", "Set toolRendering to one of: detailed, activity.");
+    }
+    if (entry.accent !== undefined && typeof entry.accent !== "string") {
+        push(`${field}.accent`, "must be a string", "Set accent to a color token or hex string, or omit it.");
+    }
+    if (entry.composerPlaceholder !== undefined && typeof entry.composerPlaceholder !== "string") {
+        push(`${field}.composerPlaceholder`, "must be a string", "Set composerPlaceholder to placeholder text, or omit it.");
+    }
+    if (entry.scheduled !== undefined && typeof entry.scheduled !== "boolean") {
+        push(`${field}.scheduled`, "must be a boolean", "Set scheduled to true or false, or omit it.");
+    }
+    validateBooleanBag(entry.chrome, `${field}.chrome`, MODE_CHROME_KEYS, "chrome", push);
+    validateStringBag(entry.vocabulary, `${field}.vocabulary`, MODE_VOCABULARY_KEYS, "vocabulary", push);
+
+    if (entry.home !== undefined) {
+        if (!isPlainObject(entry.home)) {
+            push(`${field}.home`, "must be an object", `Fix ${field}.home to a mode home object, or omit it.`);
+        } else {
+            for (const key of Object.keys(entry.home)) {
+                if (!MODE_HOME_KEYS.has(key)) {
+                    push(`${field}.home.${key}`, `unknown mode home key "${key}"`, `Remove "${key}" — allowed keys: ${[...MODE_HOME_KEYS].join(", ")}.`);
+                }
+            }
+            if (entry.home.greeting !== undefined && typeof entry.home.greeting !== "string") {
+                push(`${field}.home.greeting`, "must be a string", "Set greeting to a headline string, or omit it.");
+            }
+            if (entry.home.recent !== undefined && typeof entry.home.recent !== "boolean") {
+                push(`${field}.home.recent`, "must be a boolean", "Set recent to true or false, or omit it.");
+            }
+            if (entry.home.suggestions !== undefined) {
+                if (!Array.isArray(entry.home.suggestions)) {
+                    push(`${field}.home.suggestions`, "must be an array", "Set suggestions to an array of { label, prompt } objects.");
+                } else {
+                    entry.home.suggestions.forEach((suggestion: unknown, index: number) => {
+                        const suggestionField = `${field}.home.suggestions[${index}]`;
+                        if (!isPlainObject(suggestion)) {
+                            push(suggestionField, "must be an object", "Use { label, prompt } suggestion objects.");
+                            return;
+                        }
+                        for (const key of Object.keys(suggestion)) {
+                            if (!MODE_SUGGESTION_KEYS.has(key)) {
+                                push(`${suggestionField}.${key}`, `unknown suggestion key "${key}"`, `Remove "${key}" — allowed keys: ${[...MODE_SUGGESTION_KEYS].join(", ")}.`);
+                            }
+                        }
+                        if (typeof suggestion.label !== "string" || suggestion.label.length === 0) {
+                            push(`${suggestionField}.label`, "must be a non-empty string", "Set label to the chip text.");
+                        }
+                        if (typeof suggestion.prompt !== "string" || suggestion.prompt.length === 0) {
+                            push(`${suggestionField}.prompt`, "must be a non-empty string", "Set prompt to the text sent when the chip is chosen.");
+                        }
+                        if (suggestion.icon !== undefined && typeof suggestion.icon !== "string") {
+                            push(`${suggestionField}.icon`, "must be a string", "Set icon to a Lucide icon name, or omit it.");
+                        }
+                    });
+                }
+            }
+        }
+    }
+
+    if (entry.artifacts !== undefined) {
+        if (!isPlainObject(entry.artifacts)) {
+            push(`${field}.artifacts`, "must be an object", `Fix ${field}.artifacts to { enabled, extensions? }, or omit it.`);
+        } else {
+            for (const key of Object.keys(entry.artifacts)) {
+                if (!MODE_ARTIFACT_KEYS.has(key)) {
+                    push(`${field}.artifacts.${key}`, `unknown artifacts key "${key}"`, `Remove "${key}" — allowed keys: ${[...MODE_ARTIFACT_KEYS].join(", ")}.`);
+                }
+            }
+            if (typeof entry.artifacts.enabled !== "boolean") {
+                push(`${field}.artifacts.enabled`, "must be a boolean", "Set enabled to true or false.");
+            }
+            if (entry.artifacts.extensions !== undefined) {
+                if (!Array.isArray(entry.artifacts.extensions) || !entry.artifacts.extensions.every((ext: unknown) => typeof ext === "string" && ext.length > 0)) {
+                    push(`${field}.artifacts.extensions`, "must be an array of non-empty strings", 'Use extensions like ["pdf", "docx"] without leading dots.');
+                }
+            }
+        }
+    }
+}
+
+/** Validate an object whose known keys must all be booleans. */
+function validateBooleanBag(entry: unknown, field: string, allowed: Set<string>, kind: string, push: PushFn): void {
+    if (entry === undefined) return;
+    if (!isPlainObject(entry)) {
+        push(field, "must be an object", `Fix ${field} to a ${kind} object, or omit it.`);
+        return;
+    }
+    for (const [key, value] of Object.entries(entry)) {
+        if (!allowed.has(key)) {
+            push(`${field}.${key}`, `unknown ${kind} key "${key}"`, `Remove "${key}" — allowed keys: ${[...allowed].join(", ")}.`);
+        } else if (typeof value !== "boolean") {
+            push(`${field}.${key}`, "must be a boolean", `Set ${key} to true or false.`);
+        }
+    }
+}
+
+/** Validate an object whose known keys must all be non-empty strings. */
+function validateStringBag(entry: unknown, field: string, allowed: Set<string>, kind: string, push: PushFn): void {
+    if (entry === undefined) return;
+    if (!isPlainObject(entry)) {
+        push(field, "must be an object", `Fix ${field} to a ${kind} object, or omit it.`);
+        return;
+    }
+    for (const [key, value] of Object.entries(entry)) {
+        if (!allowed.has(key)) {
+            push(`${field}.${key}`, `unknown ${kind} key "${key}"`, `Remove "${key}" — allowed keys: ${[...allowed].join(", ")}.`);
+        } else if (typeof value !== "string" || value.length === 0) {
+            push(`${field}.${key}`, "must be a non-empty string", `Set ${key} to a non-empty string.`);
+        }
     }
 }
 

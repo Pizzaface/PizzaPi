@@ -650,6 +650,112 @@ A service doesn't need a UI panel. Omit `panel` from the manifest and skip `anno
 
 ---
 
+## Session Modes
+
+A **session mode** is a workspace with its own identity in the UI. A mode claims
+a directory; every session whose working directory is inside it belongs to that
+mode, including sessions started from the terminal.
+
+Modes exist so a package can make PizzaPi feel like the right tool for
+non-coding work. A mode **declares** what it wants and PizzaPi renders it
+natively — modes do not ship UI code.
+
+```json
+{
+  "id": "pizzawork",
+  "label": "PizzaWork",
+  "entry": "./src/service.ts",
+  "sessionModes": [
+    {
+      "id": "work",
+      "label": "Work",
+      "icon": "briefcase",
+      "workspace": "~/Documents/Workspace",
+      "ui": {
+        "preset": "work",
+        "toolRendering": "activity",
+        "vocabulary": { "session": "task", "sessions": "tasks" },
+        "accent": "#7c3aed",
+        "composerPlaceholder": "What do you need done?",
+        "home": {
+          "greeting": "What are we working on?",
+          "suggestions": [
+            { "label": "Daily report", "icon": "sun", "prompt": "Write my daily report" }
+          ]
+        },
+        "artifacts": { "enabled": true },
+        "scheduled": true
+      }
+    }
+  ]
+}
+```
+
+### Mode fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Unique mode ID within the package |
+| `label` | string | Name shown on the mode picker |
+| `icon` | string | Lucide icon name |
+| `workspace` | string | Home-relative path (`~/...`), resolved per runner |
+| `ui` | object | Optional — how PizzaPi should render this mode's sessions |
+
+### `ui` fields
+
+Every field is optional, and omitting `ui` entirely gives the standard coding
+UI. A mode only declares what differs.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `preset` | `"coding"` \| `"work"` | `"coding"` | `work` hides git, terminal and process chrome |
+| `chrome` | object | from preset | Per-surface overrides: `git`, `terminal`, `processes`, `diffs`, `files` |
+| `toolRendering` | `"detailed"` \| `"activity"` | preset-derived | `activity` collapses each tool call to a human-language line that expands on click |
+| `vocabulary` | object | — | `session`, `sessions`, `newSession` noun overrides |
+| `accent` | string | — | Color token or hex used for the mode badge |
+| `composerPlaceholder` | string | — | Placeholder text in the composer |
+| `home` | object | — | `greeting`, `suggestions[]` (`label`, `icon`, `prompt`), `recent` |
+| `artifacts` | object | disabled | `enabled`, plus optional `extensions[]` |
+| `scheduled` | boolean | `false` | Show standing `time:cron` / `time:at` instructions |
+
+### What each surface does
+
+**Chrome.** `preset: "work"` hides the git, terminal and process affordances. A
+hidden panel is also closed, so switching from a coding session cannot strand a
+panel with no button to reopen it. `chrome` overrides individual flags:
+
+```json
+"ui": { "preset": "work", "chrome": { "git": true } }
+```
+
+**Activity rendering.** With `toolRendering: "activity"`, a tool call renders as
+one line — `Created q3-review.md`, `Searched the web for "freight rates"` — that
+expands to the full card. Nothing is hidden; it just stops being the default
+way the transcript reads.
+
+**Artifacts.** When enabled, a file written into the workspace whose extension
+the mode claims renders as an artifact card with an inline preview: Markdown,
+images, PDF, CSV tables and sandboxed HTML. Formats browsers cannot render
+(`docx`, `pptx`, `xlsx`) get a download card. Omit `extensions` for a
+document-centric default set.
+
+**Mode home.** Selecting a mode with no session open shows a composer that
+starts a task directly in the mode's workspace, its suggestion chips, and its
+recent tasks. Suggestions prefill the composer rather than sending, so an
+opening like `"Research "` can be completed before it runs.
+
+**Scheduled.** Lists standing `time:cron` / `time:at` / `time:timer_fired`
+subscriptions across the mode's sessions, with what runs, when, which task owns
+it, and a cancel. See [Time triggers](#custom-triggers).
+
+:::note
+A mode is claimed by workspace containment, not by how a session was started.
+`cd ~/Documents/Workspace && pizza` gets the mode, and so does a task working
+in `~/Documents/Workspace/clients/acme`.
+:::
+
+---
+
 ## Connectivity Services
 
 A **connectivity service** owns a live connection to an outside network — a chat

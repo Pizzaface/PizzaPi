@@ -101,6 +101,9 @@ import { ComposerSubmitButton } from "@/components/session-viewer/composer-submi
 import { SessionMessageItem, PaginationSentinel } from "@/components/session-viewer/message-item";
 import { GoalStatusBadge } from "@/components/session-viewer/goal-status-badge";
 import { DraggableToolbarButton } from "@/components/session-viewer/DraggableToolbarButton";
+import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
+import { ArtifactHostContext, ModeUiContext, type ArtifactHost } from "@/components/session-viewer/ModeUiContext";
+import { ModeHome } from "@/components/session-viewer/ModeHome";
 import type { ToolbarButtonId } from "@/hooks/useButtonPosition";
 
 // ── Public re-exports (existing consumers import these from SessionViewer) ────
@@ -148,6 +151,11 @@ export function SessionViewer({
   showFileExplorerButton,
   onToggleGit,
   showGitButton,
+  modeUi,
+  modeLabel,
+  modeIcon,
+  onOpenArtifact,
+  modeHome,
   isTerminalOpen,
   isFileExplorerOpen,
   isGitOpen,
@@ -408,6 +416,12 @@ export function SessionViewer({
 
   // ── Session actions + MCP toggle context ─────────────────────────────────
   const { sessionActions, handleMcpToggle } = useSessionActionsSetup(onExec);
+
+  // What artifact cards need to fetch a preview and open the real file.
+  const artifactHost = React.useMemo<ArtifactHost>(
+    () => ({ runnerId, onOpenFile: onOpenArtifact }),
+    [runnerId, onOpenArtifact],
+  );
   const sessionActionsWithQuote = React.useMemo(() => {
     if (!sessionActions) return null;
     return {
@@ -578,6 +592,8 @@ export function SessionViewer({
   return (
     <SessionActionsProvider value={sessionActionsWithQuote}>
       <McpToggleContext.Provider value={onExec ? handleMcpToggle : null}>
+        <ModeUiContext.Provider value={modeUi ?? null}>
+        <ArtifactHostContext.Provider value={artifactHost}>
         <div className="flex flex-col flex-1 min-h-0">
 
           {/* ── Session info bar ─────────────────────────────────────────── */}
@@ -621,6 +637,18 @@ export function SessionViewer({
                 <span className="text-sm font-medium truncate leading-none">
                   {sessionName || `Session ${sessionId.slice(0, 8)}…`}
                 </span>
+                {modeLabel && (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[0.65rem] font-medium flex-shrink-0"
+                    style={modeUi?.accent
+                      ? { borderColor: `${modeUi.accent}59`, backgroundColor: `${modeUi.accent}1a`, color: modeUi.accent }
+                      : undefined}
+                    title={`${modeLabel} mode`}
+                  >
+                    {modeIcon ? <DynamicLucideIcon name={modeIcon} className="size-3" /> : null}
+                    {modeLabel}
+                  </span>
+                )}
                 {activeModel?.provider && (
                   <span
                     className="hidden sm:inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[0.65rem] text-muted-foreground flex-shrink-0"
@@ -861,7 +889,18 @@ export function SessionViewer({
 
           {/* ── Conversation area ─────────────────────────────────────────── */}
           <div className="relative flex flex-col flex-1 min-h-0">
-            {!sessionId ? (
+            {!sessionId && modeHome ? (
+              <ModeHome
+                modeLabel={modeHome.label}
+                modeIcon={modeHome.icon}
+                modeUi={modeHome.ui}
+                recentSessions={modeHome.recentSessions}
+                busy={modeHome.busy}
+                onStartTask={modeHome.onStartTask}
+                onOpenSession={modeHome.onOpenSession}
+                scheduled={modeHome.scheduled}
+              />
+            ) : !sessionId ? (
               <ConversationEmptyState>
                 <MessageSquare className="size-8 opacity-40 text-muted-foreground" aria-hidden="true" />
                 <div className="space-y-1">
@@ -926,7 +965,12 @@ export function SessionViewer({
           </div>
 
           {/* ── Composer area ─────────────────────────────────────────────── */}
-          <div className="border-t border-border bg-background px-3 py-2 pp-safe-bottom">
+          {/* The mode home carries its own composer; a second, disabled one
+              below it would just be dead chrome. */}
+          <div className={cn(
+            "border-t border-border bg-background px-3 py-2 pp-safe-bottom",
+            !sessionId && modeHome && "hidden",
+          )}>
 
             {/* Message queue */}
             {sessionId && messageQueue && messageQueue.length > 0 && (
@@ -1721,10 +1765,12 @@ export function SessionViewer({
                             ? deliveryMode === "steer"
                               ? "Type to steer the agent…"
                               : "Type a follow-up message…"
-                            : isTouchDevice
-                              ? "Send a message…"
-                              : "Send a message to this session…"
-                        : "Pick a session to chat"
+                            : modeUi?.composerPlaceholder
+                              ? modeUi.composerPlaceholder
+                              : isTouchDevice
+                                ? "Send a message…"
+                                : `Send a message to this ${modeUi?.sessionNoun ?? "session"}`
+                        : `Pick a ${modeUi?.sessionNoun ?? "session"} to chat`
                     }
                     className="min-h-12 max-h-36"
                   />
@@ -1832,6 +1878,8 @@ export function SessionViewer({
           </Dialog>
 
         </div>
+        </ArtifactHostContext.Provider>
+        </ModeUiContext.Provider>
       </McpToggleContext.Provider>
     </SessionActionsProvider>
   );

@@ -21,6 +21,12 @@ export type {
   ServiceTriggerParamDef,
   ServiceSigilDef,
   ServiceModeDef,
+  ServiceModeUi,
+  ServiceModeChrome,
+  ServiceModeVocabulary,
+  ServiceModeHome,
+  ServiceModeSuggestion,
+  ServiceModeArtifacts,
   JsonValue,
   TriggerFilter,
   TriggerFilterMode,
@@ -28,6 +34,16 @@ export type {
   ServiceAnnounceDelta,
   TunnelInfo,
 } from "./shared.js";
+
+// Session mode UI resolution (shared across server, UI, CLI)
+export {
+  resolveModeUi,
+  isArtifactPath,
+  findSessionMode,
+  cwdInWorkspace,
+  DEFAULT_ARTIFACT_EXTENSIONS,
+} from "./mode-ui.js";
+export type { ResolvedModeUi } from "./mode-ui.js";
 
 // Password validation (shared across server, UI, CLI)
 export {
