@@ -10,7 +10,7 @@ import { getMcpBridge } from "./mcp-bridge.js";
 import { toggleMcpServer, saveGlobalConfig, loadConfig, loadGlobalConfig, resolveSandboxConfig, type SandboxConfig } from "../config.js";
 import { isPlanModeEnabled, togglePlanModeFromRemote, setPlanModeFromRemote } from "./plan-mode/index.js";
 import { isSandboxActive, getSandboxMode, getViolations, getResolvedConfig } from "@pizzapi/tools";
-import { refreshAllUsage, buildProviderUsage } from "./remote-provider-usage.js";
+import { refreshUsageViaRunner, buildProviderUsage } from "./remote-provider-usage.js";
 import { backgroundPendingJobs } from "./background-bash.js";
 import { isModelHidden } from "../hidden-models.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
@@ -277,7 +277,7 @@ export async function handleExecFromWeb(
         }
 
         if (req.command === "refresh_usage") {
-            await refreshAllUsage({ force: true });
+            await refreshUsageViaRunner({ force: true });
             const providerUsage = buildProviderUsage();
             replyOk({ providerUsage, refreshedAt: Date.now() });
             rctx.forwardEvent(rctx.buildHeartbeat());

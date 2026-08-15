@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { loadConfig, defaultAgentDir, expandHome } from "../config.js";
 import { getAnthropicKeychainToken, parseGeminiQuotaCredential } from "../runner/usage-auth.js";
+import { runnerUsageCacheFilePath, writeUsageCacheAtomic } from "../runner/runner-usage-cache.js";
 import type { UsageWindow, ProviderUsageData } from "./remote-types.js";
 
 const DEFAULT_USAGE_CACHE_TTL = 5 * 60 * 1000; // 5 min
@@ -70,6 +71,107 @@ export function buildProviderUsage(): Record<string, ProviderUsageData> {
     return out;
 }
 
+/** True if the status code is an auth/rate-limit error that shouldn't wipe cached windows. */
+function isAuthErrorCode(code: number | undefined): boolean {
+    return code === 401 || code === 403 || code === 429;
+}
+
+/** Store fetched provider data, preserving existing windows on auth errors. */
+export function setUsageCachePreserving(providerId: string, data: ProviderUsageData): void {
+    if (!isAuthErrorCode(data.errorCode) || data.windows.length > 0) {
+        usageCache.set(providerId, { data, fetchedAt: Date.now() });
+        return;
+    }
+    const existing = usageCache.get(providerId);
+    if (existing?.data.windows.length) {
+        usageCache.set(providerId, {
+            data: { ...existing.data, errorCode: data.errorCode },
+            fetchedAt: existing.fetchedAt,
+        });
+    } else {
+        usageCache.set(providerId, { data, fetchedAt: Date.now() });
+    }
+}
+
+/** Write the current in-memory provider usage back to the runner cache file. */
+async function writeBackRunnerCache(): Promise<void> {
+    const path = runnerUsageCachePath ?? runnerUsageCacheFilePath();
+    const providers = buildProviderUsage();
+    if (Object.keys(providers).length === 0) return;
+    try {
+        await writeUsageCacheAtomic(path, JSON.stringify({ fetchedAt: Date.now(), providers }, null, 2));
+    } catch {
+        // Non-fatal: best-effort shared-cache update.
+    }
+}
+
+/**
+ * Ask the runner daemon to force-refresh the shared usage cache, then mirror
+ * the result into this worker's in-memory cache. Falls back to direct API
+ * calls if IPC is unavailable or the daemon doesn't respond in time.
+ */
+export async function refreshUsageViaRunner(opts: { force?: boolean } = {}): Promise<void> {
+    const send = process.send;
+    if (!runnerUsageCachePath || typeof send !== "function") {
+        await refreshAllUsage(opts);
+        return;
+    }
+
+    const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    let settled = false;
+
+    const result = await new Promise<
+        { ok: true; providers: Record<string, ProviderUsageData>; fetchedAt: number } | { ok: false }
+    >((resolve) => {
+        const timeout = setTimeout(() => {
+            cleanup();
+            resolve({ ok: false });
+        }, 5000);
+
+        function onMessage(msg: unknown) {
+            if (typeof msg !== "object" || msg === null) return;
+            const message = msg as Record<string, unknown>;
+            if (message.type !== "refresh_usage_response" || message.requestId !== requestId) return;
+            cleanup();
+            if (message.error || typeof message.providers !== "object" || message.providers === null) {
+                resolve({ ok: false });
+                return;
+            }
+            resolve({
+                ok: true,
+                providers: message.providers as Record<string, ProviderUsageData>,
+                fetchedAt: typeof message.fetchedAt === "number" ? message.fetchedAt : Date.now(),
+            });
+        }
+
+        function cleanup() {
+            settled = true;
+            clearTimeout(timeout);
+            process.removeListener?.("message", onMessage);
+        }
+
+        process.addListener?.("message", onMessage);
+        try {
+            send({ type: "refresh_usage_request", requestId });
+        } catch {
+            cleanup();
+            resolve({ ok: false });
+        }
+    });
+
+    if (result.ok) {
+        for (const [id, data] of Object.entries(result.providers)) {
+            if (data && Array.isArray(data.windows)) {
+                usageCache.set(id, { data, fetchedAt: result.fetchedAt });
+            }
+        }
+        return;
+    }
+
+    // IPC failed or daemon had no credentials: fall back to direct fetches.
+    await refreshAllUsage(opts);
+}
+
 /**
  * Read the runner daemon's shared usage cache file and populate the local
  * in-memory cache.
@@ -109,12 +211,7 @@ async function refreshAnthropicUsage(opts: { force?: boolean } = {}): Promise<vo
             },
         });
         if (!res.ok) {
-            if (res.status === 403) {
-                usageCache.set("anthropic", {
-                    data: { windows: [], status: "unknown", errorCode: 403 },
-                    fetchedAt: Date.now(),
-                });
-            }
+            setUsageCachePreserving("anthropic", { windows: [], status: "unknown", errorCode: res.status });
             return;
         }
         const raw = (await res.json()) as Record<string, unknown>;
@@ -153,12 +250,7 @@ async function refreshCodexUsage(opts: { force?: boolean } = {}): Promise<void> 
             },
         });
         if (!res.ok) {
-            if (res.status === 403) {
-                usageCache.set("openai-codex", {
-                    data: { windows: [], status: "unknown", errorCode: 403 },
-                    fetchedAt: Date.now(),
-                });
-            }
+            setUsageCachePreserving("openai-codex", { windows: [], status: "unknown", errorCode: res.status });
             return;
         }
         const raw = (await res.json()) as {
@@ -277,10 +369,11 @@ async function refreshGeminiUsage(opts: { force?: boolean } = {}): Promise<void>
         if (!res.ok) {
             // 401 = expired/invalid token, 403 = no access. Report both rather than
             // dropping Gemini from the usage list with no explanation.
-            if (res.status === 401 || res.status === 403) {
-                usageCache.set("google-gemini-cli", {
-                    data: { windows: [], status: "unknown", errorCode: res.status },
-                    fetchedAt: Date.now(),
+            if (res.status === 401 || res.status === 403 || res.status === 429) {
+                setUsageCachePreserving("google-gemini-cli", {
+                    windows: [],
+                    status: "unknown",
+                    errorCode: res.status,
                 });
             }
             return;
@@ -324,4 +417,10 @@ export async function refreshAllUsage(opts: { force?: boolean } = {}): Promise<v
         refreshCodexUsage({ force }),
         refreshGeminiUsage({ force }),
     ]);
+
+    // When force-refreshing directly in a worker, push the result back to the
+    // runner cache file so other sessions see fresh data immediately.
+    if (force) {
+        await writeBackRunnerCache();
+    }
 }

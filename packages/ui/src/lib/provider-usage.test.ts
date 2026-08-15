@@ -46,6 +46,7 @@ describe("providerUsageDisplay", () => {
             usedPct: 43,
             remainingPct: 57,
             label: "5-hour",
+            errorCode: null,
         });
     });
 
@@ -72,6 +73,7 @@ describe("providerUsageDisplay", () => {
             usedPct: 0,
             remainingPct: 100,
             label: null,
+            errorCode: null,
         });
     });
 
@@ -81,6 +83,7 @@ describe("providerUsageDisplay", () => {
             usedPct: 0,
             remainingPct: 100,
             label: null,
+            errorCode: null,
         });
     });
 
@@ -106,6 +109,7 @@ describe("providerUsageDisplay", () => {
             usedPct: null,
             remainingPct: null,
             label: null,
+            errorCode: 403,
         });
     });
 });

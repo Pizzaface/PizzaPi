@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mergeProviderUsage } from "./runner-usage-cache.js";
 
 describe("runner-usage-cache", () => {
     test("refreshes usage data with tracked cwd auth paths and drops them after untracking", () => {
@@ -143,5 +144,28 @@ describe("runner-usage-cache child", () => {
             rmSync(childTestPath, { force: true });
             rmSync(tmpHome, { recursive: true, force: true });
         }
+    });
+});
+
+describe("mergeProviderUsage", () => {
+    test("keeps existing windows on 401/403/429 and just records the error code", () => {
+        const existing = {
+            windows: [{ label: "5-hour", utilization: 50, resets_at: "2026-03-10T15:00:00Z" }],
+            status: "ok" as const,
+        };
+        const merged = mergeProviderUsage({ windows: [], status: "unknown", errorCode: 403 }, existing);
+        expect(merged.windows).toEqual(existing.windows);
+        expect(merged.status).toBe("ok");
+        expect(merged.errorCode).toBe(403);
+    });
+
+    test("falls back to fresh data when there are no existing windows", () => {
+        const fresh = { windows: [], status: "unknown" as const, errorCode: 403 };
+        expect(mergeProviderUsage(fresh, undefined)).toBe(fresh);
+    });
+
+    test("returns fresh data unchanged on non-auth errors", () => {
+        const fresh = { windows: [], status: "unknown" as const, errorCode: 500 };
+        expect(mergeProviderUsage(fresh, { windows: [{ label: "5-hour", utilization: 50, resets_at: "2026-03-10T15:00:00Z" }], status: "ok" })).toBe(fresh);
     });
 });

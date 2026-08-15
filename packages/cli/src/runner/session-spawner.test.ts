@@ -77,6 +77,7 @@ describe("session-spawner child", () => {
 
         mock.module("./runner-usage-cache.js", () => ({
             runnerUsageCacheFilePath,
+            refreshAndWriteRunnerUsageCache: mock(async () => null),
             trackSessionCwd,
             untrackSessionCwd,
         }));
@@ -246,6 +247,7 @@ describe("session-spawner child", () => {
 
         mock.module("./runner-usage-cache.js", () => ({
             runnerUsageCacheFilePath,
+            refreshAndWriteRunnerUsageCache: mock(async () => null),
             trackSessionCwd,
             untrackSessionCwd,
         }));

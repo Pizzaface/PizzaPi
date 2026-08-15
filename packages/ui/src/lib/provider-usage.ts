@@ -33,7 +33,7 @@ export function activeWindows(windows: UsageWindow[], now = Date.now()): UsageWi
 
 export function providerUsageDisplay(data: ProviderUsageData, now = Date.now()) {
   if (data.status === "unknown") {
-    return { kind: "unknown" as const, usedPct: null, remainingPct: null, label: null };
+    return { kind: "unknown" as const, usedPct: null, remainingPct: null, label: null, errorCode: data.errorCode ?? null };
   }
 
   // The badge shows a single number, so it reports the most-constrained window.
@@ -50,5 +50,6 @@ export function providerUsageDisplay(data: ProviderUsageData, now = Date.now()) 
     usedPct,
     remainingPct: Math.max(0, 100 - usedPct),
     label: governing?.label ?? null,
+    errorCode: data.errorCode ?? null,
   };
 }

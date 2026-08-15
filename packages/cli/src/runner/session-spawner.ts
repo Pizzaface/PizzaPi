@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { cleanupSessionAttachments } from "../extensions/session-attachments.js";
 import { logInfo } from "./logger.js";
@@ -9,7 +9,7 @@ import {
     readRecordedGroupPids,
     removeSessionProcFile,
 } from "./session-procs.js";
-import { runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd } from "./runner-usage-cache.js";
+import { runnerUsageCacheFilePath, refreshAndWriteRunnerUsageCache, trackSessionCwd, untrackSessionCwd } from "./runner-usage-cache.js";
 import { isCwdAllowed } from "./workspace.js";
 import { loadConfig } from "../config.js";
 
@@ -265,6 +265,46 @@ export function spawnSession(
             const running = runningSessions.get(sessionId);
             if (running) running.sessionFile = message.sessionFile;
             logInfo(`session ${sessionId} reported transcript ${message.sessionFile}`);
+            return;
+        }
+        if (message.type === "refresh_usage_request" && typeof message.requestId === "string") {
+            void (async () => {
+                try {
+                    const cache = await refreshAndWriteRunnerUsageCache({ forceAnthropic: true });
+                    const response: Record<string, unknown> = {
+                        type: "refresh_usage_response",
+                        requestId: message.requestId,
+                    };
+                    if (cache) {
+                        response.providers = cache.providers;
+                        response.fetchedAt = cache.fetchedAt;
+                    } else {
+                        // No credentials available to refresh; fall back to sending the
+                        // current on-disk cache so the worker isn't left empty-handed.
+                        try {
+                            const path = runnerUsageCacheFilePath();
+                            if (existsSync(path)) {
+                                const disk = JSON.parse(readFileSync(path, "utf-8")) as {
+                                    fetchedAt?: number;
+                                    providers?: Record<string, unknown>;
+                                };
+                                response.providers = disk.providers ?? {};
+                                response.fetchedAt = disk.fetchedAt ?? Date.now();
+                            }
+                        } catch {
+                            // Non-fatal: leave response without providers.
+                        }
+                    }
+                    child.send(response);
+                } catch (err) {
+                    child.send({
+                        type: "refresh_usage_response",
+                        requestId: message.requestId,
+                        error: err instanceof Error ? err.message : String(err),
+                    });
+                }
+            })();
+            return;
         }
     });
 

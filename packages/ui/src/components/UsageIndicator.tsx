@@ -76,7 +76,7 @@ function UsageBar({ window: w }: { window: UsageWindow }) {
 
 function ProviderSection({ providerId, data }: { providerId: string; data: ProviderUsageData }) {
     const displayName = getProviderDisplayName(providerId);
-    if (data.status === "unknown") {
+    if (data.status === "unknown" && data.windows.length === 0) {
         return (
             <div className="flex flex-col gap-2">
                 <div className="flex items-center gap-1.5">
@@ -102,6 +102,11 @@ function ProviderSection({ providerId, data }: { providerId: string; data: Provi
             {windows.map((w) => (
                 <UsageBar key={w.label} window={w} />
             ))}
+            {typeof data.errorCode === "number" && (
+                <div className="text-[0.6rem] text-amber-600 dark:text-amber-400">
+                    Refresh failed (HTTP {data.errorCode}); showing last known usage.
+                </div>
+            )}
         </div>
     );
 }
@@ -122,9 +127,10 @@ function ProviderBadge({
     const display = providerUsageDisplay(data);
     // Which window the number came from — "43%" alone reads as the whole subscription.
     const governingWindow = display.kind === "usage" ? display.label : null;
+    const errorSuffix = display.errorCode ? ` — refresh failed (HTTP ${display.errorCode})` : "";
     const label = display.kind === "unknown"
-        ? `${getProviderDisplayName(providerId)} subscription usage (unknown)`
-        : `${getProviderDisplayName(providerId)} subscription usage (${display.remainingPct.toFixed(0)}% remaining${governingWindow ? `, ${governingWindow} window` : ""})`;
+        ? `${getProviderDisplayName(providerId)} subscription usage (unknown${errorSuffix})`
+        : `${getProviderDisplayName(providerId)} subscription usage (${display.remainingPct.toFixed(0)}% remaining${governingWindow ? `, ${governingWindow} window` : ""}${errorSuffix})`;
 
     // hovered: controlled by HoverCard's internal hover logic via onOpenChange
     // locked: toggled on click; cleared when pointer leaves while not hovering

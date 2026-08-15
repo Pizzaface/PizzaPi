@@ -1,4 +1,4 @@
-import { renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readStoredCredential } from "@earendil-works/pi-coding-agent";
@@ -135,12 +135,24 @@ async function getRunnerAnthropicUsageData(opts: { force?: boolean } = {}): Prom
     }
 
     const data = await fetchAnthropicUsageData();
-    // Only cache successful fetches so transient failures don't suppress
-    // retries for the full 15-minute interval.
-    if (data !== null) {
+    if (data === null) {
+        // Transient failure: keep the last good data so the UI doesn't flicker
+        // to "unknown" because of a single network blip.
+        return _lastAnthropicUsage?.data ?? null;
+    }
+
+    // Auth errors (401/403/429) shouldn't blow away known-good usage windows.
+    // Preserve the previous cached data and just record the error code so
+    // the UI can show a stale indicator.
+    if (data.errorCode && _lastAnthropicUsage?.data?.windows?.length) {
+        _lastAnthropicUsage = {
+            data: { ..._lastAnthropicUsage.data, errorCode: data.errorCode },
+            fetchedAt: now,
+        };
+    } else {
         _lastAnthropicUsage = { data, fetchedAt: now };
     }
-    return data;
+    return _lastAnthropicUsage.data;
 }
 
 async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
@@ -259,12 +271,51 @@ async function fetchCodexUsageData(): Promise<ProviderUsageData | null> {
     }
 }
 
+/** Returns the on-disk usage cache file contents, or null if it doesn't exist or is unreadable. */
+function readExistingRunnerUsageCache(): RunnerUsageCacheFile | null {
+    const path = runnerUsageCacheFilePath();
+    try {
+        if (!existsSync(path)) return null;
+        const parsed = JSON.parse(readFileSync(path, "utf-8")) as RunnerUsageCacheFile;
+        if (typeof parsed.fetchedAt === "number" && parsed.providers && typeof parsed.providers === "object") {
+            return parsed;
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+/** True if the status code indicates an auth/rate-limit error that shouldn't wipe cached data. */
+function isAuthErrorCode(errorCode: number | undefined): boolean {
+    if (errorCode === undefined) return false;
+    return errorCode === 401 || errorCode === 403 || errorCode === 429;
+}
+
+/** Merge a freshly-fetched provider result with any existing cached windows. */
+export function mergeProviderUsage(
+    fresh: ProviderUsageData,
+    existing: ProviderUsageData | undefined,
+): ProviderUsageData {
+    if (!isAuthErrorCode(fresh.errorCode)) return fresh;
+    const existingWindows = existing?.windows ?? [];
+    if (existingWindows.length === 0) return fresh;
+    return { ...existing, windows: existingWindows, errorCode: fresh.errorCode };
+}
+
 /**
  * Fetch usage from all configured providers and write the result to the shared
  * cache file so every worker on this runner node can read it without making
  * their own API calls.
+ *
+ * Returns the written cache so callers (e.g. IPC responses) don't have to read
+ * the file back.
  */
-async function refreshAndWriteRunnerUsageCache(opts: { forceAnthropic?: boolean } = {}): Promise<void> {
+export async function refreshAndWriteRunnerUsageCache(
+    opts: { forceAnthropic?: boolean } = {},
+): Promise<RunnerUsageCacheFile | null> {
+    const existing = readExistingRunnerUsageCache();
+
     const [anthropicResult, geminiResult, codexResult] = await Promise.allSettled([
         getRunnerAnthropicUsageData({ force: opts.forceAnthropic === true }),
         fetchGeminiUsageData(),
@@ -273,23 +324,28 @@ async function refreshAndWriteRunnerUsageCache(opts: { forceAnthropic?: boolean 
 
     const providers: Record<string, ProviderUsageData> = {};
     if (anthropicResult.status === "fulfilled" && anthropicResult.value) {
-        providers.anthropic = anthropicResult.value;
+        providers.anthropic = mergeProviderUsage(anthropicResult.value, existing?.providers.anthropic);
     }
     if (geminiResult.status === "fulfilled" && geminiResult.value) {
-        providers["google-gemini-cli"] = geminiResult.value;
+        providers["google-gemini-cli"] = mergeProviderUsage(
+            geminiResult.value,
+            existing?.providers["google-gemini-cli"],
+        );
     }
     if (codexResult.status === "fulfilled" && codexResult.value) {
-        providers["openai-codex"] = codexResult.value;
+        providers["openai-codex"] = mergeProviderUsage(codexResult.value, existing?.providers["openai-codex"]);
     }
 
-    if (Object.keys(providers).length === 0) return; // No credentials available — skip write
+    if (Object.keys(providers).length === 0) return null; // No credentials available — skip write
 
     const cache: RunnerUsageCacheFile = { fetchedAt: Date.now(), providers };
     try {
         await writeUsageCacheAtomic(runnerUsageCacheFilePath(), JSON.stringify(cache, null, 2));
         logInfo(`usage cache refreshed (${Object.keys(providers).join(", ")})`);
+        return cache;
     } catch (err: any) {
         logWarn(`failed to write usage cache: ${err?.message ?? String(err)}`);
+        return null;
     }
 }
 
@@ -300,7 +356,7 @@ async function refreshAndWriteRunnerUsageCache(opts: { forceAnthropic?: boolean 
  * for reading — retry briefly, then fall back to a direct write rather than
  * dropping the refresh entirely.
  */
-async function writeUsageCacheAtomic(path: string, contents: string): Promise<void> {
+export async function writeUsageCacheAtomic(path: string, contents: string): Promise<void> {
     const tmp = `${path}.tmp`;
     writeFileSync(tmp, contents, { encoding: "utf-8", mode: 0o600 });
     for (let attempt = 0; attempt < 5; attempt++) {

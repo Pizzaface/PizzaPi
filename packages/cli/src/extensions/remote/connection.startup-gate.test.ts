@@ -68,6 +68,7 @@ mock.module("../session-message-bus.js", () => ({
 mock.module("../remote-provider-usage.js", () => ({
     getOAuthToken: mock(() => null),
     refreshAllUsage: mock(async () => {}),
+    refreshUsageViaRunner: mock(async () => {}),
     buildProviderUsage: mock(() => ({})),
 }));
 mock.module("../remote-heartbeat.js", () => ({
