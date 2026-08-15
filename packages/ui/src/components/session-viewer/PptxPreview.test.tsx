@@ -14,12 +14,17 @@ const rendered: number[] = [];
 mock.module("pptx-browser", () => ({
   PptxRenderer: class {
     slideCount = 0;
+    static throwOn: number | null = null;
     async load() {
       loaded++;
       this.slideCount = 3;
     }
     async renderSlide(index: number) {
       rendered.push(index);
+      const ctor = this.constructor as typeof PptxRenderer & { throwOn: number | null };
+      if (ctor.throwOn === index) {
+        throw new Error(`render slide ${index} failed`);
+      }
     }
     destroy() {
       destroyed++;
@@ -41,8 +46,12 @@ const win = new Window({ url: "http://localhost/" });
 const { render, cleanup, fireEvent, waitFor } = await import("@testing-library/react");
 const React = (await import("react")).default;
 const { default: PptxPreview } = await import("./PptxPreview");
+const { PptxRenderer } = await import("pptx-browser");
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  (PptxRenderer as unknown as { throwOn: number | null }).throwOn = null;
+});
 
 describe("PptxPreview", () => {
   test("loads the deck and shows a slide navigator", async () => {
@@ -60,6 +69,34 @@ describe("PptxPreview", () => {
     await waitFor(() => expect(getByText("2 / 3")).toBeDefined());
     // Rendered slide index 1 at least once after nav.
     expect(rendered.slice(before)).toContain(1);
+  });
+
+  test("disables navigation while a slide is rendering", async () => {
+    const { getByText, getByLabelText } = render(<PptxPreview content="CCCC" />);
+    await waitFor(() => expect(getByText("1 / 3")).toBeDefined());
+
+    const next = getByLabelText("Next slide") as HTMLButtonElement;
+    expect(next.disabled).toBe(false);
+
+    fireEvent.click(next);
+    // Immediately after click, while renderSlide is pending, the button should be disabled.
+    await waitFor(() => expect(next.disabled).toBe(true));
+
+    // Once the render resolves the counter updates and the button is re-enabled.
+    await waitFor(() => expect(getByText("2 / 3")).toBeDefined());
+    expect(next.disabled).toBe(false);
+  });
+
+  test("shows an error and keeps the current slide when navigation render fails", async () => {
+    (PptxRenderer as unknown as { throwOn: number | null }).throwOn = 1;
+    const { getByText, getByLabelText } = render(<PptxPreview content="DDDD" />);
+    await waitFor(() => expect(getByText("1 / 3")).toBeDefined());
+
+    fireEvent.click(getByLabelText("Next slide"));
+    await waitFor(() => expect(getByText(/render slide 1 failed/)).toBeDefined());
+
+    // Counter should not advance.
+    expect(getByText("1 / 3")).toBeDefined();
   });
 
   test("destroys the renderer on unmount", () => {
