@@ -106,4 +106,19 @@ describe("ArtifactCard", () => {
         const { getByText } = render(<ArtifactCard path="/w/a.csv" kind="csv" runnerId="r1" />);
         await waitFor(() => expect(getByText(/permission denied/i)).toBeDefined());
     });
+
+    test("a previewable artifact offers an expand affordance", () => {
+        const { getByLabelText } = render(<ArtifactCard path="/w/reports/q3.csv" kind="csv" runnerId="r1" />);
+        expect(getByLabelText("Expand q3.csv")).toBeDefined();
+    });
+
+    test("a download-only artifact offers no expand affordance", () => {
+        const { queryByLabelText } = render(<ArtifactCard path="/w/deck.pptx" kind="download" runnerId="r1" />);
+        expect(queryByLabelText("Expand deck.pptx")).toBeNull();
+    });
+
+    test("expand is hidden when there is no runner to fetch from", () => {
+        const { queryByLabelText } = render(<ArtifactCard path="/w/a.csv" kind="csv" />);
+        expect(queryByLabelText("Expand a.csv")).toBeNull();
+    });
 });
