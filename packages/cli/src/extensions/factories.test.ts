@@ -31,6 +31,7 @@ import { toolSearchExtension } from "./tool-search.js";
 import { ollamaWebToolsExtension } from "./ollama-web-tools.js";
 import { sessionAnalysisExtension } from "./session-analysis.js";
 import { providerRequestLogExtension } from "./provider-request-log.js";
+import { fallbackModelsExtension } from "./fallback-models.js";
 import { sessionProcessesExtension } from "./session-processes.js";
 import { backgroundBashExtension } from "./background-bash.js";
 import { queueFlushExtension } from "./queue-flush.js";
@@ -50,6 +51,7 @@ const CORE_EXTENSIONS_HEAD: ExtensionFactory[] = [
     hostAnnounceExtension,
     ollamaCloudProviderExtension,
     providerRequestLogExtension,
+    fallbackModelsExtension,
     triggersExtension,  // Must be before remoteExtension (shutdown ordering)
     remoteExtension,
     tunnelToolsExtension,
