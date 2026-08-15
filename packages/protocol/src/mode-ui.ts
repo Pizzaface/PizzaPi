@@ -130,7 +130,9 @@ export function isArtifactPath(path: string, resolved: ResolvedModeUi): boolean 
  * `~/Documents/Workspace/` behaves the same as one that does not.
  */
 export function cwdInWorkspace(cwd: string, workspace: string): boolean {
-  const root = workspace.replace(/\/+$/, "");
+  // ponytail: loop, not /\/+$/ — that regex backtracks on many trailing slashes (CodeQL js/polynomial-redos)
+  let root = workspace;
+  while (root.endsWith("/")) root = root.slice(0, -1);
   if (!root) return false;
   return cwd === root || cwd.startsWith(`${root}/`);
 }
