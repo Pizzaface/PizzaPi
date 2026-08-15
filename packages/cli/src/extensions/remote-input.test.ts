@@ -110,6 +110,15 @@ describe("remote-input", () => {
             expect(isTextMimeType("application/octet-stream", "DATA.JSON")).toBe(true);
             expect(isTextMimeType("application/octet-stream", "CODE.PY")).toBe(true);
         });
+
+        test("recognizes SVG as text by MIME type", () => {
+            expect(isTextMimeType("image/svg+xml")).toBe(true);
+        });
+
+        test("recognizes SVG by filename extension", () => {
+            expect(isTextMimeType("application/octet-stream", "diagram.svg")).toBe(true);
+            expect(isTextMimeType("image/svg+xml", "diagram.SVG")).toBe(true);
+        });
     });
 
     describe("buildUserMessageFromRemoteInput", () => {
@@ -207,22 +216,35 @@ describe("remote-input", () => {
                 ]);
             });
 
-            test("binary files still get placeholder even with sessionId", async () => {
+            test("binary files are referenced by saved path with sessionId", async () => {
                 const content = Buffer.from([0x50, 0x4b, 0x03, 0x04]).toString("base64");
                 const attachments = [{ url: `data:application/zip;base64,${content}`, filename: "archive.zip" }];
                 const result = await buildUserMessageFromRemoteInput("", attachments, "", "", "sess-bin");
                 expect(result).toEqual([
-                    { type: "text", text: "[Attachment provided by web client: archive.zip — binary content not included]" },
+                    { type: "text", text: expect.stringContaining("[Attached file saved to runner:") },
                 ]);
+                const msg = (result as any[])[0].text as string;
+                expect(msg).toContain("archive.zip");
+                expect(msg).not.toContain("binary content not included");
             });
         });
 
-        test("shows binary placeholder for non-text non-image files", async () => {
+        test("shows binary attachment info for non-text non-image files without sessionId", async () => {
             const content = Buffer.from([0x50, 0x4b, 0x03, 0x04]).toString("base64"); // zip magic bytes
             const attachments = [{ url: `data:application/zip;base64,${content}`, filename: "archive.zip" }];
             const result = await buildUserMessageFromRemoteInput("", attachments, "", "");
             expect(result).toEqual([
-                { type: "text", text: "[Attachment provided by web client: archive.zip — binary content not included]" },
+                { type: "text", text: "[Attached file: archive.zip (application/zip) — binary content not shown]" },
+            ]);
+        });
+
+        test("inlines SVG as text rather than treating it as a binary image", async () => {
+            const svg = `<svg xmlns="http://www.w3.org/2000/svg"><rect width="100" height="100"/></svg>`;
+            const content = Buffer.from(svg).toString("base64");
+            const attachments = [{ url: `data:image/svg+xml;base64,${content}`, filename: "shape.svg" }];
+            const result = await buildUserMessageFromRemoteInput("", attachments, "", "");
+            expect(result).toEqual([
+                { type: "text", text: "--- shape.svg ---\n" + svg + "\n--- end shape.svg ---" },
             ]);
         });
 
@@ -238,7 +260,8 @@ describe("remote-input", () => {
             expect((result[0] as any).type).toBe("text");
             expect((result[1] as any).type).toBe("image");
             expect((result[2] as any).text).toContain("# README");
-            expect((result[3] as any).text).toContain("binary content not included");
+            expect((result[3] as any).text).toContain("Attached file: doc.pdf");
+            expect((result[3] as any).text).not.toContain("binary content not included");
         });
     });
 });
