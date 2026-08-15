@@ -255,7 +255,10 @@ async function askUserQuestion(
     ctx: ExtensionContext,
 ): Promise<{ answer: string | null; source: "tui" | "web" | null }> {
     const canAskViaWeb = rctx.isConnected();
-    const canAskViaTui = ctx.hasUI;
+    // hasUI is also true in RPC mode (runner workers), where ctx.ui routes to
+    // the web approval card — asking there would double-prompt with an
+    // ANSI-garbled duplicate. Only race the TUI when there is a real terminal.
+    const canAskViaTui = ctx.hasUI && (ctx as { mode?: string }).mode === "tui";
 
     if (!canAskViaWeb && !canAskViaTui) {
         return { answer: null, source: null };

@@ -9,6 +9,7 @@ import {
     bRow,
     typeLabel,
     buildBox,
+    registerAskUserTool,
 } from "./remote-ask-user.js";
 
 // ── sanitizeQuestions ────────────────────────────────────────────────────────
@@ -337,6 +338,62 @@ describe("remote-ask-user", () => {
                 const stripped = line.replace(/\x1b\[[0-9;]*m/g, "");
                 expect(stripped.length).toBeLessThanOrEqual(BOX_W + 2);
             }
+        });
+    });
+
+    // ── TUI race gating ────────────────────────────────────────────────────────
+
+    describe("TUI race gating", () => {
+        function makeRctx() {
+            let tool: any;
+            const rctx: any = {
+                pi: { registerTool: (t: any) => { tool = t; } },
+                isConnected: () => true,
+                isChildSession: false,
+                parentSessionId: null,
+                pendingAskUserQuestion: null,
+                relay: {},
+                setRelayStatus: () => {},
+                disconnectedStatusText: () => "",
+                forwardEvent: () => {},
+                getCurrentSessionName: () => "test",
+            };
+            registerAskUserTool(rctx);
+            return { rctx, tool: () => tool };
+        }
+
+        const params = { questions: [{ question: "Pick one", options: ["a", "b"] }] };
+
+        test("does NOT prompt ctx.ui in RPC/headless mode (hasUI true, mode print)", async () => {
+            const { rctx, tool } = makeRctx();
+            let inputCalled = false;
+            const ctx = {
+                hasUI: true,
+                mode: "print",
+                ui: { input: async () => { inputCalled = true; return undefined; } },
+            };
+            const resultP = tool().execute("tc1", params, undefined, undefined, ctx);
+            // Answer via the web path.
+            await Promise.resolve();
+            rctx.pendingAskUserQuestion.resolve("a");
+            const result = await resultP;
+            expect(inputCalled).toBe(false);
+            expect(result.details.answer).toBe("a");
+            expect(result.details.source).toBe("web");
+        });
+
+        test("prompts ctx.ui in real TUI mode (mode tui)", async () => {
+            const { tool } = makeRctx();
+            let inputCalled = false;
+            const ctx = {
+                hasUI: true,
+                mode: "tui",
+                ui: { input: async () => { inputCalled = true; return "b"; } },
+            };
+            const result = await tool().execute("tc2", params, undefined, undefined, ctx);
+            expect(inputCalled).toBe(true);
+            expect(result.details.answer).toBe("b");
+            expect(result.details.source).toBe("tui");
         });
     });
 });

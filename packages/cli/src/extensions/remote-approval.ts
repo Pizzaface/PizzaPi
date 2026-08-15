@@ -39,6 +39,12 @@ export function getApprovalHandler(): ApprovalHandler | null {
 
 const UNAVAILABLE: ApprovalDecision = { action: "unavailable", approved: false, unavailable: true };
 
+/** Strip ANSI escape sequences — TUI-rendered text must never reach the web card raw. */
+function stripAnsi(s: string): string {
+    // eslint-disable-next-line no-control-regex
+    return s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+}
+
 /** Strip a request down to the fields the web card needs, with sane defaults. */
 function toMetaApproval(promptId: string, request: ApprovalRequest): MetaPendingApproval {
   const fields = Array.isArray(request.fields)
@@ -46,8 +52,8 @@ function toMetaApproval(promptId: string, request: ApprovalRequest): MetaPending
         .filter((f) => f && typeof f.key === "string" && typeof f.label === "string")
         .map((f) => ({
           key: f.key,
-          label: f.label,
-          value: typeof f.value === "string" ? f.value : String(f.value ?? ""),
+          label: stripAnsi(f.label),
+          value: stripAnsi(typeof f.value === "string" ? f.value : String(f.value ?? "")),
           editable: f.editable === true,
           multiline: f.multiline === true,
         }))
@@ -59,8 +65,11 @@ function toMetaApproval(promptId: string, request: ApprovalRequest): MetaPending
     : undefined;
   return {
     promptId,
-    title: typeof request.title === "string" && request.title.trim() ? request.title.trim() : "Approve action?",
-    message: typeof request.message === "string" ? request.message : undefined,
+    title:
+      typeof request.title === "string" && stripAnsi(request.title).trim()
+        ? stripAnsi(request.title).trim()
+        : "Approve action?",
+    message: typeof request.message === "string" ? stripAnsi(request.message) : undefined,
     toolName: typeof request.toolName === "string" ? request.toolName : undefined,
     icon: typeof request.icon === "string" ? request.icon : undefined,
     ...(fields && fields.length > 0 ? { fields } : {}),
