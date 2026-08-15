@@ -27,9 +27,9 @@ function toolArgs(toolInput: unknown): Record<string, unknown> {
 }
 
 /** How an artifact should be previewed. */
-export type ArtifactKind = "markdown" | "image" | "pdf" | "csv" | "html" | "download";
+export type ArtifactKind = "markdown" | "image" | "pdf" | "csv" | "xlsx" | "html" | "download";
 
-const ARTIFACT_KINDS: ReadonlySet<ArtifactKind> = new Set(["markdown", "image", "pdf", "csv", "html", "download"]);
+const ARTIFACT_KINDS: ReadonlySet<ArtifactKind> = new Set(["markdown", "image", "pdf", "csv", "xlsx", "html", "download"]);
 
 function isArtifactKind(value: string): value is ArtifactKind {
   return ARTIFACT_KINDS.has(value as ArtifactKind);
@@ -56,6 +56,9 @@ const KIND_BY_EXTENSION: Record<string, ArtifactKind> = {
   pdf: "pdf",
   csv: "csv",
   tsv: "csv",
+  xlsx: "xlsx",
+  xls: "xlsx",
+  ods: "xlsx",
   html: "html",
   htm: "html",
 };
@@ -68,7 +71,8 @@ export function extensionOf(path: string): string | null {
 
 /**
  * Preview kind for a path. Anything without a known preview is "download" —
- * docx/pptx/xlsx are real deliverables that browsers cannot render inline.
+ * docx/pptx are real deliverables that browsers cannot render inline.
+ * Spreadsheets (xlsx/xls/ods) preview as a sortable sheet.
  */
 export function artifactKindFor(path: string): ArtifactKind {
   const ext = extensionOf(path);
