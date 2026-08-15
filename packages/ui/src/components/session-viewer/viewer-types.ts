@@ -133,12 +133,6 @@ export interface SessionViewerProps {
   showAnalyzerButton?: boolean;
   /** Whether the analyzer panel is currently open (used for mobile overflow menu state indicator) */
   isAnalyzerOpen?: boolean;
-  /** Toggle the artifacts panel */
-  onToggleArtifacts?: () => void;
-  /** Whether to show the artifacts button */
-  showArtifactsButton?: boolean;
-  /** Whether the artifacts panel is currently open (used for mobile overflow menu state indicator) */
-  isArtifactsOpen?: boolean;
   /** Trigger counts — pending (incomplete) and subscriptions */
   triggerCount?: TriggerCounts;
   /** Extra buttons to render in the header bar (e.g. service panel toggles) */
