@@ -10,6 +10,7 @@ import {
     removeSessionProcFile,
 } from "./session-procs.js";
 import { runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd } from "./runner-usage-cache.js";
+import { recordTranscriptLink } from "./session-transcript-links.js";
 import { isCwdAllowed } from "./workspace.js";
 import { loadConfig } from "../config.js";
 
@@ -264,6 +265,8 @@ export function spawnSession(
         if (message.type === "session_metadata" && typeof message.sessionFile === "string") {
             const running = runningSessions.get(sessionId);
             if (running) running.sessionFile = message.sessionFile;
+            // Durable so a respawn after a daemon restart can still resume it.
+            recordTranscriptLink(sessionId, message.sessionFile);
             logInfo(`session ${sessionId} reported transcript ${message.sessionFile}`);
         }
     });

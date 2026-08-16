@@ -34,6 +34,7 @@ import { TunnelClient } from "@pizzapi/tunnel";
 import { loadGlobalConfig, saveGlobalConfig, defaultAgentDir, expandHome, loadConfig } from "../config.js";
 import type { PizzaPiConfig } from "../config.js";
 import { findSessionPathById } from "./session-list-cache.js";
+import { lookupTranscriptLink } from "./session-transcript-links.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ServiceModeDef, ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } from "@pizzapi/protocol";
@@ -1717,6 +1718,22 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             // from server-side persisted sessions), it sends resumeId and the
             // daemon resolves the path from the local session cache/filesystem.
             let resolvedResumePath = typeof requestedResumePath === "string" ? requestedResumePath : undefined;
+
+            // A relay session id is NOT a pi transcript id, so findSessionPathById
+            // can never resolve one — that is why a relay wake (which sends
+            // resumeId = the relay session id) and a plain respawn both used to
+            // start this session on an empty transcript. The recorded link is
+            // the only thing that maps the two, so it is checked first.
+            if (!resolvedResumePath) {
+                const linked = lookupTranscriptLink(
+                    typeof requestedResumeId === "string" && requestedResumeId ? requestedResumeId : sessionId,
+                );
+                if (linked) {
+                    resolvedResumePath = linked;
+                    logInfo(`resuming session ${sessionId} from its recorded transcript ${linked}`);
+                }
+            }
+
             if (!resolvedResumePath && typeof requestedResumeId === "string" && requestedResumeId) {
                 const sessionsRootDir = join(resolveConfiguredAgentDir(requestedCwd), "sessions");
                 try {
