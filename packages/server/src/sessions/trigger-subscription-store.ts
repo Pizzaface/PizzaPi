@@ -21,7 +21,9 @@
  *
  * **Mitigation**: clearSessionSubscriptions() is called from endSharedSession()
  * so subscriptions are cleaned up eagerly when a session ends. The 24h TTL is
- * a last-resort safeguard for abnormal termination paths only.
+ * a last-resort safeguard for abnormal termination paths only. Schedule
+ * subscriptions (time:*) are deliberately preserved across session end — see
+ * clearSessionSubscriptions({ preserveDurable }).
  *
  * unsubscribeSessionFromTrigger() is also best-effort: if the session hash has
  * already expired (losing the triggerType→runnerId mapping), it cannot remove
@@ -487,16 +489,39 @@ export async function updateSessionSubscription(
     }
 }
 
+/** Trigger-type prefixes whose subscriptions outlive the session that made them. */
+export const DURABLE_TRIGGER_PREFIXES = ["time:"] as const;
+
+/** True when this trigger type is a durable schedule (survives its owning session). */
+export function isDurableTriggerType(triggerType: string): boolean {
+    return DURABLE_TRIGGER_PREFIXES.some((prefix) => triggerType.startsWith(prefix));
+}
+
+/** True when the session still owns at least one durable schedule. */
+export async function sessionHasScheduleSubscription(sessionId: string): Promise<boolean> {
+    const subs = await listSessionSubscriptions(sessionId);
+    return subs.some((sub) => isDurableTriggerType(sub.triggerType));
+}
+
 /**
- * Remove all subscriptions for a session (e.g. on session end).
+ * Remove subscriptions for a session (e.g. on session end).
  * Cleans up session hash and all reverse index entries.
+ *
+ * `preserveDurable` keeps schedule subscriptions (time:*) alive: a schedule
+ * must outlive the session that created it — when it next fires, the relay
+ * either wakes that session or the time service starts a new one to carry it
+ * out. Without this, the orphan sweep (2 min after a worker dies) would delete
+ * standing schedules outright and nothing could ever run them.
  *
  * Best-effort: if the session hash has already expired (TTL elapsed before
  * this is called), the reverse-index entries are left to expire on their own.
  * In normal operation this is called eagerly from endSharedSession() so the
  * hash is still present.
  */
-export async function clearSessionSubscriptions(sessionId: string): Promise<void> {
+export async function clearSessionSubscriptions(
+    sessionId: string,
+    opts: { preserveDurable?: boolean } = {},
+): Promise<void> {
     const redis = await getClient();
     if (!redis) return;
 
@@ -504,19 +529,33 @@ export async function clearSessionSubscriptions(sessionId: string): Promise<void
 
     try {
         const hash = await redis.hGetAll(sessionKey);
-        const runnerIds = new Set<string>();
+        const removedRunnerIds = new Set<string>();
+        const keptRunnerIds = new Set<string>();
         const pipeline = redis.multi();
+        let keptAny = false;
+
         for (const [field, raw] of Object.entries(hash)) {
-            for (const sub of parseSubValues(field, raw)) {
-                const indexKey = RUNNER_TYPE_INDEX_KEY(sub.runnerId, sub.triggerType);
-                pipeline.sRem(indexKey, sessionId);
-                runnerIds.add(sub.runnerId);
+            const subs = parseSubValues(field, raw);
+            // A legacy array-format field can hold several subscriptions. Only
+            // drop the field when every subscription in it is removable, so a
+            // preserved schedule is never collateral damage.
+            const keep = opts.preserveDurable === true && subs.some((sub) => isDurableTriggerType(sub.triggerType));
+            if (keep) {
+                keptAny = true;
+                for (const sub of subs) keptRunnerIds.add(sub.runnerId);
+                continue;
+            }
+            pipeline.hDel(sessionKey, field);
+            for (const sub of subs) {
+                pipeline.sRem(RUNNER_TYPE_INDEX_KEY(sub.runnerId, sub.triggerType), sessionId);
+                removedRunnerIds.add(sub.runnerId);
             }
         }
-        pipeline.del(sessionKey);
-        // The whole hash is deleted, so no subscriptions remain on any runner.
-        for (const runnerId of runnerIds) {
-            pipeline.sRem(RUNNER_SESSIONS_INDEX_KEY(runnerId), sessionId);
+
+        if (!keptAny) pipeline.del(sessionKey);
+        for (const runnerId of removedRunnerIds) {
+            // Only forget the session on runners where nothing survives.
+            if (!keptRunnerIds.has(runnerId)) pipeline.sRem(RUNNER_SESSIONS_INDEX_KEY(runnerId), sessionId);
         }
         await pipeline.exec();
     } catch (err) {

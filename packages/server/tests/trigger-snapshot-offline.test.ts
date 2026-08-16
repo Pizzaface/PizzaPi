@@ -13,11 +13,14 @@ import { describe, test, expect } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { createTestServer } from "./harness/server.js";
 import { createMockRunner } from "./harness/mock-runner.js";
+import { createMockRelay } from "./harness/mock-relay.js";
 import type { TestServer } from "./harness/types.js";
 import {
     subscribeSessionToTrigger,
+    listSessionSubscriptions,
     clearSessionSubscriptions,
 } from "../src/sessions/trigger-subscription-store.js";
+import { endSharedSession } from "../src/ws/sio-registry.js";
 
 const TEST_TIMEOUT = 30_000;
 
@@ -88,6 +91,47 @@ describe("trigger subscription snapshot — offline sessions", () => {
             await second.disconnect();
         } finally {
             await clearSessionSubscriptions(offlineSessionId);
+            await cleanupServer(server);
+        }
+    }, TEST_TIMEOUT);
+
+    test("a schedule survives its owning session ending and is restored on runner restart", async () => {
+        const server = await createTestServer();
+        const runnerId = `runner-end-${randomUUID().slice(0, 8)}`;
+        const runnerSecret = "end-test-secret";
+        let sessionId = "";
+        try {
+            const first = await createMockRunner(server, { runnerId, runnerSecret, name: "end-runner" });
+
+            // A real session, with a standing schedule plus an ordinary subscription.
+            const relay = await createMockRelay(server);
+            const registered = await relay.registerSession({ cwd: "/tmp/test" });
+            sessionId = registered.sessionId;
+            await subscribeSessionToTrigger(sessionId, runnerId, "time:cron", undefined, { cron: "0 9 * * *", message: "daily standup" });
+            await subscribeSessionToTrigger(sessionId, runnerId, "github:pr_comment");
+
+            // The session ends (same path the orphan sweep takes when a worker dies).
+            await endSharedSession(sessionId, "Session ended");
+
+            // The schedule outlives it; the ordinary subscription does not.
+            const surviving = await listSessionSubscriptions(sessionId);
+            expect(surviving.map((s) => s.triggerType)).toEqual(["time:cron"]);
+
+            // Runner restart still rebuilds the schedule.
+            await relay.disconnect();
+            await first.disconnect();
+            const second = await createMockRunner(server, { runnerId, runnerSecret, name: "end-runner" });
+            await waitFor(() => second.getTriggerSubscriptionSnapshots().length > 0);
+            const snapshot = second.getTriggerSubscriptionSnapshots()[0];
+            const cronSub = snapshot.subscriptions.find(
+                (s) => s.sessionId === sessionId && s.triggerType === "time:cron",
+            );
+            expect(cronSub).toBeDefined();
+            expect((cronSub!.params as Record<string, unknown>).message).toBe("daily standup");
+
+            await second.disconnect();
+        } finally {
+            if (sessionId) await clearSessionSubscriptions(sessionId);
             await cleanupServer(server);
         }
     }, TEST_TIMEOUT);

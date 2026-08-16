@@ -15,6 +15,8 @@ import {
     unsubscribeSessionSubscription,
     getSessionIdsWithSubscriptionsForRunner,
     refreshRunnerSubscriptionTtls,
+    sessionHasScheduleSubscription,
+    isDurableTriggerType,
     _injectRedisForTesting,
     _resetRedisForTesting,
 } from "./trigger-subscription-store";
@@ -455,6 +457,71 @@ describe("getSessionIdsWithSubscriptionsForRunner", () => {
 
     test("returns empty for a runner with no subscribed sessions", async () => {
         expect(await getSessionIdsWithSubscriptionsForRunner("runner-none")).toEqual([]);
+    });
+});
+
+describe("clearSessionSubscriptions({ preserveDurable })", () => {
+    beforeEach(resetState);
+
+    test("keeps schedules and removes everything else", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:cron", undefined, { cron: "0 9 * * *" });
+        await subscribeSessionToTrigger("session-1", "runner-A", "github:pr_comment");
+
+        await clearSessionSubscriptions("session-1", { preserveDurable: true });
+
+        const subs = await listSessionSubscriptions("session-1");
+        expect(subs).toHaveLength(1);
+        expect(subs[0].triggerType).toBe("time:cron");
+        expect(subs[0].params).toEqual({ cron: "0 9 * * *" });
+    });
+
+    test("keeps the runner-sessions index entry so the reconnect snapshot still finds the schedule", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:cron");
+        await subscribeSessionToTrigger("session-1", "runner-A", "github:pr_comment");
+
+        await clearSessionSubscriptions("session-1", { preserveDurable: true });
+
+        expect(await getSessionIdsWithSubscriptionsForRunner("runner-A")).toEqual(["session-1"]);
+        expect(await getSubscribersForTrigger("runner-A", "time:cron")).toContain("session-1");
+        expect(await getSubscribersForTrigger("runner-A", "github:pr_comment")).not.toContain("session-1");
+    });
+
+    test("drops the session from runners where nothing durable survives", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:cron");
+        await subscribeSessionToTrigger("session-1", "runner-B", "github:pr_comment");
+
+        await clearSessionSubscriptions("session-1", { preserveDurable: true });
+
+        expect(await getSessionIdsWithSubscriptionsForRunner("runner-A")).toEqual(["session-1"]);
+        expect(await getSessionIdsWithSubscriptionsForRunner("runner-B")).toEqual([]);
+    });
+
+    test("without the option it still clears everything (default unchanged)", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:cron");
+        await subscribeSessionToTrigger("session-1", "runner-A", "github:pr_comment");
+
+        await clearSessionSubscriptions("session-1");
+
+        expect(await listSessionSubscriptions("session-1")).toHaveLength(0);
+        expect(await getSessionIdsWithSubscriptionsForRunner("runner-A")).toEqual([]);
+    });
+
+    test("sessionHasScheduleSubscription reflects surviving schedules", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:at", undefined, { at: "14:30UTC" });
+        await subscribeSessionToTrigger("session-2", "runner-A", "github:pr_comment");
+
+        expect(await sessionHasScheduleSubscription("session-1")).toBe(true);
+        expect(await sessionHasScheduleSubscription("session-2")).toBe(false);
+
+        await clearSessionSubscriptions("session-1", { preserveDurable: true });
+        expect(await sessionHasScheduleSubscription("session-1")).toBe(true);
+    });
+
+    test("isDurableTriggerType covers the time trigger family only", () => {
+        expect(isDurableTriggerType("time:cron")).toBe(true);
+        expect(isDurableTriggerType("time:at")).toBe(true);
+        expect(isDurableTriggerType("time:timer_fired")).toBe(true);
+        expect(isDurableTriggerType("github:pr_comment")).toBe(false);
     });
 });
 

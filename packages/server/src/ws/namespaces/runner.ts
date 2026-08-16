@@ -26,20 +26,26 @@ import type {
 import { shouldPreserveOnSocketDisconnect } from "../../health.js";
 import { apiKeyAuthMiddleware } from "./auth.js";
 import { bindSocketHandlersToAuthContext } from "./context.js";
-import { getSubscriptionsForRunnerSessions, getSessionIdsWithSubscriptionsForRunner, refreshRunnerSubscriptionTtls, nextTriggerSubRevision } from "../../sessions/trigger-subscription-store.js";
+import { getSubscriptionsForRunnerSessions, getSessionIdsWithSubscriptionsForRunner, refreshRunnerSubscriptionTtls, sessionHasScheduleSubscription, nextTriggerSubRevision } from "../../sessions/trigger-subscription-store.js";
 
 /**
- * Refresh subscription TTLs for every still-existing session that owns
- * subscriptions on this runner. Standing schedules must not expire from Redis
- * while their runner is alive; sessions that no longer exist are skipped so
- * their subscriptions age out via the normal TTL.
+ * Refresh subscription TTLs for sessions that own subscriptions on this runner.
+ *
+ * Kept alive while the runner is connected:
+ *   - sessions that still exist, and
+ *   - schedules (time:*) whose owning session is gone — those are durable by
+ *     design and migrate to a fresh session on their next fire, so expiring
+ *     them out of Redis would silently cancel standing work.
+ * Anything else ages out via the normal TTL.
  */
 async function refreshSubscriptionTtlsForRunner(runnerId: string): Promise<void> {
     const sessionIds = await getSessionIdsWithSubscriptionsForRunner(runnerId);
     if (sessionIds.length === 0) return;
     const alive: string[] = [];
     for (const sessionId of sessionIds) {
-        if (await getSharedSession(sessionId)) alive.push(sessionId);
+        if (await getSharedSession(sessionId) || await sessionHasScheduleSubscription(sessionId)) {
+            alive.push(sessionId);
+        }
     }
     await refreshRunnerSubscriptionTtls(runnerId, alive);
 }
