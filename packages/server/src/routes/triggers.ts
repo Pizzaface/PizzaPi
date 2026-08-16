@@ -228,6 +228,75 @@ interface TriggerRequest {
     source?: string;
     /** Optional human-readable summary for the trigger */
     summary?: string;
+    /**
+     * When true and the target session is offline, the server wakes it: the
+     * runner respawns a worker that resumes the same session (new_session with
+     * resumeId), and the caller's retry delivers into the awakened session.
+     * Used by schedule deliveries (time service) — a schedule firing must
+     * reach the session that created it even if its worker has exited.
+     */
+    wakeSession?: boolean;
+}
+
+// ── Offline-session wake ───────────────────────────────────────────
+
+/** In-flight wake attempts, deduped per session so concurrent schedule fires
+ *  (or retries) share one worker respawn instead of racing the daemon. */
+const pendingSessionWakes = new Map<string, Promise<boolean>>();
+
+/**
+ * Ask the session's runner to respawn a worker that RESUMES this session
+ * (same relay session id, same conversation via resumeId). Returns true once
+ * the worker's TUI socket has registered. Runs in the background — the
+ * trigger route returns 503 immediately and the caller's retry loop delivers
+ * once the session is awake, which avoids double-delivery races between a
+ * slow wake and the caller's own delivery timeout.
+ */
+function wakeOfflineSession(
+    sessionId: string,
+    session: { runnerId?: string | null; cwd?: string },
+): Promise<boolean> {
+    const existing = pendingSessionWakes.get(sessionId);
+    if (existing) return existing;
+
+    const attempt = (async (): Promise<boolean> => {
+        const runnerId = session.runnerId;
+        if (!runnerId) return false;
+        const runnerSocket = getLocalRunnerSocket(runnerId);
+        if (!runnerSocket) return false;
+
+        const ackPromise = waitForSpawnAck(sessionId, 10_000);
+        try {
+            runnerSocket.emit("new_session", {
+                sessionId,
+                ...(session.cwd ? { cwd: session.cwd } : {}),
+                // The daemon resolves the local .jsonl by session id; if the file
+                // is gone it degrades to a fresh conversation under the same
+                // relay session — still the schedule's home.
+                resumeId: sessionId,
+            });
+        } catch (err) {
+            log.warn(`wake: failed to send new_session for ${sessionId}:`, err);
+            return false;
+        }
+        const ack = await ackPromise;
+        if (ack.ok === false && !(ack as { timeout?: boolean }).timeout) {
+            log.warn(`wake: runner rejected resume of ${sessionId}: ${(ack as { message?: string }).message ?? "unknown"}`);
+            return false;
+        }
+        const ready = await waitForSessionSocket(sessionId, 15_000);
+        if (ready) {
+            log.info(`wake: session ${sessionId} resumed and registered`);
+        } else {
+            log.warn(`wake: session ${sessionId} worker never registered`);
+        }
+        return ready;
+    })().finally(() => {
+        pendingSessionWakes.delete(sessionId);
+    });
+
+    pendingSessionWakes.set(sessionId, attempt);
+    return attempt;
 }
 
 /** Authenticate via session cookie or API key. */
@@ -483,6 +552,20 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             void Promise.resolve(pushTriggerHistory(sessionId, historyEntry)).catch(() => {});
             broadcastToSessionViewers(sessionId, "trigger_delivered", { triggerId });
             return Response.json({ ok: true, triggerId });
+        }
+
+        // Offline — optionally wake the session in the background. The caller
+        // retries (schedule deliveries use backoff) and lands the trigger once
+        // the resumed worker registers.
+        if (body.wakeSession === true && targetSession.runnerId) {
+            log.info(`External trigger ${triggerId}: session ${sessionId} offline — starting wake`);
+            void wakeOfflineSession(sessionId, targetSession).catch((err) => {
+                log.warn(`wake: unexpected error for ${sessionId}:`, err);
+            });
+            return Response.json(
+                { error: "Session is offline — wake started, retry delivery", waking: true },
+                { status: 503 },
+            );
         }
 
         return Response.json(
