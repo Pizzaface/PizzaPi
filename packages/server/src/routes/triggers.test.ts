@@ -42,8 +42,14 @@ mock.module("../ws/runner-control.js", () => ({
     waitForSpawnAck: mock(() => Promise.resolve({ ok: true })),
 }));
 
+// Captured so tests can assert the runner is told about subscription changes
+// (the delta is what disarms a live timer/cron on the daemon).
+const mockEmitDeltaCalls: Array<[string, any]> = [];
 mock.module("../ws/namespaces/runner.js", () => ({
-    emitTriggerSubscriptionDelta: mock(() => Promise.resolve()),
+    emitTriggerSubscriptionDelta: mock((runnerId: string, delta: any) => {
+        mockEmitDeltaCalls.push([runnerId, delta]);
+        return Promise.resolve();
+    }),
 }));
 
 // ── Mock middleware ──────────────────────────────────────────────────────
@@ -84,6 +90,7 @@ const mockGetSubscriptionsForRunnerSessions = mock((_runnerId: string, _sessionI
 import * as _runnersModule from "../ws/sio-registry/runners.js";
 import * as _triggerSubsModule from "../sessions/trigger-subscription-store.js";
 import * as _runnerListenersModule from "../sessions/runner-trigger-listener-store.js";
+import * as _sessionStoreModule from "../sessions/store.js";
 let mockGetRunnerServices: ReturnType<typeof spyOn>;
 let mockGetRunnerData: ReturnType<typeof spyOn>;
 let spySubscribeSessionToTrigger: ReturnType<typeof spyOn>;
@@ -102,6 +109,13 @@ let spyListRunnerTriggerListeners: ReturnType<typeof spyOn>;
 let spyAddRunnerTriggerListener: ReturnType<typeof spyOn>;
 let spyRemoveRunnerTriggerListener: ReturnType<typeof spyOn>;
 let spyUpdateRunnerTriggerListener: ReturnType<typeof spyOn>;
+let spyGetRelaySessionUserId: ReturnType<typeof spyOn>;
+let spyGetPersistedRelaySessionRunner: ReturnType<typeof spyOn>;
+
+// Persisted-session fallback used by the subscription routes. Defaults to
+// "no persisted session" so existing not-found cases still 404.
+const mockGetRelaySessionUserId = mock((_sid: string) => Promise.resolve(null as string | null));
+const mockGetPersistedRelaySessionRunner = mock((_sid: string) => Promise.resolve(null as any));
 
 beforeEach(() => {
     mockGetRunnerServices = spyOn(_runnersModule, "getRunnerServices")
@@ -126,6 +140,9 @@ beforeEach(() => {
     spyAddRunnerTriggerListener = spyOn(_runnerListenersModule, "addRunnerTriggerListener").mockImplementation(mockAddRunnerTriggerListener as any);
     spyRemoveRunnerTriggerListener = spyOn(_runnerListenersModule, "removeRunnerTriggerListener").mockImplementation(mockRemoveRunnerTriggerListener as any);
     spyUpdateRunnerTriggerListener = spyOn(_runnerListenersModule, "updateRunnerTriggerListener").mockImplementation(mockUpdateRunnerTriggerListener as any);
+
+    spyGetRelaySessionUserId = spyOn(_sessionStoreModule, "getRelaySessionUserId").mockImplementation(mockGetRelaySessionUserId as any);
+    spyGetPersistedRelaySessionRunner = spyOn(_sessionStoreModule, "getPersistedRelaySessionRunner").mockImplementation(mockGetPersistedRelaySessionRunner as any);
 });
 
 afterEach(() => {
@@ -147,6 +164,8 @@ afterEach(() => {
     spyAddRunnerTriggerListener.mockRestore();
     spyRemoveRunnerTriggerListener.mockRestore();
     spyUpdateRunnerTriggerListener.mockRestore();
+    spyGetRelaySessionUserId.mockRestore();
+    spyGetPersistedRelaySessionRunner.mockRestore();
 });
 
 // ── Mock logger ──────────────────────────────────────────────────────────
@@ -2097,6 +2116,77 @@ describe("POST /api/sessions/:id/trigger — wakeSession", () => {
         const res = await handleTriggersRoute(req, url);
         expect(res!.status).toBe(503);
         await new Promise((r) => setTimeout(r, 20));
+    });
+});
+
+describe("subscription routes — schedule whose owning session has ended", () => {
+    // A schedule outlives its session (see clearSessionSubscriptions preserveDurable),
+    // so the live Redis record is gone while the subscription is still live.
+    beforeEach(() => {
+        mockGetSharedSession.mockReset();
+        mockGetLocalRunnerSocket.mockReset();
+        mockRequireSession.mockReset();
+        mockListSessionSubscriptions.mockReset();
+        mockGetRelaySessionUserId.mockReset();
+        mockGetPersistedRelaySessionRunner.mockReset();
+        mockUnsubscribeSessionSubscription.mockReset();
+        mockEmitDeltaCalls.length = 0;
+
+        mockRequireSession.mockReturnValue(Promise.resolve({ userId: "user-1", userName: "TestUser" }));
+        // Live record gone.
+        mockGetSharedSession.mockReturnValue(Promise.resolve(null));
+        mockGetRelaySessionUserId.mockReturnValue(Promise.resolve("user-1"));
+        mockGetPersistedRelaySessionRunner.mockReturnValue(Promise.resolve({ runnerId: "runner-A", runnerName: "r" }));
+        mockUnsubscribeSessionSubscription.mockReturnValue(Promise.resolve(true));
+        mockListSessionSubscriptions.mockReturnValue(Promise.resolve([
+            { subscriptionId: "sub-cron", triggerType: "time:cron", runnerId: "runner-A", params: { cron: "0 9 * * *" } },
+        ]));
+    });
+
+    test("GET lists the surviving schedule instead of 404ing", async () => {
+        const [req, url] = makeReq("GET", "/api/sessions/sess-ended/trigger-subscriptions");
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json() as { subscriptions: Array<{ triggerType: string }> };
+        expect(body.subscriptions.map((s) => s.triggerType)).toEqual(["time:cron"]);
+    });
+
+    test("GET still 404s when the persisted session belongs to another user", async () => {
+        mockGetRelaySessionUserId.mockReturnValue(Promise.resolve("someone-else"));
+        const [req, url] = makeReq("GET", "/api/sessions/sess-ended/trigger-subscriptions");
+        expect((await handleTriggersRoute(req, url))!.status).toBe(404);
+    });
+
+    test("GET still 404s when the session is unknown to both live and persisted stores", async () => {
+        mockGetRelaySessionUserId.mockReturnValue(Promise.resolve(null));
+        const [req, url] = makeReq("GET", "/api/sessions/sess-unknown/trigger-subscriptions");
+        expect((await handleTriggersRoute(req, url))!.status).toBe(404);
+    });
+
+    test("DELETE cancels the schedule and tells the runner, so its armed timer dies too", async () => {
+        const [req, url] = makeReq(
+            "DELETE",
+            "/api/sessions/sess-ended/trigger-subscriptions/time:cron?subscriptionId=sub-cron",
+        );
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        expect(mockUnsubscribeSessionSubscription).toHaveBeenCalledWith("sess-ended", "sub-cron");
+
+        // Without this delta the daemon keeps firing and spawns a replacement
+        // session for work the user just cancelled.
+        expect(mockEmitDeltaCalls).toHaveLength(1);
+        const [runnerId, delta] = mockEmitDeltaCalls[0];
+        expect(runnerId).toBe("runner-A");
+        expect(delta.action).toBe("unsubscribe");
+        expect(delta.subscription.subscriptionId).toBe("sub-cron");
+        expect(delta.subscription.runnerId).toBe("runner-A");
+    });
+
+    test("DELETE still 404s for another user's ended session", async () => {
+        mockGetRelaySessionUserId.mockReturnValue(Promise.resolve("someone-else"));
+        const [req, url] = makeReq("DELETE", "/api/sessions/sess-ended/trigger-subscriptions/time:cron");
+        expect((await handleTriggersRoute(req, url))!.status).toBe(404);
+        expect(mockEmitDeltaCalls).toHaveLength(0);
     });
 });
 
