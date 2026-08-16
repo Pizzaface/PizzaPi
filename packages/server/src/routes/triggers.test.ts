@@ -545,6 +545,34 @@ describe("GET /api/sessions/:id/available-triggers", () => {
         const body = await res!.json();
         expect(body.triggerDefs).toHaveLength(0);
     });
+
+    test("filters mode-scoped trigger defs by the session's cwd", async () => {
+        const catalog = {
+            serviceIds: ["reporter"],
+            triggerDefs: [
+                { type: "reporter:daily", label: "Daily", modes: ["work"] },
+                { type: "godmother:idea_moved", label: "Idea Moved" },
+            ],
+            sessionModes: [{ id: "work", label: "Work", workspace: "/home/u/Workspace" }],
+        };
+        mockGetRunnerServices.mockReturnValue(Promise.resolve(catalog));
+
+        // Out-of-mode session only sees the unscoped trigger.
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A", cwd: "/home/u/Projects/foo" } as any),
+        );
+        let [req, url] = makeReq("GET", "/api/sessions/sess-1/available-triggers");
+        let body = await (await handleTriggersRoute(req, url))!.json();
+        expect(body.triggerDefs.map((d: any) => d.type)).toEqual(["godmother:idea_moved"]);
+
+        // In-mode session sees both.
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A", cwd: "/home/u/Workspace/reports" } as any),
+        );
+        [req, url] = makeReq("GET", "/api/sessions/sess-1/available-triggers");
+        body = await (await handleTriggersRoute(req, url))!.json();
+        expect(body.triggerDefs).toHaveLength(2);
+    });
 });
 
 describe("GET /api/sessions/:id/available-sigils", () => {
@@ -701,6 +729,48 @@ describe("POST /api/sessions/:id/trigger-subscriptions", () => {
         expect(res!.status).toBe(422);
         const body = await res!.json();
         expect(body.error).toContain("not available");
+    });
+
+    test("returns 422 for a mode-scoped trigger when the session is outside the mode", async () => {
+        const catalog = {
+            serviceIds: ["reporter"],
+            triggerDefs: [{ type: "reporter:daily", label: "Daily", modes: ["work"] }],
+            sessionModes: [{ id: "work", label: "Work", workspace: "/home/u/Workspace" }],
+        };
+        mockGetRunnerServices.mockReturnValue(Promise.resolve(catalog));
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A", cwd: "/home/u/Projects/foo" } as any),
+        );
+
+        const [req, url] = makeReq("POST", "/api/sessions/sess-1/trigger-subscriptions", {
+            triggerType: "reporter:daily",
+        });
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(422);
+        const body = await res!.json();
+        expect(body.error).toContain("scoped to session mode");
+        expect(mockSubscribeSessionToTrigger).not.toHaveBeenCalled();
+    });
+
+    test("allows a mode-scoped trigger when the session cwd is inside the mode", async () => {
+        const catalog = {
+            serviceIds: ["reporter"],
+            triggerDefs: [{ type: "reporter:daily", label: "Daily", modes: ["work"] }],
+            sessionModes: [{ id: "work", label: "Work", workspace: "/home/u/Workspace" }],
+        };
+        mockGetRunnerServices.mockReturnValue(Promise.resolve(catalog));
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1", runnerId: "runner-A", cwd: "/home/u/Workspace/reports" } as any),
+        );
+        mockSubscribeSessionToTrigger.mockReturnValue(Promise.resolve("sub-mode-1"));
+
+        const [req, url] = makeReq("POST", "/api/sessions/sess-1/trigger-subscriptions", {
+            triggerType: "reporter:daily",
+        });
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.ok).toBe(true);
     });
 
     test("returns 503 when runner catalog is unavailable (runner restarted)", async () => {

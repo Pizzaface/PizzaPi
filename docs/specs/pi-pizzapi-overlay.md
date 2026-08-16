@@ -162,7 +162,7 @@ Each declaration describes one daemon-side `ServiceHandler` plus optional announ
 - `triggers` and `sigils` MAY be inline arrays or one explicit JSON path. A service does not implicitly scan `triggers.json` or `sigils.json`.
 - Trigger and sigil definitions retain their current protocol shapes.
 - Service IDs MUST be unique within a package.
-- `modes` MAY list session mode ids the service's UI surfaces are scoped to. When present, the daemon stamps the list onto the announced panel and trigger defs and the web UI only shows them for sessions whose resolved session mode id is in the list. Absent/empty means visible for every session. The service itself always runs daemon-wide; sigil defs are never mode-scoped (existing sigil references must keep rendering).
+- `modes` MAY list session mode ids the service's UI surfaces are scoped to. When present, the daemon stamps the list onto the announced panel and trigger defs; the web UI only shows them for sessions whose resolved session mode id is in the list, and the relay enforces the same rule server-side: mode-scoped trigger types are filtered from `available-triggers` and rejected on session subscription and runner trigger-listener create/update when the session (or listener) cwd is outside a matching mode workspace. Absent/empty means visible for every session. The service itself always runs daemon-wide; sigil defs are never mode-scoped (existing sigil references must keep rendering). Subscriptions that already existed before a service became mode-scoped are not retroactively revoked.
 
 A service with triggers or sigils but no `panel` is valid. It may call `announceSigilServer()` and remains absent from the panel grid, matching today's panel-less service behavior.
 

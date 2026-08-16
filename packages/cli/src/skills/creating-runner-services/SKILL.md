@@ -138,7 +138,7 @@ are confined to the package root.
 | `triggers` | No | `[]` | Inline `ServiceTriggerDef[]` **or** a path to a JSON file |
 | `sigils` | No | `[]` | Inline `ServiceSigilDef[]` **or** a path to a JSON file |
 | `sessionModes` | No | `[]` | `ServiceModeDef[]` — workspaces with their own UI identity (see [Session modes](#session-modes)) |
-| `modes` | No | `[]` | Session mode ids this service's **surfaces** (panel button, trigger defs) are scoped to. Omit for always-visible. The service still runs daemon-wide; only visibility is scoped. Sigils stay unscoped so existing `[[type:id]]` references render everywhere. |
+| `modes` | No | `[]` | Session mode ids this service's **surfaces** (panel button, trigger defs) are scoped to. Omit for always-visible. The service still runs daemon-wide. Enforced server-side too: out-of-mode sessions can't list or subscribe to scoped triggers, and runner trigger listeners must set a cwd inside the mode workspace. Sigils stay unscoped so existing `[[type:id]]` references render everywhere. |
 
 ### Split files
 

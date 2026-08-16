@@ -17,6 +17,7 @@ import {
     registerTerminal,
 } from "../ws/sio-registry.js";
 import { getRunnerServices } from "../ws/sio-registry/runners.js";
+import { triggerAllowedForCwd } from "./mode-scope.js";
 import {
     addRunnerTriggerListener,
     getRunnerTriggerListener,
@@ -645,9 +646,21 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
             const autoClose = body?.autoClose === true ? true : undefined;
 
+            const listenerCwd = typeof body?.cwd === "string" ? body.cwd : undefined;
+            // Mode-scoped triggers require the listener's spawn cwd to be inside
+            // a matching mode workspace — same rule as session subscriptions.
+            const catalog = await getRunnerServices(runnerId);
+            const triggerDef = catalog?.triggerDefs?.find((d) => d.type === triggerType);
+            if (triggerDef && !triggerAllowedForCwd(triggerDef, catalog?.sessionModes, listenerCwd, runnerId)) {
+                return Response.json(
+                    { error: `Trigger type '${triggerType}' is scoped to session mode(s) [${(triggerDef.modes ?? []).join(", ")}] — set the listener's cwd inside a matching mode workspace` },
+                    { status: 422 },
+                );
+            }
+
             const listenerId = await addRunnerTriggerListener(runnerId, triggerType, {
                 prompt: typeof body?.prompt === "string" ? body.prompt : undefined,
-                cwd: typeof body?.cwd === "string" ? body.cwd : undefined,
+                cwd: listenerCwd,
                 model,
                 params,
                 autoClose,
@@ -691,6 +704,23 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
             }
 
             const autoClose = typeof body.autoClose === "boolean" ? body.autoClose : undefined;
+
+            // A cwd change on a listener for a mode-scoped trigger must stay
+            // inside a matching mode workspace.
+            if (typeof body.cwd === "string") {
+                const existing = !target.includes(":") ? await getRunnerTriggerListener(runnerId, target) : null;
+                const existingType = existing?.triggerType ?? (target.includes(":") ? target : undefined);
+                if (existingType) {
+                    const catalog = await getRunnerServices(runnerId);
+                    const triggerDef = catalog?.triggerDefs?.find((d) => d.type === existingType);
+                    if (triggerDef && !triggerAllowedForCwd(triggerDef, catalog?.sessionModes, body.cwd, runnerId)) {
+                        return Response.json(
+                            { error: `Trigger type '${existingType}' is scoped to session mode(s) [${(triggerDef.modes ?? []).join(", ")}] — set cwd inside a matching mode workspace` },
+                            { status: 422 },
+                        );
+                    }
+                }
+            }
 
             const updated = await updateRunnerTriggerListener(runnerId, target, {
                 prompt: typeof body.prompt === "string" ? body.prompt : undefined,
