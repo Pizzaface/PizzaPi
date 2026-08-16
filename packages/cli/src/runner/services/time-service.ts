@@ -111,6 +111,17 @@ function cwdFromParams(params: unknown): string | undefined {
     return typeof cwd === "string" && cwd ? cwd : undefined;
 }
 
+/**
+ * Optional transcript path captured at subscribe time (`_resumePath`).
+ * A replacement session resumes it, so a woken schedule keeps the context of
+ * the conversation that scheduled it. Resume appends to the same file, so this
+ * stays valid across repeated cron migrations.
+ */
+function resumePathFromParams(params: unknown): string | undefined {
+    const path = (params as Record<string, unknown> | null | undefined)?._resumePath;
+    return typeof path === "string" && path ? path : undefined;
+}
+
 // ── Timer state ──────────────────────────────────────────────────────────────
 
 interface TimerEntry {
@@ -606,6 +617,7 @@ export class TimeService implements ServiceHandler {
         const label = typeof params?.label === "string" ? params.label : undefined;
         const message = typeof params?.message === "string" ? params.message : undefined;
         const cwd = cwdFromParams(params);
+        const resumePath = resumePathFromParams(params);
         const fireAt = Date.now() + durationMs;
 
         logInfo(`[time] starting timer for session ${sessionId}: ${durationStr} (${formatDuration(durationMs)})${label ? ` [${label}]` : ""}`);
@@ -615,7 +627,7 @@ export class TimeService implements ServiceHandler {
         const replacementPrompt = buildReplacementPrompt(`timer "${durationStr}"`, label, message);
         const fire = () => {
             this.#timers.delete(key);
-            this.#fireOneShotWithRetry(key, sessionId, subscriptionId, "time:timer_fired", buildPayload, summary, label, 0, replacementPrompt, cwd);
+            this.#fireOneShotWithRetry(key, sessionId, subscriptionId, "time:timer_fired", buildPayload, summary, label, 0, replacementPrompt, cwd, resumePath);
         };
 
         const handle = this.#setTimeoutUntil(key, fireAt, fire);
@@ -672,13 +684,14 @@ export class TimeService implements ServiceHandler {
         const label = typeof params?.label === "string" ? params.label : undefined;
         const message = typeof params?.message === "string" ? params.message : undefined;
         const cwd = cwdFromParams(params);
+        const resumePath = resumePathFromParams(params);
 
         const summary = message ?? (label ? `Scheduled "${label}" fired` : `Scheduled trigger fired (target: ${atStr})`);
         const buildPayload = () => ({ at: new Date(targetMs).toISOString(), firedAt: new Date().toISOString(), label, message });
         const replacementPrompt = buildReplacementPrompt(`scheduled time ${atStr}`, label, message);
         const fire = () => {
             this.#timers.delete(key);
-            this.#fireOneShotWithRetry(key, sessionId, subscriptionId, "time:at", buildPayload, summary, label, 0, replacementPrompt, cwd);
+            this.#fireOneShotWithRetry(key, sessionId, subscriptionId, "time:at", buildPayload, summary, label, 0, replacementPrompt, cwd, resumePath);
         };
 
         const delayMs = targetMs - Date.now();
@@ -733,6 +746,7 @@ export class TimeService implements ServiceHandler {
         const label = typeof params?.label === "string" ? params.label : undefined;
         const message = typeof params?.message === "string" ? params.message : undefined;
         const cwd = cwdFromParams(params);
+        const resumePath = resumePathFromParams(params);
 
         // Restore durable next-fire/iteration so a restart neither re-fires a
         // cron that already ran this period nor resets its iteration count. A
@@ -807,6 +821,7 @@ export class TimeService implements ServiceHandler {
                     const spawn = await this.#spawnReplacementSession(
                         buildReplacementPrompt(`cron "${cronStr}"`, label, message, true),
                         cwd,
+                        resumePath,
                     );
                     const afterSpawn = this.#crons.get(key);
                     if (!afterSpawn) return; // unsubscribed while migrating
@@ -820,6 +835,7 @@ export class TimeService implements ServiceHandler {
                             ...(message ? { message } : {}),
                             ...(label ? { label } : {}),
                             ...(cwd ? { _cwd: cwd } : {}),
+                            ...(resumePath ? { _resumePath: resumePath } : {}),
                         });
                         const stillMounted = this.#crons.get(key);
                         if (!stillMounted) return;
@@ -930,12 +946,13 @@ export class TimeService implements ServiceHandler {
         retryCount: number,
         replacementPrompt: string,
         cwd: string | undefined,
+        resumePath: string | undefined,
     ): void {
         void this.#fireOneShot(sessionId, subscriptionId, triggerType, buildPayload(), summary).then(async (result) => {
             if (this.#disposed) return;
             if (result === "delivered") return;
             if (result === "gone") {
-                const spawn = await this.#spawnReplacementSession(replacementPrompt, cwd);
+                const spawn = await this.#spawnReplacementSession(replacementPrompt, cwd, resumePath);
                 if ("sessionId" in spawn) {
                     // The one-shot has been handed to a live session; retire the
                     // subscription so it cannot re-arm on the next restart.
@@ -957,7 +974,7 @@ export class TimeService implements ServiceHandler {
             logWarn(`[time] ${triggerType} delivery to ${sessionId} failed; retrying in ${formatDuration(delay)}`);
             const handle = this.#setTimeoutUntil(key, fireAt, () => {
                 this.#timers.delete(key);
-                this.#fireOneShotWithRetry(key, sessionId, subscriptionId, triggerType, buildPayload, summary, label, retryCount + 1, replacementPrompt, cwd);
+                this.#fireOneShotWithRetry(key, sessionId, subscriptionId, triggerType, buildPayload, summary, label, retryCount + 1, replacementPrompt, cwd, resumePath);
             });
             this.#timers.set(key, { subscriptionId, handle, fireAt, sessionId, triggerType, label });
         });
@@ -976,6 +993,7 @@ export class TimeService implements ServiceHandler {
     async #spawnReplacementSession(
         prompt: string,
         cwd: string | undefined,
+        resumePath?: string,
     ): Promise<{ sessionId: string } | { failure: "transient" | "permanent" }> {
         const apiKey = getApiKey();
         const runnerId = getOwnRunnerId();
@@ -990,7 +1008,15 @@ export class TimeService implements ServiceHandler {
                     method: "POST",
                     headers: { "Content-Type": "application/json", "x-api-key": apiKey },
                     signal: AbortSignal.timeout(this.deliveryTimeoutMs),
-                    body: JSON.stringify({ runnerId, prompt, ...(withCwd ? { cwd: withCwd } : {}) }),
+                    body: JSON.stringify({
+                        runnerId,
+                        prompt,
+                        ...(withCwd ? { cwd: withCwd } : {}),
+                        // ponytail: a stale/deleted transcript just logs a warn
+                        // worker-side and the session starts fresh — no need to
+                        // stat it here from the daemon.
+                        ...(resumePath ? { resumePath } : {}),
+                    }),
                 });
                 if (res.ok) {
                     const data = await res.json().catch(() => null) as { sessionId?: string } | null;
