@@ -34,6 +34,7 @@ const mockRequireSession = mock(
 );
 
 mock.module("../ws/sio-registry.js", () => ({
+    emitToRunner: mock(() => {}),
     getSessions: mockGetSessions,
 }));
 

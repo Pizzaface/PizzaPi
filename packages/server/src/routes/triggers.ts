@@ -56,6 +56,7 @@ import {
     broadcastToSessionViewers,
     emitToRelaySessionVerified,
     getLocalRunnerSocket,
+    emitToRunner,
     recordRunnerSession,
     linkSessionToRunner,
 } from "../ws/sio-registry.js";
@@ -265,12 +266,15 @@ function wakeOfflineSession(
     const attempt = (async (): Promise<boolean> => {
         const runnerId = session.runnerId;
         if (!runnerId) return false;
-        const runnerSocket = getLocalRunnerSocket(runnerId);
-        if (!runnerSocket) return false;
 
-        const ackPromise = waitForSpawnAck(sessionId, 10_000);
+        // The runner may be connected to a DIFFERENT relay node. emitToRunner
+        // goes through the per-runner room, which the Redis adapter fans out
+        // cluster-wide, so waking is not limited to sessions whose runner
+        // happens to share this node.
+        const isLocal = !!getLocalRunnerSocket(runnerId);
+        const ackPromise = isLocal ? waitForSpawnAck(sessionId, 10_000) : null;
         try {
-            runnerSocket.emit("new_session", {
+            emitToRunner(runnerId, "new_session", {
                 sessionId,
                 ...(session.cwd ? { cwd: session.cwd } : {}),
                 // The daemon resolves the local .jsonl by session id; if the file
@@ -282,6 +286,15 @@ function wakeOfflineSession(
             log.warn(`wake: failed to send new_session for ${sessionId}:`, err);
             return false;
         }
+
+        // The spawn ack and worker socket are observable only on the node the
+        // runner/worker connect to. Cross-node, fire and let the caller's retry
+        // confirm delivery — that path is already cluster-wide.
+        if (!ackPromise) {
+            log.info(`wake: asked runner ${runnerId} on another node to resume ${sessionId}`);
+            return true;
+        }
+
         const ack = await ackPromise;
         if (ack.ok === false && !(ack as { timeout?: boolean }).timeout) {
             log.warn(`wake: runner rejected resume of ${sessionId}: ${(ack as { message?: string }).message ?? "unknown"}`);
@@ -611,7 +624,11 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         // so a schedule returns to the conversation that created it rather than
         // starting a stranger.
         if (body.wakeSession === true && target.runnerId) {
-            const runnerReachable = !!getLocalRunnerSocket(target.runnerId);
+            // Redis-backed, so a runner attached to another relay node counts as
+            // reachable — a local-socket check would report a perfectly healthy
+            // multi-node deployment as "runner down".
+            const runnerReachable = !!getLocalRunnerSocket(target.runnerId)
+                || !!(await getRunnerData(target.runnerId).catch(() => null));
             if (runnerReachable) {
                 log.info(`External trigger ${triggerId}: session ${sessionId} offline — starting wake`);
                 void wakeOfflineSession(sessionId, target).catch((err) => {

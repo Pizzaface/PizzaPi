@@ -50,6 +50,9 @@ const DELIVERY_TIMEOUT_MS = 15_000;
  */
 const RETRY_BACKOFF_MS = [60_000, 5 * 60_000, 15 * 60_000, 30 * 60_000] as const;
 
+/** How many times to retry handing a recurring schedule to its new owner. */
+const RESUBSCRIBE_ATTEMPTS = 3;
+
 /** Outcome of a trigger delivery attempt. */
 type DeliveryResult = "delivered" | "retry" | "gone";
 
@@ -226,7 +229,7 @@ export const TIME_TRIGGER_DEFS: ServiceTriggerDef[] = [
     {
         type: "time:cron",
         label: "Cron Schedule",
-        description: "Recurring follow-up on a cron schedule. Standard 5-field format: minute hour day-of-month month day-of-week. Delivered only to your session; unsubscribe when you no longer need it.",
+        description: "Recurring follow-up on a cron schedule. Standard 5-field format: minute hour day-of-month month day-of-week. Fields are matched in UTC, not local time — \"0 9 * * *\" means 09:00 UTC daily, so convert if you mean a local hour. Being UTC also means intervals are fixed and unaffected by daylight-saving changes. Delivered only to your session; unsubscribe when you no longer need it.",
         schema: {
             type: "object",
             properties: {
@@ -242,7 +245,7 @@ export const TIME_TRIGGER_DEFS: ServiceTriggerDef[] = [
                 name: "cron",
                 label: "Cron Expression",
                 type: "string",
-                description: "Standard 5-field cron (e.g. \"*/30 * * * *\" for every 30 minutes)",
+                description: "Standard 5-field cron, matched in UTC (e.g. \"*/30 * * * *\" for every 30 minutes; \"0 9 * * *\" is 09:00 UTC daily)",
                 required: true,
             },
             {
@@ -801,27 +804,72 @@ export class TimeService implements ServiceHandler {
                     // the cron under it so future fires deliver there. Keep
                     // `delivering` held while migrating so the interval cannot
                     // start a second migration.
-                    const spawned = await this.#spawnReplacementSession(
+                    const spawn = await this.#spawnReplacementSession(
                         buildReplacementPrompt(`cron "${cronStr}"`, label, message, true),
                         cwd,
                     );
                     const afterSpawn = this.#crons.get(key);
                     if (!afterSpawn) return; // unsubscribed while migrating
-                    afterSpawn.delivering = false;
-                    if (spawned) {
-                        await this.#resubscribeCron(spawned, {
+                    // NOTE: `delivering` stays held across the handover below.
+                    // Releasing it here lets the next interval tick see the old
+                    // (past) nextFireAt and start a SECOND migration while this
+                    // one is still awaiting — spawning a duplicate session.
+                    if ("sessionId" in spawn) {
+                        const migrated = await this.#resubscribeCron(spawn.sessionId, {
                             cron: cronStr,
                             ...(message ? { message } : {}),
                             ...(label ? { label } : {}),
                             ...(cwd ? { _cwd: cwd } : {}),
                         });
-                        logInfo(`[time] cron "${cronStr}" owner ${sessionId} is gone — re-owned by new session ${spawned}`);
-                        clearInterval(afterSpawn.handle);
-                        this.#crons.delete(key);
-                        this.#cronIterations.delete(key);
-                        this.#dropCronState(subscriptionId);
+                        const stillMounted = this.#crons.get(key);
+                        if (!stillMounted) return;
+                        stillMounted.delivering = false;
+                        if (migrated) {
+                            // Retire the old subscription. It is durable, so leaving
+                            // it would restore it on the next reconnect snapshot,
+                            // re-arm this cron against a dead session, and migrate
+                            // AGAIN — one extra subscription and session per restart.
+                            await this.#removeSubscription(sessionId, "time:cron", subscriptionId);
+                            logInfo(`[time] cron "${cronStr}" owner ${sessionId} is gone — re-owned by new session ${spawn.sessionId}`);
+                            clearInterval(stillMounted.handle);
+                            this.#crons.delete(key);
+                            this.#cronIterations.delete(key);
+                            this.#dropCronState(subscriptionId);
+                        } else {
+                            // The fire ran (a session is doing the work) but the
+                            // recurrence could not be handed over. Keep THIS cron
+                            // armed at its next natural time so the schedule is not
+                            // downgraded to a one-off, and try the handover again.
+                            const nextTime = nextCronTime(cron, Date.now());
+                            if (nextTime) {
+                                stillMounted.nextFireAt = nextTime;
+                                stillMounted.retryCount = 0;
+                                this.#persistCron(subscriptionId, nextTime, nextIteration);
+                                this.#cronIterations.set(key, nextIteration);
+                                logWarn(`[time] cron "${cronStr}" ran as ${spawn.sessionId} but could not be re-owned; keeping the old schedule armed for ${new Date(nextTime).toISOString()}`);
+                            }
+                        }
+                    } else if (spawn.failure === "permanent") {
+                        afterSpawn.delivering = false;
+                        // The spawn cannot succeed as configured (e.g. its cwd is
+                        // gone). Do not hammer every 30 minutes forever — wait for
+                        // the next natural fire, which also lets it self-heal if
+                        // the workspace comes back.
+                        const nextTime = nextCronTime(cron, Date.now());
+                        if (nextTime) {
+                            afterSpawn.nextFireAt = nextTime;
+                            afterSpawn.retryCount = 0;
+                            this.#persistCron(subscriptionId, nextTime, this.#cronIterations.get(key) ?? 0);
+                            logError(`[time] cron "${cronStr}" cannot start a replacement session (permanent failure); skipping to ${new Date(nextTime).toISOString()}`);
+                        } else {
+                            clearInterval(afterSpawn.handle);
+                            this.#crons.delete(key);
+                            this.#cronIterations.delete(key);
+                            this.#dropCronState(subscriptionId);
+                        }
                     } else {
-                        // Spawn failed — hold the fire and retry with backoff.
+                        // Transient — hold the fire and retry with backoff.
+                        afterSpawn.delivering = false;
                         afterSpawn.retryCount++;
                         afterSpawn.nextFireAt = Date.now() + this.#backoffDelay(afterSpawn.retryCount - 1);
                         logWarn(`[time] cron "${cronStr}" owner ${sessionId} is gone and replacement spawn failed; retrying in ${formatDuration(afterSpawn.nextFireAt - Date.now())}`);
@@ -887,9 +935,19 @@ export class TimeService implements ServiceHandler {
             if (this.#disposed) return;
             if (result === "delivered") return;
             if (result === "gone") {
-                const spawned = await this.#spawnReplacementSession(replacementPrompt, cwd);
-                if (spawned) {
-                    logInfo(`[time] ${triggerType} owner ${sessionId} is gone — handled by new session ${spawned}`);
+                const spawn = await this.#spawnReplacementSession(replacementPrompt, cwd);
+                if ("sessionId" in spawn) {
+                    // The one-shot has been handed to a live session; retire the
+                    // subscription so it cannot re-arm on the next restart.
+                    await this.#removeSubscription(sessionId, triggerType, subscriptionId);
+                    logInfo(`[time] ${triggerType} owner ${sessionId} is gone — handled by new session ${spawn.sessionId}`);
+                    return;
+                }
+                if (spawn.failure === "permanent") {
+                    // Undeliverable as configured. Stop the retry loop rather than
+                    // waking every 30 minutes forever; the subscription is left in
+                    // place so it stays visible and cancellable in the UI.
+                    logError(`[time] ${triggerType} for gone session ${sessionId} cannot start a replacement session (permanent failure) — giving up on this fire`);
                     return;
                 }
                 logWarn(`[time] ${triggerType} owner ${sessionId} is gone and replacement spawn failed; retrying`);
@@ -907,33 +965,55 @@ export class TimeService implements ServiceHandler {
 
     /**
      * The owning session no longer exists — start a fresh session on this
-     * runner with the schedule's instruction as its initial prompt. Returns
-     * the new sessionId, or null when the spawn could not be performed.
+     * runner with the schedule's instruction as its initial prompt.
+     *
+     * A 4xx is permanent for this input (a deleted `_cwd`, a cwd outside the
+     * runner's roots, a forbidden model): retrying it on a timer just hammers
+     * the relay forever. Those retry ONCE without the cwd — the workspace may
+     * be gone while the schedule is still worth running — and then report
+     * "permanent" so the caller stops instead of looping.
      */
-    async #spawnReplacementSession(prompt: string, cwd: string | undefined): Promise<string | null> {
+    async #spawnReplacementSession(
+        prompt: string,
+        cwd: string | undefined,
+    ): Promise<{ sessionId: string } | { failure: "transient" | "permanent" }> {
         const apiKey = getApiKey();
         const runnerId = getOwnRunnerId();
         if (!apiKey || !runnerId) {
             logWarn(`[time] cannot spawn replacement session — missing ${apiKey ? "runnerId" : "apiKey"}`);
-            return null;
+            return { failure: "transient" };
         }
-        try {
-            const res = await fetch(`${resolveRelayUrl()}/api/runners/spawn`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json", "x-api-key": apiKey },
-                signal: AbortSignal.timeout(this.deliveryTimeoutMs),
-                body: JSON.stringify({ runnerId, prompt, ...(cwd ? { cwd } : {}) }),
-            });
-            if (!res.ok) {
-                logWarn(`[time] replacement session spawn failed: ${res.status} ${res.statusText}`);
-                return null;
+
+        const attempt = async (withCwd: string | undefined): Promise<{ sessionId: string } | { failure: "transient" | "permanent" }> => {
+            try {
+                const res = await fetch(`${resolveRelayUrl()}/api/runners/spawn`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+                    signal: AbortSignal.timeout(this.deliveryTimeoutMs),
+                    body: JSON.stringify({ runnerId, prompt, ...(withCwd ? { cwd: withCwd } : {}) }),
+                });
+                if (res.ok) {
+                    const data = await res.json().catch(() => null) as { sessionId?: string } | null;
+                    if (typeof data?.sessionId === "string" && data.sessionId) return { sessionId: data.sessionId };
+                    logWarn("[time] replacement session spawn returned no sessionId");
+                    return { failure: "transient" };
+                }
+                const permanent = res.status >= 400 && res.status < 500 && res.status !== 429;
+                logWarn(`[time] replacement session spawn failed: ${res.status} ${res.statusText}${permanent ? " (permanent)" : ""}`);
+                return { failure: permanent ? "permanent" : "transient" };
+            } catch (err) {
+                logError(`[time] replacement session spawn error: ${err}`);
+                return { failure: "transient" };
             }
-            const data = await res.json().catch(() => null) as { sessionId?: string } | null;
-            return typeof data?.sessionId === "string" && data.sessionId ? data.sessionId : null;
-        } catch (err) {
-            logError(`[time] replacement session spawn error: ${err}`);
-            return null;
+        };
+
+        const first = await attempt(cwd);
+        if ("sessionId" in first) return first;
+        if (first.failure === "permanent" && cwd) {
+            logWarn(`[time] retrying replacement spawn without cwd "${cwd}" — the workspace may be gone`);
+            return await attempt(undefined);
         }
+        return first;
     }
 
     /**
@@ -945,22 +1025,34 @@ export class TimeService implements ServiceHandler {
     async #resubscribeCron(newSessionId: string, params: Record<string, unknown>): Promise<boolean> {
         const apiKey = getApiKey();
         if (!apiKey) return false;
-        try {
-            const res = await fetch(`${resolveRelayUrl()}/api/sessions/${encodeURIComponent(newSessionId)}/trigger-subscriptions`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json", "x-api-key": apiKey },
-                signal: AbortSignal.timeout(this.deliveryTimeoutMs),
-                body: JSON.stringify({ triggerType: "time:cron", params }),
-            });
-            if (!res.ok) {
-                logError(`[time] failed to re-own cron under session ${newSessionId}: ${res.status} ${res.statusText} — recurrence lost`);
-                return false;
+        // Retried: this single call is what carries the recurrence to its new
+        // owner, so dropping it on one blip silently downgrades a standing
+        // schedule to a one-off.
+        for (let attempt = 0; attempt < RESUBSCRIBE_ATTEMPTS; attempt++) {
+            if (this.#disposed) return false;
+            try {
+                const res = await fetch(`${resolveRelayUrl()}/api/sessions/${encodeURIComponent(newSessionId)}/trigger-subscriptions`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+                    signal: AbortSignal.timeout(this.deliveryTimeoutMs),
+                    body: JSON.stringify({ triggerType: "time:cron", params }),
+                });
+                if (res.ok) return true;
+                // A 4xx fails identically next time — don't spend the retries.
+                if (res.status >= 400 && res.status < 500 && res.status !== 429) {
+                    logError(`[time] failed to re-own cron under session ${newSessionId}: ${res.status} ${res.statusText} — not retryable`);
+                    return false;
+                }
+                logWarn(`[time] re-owning cron under ${newSessionId} failed (${res.status}), attempt ${attempt + 1}/${RESUBSCRIBE_ATTEMPTS}`);
+            } catch (err) {
+                logWarn(`[time] re-owning cron under ${newSessionId} errored, attempt ${attempt + 1}/${RESUBSCRIBE_ATTEMPTS}: ${err}`);
             }
-            return true;
-        } catch (err) {
-            logError(`[time] failed to re-own cron under session ${newSessionId}: ${err} — recurrence lost`);
-            return false;
+            if (attempt < RESUBSCRIBE_ATTEMPTS - 1) {
+                await new Promise((resolve) => setTimeout(resolve, this.#backoffDelay(attempt)));
+            }
         }
+        logError(`[time] failed to re-own cron under session ${newSessionId} after ${RESUBSCRIBE_ATTEMPTS} attempts`);
+        return false;
     }
 
     /** Deliver a trigger to the session that owns the subscription (not a broadcast). */

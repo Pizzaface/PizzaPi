@@ -127,6 +127,56 @@ async function deleteSubscriptionRows(where: { subscriptionIds?: string[]; sessi
     }
 }
 
+/** A schedule plus the session that owns it, for runner-wide listing. */
+export interface RunnerScheduleEntry {
+    subscriptionId: string;
+    sessionId: string;
+    runnerId: string;
+    triggerType: string;
+    params?: SubscriptionParams;
+    filters?: SubscriptionFilter[];
+    filterMode?: SubscriptionFilterMode;
+}
+
+/**
+ * Every durable schedule (time:*) on a runner, read straight from the durable
+ * table.
+ *
+ * The UI previously discovered schedules by fanning out over sessions, which
+ * meant a schedule was only visible if its owning session happened to be in the
+ * page of sessions being listed — so an old or ownerless schedule silently
+ * vanished from the surface that is supposed to let you cancel it. Schedules
+ * belong to a runner, so they are listed by runner.
+ */
+export async function listRunnerSchedules(runnerId: string): Promise<RunnerScheduleEntry[]> {
+    try {
+        const rows = await getKysely()
+            .selectFrom(SUBSCRIPTION_TABLE)
+            .select(["sessionId", "subscriptionJson", "triggerType"])
+            .where("runnerId", "=", runnerId)
+            .execute();
+        const entries: RunnerScheduleEntry[] = [];
+        for (const row of rows) {
+            if (!isDurableTriggerType(row.triggerType)) continue;
+            const sub = parseSubValues(row.sessionId, row.subscriptionJson)[0];
+            if (!sub) continue;
+            entries.push({
+                subscriptionId: sub.subscriptionId,
+                sessionId: row.sessionId,
+                runnerId: sub.runnerId,
+                triggerType: sub.triggerType,
+                ...(sub.params ? { params: sub.params } : {}),
+                ...(sub.filters && sub.filters.length > 0 ? { filters: sub.filters } : {}),
+                ...(sub.filterMode ? { filterMode: sub.filterMode } : {}),
+            });
+        }
+        return entries;
+    } catch (err) {
+        log.warn("Failed to list runner schedules:", err);
+        return [];
+    }
+}
+
 /**
  * Rebuild this runner's Redis subscription state from the durable table.
  *

@@ -76,6 +76,7 @@ const mockGetRunnerData = mock((_runnerId: string) =>
 );
 
 mock.module("../ws/sio-registry.js", () => ({
+    emitToRunner: mock(() => {}),
     getSharedSession: mockGetSharedSession,
     getLocalTuiSocket: mockGetLocalTuiSocket,
     emitToRelaySessionVerified: mockEmitToRelaySessionVerified,

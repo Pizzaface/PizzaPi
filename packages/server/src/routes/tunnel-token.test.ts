@@ -14,6 +14,7 @@ mock.module("../sessions/store.js", () => ({
 }));
 
 mock.module("../ws/sio-registry.js", () => ({
+    emitToRunner: mock(() => {}),
     getRunnerData: mockGetRunnerData,
 }));
 

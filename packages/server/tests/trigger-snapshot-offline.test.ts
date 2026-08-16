@@ -242,6 +242,57 @@ describe("schedule durability", () => {
         }
     }, TEST_TIMEOUT);
 
+    test("runner-scoped listing shows schedules regardless of session age or liveness", async () => {
+        const server = await createTestServer();
+        const runnerId = `runner-list-${randomUUID().slice(0, 8)}`;
+        let liveSessionId = "";
+        let endedSessionId = "";
+        const disposers: Array<() => Promise<void>> = [];
+        try {
+            const runner = await createMockRunner(server, { runnerId, runnerSecret: "list-secret", name: "list-runner" });
+            disposers.push(() => runner.disconnect());
+            const relay = await createMockRelay(server);
+            disposers.push(() => relay.disconnect());
+
+            liveSessionId = (await relay.registerSession({ cwd: "/tmp/live" })).sessionId;
+            endedSessionId = (await relay.registerSession({ cwd: "/tmp/ended" })).sessionId;
+
+            await withAuth(server.authContext, () => subscribeSessionToTrigger(
+                liveSessionId, runnerId, "time:cron", undefined, { cron: "0 9 * * *" },
+            ));
+            await withAuth(server.authContext, () => subscribeSessionToTrigger(
+                endedSessionId, runnerId, "time:at", undefined, { at: "14:30UTC" },
+            ));
+            // Non-schedule subscriptions must not appear on the schedule surface.
+            await withAuth(server.authContext, () => subscribeSessionToTrigger(liveSessionId, runnerId, "github:pr_comment"));
+
+            // One owner ends — its schedule is exactly what a per-session
+            // fan-out would have missed.
+            await withAuth(server.authContext, () => endSharedSession(endedSessionId, "Session ended"));
+
+            const res = await server.fetch(`/api/runners/${runnerId}/schedules`);
+            expect(res.status).toBe(200);
+            const body = await res.json() as {
+                schedules: Array<{ sessionId: string; triggerType: string; cwd: string | null; sessionLive: boolean }>;
+            };
+
+            expect(body.schedules.map((s) => s.triggerType).sort()).toEqual(["time:at", "time:cron"]);
+            const ownerless = body.schedules.find((s) => s.sessionId === endedSessionId)!;
+            expect(ownerless).toBeDefined();
+            expect(ownerless.sessionLive).toBe(false);
+            // cwd comes from the durable row, so the UI can still place an
+            // ownerless schedule in its workspace.
+            expect(ownerless.cwd).toBe("/tmp/ended");
+            expect(body.schedules.find((s) => s.sessionId === liveSessionId)!.sessionLive).toBe(true);
+        } finally {
+            for (const id of [liveSessionId, endedSessionId]) {
+                if (id) await withAuth(server.authContext, () => clearSessionSubscriptions(id));
+            }
+            await disposeAll(disposers);
+            await cleanupServer(server);
+        }
+    }, TEST_TIMEOUT);
+
     test("a schedule owned by an ended session can still be cancelled over HTTP", async () => {
         const server = await createTestServer();
         const runnerId = `runner-cancel-${randomUUID().slice(0, 8)}`;

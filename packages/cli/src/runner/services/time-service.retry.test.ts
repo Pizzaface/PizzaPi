@@ -143,7 +143,36 @@ describe("one-shot delivery retry", () => {
         expect(spawnBody.runnerId).toBe("runner-test");
         expect(spawnBody.cwd).toBe("/tmp/proj");
         expect(spawnBody.prompt).toContain("Check the build");
-        // Settled — exactly one trigger attempt, no retries, nothing to clean up.
+        // Settled — exactly one trigger attempt, no retries.
+        expect(toUrl(posts(calls), "/trigger")).toHaveLength(1);
+        // The dead subscription is retired once a live session owns the work,
+        // or it would re-arm on the next reconnect snapshot and spawn again.
+        expect(deletes(calls)).toHaveLength(1);
+        expect(deletes(calls)[0]!.url).toContain("subscriptionId=sub-1");
+    });
+
+    test("session gone and the spawn is rejected permanently (4xx): retries once without cwd, then gives up", async () => {
+        setupEnv();
+        const calls = routedFetch((url) => {
+            // e.g. the schedule's workspace was deleted, so cwd is rejected.
+            if (url.includes("/api/runners/spawn")) return { status: 400, body: { error: "Runner cannot access cwd" } };
+            return { status: 404 };
+        });
+        service = new TimeService([10, 20]);
+
+        service.reconcileSubscriptions([
+            entry("sess-1", "time:timer_fired", { duration: "0.01s", message: "Check the build", _cwd: "/tmp/deleted" }, "sub-1"),
+        ]);
+
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        const spawns = toUrl(posts(calls), "/api/runners/spawn");
+        // Two attempts: with the recorded cwd, then once without it.
+        expect(spawns).toHaveLength(2);
+        expect(JSON.parse(spawns[0]!.body).cwd).toBe("/tmp/deleted");
+        expect(JSON.parse(spawns[1]!.body).cwd).toBeUndefined();
+        // Then it stops: no endless 30-minute retry loop against a spawn that
+        // cannot succeed. One delivery attempt, and the subscription is left in
+        // place so the schedule stays visible and cancellable.
         expect(toUrl(posts(calls), "/trigger")).toHaveLength(1);
         expect(deletes(calls)).toHaveLength(0);
     });
@@ -224,6 +253,45 @@ describe("cron delivery retry and durable state", () => {
         expect(JSON.parse(readFileSync(join(home, ".pizzapi", "time-service-state.json"), "utf-8")).hasOwnProperty("sub-cron")).toBe(false);
         const fires = posts(calls).filter((c) => c.url.endsWith("/trigger"));
         expect(fires).toHaveLength(1);
+
+        // The old subscription is retired. Leaving it would restore it on the
+        // next reconnect snapshot, re-arm this cron against a dead session and
+        // migrate again — one extra subscription and session per restart.
+        const cleanup = deletes(calls);
+        expect(cleanup).toHaveLength(1);
+        expect(cleanup[0]!.url).toContain("subscriptionId=sub-cron");
+    });
+
+    test("cron migration whose handover fails keeps the recurrence instead of downgrading to a one-off", async () => {
+        const home = setupEnv();
+        const calls = routedFetch((url) => {
+            if (url.includes("/api/runners/spawn")) return { status: 200, body: { ok: true, sessionId: "replacement-3" } };
+            // Handing the recurrence to the new session keeps failing (5xx).
+            if (url.includes("/trigger-subscriptions")) return { status: 503 };
+            return { status: 404 };
+        });
+        writeFileSync(
+            join(home, ".pizzapi", "time-service-state.json"),
+            JSON.stringify({ "sub-cron": { nextFireAt: Date.now() - 1000, iteration: 0 } }),
+            "utf-8",
+        );
+        service = new TimeService([5, 5], 10);
+
+        service.reconcileSubscriptions([
+            entry("sess-1", "time:cron", { cron: "0 0 * * *", message: "nightly" }, "sub-cron"),
+        ]);
+
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        // The fire itself was handled by a replacement session...
+        expect(toUrl(posts(calls), "/api/runners/spawn")).toHaveLength(1);
+        // ...the handover was retried rather than abandoned after one failure...
+        expect(toUrl(posts(calls), "/trigger-subscriptions").length).toBeGreaterThan(1);
+        // ...and the original subscription is NOT retired, so the schedule still
+        // exists and will retry the handover on its next fire.
+        expect(deletes(calls)).toHaveLength(0);
+        const state = JSON.parse(readFileSync(join(home, ".pizzapi", "time-service-state.json"), "utf-8"));
+        expect(state.hasOwnProperty("sub-cron")).toBe(true);
+        expect(state["sub-cron"].nextFireAt).toBeGreaterThan(Date.now());
     });
 
     test("persists cron state on subscribe and drops it on unsubscribe", () => {

@@ -16,6 +16,12 @@ const mockBroadcastToSessionViewers = mock((_sid: string, _event: string, _data:
 
 const mockRecordRunnerSession = mock((_runnerId: string, _sessionId: string) => Promise.resolve());
 const mockGetLocalRunnerSocket = mock((_runnerId: string) => null as any);
+// The wake goes through emitToRunner (per-runner room) so it reaches a runner
+// attached to any relay node, not just this one.
+const mockEmitToRunnerCalls: Array<[string, string, any]> = [];
+const mockEmitToRunner = mock((runnerId: string, event: string, data: any) => {
+    mockEmitToRunnerCalls.push([runnerId, event, data]);
+});
 const mockLinkSessionToRunner = mock((_runnerId: string, _sessionId: string) => Promise.resolve());
 
 mock.module("../ws/sio-registry.js", () => ({
@@ -26,6 +32,7 @@ mock.module("../ws/sio-registry.js", () => ({
     broadcastToSessionViewers: mockBroadcastToSessionViewers,
     recordRunnerSession: mockRecordRunnerSession,
     getLocalRunnerSocket: mockGetLocalRunnerSocket,
+    emitToRunner: mockEmitToRunner,
     linkSessionToRunner: mockLinkSessionToRunner,
     emitToRelaySession: mock((_id: string, _event: string, _data: any) => Promise.resolve(false)),
     getTerminalEntry: mock((_id: string) => Promise.resolve(null as any)),
@@ -2049,6 +2056,7 @@ describe("POST /api/sessions/:id/trigger — wakeSession", () => {
         mockEmitToRelaySessionVerified.mockReset();
         mockGetLocalRunnerSocket.mockReset();
         mockRequireSession.mockReset();
+        mockEmitToRunnerCalls.length = 0;
         mockRequireSession.mockReturnValue(
             Promise.resolve({ userId: "user-1", userName: "TestUser" }),
         );
@@ -2058,8 +2066,7 @@ describe("POST /api/sessions/:id/trigger — wakeSession", () => {
 
     test("offline session with wakeSession=true starts a resume on the runner and reports waking", async () => {
         mockGetSharedSession.mockReturnValue(Promise.resolve(offlineSession()));
-        const runnerEmit = mock((_event: string, _data: any) => {});
-        mockGetLocalRunnerSocket.mockReturnValue({ emit: runnerEmit });
+        mockGetLocalRunnerSocket.mockReturnValue({ emit: mock(() => {}) });
 
         const [req, url] = makeReq("POST", "/api/sessions/sess-wake/trigger", {
             type: "time:cron",
@@ -2074,8 +2081,9 @@ describe("POST /api/sessions/:id/trigger — wakeSession", () => {
 
         // The wake runs in the background — give it a tick to reach the runner.
         await new Promise((r) => setTimeout(r, 20));
-        expect(runnerEmit).toHaveBeenCalledTimes(1);
-        const [event, data] = runnerEmit.mock.calls[0] as [string, any];
+        expect(mockEmitToRunnerCalls).toHaveLength(1);
+        const [wakeRunnerId, event, data] = mockEmitToRunnerCalls[0];
+        expect(wakeRunnerId).toBe("runner-A");
         expect(event).toBe("new_session");
         expect(data.sessionId).toBe("sess-wake");
         expect(data.resumeId).toBe("sess-wake");
@@ -2084,8 +2092,7 @@ describe("POST /api/sessions/:id/trigger — wakeSession", () => {
 
     test("offline session WITHOUT wakeSession does not touch the runner", async () => {
         mockGetSharedSession.mockReturnValue(Promise.resolve(offlineSession()));
-        const runnerEmit = mock((_event: string, _data: any) => {});
-        mockGetLocalRunnerSocket.mockReturnValue({ emit: runnerEmit });
+        mockGetLocalRunnerSocket.mockReturnValue({ emit: mock(() => {}) });
 
         const [req, url] = makeReq("POST", "/api/sessions/sess-wake/trigger", {
             type: "time:cron",
@@ -2097,12 +2104,15 @@ describe("POST /api/sessions/:id/trigger — wakeSession", () => {
         expect(body.waking).toBeUndefined();
 
         await new Promise((r) => setTimeout(r, 20));
-        expect(runnerEmit).not.toHaveBeenCalled();
+        expect(mockEmitToRunnerCalls).toHaveLength(0);
     });
 
-    test("wakeSession with a disconnected runner 503s for retry and does not claim to be waking", async () => {
+    test("wakeSession with a runner that is gone entirely 503s for retry and does not claim to be waking", async () => {
         mockGetSharedSession.mockReturnValue(Promise.resolve(offlineSession()));
         mockGetLocalRunnerSocket.mockReturnValue(null);
+        // Absent locally AND absent from Redis — genuinely gone, not merely
+        // attached to another relay node.
+        mockGetRunnerData.mockReturnValue(Promise.resolve(null as any));
 
         const [req, url] = makeReq("POST", "/api/sessions/sess-wake/trigger", {
             type: "time:timer_fired",
@@ -2118,12 +2128,37 @@ describe("POST /api/sessions/:id/trigger — wakeSession", () => {
         await new Promise((r) => setTimeout(r, 20));
     });
 
+    test("wakes a runner attached to another relay node (no local socket)", async () => {
+        mockGetSharedSession.mockReturnValue(Promise.resolve(offlineSession()));
+        // No local socket, but the runner is registered in Redis — i.e. it is
+        // connected to a different node of a multi-node relay.
+        mockGetLocalRunnerSocket.mockReturnValue(null);
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+
+        const [req, url] = makeReq("POST", "/api/sessions/sess-wake/trigger", {
+            type: "time:cron",
+            payload: {},
+            wakeSession: true,
+        });
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(503);
+        expect((await res!.json() as { waking?: boolean }).waking).toBe(true);
+
+        await new Promise((r) => setTimeout(r, 20));
+        // Delivered through the per-runner room, which the Redis adapter fans
+        // out cluster-wide — a local-socket emit would have reached nobody.
+        expect(mockEmitToRunnerCalls).toHaveLength(1);
+        expect(mockEmitToRunnerCalls[0][0]).toBe("runner-A");
+        expect(mockEmitToRunnerCalls[0][2].resumeId).toBe("sess-wake");
+    });
+
     // The orphan sweep deletes the live record ~2 min after a worker dies, so
     // this — not the live-but-disconnected case — is what a schedule normally
     // meets when it fires. It must still return to the session that created it.
     describe("owning session already swept from Redis", () => {
         beforeEach(() => {
             mockGetSharedSession.mockReturnValue(Promise.resolve(null));
+            mockEmitToRunnerCalls.length = 0;
             mockGetPersistedRelaySessionOwner.mockReset();
             mockGetPersistedRelaySessionOwner.mockReturnValue(
                 Promise.resolve({ userId: "user-1", runnerId: "runner-A", cwd: "/tmp/proj" }),
@@ -2131,8 +2166,7 @@ describe("POST /api/sessions/:id/trigger — wakeSession", () => {
         });
 
         test("resumes the original session instead of 404ing into a new one", async () => {
-            const runnerEmit = mock((_event: string, _data: any) => {});
-            mockGetLocalRunnerSocket.mockReturnValue({ emit: runnerEmit });
+            mockGetLocalRunnerSocket.mockReturnValue({ emit: mock(() => {}) });
 
             const [req, url] = makeReq("POST", "/api/sessions/sess-swept/trigger", {
                 type: "time:cron",
@@ -2144,8 +2178,9 @@ describe("POST /api/sessions/:id/trigger — wakeSession", () => {
             expect((await res!.json() as { waking?: boolean }).waking).toBe(true);
 
             await new Promise((r) => setTimeout(r, 20));
-            expect(runnerEmit).toHaveBeenCalledTimes(1);
-            const [event, data] = runnerEmit.mock.calls[0] as [string, any];
+            expect(mockEmitToRunnerCalls).toHaveLength(1);
+            const [wakeRunnerId, event, data] = mockEmitToRunnerCalls[0];
+            expect(wakeRunnerId).toBe("runner-A");
             expect(event).toBe("new_session");
             expect(data.sessionId).toBe("sess-swept");
             expect(data.resumeId).toBe("sess-swept");
@@ -2156,8 +2191,7 @@ describe("POST /api/sessions/:id/trigger — wakeSession", () => {
 
         test("a session gone from BOTH stores still 404s, so the caller starts new work", async () => {
             mockGetPersistedRelaySessionOwner.mockReturnValue(Promise.resolve(null));
-            const runnerEmit = mock((_event: string, _data: any) => {});
-            mockGetLocalRunnerSocket.mockReturnValue({ emit: runnerEmit });
+            mockGetLocalRunnerSocket.mockReturnValue({ emit: mock(() => {}) });
 
             const [req, url] = makeReq("POST", "/api/sessions/sess-gone/trigger", {
                 type: "time:cron",
@@ -2166,12 +2200,11 @@ describe("POST /api/sessions/:id/trigger — wakeSession", () => {
             });
             expect((await handleTriggersRoute(req, url))!.status).toBe(404);
             await new Promise((r) => setTimeout(r, 20));
-            expect(runnerEmit).not.toHaveBeenCalled();
+            expect(mockEmitToRunnerCalls).toHaveLength(0);
         });
 
         test("an ordinary (non-wake) trigger to a swept session still 404s — contract unchanged", async () => {
-            const runnerEmit = mock((_event: string, _data: any) => {});
-            mockGetLocalRunnerSocket.mockReturnValue({ emit: runnerEmit });
+            mockGetLocalRunnerSocket.mockReturnValue({ emit: mock(() => {}) });
 
             const [req, url] = makeReq("POST", "/api/sessions/sess-swept/trigger", {
                 type: "github:pr_comment",
@@ -2179,15 +2212,14 @@ describe("POST /api/sessions/:id/trigger — wakeSession", () => {
             });
             expect((await handleTriggersRoute(req, url))!.status).toBe(404);
             await new Promise((r) => setTimeout(r, 20));
-            expect(runnerEmit).not.toHaveBeenCalled();
+            expect(mockEmitToRunnerCalls).toHaveLength(0);
         });
 
         test("another user's swept session is not resumable", async () => {
             mockGetPersistedRelaySessionOwner.mockReturnValue(
                 Promise.resolve({ userId: "someone-else", runnerId: "runner-A", cwd: "/tmp/proj" }),
             );
-            const runnerEmit = mock((_event: string, _data: any) => {});
-            mockGetLocalRunnerSocket.mockReturnValue({ emit: runnerEmit });
+            mockGetLocalRunnerSocket.mockReturnValue({ emit: mock(() => {}) });
 
             const [req, url] = makeReq("POST", "/api/sessions/sess-swept/trigger", {
                 type: "time:cron",
@@ -2196,7 +2228,7 @@ describe("POST /api/sessions/:id/trigger — wakeSession", () => {
             });
             expect((await handleTriggersRoute(req, url))!.status).toBe(404);
             await new Promise((r) => setTimeout(r, 20));
-            expect(runnerEmit).not.toHaveBeenCalled();
+            expect(mockEmitToRunnerCalls).toHaveLength(0);
         });
     });
 });

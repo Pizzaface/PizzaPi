@@ -22,6 +22,7 @@ const mockRecordRunnerSession = mock(() => Promise.resolve());
 const mockLinkSessionToRunner = mock(() => Promise.resolve());
 
 mock.module("../ws/sio-registry.js", () => ({
+    emitToRunner: mock(() => {}),
   getSharedSession: mockGetSharedSession,
   getLocalTuiSocket: mockGetLocalTuiSocket,
   waitForLocalTuiSocket: mockGetLocalTuiSocket,

@@ -24,6 +24,8 @@ import {
     listRunnerTriggerListeners,
     updateRunnerTriggerListener,
 } from "../sessions/runner-trigger-listener-store.js";
+import { listRunnerSchedules } from "../sessions/trigger-subscription-store.js";
+import { getPersistedRelaySessionOwner } from "../sessions/store.js";
 import { getSession } from "../ws/sio-state/index.js";
 import { sendSkillCommand, sendAgentCommand, sendRunnerCommand, emitTriggerSubscriptionDelta } from "../ws/namespaces/runner.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
@@ -562,6 +564,42 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
             triggerDefs: services?.triggerDefs ?? [],
             listeners,
         });
+    }
+
+    // ── Schedules owned by this runner ────────────────────────────────
+    // Schedules belong to a runner and outlive the sessions that create them,
+    // so they are listed by runner. The previous per-session fan-out could only
+    // see schedules whose owning session happened to be in the page of sessions
+    // being listed, which quietly hid old and ownerless ones from the very
+    // surface meant to cancel them.
+    const schedulesMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/schedules$/);
+    if (schedulesMatch && req.method === "GET") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(schedulesMatch[1]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        const entries = await listRunnerSchedules(runnerId);
+        // Label each schedule with its owning session so the UI can show where
+        // it runs and filter by workspace, without a per-session round trip.
+        const schedules = await Promise.all(entries.map(async (entry) => {
+            const owner = await getPersistedRelaySessionOwner(entry.sessionId).catch(() => null);
+            const live = await getSession(entry.sessionId).catch(() => null);
+            const cwd = live?.cwd ?? owner?.cwd ?? null;
+            return {
+                ...entry,
+                sessionName: live?.sessionName ?? null,
+                cwd,
+                // False once the owning worker is gone: the schedule still fires
+                // (it wakes the session or starts a new one), the UI just wants
+                // to say so.
+                sessionLive: !!live,
+            };
+        }));
+        return Response.json({ schedules });
     }
 
     // ── Runner trigger listeners (subscribe/unsubscribe) ──────────────
