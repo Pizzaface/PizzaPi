@@ -133,7 +133,7 @@ describe("one-shot delivery retry", () => {
         service = new TimeService([10, 20]);
 
         service.reconcileSubscriptions([
-            entry("sess-1", "time:timer_fired", { duration: "0.01s", message: "Check the build", _cwd: "/tmp/proj" }, "sub-1"),
+            entry("sess-1", "time:timer_fired", { duration: "0.01s", message: "Check the build", _cwd: "/tmp/proj", _resumePath: "/tmp/proj/sess-1.jsonl" }, "sub-1"),
         ]);
 
         await new Promise((resolve) => setTimeout(resolve, 80));
@@ -143,6 +143,9 @@ describe("one-shot delivery retry", () => {
         expect(spawnBody.runnerId).toBe("runner-test");
         expect(spawnBody.cwd).toBe("/tmp/proj");
         expect(spawnBody.prompt).toContain("Check the build");
+        // The replacement resumes the scheduling session's transcript, so it
+        // wakes up with the conversation that set the timer.
+        expect(spawnBody.resumePath).toBe("/tmp/proj/sess-1.jsonl");
         // Settled — exactly one trigger attempt, no retries.
         expect(toUrl(posts(calls), "/trigger")).toHaveLength(1);
         // The dead subscription is retired once a live session owns the work,
@@ -233,13 +236,14 @@ describe("cron delivery retry and durable state", () => {
         service = new TimeService([10, 20], 10);
 
         service.reconcileSubscriptions([
-            entry("sess-1", "time:cron", { cron: "0 0 * * *", message: "daily standup", _cwd: "/tmp/proj" }, "sub-cron"),
+            entry("sess-1", "time:cron", { cron: "0 0 * * *", message: "daily standup", _cwd: "/tmp/proj", _resumePath: "/tmp/proj/sess-1.jsonl" }, "sub-cron"),
         ]);
 
         await new Promise((resolve) => setTimeout(resolve, 100));
         const spawns = toUrl(posts(calls), "/api/runners/spawn");
         expect(spawns).toHaveLength(1);
         expect(JSON.parse(spawns[0]!.body).prompt).toContain("daily standup");
+        expect(JSON.parse(spawns[0]!.body).resumePath).toBe("/tmp/proj/sess-1.jsonl");
 
         // The recurring schedule is re-owned by the replacement session.
         const resubs = toUrl(posts(calls), "/api/sessions/replacement-2/trigger-subscriptions");
@@ -248,6 +252,9 @@ describe("cron delivery retry and durable state", () => {
         expect(resubBody.triggerType).toBe("time:cron");
         expect(resubBody.params.cron).toBe("0 0 * * *");
         expect(resubBody.params._cwd).toBe("/tmp/proj");
+        // Resume appends to the same transcript, so the migrated cron keeps
+        // pointing at it and every future wake continues the same thread.
+        expect(resubBody.params._resumePath).toBe("/tmp/proj/sess-1.jsonl");
 
         // Old durable state dropped and the old cron stops firing.
         expect(JSON.parse(readFileSync(join(home, ".pizzapi", "time-service-state.json"), "utf-8")).hasOwnProperty("sub-cron")).toBe(false);

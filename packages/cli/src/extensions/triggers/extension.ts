@@ -790,9 +790,18 @@ export const triggersExtension: ExtensionFactory = (pi) => {
 
             // Schedules can outlive the session that created them: capture the
             // workspace so the time service can spawn a replacement session in
-            // the right cwd if this session is gone when the schedule fires.
+            // the right cwd if this session is gone when the schedule fires,
+            // plus this session's transcript so that replacement RESUMES this
+            // conversation instead of waking with no memory of it.
+            // PIZZAPI_SESSION_FILE is kept current by the worker across /new
+            // and resume, so it always names the live transcript.
             if (params.triggerType.startsWith("time:")) {
-                subParams = { ...(subParams ?? {}), _cwd: process.cwd() };
+                const sessionFile = process.env.PIZZAPI_SESSION_FILE?.trim();
+                subParams = {
+                    ...(subParams ?? {}),
+                    _cwd: process.cwd(),
+                    ...(sessionFile ? { _resumePath: sessionFile } : {}),
+                };
             }
 
             // Coerce filter values
