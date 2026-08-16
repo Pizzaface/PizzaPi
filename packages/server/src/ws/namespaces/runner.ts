@@ -26,7 +26,7 @@ import type {
 import { shouldPreserveOnSocketDisconnect } from "../../health.js";
 import { apiKeyAuthMiddleware } from "./auth.js";
 import { bindSocketHandlersToAuthContext } from "./context.js";
-import { getSubscriptionsForRunnerSessions, getSessionIdsWithSubscriptionsForRunner, refreshRunnerSubscriptionTtls, sessionHasScheduleSubscription, nextTriggerSubRevision } from "../../sessions/trigger-subscription-store.js";
+import { getSubscriptionsForRunnerSessions, getSessionIdsWithSubscriptionsForRunner, refreshRunnerSubscriptionTtls, sessionHasScheduleSubscription, rehydrateRunnerSubscriptions, nextTriggerSubRevision } from "../../sessions/trigger-subscription-store.js";
 
 /**
  * Refresh subscription TTLs for sessions that own subscriptions on this runner.
@@ -571,6 +571,16 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             // subscriptions for this runner's sessions so the runner can rebuild
             // its in-memory subscription state (timers, watchers, etc.).
             try {
+                // Rebuild Redis from durable storage FIRST. Production Redis is
+                // ephemeral (`--save "" --appendonly no`, no volume), so after a
+                // relay redeploy it holds nothing — and the snapshot below is
+                // authoritative, meaning an empty one makes the runner drop every
+                // timer/cron it holds and discard its durable state. Without this
+                // line a routine deploy silently cancels every schedule.
+                await rehydrateRunnerSubscriptions(result).catch((err) => {
+                    log.warn(`[trigger-reconciliation] rehydrate failed for runner ${result}:`, err);
+                });
+
                 const sessionIdsList = existingSessions.map((s: { sessionId: string }) => s.sessionId);
                 // Also include sessions from our in-memory tracking (may include sessions
                 // not in existingSessions if they were already connected before this registration).

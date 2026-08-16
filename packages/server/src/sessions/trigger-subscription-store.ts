@@ -32,8 +32,150 @@
 
 import { connectRedisClient, isRedisDisabled, type RedisClient } from "../redis-client.js";
 import { createLogger } from "@pizzapi/tools";
+import { getKysely } from "../auth.js";
 
 const log = createLogger("trigger-subscription-store");
+
+// ── Durable mirror (SQLite) ─────────────────────────────────────────
+//
+// Redis is a cache, not the source of truth. Production runs Redis with
+// `--save "" --appendonly no` and no volume, so a relay redeploy starts with an
+// empty Redis — and the runner would then receive an authoritative EMPTY
+// reconnect snapshot, which makes services drop every timer/cron they hold and
+// discard their durable state. A standing schedule would be destroyed on both
+// sides by a routine deploy.
+//
+// Every subscription is therefore mirrored into SQLite (the same durability the
+// runner_trigger_listener table already gets) and Redis is rehydrated from it
+// when a runner registers, before any snapshot is built.
+
+const SUBSCRIPTION_TABLE = "trigger_subscription" as const;
+
+export async function ensureTriggerSubscriptionTable(): Promise<void> {
+    await getKysely().schema
+        .createTable(SUBSCRIPTION_TABLE)
+        .ifNotExists()
+        .addColumn("id", "text", (col) => col.primaryKey())
+        .addColumn("sessionId", "text", (col) => col.notNull())
+        .addColumn("runnerId", "text", (col) => col.notNull())
+        .addColumn("triggerType", "text", (col) => col.notNull())
+        .addColumn("subscriptionJson", "text", (col) => col.notNull())
+        .addColumn("updatedAt", "text", (col) => col.notNull())
+        .execute();
+
+    await getKysely().schema
+        .createIndex("trigger_subscription_runner_idx")
+        .ifNotExists()
+        .on(SUBSCRIPTION_TABLE)
+        .columns(["runnerId"])
+        .execute();
+
+    await getKysely().schema
+        .createIndex("trigger_subscription_session_idx")
+        .ifNotExists()
+        .on(SUBSCRIPTION_TABLE)
+        .columns(["sessionId"])
+        .execute();
+}
+
+/** Mirror a subscription into SQLite. Best-effort: Redis stays authoritative
+ *  for the live request, so a mirror failure must not fail the API call. */
+async function persistSubscriptionRow(sessionId: string, value: SubscriptionValue): Promise<void> {
+    try {
+        const row = {
+            id: value.subscriptionId,
+            sessionId,
+            runnerId: value.runnerId,
+            triggerType: value.triggerType,
+            subscriptionJson: serializeSubValue(value),
+            updatedAt: new Date().toISOString(),
+        };
+        await getKysely()
+            .insertInto(SUBSCRIPTION_TABLE)
+            .values(row)
+            .onConflict((oc) => oc.column("id").doUpdateSet({
+                sessionId: row.sessionId,
+                runnerId: row.runnerId,
+                triggerType: row.triggerType,
+                subscriptionJson: row.subscriptionJson,
+                updatedAt: row.updatedAt,
+            }))
+            .execute();
+    } catch (err) {
+        log.warn("Failed to persist trigger subscription (best-effort):", err);
+    }
+}
+
+async function deleteSubscriptionRows(where: { subscriptionIds?: string[]; sessionId?: string; preserveDurable?: boolean }): Promise<void> {
+    try {
+        let query = getKysely().deleteFrom(SUBSCRIPTION_TABLE);
+        if (where.subscriptionIds && where.subscriptionIds.length > 0) {
+            query = query.where("id", "in", where.subscriptionIds);
+        } else if (where.sessionId) {
+            query = query.where("sessionId", "=", where.sessionId);
+        } else {
+            return;
+        }
+        if (where.preserveDurable) {
+            for (const prefix of DURABLE_TRIGGER_PREFIXES) {
+                query = query.where("triggerType", "not like", `${prefix}%`);
+            }
+        }
+        await query.execute();
+    } catch (err) {
+        log.warn("Failed to delete persisted trigger subscriptions (best-effort):", err);
+    }
+}
+
+/**
+ * Rebuild this runner's Redis subscription state from the durable table.
+ *
+ * Called when a runner registers, BEFORE the reconnect snapshot is built, so a
+ * relay restart with an empty Redis cannot silently cancel standing schedules.
+ * Additive and idempotent: entries are keyed by subscriptionId, and Redis wins
+ * where it already has the key.
+ */
+export async function rehydrateRunnerSubscriptions(runnerId: string): Promise<number> {
+    const redis = await getClient();
+    if (!redis) return 0;
+    let rows: Array<{ sessionId: string; subscriptionJson: string }> = [];
+    try {
+        rows = await getKysely()
+            .selectFrom(SUBSCRIPTION_TABLE)
+            .select(["sessionId", "subscriptionJson"])
+            .where("runnerId", "=", runnerId)
+            .execute();
+    } catch (err) {
+        log.warn("Failed to read persisted trigger subscriptions:", err);
+        return 0;
+    }
+    if (rows.length === 0) return 0;
+
+    let restored = 0;
+    try {
+        const pipeline = redis.multi();
+        for (const row of rows) {
+            const sub = parseSubValues(row.sessionId, row.subscriptionJson)[0];
+            if (!sub) continue;
+            const sessionKey = SESSION_SUBS_KEY(row.sessionId);
+            pipeline.hSet(sessionKey, sub.subscriptionId, row.subscriptionJson);
+            pipeline.expire(sessionKey, DEFAULT_TTL_SECONDS);
+            const indexKey = RUNNER_TYPE_INDEX_KEY(sub.runnerId, sub.triggerType);
+            pipeline.sAdd(indexKey, row.sessionId);
+            pipeline.expire(indexKey, DEFAULT_TTL_SECONDS);
+            const runnerSessionsKey = RUNNER_SESSIONS_INDEX_KEY(sub.runnerId);
+            pipeline.sAdd(runnerSessionsKey, row.sessionId);
+            pipeline.expire(runnerSessionsKey, DEFAULT_TTL_SECONDS);
+            restored++;
+        }
+        await pipeline.exec();
+    } catch (err) {
+        log.warn("Failed to rehydrate trigger subscriptions into Redis:", err);
+        return 0;
+    }
+    if (restored > 0) log.info(`Rehydrated ${restored} trigger subscription(s) for runner ${runnerId} from durable storage`);
+    return restored;
+}
 
 let _redis: RedisClient | null = null;
 let _initPromise: Promise<void> | null = null;
@@ -293,6 +435,16 @@ export async function subscribeSessionToTrigger(
         pipeline.sAdd(runnerSessionsKey, sessionId);
         pipeline.expire(runnerSessionsKey, ttlSeconds);
         await pipeline.exec();
+        // Mirror to durable storage so a relay redeploy (empty Redis) cannot
+        // silently cancel this subscription.
+        await persistSubscriptionRow(sessionId, {
+            subscriptionId,
+            triggerType,
+            runnerId,
+            params,
+            ...(filters && filters.length > 0 ? { filters } : {}),
+            ...(filterMode && filterMode !== "and" ? { filterMode } : {}),
+        });
         return subscriptionId;
     } catch (err) {
         log.warn("Failed to subscribe session to trigger:", err);
@@ -326,6 +478,7 @@ export async function unsubscribeSessionFromTrigger(
             pipeline.sRem(RUNNER_TYPE_INDEX_KEY(sub.runnerId, triggerType), sessionId);
         }
         await pipeline.exec();
+        await deleteSubscriptionRows({ subscriptionIds: matching.map((sub) => sub.subscriptionId) });
         for (const runnerId of new Set(matching.map((sub) => sub.runnerId))) {
             await maybeDropRunnerSessionIndex(sessionId, runnerId);
         }
@@ -481,6 +634,14 @@ export async function updateSessionSubscription(
         pipeline.expire(sessionKey, ttlSeconds);
         pipeline.expire(indexKey, ttlSeconds);
         await pipeline.exec();
+        await persistSubscriptionRow(sessionId, {
+            subscriptionId: prev.subscriptionId,
+            triggerType,
+            runnerId: prev.runnerId,
+            params: updates.params,
+            ...(updates.filters && updates.filters.length > 0 ? { filters: updates.filters } : {}),
+            ...(updates.filterMode && updates.filterMode !== "and" ? { filterMode: updates.filterMode } : {}),
+        });
 
         return { updated: true, subscriptionId: prev.subscriptionId, triggerType, runnerId: prev.runnerId };
     } catch (err) {
@@ -558,6 +719,8 @@ export async function clearSessionSubscriptions(
             if (!keptRunnerIds.has(runnerId)) pipeline.sRem(RUNNER_SESSIONS_INDEX_KEY(runnerId), sessionId);
         }
         await pipeline.exec();
+        // Mirror the same selective removal into durable storage.
+        await deleteSubscriptionRows({ sessionId, preserveDurable: opts.preserveDurable === true });
     } catch (err) {
         log.warn("Failed to clear session subscriptions (best-effort):", err);
     }
@@ -675,6 +838,7 @@ export async function unsubscribeSessionSubscription(
         pipeline.hDel(sessionKey, subscriptionId);
         pipeline.sRem(RUNNER_TYPE_INDEX_KEY(sub.runnerId, sub.triggerType), sessionId);
         await pipeline.exec();
+        await deleteSubscriptionRows({ subscriptionIds: [subscriptionId] });
         await maybeDropRunnerSessionIndex(sessionId, sub.runnerId);
     } catch (err) {
         log.warn("Failed to unsubscribe session subscription:", err);
@@ -684,4 +848,17 @@ export async function unsubscribeSessionSubscription(
 /** @deprecated Use `_resetRedisForTesting` instead. */
 export function _resetTriggerSubscriptionStoreForTesting(): void {
     _resetRedisForTesting();
+}
+
+/**
+ * Drop every Redis subscription key, leaving durable storage untouched.
+ *
+ * Test-only: reproduces a relay redeploy, where Redis restarts empty (it runs
+ * with `--save "" --appendonly no` and no volume) while SQLite survives.
+ */
+export async function _dropRedisCacheForTesting(): Promise<void> {
+    const redis = await getClient();
+    if (!redis) return;
+    const keys = await redis.keys("pizzapi:trigger-subs*");
+    if (keys.length > 0) await redis.del(keys);
 }
