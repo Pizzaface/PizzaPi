@@ -102,19 +102,20 @@ export interface DetectedArtifact {
  * The artifact a tool call produced, or null.
  *
  * Two paths. An explicit hand-off (`present_artifact`) is the model choosing to
- * deliver something to the user — honored regardless of extension, because
- * intent beats the allowlist. Otherwise the legacy implicit case: a write to a
- * deliverable path in an artifact-enabled mode (a coding session writing `.ts`
- * is not producing a deliverable).
+ * deliver something to the user — honored regardless of mode or extension,
+ * because intent beats the allowlist (the tool only exists if a package
+ * registered it). Otherwise the legacy implicit case: a write to a deliverable
+ * path in an artifact-enabled mode (a coding session writing `.ts` is not
+ * producing a deliverable).
  */
 export function detectArtifact(
   toolName: string | undefined,
   toolInput: unknown,
   modeUi: ResolvedModeUi | null | undefined,
 ): DetectedArtifact | null {
-  if (!modeUi?.artifacts) return null;
-
   const base = baseToolName(toolName);
+
+  // Explicit hand-off — honored regardless of mode.
   if (base && PRESENT_ARTIFACT_TOOLS.has(base)) {
     const args = toolArgs(toolInput);
     const path = typeof args.path === "string" ? args.path.trim() : "";
@@ -123,6 +124,9 @@ export function detectArtifact(
     const title = typeof args.title === "string" && args.title.trim() ? args.title.trim() : undefined;
     return { path, kind, title };
   }
+
+  // Implicit write-detection — only in an artifact-enabled mode.
+  if (!modeUi?.artifacts) return null;
 
   const path = writtenPath(toolName, toolInput);
   if (!path || !isArtifactPath(path, modeUi)) return null;

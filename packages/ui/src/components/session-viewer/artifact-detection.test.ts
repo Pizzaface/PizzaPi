@@ -108,8 +108,15 @@ describe("detectArtifact — explicit present_artifact hand-off", () => {
         expect(detectArtifact("mcp__pizzawork__present_artifact", { path: "/w/a.md" }, workUi)?.path).toBe("/w/a.md");
     });
 
-    test("still requires artifacts to be enabled", () => {
-        expect(detectArtifact("present_artifact", { path: "/w/a.md" }, codingUi)).toBeNull();
+    test("works in code mode without artifacts enabled", () => {
+        expect(detectArtifact("present_artifact", { path: "/w/a.md" }, codingUi)).toEqual({
+            path: "/w/a.md",
+            kind: "markdown",
+        });
+        expect(detectArtifact("present_artifact", { path: "/w/a.md" }, null)).toEqual({
+            path: "/w/a.md",
+            kind: "markdown",
+        });
     });
 
     test("a hand-off with no path is ignored", () => {
