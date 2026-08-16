@@ -1,9 +1,11 @@
 ---
 name: creating-runner-services
-description: Use when building a runner service — a daemon background process that ships inside a pi package (pi.pizzapi.services), exposes a UI panel, advertises triggers agents subscribe to, or defines sigils the UI renders inline. Covers panels, triggers, sigils, connectivity bridges, trust grants, and graceful degradation.
+description: Quick-start guide for building runner services — daemon background processes that ship inside pi packages. For full SDK reference (pi core events, tools, UI, PizzaPi host detection, service messaging), use the extension-sdk-reference skill. This skill covers practical patterns for panels, triggers, sigils, and service lifecycle.
 ---
 
 # Creating Runner Services
+
+**See also:** [extension-sdk-reference](../extension-sdk-reference/SKILL.md) for the complete SDK reference covering pi core extension API, PizzaPi host detection, service messaging, approvals, and connectivity bridge examples.
 
 A runner service is a background process on the runner daemon. It can expose an
 interactive **UI panel** in the web interface, advertise **custom triggers**
@@ -621,3 +623,9 @@ package can be reinstalled, moved, or resolved from a different checkout.
 | Not cleaning up in `dispose()` | `server.stop(true)`; release listeners/timers/processes |
 | Absolute panel API URLs | Use relative `./api/...` — the tunnel rewrites paths |
 | Panel designed too big | Bottom dock 280px tall, side dock 320px wide |
+
+---
+
+## See Also
+
+**[extension-sdk-reference](../extension-sdk-reference/SKILL.md)** — Complete SDK reference covering pi core extension API (events, UI, tools, commands, models), PizzaPi host detection, service messaging, approvals, and full working examples. Use this for SDK capabilities and patterns you need to implement.
