@@ -87,6 +87,40 @@ async function parseSandboxReady(proc: ReturnType<typeof Bun.spawn>): Promise<Sa
     };
 }
 
+/**
+ * Poll the server (through the page's authenticated session) until a runner is
+ * registered, and return its name.
+ *
+ * The sandbox boots a real runner daemon, so registration is genuinely async.
+ * Asserting on it via a UI selector makes daemon startup time indistinguishable
+ * from a UI regression — and produces a bare "selector timed out" that says
+ * nothing about which one it was.
+ */
+async function waitForRegisteredRunner(page: Page, timeoutMs: number): Promise<string> {
+    const deadline = Date.now() + timeoutMs;
+    let lastSeen = "no successful response yet";
+    while (Date.now() < deadline) {
+        const names = await page.evaluate(async () => {
+            try {
+                const res = await fetch("/api/runners", { credentials: "include" });
+                if (!res.ok) return null;
+                const data = await res.json() as { runners?: Array<{ name?: string | null }> };
+                return Array.isArray(data?.runners) ? data.runners.map((r) => r?.name ?? "") : null;
+            } catch {
+                return null;
+            }
+        });
+        const named = names?.find((name) => !!name);
+        if (named) return named;
+        lastSeen = names === null ? "/api/runners request failed" : `${names.length} runner(s), none named`;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    throw new Error(
+        `Sandbox runner never registered with the server within ${timeoutMs}ms (last: ${lastSeen}). `
+        + "This is runner/daemon startup, not the web UI.",
+    );
+}
+
 async function sandboxApiPost(apiUrl: string, path: string, body: unknown): Promise<unknown> {
     const res = await fetch(`${apiUrl}${path}`, {
         method: "POST",
@@ -229,16 +263,21 @@ describe("browser smoke — sandbox UI", () => {
             await page.waitForSelector('[data-session-row]', { timeout: 20_000 });
 
             // Verify the default sandbox runner appears.
+            //
+            // Waiting on the UI selector alone was flaky, because it conflated
+            // two very different failures: a real runner daemon booting and
+            // registering inside the sandbox (slow, and not what this assertion
+            // is about) versus the UI failing to render a runner the server
+            // already knows about (the actual thing under test). So: wait for
+            // the server to report the runner, then hold the UI to a short
+            // deadline. A timeout now names which layer broke.
+            const runnerName = await waitForRegisteredRunner(page, 60_000);
             await page.click('button:has-text("Runners")');
             try {
-                await page.waitForSelector('button:has-text("sandbox-runner")', { timeout: 30_000 });
+                await page.waitForSelector(`button:has-text("${runnerName}")`, { timeout: 10_000 });
             } catch (err) {
-                // This wait depends on a real runner daemon booting and
-                // registering inside the sandbox. When it times out the failure
-                // is otherwise opaque — dump what the page and the sandbox saw so
-                // "runner never started" is distinguishable from "UI never
-                // rendered it".
-                console.error("Runner button did not appear. Sidebar HTML:", (await page.content()).slice(0, 2000));
+                console.error(`Server reported runner "${runnerName}" but the UI never rendered it.`);
+                console.error("Page HTML:", (await page.content()).slice(0, 2000));
                 console.error("Sandbox stderr tail:\n", stderrBuffer.slice(-4000));
                 throw err;
             }
