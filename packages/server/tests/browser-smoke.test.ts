@@ -121,6 +121,42 @@ async function waitForRegisteredRunner(page: Page, timeoutMs: number): Promise<s
     );
 }
 
+/**
+ * Wait for a runner the SERVER already knows about to appear in the sidebar.
+ *
+ * Two things make a single click-then-wait unreliable here, and neither is
+ * fixed by a bigger timeout:
+ *   - the sidebar's runner list is fed by the hub socket, not by /api/runners,
+ *     so the REST readiness check above does not imply the client has been told
+ *     yet; and
+ *   - the panel is opened by a click, which is lost if it lands while the app
+ *     is still settling, leaving the panel closed indefinitely.
+ * So the tab click is re-issued while polling, and a failure reports the
+ * buttons actually on screen rather than a slice of Vite's <head>.
+ */
+async function waitForRunnerInSidebar(page: Page, runnerName: string, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    const runnerButton = page.locator(`button:has-text("${runnerName}")`).first();
+    while (Date.now() < deadline) {
+        if (await runnerButton.isVisible().catch(() => false)) return;
+        // Re-open the panel: a click that landed too early leaves it closed.
+        await page.click('button:has-text("Runners")').catch(() => {});
+        try {
+            await runnerButton.waitFor({ state: "visible", timeout: 2_000 });
+            return;
+        } catch {
+            // Not there yet — keep polling until the deadline.
+        }
+    }
+    const labels = await page.locator("button").allInnerTexts().catch(() => [] as string[]);
+    console.error(
+        `Server reported runner "${runnerName}" but the sidebar never rendered it within ${timeoutMs}ms. `
+        + "The server already knows about it, so this is the hub feed or the sidebar — not runner startup.",
+    );
+    console.error("Buttons on screen:", JSON.stringify(labels.map((l) => l.trim()).filter(Boolean).slice(0, 40)));
+    throw new Error(`Runner "${runnerName}" never appeared in the sidebar`);
+}
+
 async function sandboxApiPost(apiUrl: string, path: string, body: unknown): Promise<unknown> {
     const res = await fetch(`${apiUrl}${path}`, {
         method: "POST",
@@ -272,15 +308,7 @@ describe("browser smoke — sandbox UI", () => {
             // the server to report the runner, then hold the UI to a short
             // deadline. A timeout now names which layer broke.
             const runnerName = await waitForRegisteredRunner(page, 60_000);
-            await page.click('button:has-text("Runners")');
-            try {
-                await page.waitForSelector(`button:has-text("${runnerName}")`, { timeout: 10_000 });
-            } catch (err) {
-                console.error(`Server reported runner "${runnerName}" but the UI never rendered it.`);
-                console.error("Page HTML:", (await page.content()).slice(0, 2000));
-                console.error("Sandbox stderr tail:\n", stderrBuffer.slice(-4000));
-                throw err;
-            }
+            await waitForRunnerInSidebar(page, runnerName, 45_000);
 
             // Back to sessions. Wait for React to render the list before counting it.
             await page.click('button:has-text("Sessions")');
