@@ -369,6 +369,28 @@ describe("computeServiceAnnounceDelta", () => {
         expect(delta.removed.triggerDefs).toEqual([]);
     });
 
+    test("detects updated triggerDefs (modes change)", () => {
+        const prev = {
+            serviceIds: ["svc"],
+            triggerDefs: [{ type: "svc:event", label: "Event" }],
+        };
+        const next = {
+            serviceIds: ["svc"],
+            triggerDefs: [{ type: "svc:event", label: "Event", modes: ["work"] }],
+        };
+        const delta = computeServiceAnnounceDelta(prev, next)!;
+        expect(delta.updated.triggerDefs).toEqual([{ type: "svc:event", label: "Event", modes: ["work"] }]);
+    });
+
+    test("detects updated panels (modes change)", () => {
+        const panel = { serviceId: "svc", port: 4000, label: "P", icon: "square" };
+        const prev = { serviceIds: ["svc"], panels: [panel] };
+        const next = { serviceIds: ["svc"], panels: [{ ...panel, modes: ["work"] }] };
+        const delta = computeServiceAnnounceDelta(prev, next)!;
+        expect(delta.updated.panels).toEqual([{ ...panel, modes: ["work"] }]);
+        expect(isSameServiceAnnounce(prev, next)).toBe(false);
+    });
+
     test("detects updated triggerDefs (schema change)", () => {
         const prev = {
             serviceIds: ["svc"],

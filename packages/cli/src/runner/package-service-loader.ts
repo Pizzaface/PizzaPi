@@ -249,6 +249,7 @@ export async function discoverPackageServices(
                 ...(Array.isArray(decl.triggers) && decl.triggers.length > 0 ? { triggers: decl.triggers } : {}),
                 ...(Array.isArray(decl.sigils) && decl.sigils.length > 0 ? { sigils: decl.sigils } : {}),
                 ...(Array.isArray(decl.sessionModes) && decl.sessionModes.length > 0 ? { sessionModes: decl.sessionModes } : {}),
+                ...(Array.isArray(decl.modes) && decl.modes.length > 0 ? { modes: decl.modes } : {}),
             };
 
             services.push({

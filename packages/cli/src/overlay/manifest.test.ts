@@ -378,6 +378,18 @@ describe("readOverlayManifest", () => {
         expect(invalid.issues.some((i) => i.field.endsWith("sessionModes[1].workspace"))).toBe(true);
     });
 
+    test("valid service modes scoping is accepted and malformed modes are rejected", () => {
+        const validDir = fixturePkg({ schemaVersion: 1, services: [{ id: "svc", label: "x", entry: "./service.ts", modes: ["work"] }] });
+        dirs.push(validDir);
+        const valid = readOverlayManifest(validDir, provenance);
+        expect(valid.overlay?.services?.[0].modes).toEqual(["work"]);
+        const invalidDir = fixturePkg({ schemaVersion: 1, services: [{ id: "svc", label: "x", entry: "./service.ts", modes: ["work", ""] }] });
+        dirs.push(invalidDir);
+        const invalid = readOverlayManifest(invalidDir, provenance);
+        expect(invalid.overlay).toBeNull();
+        expect(invalid.issues.some((i) => i.field.endsWith("services[0].modes"))).toBe(true);
+    });
+
     test("workspaces that escape the home directory are rejected", () => {
         for (const workspace of ["~/../elsewhere", "~/Documents/../../etc", "~/./x", "~", "~/", "/absolute", "~/..\\elsewhere", "~\\x"]) {
             const dir = fixturePkg({

@@ -146,6 +146,11 @@ export interface ServicePanelInfo {
    * and passes the resolved values here. Keys are camelCase (e.g. "projectDir", "sessionId").
    */
   panelParams?: Record<string, string>;
+  /**
+   * Session mode ids this panel is scoped to (from the service declaration's
+   * `modes`). Absent/empty = shown for every session.
+   */
+  modes?: string[];
 }
 
 // ── Service trigger types ─────────────────────────────────────────────────────
@@ -176,6 +181,11 @@ export interface ServiceTriggerDef {
    * For delivery filtering, subscribers use `filters` based on the output `schema`.
    */
   params?: ServiceTriggerParamDef[];
+  /**
+   * Session mode ids this trigger def is scoped to (stamped by the daemon
+   * from the declaring service's `modes`). Absent/empty = visible everywhere.
+   */
+  modes?: string[];
 }
 
 /**

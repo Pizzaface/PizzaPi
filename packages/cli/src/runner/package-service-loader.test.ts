@@ -112,6 +112,20 @@ describe("discoverPackageServices", () => {
         expect(existsSync(markerPath)).toBe(true);
     });
 
+    test("declared modes pass through to the service manifest", async () => {
+        const pkgDir = join(tmpDir, "modes-pkg");
+        const markerPath = join(tmpDir, "modes-marker.txt");
+        writeFixturePackage(pkgDir, { schemaVersion: 1, services: [{ id: "modes-svc", label: "X", entry: "./service.ts", modes: ["work"] }] });
+        writeMarkerService(pkgDir, "modes-svc", markerPath);
+        await installLocal("../modes-pkg");
+        grantServices("local:" + realpathSync(pkgDir), ["modes-svc"]);
+
+        const { services, errors } = await discoverPackageServices({ cwd, agentDir });
+        expect(errors).toEqual([]);
+        expect(services).toHaveLength(1);
+        expect(services[0]!.manifest?.modes).toEqual(["work"]);
+    });
+
     test("disabled service is never imported even when granted", async () => {
         const pkgDir = join(tmpDir, "disabled-pkg");
         const markerPath = join(tmpDir, "disabled-marker.txt");

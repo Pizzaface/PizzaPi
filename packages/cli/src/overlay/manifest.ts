@@ -28,7 +28,7 @@ const PREFERRED_MCP_TRANSPORT_KEYS: Record<string, Set<string>> = {
     http: new Set(["url", "headers"]),
     streamable: new Set(["url", "headers", "oauthClientName", "oauthClientId", "oauthClientSecret", "oauthCallbackPort"]),
 };
-const SERVICE_KEYS = new Set(["id", "label", "entry", "icon", "panel", "triggers", "sigils", "sessionModes"]);
+const SERVICE_KEYS = new Set(["id", "label", "entry", "icon", "panel", "triggers", "sigils", "sessionModes", "modes"]);
 const PANEL_KEYS = new Set(["dir", "requires"]);
 const PANEL_VARIABLES: ReadonlySet<PanelVariable> = new Set(["PWD", "SESSION_ID", "HOME", "USER", "PROJECT_DIR"]);
 const SERVICE_ID_RE = /^[a-z][a-z0-9-]{0,63}$/;
@@ -847,6 +847,13 @@ function validateServices(
         if (raw.icon !== undefined && typeof raw.icon !== "string") {
             push(`${field}.icon`, "must be a string", "Set icon to a string identifier, or omit it.");
             valid = false;
+        }
+
+        if (raw.modes !== undefined) {
+            if (!Array.isArray(raw.modes) || !raw.modes.every((m: unknown) => typeof m === "string" && m.length > 0)) {
+                push(`${field}.modes`, "must be an array of non-empty session mode id strings", "Set modes to the session mode ids this service's surfaces are scoped to, or omit it for always-visible.");
+                valid = false;
+            }
         }
 
         if (raw.panel !== undefined) {

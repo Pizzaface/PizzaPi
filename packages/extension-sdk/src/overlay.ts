@@ -24,6 +24,13 @@ export interface PizzaPiServiceDeclaration {
   triggers?: string | ServiceTriggerDef[];
   sigils?: string | ServiceSigilDef[];
   sessionModes?: ServiceModeDef[];
+  /**
+   * Session mode ids this service's UI surfaces (panel, triggers) are scoped
+   * to. Absent/empty = visible for every session (default). When set, the
+   * panel and trigger defs only appear for sessions whose active mode id is
+   * in this list; the service itself still runs daemon-wide.
+   */
+  modes?: string[];
 }
 
 export type PanelVariable = "PWD" | "SESSION_ID" | "HOME" | "USER" | "PROJECT_DIR";

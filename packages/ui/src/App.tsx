@@ -23,7 +23,7 @@ import type {
   HubClientToServerEvents,
   SessionMetaState,
 } from "@pizzapi/protocol";
-import { SOCKET_PROTOCOL_VERSION, parseViewerEventEnvelope, parseViewerConnectedEnvelope, parseHubStateSnapshot, parseHubMetaEvent, parseSpawnResponse, findSessionMode, resolveModeUi } from "@pizzapi/protocol";
+import { SOCKET_PROTOCOL_VERSION, parseViewerEventEnvelope, parseViewerConnectedEnvelope, parseHubStateSnapshot, parseHubMetaEvent, parseSpawnResponse, findSessionMode, resolveModeUi, surfaceVisibleInMode } from "@pizzapi/protocol";
 import { cn } from "@/lib/utils";
 import { pulseStreamingHaptic, cancelHaptic, startToolHaptic, stopToolHaptic } from "@/lib/haptics";
 import { shouldCenterTopSpanFullWidth, shouldCenterBottomSpanFullWidth } from "@/utils/panelLayoutHelpers";
@@ -4416,6 +4416,18 @@ export function App() {
   );
   const modeUi = React.useMemo(() => resolveModeUi(activeMode), [activeMode]);
 
+  // Mode-scoped service surfaces: a service declaring `modes` in its overlay
+  // only shows its panel/triggers for sessions inside a matching mode. Sigil
+  // defs stay unfiltered so existing [[type:id]] sigils render everywhere.
+  const modePanels = React.useMemo(
+    () => dynamicPanels.filter((p) => surfaceVisibleInMode(p.modes, activeMode)),
+    [dynamicPanels, activeMode],
+  );
+  const modeTriggerDefs = React.useMemo(
+    () => runnerTriggerDefs.filter((t) => surfaceVisibleInMode(t.modes, activeMode)),
+    [runnerTriggerDefs, activeMode],
+  );
+
   // Mode selected in the sidebar, which drives the mode home shown when no
   // session is open. Independent of the active session's own mode.
   const [selectedModeId, setSelectedModeId] = React.useState<string | null>(null);
@@ -4608,14 +4620,14 @@ export function App() {
     const staticAvailable = new Set(
       SERVICE_PANELS.filter(p => modeVisibleServices.has(p.serviceId)).map(p => p.serviceId),
     );
-    const dynamicAvailable = new Set(dynamicPanels.map(p => p.serviceId));
+    const dynamicAvailable = new Set(modePanels.map(p => p.serviceId));
     for (const id of current) {
       if (!staticAvailable.has(id) && !dynamicAvailable.has(id)) {
         closeServicePanelById(id);
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modeVisibleServices, dynamicPanels, closeServicePanelById]);
+  }, [modeVisibleServices, modePanels, closeServicePanelById]);
 
   // Tell the server whether the tab is actually being looked at, so it can
   // suppress native push while a viewer is visible. "Visible" ignores window
@@ -4697,7 +4709,7 @@ export function App() {
   }, [activeServicePanels, closeServicePanelById, toggleServicePanel, handleCombinedTabChange, combinedActiveTab, setEphemeralServicePanelPosition, getServicePanelPosition, setServicePanelPosition]);
 
   // ── Service panel buttons in rails/strips ────────────────────────────
-  const visibleServicePanels = useVisibleServicePanels(modeVisibleServices, dynamicPanels, disabledServiceIds);
+  const visibleServicePanels = useVisibleServicePanels(modeVisibleServices, modePanels, disabledServiceIds);
   const railServicePanels = React.useMemo(
     () => visibleServicePanels.map((p) => ({ ...p, active: activeServicePanels.has(p.serviceId) })),
     [visibleServicePanels, activeServicePanels],
@@ -4808,10 +4820,10 @@ export function App() {
     onDragStart: (e) => startPanelDragWith(e, handleTriggersPositionChange),
     content: (
       <Suspense fallback={<PanelFallback label="Triggers" />}>
-        <LazyTriggersPanel sessionId={activeSessionId} triggerDefs={runnerTriggerDefs} viewerSocket={viewerSocket} />
+        <LazyTriggersPanel sessionId={activeSessionId} triggerDefs={modeTriggerDefs} viewerSocket={viewerSocket} />
       </Suspense>
     ),
-  } : null, [showTriggers, activeSessionId, runnerTriggerDefs, viewerSocket, startPanelDragWith, handleTriggersPositionChange, setShowTriggers]);
+  } : null, [showTriggers, activeSessionId, modeTriggerDefs, viewerSocket, startPanelDragWith, handleTriggersPositionChange, setShowTriggers]);
 
   const analyzerPanelTab = React.useMemo<CombinedPanelTab | null>(() => {
     if (!showAnalyzer || !activeSessionId) return null;
@@ -5509,7 +5521,7 @@ export function App() {
                           <ServicePanelButtons
                             availableServices={modeVisibleServices}
                             disabledServiceIds={disabledServiceIds}
-                            dynamicPanels={dynamicPanels}
+                            dynamicPanels={modePanels}
                             activePanelIds={activeServicePanels}
                             onTogglePanel={handleToggleServicePanel}
                             onButtonDragStart={handleButtonDragStart}
@@ -5520,7 +5532,7 @@ export function App() {
                           <ServicePanelOverflowItems
                             availableServices={modeVisibleServices}
                             disabledServiceIds={disabledServiceIds}
-                            dynamicPanels={dynamicPanels}
+                            dynamicPanels={modePanels}
                             activePanelIds={activeServicePanels}
                             onTogglePanel={handleToggleServicePanel}
                           />

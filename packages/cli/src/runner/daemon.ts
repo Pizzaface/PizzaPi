@@ -100,6 +100,8 @@ export type PanelEntry = {
     sigils?: ServiceSigilDef[];
     /** Session modes declared by this service; workspace is resolved per runner. */
     sessionModes?: ServiceModeDef[];
+    /** Session mode ids this service's surfaces are scoped to (manifest `modes`). */
+    modes?: string[];
     /**
      * Whether this service has a UI panel shown to users.
      * false = service has trigger/sigil defs but no panel (e.g. the time service).
@@ -295,6 +297,7 @@ export function panelEntryFromManifest(
         ...(hasTriggers ? { triggers: manifest.triggers } : {}),
         ...(hasSigils ? { sigils: manifest.sigils } : {}),
         ...(hasSessionModes ? { sessionModes: manifest.sessionModes } : {}),
+        ...(manifest.modes && manifest.modes.length > 0 ? { modes: manifest.modes } : {}),
         ...(manifest.panel?.requires ? { requires: manifest.panel.requires } : {}),
     };
 }
@@ -939,6 +942,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     label: p.label,
                     icon: p.icon,
                     ...(p.requires ? { panelParams: resolveRequires(p.requires) } : {}),
+                    ...(p.modes ? { modes: p.modes } : {}),
                 }));
             // Collect all trigger defs and sigil defs across all services with manifests
             const allTriggerDefs: ServiceTriggerDef[] = [];
@@ -947,7 +951,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             for (const entry of panelEntries.values()) {
                 if (!activeServiceIds.has(entry.serviceId)) continue;
                 if (entry.triggers && entry.triggers.length > 0) {
-                    allTriggerDefs.push(...entry.triggers);
+                    // Stamp the service's mode scoping onto each trigger def so the
+                    // UI can hide mode-scoped triggers outside their mode.
+                    allTriggerDefs.push(...(entry.modes ? entry.triggers.map((t) => ({ ...t, modes: entry.modes })) : entry.triggers));
                 }
                 if (entry.sessionModes && entry.sessionModes.length > 0) {
                     // Resolve home-relative workspaces on each runner; matching is exact cwd equality.
