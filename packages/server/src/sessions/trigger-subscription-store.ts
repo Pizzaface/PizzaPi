@@ -64,6 +64,11 @@ const SESSION_SUBS_KEY = (sessionId: string) =>
 const RUNNER_TYPE_INDEX_KEY = (runnerId: string, triggerType: string) =>
     `pizzapi:trigger-subs:runner:${runnerId}:${triggerType}`;
 
+/** Reverse index of all sessionIds that have any trigger subscription on a runner.
+ *  Used to rebuild runner timer/cron state for sessions that are offline at reconnect time. */
+const RUNNER_SESSIONS_INDEX_KEY = (runnerId: string) =>
+    `pizzapi:trigger-subs:runner-sessions:${runnerId}`;
+
 // Shared Redis key for the globally monotonic revision counter.
 // All server nodes INCR the same key so revisions are ordered cluster-wide.
 const TRIGGER_SUB_REVISION_KEY = "pizzapi:trigger-sub-revision";
@@ -219,12 +224,33 @@ function serializeSubValue(value: SubscriptionValue): string {
     });
 }
 
+/** True if the session still has at least one subscription on the given runner. */
+async function sessionHasRunnerSubscriptions(sessionId: string, runnerId: string): Promise<boolean> {
+    const redis = await getClient();
+    if (!redis) return false;
+    const subs = await listSessionSubscriptions(sessionId);
+    return subs.some((sub) => sub.runnerId === runnerId);
+}
+
+/** Remove sessionId from the runner-sessions index if it no longer has any
+ *  subscriptions on that runner. Best-effort: stale entries are harmless
+ *  because getSubscriptionsForRunnerSessions filters them out at read time. */
+async function maybeDropRunnerSessionIndex(sessionId: string, runnerId: string): Promise<void> {
+    const redis = await getClient();
+    if (!redis) return;
+    if (!(await sessionHasRunnerSubscriptions(sessionId, runnerId))) {
+        await redis.sRem(RUNNER_SESSIONS_INDEX_KEY(runnerId), sessionId);
+    }
+}
+
 /**
  * Subscribe a session to a trigger type from a specific runner.
  * - Cleans up the old reverse-index entry if the session was previously subscribed
  *   to the same trigger type via a different runner (rebind case)
  * - Adds `triggerType → {runnerId, params?}` to the session's subscription hash
  * - Adds `sessionId` to the runner+type reverse index set
+ * - Adds `sessionId` to the per-runner session index so reconnect snapshots can
+ *   rebuild schedules for offline sessions
  * - Refreshes TTL on both keys
  *
  * @param params Optional subscription params — forwarded to the service (not used for filtering).
@@ -245,6 +271,7 @@ export async function subscribeSessionToTrigger(
 
     const sessionKey = SESSION_SUBS_KEY(sessionId);
     const indexKey = RUNNER_TYPE_INDEX_KEY(runnerId, triggerType);
+    const runnerSessionsKey = RUNNER_SESSIONS_INDEX_KEY(runnerId);
 
     try {
         const subscriptionId = generateSubscriptionId(sessionId, triggerType);
@@ -261,6 +288,8 @@ export async function subscribeSessionToTrigger(
         pipeline.expire(sessionKey, ttlSeconds);
         pipeline.sAdd(indexKey, sessionId);
         pipeline.expire(indexKey, ttlSeconds);
+        pipeline.sAdd(runnerSessionsKey, sessionId);
+        pipeline.expire(runnerSessionsKey, ttlSeconds);
         await pipeline.exec();
         return subscriptionId;
     } catch (err) {
@@ -295,6 +324,9 @@ export async function unsubscribeSessionFromTrigger(
             pipeline.sRem(RUNNER_TYPE_INDEX_KEY(sub.runnerId, triggerType), sessionId);
         }
         await pipeline.exec();
+        for (const runnerId of new Set(matching.map((sub) => sub.runnerId))) {
+            await maybeDropRunnerSessionIndex(sessionId, runnerId);
+        }
         return { removed: matching.length, triggerType };
     } catch (err) {
         log.warn("Failed to unsubscribe session from trigger:", err);
@@ -472,14 +504,20 @@ export async function clearSessionSubscriptions(sessionId: string): Promise<void
 
     try {
         const hash = await redis.hGetAll(sessionKey);
+        const runnerIds = new Set<string>();
         const pipeline = redis.multi();
         for (const [field, raw] of Object.entries(hash)) {
             for (const sub of parseSubValues(field, raw)) {
                 const indexKey = RUNNER_TYPE_INDEX_KEY(sub.runnerId, sub.triggerType);
                 pipeline.sRem(indexKey, sessionId);
+                runnerIds.add(sub.runnerId);
             }
         }
         pipeline.del(sessionKey);
+        // The whole hash is deleted, so no subscriptions remain on any runner.
+        for (const runnerId of runnerIds) {
+            pipeline.sRem(RUNNER_SESSIONS_INDEX_KEY(runnerId), sessionId);
+        }
         await pipeline.exec();
     } catch (err) {
         log.warn("Failed to clear session subscriptions (best-effort):", err);
@@ -487,11 +525,70 @@ export async function clearSessionSubscriptions(sessionId: string): Promise<void
 }
 
 /**
+ * Get all sessionIds that have at least one trigger subscription on this runner,
+ * whether or not the session is currently connected. Used to build the reconnect
+ * trigger_subscriptions_snapshot so schedules owned by offline sessions survive
+ * a runner restart.
+ *
+ * Best-effort: the index may briefly contain sessions whose subscriptions have
+ * all been removed — harmless, since listing their subscriptions yields nothing.
+ */
+export async function getSessionIdsWithSubscriptionsForRunner(runnerId: string): Promise<string[]> {
+    const redis = await getClient();
+    if (!redis) return [];
+    try {
+        return await redis.sMembers(RUNNER_SESSIONS_INDEX_KEY(runnerId));
+    } catch (err) {
+        log.warn("Failed to list sessions with subscriptions for runner:", err);
+        return [];
+    }
+}
+
+/**
+ * Refresh the TTLs of every subscription key belonging to the given sessions,
+ * plus this runner's session index and the reverse per-type indexes it uses.
+ *
+ * Called periodically while a runner is connected so standing schedules
+ * (time:cron etc.) do not expire out of Redis after DEFAULT_TTL_SECONDS — the
+ * TTL is a garbage collector for abnormal termination, not a lifetime cap on a
+ * live schedule. Callers pass only sessions that still exist so subscriptions
+ * of truly-dead sessions age out normally.
+ */
+export async function refreshRunnerSubscriptionTtls(
+    runnerId: string,
+    sessionIds: string[],
+    ttlSeconds = DEFAULT_TTL_SECONDS,
+): Promise<void> {
+    const redis = await getClient();
+    if (!redis) return;
+    try {
+        const typeKeys = new Set<string>();
+        for (const sessionId of sessionIds) {
+            for (const sub of await listSessionSubscriptions(sessionId)) {
+                if (sub.runnerId === runnerId) typeKeys.add(RUNNER_TYPE_INDEX_KEY(runnerId, sub.triggerType));
+            }
+        }
+        const pipeline = redis.multi();
+        pipeline.expire(RUNNER_SESSIONS_INDEX_KEY(runnerId), ttlSeconds);
+        for (const sessionId of sessionIds) {
+            pipeline.expire(SESSION_SUBS_KEY(sessionId), ttlSeconds);
+        }
+        for (const key of typeKeys) {
+            pipeline.expire(key, ttlSeconds);
+        }
+        await pipeline.exec();
+    } catch (err) {
+        log.warn("Failed to refresh runner subscription TTLs:", err);
+    }
+}
+
+/**
  * Get all active subscriptions for all sessions on a specific runner.
  * Used to build the trigger_subscriptions_snapshot sent after runner registration.
  *
- * This scans all sessions connected to the runner and collects their subscriptions.
- * The sessionIds parameter should come from getConnectedSessionsForRunner().
+ * The sessionIds parameter should merge getConnectedSessionsForRunner() with
+ * getSessionIdsWithSubscriptionsForRunner() so offline sessions' schedules are
+ * included.
  */
 export async function getSubscriptionsForRunnerSessions(
     sessionIds: string[],
@@ -539,6 +636,7 @@ export async function unsubscribeSessionSubscription(
         pipeline.hDel(sessionKey, subscriptionId);
         pipeline.sRem(RUNNER_TYPE_INDEX_KEY(sub.runnerId, sub.triggerType), sessionId);
         await pipeline.exec();
+        await maybeDropRunnerSessionIndex(sessionId, sub.runnerId);
     } catch (err) {
         log.warn("Failed to unsubscribe session subscription:", err);
     }
