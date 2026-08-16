@@ -17,7 +17,7 @@
  *
  * No panel — the service runs a minimal HTTP server for sigil resolve endpoints only.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Socket } from "socket.io-client";
@@ -39,6 +39,22 @@ import { normalizeLoopbackHost } from "../../relay-url.js";
 
 /** Largest delay setTimeout honors; anything above overflows and fires immediately. */
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+
+/**
+ * Backoff for retrying a failed delivery: 1m, 5m, 15m, then 30m cap.
+ * A schedule must not be lost just because its owning session is offline, so
+ * a transient delivery failure re-arms the fire rather than dropping it.
+ */
+const RETRY_BACKOFF_MS = [60_000, 5 * 60_000, 15 * 60_000, 30 * 60_000] as const;
+
+/** Outcome of a trigger delivery attempt. */
+type DeliveryResult = "delivered" | "retry" | "gone";
+
+/** Durable per-cron state persisted across runner restarts. */
+interface CronState {
+    nextFireAt: number;
+    iteration: number;
+}
 
 // ── Relay helpers ────────────────────────────────────────────────────────────
 
@@ -91,6 +107,10 @@ interface CronEntry {
     label?: string;
     /** Next scheduled fire time */
     nextFireAt: number;
+    /** True while a delivery attempt is in flight (prevents double-fire). */
+    delivering: boolean;
+    /** Consecutive failed delivery attempts, for backoff. */
+    retryCount: number;
 }
 
 // ── Static definitions ───────────────────────────────────────────────────────
@@ -242,6 +262,62 @@ export class TimeService implements ServiceHandler {
     #timers = new Map<string, TimerEntry>();
     #crons = new Map<string, CronEntry>();
     #cronIterations = new Map<string, number>();
+    /** Lazily-loaded durable cron state, keyed by subscriptionId. */
+    #cronState: Record<string, CronState> | null = null;
+
+    constructor(
+        private readonly retryBackoffMs: readonly number[] = RETRY_BACKOFF_MS,
+        private readonly cronCheckIntervalMs: number = 30_000,
+    ) {}
+
+    /** Backoff delay for a failed delivery attempt, capped at the last entry. */
+    #backoffDelay(attempt: number): number {
+        return this.retryBackoffMs[Math.min(attempt, this.retryBackoffMs.length - 1)] ?? 30_000;
+    }
+
+    // ── Durable cron state ────────────────────────────────────────────────
+
+    #stateFilePath(): string {
+        return join(process.env.HOME || homedir(), ".pizzapi", "time-service-state.json");
+    }
+
+    #getCronState(): Record<string, CronState> {
+        if (this.#cronState === null) {
+            let state: Record<string, CronState> = {};
+            try {
+                const parsed = JSON.parse(readFileSync(this.#stateFilePath(), "utf-8"));
+                if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) state = parsed as Record<string, CronState>;
+            } catch {
+                // missing or corrupt file — start empty
+            }
+            this.#cronState = state;
+        }
+        return this.#cronState;
+    }
+
+    #saveCronState(): void {
+        try {
+            mkdirSync(join(process.env.HOME || homedir(), ".pizzapi"), { recursive: true });
+            writeFileSync(this.#stateFilePath(), JSON.stringify(this.#cronState ?? {}), "utf-8");
+        } catch (err) {
+            logWarn(`[time] failed to persist cron state: ${err}`);
+        }
+    }
+
+    #persistCron(subscriptionId: string, nextFireAt: number, iteration: number): void {
+        const state = this.#getCronState();
+        state[subscriptionId] = { nextFireAt, iteration };
+        this.#saveCronState();
+    }
+
+    #dropCronState(subscriptionId: string): void {
+        const state = this.#getCronState();
+        if (subscriptionId in state) {
+            delete state[subscriptionId];
+            this.#saveCronState();
+        }
+    }
+
     init(socket: Socket, { announceSigilServer }: ServiceInitOptions): void {
         this.#socket = socket;
 
@@ -336,6 +412,7 @@ export class TimeService implements ServiceHandler {
                     clearInterval(cron.handle);
                     this.#crons.delete(key);
                     this.#cronIterations.delete(key);
+                    this.#dropCronState(cron.subscriptionId);
                     logInfo(`[time] reconcile: removed stale cron ${key}`);
                 }
             }
@@ -373,6 +450,7 @@ export class TimeService implements ServiceHandler {
         }
         this.#crons.clear();
         this.#cronIterations.clear();
+        this.#cronState = null;
 
         // No socket listener to remove — subscription changes come via reconcileSubscriptions().
         this.#socket = null;
@@ -493,16 +571,14 @@ export class TimeService implements ServiceHandler {
 
         logInfo(`[time] starting timer for session ${sessionId}: ${durationStr} (${formatDuration(durationMs)})${label ? ` [${label}]` : ""}`);
 
-        const handle = this.#setTimeoutUntil(key, fireAt, () => {
+        const summary = message ?? (label ? `Timer "${label}" fired after ${formatDuration(durationMs)}` : `Timer fired after ${formatDuration(durationMs)}`);
+        const buildPayload = () => ({ duration: durationStr, durationMs, firedAt: new Date().toISOString(), label, message });
+        const fire = () => {
             this.#timers.delete(key);
-            void this.#fireOneShot(sessionId, subscriptionId, "time:timer_fired", {
-                duration: durationStr,
-                durationMs,
-                firedAt: new Date().toISOString(),
-                label,
-                message,
-            }, message ?? (label ? `Timer "${label}" fired after ${formatDuration(durationMs)}` : `Timer fired after ${formatDuration(durationMs)}`));
-        });
+            this.#fireOneShotWithRetry(key, sessionId, subscriptionId, "time:timer_fired", buildPayload, summary, label, 0);
+        };
+
+        const handle = this.#setTimeoutUntil(key, fireAt, fire);
 
         this.#timers.set(key, {
             subscriptionId,
@@ -556,30 +632,24 @@ export class TimeService implements ServiceHandler {
         const label = typeof params?.label === "string" ? params.label : undefined;
         const message = typeof params?.message === "string" ? params.message : undefined;
 
+        const summary = message ?? (label ? `Scheduled "${label}" fired` : `Scheduled trigger fired (target: ${atStr})`);
+        const buildPayload = () => ({ at: new Date(targetMs).toISOString(), firedAt: new Date().toISOString(), label, message });
+        const fire = () => {
+            this.#timers.delete(key);
+            this.#fireOneShotWithRetry(key, sessionId, subscriptionId, "time:at", buildPayload, summary, label, 0);
+        };
+
         const delayMs = targetMs - Date.now();
         if (delayMs <= 0) {
             // Already past — fire immediately
             logInfo(`[time] at target "${atStr}" already passed, firing immediately for session ${sessionId}`);
-            void this.#fireOneShot(sessionId, subscriptionId, "time:at", {
-                at: new Date(targetMs).toISOString(),
-                firedAt: new Date().toISOString(),
-                label,
-                message,
-            }, message ?? `Scheduled trigger fired (target: ${atStr})`);
+            fire();
             return;
         }
 
         logInfo(`[time] scheduling at-timer for session ${sessionId}: ${atStr} (in ${formatDuration(delayMs)})${label ? ` [${label}]` : ""}`);
 
-        const handle = this.#setTimeoutUntil(key, targetMs, () => {
-            this.#timers.delete(key);
-            void this.#fireOneShot(sessionId, subscriptionId, "time:at", {
-                at: new Date(targetMs).toISOString(),
-                firedAt: new Date().toISOString(),
-                label,
-                message,
-            }, message ?? (label ? `Scheduled "${label}" fired` : `Scheduled trigger fired (target: ${atStr})`));
-        });
+        const handle = this.#setTimeoutUntil(key, targetMs, fire);
 
         this.#timers.set(key, {
             subscriptionId,
@@ -601,7 +671,10 @@ export class TimeService implements ServiceHandler {
         }
         this.#cronIterations.delete(key);
 
-        if (action === "unsubscribe") return;
+        if (action === "unsubscribe") {
+            this.#dropCronState(subscriptionId);
+            return;
+        }
 
         const cronStr = typeof params?.cron === "string" ? params.cron : null;
         if (!cronStr) {
@@ -617,55 +690,90 @@ export class TimeService implements ServiceHandler {
 
         const label = typeof params?.label === "string" ? params.label : undefined;
         const message = typeof params?.message === "string" ? params.message : undefined;
-        const nextFire = nextCronTime(cron);
+
+        // Restore durable next-fire/iteration so a restart neither re-fires a
+        // cron that already ran this period nor resets its iteration count. A
+        // persisted nextFireAt in the past (missed while the runner was down)
+        // fires once on the next tick — catch-up, not a replay of every miss.
+        const persisted = this.#getCronState()[subscriptionId];
+        const nextFire = (persisted && typeof persisted.nextFireAt === "number")
+            ? persisted.nextFireAt
+            : nextCronTime(cron);
         if (!nextFire) {
             logWarn(`[time] cron "${cronStr}" has no next fire time`);
             return;
         }
+        const iteration = (persisted && typeof persisted.iteration === "number") ? persisted.iteration : 0;
 
         logInfo(`[time] starting cron for session ${sessionId}: "${cronStr}" (next: ${new Date(nextFire).toISOString()})${label ? ` [${label}]` : ""}`);
-        this.#cronIterations.set(key, 0);
+        this.#cronIterations.set(key, iteration);
 
-        // Check every 30 seconds for cron matches
-        const handle = setInterval(() => {
-            const now = Date.now();
-            const entry = this.#crons.get(key);
-            if (!entry) return;
-
-            // Check if we've passed the next fire time
-            if (now >= entry.nextFireAt) {
-                const iteration = (this.#cronIterations.get(key) ?? 0) + 1;
-                this.#cronIterations.set(key, iteration);
-
-                void this.#deliverToSession(sessionId, "time:cron", {
-                    cron: cronStr,
-                    firedAt: new Date().toISOString(),
-                    label,
-                    message,
-                    iteration,
-                }, message ?? (label ? `Cron "${label}" fired (#${iteration})` : `Cron "${cronStr}" fired (#${iteration})`));
-
-                // Schedule next
-                const nextTime = nextCronTime(cron, now);
-                if (nextTime) {
-                    entry.nextFireAt = nextTime;
-                } else {
-                    // No more fire times — clean up
-                    clearInterval(handle);
-                    this.#crons.delete(key);
-                    this.#cronIterations.delete(key);
-                }
-            }
-        }, 30_000);
-
-        this.#crons.set(key, {
+        const entry: CronEntry = {
             subscriptionId,
-            handle,
+            handle: null as unknown as ReturnType<typeof setInterval>,
             cron,
             sessionId,
             label,
             nextFireAt: nextFire,
-        });
+            delivering: false,
+            retryCount: 0,
+        };
+
+        // Check every 30 seconds for cron matches. A failed delivery holds
+        // nextFireAt (retried with backoff) instead of silently skipping the
+        // iteration.
+        const deliver = (): void => {
+            const current = this.#crons.get(key);
+            if (!current || current.delivering) return;
+            const now = Date.now();
+            if (now < current.nextFireAt) return;
+
+            current.delivering = true;
+            const nextIteration = (this.#cronIterations.get(key) ?? 0) + 1;
+            void this.#deliverToSession(sessionId, "time:cron", {
+                cron: cronStr,
+                firedAt: new Date().toISOString(),
+                label,
+                message,
+                iteration: nextIteration,
+            }, message ?? (label ? `Cron "${label}" fired (#${nextIteration})` : `Cron "${cronStr}" fired (#${nextIteration})`)).then((result) => {
+                const cur = this.#crons.get(key);
+                if (!cur) return; // unsubscribed while delivering
+                cur.delivering = false;
+
+                if (result === "delivered") {
+                    this.#cronIterations.set(key, nextIteration);
+                    cur.retryCount = 0;
+                    const nextTime = nextCronTime(cron, now);
+                    if (nextTime) {
+                        cur.nextFireAt = nextTime;
+                        this.#persistCron(subscriptionId, nextTime, nextIteration);
+                    } else {
+                        // No more fire times — clean up
+                        clearInterval(cur.handle);
+                        this.#crons.delete(key);
+                        this.#cronIterations.delete(key);
+                        this.#dropCronState(subscriptionId);
+                    }
+                } else if (result === "gone") {
+                    clearInterval(cur.handle);
+                    this.#crons.delete(key);
+                    this.#cronIterations.delete(key);
+                    this.#dropCronState(subscriptionId);
+                } else {
+                    // Transient — retry the same fire with backoff.
+                    cur.retryCount++;
+                    cur.nextFireAt = now + this.#backoffDelay(cur.retryCount - 1);
+                    logWarn(`[time] cron "${cronStr}" delivery to ${sessionId} failed; retrying in ${formatDuration(cur.nextFireAt - now)}`);
+                }
+            });
+        };
+
+        const handle = setInterval(deliver, this.cronCheckIntervalMs);
+        entry.handle = handle;
+        this.#crons.set(key, entry);
+
+        this.#persistCron(subscriptionId, nextFire, iteration);
     }
 
     // ── Trigger delivery ─────────────────────────────────────────────
@@ -673,8 +781,8 @@ export class TimeService implements ServiceHandler {
     /**
      * Fire a one-shot follow-up: deliver to the owning session, then remove
      * the subscription so it doesn't re-arm and re-fire on runner restart.
-     * If delivery fails (e.g. session offline), the subscription is kept so
-     * the next reconcile retries it.
+     * Returns true once the fire is settled (delivered, or the session is
+     * gone); false means a transient failure that the caller should retry.
      */
     async #fireOneShot(
         sessionId: string,
@@ -682,11 +790,42 @@ export class TimeService implements ServiceHandler {
         type: string,
         payload: Record<string, unknown>,
         summary?: string,
-    ): Promise<void> {
-        const delivered = await this.#deliverToSession(sessionId, type, payload, summary);
-        if (delivered) {
+    ): Promise<boolean> {
+        const result = await this.#deliverToSession(sessionId, type, payload, summary);
+        if (result === "delivered") {
             await this.#removeSubscription(sessionId, type, subscriptionId);
+            return true;
         }
+        // "gone" means the session no longer exists — nothing to retry or clean up.
+        return result === "gone";
+    }
+
+    /**
+     * Fire a one-shot and, on a transient delivery failure, re-arm with
+     * backoff so the follow-up is not lost while the owning session is
+     * offline. The subscription is removed only once delivery succeeds.
+     */
+    #fireOneShotWithRetry(
+        key: string,
+        sessionId: string,
+        subscriptionId: string,
+        triggerType: "time:timer_fired" | "time:at",
+        buildPayload: () => Record<string, unknown>,
+        summary: string,
+        label: string | undefined,
+        retryCount: number,
+    ): void {
+        void this.#fireOneShot(sessionId, subscriptionId, triggerType, buildPayload(), summary).then((settled) => {
+            if (settled) return;
+            const delay = this.#backoffDelay(retryCount);
+            const fireAt = Date.now() + delay;
+            logWarn(`[time] ${triggerType} delivery to ${sessionId} failed; retrying in ${formatDuration(delay)}`);
+            const handle = this.#setTimeoutUntil(key, fireAt, () => {
+                this.#timers.delete(key);
+                this.#fireOneShotWithRetry(key, sessionId, subscriptionId, triggerType, buildPayload, summary, label, retryCount + 1);
+            });
+            this.#timers.set(key, { subscriptionId, handle, fireAt, sessionId, triggerType, label });
+        });
     }
 
     /** Deliver a trigger to the session that owns the subscription (not a broadcast). */
@@ -695,11 +834,11 @@ export class TimeService implements ServiceHandler {
         type: string,
         payload: Record<string, unknown>,
         summary?: string,
-    ): Promise<boolean> {
+    ): Promise<DeliveryResult> {
         const apiKey = getApiKey();
         if (!apiKey) {
             logWarn(`[time] cannot deliver trigger — missing apiKey`);
-            return false;
+            return "retry";
         }
 
         try {
@@ -715,15 +854,20 @@ export class TimeService implements ServiceHandler {
                 }),
             });
 
-            if (!res.ok) {
-                logWarn(`[time] trigger delivery to ${sessionId} failed: ${res.status} ${res.statusText}`);
-                return false;
+            if (res.ok) {
+                logInfo(`[time] delivered ${type} to ${sessionId}: ${summary ?? "(no summary)"}`);
+                return "delivered";
             }
-            logInfo(`[time] delivered ${type} to ${sessionId}: ${summary ?? "(no summary)"}`);
-            return true;
+            // 404 = session gone (permanent); 503 = offline (transient).
+            if (res.status === 404) {
+                logWarn(`[time] trigger delivery to ${sessionId} failed: session not found`);
+                return "gone";
+            }
+            logWarn(`[time] trigger delivery to ${sessionId} failed: ${res.status} ${res.statusText}`);
+            return "retry";
         } catch (err) {
             logError(`[time] trigger delivery error: ${err}`);
-            return false;
+            return "retry";
         }
     }
 
