@@ -63,6 +63,26 @@ function mockFetch(statuses: number[]): RecordedCall[] {
 
 const posts = (calls: RecordedCall[]) => calls.filter((c) => c.method === "POST");
 const deletes = (calls: RecordedCall[]) => calls.filter((c) => c.method === "DELETE");
+const toUrl = (calls: RecordedCall[], substr: string) => calls.filter((c) => c.url.includes(substr));
+
+/** URL-aware fetch mock: routes each request through `handler`. */
+function routedFetch(handler: (url: string, init?: RequestInit) => { status: number; body?: unknown }): RecordedCall[] {
+    const calls: RecordedCall[] = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        calls.push({
+            method: init?.method ?? "GET",
+            url,
+            body: typeof init?.body === "string" ? init.body : "",
+        });
+        const r = handler(url, init);
+        return new Response(r.body !== undefined ? JSON.stringify(r.body) : null, {
+            status: r.status,
+            headers: { "content-type": "application/json" },
+        });
+    }) as typeof fetch;
+    return calls;
+}
 
 function setupEnv(): string {
     const home = mkdtempSync(join(tmpdir(), "pizzapi-time-retry-"));
@@ -89,18 +109,59 @@ describe("one-shot delivery retry", () => {
         expect(deletes(calls)).toHaveLength(1); // removed only after success
     });
 
-    test("settles without retrying when the session is gone (404)", async () => {
+    test("delivery asks the relay to wake an offline session (wakeSession flag)", async () => {
         setupEnv();
-        const calls = mockFetch([404]);
+        const calls = mockFetch([200]);
         service = new TimeService([10, 20]);
 
         service.reconcileSubscriptions([
             entry("sess-1", "time:timer_fired", { duration: "0.01s" }, "sub-1"),
         ]);
 
-        await new Promise((resolve) => setTimeout(resolve, 60));
-        expect(posts(calls)).toHaveLength(1); // no retry
-        expect(deletes(calls)).toHaveLength(0); // nothing to clean up
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        const fire = posts(calls)[0];
+        expect(fire).toBeDefined();
+        expect(JSON.parse(fire!.body).wakeSession).toBe(true);
+    });
+
+    test("session gone (404): starts a replacement session with the instruction as prompt and settles", async () => {
+        setupEnv();
+        const calls = routedFetch((url) => {
+            if (url.includes("/api/runners/spawn")) return { status: 200, body: { ok: true, sessionId: "replacement-1" } };
+            return { status: 404 };
+        });
+        service = new TimeService([10, 20]);
+
+        service.reconcileSubscriptions([
+            entry("sess-1", "time:timer_fired", { duration: "0.01s", message: "Check the build", _cwd: "/tmp/proj" }, "sub-1"),
+        ]);
+
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        const spawns = toUrl(posts(calls), "/api/runners/spawn");
+        expect(spawns).toHaveLength(1);
+        const spawnBody = JSON.parse(spawns[0]!.body);
+        expect(spawnBody.runnerId).toBe("runner-test");
+        expect(spawnBody.cwd).toBe("/tmp/proj");
+        expect(spawnBody.prompt).toContain("Check the build");
+        // Settled — exactly one trigger attempt, no retries, nothing to clean up.
+        expect(toUrl(posts(calls), "/trigger")).toHaveLength(1);
+        expect(deletes(calls)).toHaveLength(0);
+    });
+
+    test("session gone but replacement spawn fails: retries instead of dropping the schedule", async () => {
+        setupEnv();
+        const calls = routedFetch((url) => {
+            if (url.includes("/api/runners/spawn")) return { status: 502 };
+            return { status: 404 };
+        });
+        service = new TimeService([10, 20]);
+
+        service.reconcileSubscriptions([
+            entry("sess-1", "time:timer_fired", { duration: "0.01s", message: "Check the build" }, "sub-1"),
+        ]);
+
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        expect(toUrl(posts(calls), "/trigger").length).toBeGreaterThan(1); // re-armed and retried
     });
 });
 
@@ -126,6 +187,43 @@ describe("cron delivery retry and durable state", () => {
         expect(fires).toHaveLength(2); // catch-up 503, retry 200
         // Iteration continues from the persisted 3, not a reset 0.
         expect(JSON.parse(fires[0]!.body).payload.iteration).toBe(4);
+    });
+
+    test("cron owner gone: spawns a replacement session, re-owns the cron under it, and stops the old cron", async () => {
+        const home = setupEnv();
+        const calls = routedFetch((url) => {
+            if (url.includes("/api/runners/spawn")) return { status: 200, body: { ok: true, sessionId: "replacement-2" } };
+            if (url.includes("/trigger-subscriptions")) return { status: 200, body: { ok: true, subscriptionId: "sub-new" } };
+            return { status: 404 };
+        });
+        writeFileSync(
+            join(home, ".pizzapi", "time-service-state.json"),
+            JSON.stringify({ "sub-cron": { nextFireAt: Date.now() - 1000, iteration: 2 } }),
+            "utf-8",
+        );
+        service = new TimeService([10, 20], 10);
+
+        service.reconcileSubscriptions([
+            entry("sess-1", "time:cron", { cron: "0 0 * * *", message: "daily standup", _cwd: "/tmp/proj" }, "sub-cron"),
+        ]);
+
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const spawns = toUrl(posts(calls), "/api/runners/spawn");
+        expect(spawns).toHaveLength(1);
+        expect(JSON.parse(spawns[0]!.body).prompt).toContain("daily standup");
+
+        // The recurring schedule is re-owned by the replacement session.
+        const resubs = toUrl(posts(calls), "/api/sessions/replacement-2/trigger-subscriptions");
+        expect(resubs).toHaveLength(1);
+        const resubBody = JSON.parse(resubs[0]!.body);
+        expect(resubBody.triggerType).toBe("time:cron");
+        expect(resubBody.params.cron).toBe("0 0 * * *");
+        expect(resubBody.params._cwd).toBe("/tmp/proj");
+
+        // Old durable state dropped and the old cron stops firing.
+        expect(JSON.parse(readFileSync(join(home, ".pizzapi", "time-service-state.json"), "utf-8")).hasOwnProperty("sub-cron")).toBe(false);
+        const fires = posts(calls).filter((c) => c.url.endsWith("/trigger"));
+        expect(fires).toHaveLength(1);
     });
 
     test("persists cron state on subscribe and drops it on unsubscribe", () => {

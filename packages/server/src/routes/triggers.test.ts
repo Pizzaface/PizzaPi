@@ -2020,6 +2020,86 @@ describe("POST /api/sessions/:id/thinking", () => {
     });
 });
 
+describe("POST /api/sessions/:id/trigger — wakeSession", () => {
+    const offlineSession = () => ({
+        userId: "user-1",
+        sessionId: "sess-wake",
+        runnerId: "runner-A",
+        cwd: "/tmp/workdir",
+    });
+
+    beforeEach(() => {
+        mockGetSharedSession.mockReset();
+        mockGetLocalTuiSocket.mockReset();
+        mockEmitToRelaySessionVerified.mockReset();
+        mockGetLocalRunnerSocket.mockReset();
+        mockRequireSession.mockReset();
+        mockRequireSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", userName: "TestUser" }),
+        );
+        mockGetLocalTuiSocket.mockReturnValue(null);
+        mockEmitToRelaySessionVerified.mockReturnValue(Promise.resolve(false));
+    });
+
+    test("offline session with wakeSession=true starts a resume on the runner and reports waking", async () => {
+        mockGetSharedSession.mockReturnValue(Promise.resolve(offlineSession()));
+        const runnerEmit = mock((_event: string, _data: any) => {});
+        mockGetLocalRunnerSocket.mockReturnValue({ emit: runnerEmit });
+
+        const [req, url] = makeReq("POST", "/api/sessions/sess-wake/trigger", {
+            type: "time:cron",
+            payload: { cron: "0 9 * * *" },
+            deliverAs: "followUp",
+            wakeSession: true,
+        });
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(503);
+        const body = await res!.json() as { waking?: boolean };
+        expect(body.waking).toBe(true);
+
+        // The wake runs in the background — give it a tick to reach the runner.
+        await new Promise((r) => setTimeout(r, 20));
+        expect(runnerEmit).toHaveBeenCalledTimes(1);
+        const [event, data] = runnerEmit.mock.calls[0] as [string, any];
+        expect(event).toBe("new_session");
+        expect(data.sessionId).toBe("sess-wake");
+        expect(data.resumeId).toBe("sess-wake");
+        expect(data.cwd).toBe("/tmp/workdir");
+    });
+
+    test("offline session WITHOUT wakeSession does not touch the runner", async () => {
+        mockGetSharedSession.mockReturnValue(Promise.resolve(offlineSession()));
+        const runnerEmit = mock((_event: string, _data: any) => {});
+        mockGetLocalRunnerSocket.mockReturnValue({ emit: runnerEmit });
+
+        const [req, url] = makeReq("POST", "/api/sessions/sess-wake/trigger", {
+            type: "time:cron",
+            payload: {},
+        });
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(503);
+        const body = await res!.json() as { waking?: boolean };
+        expect(body.waking).toBeUndefined();
+
+        await new Promise((r) => setTimeout(r, 20));
+        expect(runnerEmit).not.toHaveBeenCalled();
+    });
+
+    test("wakeSession with a disconnected runner still 503s without crashing", async () => {
+        mockGetSharedSession.mockReturnValue(Promise.resolve(offlineSession()));
+        mockGetLocalRunnerSocket.mockReturnValue(null);
+
+        const [req, url] = makeReq("POST", "/api/sessions/sess-wake/trigger", {
+            type: "time:timer_fired",
+            payload: {},
+            wakeSession: true,
+        });
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(503);
+        await new Promise((r) => setTimeout(r, 20));
+    });
+});
+
 describe("non-matching routes", () => {
     test("returns undefined for unmatched paths", async () => {
         const [req, url] = makeReq("GET", "/api/something-else");
