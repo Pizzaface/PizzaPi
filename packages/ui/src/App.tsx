@@ -4464,22 +4464,32 @@ export function App() {
     return fetchScheduledInstructions(scheduleRunnerId, signal)
       .then(({ instructions, failed }) => {
         if (signal?.aborted) return;
-        // Place each schedule by the workspace it belongs to. A schedule whose
-        // workspace is unknown is kept rather than dropped — losing sight of a
-        // schedule is worse than showing it in the wrong mode.
-        setScheduledInstructions(instructions.filter((instruction) => {
-          if (!instruction.cwd) return true;
-          return findSessionMode(
-            { cwd: instruction.cwd, runnerId: scheduleRunnerId },
-            effectiveSessionModes,
-            modesSource.runnerId,
-          )?.id === selectedMode.id;
-        }));
+        setScheduledInstructions(instructions);
         setScheduledFailed(failed);
       })
       .catch((err) => { if (!signal?.aborted) console.error("Failed to load scheduled work:", err); })
       .finally(() => { if (!signal?.aborted) setScheduledLoading(false); });
-  }, [wantsSchedule, scheduleRunnerId, selectedMode, effectiveSessionModes, modesSource.runnerId]);
+    // Deliberately depends only on WHAT to fetch, never on mode-shape values.
+    // modesSource derives from the runners feed, so its identity changes on
+    // every heartbeat — depending on it here re-ran the fetch (and replaced
+    // state with a fresh array) on every tick, thrashing the app.
+  }, [wantsSchedule, scheduleRunnerId, selectedMode?.id]);
+
+  // Placing a schedule in a mode is pure derivation, so it belongs here rather
+  // than in the fetch. A schedule whose workspace is unknown is kept rather
+  // than dropped: losing sight of one is worse than showing it in the wrong
+  // mode, since this is the only surface that can cancel it.
+  const visibleScheduledInstructions = React.useMemo(() => {
+    if (!selectedMode) return [];
+    return scheduledInstructions.filter((instruction) => {
+      if (!instruction.cwd) return true;
+      return findSessionMode(
+        { cwd: instruction.cwd, runnerId: scheduleRunnerId },
+        effectiveSessionModes,
+        modesSource.runnerId,
+      )?.id === selectedMode.id;
+    });
+  }, [scheduledInstructions, selectedMode, effectiveSessionModes, modesSource.runnerId, scheduleRunnerId]);
 
   React.useEffect(() => {
     const controller = new AbortController();
@@ -5479,7 +5489,7 @@ export function App() {
                           onStartTask: (prompt: string) => { void handleStartModeTask(prompt); },
                           onOpenSession: handleOpenSession,
                           scheduled: selectedModeUi.scheduled ? {
-                            instructions: scheduledInstructions,
+                            instructions: visibleScheduledInstructions,
                             loading: scheduledLoading,
                             failed: scheduledFailed,
                             onCancel: handleCancelScheduled,

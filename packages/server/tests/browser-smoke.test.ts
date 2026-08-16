@@ -230,7 +230,18 @@ describe("browser smoke — sandbox UI", () => {
 
             // Verify the default sandbox runner appears.
             await page.click('button:has-text("Runners")');
-            await page.waitForSelector('button:has-text("sandbox-runner")', { timeout: 30_000 });
+            try {
+                await page.waitForSelector('button:has-text("sandbox-runner")', { timeout: 30_000 });
+            } catch (err) {
+                // This wait depends on a real runner daemon booting and
+                // registering inside the sandbox. When it times out the failure
+                // is otherwise opaque — dump what the page and the sandbox saw so
+                // "runner never started" is distinguishable from "UI never
+                // rendered it".
+                console.error("Runner button did not appear. Sidebar HTML:", (await page.content()).slice(0, 2000));
+                console.error("Sandbox stderr tail:\n", stderrBuffer.slice(-4000));
+                throw err;
+            }
 
             // Back to sessions. Wait for React to render the list before counting it.
             await page.click('button:has-text("Sessions")');
