@@ -16,13 +16,16 @@ describe("extensionOf / artifactKindFor", () => {
         expect(artifactKindFor("/w/a.md")).toBe("markdown");
         expect(artifactKindFor("/w/a.PDF")).toBe("pdf");
         expect(artifactKindFor("/w/a.csv")).toBe("csv");
+        expect(artifactKindFor("/w/a.xlsx")).toBe("xlsx");
+        expect(artifactKindFor("/w/a.xls")).toBe("xlsx");
+        expect(artifactKindFor("/w/a.ods")).toBe("xlsx");
+        expect(artifactKindFor("/w/a.pptx")).toBe("pptx");
         expect(artifactKindFor("/w/a.html")).toBe("html");
         expect(artifactKindFor("/w/a.png")).toBe("image");
     });
 
     test("formats browsers cannot render inline fall back to download", () => {
         expect(artifactKindFor("/w/a.docx")).toBe("download");
-        expect(artifactKindFor("/w/a.pptx")).toBe("download");
         expect(artifactKindFor("/w/Makefile")).toBe("download");
     });
 
@@ -71,6 +74,53 @@ describe("detectArtifact", () => {
 
     test("source files are not deliverables", () => {
         expect(detectArtifact("write", { file_path: "/w/script.ts" }, workUi)).toBeNull();
+    });
+});
+
+describe("detectArtifact — explicit present_artifact hand-off", () => {
+    test("honors an explicit hand-off with a title", () => {
+        expect(detectArtifact("present_artifact", { path: "/w/report.pdf", title: "Q3 Report" }, workUi)).toEqual({
+            path: "/w/report.pdf",
+            kind: "pdf",
+            title: "Q3 Report",
+        });
+    });
+
+    test("an explicit kind overrides the extension guess", () => {
+        expect(detectArtifact("present_artifact", { path: "/w/page", kind: "html" }, workUi)?.kind).toBe("html");
+    });
+
+    test("a bogus kind falls back to the extension", () => {
+        expect(detectArtifact("present_artifact", { path: "/w/a.csv", kind: "nonsense" }, workUi)?.kind).toBe("csv");
+    });
+
+    test("explicit intent beats the extension allowlist", () => {
+        // A narrow mode only claims pdf, but an explicit hand-off of a docx is
+        // still a deliverable — the model chose to present it.
+        const narrow = resolveModeUi({ ...workMode, ui: { artifacts: { enabled: true, extensions: ["pdf"] } } });
+        expect(detectArtifact("present_artifact", { path: "/w/notes.docx" }, narrow)).toEqual({
+            path: "/w/notes.docx",
+            kind: "download",
+        });
+    });
+
+    test("the MCP-prefixed form is recognized", () => {
+        expect(detectArtifact("mcp__pizzawork__present_artifact", { path: "/w/a.md" }, workUi)?.path).toBe("/w/a.md");
+    });
+
+    test("works in code mode without artifacts enabled", () => {
+        expect(detectArtifact("present_artifact", { path: "/w/a.md" }, codingUi)).toEqual({
+            path: "/w/a.md",
+            kind: "markdown",
+        });
+        expect(detectArtifact("present_artifact", { path: "/w/a.md" }, null)).toEqual({
+            path: "/w/a.md",
+            kind: "markdown",
+        });
+    });
+
+    test("a hand-off with no path is ignored", () => {
+        expect(detectArtifact("present_artifact", { title: "nothing" }, workUi)).toBeNull();
     });
 });
 

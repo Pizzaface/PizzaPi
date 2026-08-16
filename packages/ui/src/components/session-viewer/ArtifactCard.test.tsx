@@ -106,4 +106,46 @@ describe("ArtifactCard", () => {
         const { getByText } = render(<ArtifactCard path="/w/a.csv" kind="csv" runnerId="r1" />);
         await waitFor(() => expect(getByText(/permission denied/i)).toBeDefined());
     });
+
+    test("a previewable artifact offers an expand affordance", () => {
+        const { getByLabelText } = render(<ArtifactCard path="/w/reports/q3.csv" kind="csv" runnerId="r1" />);
+        expect(getByLabelText("Expand q3.csv")).toBeDefined();
+    });
+
+    test("a download-only artifact offers no expand affordance", () => {
+        const { queryByLabelText } = render(<ArtifactCard path="/w/deck.pptx" kind="download" runnerId="r1" />);
+        expect(queryByLabelText("Expand deck.pptx")).toBeNull();
+    });
+
+    test("expand is hidden when there is no runner to fetch from", () => {
+        const { queryByLabelText } = render(<ArtifactCard path="/w/a.csv" kind="csv" />);
+        expect(queryByLabelText("Expand a.csv")).toBeNull();
+    });
+
+    test("expand routes to the host side panel with the resolved path", () => {
+        const opened: Array<{ path: string; kind: string; title?: string }> = [];
+        const { getByLabelText } = render(
+            <ArtifactCard path="report.csv" kind="csv" runnerId="r1" cwd="/w/space" title="Q3" onExpand={(a) => opened.push(a)} />,
+        );
+        fireEvent.click(getByLabelText("Expand report.csv"));
+        expect(opened).toEqual([{ path: "/w/space/report.csv", kind: "csv", title: "Q3" }]);
+    });
+
+    test("shows an explicit title alongside the filename", () => {
+        const { getByText } = render(<ArtifactCard path="/w/q3.csv" kind="csv" title="Q3 Report" runnerId="r1" />);
+        expect(getByText("Q3 Report")).toBeDefined();
+        expect(getByText("q3.csv")).toBeDefined();
+    });
+
+    test("resolves a relative deliverable path against the session cwd", async () => {
+        render(<ArtifactCard path="report.csv" kind="csv" runnerId="r1" cwd="/w/space" />);
+        await waitFor(() => expect(requests.length).toBe(1));
+        expect(requests[0]!.path).toBe("/w/space/report.csv");
+    });
+
+    test("leaves an absolute deliverable path untouched", async () => {
+        render(<ArtifactCard path="/w/abs.csv" kind="csv" runnerId="r1" cwd="/other" />);
+        await waitFor(() => expect(requests.length).toBe(1));
+        expect(requests[0]!.path).toBe("/w/abs.csv");
+    });
 });

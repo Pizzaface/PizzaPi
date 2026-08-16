@@ -1,5 +1,6 @@
 import * as React from "react";
 import type { ResolvedModeUi } from "@pizzapi/protocol";
+import type { ArtifactKind } from "@/components/session-viewer/artifact-detection";
 
 /**
  * Context carrying the active session's resolved mode UI to the message tree.
@@ -19,8 +20,12 @@ export function useModeUi(): ResolvedModeUi | null {
 export interface ArtifactHost {
   /** Runner that owns the session's filesystem. */
   runnerId?: string;
+  /** Session working directory, to resolve relative deliverable paths. */
+  cwd?: string;
   /** Open a path in the file explorer, when the host offers one. */
   onOpenFile?: (path: string) => void;
+  /** Open one artifact in the host's docked side panel (Claude-style). */
+  onOpenArtifact?: (artifact: { path: string; kind: ArtifactKind; title?: string }) => void;
 }
 
 export const ArtifactHostContext = React.createContext<ArtifactHost | null>(null);

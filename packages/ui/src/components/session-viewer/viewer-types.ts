@@ -36,6 +36,10 @@ export interface SessionViewerProps {
   pluginTrustPrompt?: { promptId: string; pluginNames: string[]; pluginSummaries: string[] } | null;
   /** Respond to the plugin trust prompt */
   onPluginTrustResponse?: (trusted: boolean) => void;
+  /** Pending extension approval (gated tool call) — shown as an approval card */
+  pendingApproval?: import("@pizzapi/protocol").MetaPendingApproval | null;
+  /** Send an approval decision back to the worker over the input channel */
+  onApprovalDecision?: (decision: import("@pizzapi/protocol").ApprovalDecision) => boolean | void | Promise<boolean | void>;
   availableCommands?: Array<{ name: string; description?: string; source?: string }>;
   resumeSessions?: ResumeSessionOption[];
   resumeSessionsLoading?: boolean;
@@ -102,6 +106,8 @@ export interface SessionViewerProps {
   modeIcon?: string;
   /** Open a deliverable in the file explorer. Omitted when the mode hides files. */
   onOpenArtifact?: (path: string) => void;
+  /** Open one artifact in a docked side panel (Claude-style single-artifact view). */
+  onOpenArtifactViewer?: (artifact: { path: string; kind: import("@/components/session-viewer/artifact-detection").ArtifactKind; title?: string }) => void;
   /**
    * Mode home shown instead of the empty state when a mode is selected and no
    * session is open. Omitted when no mode is selected.

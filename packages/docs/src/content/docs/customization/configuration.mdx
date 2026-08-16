@@ -409,6 +409,10 @@ Edit directly or use the `/settings` command inside a session.
   "defaultProvider": "anthropic",
   "defaultModel": "claude-sonnet-4-20250514",
   "defaultThinkingLevel": "medium",
+  "fallbackModels": [
+    "openai-codex:gpt-5.5",
+    "ollama-cloud:glm-5.2"
+  ],
   "compaction": {
     "enabled": true,
     "reserveTokens": 16384,
@@ -424,7 +428,7 @@ Edit directly or use the `/settings` command inside a session.
 }
 ```
 
-See [Providers & Models](/PizzaPi/features/providers-and-models/) for model configuration and [Sessions & Context](/PizzaPi/features/sessions/) for compaction and session settings.
+`fallbackModels` is an ordered list of model references (`provider:modelId` or just `modelId`). When the active model returns a rate-limit or quota error, PizzaPi automatically switches to the first matching fallback in the list and retries the last user prompt. It cascades through the chain until a model succeeds or the chain is exhausted. Configure it from the web UI under **Runner → Settings → Models** or by editing `~/.pizzapi/settings.json` directly.
 
 <Aside type="note">
   PizzaPi config (`~/.pizzapi/config.json`) controls the relay, MCP servers, hooks, sandbox, and PizzaPi extensions. Pi settings (`~/.pizzapi/settings.json`) control model defaults, compaction, retry, and session behavior. They are independent — don't mix them up.

@@ -45,6 +45,7 @@ import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choice";
 import { PlanModePanel, type PlanModeAnswer } from "@/components/ai-elements/plan-mode";
+import { ApprovalCard } from "@/components/session-viewer/ApprovalCard";
 import { formatAnswersForAgent } from "@/lib/ask-user-questions";
 import { exportToMarkdown } from "@/lib/export-markdown";
 import { dismissNotificationsForSession } from "@/lib/push";
@@ -121,6 +122,8 @@ export function SessionViewer({
   activeToolCalls,
   pendingQuestion,
   pendingPlan,
+  pendingApproval,
+  onApprovalDecision,
   pluginTrustPrompt,
   onPluginTrustResponse,
   availableCommands,
@@ -155,6 +158,7 @@ export function SessionViewer({
   modeLabel,
   modeIcon,
   onOpenArtifact,
+  onOpenArtifactViewer,
   modeHome,
   isTerminalOpen,
   isFileExplorerOpen,
@@ -419,8 +423,8 @@ export function SessionViewer({
 
   // What artifact cards need to fetch a preview and open the real file.
   const artifactHost = React.useMemo<ArtifactHost>(
-    () => ({ runnerId, onOpenFile: onOpenArtifact }),
-    [runnerId, onOpenArtifact],
+    () => ({ runnerId, cwd: sessionCwd, onOpenFile: onOpenArtifact, onOpenArtifact: onOpenArtifactViewer }),
+    [runnerId, sessionCwd, onOpenArtifact, onOpenArtifactViewer],
   );
   const sessionActionsWithQuote = React.useMemo(() => {
     if (!sessionActions) return null;
@@ -1131,6 +1135,10 @@ export function SessionViewer({
             )}
 
             {/* Plan mode review panel */}
+            {pendingApproval && sessionId && onApprovalDecision && (
+              <ApprovalCard approval={pendingApproval} onDecision={onApprovalDecision} />
+            )}
+
             {pendingPlan && sessionId && (
               <PlanModePanel
                 plan={pendingPlan}

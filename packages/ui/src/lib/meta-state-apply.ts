@@ -12,7 +12,7 @@ import {
   type ParsedQuestion,
   type QuestionDisplayMode,
 } from "./ask-user-questions";
-import type { MetaRelayEvent, SessionMetaState, MetaPendingQuestion, MetaGoalStatus } from "@pizzapi/protocol";
+import type { MetaRelayEvent, SessionMetaState, MetaPendingQuestion, MetaGoalStatus, MetaPendingApproval } from "@pizzapi/protocol";
 import type { ProviderUsageMap } from "@/components/UsageIndicator";
 
 interface PendingQuestionState {
@@ -31,6 +31,8 @@ export interface MetaStatePatch {
   isCompacting?: boolean;
   retryState?: SessionMetaState["retryState"] | null;
   pluginTrustPrompt?: { promptId: string; pluginNames: string[]; pluginSummaries: string[] } | null;
+  pendingApproval?: MetaPendingApproval | null;
+  setPendingApproval?: boolean;
   tokenUsage?: TokenUsage | null;
   providerUsage?: ProviderUsageMap | null;
   thinkingLevel?: string | null;
@@ -84,6 +86,14 @@ export function metaEventToStatePatch(event: MetaRelayEvent): MetaStatePatch {
       return { pluginTrustPrompt: event.prompt };
     case "plugin_trust_resolved":
       return { pluginTrustPrompt: null };
+    case "approval_pending":
+      return {
+        setPendingApproval: true,
+        pendingApproval: event.approval,
+        viewerStatusOverride: "Waiting for approval…",
+      };
+    case "approval_cleared":
+      return { setPendingApproval: true, pendingApproval: null };
     case "token_usage_updated":
       return {
         tokenUsage: event.tokenUsage as TokenUsage,

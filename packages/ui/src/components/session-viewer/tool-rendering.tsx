@@ -27,6 +27,8 @@ import { FileTypeCard } from "@/components/ai-elements/file-type-card";
 import { ActivityToolCard } from "@/components/session-viewer/ActivityToolCard";
 import { ArtifactCard } from "@/components/session-viewer/ArtifactCard";
 import { detectArtifact } from "@/components/session-viewer/artifact-detection";
+import { PresentedCardGroup } from "@/components/session-viewer/PresentedCard";
+import { detectPresentedCards } from "@/components/session-viewer/presented-card";
 import { useArtifactHost, useModeUi } from "@/components/session-viewer/ModeUiContext";
 import { EditFileCard } from "@/components/ai-elements/edit-file-card";
 import {
@@ -1197,13 +1199,32 @@ function ModeAwareToolCard({
 }) {
   const modeUi = useModeUi();
   const artifactHost = useArtifactHost();
+
+  // Explicit read-only entities the model presented (contact/place/event/…),
+  // one or many. Renders regardless of mode — the tool only exists if a package
+  // registered it.
+  const presentedCards = detectPresentedCards(toolName, toolInput);
+  if (presentedCards.length > 0 && !isStreaming && !isError) {
+    return <PresentedCardGroup cards={presentedCards} />;
+  }
+
   const artifact = detectArtifact(toolName, toolInput, modeUi);
 
   // A finished deliverable is the point of the message, so it renders in full
   // rather than collapsed behind an activity line. While the write is still
   // streaming there is no file to preview yet.
   if (artifact && !isStreaming && !isError) {
-    return <ArtifactCard path={artifact.path} kind={artifact.kind} runnerId={artifactHost?.runnerId} onOpen={artifactHost?.onOpenFile} />;
+    return (
+      <ArtifactCard
+        path={artifact.path}
+        kind={artifact.kind}
+        title={artifact.title}
+        runnerId={artifactHost?.runnerId}
+        cwd={artifactHost?.cwd}
+        onOpen={artifactHost?.onOpenFile}
+        onExpand={artifactHost?.onOpenArtifact}
+      />
+    );
   }
 
   if (modeUi?.toolRendering !== "activity") return <>{children}</>;

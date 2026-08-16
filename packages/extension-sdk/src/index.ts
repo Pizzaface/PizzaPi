@@ -15,7 +15,8 @@ export type {
 export type { PizzaPiOverlayV1, PizzaPiServiceDeclaration, PanelVariable } from "./overlay.js";
 
 export type { PizzaPiHostInfo, PizzaPiHostAPI } from "./host.js";
-export { isPizzaPiHostInfo, detectPizzaPiHost, onPizzaPiHost, sendServiceMessage } from "./host.js";
+export { isPizzaPiHostInfo, detectPizzaPiHost, onPizzaPiHost, sendServiceMessage, requestApproval } from "./host.js";
+export type { ApprovalRequest, ApprovalDecision, ApprovalField, ApprovalAction } from "@pizzapi/protocol";
 
 // Re-exported protocol declaration types required by the public service contract.
 export type { ServiceTriggerDef, ServiceSigilDef, ServicePanelInfo, ServiceTriggerParamDef } from "@pizzapi/protocol";

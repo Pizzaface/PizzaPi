@@ -55,14 +55,24 @@ function createNotifyCtx(cwd: string, signal?: AbortSignal) {
 }
 
 let projectDir: string;
+let fakeHome: string;
+let originalHome: string | undefined;
 
 beforeEach(() => {
     projectDir = mkdtempSync(join(tmpdir(), "workflow-index-test-"));
+    fakeHome = mkdtempSync(join(tmpdir(), "workflow-index-home-"));
+    originalHome = process.env.HOME;
+    process.env.HOME = fakeHome;
 });
 
 afterEach(() => {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
     try {
         rmSync(projectDir, { recursive: true, force: true });
+    } catch {}
+    try {
+        rmSync(fakeHome, { recursive: true, force: true });
     } catch {}
 });
 

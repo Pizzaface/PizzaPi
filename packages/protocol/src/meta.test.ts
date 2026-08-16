@@ -67,6 +67,13 @@ describe("metaEventToPatch", () => {
   test("plugin_trust_resolved clears trust prompt", () => {
     expect(metaEventToPatch({ type: "plugin_trust_resolved", promptId: "p1" })).toEqual({ pendingPluginTrust: null });
   });
+  test("approval_pending → pendingApproval set", () => {
+    const approval = { promptId: "a1", title: "Send this email?", toolName: "gmail_send", fields: [{ key: "to", label: "To", value: "x@y.com", editable: true }] };
+    expect(metaEventToPatch({ type: "approval_pending", approval })).toEqual({ pendingApproval: approval });
+  });
+  test("approval_cleared clears pending approval", () => {
+    expect(metaEventToPatch({ type: "approval_cleared", promptId: "a1" })).toEqual({ pendingApproval: null });
+  });
   test("mcp_startup_report → mcpStartupReport set", () => {
     const report = { slow: true, totalDurationMs: 5000, ts: 1234 };
     expect(metaEventToPatch({ type: "mcp_startup_report", report, ts: 1234 })).toEqual({ mcpStartupReport: report });

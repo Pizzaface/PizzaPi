@@ -18,6 +18,7 @@ import { emitAuthSourceChanged, emitThinkingLevelChanged, emitMcpStartupReport }
 import { getAuthSource } from "../remote-auth-source.js";
 import { cancelPendingAskUserQuestion, consumePendingAskUserQuestionFromWeb } from "../remote-ask-user.js";
 import { cancelPendingPlanMode, consumePendingPlanModeFromWeb } from "../remote-plan-mode.js";
+import { cancelPendingApproval, consumePendingApprovalFromWeb } from "../remote-approval.js";
 import { normalizeRemoteInputAttachments, buildUserMessageFromRemoteInput } from "../remote-input.js";
 import { handleExecFromWeb } from "../remote-exec-handler.js";
 import { renderTrigger, renderTriggerBatch } from "../triggers/registry.js";
@@ -430,6 +431,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         handlers.clearFollowUpGrace();
 
         const inputText = data.text;
+        if (consumePendingApprovalFromWeb(rctx, inputText)) return;
         if (consumePendingAskUserQuestionFromWeb(rctx, inputText)) return;
         if (consumePendingPlanModeFromWeb(rctx, inputText)) return;
 
@@ -661,6 +663,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         rctx.relay = null;
         cancelPendingAskUserQuestion(rctx);
         cancelPendingPlanMode(rctx);
+        cancelPendingApproval(rctx);
         rctx.setRelayStatus(rctx.disconnectedStatusText());
     });
 
@@ -716,6 +719,7 @@ export function disconnect(rctx: RelayContext, handlers?: ConnectionHandlers): v
     handlers?.onDelinkDisconnect();
     cancelPendingAskUserQuestion(rctx);
     cancelPendingPlanMode(rctx);
+    cancelPendingApproval(rctx);
     messageBus.setSendFn(null);
     const bridge = getMcpBridge();
     bridge?.setRelayContext?.(null);

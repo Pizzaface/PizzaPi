@@ -59,7 +59,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { X, TerminalIcon, FolderTree, GitBranch, EyeOff, Zap, BarChart3 } from "lucide-react";
+import { X, TerminalIcon, FolderTree, GitBranch, EyeOff, Zap, BarChart3, FileText } from "lucide-react";
+import { ArtifactViewerContent } from "@/components/session-viewer/ArtifactCard";
 import type { TriggerHistoryEntry } from "@/components/TriggersPanel";
 import type { ProviderUsageMap } from "@/components/UsageIndicator";
 import { CombinedPanel, type CombinedPanelTab } from "@/components/CombinedPanel";
@@ -212,6 +213,7 @@ interface SessionState {
   pendingQuestion: { toolCallId: string; questions: Array<{ question: string; options: string[]; type?: QuestionType }>; display: QuestionDisplayMode } | null;
   pendingPlan: { toolCallId: string; title: string; description: string | null; steps: Array<{ title: string; description?: string }> } | null;
   pluginTrustPrompt: { promptId: string; pluginNames: string[]; pluginSummaries: string[] } | null;
+  pendingApproval: import("@pizzapi/protocol").MetaPendingApproval | null;
   activeToolCalls: Map<string, string>;
   mcpOAuthPastes: Array<{ serverName: string; authUrl: string; nonce: string; ts: number }>;
   messageQueue: QueuedMessage[];
@@ -244,6 +246,7 @@ function createInitialSessionState(): SessionState {
     pendingQuestion: null,
     pendingPlan: null,
     pluginTrustPrompt: null,
+    pendingApproval: null,
     activeToolCalls: new Map(),
     mcpOAuthPastes: [],
     messageQueue: [],
@@ -316,7 +319,7 @@ export function App() {
   const [sessionState, setSessionState] = React.useState<SessionState>(createInitialSessionState);
   const {
     viewerSocket, messages, retryState,
-    pendingQuestion, pendingPlan, pluginTrustPrompt, activeToolCalls,
+    pendingQuestion, pendingPlan, pluginTrustPrompt, pendingApproval, activeToolCalls,
     mcpOAuthPastes, messageQueue, activeModel, sessionName, availableModels,
     modelSelectorOpen, isChangingModel, agentActive, effortLevel, authSource,
     tokenUsage, providerUsage, usageRefreshing, lastHeartbeatAt,
@@ -352,6 +355,11 @@ export function App() {
     (v: React.SetStateAction<SessionState["pendingPlan"]>) =>
       setSessionState((p: SessionState) => ({ ...p, pendingPlan: typeof v === "function" ? v(p.pendingPlan) : v })),
     []
+  );
+  const setPendingApproval = React.useCallback(
+    (v: React.SetStateAction<SessionState["pendingApproval"]>) =>
+      setSessionState((p: SessionState) => ({ ...p, pendingApproval: typeof v === "function" ? v(p.pendingApproval) : v })),
+    [],
   );
   const setPluginTrustPrompt = React.useCallback(
     (v: React.SetStateAction<SessionState["pluginTrustPrompt"]>) =>
@@ -643,6 +651,13 @@ export function App() {
   const [analyzerPosition, setAnalyzerPosition] = React.useState<PanelPosition>("center-bottom");
   const handleAnalyzerPositionChange = React.useCallback((pos: PanelPosition) => {
     setAnalyzerPosition(pos);
+  }, []);
+
+  // Single-artifact side viewer (Claude-style): one artifact at a time, not a list.
+  const [artifactViewer, setArtifactViewer] = React.useState<{ path: string; kind: import("@/components/session-viewer/artifact-detection").ArtifactKind; title?: string } | null>(null);
+  const [artifactViewerPosition, setArtifactViewerPosition] = React.useState<PanelPosition>("right-middle");
+  const handleArtifactViewerPositionChange = React.useCallback((pos: PanelPosition) => {
+    setArtifactViewerPosition(pos);
   }, []);
 
   const buttonPositions = useButtonPosition();
@@ -1495,6 +1510,11 @@ export function App() {
       }
     }
 
+    if (Object.prototype.hasOwnProperty.call(state, "pendingApproval")) {
+      const ap = state.pendingApproval;
+      setPendingApproval(ap && typeof ap.promptId === "string" && typeof ap.title === "string" ? ap : null);
+    }
+
     if (Object.prototype.hasOwnProperty.call(state, "tokenUsage")) {
       const usage = state.tokenUsage as TokenUsage | null;
       setTokenUsage(usage);
@@ -1639,6 +1659,10 @@ export function App() {
       } else {
         setPluginTrustPrompt(null);
       }
+    }
+
+    if (patch.setPendingApproval) {
+      setPendingApproval(patch.pendingApproval ?? null);
     }
 
     if (patch.tokenUsage !== undefined) {
@@ -2157,6 +2181,8 @@ export function App() {
       patchSessionCache({ messages: withInjected });
       setPendingQuestion(null);
       setPendingPlan(null);
+      setPendingApproval(null);
+      setArtifactViewer(null);
       setRetryState(null);
       setActiveToolCalls(new Map());
       // Clear message queue — the agent processed any queued steer/followUp
@@ -3285,6 +3311,7 @@ export function App() {
     // authoritative values from the runner.
     setPendingQuestion(null);
     setPendingPlan(null);
+    setPendingApproval(null);
 
     let socket = viewerWsRef.current;
     if (!socket) {
@@ -4124,11 +4151,10 @@ export function App() {
     return () => window.removeEventListener("pp-navigate-session", handler);
   }, [handleOpenSession]);
 
-  const handleClearSelection = React.useCallback((keepSidebarOpen?: boolean) => {
+  const handleClearSelection = React.useCallback(() => {
     setShowRunners(false);
     clearSelection();
-    // ponytail: mode switching clears the session but stays in the sidebar.
-    if (!keepSidebarOpen) setSidebarOpen(false);
+    setSidebarOpen(false);
   }, [clearSelection]);
 
   // Global keyboard shortcuts
@@ -4417,13 +4443,44 @@ export function App() {
   const [scheduledInstructions, setScheduledInstructions] = React.useState<ScheduledInstruction[]>([]);
   const [scheduledLoading, setScheduledLoading] = React.useState(false);
   const [scheduledFailed, setScheduledFailed] = React.useState(0);
-  // Every mode session, not just the recent five: a schedule owned by an older
-  // task would otherwise be invisible and impossible to cancel from here.
-  const scheduledSessions = React.useMemo(
-    () => selectedModeAllSessions.map((s) => ({ sessionId: s.sessionId, sessionName: s.sessionName ?? null })),
-    [selectedModeAllSessions],
-  );
   const wantsSchedule = !!selectedMode && selectedModeUi.scheduled;
+
+  // Offline sessions that still own schedules: a schedule must stay visible
+  // and cancellable even when its task is no longer running. Fetched from the
+  // server's persisted-session list and matched to the mode by cwd/runner.
+  const [persistedModeSessions, setPersistedModeSessions] = React.useState<Array<{ sessionId: string; sessionName: string | null }>>([]);
+  React.useEffect(() => {
+    if (!wantsSchedule || !selectedMode) {
+      setPersistedModeSessions([]);
+      return;
+    }
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const res = await fetch(`/api/sessions?includePersisted=1&limit=100`, { credentials: "include", signal: controller.signal });
+        if (!res.ok) return;
+        const data = await res.json() as { persistedSessions?: Array<{ sessionId: string; cwd: string; sessionName: string | null; runnerId: string | null }> };
+        const persisted = Array.isArray(data.persistedSessions) ? data.persistedSessions : [];
+        setPersistedModeSessions(
+          persisted
+            .filter((s) => findSessionMode({ cwd: s.cwd, runnerId: s.runnerId }, effectiveSessionModes, modesSource.runnerId)?.id === selectedMode.id)
+            .map((s) => ({ sessionId: s.sessionId, sessionName: s.sessionName ?? null })),
+        );
+      } catch {
+        if (!controller.signal.aborted) setPersistedModeSessions([]);
+      }
+    })();
+    return () => controller.abort();
+  }, [wantsSchedule, selectedMode, effectiveSessionModes, modesSource.runnerId]);
+
+  // Every mode session, not just the recent five: a schedule owned by an older
+  // or offline task would otherwise be invisible and impossible to cancel.
+  const scheduledSessions = React.useMemo(() => {
+    const live = selectedModeAllSessions.map((s) => ({ sessionId: s.sessionId, sessionName: s.sessionName ?? null }));
+    const liveIds = new Set(live.map((s) => s.sessionId));
+    const offline = persistedModeSessions.filter((s) => !liveIds.has(s.sessionId));
+    return [...live, ...offline];
+  }, [selectedModeAllSessions, persistedModeSessions]);
 
   const reloadScheduled = React.useCallback((signal?: AbortSignal) => {
     if (!wantsSchedule || scheduledSessions.length === 0) {
@@ -4787,6 +4844,27 @@ export function App() {
     };
   }, [showAnalyzer, activeSessionId, activeSessionInfo?.runnerId, analysis, startPanelDragWith, handleAnalyzerPositionChange]);
 
+  const artifactViewerPanelTab = React.useMemo<CombinedPanelTab | null>(() => {
+    if (!artifactViewer || !activeSessionId) return null;
+    const fileName = artifactViewer.path.split(/[\\/]/).filter(Boolean).pop() ?? artifactViewer.path;
+    return {
+      id: "artifact-viewer",
+      label: artifactViewer.title ?? fileName,
+      icon: <FileText className="size-3.5" />,
+      onClose: () => setArtifactViewer(null),
+      onDragStart: (e) => startPanelDragWith(e, handleArtifactViewerPositionChange),
+      content: (
+        <ArtifactViewerContent
+          path={artifactViewer.path}
+          kind={artifactViewer.kind}
+          title={artifactViewer.title}
+          runnerId={activeSessionInfo?.runnerId ?? undefined}
+          onOpen={modeUi.files ? handleOpenFileInExplorer : undefined}
+        />
+      ),
+    };
+  }, [artifactViewer, activeSessionId, activeSessionInfo?.runnerId, modeUi.files, handleOpenFileInExplorer, startPanelDragWith, handleArtifactViewerPositionChange]);
+
   const servicePanelTabs = React.useMemo<CombinedPanelTab[]>(() => {
     // Use tunnelSessionId (runner-stable) instead of activeSessionId so
     // iframe service panels don't reload on same-runner session switches.
@@ -4838,9 +4916,10 @@ export function App() {
     if (gitPanelTab) groups[gitPosition].push(gitPanelTab);
     if (triggersPanelTab) groups[triggersPosition].push(triggersPanelTab);
     if (analyzerPanelTab) groups[analyzerPosition].push(analyzerPanelTab);
+    if (artifactViewerPanelTab) groups[artifactViewerPosition].push(artifactViewerPanelTab);
     for (const tab of servicePanelTabs) groups[getServicePanelPosition(tab.id)].push(tab);
     return groups;
-  }, [terminalPanelTab, terminalPosition, filesPanelTab, filesPosition, gitPanelTab, gitPosition, triggersPanelTab, triggersPosition, analyzerPanelTab, analyzerPosition, servicePanelTabs, getServicePanelPosition]);
+  }, [terminalPanelTab, terminalPosition, filesPanelTab, filesPosition, gitPanelTab, gitPosition, triggersPanelTab, triggersPosition, analyzerPanelTab, analyzerPosition, artifactViewerPanelTab, artifactViewerPosition, servicePanelTabs, getServicePanelPosition]);
   panelGroupsRef.current = panelGroups;
 
   // ── Derived column zone arrays ─────────────────────────────────────────────
@@ -4907,8 +4986,8 @@ export function App() {
   const centerBottomCollapsed = isGroupCollapsed(centerBottomTabIds);
 
   const mobilePanelTabs = React.useMemo(() => {
-    return [terminalPanelTab, filesPanelTab, gitPanelTab, triggersPanelTab, analyzerPanelTab, ...servicePanelTabs].filter(Boolean) as CombinedPanelTab[];
-  }, [terminalPanelTab, filesPanelTab, gitPanelTab, triggersPanelTab, analyzerPanelTab, servicePanelTabs]);
+    return [terminalPanelTab, filesPanelTab, gitPanelTab, triggersPanelTab, analyzerPanelTab, artifactViewerPanelTab, ...servicePanelTabs].filter(Boolean) as CombinedPanelTab[];
+  }, [terminalPanelTab, filesPanelTab, gitPanelTab, triggersPanelTab, analyzerPanelTab, artifactViewerPanelTab, servicePanelTabs]);
 
   const resolveActiveTabId = React.useCallback((tabs: CombinedPanelTab[]) => {
     return resolveActiveTabIdFromIds(tabs.map((t) => t.id), combinedActiveTab);
@@ -5361,6 +5440,14 @@ export function App() {
                         pendingPlan={pendingPlan}
                         pluginTrustPrompt={pluginTrustPrompt}
                         onPluginTrustResponse={respondPluginTrust}
+                        pendingApproval={pendingApproval}
+                        onApprovalDecision={async (decision) => {
+                          const promptId = pendingApproval?.promptId;
+                          const payload = JSON.stringify({ ...decision, ...(promptId ? { promptId } : {}) });
+                          const ok = await sendSessionInput(payload);
+                          if (ok !== false) setPendingApproval(null);
+                          return ok;
+                        }}
                         availableCommands={availableCommands}
                         resumeSessions={resumeSessions}
                         resumeSessionsLoading={resumeSessionsLoading}
@@ -5396,6 +5483,7 @@ export function App() {
                         modeLabel={activeMode?.label}
                         modeIcon={activeMode?.icon}
                         onOpenArtifact={modeUi.files ? handleOpenFileInExplorer : undefined}
+                        onOpenArtifactViewer={(a) => { setArtifactViewer(a); handleCombinedTabChange("artifact-viewer"); }}
                         modeHome={selectedMode ? {
                           label: selectedMode.label,
                           icon: selectedMode.icon,
