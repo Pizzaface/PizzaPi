@@ -94,6 +94,8 @@ mock.module("../remote-meta-events.js", () => ({
     emitAuthSourceChanged: mock(() => {}),
     emitModelChanged: mock(() => {}),
     emitGoalUpdated: mock(() => {}),
+    emitApprovalPending: mock(() => {}),
+    emitApprovalCleared: mock(() => {}),
 }));
 mock.module("../remote-auth-source.js", () => ({
     getAuthSource: mock(() => null),

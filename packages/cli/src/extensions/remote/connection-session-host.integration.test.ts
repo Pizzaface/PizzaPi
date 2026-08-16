@@ -62,6 +62,7 @@ mock.module("../remote-meta-events.js", () => ({
     emitPluginTrustRequired: mock(() => {}), emitPluginTrustResolved: mock(() => {}), emitMcpStartupReport: mock(() => {}),
     emitTokenUsageUpdated: mock(() => {}), emitThinkingLevelChanged: mock(() => {}), emitAuthSourceChanged: mock(() => {}),
     emitModelChanged: mock(() => {}), emitGoalUpdated: mock(() => {}),
+    emitApprovalPending: mock(() => {}), emitApprovalCleared: mock(() => {}),
 }));
 mock.module("../remote-auth-source.js", () => ({ getAuthSource: mock(() => null), authSourceLabel: mock(() => "") }));
 mock.module("../remote-ask-user.js", () => ({
