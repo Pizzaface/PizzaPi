@@ -146,4 +146,32 @@ describe("cron delivery retry and durable state", () => {
 
         expect(JSON.parse(readFileSync(statePath, "utf-8")).hasOwnProperty("sub-cron")).toBe(false);
     });
+
+    test("a hung delivery times out and retries instead of wedging the cron", async () => {
+        const home = setupEnv();
+        let calls = 0;
+        // A fetch that never resolves on its own — it only rejects when the
+        // delivery timeout aborts the signal. Without the timeout, the cron's
+        // `delivering` flag would stay true forever and it would never fire again.
+        globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
+            calls++;
+            return new Promise((_resolve, reject) => {
+                init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+            });
+        }) as typeof fetch;
+        writeFileSync(
+            join(home, ".pizzapi", "time-service-state.json"),
+            JSON.stringify({ "sub-cron": { nextFireAt: Date.now() - 1000, iteration: 0 } }),
+            "utf-8",
+        );
+        service = new TimeService([10, 20], 10, 20); // 10ms check interval, 20ms delivery timeout
+
+        service.reconcileSubscriptions([
+            entry("sess-1", "time:cron", { cron: "0 0 * * *" }, "sub-cron"),
+        ]);
+
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        // Timed out and retried (not wedged on the first in-flight delivery).
+        expect(calls).toBeGreaterThan(1);
+    });
 });

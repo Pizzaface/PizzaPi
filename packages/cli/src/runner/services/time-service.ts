@@ -40,6 +40,9 @@ import { normalizeLoopbackHost } from "../../relay-url.js";
 /** Largest delay setTimeout honors; anything above overflows and fires immediately. */
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
+/** Bound on a single relay delivery attempt; a timeout is treated as a retry. */
+const DELIVERY_TIMEOUT_MS = 15_000;
+
 /**
  * Backoff for retrying a failed delivery: 1m, 5m, 15m, then 30m cap.
  * A schedule must not be lost just because its owning session is offline, so
@@ -268,6 +271,7 @@ export class TimeService implements ServiceHandler {
     constructor(
         private readonly retryBackoffMs: readonly number[] = RETRY_BACKOFF_MS,
         private readonly cronCheckIntervalMs: number = 30_000,
+        private readonly deliveryTimeoutMs: number = DELIVERY_TIMEOUT_MS,
     ) {}
 
     /** Backoff delay for a failed delivery attempt, capped at the last entry. */
@@ -845,6 +849,9 @@ export class TimeService implements ServiceHandler {
             const res = await fetch(`${resolveRelayUrl()}/api/sessions/${encodeURIComponent(sessionId)}/trigger`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+                // A hung delivery must not wedge the cron's `delivering` flag
+                // (or drop a one-shot) — bound it and treat a timeout as retry.
+                signal: AbortSignal.timeout(this.deliveryTimeoutMs),
                 body: JSON.stringify({
                     type,
                     payload,
@@ -883,7 +890,7 @@ export class TimeService implements ServiceHandler {
         try {
             const res = await fetch(
                 `${resolveRelayUrl()}/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions/${encodeURIComponent(triggerType)}?subscriptionId=${encodeURIComponent(subscriptionId)}`,
-                { method: "DELETE", headers: { "x-api-key": apiKey } },
+                { method: "DELETE", headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(this.deliveryTimeoutMs) },
             );
             if (!res.ok) {
                 logWarn(`[time] failed to remove fired subscription ${subscriptionId}: ${res.status} ${res.statusText}`);
