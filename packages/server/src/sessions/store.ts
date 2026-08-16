@@ -420,6 +420,30 @@ export async function recordRelaySessionEnd(sessionId: string): Promise<void> {
         .execute();
 }
 
+/**
+ * Owner + placement for a relay session from the durable table, including
+ * sessions that have already ended.
+ *
+ * Used by the subscription routes and the offline-session wake: a schedule
+ * outlives its session, so both "who owns this" and "where do I resume it"
+ * must still be answerable after the live Redis record is gone.
+ */
+export async function getPersistedRelaySessionOwner(
+    sessionId: string,
+): Promise<{ userId: string | null; runnerId: string | null; cwd: string | null } | null> {
+    const row = await getKysely()
+        .selectFrom("relay_session")
+        .select(["userId", "runnerId", "cwd"])
+        .where("id", "=", sessionId)
+        .executeTakeFirst();
+    if (!row) return null;
+    return {
+        userId: row.userId ?? null,
+        runnerId: row.runnerId ?? null,
+        cwd: row.cwd ?? null,
+    };
+}
+
 export async function getPersistedRelaySessionRunner(
     sessionId: string,
 ): Promise<PersistedRelaySessionRunnerInfo | null> {

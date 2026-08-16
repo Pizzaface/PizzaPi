@@ -88,8 +88,7 @@ import {
     updateRunnerTriggerListener,
 } from "../sessions/runner-trigger-listener-store.js";
 import {
-    getRelaySessionUserId,
-    getPersistedRelaySessionRunner,
+    getPersistedRelaySessionOwner,
 } from "../sessions/store.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
 
@@ -319,15 +318,19 @@ function wakeOfflineSession(
 async function resolveSubscriptionOwner(
     sessionId: string,
     userId: string,
-): Promise<{ runnerId: string | null } | null> {
+): Promise<{ runnerId: string | null; cwd?: string } | null> {
     const live = await getSharedSession(sessionId);
     if (live) {
-        return live.userId === userId ? { runnerId: live.runnerId ?? null } : null;
+        return live.userId === userId
+            ? { runnerId: live.runnerId ?? null, ...(live.cwd ? { cwd: live.cwd } : {}) }
+            : null;
     }
-    const persistedUserId = await getRelaySessionUserId(sessionId);
-    if (!persistedUserId || persistedUserId !== userId) return null;
-    const runner = await getPersistedRelaySessionRunner(sessionId);
-    return { runnerId: runner?.runnerId ?? null };
+    const persisted = await getPersistedRelaySessionOwner(sessionId);
+    if (!persisted || !persisted.userId || persisted.userId !== userId) return null;
+    return {
+        runnerId: persisted.runnerId,
+        ...(persisted.cwd ? { cwd: persisted.cwd } : {}),
+    };
 }
 
 /** Authenticate via session cookie or API key. */
@@ -501,12 +504,13 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Missing session ID" }, { status: 400 });
         }
 
-        // Validate the target session exists and belongs to this user
+        // Validate the target session belongs to this user. A missing live
+        // record is not decided here: a schedule outlives its session, so a
+        // wake-enabled delivery may legitimately target a session whose live
+        // record has been swept — resolved against the durable table below,
+        // once the body tells us whether a wake was requested.
         const targetSession = await getSharedSession(sessionId);
-        if (!targetSession) {
-            return Response.json({ error: "Session not found or not connected" }, { status: 404 });
-        }
-        if (targetSession.userId !== identity.userId) {
+        if (targetSession && targetSession.userId !== identity.userId) {
             return Response.json({ error: "Session not found or not connected" }, { status: 404 });
         }
 
@@ -528,6 +532,21 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         const deliverAs = body.deliverAs ?? "steer";
         if (deliverAs !== "steer" && deliverAs !== "followUp") {
             return Response.json({ error: "Invalid 'deliverAs' — must be 'steer' or 'followUp'" }, { status: 400 });
+        }
+
+        // Where this trigger can be delivered or resumed. Falls back to the
+        // durable table ONLY for wake-enabled deliveries, so ordinary triggers
+        // keep their existing "live session or 404" contract.
+        const target: { runnerId: string | null; cwd?: string } | null = targetSession
+            ? { runnerId: targetSession.runnerId ?? null, ...(targetSession.cwd ? { cwd: targetSession.cwd } : {}) }
+            : body.wakeSession === true
+                ? await resolveSubscriptionOwner(sessionId, identity.userId)
+                : null;
+        if (!target) {
+            // No live record and nothing durable to resume — the session is
+            // genuinely gone. Callers treat 404 as "start fresh work": the time
+            // service spawns a replacement session for the schedule.
+            return Response.json({ error: "Session not found or not connected" }, { status: 404 });
         }
 
         const triggerId = `ext_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
@@ -587,14 +606,30 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
 
         // Offline — optionally wake the session in the background. The caller
         // retries (schedule deliveries use backoff) and lands the trigger once
-        // the resumed worker registers.
-        if (body.wakeSession === true && targetSession.runnerId) {
-            log.info(`External trigger ${triggerId}: session ${sessionId} offline — starting wake`);
-            void wakeOfflineSession(sessionId, targetSession).catch((err) => {
-                log.warn(`wake: unexpected error for ${sessionId}:`, err);
-            });
+        // the resumed worker registers. This covers a session whose live record
+        // is gone entirely: the runner resumes it by id from the session file,
+        // so a schedule returns to the conversation that created it rather than
+        // starting a stranger.
+        if (body.wakeSession === true && target.runnerId) {
+            const runnerReachable = !!getLocalRunnerSocket(target.runnerId);
+            if (runnerReachable) {
+                log.info(`External trigger ${triggerId}: session ${sessionId} offline — starting wake`);
+                void wakeOfflineSession(sessionId, target).catch((err) => {
+                    log.warn(`wake: unexpected error for ${sessionId}:`, err);
+                });
+            } else {
+                // Runner is down, not the session. Retrying is right — spawning a
+                // replacement here would strand work on a runner that is about
+                // to come back.
+                log.info(`External trigger ${triggerId}: runner ${target.runnerId} unreachable — caller should retry`);
+            }
             return Response.json(
-                { error: "Session is offline — wake started, retry delivery", waking: true },
+                {
+                    error: runnerReachable
+                        ? "Session is offline — wake started, retry delivery"
+                        : "Session is offline and its runner is unreachable — retry delivery",
+                    ...(runnerReachable ? { waking: true } : {}),
+                },
                 { status: 503 },
             );
         }
