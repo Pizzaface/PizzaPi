@@ -943,7 +943,11 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
     // immediately re-registers, so subscriptions must be preserved.
     // Only clear on true termination paths (session ended, killed, expired).
     if (reason !== "Session reconnected") {
-        void clearSessionSubscriptions(sessionId).catch((err) => {
+        // Schedules (time:*) are preserved: a standing schedule outlives the
+        // session that created it. When it next fires, the relay wakes that
+        // session (resume) or the time service starts a new one to run it.
+        // Everything else is cleaned up eagerly as before.
+        void clearSessionSubscriptions(sessionId, { preserveDurable: true }).catch((err) => {
             log.warn("Failed to clear trigger subscriptions for session", sessionId, ":", err);
         });
         // NOTE: Do NOT delete the relay event cache here. The cache is
