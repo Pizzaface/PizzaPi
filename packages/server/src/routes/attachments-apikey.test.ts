@@ -31,6 +31,7 @@ mock.module("../middleware.js", () => ({
 
 // Stub out the other dependencies the handler imports.
 mock.module("../ws/sio-registry.js", () => ({
+    emitToRunner: mock(() => {}),
     getSharedSession: async (_id: string) => null,
 }));
 

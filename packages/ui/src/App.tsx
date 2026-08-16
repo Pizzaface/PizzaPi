@@ -4438,52 +4438,21 @@ export function App() {
   /** The handful shown under "Recent" — display only, never the search scope. */
   const selectedModeSessions = React.useMemo(() => selectedModeAllSessions.slice(0, 5), [selectedModeAllSessions]);
 
-  // Standing scheduled work for the selected mode. Subscriptions live per
-  // session, so this fans out over the mode's sessions.
+  // Standing scheduled work for the selected mode.
+  //
+  // Schedules belong to a RUNNER and outlive the sessions that create them, so
+  // they are fetched per runner and then placed into a mode by workspace. The
+  // previous per-session fan-out could only see a schedule whose owning session
+  // was in the page of sessions being listed, so old and ownerless schedules
+  // silently vanished from the surface meant to cancel them.
   const [scheduledInstructions, setScheduledInstructions] = React.useState<ScheduledInstruction[]>([]);
   const [scheduledLoading, setScheduledLoading] = React.useState(false);
   const [scheduledFailed, setScheduledFailed] = React.useState(0);
   const wantsSchedule = !!selectedMode && selectedModeUi.scheduled;
-
-  // Offline sessions that still own schedules: a schedule must stay visible
-  // and cancellable even when its task is no longer running. Fetched from the
-  // server's persisted-session list and matched to the mode by cwd/runner.
-  const [persistedModeSessions, setPersistedModeSessions] = React.useState<Array<{ sessionId: string; sessionName: string | null }>>([]);
-  React.useEffect(() => {
-    if (!wantsSchedule || !selectedMode) {
-      setPersistedModeSessions([]);
-      return;
-    }
-    const controller = new AbortController();
-    void (async () => {
-      try {
-        const res = await fetch(`/api/sessions?includePersisted=1&limit=100`, { credentials: "include", signal: controller.signal });
-        if (!res.ok) return;
-        const data = await res.json() as { persistedSessions?: Array<{ sessionId: string; cwd: string; sessionName: string | null; runnerId: string | null }> };
-        const persisted = Array.isArray(data.persistedSessions) ? data.persistedSessions : [];
-        setPersistedModeSessions(
-          persisted
-            .filter((s) => findSessionMode({ cwd: s.cwd, runnerId: s.runnerId }, effectiveSessionModes, modesSource.runnerId)?.id === selectedMode.id)
-            .map((s) => ({ sessionId: s.sessionId, sessionName: s.sessionName ?? null })),
-        );
-      } catch {
-        if (!controller.signal.aborted) setPersistedModeSessions([]);
-      }
-    })();
-    return () => controller.abort();
-  }, [wantsSchedule, selectedMode, effectiveSessionModes, modesSource.runnerId]);
-
-  // Every mode session, not just the recent five: a schedule owned by an older
-  // or offline task would otherwise be invisible and impossible to cancel.
-  const scheduledSessions = React.useMemo(() => {
-    const live = selectedModeAllSessions.map((s) => ({ sessionId: s.sessionId, sessionName: s.sessionName ?? null }));
-    const liveIds = new Set(live.map((s) => s.sessionId));
-    const offline = persistedModeSessions.filter((s) => !liveIds.has(s.sessionId));
-    return [...live, ...offline];
-  }, [selectedModeAllSessions, persistedModeSessions]);
+  const scheduleRunnerId = modesSource.runnerId ?? null;
 
   const reloadScheduled = React.useCallback((signal?: AbortSignal) => {
-    if (!wantsSchedule || scheduledSessions.length === 0) {
+    if (!wantsSchedule || !scheduleRunnerId || !selectedMode) {
       setScheduledInstructions([]);
       setScheduledFailed(0);
       // Clear here too: an aborted in-flight load skips its own finally, so
@@ -4492,7 +4461,7 @@ export function App() {
       return Promise.resolve();
     }
     setScheduledLoading(true);
-    return fetchScheduledInstructions(scheduledSessions, signal)
+    return fetchScheduledInstructions(scheduleRunnerId, signal)
       .then(({ instructions, failed }) => {
         if (signal?.aborted) return;
         setScheduledInstructions(instructions);
@@ -4500,7 +4469,27 @@ export function App() {
       })
       .catch((err) => { if (!signal?.aborted) console.error("Failed to load scheduled work:", err); })
       .finally(() => { if (!signal?.aborted) setScheduledLoading(false); });
-  }, [wantsSchedule, scheduledSessions]);
+    // Deliberately depends only on WHAT to fetch, never on mode-shape values.
+    // modesSource derives from the runners feed, so its identity changes on
+    // every heartbeat — depending on it here re-ran the fetch (and replaced
+    // state with a fresh array) on every tick, thrashing the app.
+  }, [wantsSchedule, scheduleRunnerId, selectedMode?.id]);
+
+  // Placing a schedule in a mode is pure derivation, so it belongs here rather
+  // than in the fetch. A schedule whose workspace is unknown is kept rather
+  // than dropped: losing sight of one is worse than showing it in the wrong
+  // mode, since this is the only surface that can cancel it.
+  const visibleScheduledInstructions = React.useMemo(() => {
+    if (!selectedMode) return [];
+    return scheduledInstructions.filter((instruction) => {
+      if (!instruction.cwd) return true;
+      return findSessionMode(
+        { cwd: instruction.cwd, runnerId: scheduleRunnerId },
+        effectiveSessionModes,
+        modesSource.runnerId,
+      )?.id === selectedMode.id;
+    });
+  }, [scheduledInstructions, selectedMode, effectiveSessionModes, modesSource.runnerId, scheduleRunnerId]);
 
   React.useEffect(() => {
     const controller = new AbortController();
@@ -5500,7 +5489,7 @@ export function App() {
                           onStartTask: (prompt: string) => { void handleStartModeTask(prompt); },
                           onOpenSession: handleOpenSession,
                           scheduled: selectedModeUi.scheduled ? {
-                            instructions: scheduledInstructions,
+                            instructions: visibleScheduledInstructions,
                             loading: scheduledLoading,
                             failed: scheduledFailed,
                             onCancel: handleCancelScheduled,

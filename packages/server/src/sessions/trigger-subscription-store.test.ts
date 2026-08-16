@@ -13,6 +13,10 @@ import {
     clearSessionSubscriptions,
     getSubscriptionsForSessionTrigger,
     unsubscribeSessionSubscription,
+    getSessionIdsWithSubscriptionsForRunner,
+    refreshRunnerSubscriptionTtls,
+    sessionHasScheduleSubscription,
+    isDurableTriggerType,
     _injectRedisForTesting,
     _resetRedisForTesting,
 } from "./trigger-subscription-store";
@@ -398,5 +402,151 @@ describe("subscription params", () => {
         });
         const params = await getSubscriptionParams("session-1", "test:event");
         expect(params).toEqual({ name: "test", count: 5, active: true });
+    });
+});
+
+// ── Runner-sessions index (offline schedule persistence) ───────────────────
+
+describe("getSessionIdsWithSubscriptionsForRunner", () => {
+    beforeEach(resetState);
+
+    test("subscribe adds the session to the runner-sessions index", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:cron");
+        expect(await getSessionIdsWithSubscriptionsForRunner("runner-A")).toEqual(["session-1"]);
+    });
+
+    test("index is per-runner", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:cron");
+        await subscribeSessionToTrigger("session-2", "runner-B", "time:at");
+        expect(await getSessionIdsWithSubscriptionsForRunner("runner-A")).toEqual(["session-1"]);
+        expect(await getSessionIdsWithSubscriptionsForRunner("runner-B")).toEqual(["session-2"]);
+    });
+
+    test("unsubscribe by trigger type removes the session once no subs remain on that runner", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:cron");
+        await unsubscribeSessionFromTrigger("session-1", "time:cron");
+        expect(await getSessionIdsWithSubscriptionsForRunner("runner-A")).toEqual([]);
+    });
+
+    test("unsubscribe keeps the session while another sub on the same runner remains", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:cron");
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:at");
+        await unsubscribeSessionFromTrigger("session-1", "time:cron");
+        expect(await getSessionIdsWithSubscriptionsForRunner("runner-A")).toEqual(["session-1"]);
+    });
+
+    test("unsubscribeSessionSubscription removes the session only when its last sub goes", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:cron");
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:at");
+        const subs = await listSessionSubscriptions("session-1");
+
+        await unsubscribeSessionSubscription("session-1", subs[0].subscriptionId);
+        expect(await getSessionIdsWithSubscriptionsForRunner("runner-A")).toEqual(["session-1"]);
+
+        await unsubscribeSessionSubscription("session-1", subs[1].subscriptionId);
+        expect(await getSessionIdsWithSubscriptionsForRunner("runner-A")).toEqual([]);
+    });
+
+    test("clearSessionSubscriptions removes the session from every runner index", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:cron");
+        await subscribeSessionToTrigger("session-1", "runner-B", "svc:event");
+        await clearSessionSubscriptions("session-1");
+        expect(await getSessionIdsWithSubscriptionsForRunner("runner-A")).toEqual([]);
+        expect(await getSessionIdsWithSubscriptionsForRunner("runner-B")).toEqual([]);
+    });
+
+    test("returns empty for a runner with no subscribed sessions", async () => {
+        expect(await getSessionIdsWithSubscriptionsForRunner("runner-none")).toEqual([]);
+    });
+});
+
+describe("clearSessionSubscriptions({ preserveDurable })", () => {
+    beforeEach(resetState);
+
+    test("keeps schedules and removes everything else", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:cron", undefined, { cron: "0 9 * * *" });
+        await subscribeSessionToTrigger("session-1", "runner-A", "github:pr_comment");
+
+        await clearSessionSubscriptions("session-1", { preserveDurable: true });
+
+        const subs = await listSessionSubscriptions("session-1");
+        expect(subs).toHaveLength(1);
+        expect(subs[0].triggerType).toBe("time:cron");
+        expect(subs[0].params).toEqual({ cron: "0 9 * * *" });
+    });
+
+    test("keeps the runner-sessions index entry so the reconnect snapshot still finds the schedule", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:cron");
+        await subscribeSessionToTrigger("session-1", "runner-A", "github:pr_comment");
+
+        await clearSessionSubscriptions("session-1", { preserveDurable: true });
+
+        expect(await getSessionIdsWithSubscriptionsForRunner("runner-A")).toEqual(["session-1"]);
+        expect(await getSubscribersForTrigger("runner-A", "time:cron")).toContain("session-1");
+        expect(await getSubscribersForTrigger("runner-A", "github:pr_comment")).not.toContain("session-1");
+    });
+
+    test("drops the session from runners where nothing durable survives", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:cron");
+        await subscribeSessionToTrigger("session-1", "runner-B", "github:pr_comment");
+
+        await clearSessionSubscriptions("session-1", { preserveDurable: true });
+
+        expect(await getSessionIdsWithSubscriptionsForRunner("runner-A")).toEqual(["session-1"]);
+        expect(await getSessionIdsWithSubscriptionsForRunner("runner-B")).toEqual([]);
+    });
+
+    test("without the option it still clears everything (default unchanged)", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:cron");
+        await subscribeSessionToTrigger("session-1", "runner-A", "github:pr_comment");
+
+        await clearSessionSubscriptions("session-1");
+
+        expect(await listSessionSubscriptions("session-1")).toHaveLength(0);
+        expect(await getSessionIdsWithSubscriptionsForRunner("runner-A")).toEqual([]);
+    });
+
+    test("sessionHasScheduleSubscription reflects surviving schedules", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:at", undefined, { at: "14:30UTC" });
+        await subscribeSessionToTrigger("session-2", "runner-A", "github:pr_comment");
+
+        expect(await sessionHasScheduleSubscription("session-1")).toBe(true);
+        expect(await sessionHasScheduleSubscription("session-2")).toBe(false);
+
+        await clearSessionSubscriptions("session-1", { preserveDurable: true });
+        expect(await sessionHasScheduleSubscription("session-1")).toBe(true);
+    });
+
+    test("isDurableTriggerType covers the time trigger family only", () => {
+        expect(isDurableTriggerType("time:cron")).toBe(true);
+        expect(isDurableTriggerType("time:at")).toBe(true);
+        expect(isDurableTriggerType("time:timer_fired")).toBe(true);
+        expect(isDurableTriggerType("github:pr_comment")).toBe(false);
+    });
+});
+
+describe("refreshRunnerSubscriptionTtls", () => {
+    beforeEach(resetState);
+
+    test("refreshes session hash, runner-sessions index, and reverse-index TTLs", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:cron");
+        expirations.clear();
+
+        await refreshRunnerSubscriptionTtls("runner-A", ["session-1"], 999);
+
+        expect(expirations.get("pizzapi:trigger-subs:session-1")).toBe(999);
+        expect(expirations.get("pizzapi:trigger-subs:runner-sessions:runner-A")).toBe(999);
+        expect(expirations.get("pizzapi:trigger-subs:runner:runner-A:time:cron")).toBe(999);
+    });
+
+    test("does not refresh reverse indexes belonging to other runners", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:cron");
+        await subscribeSessionToTrigger("session-1", "runner-B", "svc:event");
+        expirations.clear();
+
+        await refreshRunnerSubscriptionTtls("runner-A", ["session-1"], 999);
+
+        expect(expirations.get("pizzapi:trigger-subs:runner:runner-A:time:cron")).toBe(999);
+        expect(expirations.get("pizzapi:trigger-subs:runner:runner-B:svc:event")).toBeUndefined();
     });
 });

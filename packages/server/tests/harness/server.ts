@@ -432,6 +432,7 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
         userName: testUserName,
         userEmail: testUserEmail,
         sessionCookie,
+        authContext,
         addTrustedOrigin,
         fetch: testFetch,
         cleanup,

@@ -129,6 +129,17 @@ export interface RunnerTriggerListenerTable {
     updatedAt: string;
 }
 
+/** Durable mirror of per-session trigger subscriptions. Redis is a cache and is
+ *  wiped by a relay redeploy; this table is what survives it. */
+export interface TriggerSubscriptionTable {
+    id: string;
+    sessionId: string;
+    runnerId: string;
+    triggerType: string;
+    subscriptionJson: string;
+    updatedAt: string;
+}
+
 export interface UserHiddenModelTable {
     id: string;
     userId: string;
@@ -232,6 +243,7 @@ export interface DB {
     push_subscription: PushSubscriptionTable;
     runner_recent_folder: RunnerRecentFolderTable;
     runner_trigger_listener: RunnerTriggerListenerTable;
+    trigger_subscription: TriggerSubscriptionTable;
     user_hidden_model: UserHiddenModelTable;
     extracted_attachment: ExtractedAttachmentTable;
     webhook: WebhookTable;

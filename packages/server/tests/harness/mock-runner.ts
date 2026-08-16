@@ -87,6 +87,9 @@ export interface MockRunnerOptions {
     /** Override the API key used for auth (default: server.apiKey). Pass a bad key to test auth failures. */
     apiKey?: string;
     runnerId?: string;
+    /** Persistent-identity secret. When provided with runnerId, the server
+     *  honors the requested id across reconnects (like a real daemon). */
+    runnerSecret?: string;
     name?: string;
     roots?: string[];
     skills?: RunnerSkill[];
@@ -134,6 +137,8 @@ export interface MockRunner {
     getTerminal(terminalId: string): MockTerminal | undefined;
     wasRestartRequested(): boolean;
     wasShutdownRequested(): boolean;
+    /** All trigger_subscriptions_snapshot payloads received (in arrival order). */
+    getTriggerSubscriptionSnapshots(): Array<{ revision: number; isReconnect?: boolean; subscriptions: Array<Record<string, unknown>> }>;
 
     // Request handler registration (backward compat)
     onSkillRequest(handler: (data: unknown) => unknown): void;
@@ -365,6 +370,14 @@ export async function createMockRunner(
     });
 
     let assignedRunnerId = runnerId;
+
+    // Capture trigger subscription snapshots. Registered BEFORE register_runner
+    // so the snapshot emitted right after runner_registered is never missed.
+    const triggerSubscriptionSnapshots: Array<{ revision: number; isReconnect?: boolean; subscriptions: Array<Record<string, unknown>> }> = [];
+    socket.on("trigger_subscriptions_snapshot" as any, (data: any) => {
+        triggerSubscriptionSnapshots.push(data);
+    });
+
     await new Promise<void>((resolve, reject) => {
         let settled = false;
 
@@ -396,6 +409,7 @@ export async function createMockRunner(
             }
             socket.emit("register_runner", {
                 runnerId,
+                ...(opts?.runnerSecret ? { runnerSecret: opts.runnerSecret } : {}),
                 name: opts?.name ?? "test-runner",
                 roots: opts?.roots ?? ["/tmp/test"],
                 skills: Array.from(skillsMap.values()).map(({ content: _, ...s }) => s),
@@ -1230,6 +1244,10 @@ export async function createMockRunner(
 
         wasShutdownRequested(): boolean {
             return shutdownRequested;
+        },
+
+        getTriggerSubscriptionSnapshots() {
+            return triggerSubscriptionSnapshots;
         },
 
         get disabledServiceIds(): ReadonlySet<string> {

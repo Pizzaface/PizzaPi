@@ -30,6 +30,12 @@ export interface TestServer {
     userEmail: string;
     /** Auth session cookie string for viewer/hub namespaces */
     sessionCookie: string;
+    /**
+     * The server's auth context. Tests that call DB-backed stores directly must
+     * run them inside runWithAuthContext(server.authContext, ...), or the write
+     * silently no-ops (stores treat a missing context as best-effort failure).
+     */
+    authContext: import("../../src/auth.js").AuthContext;
     /** Add a trusted origin after startup (e.g. Vite HMR sandbox port) */
     addTrustedOrigin(origin: string): void;
     /** Helper: make an authenticated REST request */

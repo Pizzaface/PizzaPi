@@ -56,6 +56,7 @@ import {
     broadcastToSessionViewers,
     emitToRelaySessionVerified,
     getLocalRunnerSocket,
+    emitToRunner,
     recordRunnerSession,
     linkSessionToRunner,
 } from "../ws/sio-registry.js";
@@ -87,6 +88,9 @@ import {
     listRunnerTriggerListeners,
     updateRunnerTriggerListener,
 } from "../sessions/runner-trigger-listener-store.js";
+import {
+    getPersistedRelaySessionOwner,
+} from "../sessions/store.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
 
 interface SubscriptionFilterRecord {
@@ -228,6 +232,118 @@ interface TriggerRequest {
     source?: string;
     /** Optional human-readable summary for the trigger */
     summary?: string;
+    /**
+     * When true and the target session is offline, the server wakes it: the
+     * runner respawns a worker that resumes the same session (new_session with
+     * resumeId), and the caller's retry delivers into the awakened session.
+     * Used by schedule deliveries (time service) — a schedule firing must
+     * reach the session that created it even if its worker has exited.
+     */
+    wakeSession?: boolean;
+}
+
+// ── Offline-session wake ───────────────────────────────────────────
+
+/** In-flight wake attempts, deduped per session so concurrent schedule fires
+ *  (or retries) share one worker respawn instead of racing the daemon. */
+const pendingSessionWakes = new Map<string, Promise<boolean>>();
+
+/**
+ * Ask the session's runner to respawn a worker that RESUMES this session
+ * (same relay session id, same conversation via resumeId). Returns true once
+ * the worker's TUI socket has registered. Runs in the background — the
+ * trigger route returns 503 immediately and the caller's retry loop delivers
+ * once the session is awake, which avoids double-delivery races between a
+ * slow wake and the caller's own delivery timeout.
+ */
+function wakeOfflineSession(
+    sessionId: string,
+    session: { runnerId?: string | null; cwd?: string },
+): Promise<boolean> {
+    const existing = pendingSessionWakes.get(sessionId);
+    if (existing) return existing;
+
+    const attempt = (async (): Promise<boolean> => {
+        const runnerId = session.runnerId;
+        if (!runnerId) return false;
+
+        // The runner may be connected to a DIFFERENT relay node. emitToRunner
+        // goes through the per-runner room, which the Redis adapter fans out
+        // cluster-wide, so waking is not limited to sessions whose runner
+        // happens to share this node.
+        const isLocal = !!getLocalRunnerSocket(runnerId);
+        const ackPromise = isLocal ? waitForSpawnAck(sessionId, 10_000) : null;
+        try {
+            emitToRunner(runnerId, "new_session", {
+                sessionId,
+                ...(session.cwd ? { cwd: session.cwd } : {}),
+                // The daemon resolves the local .jsonl by session id; if the file
+                // is gone it degrades to a fresh conversation under the same
+                // relay session — still the schedule's home.
+                resumeId: sessionId,
+            });
+        } catch (err) {
+            log.warn(`wake: failed to send new_session for ${sessionId}:`, err);
+            return false;
+        }
+
+        // The spawn ack and worker socket are observable only on the node the
+        // runner/worker connect to. Cross-node, fire and let the caller's retry
+        // confirm delivery — that path is already cluster-wide.
+        if (!ackPromise) {
+            log.info(`wake: asked runner ${runnerId} on another node to resume ${sessionId}`);
+            return true;
+        }
+
+        const ack = await ackPromise;
+        if (ack.ok === false && !(ack as { timeout?: boolean }).timeout) {
+            log.warn(`wake: runner rejected resume of ${sessionId}: ${(ack as { message?: string }).message ?? "unknown"}`);
+            return false;
+        }
+        const ready = await waitForSessionSocket(sessionId, 15_000);
+        if (ready) {
+            log.info(`wake: session ${sessionId} resumed and registered`);
+        } else {
+            log.warn(`wake: session ${sessionId} worker never registered`);
+        }
+        return ready;
+    })().finally(() => {
+        pendingSessionWakes.delete(sessionId);
+    });
+
+    pendingSessionWakes.set(sessionId, attempt);
+    return attempt;
+}
+
+/**
+ * Resolve who owns a session for subscription management, tolerating a session
+ * whose live record is gone.
+ *
+ * Schedules (time:*) outlive the session that created them, so a standing
+ * subscription must stay listable and cancellable after its owner ends —
+ * otherwise a cron fires forever with no way to see or stop it from the UI.
+ * The live Redis record is preferred (it is authoritative and carries the
+ * current runner); the persisted relay_session row is the fallback.
+ *
+ * Returns null when the session is unknown or belongs to another user —
+ * callers must treat that exactly like "not found".
+ */
+async function resolveSubscriptionOwner(
+    sessionId: string,
+    userId: string,
+): Promise<{ runnerId: string | null; cwd?: string } | null> {
+    const live = await getSharedSession(sessionId);
+    if (live) {
+        return live.userId === userId
+            ? { runnerId: live.runnerId ?? null, ...(live.cwd ? { cwd: live.cwd } : {}) }
+            : null;
+    }
+    const persisted = await getPersistedRelaySessionOwner(sessionId);
+    if (!persisted || !persisted.userId || persisted.userId !== userId) return null;
+    return {
+        runnerId: persisted.runnerId,
+        ...(persisted.cwd ? { cwd: persisted.cwd } : {}),
+    };
 }
 
 /** Authenticate via session cookie or API key. */
@@ -401,12 +517,13 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Missing session ID" }, { status: 400 });
         }
 
-        // Validate the target session exists and belongs to this user
+        // Validate the target session belongs to this user. A missing live
+        // record is not decided here: a schedule outlives its session, so a
+        // wake-enabled delivery may legitimately target a session whose live
+        // record has been swept — resolved against the durable table below,
+        // once the body tells us whether a wake was requested.
         const targetSession = await getSharedSession(sessionId);
-        if (!targetSession) {
-            return Response.json({ error: "Session not found or not connected" }, { status: 404 });
-        }
-        if (targetSession.userId !== identity.userId) {
+        if (targetSession && targetSession.userId !== identity.userId) {
             return Response.json({ error: "Session not found or not connected" }, { status: 404 });
         }
 
@@ -428,6 +545,21 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         const deliverAs = body.deliverAs ?? "steer";
         if (deliverAs !== "steer" && deliverAs !== "followUp") {
             return Response.json({ error: "Invalid 'deliverAs' — must be 'steer' or 'followUp'" }, { status: 400 });
+        }
+
+        // Where this trigger can be delivered or resumed. Falls back to the
+        // durable table ONLY for wake-enabled deliveries, so ordinary triggers
+        // keep their existing "live session or 404" contract.
+        const target: { runnerId: string | null; cwd?: string } | null = targetSession
+            ? { runnerId: targetSession.runnerId ?? null, ...(targetSession.cwd ? { cwd: targetSession.cwd } : {}) }
+            : body.wakeSession === true
+                ? await resolveSubscriptionOwner(sessionId, identity.userId)
+                : null;
+        if (!target) {
+            // No live record and nothing durable to resume — the session is
+            // genuinely gone. Callers treat 404 as "start fresh work": the time
+            // service spawns a replacement session for the schedule.
+            return Response.json({ error: "Session not found or not connected" }, { status: 404 });
         }
 
         const triggerId = `ext_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
@@ -483,6 +615,40 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             void Promise.resolve(pushTriggerHistory(sessionId, historyEntry)).catch(() => {});
             broadcastToSessionViewers(sessionId, "trigger_delivered", { triggerId });
             return Response.json({ ok: true, triggerId });
+        }
+
+        // Offline — optionally wake the session in the background. The caller
+        // retries (schedule deliveries use backoff) and lands the trigger once
+        // the resumed worker registers. This covers a session whose live record
+        // is gone entirely: the runner resumes it by id from the session file,
+        // so a schedule returns to the conversation that created it rather than
+        // starting a stranger.
+        if (body.wakeSession === true && target.runnerId) {
+            // Redis-backed, so a runner attached to another relay node counts as
+            // reachable — a local-socket check would report a perfectly healthy
+            // multi-node deployment as "runner down".
+            const runnerReachable = !!getLocalRunnerSocket(target.runnerId)
+                || !!(await getRunnerData(target.runnerId).catch(() => null));
+            if (runnerReachable) {
+                log.info(`External trigger ${triggerId}: session ${sessionId} offline — starting wake`);
+                void wakeOfflineSession(sessionId, target).catch((err) => {
+                    log.warn(`wake: unexpected error for ${sessionId}:`, err);
+                });
+            } else {
+                // Runner is down, not the session. Retrying is right — spawning a
+                // replacement here would strand work on a runner that is about
+                // to come back.
+                log.info(`External trigger ${triggerId}: runner ${target.runnerId} unreachable — caller should retry`);
+            }
+            return Response.json(
+                {
+                    error: runnerReachable
+                        ? "Session is offline — wake started, retry delivery"
+                        : "Session is offline and its runner is unreachable — retry delivery",
+                    ...(runnerReachable ? { waking: true } : {}),
+                },
+                { status: 503 },
+            );
         }
 
         return Response.json(
@@ -583,8 +749,10 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
 
         const sessionId = decodeURIComponent(subsMatch[1]);
 
-        const session = await getSharedSession(sessionId);
-        if (!session || session.userId !== identity.userId) {
+        // Falls back to persisted ownership: a schedule outlives its session,
+        // and an unlistable schedule is an uncancellable one.
+        const owner = await resolveSubscriptionOwner(sessionId, identity.userId);
+        if (!owner) {
             return Response.json({ error: "Session not found" }, { status: 404 });
         }
 
@@ -859,8 +1027,12 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         const target = decodeURIComponent(subsDeleteMatch[2]);
         const subscriptionIdParam = url.searchParams.get("subscriptionId")?.trim() || undefined;
 
-        const session = await getSharedSession(sessionId);
-        if (!session || session.userId !== identity.userId) {
+        // Persisted fallback: cancelling a schedule whose session has ended must
+        // work, and must still reach the runner below so its armed timer dies
+        // with the subscription (otherwise the next fire spawns a replacement
+        // session for work the user just cancelled).
+        const owner = await resolveSubscriptionOwner(sessionId, identity.userId);
+        if (!owner) {
             return Response.json({ error: "Session not found" }, { status: 404 });
         }
 
@@ -878,14 +1050,14 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         log.info(`Session ${sessionId} unsubscribed from trigger target '${subscriptionId ?? triggerType}'`);
         broadcastToSessionViewers(sessionId, "trigger_subscriptions_changed", { triggerType, action: "unsubscribe" });
 
-        if (session.runnerId) {
-            void emitTriggerSubscriptionDelta(session.runnerId, {
+        if (owner.runnerId) {
+            void emitTriggerSubscriptionDelta(owner.runnerId, {
                 action: "unsubscribe",
                 subscription: {
                     subscriptionId: subscriptionId ?? `legacy:all:${triggerType}`,
                     sessionId,
                     triggerType,
-                    runnerId: session.runnerId,
+                    runnerId: owner.runnerId,
                 },
             });
         }
@@ -904,8 +1076,10 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         const target = decodeURIComponent(subsDeleteMatch[2]);
         const subscriptionIdParam = url.searchParams.get("subscriptionId")?.trim() || undefined;
 
-        const session = await getSharedSession(sessionId);
-        if (!session || session.userId !== identity.userId) {
+        // Same persisted fallback as GET/DELETE — editing a standing schedule
+        // must not require its creating session to still be running.
+        const owner = await resolveSubscriptionOwner(sessionId, identity.userId);
+        if (!owner) {
             return Response.json({ error: "Session not found" }, { status: 404 });
         }
 
@@ -918,8 +1092,8 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
 
         // Validate params against the runner's trigger def (if available)
         let subParams: SubscriptionParams | undefined;
-        if (session.runnerId) {
-            const services = await getRunnerServices(session.runnerId);
+        if (owner.runnerId) {
+            const services = await getRunnerServices(owner.runnerId);
             const triggerDef = services?.triggerDefs?.find((d) => d.type === target);
 
             if (body.params && typeof body.params === "object" && !Array.isArray(body.params)) {
@@ -988,7 +1162,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         let subFilters: SubscriptionFilter[] | undefined;
         let subFilterMode: SubscriptionFilterMode | undefined;
         if (Array.isArray(body.filters) && body.filters.length > 0) {
-            const services = session.runnerId ? await getRunnerServices(session.runnerId) : null;
+            const services = owner.runnerId ? await getRunnerServices(owner.runnerId) : null;
             const triggerDef = services?.triggerDefs?.find((d) => d.type === target);
             const schemaProps = (triggerDef?.schema as any)?.properties ?? {};
             const validatedFilters: SubscriptionFilter[] = [];
@@ -1038,14 +1212,14 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         // The reconciliation protocol (trigger_subscription_delta) is the
         // authoritative path — the legacy subscription_params_changed event
         // has been removed to prevent double-apply.
-        if (session.runnerId) {
-            void emitTriggerSubscriptionDelta(session.runnerId, {
+        if (owner.runnerId) {
+            void emitTriggerSubscriptionDelta(owner.runnerId, {
                 action: "update",
                 subscription: {
                     subscriptionId: subscriptionId ?? `legacy:all:${triggerType}`,
                     sessionId,
                     triggerType,
-                    runnerId: session.runnerId,
+                    runnerId: owner.runnerId,
                     ...(subParams ? { params: subParams } : {}),
                     ...(subFilters ? { filters: subFilters } : {}),
                     ...(subFilterMode ? { filterMode: subFilterMode } : {}),

@@ -28,53 +28,49 @@ describe("fetchScheduledInstructions", () => {
     beforeEach(() => {
         globalThis.fetch = (async (input: any) => {
             const url = String(input);
-            if (url.includes("sess-1")) {
+            if (url.includes("/api/runners/runner-A/schedules")) {
                 return new Response(JSON.stringify({
-                    subscriptions: [
-                        { subscriptionId: "a", triggerType: "time:cron", params: { cron: "0 8 * * *" } },
-                        { subscriptionId: "b", triggerType: "github:pr_comment" },
+                    schedules: [
+                        { subscriptionId: "a", sessionId: "sess-1", sessionName: "One", triggerType: "time:cron", params: { cron: "0 8 * * *" }, cwd: "/work/a", sessionLive: true },
+                        { subscriptionId: "c", sessionId: "sess-2", sessionName: null, triggerType: "time:at", params: { at: "9:00" }, cwd: "/work/b", sessionLive: false },
+                        // Not a schedule — must not appear on the schedule surface.
+                        { subscriptionId: "b", sessionId: "sess-1", triggerType: "github:pr_comment" },
                     ],
                 }));
             }
-            if (url.includes("sess-2")) {
-                return new Response(JSON.stringify({
-                    subscriptions: [{ subscriptionId: "c", triggerType: "time:at", params: { at: "9:00" } }],
-                }));
-            }
-            return new Response(JSON.stringify({ subscriptions: [] }));
+            return new Response(JSON.stringify({ schedules: [] }));
         }) as typeof fetch;
     });
 
-    test("collects time-based subscriptions across sessions and drops the rest", async () => {
-        const { instructions, failed } = await fetchScheduledInstructions([
-            { sessionId: "sess-1", sessionName: "One" },
-            { sessionId: "sess-2", sessionName: "Two" },
-        ]);
+    test("lists a runner's schedules and drops non-schedule subscriptions", async () => {
+        const { instructions, failed } = await fetchScheduledInstructions("runner-A");
         expect(instructions.map((f) => f.subscriptionId)).toEqual(["a", "c"]);
         expect(instructions[0]!.sessionName).toBe("One");
+        expect(instructions[0]!.cwd).toBe("/work/a");
         expect(failed).toBe(0);
     });
 
-    test("an unreachable session does not blank the whole schedule", async () => {
-        globalThis.fetch = (async (input: any) => {
-            if (String(input).includes("sess-1")) throw new Error("offline");
-            return new Response(JSON.stringify({
-                subscriptions: [{ subscriptionId: "c", triggerType: "time:cron", params: { cron: "0 9 * * *" } }],
-            }));
-        }) as typeof fetch;
-
-        const { instructions, failed } = await fetchScheduledInstructions([
-            { sessionId: "sess-1", sessionName: "One" },
-            { sessionId: "sess-2", sessionName: "Two" },
-        ]);
-        expect(instructions.map((f) => f.subscriptionId)).toEqual(["c"]);
-        // The unreachable session is reported, not passed off as "nothing scheduled".
-        expect(failed).toBe(1);
+    test("includes schedules whose owning session is no longer running", async () => {
+        const { instructions } = await fetchScheduledInstructions("runner-A");
+        const ownerless = instructions.find((i) => i.subscriptionId === "c");
+        // The whole point of listing by runner: this one is invisible to any
+        // per-session fan-out, but still fires and still needs cancelling.
+        expect(ownerless).toBeDefined();
+        expect(ownerless!.sessionLive).toBe(false);
     });
 
-    test("a non-ok response contributes nothing", async () => {
+    test("no runner means nothing to ask, not a failure", async () => {
+        expect(await fetchScheduledInstructions(null)).toEqual({ instructions: [], failed: 0 });
+    });
+
+    test("a non-ok response is reported rather than passed off as 'nothing scheduled'", async () => {
         globalThis.fetch = (async () => new Response("nope", { status: 500 })) as typeof fetch;
-        expect(await fetchScheduledInstructions([{ sessionId: "s", sessionName: null }])).toEqual({ instructions: [], failed: 1 });
+        expect(await fetchScheduledInstructions("runner-A")).toEqual({ instructions: [], failed: 1 });
+    });
+
+    test("a network error is reported too", async () => {
+        globalThis.fetch = (async () => { throw new Error("offline"); }) as typeof fetch;
+        expect(await fetchScheduledInstructions("runner-A")).toEqual({ instructions: [], failed: 1 });
     });
 });
 

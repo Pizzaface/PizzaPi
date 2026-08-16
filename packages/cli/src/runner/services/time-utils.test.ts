@@ -316,4 +316,63 @@ describe("nextCronTime", () => {
         const next = nextCronTime(cron);
         expect(next).toBeNull();
     });
+
+    // Cron fields are matched in UTC (getUTC*/setUTC*), which is what makes a
+    // daily schedule a fixed 24h interval. A local-time implementation would
+    // fire twice on the fall-back day and skip the spring-forward hour; these
+    // pin that we do neither, and that the contract stays UTC rather than
+    // drifting to the host's zone.
+    describe("DST boundaries (UTC semantics)", () => {
+        const DAY_MS = 24 * 60 * 60 * 1000;
+
+        test("US spring-forward: daily cron keeps a fixed 24h gap and does not skip a day", () => {
+            // 2026-03-08 02:00 US/Eastern does not exist locally.
+            const cron = parseCron("30 2 * * *")!;
+            let cursor = new Date("2026-03-06T00:00:00Z").getTime();
+            const fires: number[] = [];
+            for (let i = 0; i < 4; i++) {
+                const next = nextCronTime(cron, cursor)!;
+                expect(next).not.toBeNull();
+                fires.push(next);
+                cursor = next;
+            }
+            for (let i = 1; i < fires.length; i++) {
+                expect(fires[i] - fires[i - 1]).toBe(DAY_MS);
+            }
+            // Every fire is 02:30 UTC — no day is skipped across the boundary.
+            for (const fire of fires) {
+                const d = new Date(fire);
+                expect(d.getUTCHours()).toBe(2);
+                expect(d.getUTCMinutes()).toBe(30);
+            }
+            expect(new Set(fires.map((f) => new Date(f).getUTCDate())).size).toBe(fires.length);
+        });
+
+        test("US fall-back: the repeated local hour does not produce a duplicate fire", () => {
+            // 2026-11-01 01:30 US/Eastern happens twice locally.
+            const cron = parseCron("30 1 * * *")!;
+            let cursor = new Date("2026-10-31T00:00:00Z").getTime();
+            const fires: number[] = [];
+            for (let i = 0; i < 4; i++) {
+                const next = nextCronTime(cron, cursor)!;
+                fires.push(next);
+                cursor = next;
+            }
+            expect(new Set(fires).size).toBe(fires.length);
+            for (let i = 1; i < fires.length; i++) {
+                expect(fires[i] - fires[i - 1]).toBe(DAY_MS);
+            }
+        });
+
+        test("hourly cron keeps a fixed 60m gap across a DST boundary", () => {
+            const cron = parseCron("0 * * * *")!;
+            let cursor = new Date("2026-03-08T04:00:00Z").getTime();
+            let prev = nextCronTime(cron, cursor)!;
+            for (let i = 0; i < 6; i++) {
+                const next = nextCronTime(cron, prev)!;
+                expect(next - prev).toBe(60 * 60 * 1000);
+                prev = next;
+            }
+        });
+    });
 });

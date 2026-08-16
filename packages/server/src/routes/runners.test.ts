@@ -22,6 +22,7 @@ const mockLinkSessionToRunner = mock((_runnerId: string, _sessionId: string) => 
 const mockRecordRunnerSession = mock((_runnerId: string, _sessionId: string) => Promise.resolve());
 const mockRegisterTerminal = mock((_terminalId: string, _runnerId: string, _userId: string, _opts: any) => Promise.resolve());
 mock.module("../ws/sio-registry.js", () => ({
+    emitToRunner: mock(() => {}),
     getRunnerData: mockGetRunnerData,
     getRunners: mockGetRunners,
     getLocalRunnerSocket: mockGetLocalRunnerSocket,

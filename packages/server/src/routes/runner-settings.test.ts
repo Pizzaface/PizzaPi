@@ -11,6 +11,7 @@ mock.module("../middleware.js", () => ({
 
 const mockGetRunnerData = mock((_runnerId: string) => Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
 mock.module("../ws/sio-registry.js", () => ({
+    emitToRunner: mock(() => {}),
   getRunnerData: mockGetRunnerData,
 }));
 

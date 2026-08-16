@@ -11,50 +11,60 @@ export interface ScheduledInstruction {
   subscriptionId?: string;
   triggerType: string;
   params?: Record<string, unknown>;
+  /** Workspace the schedule belongs to, used to place it in a mode. */
+  cwd?: string | null;
+  /** False when the owning worker has exited — the schedule still fires. */
+  sessionLive?: boolean;
 }
 
 /**
- * Fetch every standing time-based instruction across a set of sessions.
+ * Fetch every standing schedule on a runner.
  *
- * Subscriptions are stored per session, so a mode-wide view fans out over the
- * mode's sessions. Bounded by the caller: a mode home passes the sessions it
- * already lists, not the whole history.
+ * Schedules belong to a runner and outlive the sessions that create them, so
+ * they are fetched by runner rather than by fanning out over sessions. The old
+ * fan-out could only see a schedule whose owning session happened to be in the
+ * page of sessions being listed, so old and ownerless schedules silently
+ * disappeared from the surface meant to cancel them.
  */
 export async function fetchScheduledInstructions(
-  sessions: Array<{ sessionId: string; sessionName: string | null }>,
+  runnerId: string | null | undefined,
   signal?: AbortSignal,
 ): Promise<{ instructions: ScheduledInstruction[]; failed: number }> {
-  let failed = 0;
-  const results = await Promise.all(
-    sessions.map(async (session) => {
-      try {
-        const res = await fetch(
-          `/api/sessions/${encodeURIComponent(session.sessionId)}/trigger-subscriptions`,
-          { credentials: "include", signal },
-        );
-        if (!res.ok) {
-          failed++;
-          return [];
-        }
-        const data = (await res.json()) as { subscriptions?: Array<{ subscriptionId?: string; triggerType: string; params?: Record<string, unknown> }> };
-        return (data.subscriptions ?? [])
-          .filter((sub) => isScheduledTrigger(sub.triggerType))
-          .map((sub) => ({
-            sessionId: session.sessionId,
-            sessionName: session.sessionName,
-            subscriptionId: sub.subscriptionId,
-            triggerType: sub.triggerType,
-            params: sub.params,
-          }));
-      } catch (err) {
-        // One unreachable session must not blank the whole schedule, but the
-        // gap is reported rather than passed off as "nothing scheduled".
-        if (!signal?.aborted) failed++;
-        return [];
-      }
-    }),
-  );
-  return { instructions: results.flat(), failed };
+  if (!runnerId) return { instructions: [], failed: 0 };
+  try {
+    const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/schedules`, {
+      credentials: "include",
+      signal,
+    });
+    if (!res.ok) return { instructions: [], failed: 1 };
+    const data = (await res.json()) as {
+      schedules?: Array<{
+        sessionId: string;
+        sessionName?: string | null;
+        subscriptionId?: string;
+        triggerType: string;
+        params?: Record<string, unknown>;
+        cwd?: string | null;
+        sessionLive?: boolean;
+      }>;
+    };
+    const instructions = (data.schedules ?? [])
+      .filter((row) => isScheduledTrigger(row.triggerType))
+      .map((row) => ({
+        sessionId: row.sessionId,
+        sessionName: row.sessionName ?? null,
+        subscriptionId: row.subscriptionId,
+        triggerType: row.triggerType,
+        params: row.params,
+        cwd: row.cwd ?? null,
+        sessionLive: row.sessionLive,
+      }));
+    return { instructions, failed: 0 };
+  } catch {
+    // A failed load is reported rather than passed off as "nothing scheduled".
+    if (signal?.aborted) return { instructions: [], failed: 0 };
+    return { instructions: [], failed: 1 };
+  }
 }
 
 /**

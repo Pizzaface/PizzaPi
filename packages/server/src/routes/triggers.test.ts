@@ -16,6 +16,12 @@ const mockBroadcastToSessionViewers = mock((_sid: string, _event: string, _data:
 
 const mockRecordRunnerSession = mock((_runnerId: string, _sessionId: string) => Promise.resolve());
 const mockGetLocalRunnerSocket = mock((_runnerId: string) => null as any);
+// The wake goes through emitToRunner (per-runner room) so it reaches a runner
+// attached to any relay node, not just this one.
+const mockEmitToRunnerCalls: Array<[string, string, any]> = [];
+const mockEmitToRunner = mock((runnerId: string, event: string, data: any) => {
+    mockEmitToRunnerCalls.push([runnerId, event, data]);
+});
 const mockLinkSessionToRunner = mock((_runnerId: string, _sessionId: string) => Promise.resolve());
 
 mock.module("../ws/sio-registry.js", () => ({
@@ -26,6 +32,7 @@ mock.module("../ws/sio-registry.js", () => ({
     broadcastToSessionViewers: mockBroadcastToSessionViewers,
     recordRunnerSession: mockRecordRunnerSession,
     getLocalRunnerSocket: mockGetLocalRunnerSocket,
+    emitToRunner: mockEmitToRunner,
     linkSessionToRunner: mockLinkSessionToRunner,
     emitToRelaySession: mock((_id: string, _event: string, _data: any) => Promise.resolve(false)),
     getTerminalEntry: mock((_id: string) => Promise.resolve(null as any)),
@@ -42,8 +49,14 @@ mock.module("../ws/runner-control.js", () => ({
     waitForSpawnAck: mock(() => Promise.resolve({ ok: true })),
 }));
 
+// Captured so tests can assert the runner is told about subscription changes
+// (the delta is what disarms a live timer/cron on the daemon).
+const mockEmitDeltaCalls: Array<[string, any]> = [];
 mock.module("../ws/namespaces/runner.js", () => ({
-    emitTriggerSubscriptionDelta: mock(() => Promise.resolve()),
+    emitTriggerSubscriptionDelta: mock((runnerId: string, delta: any) => {
+        mockEmitDeltaCalls.push([runnerId, delta]);
+        return Promise.resolve();
+    }),
 }));
 
 // ── Mock middleware ──────────────────────────────────────────────────────
@@ -84,6 +97,7 @@ const mockGetSubscriptionsForRunnerSessions = mock((_runnerId: string, _sessionI
 import * as _runnersModule from "../ws/sio-registry/runners.js";
 import * as _triggerSubsModule from "../sessions/trigger-subscription-store.js";
 import * as _runnerListenersModule from "../sessions/runner-trigger-listener-store.js";
+import * as _sessionStoreModule from "../sessions/store.js";
 let mockGetRunnerServices: ReturnType<typeof spyOn>;
 let mockGetRunnerData: ReturnType<typeof spyOn>;
 let spySubscribeSessionToTrigger: ReturnType<typeof spyOn>;
@@ -102,6 +116,11 @@ let spyListRunnerTriggerListeners: ReturnType<typeof spyOn>;
 let spyAddRunnerTriggerListener: ReturnType<typeof spyOn>;
 let spyRemoveRunnerTriggerListener: ReturnType<typeof spyOn>;
 let spyUpdateRunnerTriggerListener: ReturnType<typeof spyOn>;
+let spyGetPersistedRelaySessionOwner: ReturnType<typeof spyOn>;
+
+// Persisted-session fallback used by the subscription routes and the wake path.
+// Defaults to "no persisted session" so existing not-found cases still 404.
+const mockGetPersistedRelaySessionOwner = mock((_sid: string) => Promise.resolve(null as any));
 
 beforeEach(() => {
     mockGetRunnerServices = spyOn(_runnersModule, "getRunnerServices")
@@ -126,6 +145,8 @@ beforeEach(() => {
     spyAddRunnerTriggerListener = spyOn(_runnerListenersModule, "addRunnerTriggerListener").mockImplementation(mockAddRunnerTriggerListener as any);
     spyRemoveRunnerTriggerListener = spyOn(_runnerListenersModule, "removeRunnerTriggerListener").mockImplementation(mockRemoveRunnerTriggerListener as any);
     spyUpdateRunnerTriggerListener = spyOn(_runnerListenersModule, "updateRunnerTriggerListener").mockImplementation(mockUpdateRunnerTriggerListener as any);
+
+    spyGetPersistedRelaySessionOwner = spyOn(_sessionStoreModule, "getPersistedRelaySessionOwner").mockImplementation(mockGetPersistedRelaySessionOwner as any);
 });
 
 afterEach(() => {
@@ -147,6 +168,7 @@ afterEach(() => {
     spyAddRunnerTriggerListener.mockRestore();
     spyRemoveRunnerTriggerListener.mockRestore();
     spyUpdateRunnerTriggerListener.mockRestore();
+    spyGetPersistedRelaySessionOwner.mockRestore();
 });
 
 // ── Mock logger ──────────────────────────────────────────────────────────
@@ -2017,6 +2039,266 @@ describe("POST /api/sessions/:id/thinking", () => {
 
         const [req, url] = makeReq("POST", "/api/sessions/sess-1/thinking", { level: "high" }, { "x-api-key": "test-key" });
         expect((await handleTriggersRoute(req, url))?.status).toBe(503);
+    });
+});
+
+describe("POST /api/sessions/:id/trigger — wakeSession", () => {
+    const offlineSession = () => ({
+        userId: "user-1",
+        sessionId: "sess-wake",
+        runnerId: "runner-A",
+        cwd: "/tmp/workdir",
+    });
+
+    beforeEach(() => {
+        mockGetSharedSession.mockReset();
+        mockGetLocalTuiSocket.mockReset();
+        mockEmitToRelaySessionVerified.mockReset();
+        mockGetLocalRunnerSocket.mockReset();
+        mockRequireSession.mockReset();
+        mockEmitToRunnerCalls.length = 0;
+        mockRequireSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", userName: "TestUser" }),
+        );
+        mockGetLocalTuiSocket.mockReturnValue(null);
+        mockEmitToRelaySessionVerified.mockReturnValue(Promise.resolve(false));
+    });
+
+    test("offline session with wakeSession=true starts a resume on the runner and reports waking", async () => {
+        mockGetSharedSession.mockReturnValue(Promise.resolve(offlineSession()));
+        mockGetLocalRunnerSocket.mockReturnValue({ emit: mock(() => {}) });
+
+        const [req, url] = makeReq("POST", "/api/sessions/sess-wake/trigger", {
+            type: "time:cron",
+            payload: { cron: "0 9 * * *" },
+            deliverAs: "followUp",
+            wakeSession: true,
+        });
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(503);
+        const body = await res!.json() as { waking?: boolean };
+        expect(body.waking).toBe(true);
+
+        // The wake runs in the background — give it a tick to reach the runner.
+        await new Promise((r) => setTimeout(r, 20));
+        expect(mockEmitToRunnerCalls).toHaveLength(1);
+        const [wakeRunnerId, event, data] = mockEmitToRunnerCalls[0];
+        expect(wakeRunnerId).toBe("runner-A");
+        expect(event).toBe("new_session");
+        expect(data.sessionId).toBe("sess-wake");
+        expect(data.resumeId).toBe("sess-wake");
+        expect(data.cwd).toBe("/tmp/workdir");
+    });
+
+    test("offline session WITHOUT wakeSession does not touch the runner", async () => {
+        mockGetSharedSession.mockReturnValue(Promise.resolve(offlineSession()));
+        mockGetLocalRunnerSocket.mockReturnValue({ emit: mock(() => {}) });
+
+        const [req, url] = makeReq("POST", "/api/sessions/sess-wake/trigger", {
+            type: "time:cron",
+            payload: {},
+        });
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(503);
+        const body = await res!.json() as { waking?: boolean };
+        expect(body.waking).toBeUndefined();
+
+        await new Promise((r) => setTimeout(r, 20));
+        expect(mockEmitToRunnerCalls).toHaveLength(0);
+    });
+
+    test("wakeSession with a runner that is gone entirely 503s for retry and does not claim to be waking", async () => {
+        mockGetSharedSession.mockReturnValue(Promise.resolve(offlineSession()));
+        mockGetLocalRunnerSocket.mockReturnValue(null);
+        // Absent locally AND absent from Redis — genuinely gone, not merely
+        // attached to another relay node.
+        mockGetRunnerData.mockReturnValue(Promise.resolve(null as any));
+
+        const [req, url] = makeReq("POST", "/api/sessions/sess-wake/trigger", {
+            type: "time:timer_fired",
+            payload: {},
+            wakeSession: true,
+        });
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(503);
+        const body = await res!.json() as { waking?: boolean };
+        // Not "waking" — the runner is down, not the session. The caller retries
+        // rather than spawning a replacement on a runner that is coming back.
+        expect(body.waking).toBeUndefined();
+        await new Promise((r) => setTimeout(r, 20));
+    });
+
+    test("wakes a runner attached to another relay node (no local socket)", async () => {
+        mockGetSharedSession.mockReturnValue(Promise.resolve(offlineSession()));
+        // No local socket, but the runner is registered in Redis — i.e. it is
+        // connected to a different node of a multi-node relay.
+        mockGetLocalRunnerSocket.mockReturnValue(null);
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+
+        const [req, url] = makeReq("POST", "/api/sessions/sess-wake/trigger", {
+            type: "time:cron",
+            payload: {},
+            wakeSession: true,
+        });
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(503);
+        expect((await res!.json() as { waking?: boolean }).waking).toBe(true);
+
+        await new Promise((r) => setTimeout(r, 20));
+        // Delivered through the per-runner room, which the Redis adapter fans
+        // out cluster-wide — a local-socket emit would have reached nobody.
+        expect(mockEmitToRunnerCalls).toHaveLength(1);
+        expect(mockEmitToRunnerCalls[0][0]).toBe("runner-A");
+        expect(mockEmitToRunnerCalls[0][2].resumeId).toBe("sess-wake");
+    });
+
+    // The orphan sweep deletes the live record ~2 min after a worker dies, so
+    // this — not the live-but-disconnected case — is what a schedule normally
+    // meets when it fires. It must still return to the session that created it.
+    describe("owning session already swept from Redis", () => {
+        beforeEach(() => {
+            mockGetSharedSession.mockReturnValue(Promise.resolve(null));
+            mockEmitToRunnerCalls.length = 0;
+            mockGetPersistedRelaySessionOwner.mockReset();
+            mockGetPersistedRelaySessionOwner.mockReturnValue(
+                Promise.resolve({ userId: "user-1", runnerId: "runner-A", cwd: "/tmp/proj" }),
+            );
+        });
+
+        test("resumes the original session instead of 404ing into a new one", async () => {
+            mockGetLocalRunnerSocket.mockReturnValue({ emit: mock(() => {}) });
+
+            const [req, url] = makeReq("POST", "/api/sessions/sess-swept/trigger", {
+                type: "time:cron",
+                payload: { cron: "0 9 * * *" },
+                wakeSession: true,
+            });
+            const res = await handleTriggersRoute(req, url);
+            expect(res!.status).toBe(503);
+            expect((await res!.json() as { waking?: boolean }).waking).toBe(true);
+
+            await new Promise((r) => setTimeout(r, 20));
+            expect(mockEmitToRunnerCalls).toHaveLength(1);
+            const [wakeRunnerId, event, data] = mockEmitToRunnerCalls[0];
+            expect(wakeRunnerId).toBe("runner-A");
+            expect(event).toBe("new_session");
+            expect(data.sessionId).toBe("sess-swept");
+            expect(data.resumeId).toBe("sess-swept");
+            // cwd comes from the durable row, so the resumed session lands in
+            // its original workspace.
+            expect(data.cwd).toBe("/tmp/proj");
+        });
+
+        test("a session gone from BOTH stores still 404s, so the caller starts new work", async () => {
+            mockGetPersistedRelaySessionOwner.mockReturnValue(Promise.resolve(null));
+            mockGetLocalRunnerSocket.mockReturnValue({ emit: mock(() => {}) });
+
+            const [req, url] = makeReq("POST", "/api/sessions/sess-gone/trigger", {
+                type: "time:cron",
+                payload: {},
+                wakeSession: true,
+            });
+            expect((await handleTriggersRoute(req, url))!.status).toBe(404);
+            await new Promise((r) => setTimeout(r, 20));
+            expect(mockEmitToRunnerCalls).toHaveLength(0);
+        });
+
+        test("an ordinary (non-wake) trigger to a swept session still 404s — contract unchanged", async () => {
+            mockGetLocalRunnerSocket.mockReturnValue({ emit: mock(() => {}) });
+
+            const [req, url] = makeReq("POST", "/api/sessions/sess-swept/trigger", {
+                type: "github:pr_comment",
+                payload: {},
+            });
+            expect((await handleTriggersRoute(req, url))!.status).toBe(404);
+            await new Promise((r) => setTimeout(r, 20));
+            expect(mockEmitToRunnerCalls).toHaveLength(0);
+        });
+
+        test("another user's swept session is not resumable", async () => {
+            mockGetPersistedRelaySessionOwner.mockReturnValue(
+                Promise.resolve({ userId: "someone-else", runnerId: "runner-A", cwd: "/tmp/proj" }),
+            );
+            mockGetLocalRunnerSocket.mockReturnValue({ emit: mock(() => {}) });
+
+            const [req, url] = makeReq("POST", "/api/sessions/sess-swept/trigger", {
+                type: "time:cron",
+                payload: {},
+                wakeSession: true,
+            });
+            expect((await handleTriggersRoute(req, url))!.status).toBe(404);
+            await new Promise((r) => setTimeout(r, 20));
+            expect(mockEmitToRunnerCalls).toHaveLength(0);
+        });
+    });
+});
+
+describe("subscription routes — schedule whose owning session has ended", () => {
+    // A schedule outlives its session (see clearSessionSubscriptions preserveDurable),
+    // so the live Redis record is gone while the subscription is still live.
+    beforeEach(() => {
+        mockGetSharedSession.mockReset();
+        mockGetLocalRunnerSocket.mockReset();
+        mockRequireSession.mockReset();
+        mockListSessionSubscriptions.mockReset();
+        mockGetPersistedRelaySessionOwner.mockReset();
+        mockUnsubscribeSessionSubscription.mockReset();
+        mockEmitDeltaCalls.length = 0;
+
+        mockRequireSession.mockReturnValue(Promise.resolve({ userId: "user-1", userName: "TestUser" }));
+        // Live record gone.
+        mockGetSharedSession.mockReturnValue(Promise.resolve(null));
+        mockGetPersistedRelaySessionOwner.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A", cwd: "/tmp/workdir" }));
+        mockUnsubscribeSessionSubscription.mockReturnValue(Promise.resolve(true));
+        mockListSessionSubscriptions.mockReturnValue(Promise.resolve([
+            { subscriptionId: "sub-cron", triggerType: "time:cron", runnerId: "runner-A", params: { cron: "0 9 * * *" } },
+        ]));
+    });
+
+    test("GET lists the surviving schedule instead of 404ing", async () => {
+        const [req, url] = makeReq("GET", "/api/sessions/sess-ended/trigger-subscriptions");
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json() as { subscriptions: Array<{ triggerType: string }> };
+        expect(body.subscriptions.map((s) => s.triggerType)).toEqual(["time:cron"]);
+    });
+
+    test("GET still 404s when the persisted session belongs to another user", async () => {
+        mockGetPersistedRelaySessionOwner.mockReturnValue(Promise.resolve({ userId: "someone-else", runnerId: "runner-A", cwd: null }));
+        const [req, url] = makeReq("GET", "/api/sessions/sess-ended/trigger-subscriptions");
+        expect((await handleTriggersRoute(req, url))!.status).toBe(404);
+    });
+
+    test("GET still 404s when the session is unknown to both live and persisted stores", async () => {
+        mockGetPersistedRelaySessionOwner.mockReturnValue(Promise.resolve(null));
+        const [req, url] = makeReq("GET", "/api/sessions/sess-unknown/trigger-subscriptions");
+        expect((await handleTriggersRoute(req, url))!.status).toBe(404);
+    });
+
+    test("DELETE cancels the schedule and tells the runner, so its armed timer dies too", async () => {
+        const [req, url] = makeReq(
+            "DELETE",
+            "/api/sessions/sess-ended/trigger-subscriptions/time:cron?subscriptionId=sub-cron",
+        );
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        expect(mockUnsubscribeSessionSubscription).toHaveBeenCalledWith("sess-ended", "sub-cron");
+
+        // Without this delta the daemon keeps firing and spawns a replacement
+        // session for work the user just cancelled.
+        expect(mockEmitDeltaCalls).toHaveLength(1);
+        const [runnerId, delta] = mockEmitDeltaCalls[0];
+        expect(runnerId).toBe("runner-A");
+        expect(delta.action).toBe("unsubscribe");
+        expect(delta.subscription.subscriptionId).toBe("sub-cron");
+        expect(delta.subscription.runnerId).toBe("runner-A");
+    });
+
+    test("DELETE still 404s for another user's ended session", async () => {
+        mockGetPersistedRelaySessionOwner.mockReturnValue(Promise.resolve({ userId: "someone-else", runnerId: "runner-A", cwd: null }));
+        const [req, url] = makeReq("DELETE", "/api/sessions/sess-ended/trigger-subscriptions/time:cron");
+        expect((await handleTriggersRoute(req, url))!.status).toBe(404);
+        expect(mockEmitDeltaCalls).toHaveLength(0);
     });
 });
 

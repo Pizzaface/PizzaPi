@@ -788,6 +788,13 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 if (Object.keys(subParams).length === 0) subParams = undefined;
             }
 
+            // Schedules can outlive the session that created them: capture the
+            // workspace so the time service can spawn a replacement session in
+            // the right cwd if this session is gone when the schedule fires.
+            if (params.triggerType.startsWith("time:")) {
+                subParams = { ...(subParams ?? {}), _cwd: process.cwd() };
+            }
+
             // Coerce filter values
             let subFilters: Array<{ field: string; value: string | number | boolean | Array<string | number | boolean>; op?: "eq" | "contains" }> | undefined;
             if (Array.isArray(params.filters) && params.filters.length > 0) {
