@@ -87,6 +87,10 @@ import {
     listRunnerTriggerListeners,
     updateRunnerTriggerListener,
 } from "../sessions/runner-trigger-listener-store.js";
+import {
+    getRelaySessionUserId,
+    getPersistedRelaySessionRunner,
+} from "../sessions/store.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
 
 interface SubscriptionFilterRecord {
@@ -297,6 +301,33 @@ function wakeOfflineSession(
 
     pendingSessionWakes.set(sessionId, attempt);
     return attempt;
+}
+
+/**
+ * Resolve who owns a session for subscription management, tolerating a session
+ * whose live record is gone.
+ *
+ * Schedules (time:*) outlive the session that created them, so a standing
+ * subscription must stay listable and cancellable after its owner ends —
+ * otherwise a cron fires forever with no way to see or stop it from the UI.
+ * The live Redis record is preferred (it is authoritative and carries the
+ * current runner); the persisted relay_session row is the fallback.
+ *
+ * Returns null when the session is unknown or belongs to another user —
+ * callers must treat that exactly like "not found".
+ */
+async function resolveSubscriptionOwner(
+    sessionId: string,
+    userId: string,
+): Promise<{ runnerId: string | null } | null> {
+    const live = await getSharedSession(sessionId);
+    if (live) {
+        return live.userId === userId ? { runnerId: live.runnerId ?? null } : null;
+    }
+    const persistedUserId = await getRelaySessionUserId(sessionId);
+    if (!persistedUserId || persistedUserId !== userId) return null;
+    const runner = await getPersistedRelaySessionRunner(sessionId);
+    return { runnerId: runner?.runnerId ?? null };
 }
 
 /** Authenticate via session cookie or API key. */
@@ -666,8 +697,10 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
 
         const sessionId = decodeURIComponent(subsMatch[1]);
 
-        const session = await getSharedSession(sessionId);
-        if (!session || session.userId !== identity.userId) {
+        // Falls back to persisted ownership: a schedule outlives its session,
+        // and an unlistable schedule is an uncancellable one.
+        const owner = await resolveSubscriptionOwner(sessionId, identity.userId);
+        if (!owner) {
             return Response.json({ error: "Session not found" }, { status: 404 });
         }
 
@@ -942,8 +975,12 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         const target = decodeURIComponent(subsDeleteMatch[2]);
         const subscriptionIdParam = url.searchParams.get("subscriptionId")?.trim() || undefined;
 
-        const session = await getSharedSession(sessionId);
-        if (!session || session.userId !== identity.userId) {
+        // Persisted fallback: cancelling a schedule whose session has ended must
+        // work, and must still reach the runner below so its armed timer dies
+        // with the subscription (otherwise the next fire spawns a replacement
+        // session for work the user just cancelled).
+        const owner = await resolveSubscriptionOwner(sessionId, identity.userId);
+        if (!owner) {
             return Response.json({ error: "Session not found" }, { status: 404 });
         }
 
@@ -961,14 +998,14 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         log.info(`Session ${sessionId} unsubscribed from trigger target '${subscriptionId ?? triggerType}'`);
         broadcastToSessionViewers(sessionId, "trigger_subscriptions_changed", { triggerType, action: "unsubscribe" });
 
-        if (session.runnerId) {
-            void emitTriggerSubscriptionDelta(session.runnerId, {
+        if (owner.runnerId) {
+            void emitTriggerSubscriptionDelta(owner.runnerId, {
                 action: "unsubscribe",
                 subscription: {
                     subscriptionId: subscriptionId ?? `legacy:all:${triggerType}`,
                     sessionId,
                     triggerType,
-                    runnerId: session.runnerId,
+                    runnerId: owner.runnerId,
                 },
             });
         }
@@ -987,8 +1024,10 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         const target = decodeURIComponent(subsDeleteMatch[2]);
         const subscriptionIdParam = url.searchParams.get("subscriptionId")?.trim() || undefined;
 
-        const session = await getSharedSession(sessionId);
-        if (!session || session.userId !== identity.userId) {
+        // Same persisted fallback as GET/DELETE — editing a standing schedule
+        // must not require its creating session to still be running.
+        const owner = await resolveSubscriptionOwner(sessionId, identity.userId);
+        if (!owner) {
             return Response.json({ error: "Session not found" }, { status: 404 });
         }
 
@@ -1001,8 +1040,8 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
 
         // Validate params against the runner's trigger def (if available)
         let subParams: SubscriptionParams | undefined;
-        if (session.runnerId) {
-            const services = await getRunnerServices(session.runnerId);
+        if (owner.runnerId) {
+            const services = await getRunnerServices(owner.runnerId);
             const triggerDef = services?.triggerDefs?.find((d) => d.type === target);
 
             if (body.params && typeof body.params === "object" && !Array.isArray(body.params)) {
@@ -1071,7 +1110,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         let subFilters: SubscriptionFilter[] | undefined;
         let subFilterMode: SubscriptionFilterMode | undefined;
         if (Array.isArray(body.filters) && body.filters.length > 0) {
-            const services = session.runnerId ? await getRunnerServices(session.runnerId) : null;
+            const services = owner.runnerId ? await getRunnerServices(owner.runnerId) : null;
             const triggerDef = services?.triggerDefs?.find((d) => d.type === target);
             const schemaProps = (triggerDef?.schema as any)?.properties ?? {};
             const validatedFilters: SubscriptionFilter[] = [];
@@ -1121,14 +1160,14 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         // The reconciliation protocol (trigger_subscription_delta) is the
         // authoritative path — the legacy subscription_params_changed event
         // has been removed to prevent double-apply.
-        if (session.runnerId) {
-            void emitTriggerSubscriptionDelta(session.runnerId, {
+        if (owner.runnerId) {
+            void emitTriggerSubscriptionDelta(owner.runnerId, {
                 action: "update",
                 subscription: {
                     subscriptionId: subscriptionId ?? `legacy:all:${triggerType}`,
                     sessionId,
                     triggerType,
-                    runnerId: session.runnerId,
+                    runnerId: owner.runnerId,
                     ...(subParams ? { params: subParams } : {}),
                     ...(subFilters ? { filters: subFilters } : {}),
                     ...(subFilterMode ? { filterMode: subFilterMode } : {}),

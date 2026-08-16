@@ -117,6 +117,14 @@ describe("trigger subscription snapshot — offline sessions", () => {
             const surviving = await listSessionSubscriptions(sessionId);
             expect(surviving.map((s) => s.triggerType)).toEqual(["time:cron"]);
 
+            // ...and it stays visible over HTTP (the schedule UI's fan-out), even
+            // though the live session record is gone — an unlistable schedule is
+            // an uncancellable one.
+            const listRes = await server.fetch(`/api/sessions/${sessionId}/trigger-subscriptions`);
+            expect(listRes.status).toBe(200);
+            const listed = await listRes.json() as { subscriptions: Array<{ triggerType: string }> };
+            expect(listed.subscriptions.map((s) => s.triggerType)).toEqual(["time:cron"]);
+
             // Runner restart still rebuilds the schedule.
             await relay.disconnect();
             await first.disconnect();
@@ -130,6 +138,38 @@ describe("trigger subscription snapshot — offline sessions", () => {
             expect((cronSub!.params as Record<string, unknown>).message).toBe("daily standup");
 
             await second.disconnect();
+        } finally {
+            if (sessionId) await clearSessionSubscriptions(sessionId);
+            await cleanupServer(server);
+        }
+    }, TEST_TIMEOUT);
+
+    test("a schedule owned by an ended session can still be cancelled over HTTP", async () => {
+        const server = await createTestServer();
+        const runnerId = `runner-cancel-${randomUUID().slice(0, 8)}`;
+        let sessionId = "";
+        try {
+            const runner = await createMockRunner(server, { runnerId, runnerSecret: "cancel-secret", name: "cancel-runner" });
+            const relay = await createMockRelay(server);
+            const registered = await relay.registerSession({ cwd: "/tmp/test" });
+            sessionId = registered.sessionId;
+            await subscribeSessionToTrigger(sessionId, runnerId, "time:cron", undefined, { cron: "0 9 * * *" });
+            await endSharedSession(sessionId, "Session ended");
+
+            const listed = await (await server.fetch(`/api/sessions/${sessionId}/trigger-subscriptions`)).json() as {
+                subscriptions: Array<{ subscriptionId: string }>;
+            };
+            const subscriptionId = listed.subscriptions[0]!.subscriptionId;
+
+            const cancelRes = await server.fetch(
+                `/api/sessions/${sessionId}/trigger-subscriptions/${encodeURIComponent("time:cron")}?subscriptionId=${encodeURIComponent(subscriptionId)}`,
+                { method: "DELETE" },
+            );
+            expect(cancelRes.status).toBe(200);
+            expect(await listSessionSubscriptions(sessionId)).toHaveLength(0);
+
+            await relay.disconnect();
+            await runner.disconnect();
         } finally {
             if (sessionId) await clearSessionSubscriptions(sessionId);
             await cleanupServer(server);
