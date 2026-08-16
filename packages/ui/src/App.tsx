@@ -4443,13 +4443,44 @@ export function App() {
   const [scheduledInstructions, setScheduledInstructions] = React.useState<ScheduledInstruction[]>([]);
   const [scheduledLoading, setScheduledLoading] = React.useState(false);
   const [scheduledFailed, setScheduledFailed] = React.useState(0);
-  // Every mode session, not just the recent five: a schedule owned by an older
-  // task would otherwise be invisible and impossible to cancel from here.
-  const scheduledSessions = React.useMemo(
-    () => selectedModeAllSessions.map((s) => ({ sessionId: s.sessionId, sessionName: s.sessionName ?? null })),
-    [selectedModeAllSessions],
-  );
   const wantsSchedule = !!selectedMode && selectedModeUi.scheduled;
+
+  // Offline sessions that still own schedules: a schedule must stay visible
+  // and cancellable even when its task is no longer running. Fetched from the
+  // server's persisted-session list and matched to the mode by cwd/runner.
+  const [persistedModeSessions, setPersistedModeSessions] = React.useState<Array<{ sessionId: string; sessionName: string | null }>>([]);
+  React.useEffect(() => {
+    if (!wantsSchedule || !selectedMode) {
+      setPersistedModeSessions([]);
+      return;
+    }
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const res = await fetch(`/api/sessions?includePersisted=1&limit=100`, { credentials: "include", signal: controller.signal });
+        if (!res.ok) return;
+        const data = await res.json() as { persistedSessions?: Array<{ sessionId: string; cwd: string; sessionName: string | null; runnerId: string | null }> };
+        const persisted = Array.isArray(data.persistedSessions) ? data.persistedSessions : [];
+        setPersistedModeSessions(
+          persisted
+            .filter((s) => findSessionMode({ cwd: s.cwd, runnerId: s.runnerId }, effectiveSessionModes, modesSource.runnerId)?.id === selectedMode.id)
+            .map((s) => ({ sessionId: s.sessionId, sessionName: s.sessionName ?? null })),
+        );
+      } catch {
+        if (!controller.signal.aborted) setPersistedModeSessions([]);
+      }
+    })();
+    return () => controller.abort();
+  }, [wantsSchedule, selectedMode, effectiveSessionModes, modesSource.runnerId]);
+
+  // Every mode session, not just the recent five: a schedule owned by an older
+  // or offline task would otherwise be invisible and impossible to cancel.
+  const scheduledSessions = React.useMemo(() => {
+    const live = selectedModeAllSessions.map((s) => ({ sessionId: s.sessionId, sessionName: s.sessionName ?? null }));
+    const liveIds = new Set(live.map((s) => s.sessionId));
+    const offline = persistedModeSessions.filter((s) => !liveIds.has(s.sessionId));
+    return [...live, ...offline];
+  }, [selectedModeAllSessions, persistedModeSessions]);
 
   const reloadScheduled = React.useCallback((signal?: AbortSignal) => {
     if (!wantsSchedule || scheduledSessions.length === 0) {
