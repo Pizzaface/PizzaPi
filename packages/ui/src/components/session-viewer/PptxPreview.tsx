@@ -1,12 +1,9 @@
 import * as React from "react";
 import { ChevronLeftIcon, ChevronRightIcon, Loader2Icon } from "lucide-react";
-import { PptxRenderer } from "pptx-browser";
+import { PptxViewer, RECOMMENDED_ZIP_LIMITS } from "@aiden0z/pptx-renderer";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-
-/** Canvas render width; CSS scales it down to fit. Higher = crisper. */
-const RENDER_WIDTH = 1280;
 
 function base64ToBytes(base64: string): Uint8Array {
   const bin = atob(base64);
@@ -16,14 +13,12 @@ function base64ToBytes(base64: string): Uint8Array {
 }
 
 /**
- * Preview a .pptx by rendering its slides to a canvas with pptx-browser
- * (zero-dependency, native ZIP + Canvas 2D). One slide at a time with a
- * navigator. Lazy-loaded (see ArtifactCard) so the renderer stays out of the
- * main bundle.
+ * Preview a .pptx with its OOXML themes, masters, layouts, and fonts intact.
+ * Lazy-loaded (see ArtifactCard) so the renderer stays out of the main bundle.
  */
 export default function PptxPreview({ content, full = false }: { content: string; full?: boolean }) {
-  const canvasRef = React.useRef<HTMLCanvasElement>(null);
-  const rendererRef = React.useRef<PptxRenderer | null>(null);
+  const slideRef = React.useRef<HTMLDivElement>(null);
+  const rendererRef = React.useRef<PptxViewer | null>(null);
   const [slideCount, setSlideCount] = React.useState(0);
   const [current, setCurrent] = React.useState(0);
   const [loading, setLoading] = React.useState(true);
@@ -32,23 +27,41 @@ export default function PptxPreview({ content, full = false }: { content: string
 
   React.useEffect(() => {
     let cancelled = false;
-    const renderer = new PptxRenderer();
-    rendererRef.current = renderer;
+    const controller = new AbortController();
+    const container = slideRef.current;
+    if (!container) return;
+
     setLoading(true);
+    setNavigating(false);
+    setSlideCount(0);
+    setCurrent(0);
     setError(null);
 
+    let bytes: Uint8Array;
+    try {
+      bytes = base64ToBytes(content);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+      setLoading(false);
+      return;
+    }
+
+    const renderer = new PptxViewer(container, {
+      fitMode: "contain",
+      zipLimits: RECOMMENDED_ZIP_LIMITS,
+      lazyMedia: true,
+      lazySlides: true,
+      pdfjs: false,
+    });
+    rendererRef.current = renderer;
+
     void renderer
-      .load(base64ToBytes(content))
-      .then(async () => {
+      .open(bytes, { renderMode: "slide", signal: controller.signal })
+      .then(() => {
         if (cancelled) return;
         setSlideCount(renderer.slideCount);
-        if (renderer.slideCount > 0 && canvasRef.current) {
-          await renderer.renderSlide(0, canvasRef.current, RENDER_WIDTH);
-        }
-        if (!cancelled) {
-          setCurrent(0);
-          setLoading(false);
-        }
+        setCurrent(0);
+        setLoading(false);
       })
       .catch((err: unknown) => {
         if (!cancelled) {
@@ -59,7 +72,8 @@ export default function PptxPreview({ content, full = false }: { content: string
 
     return () => {
       cancelled = true;
-      try { renderer.destroy(); } catch { /* nothing to release */ }
+      controller.abort();
+      renderer.destroy();
       rendererRef.current = null;
     };
   }, [content]);
@@ -67,16 +81,16 @@ export default function PptxPreview({ content, full = false }: { content: string
   const goTo = React.useCallback(
     async (index: number) => {
       const renderer = rendererRef.current;
-      if (!renderer || !canvasRef.current || index < 0 || index >= slideCount || navigating) return;
+      if (!renderer || index < 0 || index >= slideCount || navigating) return;
       setNavigating(true);
       setError(null);
       try {
-        await renderer.renderSlide(index, canvasRef.current, RENDER_WIDTH);
-        setCurrent(index);
+        await renderer.renderSlide(index);
+        if (rendererRef.current === renderer) setCurrent(index);
       } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : String(err));
+        if (rendererRef.current === renderer) setError(err instanceof Error ? err.message : String(err));
       } finally {
-        setNavigating(false);
+        if (rendererRef.current === renderer) setNavigating(false);
       }
     },
     [slideCount, navigating],
@@ -92,11 +106,14 @@ export default function PptxPreview({ content, full = false }: { content: string
           </div>
         )}
         {error && !loading && (
-          <div className="px-4 py-8 text-center text-sm text-muted-foreground">Slides unavailable — {error}</div>
+          <div className="absolute top-3 z-10 rounded bg-background/90 px-3 py-2 text-center text-sm text-muted-foreground shadow-sm">
+            {slideCount === 0 ? "Slides unavailable" : "Could not change slides"} — {error}
+          </div>
         )}
-        <canvas
-          ref={canvasRef}
-          className={cn("max-h-full max-w-full rounded object-contain shadow-sm", (loading || error) && "invisible")}
+        <div
+          ref={slideRef}
+          aria-label="Rendered slide"
+          className={cn("h-full w-full overflow-hidden rounded shadow-sm", (loading || slideCount === 0) && "invisible")}
         />
       </div>
 

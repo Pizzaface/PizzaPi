@@ -1,30 +1,38 @@
 /**
- * Tests for PptxPreview — wiring around the pptx-browser renderer.
+ * Tests for PptxPreview — wiring around the browser-only PPTX renderer.
  *
- * Canvas rendering can't run under happy-dom, so pptx-browser is mocked with a
- * fake renderer; this verifies the slide navigator and lifecycle, not pixels.
+ * The renderer is mocked because happy-dom cannot lay out real slides; this
+ * verifies the slide navigator and lifecycle, not pixels.
  */
 import { afterEach, describe, test, expect, mock } from "bun:test";
 import { Window } from "happy-dom";
 
 let loaded = 0;
 let destroyed = 0;
+let releaseNavigation: (() => void) | null = null;
 const rendered: number[] = [];
 
-mock.module("pptx-browser", () => ({
-  PptxRenderer: class {
+mock.module("@aiden0z/pptx-renderer", () => ({
+  RECOMMENDED_ZIP_LIMITS: {},
+  PptxViewer: class {
     slideCount = 0;
     static throwOn: number | null = null;
-    async load() {
+    static pauseOn: number | null = null;
+    constructor(private container: HTMLElement) {}
+    async open() {
       loaded++;
       this.slideCount = 3;
     }
     async renderSlide(index: number) {
       rendered.push(index);
-      const ctor = this.constructor as typeof PptxRenderer & { throwOn: number | null };
+      const ctor = this.constructor as typeof PptxViewer & { throwOn: number | null };
       if (ctor.throwOn === index) {
         throw new Error(`render slide ${index} failed`);
       }
+      if ((ctor as typeof PptxViewer & { pauseOn: number | null }).pauseOn === index) {
+        await new Promise<void>((resolve) => { releaseNavigation = resolve; });
+      }
+      this.container.dataset.slide = String(index);
     }
     destroy() {
       destroyed++;
@@ -41,16 +49,20 @@ const win = new Window({ url: "http://localhost/" });
 (globalThis as any).Element = (win as any).Element;
 (globalThis as any).Node = (win as any).Node;
 (globalThis as any).getComputedStyle = (win as any).getComputedStyle;
-(globalThis as any).atob = (b64: string) => Buffer.from(b64, "base64").toString("binary");
+const workingAtob = (b64: string) => Buffer.from(b64, "base64").toString("binary");
+(globalThis as any).atob = workingAtob;
 
 const { render, cleanup, fireEvent, waitFor } = await import("@testing-library/react");
 const React = (await import("react")).default;
 const { default: PptxPreview } = await import("./PptxPreview");
-const { PptxRenderer } = await import("pptx-browser");
+const { PptxViewer } = await import("@aiden0z/pptx-renderer");
 
 afterEach(() => {
   cleanup();
-  (PptxRenderer as unknown as { throwOn: number | null }).throwOn = null;
+  (PptxViewer as unknown as { throwOn: number | null; pauseOn: number | null }).throwOn = null;
+  (PptxViewer as unknown as { throwOn: number | null; pauseOn: number | null }).pauseOn = null;
+  releaseNavigation = null;
+  globalThis.atob = workingAtob;
 });
 
 describe("PptxPreview", () => {
@@ -102,14 +114,37 @@ describe("PptxPreview", () => {
   });
 
   test("shows an error and keeps the current slide when navigation render fails", async () => {
-    (PptxRenderer as unknown as { throwOn: number | null }).throwOn = 1;
+    (PptxViewer as unknown as { throwOn: number | null }).throwOn = 1;
     const { getByText, getByLabelText } = render(<PptxPreview content="DDDD" />);
     await waitFor(() => expect(getByText("1 / 3")).toBeDefined());
 
     fireEvent.click(getByLabelText("Next slide"));
     await waitFor(() => expect(getByText(/render slide 1 failed/)).toBeDefined());
 
-    // Counter should not advance.
+    // Counter should not advance and the valid current slide remains visible.
+    expect(getByText("1 / 3")).toBeDefined();
+    expect(getByLabelText("Rendered slide").classList.contains("invisible")).toBe(false);
+  });
+
+  test("reports malformed content without leaking a renderer", async () => {
+    const before = destroyed;
+    globalThis.atob = () => { throw new Error("bad base64"); };
+    const { getByText } = render(<PptxPreview content="invalid" />);
+    await waitFor(() => expect(getByText(/bad base64/)).toBeDefined());
+    expect(destroyed).toBe(before);
+  });
+
+  test("ignores navigation completion from a replaced deck", async () => {
+    (PptxViewer as unknown as { pauseOn: number | null }).pauseOn = 1;
+    const { getByText, getByLabelText, rerender } = render(<PptxPreview content="OLD" />);
+    await waitFor(() => expect(getByText("1 / 3")).toBeDefined());
+    fireEvent.click(getByLabelText("Next slide"));
+    await waitFor(() => expect(releaseNavigation).not.toBeNull());
+
+    rerender(<PptxPreview content="NEW" />);
+    await waitFor(() => expect(getByText("1 / 3")).toBeDefined());
+    releaseNavigation?.();
+    await Promise.resolve();
     expect(getByText("1 / 3")).toBeDefined();
   });
 
