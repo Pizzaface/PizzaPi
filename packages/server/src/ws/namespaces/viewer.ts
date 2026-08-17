@@ -46,9 +46,8 @@ import { recordTriggerResponse } from "../../sessions/trigger-store.js";
 import { getHiddenModels } from "../../user-hidden-models.js";
 import { isHiddenModel } from "../../routes/model-guard.js";
 import { createLogger } from "@pizzapi/tools";
-import { hydrateViewerFromCache, sendCachedDeltaReplayEvents, sendLatestSnapshotFromCache } from "./viewer-cache.js";
+import { hydrateViewerFromCache, sendCachedDeltaReplayEvents } from "./viewer-cache.js";
 import { getBestSnapshot } from "./snapshot-provider.js";
-import { applySnapshotOverlayToState } from "../sio-registry/snapshot-state.js";
 
 export { hydrateViewerFromCache, sendCachedDeltaReplayEvents } from "./viewer-cache.js";
 
@@ -135,11 +134,6 @@ export function onViewerReadyForRunnerSignal(
 /** @internal — exported for unit tests only */
 export function withHubMetaSource<T extends Record<string, unknown>>(payload: T): T & { meta_source: "hub" } {
     return { ...payload, meta_source: "hub" };
-}
-
-/** @internal — exported for unit tests only */
-export function withMetaViaHubHint<T extends Record<string, unknown>>(event: T): T & { _metaViaHub: true } {
-    return { ...event, _metaViaHub: true };
 }
 
 /** @internal — exported for unit tests only */
@@ -460,6 +454,14 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             if (!chunkedPending) {
                 const snapshotResult = await getBestSnapshot(nextSessionId, {
                     lastSeq: requestedLastSeq,
+                    // Without userId the SQLite tier is unreachable, so a dead
+                    // session whose Redis cache aged out could never hydrate here.
+                    // Only offer it for sessions that are actually finished: the
+                    // persisted copy is a throttled snapshot, so serving it for a
+                    // live session whose cache merely blipped would show a stale
+                    // transcript AND suppress the runner signal that would have
+                    // fixed it — with no error and no retry.
+                    userId: freshSession.isActive ? undefined : viewerUserId,
                     lastState: freshSession.lastState,
                     snapshotOverlay: freshSession.snapshotOverlay,
                     chunkedPending: false,
@@ -501,29 +503,16 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 } catch {}
             }
 
-            // A seq cache miss must recover from the runner; an unsequenced
-            // snapshot can rewind a client that already has newer events. The
-            // same applies while a chunked checkpoint is still assembling.
-            if (shouldAvoidSnapshotFallback(requestedLastSeq, chunkedPending)) {
-                return;
-            }
-
-            if (freshSession.lastState) {
-                try {
-                    const state = applySnapshotOverlayToState(
-                        JSON.parse(freshSession.lastState),
-                        freshSession.snapshotOverlay,
-                    );
-                    socket.emit("event", {
-                        event: withMetaViaHubHint({ type: "session_active", state }),
-                        seq: freshSeq,
-                        generation,
-                        sessionId: nextSessionId,
-                    });
-                } catch {}
-            } else {
-                await sendLatestSnapshotFromCache(socket, nextSessionId, generation);
-            }
+            // Nothing further to try here. getBestSnapshot() has already
+            // exhausted every source it is allowed to use for this viewer
+            // (cache delta, cache snapshot, lastState, SQLite), so the runner
+            // recovery signal above is the only remaining path to content.
+            //
+            // The old code re-attempted lastState and a second cache read at
+            // this point. Both were unreachable-or-unsafe: getBestSnapshot had
+            // just tried the identical Redis key, and re-sending unsequenced
+            // lastState to a viewer holding a cursor is exactly the rewind the
+            // seq comparison exists to prevent.
         };
 
         // ── switch_session — reuse the viewer socket across session changes ─
@@ -574,17 +563,21 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             const requestedLastSeq = typeof data?.lastSeq === "number" && Number.isFinite(data.lastSeq) ? data.lastSeq : undefined;
             const resyncChunkedPending = getPendingChunkedSnapshot(currentSessionId);
             if (requestedLastSeq !== undefined && !resyncChunkedPending) {
+                const resyncSession = await getSharedSession(currentSessionId);
                 const cacheHydrated = await hydrateViewerFromCache(socket, currentSessionId, {
                     lastSeq: requestedLastSeq,
                     generation: getCurrentGeneration(),
+                    snapshotOverlay: resyncSession?.snapshotOverlay,
                 });
                 if (cacheHydrated) {
                     return;
                 }
             }
             if (shouldAvoidSnapshotFallback(requestedLastSeq, resyncChunkedPending)) {
-                // Cache miss with a client cursor requires a newly sequenced
-                // runner snapshot; stale lastState cannot safely fill the gap.
+                // The cache is seq-aware now and will already have replayed a
+                // snapshot if one provably sat at or ahead of the client cursor.
+                // Reaching here means only unsequenced state is left, which
+                // cannot safely fill the gap — ask the runner for a fresh one.
                 if (requestedLastSeq !== undefined && !resyncChunkedPending) {
                     forwardRecoveryConnectedSignal(currentSessionId);
                 }

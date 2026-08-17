@@ -316,15 +316,23 @@ export function sessionLifecycleReducer(
     case "CONNECTED": {
       if (!state.activeSessionId) return state;
       const replayOnly = action.replayOnly === true;
+      // A transport reconnect for a session we already hydrated must NOT re-enter
+      // the awaiting-snapshot gate. The transcript is still on screen, and the
+      // server can legitimately answer the resume with nothing to send (the
+      // viewer is already current) — in which case no content event would ever
+      // arrive to clear the gate, leaving input blocked on a session that is
+      // visibly fine. A real session switch clears `hydrated` via
+      // SESSION_SELECTED, so this only relaxes the reconnect case.
+      const resumed = !replayOnly && state.hydration.hydrated;
       return {
         ...state,
-        phase: replayOnly ? "snapshot_replay" : "connecting",
+        phase: replayOnly ? "snapshot_replay" : resumed ? "live" : "connecting",
         status: replayOnly ? "Snapshot replay" : "Connected",
         error: null,
         hydration: {
           ...state.hydration,
-          awaitingSnapshot: !replayOnly,
-          hydrated: replayOnly,
+          awaitingSnapshot: !replayOnly && !resumed,
+          hydrated: replayOnly || resumed,
           metaSourceHub: action.metaSource === "hub" || state.hydration.metaSourceHub,
         },
       };
