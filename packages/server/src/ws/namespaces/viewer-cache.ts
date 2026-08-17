@@ -11,6 +11,7 @@ import {
     getLatestCachedSnapshotEvent,
     type LatestCachedSnapshot,
 } from "../../sessions/redis.js";
+import { applySnapshotOverlayToState } from "../sio-registry/snapshot-state.js";
 
 type ViewerEventEmitter = {
     emit: any;
@@ -76,8 +77,16 @@ function emitSnapshotWithTrailingDeltas(
     socket: ViewerEventEmitter,
     cached: LatestCachedSnapshot,
     generation: number | undefined,
+    snapshotOverlay?: string | null,
 ): void {
-    socket.emit("event", { event: cached.event, replay: true, generation });
+    // The cached session_active predates any later metadata-only updates (queue,
+    // model, todo list), which are carried by the overlay rather than re-cached.
+    // Without applying it a resync hands the viewer stale metadata.
+    let event = cached.event;
+    if (snapshotOverlay && event.type === "session_active") {
+        event = { ...event, state: applySnapshotOverlayToState(event.state, snapshotOverlay) };
+    }
+    socket.emit("event", { event, replay: true, generation });
     // Replay deltas cached after the snapshot so the viewer isn't left stale
     // between the snapshot and the seq advertised in "connected".
     sendCachedDeltaReplayEvents(socket, cached.eventsAfter, generation);
@@ -88,11 +97,12 @@ export async function sendLatestSnapshotFromCache(
     sessionId: string,
     generation: number | undefined,
     deps: ViewerCacheDeps = defaultViewerCacheDeps,
+    snapshotOverlay?: string | null,
 ): Promise<boolean> {
     const cached = await deps.getLatestCachedSnapshotEvent(sessionId);
     if (!cached) return false;
 
-    emitSnapshotWithTrailingDeltas(socket, cached, generation);
+    emitSnapshotWithTrailingDeltas(socket, cached, generation, snapshotOverlay);
     return true;
 }
 
@@ -141,6 +151,7 @@ export async function hydrateViewerFromCache(
     opts: {
         lastSeq?: number;
         generation?: number;
+        snapshotOverlay?: string | null;
     } = {},
     deps: ViewerCacheDeps = defaultViewerCacheDeps,
 ): Promise<boolean> {
@@ -161,7 +172,7 @@ export async function hydrateViewerFromCache(
             // reach is decidable. Refusing outright left resyncing viewers blank.
             const cached = await deps.getLatestCachedSnapshotEvent(sessionId);
             if (cached && snapshotCoversCursor(cached, opts.lastSeq)) {
-                emitSnapshotWithTrailingDeltas(socket, cached, opts.generation);
+                emitSnapshotWithTrailingDeltas(socket, cached, opts.generation, opts.snapshotOverlay);
                 return true;
             }
 
@@ -177,7 +188,7 @@ export async function hydrateViewerFromCache(
             return false;
         }
 
-        return sendLatestSnapshotFromCache(socket, sessionId, opts.generation, deps);
+        return sendLatestSnapshotFromCache(socket, sessionId, opts.generation, deps, opts.snapshotOverlay);
     } catch (err) {
         // Log and fall through to runner-driven recovery
         const errMsg = err instanceof Error ? err.message : String(err);

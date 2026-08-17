@@ -454,9 +454,14 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             if (!chunkedPending) {
                 const snapshotResult = await getBestSnapshot(nextSessionId, {
                     lastSeq: requestedLastSeq,
-                    // Without userId the SQLite tier is unreachable, so a session
-                    // whose Redis cache has aged out could never hydrate here.
-                    userId: viewerUserId,
+                    // Without userId the SQLite tier is unreachable, so a dead
+                    // session whose Redis cache aged out could never hydrate here.
+                    // Only offer it for sessions that are actually finished: the
+                    // persisted copy is a throttled snapshot, so serving it for a
+                    // live session whose cache merely blipped would show a stale
+                    // transcript AND suppress the runner signal that would have
+                    // fixed it — with no error and no retry.
+                    userId: freshSession.isActive ? undefined : viewerUserId,
                     lastState: freshSession.lastState,
                     snapshotOverlay: freshSession.snapshotOverlay,
                     chunkedPending: false,
@@ -558,9 +563,11 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             const requestedLastSeq = typeof data?.lastSeq === "number" && Number.isFinite(data.lastSeq) ? data.lastSeq : undefined;
             const resyncChunkedPending = getPendingChunkedSnapshot(currentSessionId);
             if (requestedLastSeq !== undefined && !resyncChunkedPending) {
+                const resyncSession = await getSharedSession(currentSessionId);
                 const cacheHydrated = await hydrateViewerFromCache(socket, currentSessionId, {
                     lastSeq: requestedLastSeq,
                     generation: getCurrentGeneration(),
+                    snapshotOverlay: resyncSession?.snapshotOverlay,
                 });
                 if (cacheHydrated) {
                     return;

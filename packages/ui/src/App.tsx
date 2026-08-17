@@ -2132,6 +2132,11 @@ export function App() {
       chunkState.loadedMessages += chunkMessages.length;
       const loaded = chunkState.loadedMessages;
       onChunkProgress(loaded, totalMessages);
+      // Chunked delivery keeps awaitingSnapshot true for as long as the transfer
+      // takes, which on a big session over a slow link legitimately exceeds the
+      // stall threshold. Treat an arriving chunk as progress so the watchdog does
+      // not restart hydration underneath a transfer that is succeeding.
+      hydrationRequestedAtRef.current = Date.now();
 
       const readyToFinalize = canFinalizeChunkHydration(
         chunkState.finalChunkSeen,

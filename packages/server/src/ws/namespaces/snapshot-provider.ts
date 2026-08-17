@@ -130,10 +130,19 @@ export async function tryCacheSnapshot(
     sessionId: string,
     deps: SnapshotProviderDeps = defaultDeps,
     snapshotOverlay?: string | null,
+    opts: { preserveLoadedHistory?: boolean } = {},
 ): Promise<SnapshotResult | null> {
     const cached = await deps.getLatestCachedSnapshotEvent(sessionId);
     if (!cached) return null;
     const snapshotEvent = cached.event;
+    // A resuming viewer may have paged far past the 50-message tail. Replacing
+    // its transcript with a truncated snapshot would silently erase that loaded
+    // history on nothing more than a network blip, which is why the live
+    // broadcast path in sio-registry/sessions.ts deliberately does not truncate
+    // either. Truncation is a cold-start bandwidth guard, not a resume policy.
+    const shrink = opts.preserveLoadedHistory
+        ? (state: unknown) => state
+        : maybeTruncateSnapshotState;
 
     return {
         snapshot: {
@@ -152,12 +161,12 @@ export async function tryCacheSnapshot(
                 // model, todo list — so apply it or a stale snapshot clobbers the
                 // viewer's restored follow-ups on switch.
                 const state = applySnapshotOverlayToState(
-                    maybeTruncateSnapshotState(snapshotEvent.state),
+                    shrink(snapshotEvent.state),
                     snapshotOverlay,
                 );
                 eventToSend = { ...snapshotEvent, state };
             } else if (Array.isArray(snapshotEvent.messages)) {
-                eventToSend = maybeTruncateSnapshotState(snapshotEvent) as Record<string, unknown>;
+                eventToSend = shrink(snapshotEvent) as Record<string, unknown>;
             }
             socket.emit("event", { event: eventToSend, replay: true, generation });
             // Replay deltas cached after the snapshot. The viewer's cursor was
@@ -288,20 +297,8 @@ export async function getBestSnapshot(
             return null;
         }
 
-        // 1b. No usable deltas. A full snapshot is still safe when we can prove
-        //     it reconstructs at least what the viewer already holds. This is the
-        //     case the old code could not distinguish and so refused outright.
-        try {
-            const cached = await tryCacheSnapshot(sessionId, deps, snapshotOverlay);
-            const coverage = cached?.snapshot.seq;
-            if (cached && coverage !== undefined && coverage >= lastSeq) {
-                return cached;
-            }
-        } catch {
-            // Fall through
-        }
-
-        // 1c. Nothing to send and the client is provably level with the server.
+        // 1b. Nothing to replay and the client is provably level with the
+        //     server: say so instead of resending a whole transcript it has.
         if (opts.latestSeq === lastSeq) {
             return {
                 snapshot: {
@@ -311,6 +308,22 @@ export async function getBestSnapshot(
                 },
                 send() {},
             };
+        }
+
+        // 1c. The client is genuinely behind and deltas cannot repair it. A full
+        //     snapshot is still safe when we can prove it reconstructs at least
+        //     what the viewer already holds — the case the old code could not
+        //     distinguish and so refused outright, going blank instead.
+        try {
+            const cached = await tryCacheSnapshot(sessionId, deps, snapshotOverlay, {
+                preserveLoadedHistory: true,
+            });
+            const coverage = cached?.snapshot.seq;
+            if (cached && coverage !== undefined && coverage >= lastSeq) {
+                return cached;
+            }
+        } catch {
+            // Fall through
         }
 
         // 1d. A real gap we cannot repair without risking a rewind. Recover

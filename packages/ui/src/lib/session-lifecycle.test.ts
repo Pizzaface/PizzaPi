@@ -350,3 +350,34 @@ function goLive(sessionId: string) {
     a.snapshotComplete(),
   );
 }
+
+describe("reconnect does not re-gate an already-hydrated session", () => {
+  test("connected after hydration stays live and does not await a snapshot again", () => {
+    let state = sessionLifecycleReducer(createInitialSessionLifecycleState(), a.sessionSelected("s1", 1));
+    state = sessionLifecycleReducer(state, a.connected({}));
+    state = sessionLifecycleReducer(state, a.snapshotComplete());
+    expect(state.hydration.hydrated).toBe(true);
+
+    // Transport blip -> a fresh "connected" for the same session. The server may
+    // legitimately answer the resume with nothing, so re-arming the hydration
+    // gate here would block input forever on a visibly fine session.
+    const resumed = sessionLifecycleReducer(state, a.connected({}));
+    expect(resumed.hydration.awaitingSnapshot).toBe(false);
+    expect(resumed.hydration.hydrated).toBe(true);
+    expect(resumed.phase).toBe("live");
+  });
+
+  test("a genuine session switch still arms the hydration gate", () => {
+    let state = sessionLifecycleReducer(createInitialSessionLifecycleState(), a.sessionSelected("s1", 1));
+    state = sessionLifecycleReducer(state, a.connected({}));
+    state = sessionLifecycleReducer(state, a.snapshotComplete());
+
+    state = sessionLifecycleReducer(state, a.sessionSelected("s2", 2));
+    expect(state.hydration.hydrated).toBe(false);
+    expect(state.hydration.awaitingSnapshot).toBe(true);
+
+    state = sessionLifecycleReducer(state, a.connected({}));
+    expect(state.hydration.awaitingSnapshot).toBe(true);
+    expect(state.phase).toBe("connecting");
+  });
+});
