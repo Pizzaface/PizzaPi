@@ -615,6 +615,17 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                         });
                         const seqAfter = await getSessionSeq(nextSessionId);
                         if (!stillMine() || seqAfter !== freshSeq) return;
+                        // A runner may have joined AFTER the room was confirmed
+                        // empty but before it broadcast anything (seq unmoved).
+                        // Re-signal recovery and only fall back if the room is
+                        // STILL empty — a joined runner will push a fresh
+                        // session_active (registered → emitSessionActive) that
+                        // must not be overwritten by unsequenced persisted
+                        // state. ponytail: an instant-of-send race remains; the
+                        // runner's unconditional snapshot-on-register supersedes
+                        // it on the next broadcast.
+                        const recheck = await forwardRecoveryConnectedSignal(nextSessionId);
+                        if (!stillMine() || recheck !== "empty") return;
                         if (persisted) {
                             persisted.send(socket, generation);
                             log.info(`persisted fallback after confirmed-offline runner: sessionId=${nextSessionId} viewer=${socket.id} type=${persisted.snapshot.type}`);

@@ -256,10 +256,17 @@ export async function emitToRelaySessionChecked(sessionId: string, eventName: st
     if (!io) return "unknown";
     const room = relaySessionRoom(sessionId);
     try {
-        // ⚡ Bolt: Fast check on adapter avoids fetching full RemoteSocket objects across cluster
-        const sockets = await io.of("/relay").adapter.sockets(new Set([room]));
-        if (sockets.size === 0) return "empty";
+        // fetchSockets() is the cluster-aware presence check: with the Redis
+        // adapter, adapter.sockets() is inherited from the in-memory adapter
+        // and only scans LOCAL rooms, so a runner on another node would be
+        // misreported as "empty" — exactly the confirmed-offline signal this
+        // function must never fake.
+        const sockets = await io.of("/relay").in(room).fetchSockets();
+        if (sockets.length === 0) return "empty";
         io.of("/relay").to(room).emit(eventName, data);
+        // Presence ≠ delivery: the socket can drop between the check and the
+        // emit. Callers needing hard delivery proof must use
+        // emitToRelaySessionAwaitingAck instead.
         return "delivered";
     } catch (err) {
         // The cluster-wide lookup goes through the Redis adapter; when Redis is
