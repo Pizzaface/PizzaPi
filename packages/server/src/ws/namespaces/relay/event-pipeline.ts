@@ -56,11 +56,14 @@ export interface ChunkedSessionState {
  * that never comes, which is unrecoverable even across client retries.
  *
  * Healthy streams emit chunks sub-second (setImmediate cadence on the
- * runner), so 15s of silence is unambiguous. Kept below the client's
- * hydration-retry window (~8s interval, 2 retries) so the second retry
- * passes the gate instead of erroring out behind it.
+ * runner), so 10s of silence is unambiguous. Timing alignment matters: the
+ * client retries hydration at ~4s and ~12s after its last progress event,
+ * then surfaces a terminal error — the threshold must sit BELOW the final
+ * retry (12s) or the bypass is never exercised before the client gives up.
+ * Both clocks anchor to the same event (a chunk arrival), so 10s here
+ * guarantees the ~12s retry sees the stream as stale.
  */
-export const CHUNK_STREAM_STALE_MS = 15_000;
+export const CHUNK_STREAM_STALE_MS = 10_000;
 
 export interface PendingChunkUpdate {
     chunkIndex: number;

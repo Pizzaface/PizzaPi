@@ -381,12 +381,22 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
         // from triggering a runner signal when the viewer was already hydrated
         // from the server-side Redis cache.
         let suppressRunnerSignal = false;
+        // Monotonic activation token: generation checks alone cannot catch a
+        // watchdog retry that reuses the SAME generation. Two overlapping
+        // activations racing across getBestSnapshot()'s await could otherwise
+        // consume or overwrite each other's socket-wide signal flags
+        // (suppressRunnerSignal / pendingConnectedSignal) or double-signal the
+        // runner. Every await inside activateSession re-checks the token and
+        // bails if a newer activation has started.
+        let activationCounter = 0;
 
         const getCurrentSessionId = (): string | null => socket.data.sessionId ?? null;
         const getCurrentGeneration = (): number | undefined =>
             typeof socket.data.generation === "number" ? socket.data.generation : undefined;
 
         const activateSession = async (nextSessionId: string, generation?: number, lastSeq?: number): Promise<void> => {
+            const activationToken = ++activationCounter;
+            const activationCurrent = () => activationToken === activationCounter;
             // Reset on every session switch so a prior session's signal state
             // cannot bleed into the new session.  Specifically:
             //   - suppressRunnerSignal=true (cache hit) must not silence the
@@ -409,11 +419,11 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             const previousSessionId = getCurrentSessionId();
             if (previousSessionId && previousSessionId !== nextSessionId) {
                 await removeViewer(previousSessionId, socket);
-                if (!isViewerSwitchCurrent(getCurrentGeneration(), generation)) return;
+                if (!isViewerSwitchCurrent(getCurrentGeneration(), generation) || !activationCurrent()) return;
             }
 
             const sessionSummary = await getSharedSessionSummary(nextSessionId);
-            if (!isViewerSwitchCurrent(getCurrentGeneration(), generation)) return;
+            if (!isViewerSwitchCurrent(getCurrentGeneration(), generation) || !activationCurrent()) return;
 
             if (!sessionSummary) {
                 socket.data.sessionId = undefined;
@@ -434,7 +444,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 sessionSummaryHint: sessionSummary,
                 touchAsync: true,
             });
-            if (!isViewerSwitchCurrent(getCurrentGeneration(), generation)) {
+            if (!isViewerSwitchCurrent(getCurrentGeneration(), generation) || !activationCurrent()) {
                 if (ok) {
                     await removeViewer(nextSessionId, socket);
                 }
@@ -458,7 +468,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 getSessionSeq(nextSessionId),
             ]);
 
-            if (!isViewerSwitchCurrent(getCurrentGeneration(), generation)) {
+            if (!isViewerSwitchCurrent(getCurrentGeneration(), generation) || !activationCurrent()) {
                 await removeViewer(nextSessionId, socket);
                 return;
             }
@@ -521,6 +531,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                     chunkedPending: false,
                     latestSeq: freshSeq,
                 });
+                if (!activationCurrent()) return; // newer activation owns the signal flags now
                 if (snapshotResult) {
                     // Cache hit — viewer is fully hydrated.  Suppress the
                     // runner "connected" signal so it doesn't rebuild and

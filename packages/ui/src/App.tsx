@@ -3300,8 +3300,11 @@ export function App() {
     // no-op and leave them with a blank transcript until a full page reload.
     if (
       relaySessionId === lifecycleRefs.activeSessionId.current &&
-      !lifecycleRefs.awaitingSnapshot.current
+      lifecycleRefs.hydrated.current
     ) {
+      // awaitingSnapshot alone is not "finished": chunked headers clear it
+      // while the transfer is still in flight, and a stalled transfer must
+      // remain re-clickable.
       return;
     }
 
