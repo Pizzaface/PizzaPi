@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import {
     providerUsageDisplay,
     activeWindows,
+    showsUsageIndicator,
     type UsageWindow,
     type ProviderUsageData,
     type ProviderUsageMap,
@@ -193,7 +194,10 @@ export interface UsageIndicatorProps {
 
 export function UsageIndicator({ usage, authSource: rawAuthSource, activeProvider, onRefresh, refreshing = false }: UsageIndicatorProps) {
     const entries = React.useMemo(
-        () => Object.entries(usage ?? {}).filter(([, d]) => d.status === "unknown" || activeWindows(d.windows).length > 0),
+        () => Object.entries(usage ?? {}).filter(([id, d]) =>
+            showsUsageIndicator(id) &&
+            (d.status === "unknown" || activeWindows(d.windows).length > 0),
+        ),
         [usage],
     );
 
@@ -204,7 +208,8 @@ export function UsageIndicator({ usage, authSource: rawAuthSource, activeProvide
 
     // env / auth.json → show "USAGE" badge (no subscription quota)
     // oauth → show if there's usage data, or an explicit unknown state.
-    const showApiKeyBadge = !!activeProvider && (authSource === "env" || authSource === "auth.json");
+    const showApiKeyBadge = !!activeProvider && showsUsageIndicator(activeProvider) &&
+        (authSource === "env" || authSource === "auth.json");
 
     if (entries.length === 0 && !showApiKeyBadge && !onRefresh) return null;
 

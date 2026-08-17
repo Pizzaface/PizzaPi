@@ -12,9 +12,9 @@ import { loadConfig } from "../../config.js";
 import { RELAY_BACKOFF_DEFAULTS, computeBackoffDelay } from "../../backoff.js";
 import { getMcpBridge } from "../mcp-bridge.js";
 import { messageBus } from "../session-message-bus.js";
-import { refreshAllUsage } from "../remote-provider-usage.js";
-import { startHeartbeat, stopHeartbeat } from "../remote-heartbeat.js";
-import { emitAuthSourceChanged, emitThinkingLevelChanged, emitMcpStartupReport } from "../remote-meta-events.js";
+import { buildProviderUsage, refreshAllUsage } from "../remote-provider-usage.js";
+import { buildTokenUsage, startHeartbeat, stopHeartbeat } from "../remote-heartbeat.js";
+import { emitAuthSourceChanged, emitThinkingLevelChanged, emitMcpStartupReport, emitTokenUsageUpdated } from "../remote-meta-events.js";
 import { getAuthSource } from "../remote-auth-source.js";
 import { cancelPendingAskUserQuestion, consumePendingAskUserQuestionFromWeb } from "../remote-ask-user.js";
 import { cancelPendingPlanMode, consumePendingPlanModeFromWeb } from "../remote-plan-mode.js";
@@ -385,7 +385,9 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         }
 
         emitSessionActive(rctx);
-        void refreshAllUsage();
+        void refreshAllUsage().then(() => {
+            emitTokenUsageUpdated(rctx, buildTokenUsage(rctx), buildProviderUsage() as any);
+        });
         startHeartbeat(rctx);
 
         // Emit initial meta values so late-joining viewers get current state.

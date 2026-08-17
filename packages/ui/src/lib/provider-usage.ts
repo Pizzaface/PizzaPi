@@ -13,6 +13,10 @@ export interface ProviderUsageData {
 // Record<providerId, ProviderUsageData>  e.g. { anthropic: {...}, "openai-codex": {...} }
 export type ProviderUsageMap = Record<string, ProviderUsageData>;
 
+export function showsUsageIndicator(providerId: string): boolean {
+  return !providerId.toLowerCase().startsWith("google");
+}
+
 /**
  * A window whose `resets_at` has passed has already rolled over, so its cached
  * utilization is stale (the daemon caches Anthropic for 15 min and the UI only

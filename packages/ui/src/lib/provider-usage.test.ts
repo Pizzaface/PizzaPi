@@ -1,7 +1,16 @@
 import { describe, test, expect } from "bun:test";
-import { activeWindows, isWindowExpired, providerUsageDisplay, type ProviderUsageData } from "./provider-usage";
+import { activeWindows, isWindowExpired, providerUsageDisplay, showsUsageIndicator, type ProviderUsageData } from "./provider-usage";
 
 const NOW = Date.parse("2026-03-10T12:00:00Z");
+
+describe("showsUsageIndicator", () => {
+    test("hides Google providers without hiding other usage", () => {
+        expect(showsUsageIndicator("google-gemini-cli")).toBe(false);
+        expect(showsUsageIndicator("Google-Vertex")).toBe(false);
+        expect(showsUsageIndicator("anthropic")).toBe(true);
+        expect(showsUsageIndicator("openai-codex")).toBe(true);
+    });
+});
 const FUTURE = "2026-03-10T17:00:00Z";
 const PAST = "2026-03-10T07:00:00Z";
 
