@@ -411,6 +411,7 @@ export function createAuthContext(config: AuthConfig = {}): AuthContext {
     const trustedOrigins = [...baseOrigins, ...extraOrigins, ...mobileOrigins];
 
     const sqliteDb = new Database(dbPath);
+    applySqlitePerfPragmas(sqliteDb);
     const dialect = new BunSqliteDialect({ database: sqliteDb });
     const db = new Kysely<DB>({ dialect });
     const auth = createBetterAuth({
@@ -502,9 +503,28 @@ export function getDisableSignupAfterFirstUser(): boolean {
 
 export type Auth = AuthInstance;
 
+/**
+ * WAL + NORMAL sync: bun:sqlite writes are synchronous on the event loop, and
+ * the default DELETE journal makes every multi-MB relay_session_state write
+ * pay journal create/fsync/delete — measured as ping-timeout churn in prod
+ * (especially on VirtioFS bind mounts). WAL appends instead, cutting write
+ * stalls dramatically. Single-process access, so WAL's shm requirements are
+ * trivial. Best-effort: a filesystem that refuses WAL keeps the default.
+ */
+function applySqlitePerfPragmas(db: Database): void {
+    try {
+        db.run("PRAGMA journal_mode = WAL");
+        db.run("PRAGMA synchronous = NORMAL");
+        db.run("PRAGMA busy_timeout = 5000");
+    } catch (err) {
+        console.warn("[auth-db] Could not apply SQLite perf pragmas (keeping defaults):", err);
+    }
+}
+
 /** Create a standalone Kysely instance for ad-hoc test setup. */
 export function createTestDatabase(dbPath: string): Kysely<DB> {
     const sqliteDb = new Database(dbPath);
+    applySqlitePerfPragmas(sqliteDb);
     return new Kysely<DB>({ dialect: new BunSqliteDialect({ database: sqliteDb }) });
 }
 

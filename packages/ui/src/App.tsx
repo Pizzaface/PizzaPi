@@ -823,6 +823,10 @@ export function App() {
   const hydrationStallTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   const hydrationRetriesRef = React.useRef(0);
   const HYDRATION_STALL_MS = 8_000;
+  // First retry fires sooner: a dropped first snapshot otherwise always costs
+  // the full stall window. Later retries keep the longer threshold so a slow
+  // link streaming a big snapshot isn't hammered with duplicate requests.
+  const HYDRATION_FIRST_RETRY_MS = 3_500;
   const HYDRATION_CHECK_INTERVAL_MS = 2_000;
   // ponytail: two retries, then surface the failure. Retrying forever would
   // re-request a full snapshot every 8s against a session that cannot answer.
@@ -845,6 +849,27 @@ export function App() {
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Reconnect immediately when the tab foregrounds or the network returns.
+  // socket.io's reconnect backoff can sit up to ~30s after a background
+  // suspension; a manual connect() bypasses the backoff timer entirely and
+  // is a no-op when already connected/connecting.
+  React.useEffect(() => {
+    const kickSockets = () => {
+      if (document.visibilityState !== "visible") return;
+      const viewer = viewerWsRef.current;
+      if (viewer && !viewer.connected) viewer.connect();
+      const hub = hubSocketRef.current;
+      if (hub && !hub.connected) hub.connect();
+    };
+    window.addEventListener("online", kickSockets);
+    document.addEventListener("visibilitychange", kickSockets);
+    return () => {
+      window.removeEventListener("online", kickSockets);
+      document.removeEventListener("visibilitychange", kickSockets);
+    };
   }, []);
   // How long to ignore runner queue syncs after a local queue mutation.
   const QUEUE_SYNC_SUPPRESS_MS = 5_000;
@@ -3033,6 +3058,10 @@ export function App() {
     if (!hubAuthUserId) return;
     const socket = io(socketUrl("/hub"), {
       withCredentials: true,
+      // WebSocket first: the default polling→upgrade handshake costs 2-3 extra
+      // RTTs on every connect AND reconnect. Polling stays as a fallback for
+      // proxies that block WebSockets.
+      transports: ["websocket", "polling"],
       auth: buildSocketAuth({
         protocolVersion: SOCKET_PROTOCOL_VERSION,
         clientVersion: UI_VERSION,
@@ -3357,6 +3386,9 @@ export function App() {
         }),
         withCredentials: true,
         autoConnect: false,
+        // WebSocket first (polling fallback) — skips the polling handshake's
+        // extra round trips on every connect/reconnect.
+        transports: ["websocket", "polling"],
       });
       viewerWsRef.current = socket;
       attachServiceAnnounceListener(socket);
@@ -3387,7 +3419,8 @@ export function App() {
         }
         const requestedAt = hydrationRequestedAtRef.current;
         if (requestedAt === null) return;
-        if (Date.now() - requestedAt < HYDRATION_STALL_MS) return;
+        const stallThreshold = hydrationRetriesRef.current === 0 ? HYDRATION_FIRST_RETRY_MS : HYDRATION_STALL_MS;
+        if (Date.now() - requestedAt < stallThreshold) return;
 
         if (hydrationRetriesRef.current >= HYDRATION_MAX_RETRIES) {
           // Stop retrying, but never leave a spinner claiming progress.
@@ -4018,6 +4051,7 @@ export function App() {
         clientVersion: UI_VERSION,
       }),
       withCredentials: true,
+      transports: ["websocket", "polling"],
     });
 
     const cleanup = () => tempSocket.disconnect();
