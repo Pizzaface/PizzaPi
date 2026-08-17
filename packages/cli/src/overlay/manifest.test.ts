@@ -188,6 +188,28 @@ describe("readOverlayManifest", () => {
         expect(result.issues.some((i) => i.field === "services[0].panel.defaultOpen")).toBe(true);
     });
 
+    test("panel.launcher is accepted and preserved on the overlay", () => {
+        const dir = fixturePkg({
+            schemaVersion: 1,
+            services: [{ id: "svc", label: "x", entry: "./service.ts", panel: { dir: "./panel", launcher: { surface: "session-list", position: "bottom-right" } } }],
+        }, (d) => { mkdirSync(join(d, "panel")); });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.issues).toHaveLength(0);
+        expect(result.overlay?.services?.[0]?.panel?.launcher).toEqual({ surface: "session-list", position: "bottom-right" });
+    });
+
+    test("panel.launcher with an unknown surface or position is rejected", () => {
+        const dir = fixturePkg({
+            schemaVersion: 1,
+            services: [{ id: "svc", label: "x", entry: "./service.ts", panel: { dir: "./panel", launcher: { surface: "unknown", position: "bottom-right" } } }],
+        }, (d) => { mkdirSync(join(d, "panel")); });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.overlay).toBeNull();
+        expect(result.issues.some((i) => i.field === "services[0].panel.launcher.surface")).toBe(true);
+    });
+
     // ── mcp sidecar shape/format ────────────────────────────────────────────
 
     test("mcp sidecar with malformed JSON is rejected", () => {

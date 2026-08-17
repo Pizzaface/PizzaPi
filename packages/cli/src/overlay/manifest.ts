@@ -29,7 +29,7 @@ const PREFERRED_MCP_TRANSPORT_KEYS: Record<string, Set<string>> = {
     streamable: new Set(["url", "headers", "oauthClientName", "oauthClientId", "oauthClientSecret", "oauthCallbackPort"]),
 };
 const SERVICE_KEYS = new Set(["id", "label", "entry", "icon", "panel", "triggers", "sigils", "sessionModes", "modes"]);
-const PANEL_KEYS = new Set(["dir", "requires", "placement", "defaultOpen"]);
+const PANEL_KEYS = new Set(["dir", "requires", "placement", "defaultOpen", "launcher"]);
 const PANEL_VARIABLES: ReadonlySet<PanelVariable> = new Set(["PWD", "SESSION_ID", "HOME", "USER", "PROJECT_DIR"]);
 /** Valid declarative panel dock zones, mirrored from ServicePanelPlacement. */
 const PANEL_PLACEMENTS = new Set([
@@ -37,6 +37,8 @@ const PANEL_PLACEMENTS = new Set([
     "center-top", "center-bottom",
     "right-top", "right-middle", "right-bottom",
 ]);
+const PANEL_LAUNCHER_SURFACES = new Set(["session-list"]);
+const PANEL_LAUNCHER_POSITIONS = new Set(["bottom-left", "bottom-right"]);
 const SERVICE_ID_RE = /^[a-z][a-z0-9-]{0,63}$/;
 const ENTRY_EXTENSIONS = [".ts", ".js", ".mts", ".mjs"];
 /** Value types allowed on a trigger param definition, mirrored from ServiceTriggerParamDef. */
@@ -869,7 +871,7 @@ function validateServices(
             } else {
                 for (const key of Object.keys(raw.panel)) {
                     if (!PANEL_KEYS.has(key)) {
-                        push(`${field}.panel.${key}`, `unknown panel key "${key}"`, `Remove "${key}" — allowed keys: dir, requires, placement, defaultOpen.`);
+                        push(`${field}.panel.${key}`, `unknown panel key "${key}"`, `Remove "${key}" — allowed keys: dir, requires, placement, defaultOpen, launcher.`);
                     }
                 }
                 if (raw.panel.placement !== undefined && !PANEL_PLACEMENTS.has(raw.panel.placement as string)) {
@@ -883,6 +885,26 @@ function validateServices(
                 if (raw.panel.defaultOpen !== undefined && typeof raw.panel.defaultOpen !== "boolean") {
                     push(`${field}.panel.defaultOpen`, "must be a boolean", "Set defaultOpen to true to auto-open the panel, or omit it.");
                     valid = false;
+                }
+                if (raw.panel.launcher !== undefined) {
+                    if (!isPlainObject(raw.panel.launcher)) {
+                        push(`${field}.panel.launcher`, "must be an object", "Set launcher to { surface, position }.");
+                        valid = false;
+                    } else {
+                        for (const key of Object.keys(raw.panel.launcher)) {
+                            if (key !== "surface" && key !== "position") {
+                                push(`${field}.panel.launcher.${key}`, `unknown launcher key "${key}"`, "Remove it — allowed keys: surface, position.");
+                            }
+                        }
+                        if (!PANEL_LAUNCHER_SURFACES.has(raw.panel.launcher.surface as string)) {
+                            push(`${field}.panel.launcher.surface`, "must be one of the supported launcher surfaces", `Use one of: ${[...PANEL_LAUNCHER_SURFACES].join(", ")}.`);
+                            valid = false;
+                        }
+                        if (!PANEL_LAUNCHER_POSITIONS.has(raw.panel.launcher.position as string)) {
+                            push(`${field}.panel.launcher.position`, "must be one of the supported launcher positions", `Use one of: ${[...PANEL_LAUNCHER_POSITIONS].join(", ")}.`);
+                            valid = false;
+                        }
+                    }
                 }
                 if (typeof raw.panel.dir !== "string" || raw.panel.dir.length === 0) {
                     push(`${field}.panel.dir`, "must be a non-empty package-relative path", "Set panel.dir to the panel UI directory.");

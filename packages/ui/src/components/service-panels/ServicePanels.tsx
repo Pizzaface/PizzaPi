@@ -30,6 +30,29 @@ export function filterDisabledServicePanels<T extends { serviceId: string }>(pan
 }
 
 /**
+ * Merged, hidden-filtered list of docked service panels for the current runner.
+ * Panels that declare a launcher are excluded because they render on their
+ * dedicated surface (e.g. session list).
+ */
+export function useDockableServicePanels(
+    availableServices: Set<string>,
+    dynamicPanels: ServicePanelInfo[] = [],
+    disabledServiceIds: Set<string> = new Set(),
+): VisibleServicePanel[] {
+    const hiddenPanels = useHiddenServicePanels();
+    return React.useMemo(() => {
+        const staticIds = new Set(SERVICE_PANELS.map(p => p.serviceId));
+        const statics = SERVICE_PANELS
+            .filter(p => availableServices.has(p.serviceId) && !hiddenPanels.has(p.serviceId))
+            .map(p => ({ serviceId: p.serviceId, label: p.label, icon: p.icon }));
+        const dynamics = dynamicPanels
+            .filter(p => !staticIds.has(p.serviceId) && !hiddenPanels.has(p.serviceId) && !p.launcher)
+            .map(p => ({ serviceId: p.serviceId, label: p.label, icon: <DynamicLucideIcon name={p.icon} /> }));
+        return filterDisabledServicePanels([...statics, ...dynamics], disabledServiceIds);
+    }, [availableServices, dynamicPanels, disabledServiceIds, hiddenPanels]);
+}
+
+/**
  * Merged, hidden-filtered list of service panels for the current runner.
  * Static registry panels win over dynamic panels with the same serviceId.
  */
@@ -75,7 +98,7 @@ export function ServicePanelButtons({
     onButtonDragStart,
     toolbarPositions,
 }: ServicePanelButtonsProps) {
-    const visiblePanels = useVisibleServicePanels(availableServices, dynamicPanels, disabledServiceIds);
+    const visiblePanels = useDockableServicePanels(availableServices, dynamicPanels, disabledServiceIds);
     const inHeader = (serviceId: string) =>
         (toolbarPositions?.[`service:${serviceId}` as ServiceButtonId] ?? "top") === "top";
 
@@ -125,7 +148,7 @@ export function ServicePanelOverflowItems({
     activePanelIds,
     onTogglePanel,
 }: Pick<ServicePanelButtonsProps, "availableServices" | "disabledServiceIds" | "dynamicPanels" | "activePanelIds" | "onTogglePanel">) {
-    const visiblePanels = useVisibleServicePanels(availableServices, dynamicPanels, disabledServiceIds);
+    const visiblePanels = useDockableServicePanels(availableServices, dynamicPanels, disabledServiceIds);
     if (visiblePanels.length === 0) return null;
     return (
         <>

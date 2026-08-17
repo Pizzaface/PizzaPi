@@ -12,7 +12,13 @@ export type {
   TriggerSubscriptionDelta,
 } from "./service.js";
 
-export type { PizzaPiOverlayV1, PizzaPiServiceDeclaration, PanelVariable } from "./overlay.js";
+export type {
+  PizzaPiOverlayV1,
+  PizzaPiServiceDeclaration,
+  PanelVariable,
+} from "./overlay.js";
+export type { ServicePanelPlacement } from "@pizzapi/protocol";
+export type { ServicePanelLauncherSurface, ServicePanelLauncherPosition } from "./overlay.js";
 
 export type { PizzaPiHostInfo, PizzaPiHostAPI } from "./host.js";
 export { isPizzaPiHostInfo, detectPizzaPiHost, onPizzaPiHost, sendServiceMessage, requestApproval } from "./host.js";

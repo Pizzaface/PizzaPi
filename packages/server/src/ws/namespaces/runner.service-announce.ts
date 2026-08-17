@@ -144,7 +144,9 @@ function samePanelInfo(a: ServicePanelInfo, b: ServicePanelInfo): boolean {
         a.label !== b.label ||
         a.icon !== b.icon ||
         a.placement !== b.placement ||
-        a.defaultOpen !== b.defaultOpen
+        a.defaultOpen !== b.defaultOpen ||
+        a.launcher?.surface !== b.launcher?.surface ||
+        a.launcher?.position !== b.launcher?.position
     ) return false;
     const aModes = a.modes !== undefined ? JSON.stringify(a.modes) : undefined;
     const bModes = b.modes !== undefined ? JSON.stringify(b.modes) : undefined;

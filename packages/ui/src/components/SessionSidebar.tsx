@@ -19,7 +19,8 @@ import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSe
 import { pruneSwipeOffsets } from "@/lib/swipe-reveal";
 import { getSessionVisualState } from "@/lib/session-visual-state";
 import { parseHubSessionsPayload } from "@/lib/hub-sessions";
-import { cwdInWorkspace, type ServiceModeDef } from "@pizzapi/protocol";
+import { cwdInWorkspace, type ServiceModeDef, type ServicePanelInfo } from "@pizzapi/protocol";
+import { IframeServicePanel } from "@/components/service-panels/IframeServicePanel";
 
 interface HubSession {
     sessionId: string;
@@ -114,6 +115,14 @@ export interface SessionSidebarProps {
     sessionModesRunnerId?: string | null;
     /** Notified when the user switches session mode (null = no mode filter). */
     onSelectedModeChange?: (modeId: string | null) => void;
+    /** Dynamic panels announced by the runner, so launcher buttons can be rendered beneath the session list. */
+    dynamicPanels?: ServicePanelInfo[];
+    /** Called when a session-list launcher panel should be opened full-screen. */
+    onOpenLauncherPanel?: (panel: ServicePanelInfo) => void;
+    /** Currently open launcher panel service id, if any. */
+    openLauncherPanelId?: string | null;
+    /** Called when the open launcher panel should be closed. */
+    onCloseLauncherPanel?: () => void;
 }
 
 /** Filter by the selected mode without changing the runner/project/session tree. */
@@ -231,6 +240,10 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     sessionModes = [],
     sessionModesRunnerId,
     onSelectedModeChange,
+    dynamicPanels = [],
+    onOpenLauncherPanel,
+    openLauncherPanelId,
+    onCloseLauncherPanel,
 }: SessionSidebarProps) {
     const [collapsed, setCollapsed] = React.useState(false);
 
@@ -1665,6 +1678,17 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
 
                 </div>}
+
+                {/* Session-list launcher footer — pinned below the scrollable list */}
+                {!showRunners && (
+                    <div className="shrink-0 border-t border-sidebar-border/60 px-2 py-1.5">
+                        <LauncherFooter
+                            dynamicPanels={dynamicPanels}
+                            activeModeId={selectedMode}
+                            onOpenLauncherPanel={onOpenLauncherPanel}
+                        />
+                    </div>
+                )}
             </div>
         </aside>
     );
@@ -1672,7 +1696,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     if (effectiveCollapsed) {
         return (
             <aside className="hidden md:flex flex-col h-full bg-sidebar border-r border-sidebar-border flex-shrink-0 w-12">
-                <div className="flex flex-col items-center gap-1 py-2">
+                <div className="flex flex-col items-center gap-1 py-2 flex-1">
                     <Button
                         variant="ghost"
                         size="icon"
@@ -1691,6 +1715,14 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     >
                         <HardDrive className="h-4 w-4" />
                     </Button>
+                </div>
+                <div className="shrink-0 border-t border-sidebar-border/60 px-1 py-1.5">
+                    <LauncherFooter
+                        dynamicPanels={dynamicPanels}
+                        activeModeId={selectedMode}
+                        onOpenLauncherPanel={onOpenLauncherPanel}
+                        collapsed
+                    />
                 </div>
             </aside>
         );
@@ -1729,6 +1761,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             >
                 <div className="relative h-full flex-shrink-0" style={{ width: sidebarWidth }}>
                     {sidebarContent}
+                    {/* Full-screen launcher panel dialog */}
+                    <LauncherPanelDialog
+                        dynamicPanels={dynamicPanels}
+                        activeSessionId={activeSessionId}
+                        openLauncherPanelId={openLauncherPanelId}
+                        onClose={onCloseLauncherPanel}
+                    />
                 </div>
             </Resizable>
         );
@@ -1736,3 +1775,147 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
     return sidebarContent;
 });
+
+// ── Session-list launcher footer ────────────────────────────────────────────
+
+interface LauncherFooterProps {
+  dynamicPanels: ServicePanelInfo[];
+  activeModeId: string | null;
+  onOpenLauncherPanel?: (panel: ServicePanelInfo) => void;
+  collapsed?: boolean;
+}
+
+function LauncherFooter({ dynamicPanels, activeModeId, onOpenLauncherPanel, collapsed }: LauncherFooterProps) {
+  const launchers = React.useMemo(() => {
+    return dynamicPanels
+      .filter((p) => p.launcher?.surface === "session-list")
+      .filter((p) => {
+        if (!p.modes || p.modes.length === 0) return true;
+        return activeModeId ? p.modes.includes(activeModeId) : false;
+      })
+      .sort((a, b) => {
+        const aRight = a.launcher!.position === "bottom-right" ? 1 : 0;
+        const bRight = b.launcher!.position === "bottom-right" ? 1 : 0;
+        if (aRight !== bRight) return aRight - bRight;
+        return a.label.localeCompare(b.label);
+      });
+  }, [dynamicPanels, activeModeId]);
+
+  if (launchers.length === 0) return null;
+
+  if (collapsed) {
+    return (
+      <div className="flex flex-col items-center gap-1">
+        {launchers.map((panel) => (
+          <Button
+            key={panel.serviceId}
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+            onClick={() => onOpenLauncherPanel?.(panel)}
+            aria-label={panel.label}
+            title={panel.label}
+          >
+            <DynamicLucideIcon name={panel.icon} className="h-4 w-4" />
+          </Button>
+        ))}
+      </div>
+    );
+  }
+
+  const left = launchers.filter((p) => p.launcher!.position === "bottom-left");
+  const right = launchers.filter((p) => p.launcher!.position === "bottom-right");
+
+  return (
+    <div className="flex items-center justify-between gap-2">
+      {left.length > 0 && (
+        <div className="flex items-center gap-1">
+          {left.map((panel) => (
+            <Button
+              key={panel.serviceId}
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+              onClick={() => onOpenLauncherPanel?.(panel)}
+              aria-label={panel.label}
+              title={panel.label}
+            >
+              <DynamicLucideIcon name={panel.icon} className="h-4 w-4" />
+            </Button>
+          ))}
+        </div>
+      )}
+      {right.length > 0 && (
+        <div className="flex items-center gap-1">
+          {right.map((panel) => (
+            <Button
+              key={panel.serviceId}
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+              onClick={() => onOpenLauncherPanel?.(panel)}
+              aria-label={panel.label}
+              title={panel.label}
+            >
+              <DynamicLucideIcon name={panel.icon} className="h-4 w-4" />
+            </Button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Full-screen launcher panel dialog ───────────────────────────────────────
+
+interface LauncherPanelDialogProps {
+  dynamicPanels: ServicePanelInfo[];
+  activeSessionId: string | null;
+  openLauncherPanelId?: string | null;
+  onClose?: () => void;
+}
+
+function LauncherPanelDialog({ dynamicPanels, activeSessionId, openLauncherPanelId, onClose }: LauncherPanelDialogProps) {
+  const panel = React.useMemo(
+    () => dynamicPanels.find((p) => p.serviceId === openLauncherPanelId),
+    [dynamicPanels, openLauncherPanelId],
+  );
+  const open = Boolean(panel) && activeSessionId != null;
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose?.(); }}>
+      <DialogContent className="max-w-none w-screen h-screen p-0 border-0 rounded-none gap-0" aria-describedby="launcher-panel-desc">
+        <DialogHeader className="sr-only">
+          <DialogTitle>{panel?.label ?? "Launcher panel"}</DialogTitle>
+          <DialogDescription id="launcher-panel-desc">Full-screen manager for {panel?.label ?? "launcher panel"}</DialogDescription>
+        </DialogHeader>
+        <div className="flex items-center justify-between px-3 py-2 border-b border-sidebar-border bg-sidebar shrink-0">
+          <div className="flex items-center gap-2 text-sm font-medium text-sidebar-foreground">
+            {panel && <DynamicLucideIcon name={panel.icon} className="h-4 w-4" />}
+            {panel?.label}
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => onClose?.()}
+            aria-label="Close manager"
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        <div className="flex-1 min-h-0">
+          {panel && activeSessionId && (
+            <IframeServicePanel
+              sessionId={activeSessionId}
+              port={panel.port}
+              panelParams={panel.panelParams}
+              cwd={panel.panelParams?.projectDir}
+            />
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
