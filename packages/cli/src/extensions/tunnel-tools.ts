@@ -145,6 +145,44 @@ function buildPublicTunnelUrl(deps: TunnelToolsDeps, port: number): string | nul
     return `${base}/api/tunnel/${encodeURIComponent(sessionId)}/${port}/`;
 }
 
+/**
+ * Shareable tunnel URL. The plain path URL above is gated on an interactive
+ * relay session (cookie), so pasting it anywhere else 401s. Mint instead:
+ * `hostUrl` (dedicated subdomain origin, when the relay sets
+ * PIZZAPI_TUNNEL_DOMAIN) else the signed `/api/tunnel/auth/<token>/...` path,
+ * which carries its own credential. Falls back to the cookie-gated URL when no
+ * API key / relay is available.
+ *
+ * ponytail: mints on every call, no cache — tokens are short-lived and
+ * create/list are rare. Add a TTL cache if tunnel listing ever gets hot.
+ */
+async function buildShareableTunnelUrl(deps: TunnelToolsDeps, port: number): Promise<string | null> {
+    const fallback = buildPublicTunnelUrl(deps, port);
+    const base = getRelayHttpBaseUrl(deps);
+    const apiKey = process.env.PIZZAPI_API_KEY;
+    if (!base || !apiKey) return fallback;
+
+    const runnerId = deps.getRunnerId();
+    const sessionId = deps.getRelaySessionId();
+    if (!runnerId && !sessionId) return fallback;
+
+    try {
+        const res = await fetch(`${base}/api/tunnel-token`, {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-api-key": apiKey },
+            body: JSON.stringify(runnerId ? { runnerId, port } : { sessionId, port }),
+            signal: AbortSignal.timeout(SERVICE_TIMEOUT_MS),
+        });
+        if (!res.ok) return fallback;
+        const data = (await res.json()) as { url?: string; hostUrl?: string };
+        if (data.hostUrl) return data.hostUrl;
+        if (data.url) return `${base}${data.url}`;
+    } catch {
+        // Relay unreachable / token mint failed — keep the cookie-gated URL.
+    }
+    return fallback;
+}
+
 function ok(text: string, details?: Record<string, unknown>) {
     return {
         content: [{ type: "text" as const, text }],
@@ -198,7 +236,7 @@ export function createTunnelToolsExtension(deps: TunnelToolsDeps = defaultDeps):
 
                 if (response.type === "tunnel_registered") {
                     const info = response.payload as TunnelInfo;
-                    const publicUrl = buildPublicTunnelUrl(deps, info.port);
+                    const publicUrl = await buildShareableTunnelUrl(deps, info.port);
 
                     const lines = [
                         `Tunnel created successfully.`,
@@ -272,14 +310,15 @@ export function createTunnelToolsExtension(deps: TunnelToolsDeps = defaultDeps):
                 const response = await sendTunnelServiceMessage(deps, "tunnel_list", {});
 
                 if (response.type === "tunnel_list_result") {
-                    const tunnels = ((response.payload as { tunnels?: TunnelInfo[] })?.tunnels ?? [])
-                        .map((t) => ({
+                    const tunnels = await Promise.all(
+                        ((response.payload as { tunnels?: TunnelInfo[] })?.tunnels ?? []).map(async (t) => ({
                             port: t.port,
                             name: t.name ?? null,
                             url: t.url,
-                            publicUrl: buildPublicTunnelUrl(deps, t.port) ?? null,
+                            publicUrl: (await buildShareableTunnelUrl(deps, t.port)) ?? null,
                             pinned: t.pinned ?? false,
-                        }));
+                        })),
+                    );
 
                     if (tunnels.length === 0) {
                         return ok("No active tunnels.", { tunnels: [] });

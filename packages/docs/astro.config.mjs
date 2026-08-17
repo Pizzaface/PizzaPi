@@ -80,6 +80,7 @@ export default defineConfig({
                         { label: "Self-Hosting", slug: "deployment/self-hosting" },
                         { label: "Runner Container", slug: "deployment/runner-container" },
                         { label: "Tailscale HTTPS", slug: "deployment/tailscale" },
+                        { label: "Tunnel TLS", slug: "deployment/tunnel-tls" },
                         { label: "macOS Service", slug: "deployment/mac-setup" },
                     ],
                 },
