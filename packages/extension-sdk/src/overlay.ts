@@ -1,4 +1,4 @@
-import type { ServiceModeDef, ServiceSigilDef, ServiceTriggerDef } from "@pizzapi/protocol";
+import type { ServiceModeDef, ServicePanelPlacement, ServiceSigilDef, ServiceTriggerDef } from "@pizzapi/protocol";
 
 /**
  * `pi.pizzapi` package manifest overlay — schema version 1.
@@ -20,6 +20,16 @@ export interface PizzaPiServiceDeclaration {
   panel?: {
     dir: string;
     requires?: PanelVariable[];
+    /**
+     * Declarative dock zone the host places this panel in by default — a
+     * guaranteed placement such as "left-bottom". Omit to use the host default.
+     */
+    placement?: ServicePanelPlacement;
+    /**
+     * Open this panel automatically wherever it is visible (respecting `modes`)
+     * instead of only on click, so a package-owned panel is present by default.
+     */
+    defaultOpen?: boolean;
   };
   triggers?: string | ServiceTriggerDef[];
   sigils?: string | ServiceSigilDef[];

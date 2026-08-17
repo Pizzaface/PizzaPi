@@ -28,6 +28,36 @@ export function resolveNewPanelPosition(
 }
 
 /**
+ * Decide which package panels to auto-open (ServicePanelInfo.defaultOpen) as the
+ * set of mode-visible panels changes.
+ *
+ * Loop-safe: a panel is auto-opened at most once while it stays visible, so a
+ * user closing it does not fight a reopen. A panel that leaves the visible set
+ * is forgotten, so re-entering its mode opens it again. `isActive` prevents
+ * re-opening a panel the user opened manually.
+ *
+ * Returns the panels to open now and the next "already auto-opened" tracking
+ * set the caller should persist.
+ */
+export function computeAutoOpenPanels(
+    modePanels: ReadonlyArray<{ serviceId: string; defaultOpen?: boolean }>,
+    alreadyAutoOpened: ReadonlySet<string>,
+    isActive: (serviceId: string) => boolean,
+): { toOpen: string[]; nextTracked: Set<string> } {
+    const visible = new Set(modePanels.map((p) => p.serviceId));
+    // Forget panels no longer visible so re-entry can open them again.
+    const nextTracked = new Set([...alreadyAutoOpened].filter((id) => visible.has(id)));
+    const toOpen: string[] = [];
+    for (const panel of modePanels) {
+        if (!panel.defaultOpen) continue;
+        if (nextTracked.has(panel.serviceId)) continue;
+        nextTracked.add(panel.serviceId);
+        if (!isActive(panel.serviceId)) toOpen.push(panel.serviceId);
+    }
+    return { toOpen, nextTracked };
+}
+
+/**
  * Given an ordered list of tab IDs in a dock group and the globally-active
  * tab ID, return which tab should be highlighted in that group.
  *

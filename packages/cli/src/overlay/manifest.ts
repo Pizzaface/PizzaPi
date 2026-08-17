@@ -29,8 +29,14 @@ const PREFERRED_MCP_TRANSPORT_KEYS: Record<string, Set<string>> = {
     streamable: new Set(["url", "headers", "oauthClientName", "oauthClientId", "oauthClientSecret", "oauthCallbackPort"]),
 };
 const SERVICE_KEYS = new Set(["id", "label", "entry", "icon", "panel", "triggers", "sigils", "sessionModes", "modes"]);
-const PANEL_KEYS = new Set(["dir", "requires"]);
+const PANEL_KEYS = new Set(["dir", "requires", "placement", "defaultOpen"]);
 const PANEL_VARIABLES: ReadonlySet<PanelVariable> = new Set(["PWD", "SESSION_ID", "HOME", "USER", "PROJECT_DIR"]);
+/** Valid declarative panel dock zones, mirrored from ServicePanelPlacement. */
+const PANEL_PLACEMENTS = new Set([
+    "left-top", "left-middle", "left-bottom",
+    "center-top", "center-bottom",
+    "right-top", "right-middle", "right-bottom",
+]);
 const SERVICE_ID_RE = /^[a-z][a-z0-9-]{0,63}$/;
 const ENTRY_EXTENSIONS = [".ts", ".js", ".mts", ".mjs"];
 /** Value types allowed on a trigger param definition, mirrored from ServiceTriggerParamDef. */
@@ -863,8 +869,20 @@ function validateServices(
             } else {
                 for (const key of Object.keys(raw.panel)) {
                     if (!PANEL_KEYS.has(key)) {
-                        push(`${field}.panel.${key}`, `unknown panel key "${key}"`, `Remove "${key}" — allowed keys: dir, requires.`);
+                        push(`${field}.panel.${key}`, `unknown panel key "${key}"`, `Remove "${key}" — allowed keys: dir, requires, placement, defaultOpen.`);
                     }
+                }
+                if (raw.panel.placement !== undefined && !PANEL_PLACEMENTS.has(raw.panel.placement as string)) {
+                    push(
+                        `${field}.panel.placement`,
+                        "must be one of the eight dock zones",
+                        `Use one of: ${[...PANEL_PLACEMENTS].join(", ")}.`,
+                    );
+                    valid = false;
+                }
+                if (raw.panel.defaultOpen !== undefined && typeof raw.panel.defaultOpen !== "boolean") {
+                    push(`${field}.panel.defaultOpen`, "must be a boolean", "Set defaultOpen to true to auto-open the panel, or omit it.");
+                    valid = false;
                 }
                 if (typeof raw.panel.dir !== "string" || raw.panel.dir.length === 0) {
                     push(`${field}.panel.dir`, "must be a non-empty package-relative path", "Set panel.dir to the panel UI directory.");

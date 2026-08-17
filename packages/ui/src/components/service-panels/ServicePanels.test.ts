@@ -22,13 +22,68 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { resolveNewPanelPosition, resolveActiveTabIdFromIds, resolvePanelToggleAction } from "../../utils/servicePanelUtils";
+import { resolveNewPanelPosition, resolveActiveTabIdFromIds, resolvePanelToggleAction, computeAutoOpenPanels } from "../../utils/servicePanelUtils";
 import { filterDisabledServicePanels } from "./ServicePanels";
 
 describe("filterDisabledServicePanels", () => {
     test("omits disabled service panel buttons", () => {
         const panels = [{ serviceId: "enabled" }, { serviceId: "disabled" }];
         expect(filterDisabledServicePanels(panels, new Set(["disabled"]))).toEqual([{ serviceId: "enabled" }]);
+    });
+});
+
+describe("computeAutoOpenPanels", () => {
+    const notActive = () => false;
+
+    test("opens a defaultOpen panel the first time it becomes visible", () => {
+        const { toOpen, nextTracked } = computeAutoOpenPanels(
+            [{ serviceId: "schedules", defaultOpen: true }, { serviceId: "other" }],
+            new Set(),
+            notActive,
+        );
+        expect(toOpen).toEqual(["schedules"]);
+        expect(nextTracked.has("schedules")).toBe(true);
+    });
+
+    test("does not reopen a defaultOpen panel already tracked (user may have closed it)", () => {
+        const { toOpen } = computeAutoOpenPanels(
+            [{ serviceId: "schedules", defaultOpen: true }],
+            new Set(["schedules"]),
+            notActive,
+        );
+        expect(toOpen).toEqual([]);
+    });
+
+    test("forgets a panel once it leaves the visible set so re-entry reopens it", () => {
+        // schedules was tracked but is no longer visible → dropped from tracking.
+        const gone = computeAutoOpenPanels([], new Set(["schedules"]), notActive);
+        expect(gone.nextTracked.has("schedules")).toBe(false);
+        // Re-entering the mode opens it again.
+        const back = computeAutoOpenPanels(
+            [{ serviceId: "schedules", defaultOpen: true }],
+            gone.nextTracked,
+            notActive,
+        );
+        expect(back.toOpen).toEqual(["schedules"]);
+    });
+
+    test("never toggles a panel the user already opened, but still tracks it", () => {
+        const { toOpen, nextTracked } = computeAutoOpenPanels(
+            [{ serviceId: "schedules", defaultOpen: true }],
+            new Set(),
+            (id) => id === "schedules", // already active
+        );
+        expect(toOpen).toEqual([]);
+        expect(nextTracked.has("schedules")).toBe(true);
+    });
+
+    test("ignores panels without defaultOpen", () => {
+        const { toOpen } = computeAutoOpenPanels(
+            [{ serviceId: "plain" }],
+            new Set(),
+            notActive,
+        );
+        expect(toOpen).toEqual([]);
     });
 });
 

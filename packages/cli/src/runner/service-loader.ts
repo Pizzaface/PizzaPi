@@ -18,7 +18,7 @@
  * just no longer contribute runner services.
  */
 import type { ServiceHandler } from "./service-handler.js";
-import type { ServiceModeDef, ServiceTriggerDef, ServiceSigilDef } from "@pizzapi/protocol";
+import type { ServiceModeDef, ServicePanelPlacement, ServiceTriggerDef, ServiceSigilDef } from "@pizzapi/protocol";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -32,6 +32,10 @@ export interface ServiceManifest {
         dir?: string;
         /** Variable names the panel requires. UI resolves and passes as query params. */
         requires?: string[];
+        /** Declarative dock zone the host places this panel in by default. */
+        placement?: ServicePanelPlacement;
+        /** Open the panel automatically in its mode(s) instead of on click. */
+        defaultOpen?: boolean;
     };
     /**
      * Whether this service has a UI panel shown to users. Set explicitly so a

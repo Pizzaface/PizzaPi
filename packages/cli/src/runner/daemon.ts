@@ -37,7 +37,7 @@ import { findSessionPathById } from "./session-list-cache.js";
 import { lookupTranscriptLink } from "./session-transcript-links.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type { ServiceModeDef, ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } from "@pizzapi/protocol";
+import type { ServiceModeDef, ServicePanelPlacement, ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } from "@pizzapi/protocol";
 import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
 import { extractHookSummary } from "./hook-summary.js";
 import { defaultStatePath, acquireStateAndIdentity, releaseStateLock, patchRunnerState } from "./runner-state.js";
@@ -102,6 +102,10 @@ export type PanelEntry = {
     sessionModes?: ServiceModeDef[];
     /** Session mode ids this service's surfaces are scoped to (manifest `modes`). */
     modes?: string[];
+    /** Declarative dock zone the host places this panel in by default. */
+    placement?: ServicePanelPlacement;
+    /** Open the panel automatically in its mode(s) instead of on click. */
+    defaultOpen?: boolean;
     /**
      * Whether this service has a UI panel shown to users.
      * false = service has trigger/sigil defs but no panel (e.g. the time service).
@@ -299,6 +303,8 @@ export function panelEntryFromManifest(
         ...(hasSessionModes ? { sessionModes: manifest.sessionModes } : {}),
         ...(manifest.modes && manifest.modes.length > 0 ? { modes: manifest.modes } : {}),
         ...(manifest.panel?.requires ? { requires: manifest.panel.requires } : {}),
+        ...(manifest.panel?.placement ? { placement: manifest.panel.placement } : {}),
+        ...(manifest.panel?.defaultOpen ? { defaultOpen: true } : {}),
     };
 }
 
@@ -943,6 +949,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     icon: p.icon,
                     ...(p.requires ? { panelParams: resolveRequires(p.requires) } : {}),
                     ...(p.modes ? { modes: p.modes } : {}),
+                    ...(p.placement ? { placement: p.placement } : {}),
+                    ...(p.defaultOpen ? { defaultOpen: true } : {}),
                 }));
             // Collect all trigger defs and sigil defs across all services with manifests
             const allTriggerDefs: ServiceTriggerDef[] = [];
