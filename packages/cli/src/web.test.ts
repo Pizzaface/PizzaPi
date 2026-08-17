@@ -16,6 +16,8 @@ import {
     readBooleanEnv,
     getDockerPlatform,
     ensureComposeSucceeded,
+    resolveCaddyConfig,
+    buildCaddyfile,
 } from "./web";
 
 /**
@@ -620,5 +622,67 @@ describe("getDockerPlatform", () => {
     test("uses current host arch when called with no argument", () => {
         const result = getDockerPlatform();
         expect(result).toMatch(/^linux\//);
+    });
+});
+
+describe("resolveCaddyConfig", () => {
+    const on = { caddy: true, tunnelDomain: "https://t.example.com" };
+
+    test("off unless explicitly enabled", () => {
+        expect(resolveCaddyConfig({ tunnelDomain: "https://t.example.com" }, "server", {}).caddy).toBeNull();
+    });
+
+    test("defaults to the internal CA on :443 with the stock image", () => {
+        const { caddy } = resolveCaddyConfig(on, "server", {});
+        expect(caddy).toEqual({
+            host: "t.example.com",
+            port: 443,
+            dnsProvider: null,
+            image: "caddy:2-alpine",
+            upstream: "server",
+        });
+        expect(buildCaddyfile(caddy!)).toContain("*.t.example.com:443 {");
+        expect(buildCaddyfile(caddy!)).toContain("tls internal");
+        expect(buildCaddyfile(caddy!)).toContain("reverse_proxy server:7492");
+    });
+
+    test("honours the port from the tunnel domain", () => {
+        expect(resolveCaddyConfig({ caddy: true, tunnelDomain: "t.example.com:8443" }, "dev", {}).caddy)
+            .toMatchObject({ port: 8443, upstream: "dev" });
+    });
+
+    test("switches to DNS-01 when a provider and token are supplied", () => {
+        const { caddy } = resolveCaddyConfig(on, "server", {
+            PIZZAPI_CADDY_DNS_PROVIDER: "cloudflare",
+            PIZZAPI_CADDY_DNS_TOKEN: "tok",
+        });
+        expect(caddy?.image).toBe("ghcr.io/caddybuilds/caddy-cloudflare:2.11.4");
+        // The token is referenced from the environment, never baked into the file.
+        expect(buildCaddyfile(caddy!)).toContain("dns cloudflare {env.PIZZAPI_CADDY_DNS_TOKEN}");
+        expect(buildCaddyfile(caddy!)).not.toContain("tok");
+    });
+
+    test("refuses configs that cannot produce a certificate", () => {
+        expect(resolveCaddyConfig({ caddy: true }, "server", {}).error).toContain("PIZZAPI_TUNNEL_DOMAIN");
+        expect(resolveCaddyConfig(on, "server", { PIZZAPI_CADDY_DNS_PROVIDER: "cloudflare" }).error)
+            .toContain("PIZZAPI_CADDY_DNS_TOKEN");
+        expect(resolveCaddyConfig(on, "server", { PIZZAPI_CADDY_DNS_PROVIDER: "route53", PIZZAPI_CADDY_DNS_TOKEN: "t" }).error)
+            .toContain("PIZZAPI_CADDY_IMAGE");
+        expect(resolveCaddyConfig({ caddy: true, tunnelDomain: "http://t.example.com:7492" }, "server", {}).error)
+            .toContain("http://");
+    });
+
+    test("skips *.localhost, which needs no TLS", () => {
+        const res = resolveCaddyConfig({ caddy: true, tunnelDomain: "t.localhost:7492" }, "server", {});
+        expect(res.caddy).toBeNull();
+        expect(res.warning).toContain("localhost");
+    });
+
+    test("accepts a custom image for any provider", () => {
+        expect(resolveCaddyConfig(on, "server", {
+            PIZZAPI_CADDY_DNS_PROVIDER: "route53",
+            PIZZAPI_CADDY_DNS_TOKEN: "t",
+            PIZZAPI_CADDY_IMAGE: "my/caddy:1",
+        }).caddy?.image).toBe("my/caddy:1");
     });
 });

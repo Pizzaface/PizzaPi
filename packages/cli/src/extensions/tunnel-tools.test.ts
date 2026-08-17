@@ -374,4 +374,50 @@ describe("buildPublicTunnelUrl", () => {
         if (savedRelayUrl !== undefined) process.env.PIZZAPI_RELAY_URL = savedRelayUrl;
         else delete process.env.PIZZAPI_RELAY_URL;
     });
+
+    // The plain path URL is cookie-gated; with an API key we must hand back a
+    // self-authenticating URL instead (subdomain origin, else signed path).
+    test.each([
+        [{ hostUrl: "https://abc123.t.example.com/", url: "/api/tunnel/auth/tok/runner:runner-abc/8080/" }, "https://abc123.t.example.com/"],
+        [{ url: "/api/tunnel/auth/tok/runner:runner-abc/8080/" }, "http://127.0.0.1:7492/api/tunnel/auth/tok/runner:runner-abc/8080/"],
+    ])("mints a shareable URL when PIZZAPI_API_KEY is set (%o)", async (minted, expected) => {
+        const savedKey = process.env.PIZZAPI_API_KEY;
+        const savedFetch = globalThis.fetch;
+        process.env.PIZZAPI_API_KEY = "pzp-test";
+        globalThis.fetch = (async () => new Response(JSON.stringify(minted), {
+            headers: { "content-type": "application/json" },
+        })) as unknown as typeof fetch;
+
+        const sock = mockSocket();
+        sock.emit = (_event: string, data: unknown) => {
+            setTimeout(() => {
+                sock.simulateMessage({
+                    serviceId: "tunnel",
+                    type: "tunnel_registered",
+                    requestId: (data as any).requestId,
+                    payload: { port: 8080, url: "/tunnel/8080" },
+                });
+            }, 10);
+        };
+        mockGetRelaySocket.mockReturnValue({ socket: sock, token: "t" });
+        mockGetRelaySessionId.mockReturnValue("sess-123");
+        mockGetRunnerId.mockReturnValue("runner-abc");
+
+        const pi = createMockPi();
+        createTunnelToolsExtension({
+            getRelaySocket: mockGetRelaySocket as any,
+            getRelaySessionId: mockGetRelaySessionId as any,
+            loadConfig: mockLoadConfig as any,
+            getRunnerId: mockGetRunnerId as any,
+        })(pi as any);
+
+        const result = await pi.tools.get("create_tunnel")!.execute("call-1", { port: 8080 });
+        expect(result.details.publicUrl).toBe(expected);
+
+        globalThis.fetch = savedFetch;
+        if (savedKey !== undefined) process.env.PIZZAPI_API_KEY = savedKey;
+        else delete process.env.PIZZAPI_API_KEY;
+        if (savedRelayUrl !== undefined) process.env.PIZZAPI_RELAY_URL = savedRelayUrl;
+        else delete process.env.PIZZAPI_RELAY_URL;
+    });
 });

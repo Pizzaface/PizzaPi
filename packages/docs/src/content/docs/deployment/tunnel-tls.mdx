@@ -1,0 +1,297 @@
+---
+title: Tunnel TLS
+description: Give every tunnel its own HTTPS origin with a wildcard certificate, using the Caddy service bundled with `pizza web`.
+---
+
+import { Steps, Aside } from "@astrojs/starlight/components";
+
+By default, tunnels are served under the relay's own origin at
+`/api/tunnel/…`. That works, but the tunnelled app sees the prefix in
+`location.pathname`, so the relay has to rewrite its HTML, its ES module
+imports and its CSS `url()`s, and inject an interceptor that patches `fetch`,
+`history.pushState`, `location.assign` and a dozen other APIs at runtime.
+
+Setting `PIZZAPI_TUNNEL_DOMAIN` replaces all of that with a dedicated origin per
+tunnel — `https://<label>.<domain>/` — where the path is proxied **verbatim**.
+This page is the deployment runbook for that: wildcard DNS, a wildcard
+certificate via the bundled Caddy, and the failure modes worth knowing about.
+
+For what tunnels are and how the agent creates them, see
+[Tunnel Tools](/PizzaPi/features/tunnels/).
+
+---
+
+## How it works
+
+```
+browser ──TLS──▶ Caddy ──HTTP──▶ relay ──encrypted relay channel──▶ runner ──▶ 127.0.0.1:<port>
+   *.t.example.com:8444        server:7492         (existing /_tunnel WebSocket)
+```
+
+Caddy terminates TLS for the wildcard domain and reverse-proxies to the relay
+container. The relay resolves the subdomain label → `{userId, runner/session,
+port}` in Redis, re-verifies ownership on **every** request, and forwards the
+path unchanged over the tunnel channel that already exists. Nothing about the
+transport changes; the only new component is the TLS front door.
+
+The label is a 128-bit random hex string and **is the credential** — there is no
+cookie or header auth on a host tunnel, which is precisely what lets it work in
+any browser, on any device, in a webview, or in `curl`. It lives in Redis with a
+1-hour sliding TTL and a 12-hour absolute cap. Treat the URL as a secret.
+
+---
+
+## Prerequisites
+
+- A working `pizza web` deployment (see [Self-Hosting](/PizzaPi/deployment/self-hosting/))
+- A domain you control, **different from the relay's own domain** (see the cookie-scope warning below)
+- For publicly trusted certificates: an API token for that domain's DNS provider
+
+---
+
+## Setup
+
+<Steps>
+1. **Point wildcard DNS at the relay host**
+
+   Add an `A` record for `*.t.example.com` → the relay's IP, **DNS-only** (grey
+   cloud on Cloudflare). A CDN cannot proxy to a private address, and the record
+   does not need to be publicly routable — a Tailscale address works fine. The
+   name then resolves for everyone, but only your tailnet can actually connect:
+
+   ```bash
+   dig +short abc123.t.example.com   # → 100.104.174.51
+   ```
+
+2. **Create a scoped DNS token**
+
+   Caddy solves the ACME **DNS-01** challenge, so it needs permission to write
+   TXT records on that zone and nothing else. On Cloudflare:
+   [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens)
+   → *Create Token* → **Edit zone DNS** template → Zone Resources:
+   `Include → Specific zone → example.com` → Create.
+
+   ```bash
+   curl -s -H "Authorization: Bearer $TOKEN" \
+     https://api.cloudflare.com/client/v4/user/tokens/verify
+   ```
+
+   DNS-01 is the reason a tailnet-only relay can hold a real Let's Encrypt
+   certificate: the challenge is answered through the DNS API, so the relay
+   never has to be reachable from the internet and no inbound `:80` is required.
+
+3. **Pick a free port**
+
+   `443` is often already taken on a relay host — notably by `tailscale serve`,
+   which binds the tailnet IP. Docker refuses to start with `bind: address
+   already in use`. Any port works; the URLs simply carry it.
+
+   ```bash
+   # Confirm what actually holds the port — `lsof` does not show tailscaled's bind
+   netstat -an | grep '\.443 '
+   ```
+
+4. **Deploy**
+
+   ```bash
+   PIZZAPI_TUNNEL_DOMAIN=https://t.example.com:8444 \
+   PIZZAPI_CADDY=1 \
+   PIZZAPI_CADDY_DNS_PROVIDER=cloudflare \
+   PIZZAPI_CADDY_DNS_TOKEN=<token from step 2> \
+     pizza web
+   ```
+
+   This adds a `caddy` service to the generated compose file and writes
+   `~/.pizzapi/web/Caddyfile`. The listen port is taken from
+   `PIZZAPI_TUNNEL_DOMAIN`; the upstream is the relay container. Both settings
+   persist in `~/.pizzapi/web/config.json`, so later `pizza web` runs need no
+   environment variables.
+
+   ```text title="~/.pizzapi/web/Caddyfile"
+   *.t.example.com:8444 {
+   	tls {
+   		dns cloudflare {env.PIZZAPI_CADDY_DNS_TOKEN}
+   	}
+   	reverse_proxy server:7492
+   }
+   ```
+
+   The token is passed to the container as an environment variable and
+   referenced as `{env.PIZZAPI_CADDY_DNS_TOKEN}` — it is never written into the
+   Caddyfile itself.
+
+5. **Verify**
+
+   ```bash
+   docker compose -p pizzapi-web logs caddy | grep -i certificate
+   # → tls.obtain  certificate obtained successfully  identifier=*.t.example.com
+   ```
+
+   Then mint a tunnel URL and fetch it with **no credentials of any kind**:
+
+   ```bash
+   curl -s -X POST https://<relay>/api/tunnel-token \
+     -H 'content-type: application/json' -H "x-api-key: $PIZZAPI_API_KEY" \
+     -d '{"runnerId":"<runner>","port":5173}' | jq -r .hostUrl
+   # → https://507309ef02f4258283eb7603032caa25.t.example.com:8444/
+
+   curl -sI https://507309ef….t.example.com:8444/
+   ```
+
+   A correct result serves the app's HTML **verbatim** — no injected `<base>`
+   tag, no interceptor script, and asset paths still absolute (`src="/assets/…"`).
+   If you see a `<base href="/api/tunnel/…">`, you are still on a path-prefix
+   tunnel.
+</Steps>
+
+---
+
+## Without a DNS token
+
+Leave `PIZZAPI_CADDY_DNS_PROVIDER` and `PIZZAPI_CADDY_DNS_TOKEN` unset and
+`PIZZAPI_CADDY=1` still works — Caddy issues from its **internal CA** instead:
+
+```text title="~/.pizzapi/web/Caddyfile"
+*.t.example.com:8444 {
+	tls internal
+	reverse_proxy server:7492
+}
+```
+
+No credentials, no ACME, no public reachability. The cost is that every device
+that opens a tunnel must trust Caddy's root CA once — including the Android app,
+which is awkward. Use it for a quick LAN setup, prefer DNS-01 for anything
+lasting.
+
+Have no domain at all? `<ip-with-dashes>.sslip.io` is free public wildcard DNS
+to any address, including a Tailscale one:
+`PIZZAPI_TUNNEL_DOMAIN=https://100-104-174-51.sslip.io:8444`.
+
+---
+
+## Security model
+
+<Aside type="caution" title="Use a separate registrable domain">
+  Host tunnels forward the tunnelled app's cookies end-to-end, so the tunnel
+  domain must not share the relay's cookie scope — otherwise a tunnelled app can
+  set a `Domain=`-scoped cookie the relay will receive. The relay **fails closed**
+  on this: `getTunnelHostConfig()` refuses any tunnel domain that is a
+  dot-boundary subtree of the `PIZZAPI_BASE_URL` host (or vice-versa) and logs an
+  error. Put the relay on `pizza.example.com` and tunnels on `t.example.net`.
+  `*.localhost` is exempt for local development.
+</Aside>
+
+- **The URL is the credential.** No cookie, no header. The relay re-verifies
+  owner + scope + port on every request and the label expires (1h sliding, 12h
+  absolute), but anyone holding the URL reaches the app while it lives.
+- **Referrer is suppressed.** Tunnel responses are sent with
+  `Referrer-Policy: no-referrer` so the label cannot leak to third-party
+  resources the app references.
+- **PizzaPi's CSP is not applied** to tunnel responses — the app may need inline
+  scripts and CDN resources. The iframe `sandbox` attribute in the web UI is the
+  defence-in-depth layer.
+- **Caddy sees plaintext** between itself and the relay, on the Docker bridge
+  network only.
+
+---
+
+## Troubleshooting
+
+### `bind: address already in use` on :443
+
+`tailscale serve` holds `443` on the tailnet IP for the relay's own hostname.
+Confusingly `lsof -iTCP:443 -sTCP:LISTEN` shows nothing, because the bind lives
+inside `tailscaled`; `netstat -an | grep '\.443 '` reveals it. Move the tunnel
+domain to another port — `PIZZAPI_TUNNEL_DOMAIN=https://t.example.com:8444`.
+
+### `API token appears invalid` from Caddy
+
+`caddy-dns/cloudflare` before **v0.2.4** rejects Cloudflare's current
+`cfut_`-prefixed 54-character tokens with a local regex, before making a single
+API call — so `/user/tokens/verify` says `active` while Caddy refuses to start
+([caddy-dns/cloudflare#125](https://github.com/caddy-dns/cloudflare/issues/125)).
+The default image is pinned to a build containing the fix. If you override
+`PIZZAPI_CADDY_IMAGE`, check it:
+
+```bash
+docker run --rm --entrypoint caddy <image> list-modules --versions \
+  | grep dns.providers.cloudflare      # must be v0.2.4 or newer
+```
+
+### "This content is blocked" in the web UI iframe
+
+The relay's own Content-Security-Policy gains
+`frame-src 'self' https://*.<tunnel domain>` only when `PIZZAPI_TUNNEL_DOMAIN`
+is set. A CSP is bound to a document when it loads, so **a browser tab opened
+before the relay picked up the setting keeps the old policy** and blocks the
+cross-origin iframe:
+
+```text
+Framing 'https://<label>.t.example.com:8444/' violates the following Content
+Security Policy directive: "default-src 'self'". … 'frame-src' was not
+explicitly set, so 'default-src' is used as a fallback.
+```
+
+Hard-reload the tab (`⌘⇧R` / `Ctrl+Shift+R`). A soft reload may not be enough:
+the web UI registers a PWA service worker with `navigateFallback: "/index.html"`,
+so a precached document can be replayed with its old headers. Confirm what the
+relay is actually serving with:
+
+```bash
+curl -sI https://<relay>/ | grep -i frame-src
+```
+
+### No `hostUrl` in the mint response
+
+`POST /api/tunnel-token` only returns `hostUrl` when the relay has a usable
+tunnel domain. If it is missing, either `PIZZAPI_TUNNEL_DOMAIN` is unset in the
+**server** container, or it was refused for overlapping the relay host — check
+the relay logs for `host tunnels disabled`.
+
+### Certificate never issues
+
+Caddy logs the ACME exchange. `authorization finalized … authz_status: valid`
+followed by `certificate obtained successfully` is the happy path. A stall at
+`trying to solve challenge` means the token cannot write the TXT record — verify
+the token's zone scope. Persisted certificates live in the `caddy-data` volume,
+so recreating the container does not re-issue.
+
+---
+
+## What `pizza web` generates
+
+```yaml title="~/.pizzapi/web/compose.yml (excerpt)"
+  caddy:
+    image: ghcr.io/caddybuilds/caddy-cloudflare:2.11.4
+    ports:
+      - "8444:8444"
+    environment:
+      - PIZZAPI_CADDY_DNS_TOKEN=<token>
+    volumes:
+      - /Users/you/.pizzapi/web/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      server:
+        condition: service_started
+    restart: unless-stopped
+```
+
+Both the Caddyfile and this block are regenerated on every `pizza web` run —
+edit `compose.override.yml` instead if you need to change them.
+
+<Aside type="note">
+  Caddy terminates TLS in front of the relay, so client IPs become Caddy's unless
+  you also set `PIZZAPI_TRUST_PROXY=true` and `PIZZAPI_PROXY_DEPTH=1`. Only do
+  that once the relay's own port is no longer directly reachable — otherwise
+  `X-Forwarded-For` can be spoofed by going around Caddy. `pizza web` warns when
+  Caddy is enabled and the setting is missing.
+</Aside>
+
+---
+
+## See also
+
+- [Tunnel Tools](/PizzaPi/features/tunnels/) — the agent-facing tools and URL schemes
+- [Tailscale Setup](/PizzaPi/deployment/tailscale/) — HTTPS for the relay itself
+- [Environment Variables](/PizzaPi/reference/environment-variables/#tunnels)

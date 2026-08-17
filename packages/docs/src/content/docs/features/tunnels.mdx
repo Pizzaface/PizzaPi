@@ -37,6 +37,14 @@ Tunnels support two URL schemes:
 
 The agent automatically prefers runner-based URLs when a runner ID is available, falling back to session-based URLs otherwise.
 
+Both patterns are gated on an **interactive relay session** — they only load in a
+browser already logged into the relay, and return `401` anywhere else. So
+`create_tunnel` and `list_tunnels` do not hand those URLs out directly: they mint
+a self-authenticating URL instead, preferring the dedicated tunnel origin below
+and otherwise returning a signed `/api/tunnel/auth/<token>/…` path. Those work in
+any browser, on any device, with no cookie — the URL itself is the credential, so
+treat it as a secret and expect it to expire.
+
 ### Dedicated tunnel origin (recommended for SPAs)
 
 The path-prefix schemes above share the relay's origin, so a tunnelled app sees
@@ -64,7 +72,7 @@ DNS options:
 | Deployment | Setting | Notes |
 |-----------|---------|-------|
 | Same machine | `t.localhost:<port>` | Browsers resolve `*.localhost` to loopback — zero DNS, zero certs |
-| LAN / tailnet | `<ip-with-dashes>.sslip.io` | e.g. `100-64-1-2.sslip.io` — public wildcard DNS to any IP, no setup |
+| LAN / tailnet | `<ip-with-dashes>.sslip.io` | e.g. `100-64-1-2.sslip.io` — public wildcard DNS to any IP, no setup. Still needs TLS: the UI iframes the tunnel origin from an HTTPS page, so a plain-`http` domain is mixed-content blocked |
 | Real domain | `https://t.example.com` | Wildcard DNS record `*.t.example.com` + wildcard TLS (Caddy below) |
 
 With `pizza web`, pass the variable once — it persists in the web config:
@@ -73,29 +81,47 @@ With `pizza web`, pass the variable once — it persists in the web config:
 PIZZAPI_TUNNEL_DOMAIN=t.localhost:7492 pizza web
 ```
 
-For HTTPS on a LAN/tailnet, put Caddy in front with its internal CA via a
-`compose.override.yml` next to the generated compose file:
+#### Wildcard TLS with the bundled Caddy
 
-```yaml
-services:
-  caddy:
-    image: caddy:2-alpine
-    ports: ["8444:8444"]
-    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro", "caddy-data:/data"]
-volumes:
-  caddy-data:
+A wildcard origin needs a wildcard certificate, which neither `tailscale serve`
+nor a plain reverse proxy can issue. `pizza web` can deploy one for you — set
+`PIZZAPI_CADDY=1` and it adds a Caddy service to the generated compose file,
+writes `~/.pizzapi/web/Caddyfile`, and points `*.<tunnel domain>` at the relay:
+
+```bash
+PIZZAPI_TUNNEL_DOMAIN=https://t.example.com:8444 PIZZAPI_CADDY=1 pizza web
 ```
 
-```text title="Caddyfile"
-*.t.example.com:8444 {
-  tls internal
-  reverse_proxy server:7492
-}
-```
+The listen port comes from `PIZZAPI_TUNNEL_DOMAIN` (default `443`), and the
+upstream is the relay container — the relay only reads the `Host` header, so
+nothing else changes. Two certificate modes:
 
-The relay only reads the `Host` header, so any TLS-terminating proxy works.
-Trust Caddy's root CA once per device. When `PIZZAPI_TUNNEL_DOMAIN` is unset,
-tunnels fall back to the path-prefix schemes above.
+| Mode | When | Trade-off |
+|------|------|-----------|
+| **Internal CA** (default) | No DNS credentials given | Zero setup, works on a private LAN/tailnet with no inbound reachability — but every device must trust Caddy's root CA once |
+| **DNS-01 wildcard** | `PIZZAPI_CADDY_DNS_PROVIDER` + `PIZZAPI_CADDY_DNS_TOKEN` | Publicly trusted Let's Encrypt cert, still no inbound `:80` needed — requires a real domain and a DNS API token |
+
+DNS-01 is the one to want: the certificate is publicly trusted, so no device ever
+has to install a root CA, and the challenge is solved over the DNS API — the
+relay itself never has to be reachable from the internet. A tailnet-only relay
+can hold a real Let's Encrypt wildcard.
+
+Either way you supply the wildcard DNS record yourself: `*.t.example.com` → the
+relay host. `<ip-with-dashes>.sslip.io` covers that for free on a LAN or tailnet
+with no domain at all.
+
+<Aside type="tip">
+  [**Tunnel TLS**](/PizzaPi/deployment/tunnel-tls/) is the full deployment
+  runbook — DNS record, scoped DNS token, port selection, verification, the
+  security model, and the failure modes worth knowing (`:443` already bound by
+  `tailscale serve`, Cloudflare `cfut_` tokens rejected by older
+  `caddy-dns/cloudflare`, "This content is blocked" in the UI iframe).
+</Aside>
+
+Hand-rolling the proxy instead is still fine — drop a `compose.override.yml` next
+to the generated compose file and leave `PIZZAPI_CADDY` unset. When
+`PIZZAPI_TUNNEL_DOMAIN` is unset, tunnels fall back to the path-prefix schemes
+above.
 
 <Aside type="caution">
   Use a **separate registrable domain** from the relay itself (e.g. relay on

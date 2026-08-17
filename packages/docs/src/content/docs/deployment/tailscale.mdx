@@ -174,3 +174,26 @@ For contributors running the dev stack, PizzaPi's Vite config can automatically 
 | 502 Bad Gateway | Tailscale Serve config was lost (e.g. after reboot) | Re-run `tailscale serve --bg http://localhost:7492` |
 | Port already allocated | Another container or process is using the port | Run `docker ps -a --filter "publish=7492"` to find the conflict, stop it, then retry |
 | Can't reach from other Tailnet devices | Tailscale ACLs blocking access | Check your [ACL policy](https://login.tailscale.com/admin/acls) allows traffic on port 443 |
+| `bind: address already in use` on :443 for another container | `tailscale serve` holds `443` on the tailnet IP; `lsof` does not show it (the bind lives inside `tailscaled`) | Confirm with `netstat -an \| grep '\.443 '` and move the other service to a different port |
+
+---
+
+## Tunnels need their own hostname
+
+Tailscale Serve covers the relay itself, but it cannot cover PizzaPi's
+[host-based tunnels](/PizzaPi/deployment/tunnel-tls/), which need a **wildcard**
+hostname (`<label>.<domain>`):
+
+```bash
+$ dig +short abc123.your-host.tail12345.ts.net
+(NXDOMAIN — MagicDNS resolves registered node names only)
+
+$ tailscale cert abc123.your-host.tail12345.ts.net
+500: invalid domain; must be one of ["your-host.tail12345.ts.net"]
+```
+
+MagicDNS has no wildcard and Tailscale issues certificates only for a node's own
+name, so no reverse proxy — Caddy, nginx or otherwise — can serve
+`*.your-host.tail12345.ts.net`. Separately, the relay **refuses** any tunnel
+domain inside its own cookie scope. Use a different domain for tunnels, pointed
+at the tailnet IP; see [Tunnel TLS](/PizzaPi/deployment/tunnel-tls/).
