@@ -522,8 +522,11 @@ function ArtifactPreview({
       <iframe
         // Untrusted generated markup: scripts allowed (interactive decks/charts
         // need JS) but no allow-same-origin, so the doc runs in an opaque origin
-        // and can never reach the session it was produced in.
-        sandbox="allow-scripts"
+        // and can never reach the session it was produced in. allow-popups (+
+        // escape-sandbox so the opened tab isn't itself sandboxed) lets
+        // target="_blank" links actually open — without it the browser silently
+        // drops the click (verified: no popup, no error).
+        sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
         srcDoc={content}
         title={fileName}
         className={cn("w-full border-0 bg-white", full ? "h-full" : "h-96")}
