@@ -254,6 +254,24 @@ export type RelayEmitCheckResult = "delivered" | "empty" | "unknown";
  */
 const RELAY_PRESENCE_LOOKUP_TIMEOUT_MS = 3_000;
 
+// One in-flight cluster presence lookup per room. See usage comment below.
+const inFlightPresenceLookups = new Map<string, Promise<number>>();
+
+function clusterPresenceLookup(nsp: ReturnType<NonNullable<typeof io>["of"]>, room: string): Promise<number> {
+    const existing = inFlightPresenceLookups.get(room);
+    if (existing) return existing;
+    const lookup = nsp.in(room).fetchSockets().then((sockets) => sockets.length);
+    inFlightPresenceLookups.set(room, lookup);
+    lookup
+        .catch(() => { /* rejection surfaces to awaiting callers; nothing to do here */ })
+        .finally(() => {
+            if (inFlightPresenceLookups.get(room) === lookup) {
+                inFlightPresenceLookups.delete(room);
+            }
+        });
+    return lookup;
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
     return new Promise<T>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
@@ -288,8 +306,12 @@ export async function emitToRelaySessionChecked(sessionId: string, eventName: st
         // serverCount() BEFORE its own request timeout is armed, and with
         // node-redis's offline queue that await can pend for an entire Redis
         // outage — an unbounded hang here would stall recovery indefinitely.
-        const sockets = await withTimeout(nsp.in(room).fetchSockets(), RELAY_PRESENCE_LOOKUP_TIMEOUT_MS);
-        if (sockets.length === 0) return "empty";
+        // Coalesced per room: a timed-out caller leaves the underlying lookup
+        // pending in the offline queue, and retries reuse it instead of
+        // stacking a new queued command per attempt — otherwise reconnect
+        // would replay a storm of accumulated fetchSockets requests.
+        const socketCount = await withTimeout(clusterPresenceLookup(nsp, room), RELAY_PRESENCE_LOOKUP_TIMEOUT_MS);
+        if (socketCount === 0) return "empty";
         nsp.to(room).emit(eventName, data);
         // Presence ≠ delivery: the socket can drop between the check and the
         // emit. Callers needing hard delivery proof must use
