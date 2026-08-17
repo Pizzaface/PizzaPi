@@ -219,16 +219,21 @@ export function getPendingChunkedSnapshot(sessionId: string): {
     totalMessages: number;
     receivedChunks: number;
     totalChunks: number;
+    /**
+     * True when the stream has gone CHUNK_STREAM_STALE_MS without a chunk.
+     * Callers should stop gating hydration on it (serve the cache) AND request
+     * a fresh runner snapshot instead of suppressing recovery — but the entry
+     * is deliberately NOT deleted: a hung runner that resumes sending refreshes
+     * lastActivityAt and the stream can still finalize normally, and deleting
+     * it would silently discard chunks the runner still believes it delivered.
+     */
+    stale: boolean;
 } | null {
     const pending = pendingChunkedStates.get(sessionId);
     if (!pending) return null;
-    if (Date.now() - pending.lastActivityAt > CHUNK_STREAM_STALE_MS) {
-        // Dead stream — drop it so viewer hydration falls back to the snapshot
-        // cache instead of gating on a transfer that will never finish. If the
-        // runner comes back it starts a fresh chunk-start session_active anyway.
-        log.warn(`Dropping stale chunked snapshot for ${sessionId} (no chunk for ${CHUNK_STREAM_STALE_MS}ms)`);
-        pendingChunkedStates.delete(sessionId);
-        return null;
+    const stale = Date.now() - pending.lastActivityAt > CHUNK_STREAM_STALE_MS;
+    if (stale) {
+        log.warn(`Chunked snapshot for ${sessionId} is stale (no chunk for ${CHUNK_STREAM_STALE_MS}ms) — bypassing hydration gate`);
     }
     const messages = pending.chunks.flat();
     return {
@@ -238,6 +243,7 @@ export function getPendingChunkedSnapshot(sessionId: string): {
         totalMessages: (pending.metadata as any).totalMessages ?? messages.length,
         receivedChunks: pending.receivedChunkIndexes.size,
         totalChunks: pending.totalChunks,
+        stale,
     };
 }
 

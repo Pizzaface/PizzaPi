@@ -498,7 +498,8 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
 
             // ── SnapshotProvider: try server-side cache before signaling the runner
             const chunkedPending = getPendingChunkedSnapshot(nextSessionId);
-            if (!chunkedPending) {
+            const staleChunkStream = chunkedPending?.stale === true;
+            if (!chunkedPending || staleChunkStream) {
                 const snapshotResult = await getBestSnapshot(nextSessionId, {
                     lastSeq: requestedLastSeq,
                     // Without userId the SQLite tier is unreachable, so a dead
@@ -527,6 +528,14 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                     snapshotResult.send(socket, generation);
                     suppressRunnerSignal = true;
                     log.info(`snapshot-provider hydration: sessionId=${nextSessionId} viewer=${socket.id} type=${snapshotResult.snapshot.type}`);
+                    if (staleChunkStream) {
+                        // The cache served a pre-stream checkpoint over a wedged
+                        // chunk stream — that transcript is old. Ask the runner
+                        // for a fresh snapshot instead of suppressing recovery,
+                        // so the viewer isn't stranded on the old checkpoint if
+                        // the stream never finishes.
+                        forwardRecoverySignalOrNotify(nextSessionId, socket, generation);
+                    }
                     return;
                 }
             }
@@ -614,7 +623,12 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             // getPendingChunkedSnapshot() is node-local. Multi-node deployments
             // still need sticky routing or shared pending state for this guard.
             const requestedLastSeq = typeof data?.lastSeq === "number" && Number.isFinite(data.lastSeq) ? data.lastSeq : undefined;
-            const resyncChunkedPending = getPendingChunkedSnapshot(currentSessionId);
+            // A stale stream (no chunk for CHUNK_STREAM_STALE_MS) must not gate
+            // hydration — treat it as absent for the fallback decisions below,
+            // but remember it so we still nudge the runner for a fresh snapshot.
+            const resyncPendingRaw = getPendingChunkedSnapshot(currentSessionId);
+            const resyncStaleStream = resyncPendingRaw?.stale === true;
+            const resyncChunkedPending = resyncPendingRaw && !resyncStaleStream ? resyncPendingRaw : null;
             if (requestedLastSeq !== undefined && !resyncChunkedPending) {
                 const [resyncSession, resyncSeq] = await Promise.all([
                     getSharedSession(currentSessionId),
@@ -627,6 +641,9 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                     latestSessionSeq: resyncSeq,
                 });
                 if (cacheHydrated) {
+                    if (resyncStaleStream) {
+                        forwardRecoverySignalOrNotify(currentSessionId, socket, getCurrentGeneration());
+                    }
                     return;
                 }
             }
@@ -651,7 +668,9 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             // Use emitToRelaySession for cluster-wide reach — the runner may
             // be on a different server node in multi-node deployments.
             const session = await getSharedSession(currentSessionId);
-            if (!session?.lastState) {
+            if (!session?.lastState || resyncStaleStream) {
+                // No usable checkpoint — or the one we just sent predates a
+                // wedged chunk stream — either way the runner should rebuild.
                 emitToRelaySession(currentSessionId, "connected" as string, {});
             }
         });

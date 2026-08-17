@@ -252,8 +252,21 @@ export async function emitToRelaySessionVerified(sessionId: string, eventName: s
         io.of("/relay").to(room).emit(eventName, data);
         return true;
     } catch (err) {
-        log.warn("emitToRelaySessionVerified failed:", (err as Error)?.message);
-        return false;
+        // The cluster-wide lookup goes through the Redis adapter; when Redis is
+        // degraded it throws or times out even though the runner may be
+        // connected to THIS node. adapter.rooms is the node-local room map and
+        // needs no Redis — fall back to local delivery so a Redis blip doesn't
+        // falsely report the runner offline.
+        log.warn("emitToRelaySessionVerified adapter lookup failed, trying local:", (err as Error)?.message);
+        try {
+            const localRoom = io.of("/relay").adapter.rooms.get(room);
+            if (!localRoom || localRoom.size === 0) return false;
+            io.of("/relay").local.to(room).emit(eventName, data);
+            return true;
+        } catch (localErr) {
+            log.warn("emitToRelaySessionVerified local fallback failed:", (localErr as Error)?.message);
+            return false;
+        }
     }
 }
 

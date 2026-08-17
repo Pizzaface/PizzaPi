@@ -287,20 +287,21 @@ describe("getPendingChunkedSnapshot — stale stream expiry", () => {
         });
     }
 
-    test("returns an active stream", () => {
+    test("returns an active stream as not stale", () => {
         seed("s-active", Date.now());
-        expect(getPendingChunkedSnapshot("s-active")).not.toBeNull();
+        expect(getPendingChunkedSnapshot("s-active")?.stale).toBe(false);
         expect(pendingChunkedStates.has("s-active")).toBe(true);
     });
 
-    test("drops a stream with no chunk activity past the stale threshold", () => {
+    test("flags a stream with no chunk activity past the stale threshold, without deleting it", () => {
         seed("s-stale", Date.now() - CHUNK_STREAM_STALE_MS - 1);
-        expect(getPendingChunkedSnapshot("s-stale")).toBeNull();
-        // Deleted so viewer hydration falls back to the snapshot cache.
-        expect(pendingChunkedStates.has("s-stale")).toBe(false);
+        expect(getPendingChunkedSnapshot("s-stale")?.stale).toBe(true);
+        // Kept: a hung runner that resumes refreshes lastActivityAt and the
+        // stream can still finalize — deleting would discard its chunks.
+        expect(pendingChunkedStates.has("s-stale")).toBe(true);
     });
 
-    test("chunk arrival refreshes activity and keeps the stream alive", () => {
+    test("chunk arrival refreshes activity and clears staleness", () => {
         seed("s-refresh", Date.now() - CHUNK_STREAM_STALE_MS - 1);
         const pending = pendingChunkedStates.get("s-refresh")!;
         applyChunkToPendingState(pending, {
@@ -309,6 +310,6 @@ describe("getPendingChunkedSnapshot — stale stream expiry", () => {
             totalChunks: 3,
             isFinalChunk: false,
         });
-        expect(getPendingChunkedSnapshot("s-refresh")).not.toBeNull();
+        expect(getPendingChunkedSnapshot("s-refresh")?.stale).toBe(false);
     });
 });

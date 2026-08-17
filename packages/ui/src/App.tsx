@@ -1957,6 +1957,13 @@ export function App() {
       // against them. Those deltas are already represented in this snapshot.
       deferredChunkEventsRef.current = [];
       onSnapshotStarted({ chunked: isChunked, snapshotId, totalMessages });
+      if (isChunked) {
+        // The header is real progress: preparing a big snapshot can consume
+        // most of the stall window, and the watchdog stays armed through the
+        // whole chunked transfer now — without this reset it could restart a
+        // healthy transfer right after a slow header, before chunk 0 arrives.
+        hydrationRequestedAtRef.current = Date.now();
+      }
 
       const stateModel = normalizeModel(state?.model);
       const stateModels = Array.isArray(state?.availableModels)
