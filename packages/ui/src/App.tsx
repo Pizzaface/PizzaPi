@@ -816,6 +816,17 @@ export function App() {
   // because browser timer throttling can delay both heartbeat delivery and checks.
   const lastViewerEventAtRef = React.useRef<number>(0);
   const staleCheckTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  // When we last asked the server to hydrate, or null once hydration settled.
+  // A hydration request has no ack, so this is the only way to notice one that
+  // was answered with nothing.
+  const hydrationRequestedAtRef = React.useRef<number | null>(null);
+  const hydrationStallTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const hydrationRetriesRef = React.useRef(0);
+  const HYDRATION_STALL_MS = 8_000;
+  const HYDRATION_CHECK_INTERVAL_MS = 2_000;
+  // ponytail: two retries, then surface the failure. Retrying forever would
+  // re-request a full snapshot every 8s against a session that cannot answer.
+  const HYDRATION_MAX_RETRIES = 2;
   const HEARTBEAT_INTERVAL_MS = 10_000;
   const [isPageHidden, setIsPageHidden] = React.useState(() => document.visibilityState === "hidden");
   const staleThresholdMs = (isPageHidden ? 18 : 3) * HEARTBEAT_INTERVAL_MS;
@@ -1071,6 +1082,10 @@ export function App() {
         clearInterval(staleCheckTimerRef.current);
         staleCheckTimerRef.current = null;
       }
+      if (hydrationStallTimerRef.current !== null) {
+        clearInterval(hydrationStallTimerRef.current);
+        hydrationStallTimerRef.current = null;
+      }
       viewerWsRef.current?.disconnect();
       viewerWsRef.current = null;
       setViewerSocket(null);
@@ -1082,6 +1097,12 @@ export function App() {
       clearInterval(staleCheckTimerRef.current);
       staleCheckTimerRef.current = null;
     }
+    if (hydrationStallTimerRef.current !== null) {
+      clearInterval(hydrationStallTimerRef.current);
+      hydrationStallTimerRef.current = null;
+    }
+    hydrationRequestedAtRef.current = null;
+    hydrationRetriesRef.current = 0;
     viewerWsRef.current?.disconnect();
     viewerWsRef.current = null;
     lastSeqRef.current = null;
@@ -3231,8 +3252,16 @@ export function App() {
   }, [hubSocket, liveSessions, activeSessionId, metaInventoryVersion]);
 
   const openSession = React.useCallback((relaySessionId: string) => {
-    // Already viewing this session — nothing to do.
-    if (relaySessionId === lifecycleRefs.activeSessionId.current) return;
+    // Already viewing this session AND hydration finished — nothing to do.
+    // If hydration never completed, re-clicking the (still highlighted) session
+    // is the user's instinctive retry, so it must actually retry rather than
+    // no-op and leave them with a blank transcript until a full page reload.
+    if (
+      relaySessionId === lifecycleRefs.activeSessionId.current &&
+      !lifecycleRefs.awaitingSnapshot.current
+    ) {
+      return;
+    }
 
     // Flush/cancel any pending RAF queues (streaming deltas & tool-stream
     // partials) from the previous session so they can't leak into the new one.
@@ -3331,14 +3360,52 @@ export function App() {
       setViewerSocket(socket);
       const nextSocket = socket;
 
+      // Hydration-stall watchdog: a hydration request is fire-and-forget, so a
+      // reply that carries no transcript (or never arrives) leaves the viewer
+      // waiting forever with input blocked. Retry once with no cursor, which
+      // forces the server down its full-snapshot path.
+      hydrationStallTimerRef.current = setInterval(() => {
+        const sessionId = lifecycleRefs.activeSessionId.current;
+        if (!sessionId || !nextSocket.connected) return;
+        if (!lifecycleRefs.awaitingSnapshot.current) {
+          hydrationRequestedAtRef.current = null;
+          hydrationRetriesRef.current = 0;
+          return;
+        }
+        const requestedAt = hydrationRequestedAtRef.current;
+        if (requestedAt === null) return;
+        if (Date.now() - requestedAt < HYDRATION_STALL_MS) return;
+
+        if (hydrationRetriesRef.current >= HYDRATION_MAX_RETRIES) {
+          // Stop retrying, but never leave a spinner claiming progress.
+          hydrationRequestedAtRef.current = null;
+          onViewerError("Could not load this conversation. Reload to try again.");
+          return;
+        }
+
+        hydrationRetriesRef.current += 1;
+        log.warn(
+          `Hydration stalled for ${sessionId} (attempt ${hydrationRetriesRef.current}/${HYDRATION_MAX_RETRIES}); retrying without a seq cursor.`,
+        );
+        hydrationRequestedAtRef.current = Date.now();
+        // Drop the cursor so the server takes its full-snapshot path instead of
+        // trying to resume from a position it cannot serve.
+        lastSeqRef.current = null;
+        nextSocket.emit("switch_session", {
+          sessionId,
+          generation: lifecycleRefs.generation.current,
+        });
+      }, HYDRATION_CHECK_INTERVAL_MS);
+
       // Stale-connection watchdog: if the socket thinks it's connected but
       // no event has arrived for the current visibility-aware threshold, reconnect.
-      // Only armed when the agent is active — idle sessions produce no events,
-      // so silence is expected and not a sign of a broken connection.
+      // Armed while the agent is active (events are expected, so silence is
+      // suspicious) and also while hydrating (a dead transport is exactly why a
+      // transcript never arrives). Idle, hydrated sessions are legitimately silent.
       staleCheckTimerRef.current = setInterval(() => {
         if (!lifecycleRefs.activeSessionId.current) return;
         if (!nextSocket.connected) return;
-        if (!agentActiveRef.current) return;
+        if (!agentActiveRef.current && !lifecycleRefs.awaitingSnapshot.current) return;
         const elapsed = Date.now() - lastViewerEventAtRef.current;
         if (elapsed > staleThresholdMsRef.current) {
           log.warn(`Stale connection detected (${Math.round(elapsed / 1000)}s since last event). Reconnecting…`);
@@ -3352,6 +3419,8 @@ export function App() {
         if (!currentSessionId) return;
         setLifecycleStatus("Connecting…");
         setViewerSwitchGeneration(nextSocket, lifecycleRefs.generation.current);
+        hydrationRequestedAtRef.current = Date.now();
+        hydrationRetriesRef.current = 0;
         nextSocket.emit("switch_session", {
           sessionId: currentSessionId,
           generation: lifecycleRefs.generation.current,
@@ -3574,6 +3643,8 @@ export function App() {
 
     setViewerSwitchGeneration(socket, nextGeneration);
     if (socket.connected) {
+      hydrationRequestedAtRef.current = Date.now();
+      hydrationRetriesRef.current = 0;
       socket.emit("switch_session", { sessionId: relaySessionId, generation: nextGeneration });
       socket.emit("viewer_visibility", getViewerVisibilityPayload());
     } else {

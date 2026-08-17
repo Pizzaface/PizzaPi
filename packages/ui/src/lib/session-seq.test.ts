@@ -18,8 +18,16 @@ describe("mergeConnectedSeq", () => {
     expect(mergeConnectedSeq(15, 12)).toBe(12);
   });
 
-  test("advances when connected seq is newer", () => {
-    expect(mergeConnectedSeq(15, 18)).toBe(18);
+  test("does NOT advance on a bare ack when connected seq is newer", () => {
+    // "connected" is emitted before any transcript. Adopting 18 here would claim
+    // we hold events 16-18 that were never delivered, and the server would then
+    // answer the next resume with "already current" and no content — forever.
+    expect(mergeConnectedSeq(15, 18)).toBe(15);
+  });
+
+  test("ignores a non-finite server seq", () => {
+    expect(mergeConnectedSeq(15, Number.NaN)).toBe(15);
+    expect(mergeConnectedSeq(null, Number.NaN)).toBe(0);
   });
 });
 

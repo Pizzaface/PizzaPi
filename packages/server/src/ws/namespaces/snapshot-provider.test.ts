@@ -461,6 +461,121 @@ describe("getBestSnapshot — priority ordering", () => {
         expect(result).toBeNull();
     });
 
+    test("resumes via a seq-stamped snapshot when the delta replay is empty", async () => {
+        // Regression for "blank conversation until I hit refresh": an empty delta
+        // replay used to be terminal for any viewer holding a cursor, so a
+        // reconnect delivered no transcript at all and nothing ever retried.
+        const snapshotEvent = { type: "session_active", state: { messages: [{ role: "user" }] } };
+        const deps = createDeps({
+            getCachedRelayEventsAfterSeq: mock(async () => []),
+            getLatestCachedSnapshotEvent: mock(async () => ({
+                event: snapshotEvent,
+                snapshotSeq: 14,
+                eventsAfter: [],
+            })),
+        });
+
+        const result = await getBestSnapshot("sess-31a", { lastSeq: 10, latestSeq: 14 }, deps);
+
+        expect(result?.snapshot.type).toBe("cache-snapshot");
+        expect(result?.snapshot.seq).toBe(14);
+        const socket = createMockSocket();
+        result?.send(socket);
+        expect(socket.calls).toHaveLength(1);
+    });
+
+    test("refuses a snapshot older than the client cursor rather than rewinding it", async () => {
+        const snapshotEvent = { type: "session_active", state: { messages: [] } };
+        const deps = createDeps({
+            getCachedRelayEventsAfterSeq: mock(async () => []),
+            getLatestCachedSnapshotEvent: mock(async () => ({
+                event: snapshotEvent,
+                snapshotSeq: 4,
+                eventsAfter: [],
+            })),
+        });
+
+        const result = await getBestSnapshot("sess-31b", { lastSeq: 10, latestSeq: 14 }, deps);
+
+        expect(result).toBeNull();
+    });
+
+    test("an older snapshot IS served when its trailing deltas reach the cursor", async () => {
+        // The common reconnect: last checkpoint is a few deltas behind the
+        // viewer's cursor. Snapshot@8 + deltas 9,10 reconstructs seq 10 exactly,
+        // so this must hydrate immediately rather than stall waiting for a retry.
+        const snapshotEvent = { type: "session_active", state: { messages: [] } };
+        const deps = createDeps({
+            getCachedRelayEventsAfterSeq: mock(async () => []),
+            getLatestCachedSnapshotEvent: mock(async () => ({
+                event: snapshotEvent,
+                snapshotSeq: 8,
+                eventsAfter: [
+                    { seq: 9, event: { type: "message_update" } },
+                    { seq: 10, event: { type: "message_end" } },
+                ],
+            })),
+        });
+
+        const result = await getBestSnapshot("sess-31e", { lastSeq: 10, latestSeq: 10 }, deps);
+
+        expect(result?.snapshot.type).toBe("cache-snapshot");
+        expect(result?.snapshot.seq).toBe(10);
+    });
+
+    test("refuses a snapshot whose trailing deltas have a hole", async () => {
+        // A gap between the snapshot and the cursor means replacing the transcript
+        // would silently drop whatever fell in the hole.
+        const snapshotEvent = { type: "session_active", state: { messages: [] } };
+        const deps = createDeps({
+            getCachedRelayEventsAfterSeq: mock(async () => []),
+            getLatestCachedSnapshotEvent: mock(async () => ({
+                event: snapshotEvent,
+                snapshotSeq: 8,
+                eventsAfter: [{ seq: 11, event: { type: "message_end" } }],
+            })),
+        });
+
+        const result = await getBestSnapshot("sess-31f", { lastSeq: 10, latestSeq: 11 }, deps);
+
+        expect(result).toBeNull();
+    });
+
+    test("never serves unsequenced lastState or SQLite state to a cursor-holding viewer", async () => {
+        // lastState is written on session_active only, so it can be arbitrarily
+        // older than the cursor. Guessing its position would poison the cursor.
+        const deps = createDeps({
+            getCachedRelayEventsAfterSeq: mock(async () => []),
+            getLatestCachedSnapshotEvent: mock(async () => null),
+            getPersistedRelaySessionSnapshot: mock(async () => ({ state: { messages: ["persisted"] } })),
+        });
+
+        const result = await getBestSnapshot(
+            "sess-31c",
+            { lastSeq: 10, latestSeq: 14, userId: "u1", lastState: '{"messages":["memory"]}' },
+            deps,
+        );
+
+        expect(result).toBeNull();
+    });
+
+    test("still prefers a cheap delta replay over a full snapshot", async () => {
+        const deps = createDeps({
+            getCachedRelayEventsAfterSeq: mock(async () => [
+                { seq: 11, event: { type: "message_start" } },
+            ]),
+            getLatestCachedSnapshotEvent: mock(async () => ({
+                event: { type: "session_active", state: { messages: [] } },
+                snapshotSeq: 14,
+                eventsAfter: [],
+            })),
+        });
+
+        const result = await getBestSnapshot("sess-31d", { lastSeq: 10, latestSeq: 14 }, deps);
+
+        expect(result?.snapshot.type).toBe("cache-delta");
+    });
+
     test("returns null when delta replay is unavailable", async () => {
         const deps = createDeps({
             getCachedRelayEventsAfterSeq: mock(async () => {

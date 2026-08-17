@@ -294,6 +294,19 @@ export async function getCachedRelayEventsAfterSeq(
 export interface LatestCachedSnapshot {
     event: Record<string, unknown>;
     /**
+     * Seq the snapshot event was published at, when known.
+     *
+     * publishSessionEvent() seq-stamps every broadcast event before caching it,
+     * so any snapshot that went out over the wire has one. The lone exception is
+     * the assembled session_active written by finalizeChunkedSnapshot(), which
+     * deliberately skips incrementSeq() because it is never broadcast.
+     *
+     * Knowing this lets a caller prove a snapshot is not a rewind before sending
+     * it to a viewer that already holds a cursor. Without it, the only safe move
+     * was to send nothing — which left reconnecting viewers permanently blank.
+     */
+    snapshotSeq?: number;
+    /**
      * Cached events appended after the snapshot, in chronological order.
      * Replaying these after the snapshot brings a viewer up to the current
      * seq — without them, deltas published between the snapshot and "now"
@@ -328,6 +341,7 @@ export async function getLatestCachedSnapshotEvent(sessionId: string): Promise<L
                 if (isSnapshotEvent(parsed.event)) {
                     return {
                         event: parsed.event as Record<string, unknown>,
+                        snapshotSeq: parsed.seq,
                         eventsAfter: trailingReversed.reverse(),
                     };
                 }

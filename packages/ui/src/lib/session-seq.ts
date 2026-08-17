@@ -1,15 +1,22 @@
 /**
  * Merge lastSeq from a viewer "connected" payload into the current cursor.
- * The server sends its authoritative seq — always accept it so a seq reset
- * (relay restart) correctly rewinds the client cursor instead of leaving it
- * stuck at a stale high value that rejects all new events.
+ *
+ * "connected" is a bare handshake ack: it is emitted before any transcript is
+ * sent, and hydration may still deliver nothing at all. So it must never move
+ * the cursor *forward* — doing so claims we hold content we were never sent,
+ * and the server then answers the next resume with "you are already current"
+ * and no transcript, forever. That is the blank-until-refresh bug.
+ *
+ * A *backward* move is still accepted: a relay restart resets the seq counter,
+ * and keeping a stale high cursor would reject every subsequent event.
  */
 export function mergeConnectedSeq(
-  _currentSeq: number | null,
+  currentSeq: number | null,
   connectedLastSeq: number,
 ): number {
-  if (!Number.isFinite(connectedLastSeq)) return _currentSeq ?? 0;
-  return connectedLastSeq;
+  if (!Number.isFinite(connectedLastSeq)) return currentSeq ?? 0;
+  if (currentSeq === null) return connectedLastSeq;
+  return Math.min(currentSeq, connectedLastSeq);
 }
 
 export function shouldDeferEventForHydration(

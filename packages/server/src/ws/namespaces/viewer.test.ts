@@ -17,7 +17,6 @@ import {
     shouldAvoidSnapshotFallback,
     forwardRecoveryConnectedSignal,
     withHubMetaSource,
-    withMetaViaHubHint,
     withLivenessOnlyHint,
     sendCachedDeltaReplayEvents,
     checkServiceMessageSize,
@@ -255,14 +254,6 @@ describe("meta routing hints", () => {
         expect(withHubMetaSource({ sessionId: "sess-1" })).toEqual({
             sessionId: "sess-1",
             meta_source: "hub",
-        });
-    });
-
-    test("marks session_active snapshots as hub-based meta", () => {
-        expect(withMetaViaHubHint({ type: "session_active", state: {} })).toEqual({
-            type: "session_active",
-            state: {},
-            _metaViaHub: true,
         });
     });
 
