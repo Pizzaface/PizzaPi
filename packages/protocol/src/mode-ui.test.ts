@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { cwdInWorkspace, findSessionMode, isArtifactPath, resolveModeUi } from "./mode-ui.js";
 import type { ServiceModeDef } from "./shared.js";
+import { surfaceVisibleInMode } from "./mode-ui.js";
 
 const codingMode: ServiceModeDef = { id: "code", label: "Code", workspace: "/home/j/Projects" };
 const workMode: ServiceModeDef = {
@@ -170,5 +171,19 @@ describe("isArtifactPath", () => {
 
     test("is always false when artifacts are disabled", () => {
         expect(isArtifactPath("/w/report.pdf", resolveModeUi(workMode))).toBe(false);
+    });
+});
+
+describe("surfaceVisibleInMode", () => {
+    test("unscoped surface is visible everywhere", () => {
+        expect(surfaceVisibleInMode(undefined, null)).toBe(true);
+        expect(surfaceVisibleInMode([], null)).toBe(true);
+        expect(surfaceVisibleInMode(undefined, workMode)).toBe(true);
+    });
+    test("scoped surface only visible in a matching mode", () => {
+        expect(surfaceVisibleInMode(["work"], workMode)).toBe(true);
+        expect(surfaceVisibleInMode(["work"], codingMode)).toBe(false);
+        expect(surfaceVisibleInMode(["work"], null)).toBe(false);
+        expect(surfaceVisibleInMode(["work", "code"], codingMode)).toBe(true);
     });
 });

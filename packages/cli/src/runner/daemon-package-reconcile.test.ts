@@ -66,6 +66,14 @@ describe("panelEntryFromManifest (fix #3: hasPanel routing)", () => {
         expect(entry?.hasPanel).toBe(true);
     });
 
+    test("manifest modes are carried onto the panel entry", () => {
+        const manifest: ServiceManifest = { id: "svc", label: "Svc", icon: "square", panel: { dir: "/abs/panel" }, modes: ["work"] };
+        const entry = panelEntryFromManifest("svc", manifest);
+        expect(entry?.modes).toEqual(["work"]);
+        const unscoped = panelEntryFromManifest("svc", { id: "svc", label: "Svc", icon: "square", panel: { dir: "/abs/panel" } });
+        expect(unscoped?.modes).toBeUndefined();
+    });
+
     test("a service with only triggers/sigils and no panel gets hasPanel: false", () => {
         const manifest: ServiceManifest = {
             id: "svc",

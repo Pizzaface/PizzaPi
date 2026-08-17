@@ -40,6 +40,7 @@ export {
   resolveModeUi,
   isArtifactPath,
   findSessionMode,
+  surfaceVisibleInMode,
   cwdInWorkspace,
   DEFAULT_ARTIFACT_EXTENSIONS,
 } from "./mode-ui.js";

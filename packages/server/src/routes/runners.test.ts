@@ -158,6 +158,8 @@ describe("runner trigger listener routes", () => {
         mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
         mockAddRunnerTriggerListener.mockReset();
         mockAddRunnerTriggerListener.mockReturnValue(Promise.resolve("listener-default"));
+        mockGetRunnerServices.mockReset();
+        mockGetRunnerServices.mockReturnValue(Promise.resolve(null));
         mockRemoveRunnerTriggerListener.mockReset();
         mockRemoveRunnerTriggerListener.mockReturnValue(Promise.resolve({ removed: 1, triggerType: "svc:event" }));
         mockGetRunnerTriggerListener.mockReset();
@@ -211,6 +213,59 @@ describe("runner trigger listener routes", () => {
                 params: { duration: "10m" },
             }),
         }));
+    });
+
+    test("POST rejects a mode-scoped trigger when listener cwd is outside the mode", async () => {
+        mockGetRunnerServices.mockReturnValue(Promise.resolve({
+            serviceIds: ["reporter"],
+            triggerDefs: [{ type: "reporter:daily", label: "Daily", modes: ["work"] }],
+            sessionModes: [{ id: "work", label: "Work", workspace: "/home/u/Workspace" }],
+        }));
+
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/trigger-listeners", {
+            triggerType: "reporter:daily",
+            prompt: "Report",
+            cwd: "/home/u/Projects/foo",
+        });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(422);
+        const body = await res!.json();
+        expect(body.error).toContain("scoped to session mode");
+        expect(mockAddRunnerTriggerListener).not.toHaveBeenCalled();
+    });
+
+    test("POST allows a mode-scoped trigger when listener cwd is inside the mode", async () => {
+        mockGetRunnerServices.mockReturnValue(Promise.resolve({
+            serviceIds: ["reporter"],
+            triggerDefs: [{ type: "reporter:daily", label: "Daily", modes: ["work"] }],
+            sessionModes: [{ id: "work", label: "Work", workspace: "/home/u/Workspace" }],
+        }));
+        mockAddRunnerTriggerListener.mockReturnValue(Promise.resolve("listener-work"));
+
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/trigger-listeners", {
+            triggerType: "reporter:daily",
+            prompt: "Report",
+            cwd: "/home/u/Workspace/reports",
+        });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        expect((await res!.json()).listenerId).toBe("listener-work");
+    });
+
+    test("PUT rejects moving a mode-scoped listener's cwd outside the mode", async () => {
+        mockGetRunnerServices.mockReturnValue(Promise.resolve({
+            serviceIds: ["reporter"],
+            triggerDefs: [{ type: "reporter:daily", label: "Daily", modes: ["work"] }],
+            sessionModes: [{ id: "work", label: "Work", workspace: "/home/u/Workspace" }],
+        }));
+        mockGetRunnerTriggerListener.mockReturnValue(Promise.resolve({ listenerId: "listener-123", triggerType: "reporter:daily" }));
+
+        const [req, url] = makeReq("PUT", "/api/runners/runner-A/trigger-listeners/listener-123", {
+            cwd: "/home/u/Projects/foo",
+        });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(422);
+        expect(mockUpdateRunnerTriggerListener).not.toHaveBeenCalled();
     });
 
     test("POST returns 500 when listener creation fails", async () => {

@@ -138,6 +138,7 @@ are confined to the package root.
 | `triggers` | No | `[]` | Inline `ServiceTriggerDef[]` **or** a path to a JSON file |
 | `sigils` | No | `[]` | Inline `ServiceSigilDef[]` **or** a path to a JSON file |
 | `sessionModes` | No | `[]` | `ServiceModeDef[]` — workspaces with their own UI identity (see [Session modes](#session-modes)) |
+| `modes` | No | `[]` | Session mode ids this service's **surfaces** (panel button, trigger defs) are scoped to. Omit for always-visible. The service still runs daemon-wide. Enforced server-side too: out-of-mode sessions can't list or subscribe to scoped triggers, and runner trigger listeners must set a cwd inside the mode workspace. Sigils stay unscoped so existing `[[type:id]]` references render everywhere. |
 
 ### Split files
 
@@ -444,6 +445,12 @@ PDF, CSV and sandboxed HTML; other extensions render a download card.
 
 Declaring a mode does **not** require any service code — a service whose only
 job is to declare a mode can have a no-op `init`/`dispose`.
+
+To scope another service's UI to a mode, set `"modes": ["work"]` on that
+service's declaration — its panel and triggers then only appear for sessions
+inside the mode's workspace (a "Daily report" panel only in Work Mode). The
+mode can be declared by any package on the runner, not necessarily the same
+one.
 
 ---
 

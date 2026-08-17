@@ -44,6 +44,11 @@ export interface ServiceManifest {
     /** Sigil types this service defines. */
     sigils?: ServiceSigilDef[];
     sessionModes?: ServiceModeDef[];
+    /**
+     * Session mode ids this service's surfaces (panel, triggers) are scoped
+     * to. Absent/empty = visible everywhere.
+     */
+    modes?: string[];
 }
 
 export interface ServicePluginResult {

@@ -50,6 +50,9 @@ export function isSameServiceAnnounce(
         ) {
             return false;
         }
+        const leftModes = left.modes !== undefined ? JSON.stringify(left.modes) : undefined;
+        const rightModes = right.modes !== undefined ? JSON.stringify(right.modes) : undefined;
+        if (leftModes !== rightModes) return false;
     }
 
     const aDefs = a.triggerDefs ?? [];
@@ -76,6 +79,11 @@ export function isSameServiceAnnounce(
         const leftParams = left.params !== undefined ? JSON.stringify(left.params) : undefined;
         const rightParams = right.params !== undefined ? JSON.stringify(right.params) : undefined;
         if (leftParams !== rightParams) {
+            return false;
+        }
+        const leftModes = left.modes !== undefined ? JSON.stringify(left.modes) : undefined;
+        const rightModes = right.modes !== undefined ? JSON.stringify(right.modes) : undefined;
+        if (leftModes !== rightModes) {
             return false;
         }
     }
@@ -128,7 +136,10 @@ export function shouldSkipServiceAnnounceFanout({
 // ── Delta computation ────────────────────────────────────────────────────────
 
 function samePanelInfo(a: ServicePanelInfo, b: ServicePanelInfo): boolean {
-    return a.serviceId === b.serviceId && a.port === b.port && a.label === b.label && a.icon === b.icon;
+    if (a.serviceId !== b.serviceId || a.port !== b.port || a.label !== b.label || a.icon !== b.icon) return false;
+    const aModes = a.modes !== undefined ? JSON.stringify(a.modes) : undefined;
+    const bModes = b.modes !== undefined ? JSON.stringify(b.modes) : undefined;
+    return aModes === bModes;
 }
 
 function sameTriggerDef(a: ServiceTriggerDef, b: ServiceTriggerDef): boolean {
@@ -139,6 +150,9 @@ function sameTriggerDef(a: ServiceTriggerDef, b: ServiceTriggerDef): boolean {
     const aParams = a.params !== undefined ? JSON.stringify(a.params) : undefined;
     const bParams = b.params !== undefined ? JSON.stringify(b.params) : undefined;
     if (aParams !== bParams) return false;
+    const aModes = a.modes !== undefined ? JSON.stringify(a.modes) : undefined;
+    const bModes = b.modes !== undefined ? JSON.stringify(b.modes) : undefined;
+    if (aModes !== bModes) return false;
     return true;
 }
 

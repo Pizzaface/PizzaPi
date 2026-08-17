@@ -145,6 +145,19 @@ export function cwdInWorkspace(cwd: string, workspace: string): boolean {
  * but is unambiguously in that mode. Deepest workspace wins so nested mode
  * workspaces resolve to the most specific mode.
  */
+/**
+ * Whether a mode-scoped service surface (panel, trigger def) should be shown
+ * for a session in `activeMode`. Surfaces with no `modes` list are visible
+ * everywhere; scoped surfaces require the session's mode id to match.
+ */
+export function surfaceVisibleInMode(
+  surfaceModes: string[] | undefined,
+  activeMode: { id: string } | null | undefined,
+): boolean {
+  if (!surfaceModes || surfaceModes.length === 0) return true;
+  return !!activeMode && surfaceModes.includes(activeMode.id);
+}
+
 export function findSessionMode(
   session: { cwd?: string | null; runnerId?: string | null } | null | undefined,
   modes: ServiceModeDef[],

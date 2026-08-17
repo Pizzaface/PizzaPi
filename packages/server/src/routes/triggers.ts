@@ -61,6 +61,7 @@ import {
     linkSessionToRunner,
 } from "../ws/sio-registry.js";
 import { getRunnerServices, getRunnerData } from "../ws/sio-registry/runners.js";
+import { triggerAllowedForCwd } from "./mode-scope.js";
 import { emitTriggerSubscriptionDelta } from "../ws/namespaces/runner.js";
 import type { RouteHandler } from "./types.js";
 import { randomUUID } from "crypto";
@@ -716,7 +717,12 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         }
 
         const services = await getRunnerServices(session.runnerId);
-        return Response.json({ triggerDefs: services?.triggerDefs ?? [] });
+        // Mode-scoped trigger defs are only listed for sessions inside a
+        // matching mode's workspace — same rule the web UI applies.
+        const runnerId = session.runnerId;
+        const triggerDefs = (services?.triggerDefs ?? []).filter((def) =>
+            triggerAllowedForCwd(def, services?.sessionModes, session.cwd, runnerId));
+        return Response.json({ triggerDefs });
     }
 
     // ── GET /api/sessions/:id/available-sigils ──────────────────────
@@ -805,6 +811,12 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         if (!triggerDef) {
             return Response.json(
                 { error: `Trigger type '${triggerType}' is not available on this session's runner` },
+                { status: 422 },
+            );
+        }
+        if (!triggerAllowedForCwd(triggerDef, services.sessionModes, session.cwd, session.runnerId)) {
+            return Response.json(
+                { error: `Trigger type '${triggerType}' is scoped to session mode(s) [${(triggerDef.modes ?? []).join(", ")}] — this session's working directory is not inside a matching mode workspace` },
                 { status: 422 },
             );
         }
