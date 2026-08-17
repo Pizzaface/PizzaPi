@@ -199,25 +199,33 @@ describe("viewer connected signal gating", () => {
                 calls.push(`mark:${sessionId}`);
                 return "nonce-1";
             }),
-            emitToRelaySessionVerified: mock(async (sessionId: string, event: string) => {
+            emitToRelaySessionChecked: mock(async (sessionId: string, event: string) => {
                 calls.push(`emit:${event}:${sessionId}`);
-                return true;
+                return "delivered";
             }) as any,
         });
 
-        expect(delivered).toBe(true);
+        expect(delivered).toBe("delivered");
         expect(calls).toEqual([
             "mark:sess-connected",
             "emit:connected:sess-connected",
         ]);
     });
 
-    test("recovery signal reports false when no runner socket is in the room", async () => {
-        const delivered = await forwardRecoveryConnectedSignal("sess-empty-room", {
+    test("recovery signal reports empty when the room is confirmed empty", async () => {
+        const result = await forwardRecoveryConnectedSignal("sess-empty-room", {
             markPendingRecovery: mock(() => "nonce-1"),
-            emitToRelaySessionVerified: mock(async () => false) as any,
+            emitToRelaySessionChecked: mock(async () => "empty") as any,
         });
-        expect(delivered).toBe(false);
+        expect(result).toBe("empty");
+    });
+
+    test("recovery signal reports unknown when the adapter lookup fails", async () => {
+        const result = await forwardRecoveryConnectedSignal("sess-degraded", {
+            markPendingRecovery: mock(() => "nonce-1"),
+            emitToRelaySessionChecked: mock(async () => "unknown") as any,
+        });
+        expect(result).toBe("unknown");
     });
 
     test("flushes pending signal when viewer becomes ready", () => {
@@ -248,9 +256,9 @@ describe("viewer connected signal gating", () => {
                 calls.push(`mark:${sessionId}`);
                 return "nonce-1";
             }),
-            emitToRelaySessionVerified: mock(async (sessionId: string, event: string) => {
+            emitToRelaySessionChecked: mock(async (sessionId: string, event: string) => {
                 calls.push(`emit:${event}:${sessionId}`);
-                return true;
+                return "delivered";
             }) as any,
         });
 

@@ -242,32 +242,46 @@ export function emitToRelaySession(sessionId: string, eventName: string, data: u
  * Use this for delivery-critical paths (e.g. trigger responses) where
  * falsely reporting success would leave the client stuck.
  */
-export async function emitToRelaySessionVerified(sessionId: string, eventName: string, data: unknown): Promise<boolean> {
-    if (!io) return false;
+export type RelayEmitCheckResult = "delivered" | "empty" | "unknown";
+
+/**
+ * Like emitToRelaySessionVerified, but distinguishes a CONFIRMED empty room
+ * from a lookup we could not complete. "empty" is proof the runner is not
+ * connected anywhere in the cluster; "unknown" means the Redis adapter lookup
+ * failed and no local socket exists — a runner may still be connected on
+ * another node, so callers must not treat it as offline (no stale fallbacks,
+ * no offline errors — let client-side retry handle it).
+ */
+export async function emitToRelaySessionChecked(sessionId: string, eventName: string, data: unknown): Promise<RelayEmitCheckResult> {
+    if (!io) return "unknown";
     const room = relaySessionRoom(sessionId);
     try {
         // ⚡ Bolt: Fast check on adapter avoids fetching full RemoteSocket objects across cluster
         const sockets = await io.of("/relay").adapter.sockets(new Set([room]));
-        if (sockets.size === 0) return false;
+        if (sockets.size === 0) return "empty";
         io.of("/relay").to(room).emit(eventName, data);
-        return true;
+        return "delivered";
     } catch (err) {
         // The cluster-wide lookup goes through the Redis adapter; when Redis is
         // degraded it throws or times out even though the runner may be
         // connected to THIS node. adapter.rooms is the node-local room map and
         // needs no Redis — fall back to local delivery so a Redis blip doesn't
         // falsely report the runner offline.
-        log.warn("emitToRelaySessionVerified adapter lookup failed, trying local:", (err as Error)?.message);
+        log.warn("emitToRelaySessionChecked adapter lookup failed, trying local:", (err as Error)?.message);
         try {
             const localRoom = io.of("/relay").adapter.rooms.get(room);
-            if (!localRoom || localRoom.size === 0) return false;
+            if (!localRoom || localRoom.size === 0) return "unknown";
             io.of("/relay").local.to(room).emit(eventName, data);
-            return true;
+            return "delivered";
         } catch (localErr) {
-            log.warn("emitToRelaySessionVerified local fallback failed:", (localErr as Error)?.message);
-            return false;
+            log.warn("emitToRelaySessionChecked local fallback failed:", (localErr as Error)?.message);
+            return "unknown";
         }
     }
+}
+
+export async function emitToRelaySessionVerified(sessionId: string, eventName: string, data: unknown): Promise<boolean> {
+    return (await emitToRelaySessionChecked(sessionId, eventName, data)) === "delivered";
 }
 
 // ── Utilities ────────────────────────────────────────────────────────────────

@@ -34,6 +34,8 @@ import {
     getLocalTuiSocket,
     emitToRelaySession,
     emitToRelaySessionVerified,
+    emitToRelaySessionChecked,
+    type RelayEmitCheckResult,
     emitToRunner,
     broadcastToSessionViewers,
     markPendingRecovery,
@@ -200,12 +202,12 @@ export function checkServiceMessageRateLimit(
 
 export interface RecoveryConnectedSignalDeps {
     markPendingRecovery: typeof markPendingRecovery;
-    emitToRelaySessionVerified: typeof emitToRelaySessionVerified;
+    emitToRelaySessionChecked: typeof emitToRelaySessionChecked;
 }
 
 const defaultRecoveryConnectedSignalDeps: RecoveryConnectedSignalDeps = {
     markPendingRecovery,
-    emitToRelaySessionVerified,
+    emitToRelaySessionChecked,
 };
 
 /**
@@ -222,15 +224,17 @@ const defaultRecoveryConnectedSignalDeps: RecoveryConnectedSignalDeps = {
 export async function forwardRecoveryConnectedSignal(
     sessionId: string,
     deps: RecoveryConnectedSignalDeps = defaultRecoveryConnectedSignalDeps,
-): Promise<boolean> {
+): Promise<RelayEmitCheckResult> {
     const recoveryNonce = deps.markPendingRecovery(sessionId);
     // The runner echoes recoveryNonce on its recovery session_active so the
     // event pipeline can distinguish it from real agent updates racing in.
-    const delivered = await deps.emitToRelaySessionVerified(sessionId, "connected" as string, { recoveryNonce });
-    if (!delivered) {
-        log.warn(`recovery signal for ${sessionId} reached no runner socket — runner offline or hung`);
+    const result = await deps.emitToRelaySessionChecked(sessionId, "connected" as string, { recoveryNonce });
+    if (result === "empty") {
+        log.warn(`recovery signal for ${sessionId}: room confirmed empty — runner offline or hung`);
+    } else if (result === "unknown") {
+        log.warn(`recovery signal for ${sessionId}: adapter lookup failed — runner state unknown, leaving recovery to client retry`);
     }
-    return delivered;
+    return result;
 }
 
 /**
@@ -255,10 +259,17 @@ function forwardRecoverySignalOrNotify(
     sessionId: string,
     socket: ViewerSocket,
     generation: number | undefined,
+    onConfirmedOffline?: () => Promise<void>,
 ): void {
-    void forwardRecoveryConnectedSignal(sessionId).then((delivered) => {
-        if (delivered) return;
+    void forwardRecoveryConnectedSignal(sessionId).then(async (result) => {
+        // "unknown" (Redis-degraded lookup) is NOT proof the runner is gone —
+        // it may be connected on another node. Do nothing; client retry covers it.
+        if (result !== "empty") return;
         if (socket.data.sessionId !== sessionId) return; // viewer moved on
+        if (onConfirmedOffline) {
+            await onConfirmedOffline();
+            return;
+        }
         socket.emit("error", {
             message: "The runner for this session is offline — the conversation will load when it reconnects.",
             generation,
@@ -389,6 +400,11 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
         // runner. Every await inside activateSession re-checks the token and
         // bails if a newer activation has started.
         let activationCounter = 0;
+        // One-shot persisted-tier fallback for a CONFIRMED-offline runner, set
+        // by the active hydration attempt. Shared so both recovery-signal
+        // paths (in-activation flush and the later client "connected" echo)
+        // behave identically regardless of arrival timing.
+        let recoveryOfflineFallback: { sessionId: string; run: () => Promise<void> } | null = null;
 
         const getCurrentSessionId = (): string | null => socket.data.sessionId ?? null;
         const getCurrentGeneration = (): number | undefined =>
@@ -409,6 +425,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             suppressRunnerSignal = false;
             viewerReadyForRunnerSignal = false;
             pendingConnectedSignal = false;
+            recoveryOfflineFallback = null;
 
             if (!nextSessionId) {
                 socket.data.sessionId = undefined;
@@ -569,42 +586,54 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             viewerReadyForRunnerSignal = true;
             const flush = onViewerReadyForRunnerSignal(pendingConnectedSignal);
             pendingConnectedSignal = flush.pendingConnectedSignal;
-            if (flush.forwardNow) {
-                void forwardRecoveryConnectedSignal(nextSessionId).then(async (delivered) => {
-                    if (delivered) return;
-                    // Bound to this activation: a late lookup must not clobber a
-                    // newer activation that already hydrated this socket.
-                    if (!activationCurrent() || socket.data.sessionId !== nextSessionId) return;
-                    // The runner is provably unreachable, so its recent heartbeat
-                    // is no longer evidence of liveness — the persisted (SQLite)
-                    // tier that runnerLooksLive() blocked above is now fair game.
-                    // Cursor-holding viewers skip this (a seqless snapshot could
-                    // rewind them); their watchdog retries cursorless and lands
-                    // here on the next attempt.
+
+            // Persisted-tier fallback for a CONFIRMED-offline runner: its recent
+            // heartbeat is no longer evidence of liveness, so the SQLite tier
+            // that runnerLooksLive() blocked above is fair game. One-shot, and
+            // every await re-checks that (a) this activation still owns the
+            // socket and (b) no live event advanced the session seq — a runner
+            // reconnecting mid-lookup broadcasts fresher content than anything
+            // persisted, and sending after it would rewind the transcript.
+            // Cursor-holding viewers skip the snapshot (seqless → rewind risk);
+            // their watchdog retries cursorless and lands here next attempt.
+            let fallbackAttempted = false;
+            const attemptPersistedFallback = async (): Promise<void> => {
+                if (fallbackAttempted) return;
+                fallbackAttempted = true;
+                const stillMine = () => activationCurrent() && socket.data.sessionId === nextSessionId;
+                if (!stillMine()) return;
+                try {
+                    const seqNow = await getSessionSeq(nextSessionId);
+                    if (!stillMine() || seqNow !== freshSeq) return;
                     if (requestedLastSeq === undefined) {
-                        try {
-                            const persisted = await getBestSnapshot(nextSessionId, {
-                                userId: viewerUserId,
-                                lastState: freshSession.lastState,
-                                snapshotOverlay: freshSession.snapshotOverlay,
-                                chunkedPending: false,
-                                latestSeq: freshSeq,
-                            });
-                            if (!activationCurrent() || socket.data.sessionId !== nextSessionId) return;
-                            if (persisted) {
-                                persisted.send(socket, generation);
-                                log.info(`persisted fallback after unreachable runner: sessionId=${nextSessionId} viewer=${socket.id} type=${persisted.snapshot.type}`);
-                                return;
-                            }
-                        } catch (err) {
-                            log.warn(`persisted fallback failed for ${nextSessionId}:`, (err as Error)?.message);
+                        const persisted = await getBestSnapshot(nextSessionId, {
+                            userId: viewerUserId,
+                            lastState: freshSession.lastState,
+                            snapshotOverlay: freshSession.snapshotOverlay,
+                            chunkedPending: false,
+                            latestSeq: freshSeq,
+                        });
+                        const seqAfter = await getSessionSeq(nextSessionId);
+                        if (!stillMine() || seqAfter !== freshSeq) return;
+                        if (persisted) {
+                            persisted.send(socket, generation);
+                            log.info(`persisted fallback after confirmed-offline runner: sessionId=${nextSessionId} viewer=${socket.id} type=${persisted.snapshot.type}`);
+                            return;
                         }
                     }
-                    socket.emit("error", {
-                        message: "The runner for this session is offline — the conversation will load when it reconnects.",
-                        generation,
-                    });
+                } catch (err) {
+                    log.warn(`persisted fallback failed for ${nextSessionId}:`, (err as Error)?.message);
+                }
+                if (!stillMine()) return;
+                socket.emit("error", {
+                    message: "The runner for this session is offline — the conversation will load when it reconnects.",
+                    generation,
                 });
+            };
+            recoveryOfflineFallback = { sessionId: nextSessionId, run: attemptPersistedFallback };
+
+            if (flush.forwardNow) {
+                forwardRecoverySignalOrNotify(nextSessionId, socket, generation, attemptPersistedFallback);
             }
 
             // Emit an immediate heartbeat snapshot while the runner pushes a
@@ -655,7 +684,13 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             const next = onViewerConnectedSignal(viewerReadyForRunnerSignal, pendingConnectedSignal);
             pendingConnectedSignal = next.pendingConnectedSignal;
             if (next.forwardNow) {
-                forwardRecoverySignalOrNotify(currentSessionId, socket, getCurrentGeneration());
+                // Route through the activation's persisted fallback when one is
+                // armed — identical cold starts must not behave differently
+                // based on whether this echo raced the cache lookup.
+                const fallback = recoveryOfflineFallback?.sessionId === currentSessionId
+                    ? recoveryOfflineFallback.run
+                    : undefined;
+                forwardRecoverySignalOrNotify(currentSessionId, socket, getCurrentGeneration(), fallback);
             }
         });
 
