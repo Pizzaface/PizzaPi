@@ -445,7 +445,13 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 touchAsync: true,
             });
             if (!isViewerSwitchCurrent(getCurrentGeneration(), generation) || !activationCurrent()) {
-                if (ok) {
+                // Only leave the room when the viewer is no longer on this
+                // session. A same-session retry (re-click or watchdog, whether
+                // it bumped the generation or only the token) shares this room —
+                // Socket.IO rooms are not reference-counted, so removing here
+                // would kick the CURRENT activation out and silently detach the
+                // viewer from all live events.
+                if (ok && getCurrentSessionId() !== nextSessionId) {
                     await removeViewer(nextSessionId, socket);
                 }
                 return;
@@ -469,7 +475,11 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             ]);
 
             if (!isViewerSwitchCurrent(getCurrentGeneration(), generation) || !activationCurrent()) {
-                await removeViewer(nextSessionId, socket);
+                // Same-room caveat as above: only remove when no longer on
+                // this session.
+                if (getCurrentSessionId() !== nextSessionId) {
+                    await removeViewer(nextSessionId, socket);
+                }
                 return;
             }
 
@@ -560,7 +570,41 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             const flush = onViewerReadyForRunnerSignal(pendingConnectedSignal);
             pendingConnectedSignal = flush.pendingConnectedSignal;
             if (flush.forwardNow) {
-                forwardRecoverySignalOrNotify(nextSessionId, socket, generation);
+                void forwardRecoveryConnectedSignal(nextSessionId).then(async (delivered) => {
+                    if (delivered) return;
+                    // Bound to this activation: a late lookup must not clobber a
+                    // newer activation that already hydrated this socket.
+                    if (!activationCurrent() || socket.data.sessionId !== nextSessionId) return;
+                    // The runner is provably unreachable, so its recent heartbeat
+                    // is no longer evidence of liveness — the persisted (SQLite)
+                    // tier that runnerLooksLive() blocked above is now fair game.
+                    // Cursor-holding viewers skip this (a seqless snapshot could
+                    // rewind them); their watchdog retries cursorless and lands
+                    // here on the next attempt.
+                    if (requestedLastSeq === undefined) {
+                        try {
+                            const persisted = await getBestSnapshot(nextSessionId, {
+                                userId: viewerUserId,
+                                lastState: freshSession.lastState,
+                                snapshotOverlay: freshSession.snapshotOverlay,
+                                chunkedPending: false,
+                                latestSeq: freshSeq,
+                            });
+                            if (!activationCurrent() || socket.data.sessionId !== nextSessionId) return;
+                            if (persisted) {
+                                persisted.send(socket, generation);
+                                log.info(`persisted fallback after unreachable runner: sessionId=${nextSessionId} viewer=${socket.id} type=${persisted.snapshot.type}`);
+                                return;
+                            }
+                        } catch (err) {
+                            log.warn(`persisted fallback failed for ${nextSessionId}:`, (err as Error)?.message);
+                        }
+                    }
+                    socket.emit("error", {
+                        message: "The runner for this session is offline — the conversation will load when it reconnects.",
+                        generation,
+                    });
+                });
             }
 
             // Emit an immediate heartbeat snapshot while the runner pushes a
