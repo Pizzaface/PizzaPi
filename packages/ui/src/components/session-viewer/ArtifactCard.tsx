@@ -520,9 +520,10 @@ function ArtifactPreview({
   if (kind === "html") {
     return (
       <iframe
-        // Untrusted generated markup: no same-origin, no scripts, so a
-        // deliverable can never reach the session it was produced in.
-        sandbox=""
+        // Untrusted generated markup: scripts allowed (interactive decks/charts
+        // need JS) but no allow-same-origin, so the doc runs in an opaque origin
+        // and can never reach the session it was produced in.
+        sandbox="allow-scripts"
         srcDoc={content}
         title={fileName}
         className={cn("w-full border-0 bg-white", full ? "h-full" : "h-96")}

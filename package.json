@@ -75,6 +75,7 @@
     "@earendil-works/pi-agent-core@0.82.1": "patches/@earendil-works%2Fpi-agent-core@0.82.1.patch",
     "@earendil-works/pi-tui@0.82.1": "patches/@earendil-works%2Fpi-tui@0.82.1.patch",
     "@earendil-works/pi-ai@0.82.1": "patches/@earendil-works%2Fpi-ai@0.82.1.patch",
-    "@earendil-works/pi-coding-agent@0.82.1": "patches/@earendil-works%2Fpi-coding-agent@0.82.1.patch"
+    "@earendil-works/pi-coding-agent@0.82.1": "patches/@earendil-works%2Fpi-coding-agent@0.82.1.patch",
+    "pptx-browser@4.1.5": "patches/pptx-browser@4.1.5.patch"
   }
 }
