@@ -152,6 +152,14 @@ export async function hydrateViewerFromCache(
         lastSeq?: number;
         generation?: number;
         snapshotOverlay?: string | null;
+        /**
+         * The session's TRUE seq counter (getSessionSeq), when the caller has
+         * it. broadcastSessionEventToViewers() advances that counter without
+         * appending to the Redis event-cache list, so the cache tail can lag
+         * behind — comparing the client cursor against the tail alone can
+         * falsely report "already current" and send a gapped viewer nothing.
+         */
+        latestSessionSeq?: number;
     } = {},
     deps: ViewerCacheDeps = defaultViewerCacheDeps,
 ): Promise<boolean> {
@@ -176,11 +184,17 @@ export async function hydrateViewerFromCache(
                 return true;
             }
 
-            // An empty replay is safe only when the cache confirms the client
-            // already has the newest stored event. Otherwise this is a real
-            // gap (or an unavailable cache), so runner recovery is required.
-            const latestSeq = await deps.getLatestCachedRelayEventSeq(sessionId);
-            if (latestSeq === opts.lastSeq) return true;
+            // An empty replay is safe only when the client provably holds the
+            // newest event. Prefer the true seq counter when supplied — the
+            // cache-list tail lags it after uncached broadcasts (chunk frames,
+            // metadata updates), and matching the stale tail here answered a
+            // genuinely-behind viewer with silence.
+            if (opts.latestSessionSeq !== undefined) {
+                if (opts.lastSeq >= opts.latestSessionSeq) return true;
+            } else {
+                const latestSeq = await deps.getLatestCachedRelayEventSeq(sessionId);
+                if (latestSeq === opts.lastSeq) return true;
+            }
 
             // Either a genuine gap, or the only snapshot we have is the
             // unsequenced one finalizeChunkedSnapshot() writes — whose position

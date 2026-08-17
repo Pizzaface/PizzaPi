@@ -54,8 +54,13 @@ export interface ChunkedSessionState {
  * Left in place, the pending entry makes every viewer hydration skip the
  * snapshot cache (viewer.ts chunkedPending gate) and wait on a runner signal
  * that never comes, which is unrecoverable even across client retries.
+ *
+ * Healthy streams emit chunks sub-second (setImmediate cadence on the
+ * runner), so 15s of silence is unambiguous. Kept below the client's
+ * hydration-retry window (~8s interval, 2 retries) so the second retry
+ * passes the gate instead of erroring out behind it.
  */
-export const CHUNK_STREAM_STALE_MS = 30_000;
+export const CHUNK_STREAM_STALE_MS = 15_000;
 
 export interface PendingChunkUpdate {
     chunkIndex: number;

@@ -200,23 +200,70 @@ export function checkServiceMessageRateLimit(
 
 export interface RecoveryConnectedSignalDeps {
     markPendingRecovery: typeof markPendingRecovery;
-    emitToRelaySession: typeof emitToRelaySession;
+    emitToRelaySessionVerified: typeof emitToRelaySessionVerified;
 }
 
 const defaultRecoveryConnectedSignalDeps: RecoveryConnectedSignalDeps = {
     markPendingRecovery,
-    emitToRelaySession,
+    emitToRelaySessionVerified,
 };
 
-/** @internal — exported for unit tests only */
-export function forwardRecoveryConnectedSignal(
+/**
+ * Ask the runner to rebuild and re-emit a fresh session_active.
+ *
+ * Verified: this signal is the LAST fallback tier — every cache tier has
+ * already declined — so firing it into an empty room (offline/hung runner)
+ * with a fire-and-forget emit left the viewer silently spinning for the full
+ * client watchdog window. Returns false when no runner socket is in the room
+ * so callers can tell the viewer the truth instead.
+ *
+ * @internal — exported for unit tests only
+ */
+export async function forwardRecoveryConnectedSignal(
     sessionId: string,
     deps: RecoveryConnectedSignalDeps = defaultRecoveryConnectedSignalDeps,
-): void {
+): Promise<boolean> {
     const recoveryNonce = deps.markPendingRecovery(sessionId);
     // The runner echoes recoveryNonce on its recovery session_active so the
     // event pipeline can distinguish it from real agent updates racing in.
-    deps.emitToRelaySession(sessionId, "connected" as string, { recoveryNonce });
+    const delivered = await deps.emitToRelaySessionVerified(sessionId, "connected" as string, { recoveryNonce });
+    if (!delivered) {
+        log.warn(`recovery signal for ${sessionId} reached no runner socket — runner offline or hung`);
+    }
+    return delivered;
+}
+
+/**
+ * Heartbeats arrive every ~10s from a healthy runner; this many missed beats
+ * means the runner is offline or hung regardless of what isActive says.
+ */
+const RUNNER_HEARTBEAT_STALE_MS = 45_000;
+
+/** @internal — exported for unit tests only */
+export function runnerLooksLive(session: { isActive?: boolean; lastHeartbeatAt?: string | null }): boolean {
+    if (!session.isActive) return false;
+    if (typeof session.lastHeartbeatAt !== "string" || !session.lastHeartbeatAt) return false;
+    const at = Date.parse(session.lastHeartbeatAt);
+    return Number.isFinite(at) && Date.now() - at < RUNNER_HEARTBEAT_STALE_MS;
+}
+
+/**
+ * Fire the recovery signal and, when it provably reached no runner, tell the
+ * viewer instead of leaving it awaiting a snapshot that cannot arrive.
+ */
+function forwardRecoverySignalOrNotify(
+    sessionId: string,
+    socket: ViewerSocket,
+    generation: number | undefined,
+): void {
+    void forwardRecoveryConnectedSignal(sessionId).then((delivered) => {
+        if (delivered) return;
+        if (socket.data.sessionId !== sessionId) return; // viewer moved on
+        socket.emit("error", {
+            message: "The runner for this session is offline — the conversation will load when it reconnects.",
+            generation,
+        });
+    });
 }
 
 /**
@@ -461,7 +508,13 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                     // live session whose cache merely blipped would show a stale
                     // transcript AND suppress the runner signal that would have
                     // fixed it — with no error and no retry.
-                    userId: freshSession.isActive ? undefined : viewerUserId,
+                    //
+                    // "Actually live" requires a fresh heartbeat, not just the
+                    // stored isActive flag: a hung runner keeps isActive=true
+                    // for 2+ minutes (until sweepOrphanedSessions), which
+                    // blocked the SQLite tier for exactly the sessions that
+                    // need it.
+                    userId: runnerLooksLive(freshSession) ? undefined : viewerUserId,
                     lastState: freshSession.lastState,
                     snapshotOverlay: freshSession.snapshotOverlay,
                     chunkedPending: false,
@@ -487,7 +540,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             const flush = onViewerReadyForRunnerSignal(pendingConnectedSignal);
             pendingConnectedSignal = flush.pendingConnectedSignal;
             if (flush.forwardNow) {
-                forwardRecoveryConnectedSignal(nextSessionId);
+                forwardRecoverySignalOrNotify(nextSessionId, socket, generation);
             }
 
             // Emit an immediate heartbeat snapshot while the runner pushes a
@@ -538,7 +591,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             const next = onViewerConnectedSignal(viewerReadyForRunnerSignal, pendingConnectedSignal);
             pendingConnectedSignal = next.pendingConnectedSignal;
             if (next.forwardNow) {
-                forwardRecoveryConnectedSignal(currentSessionId);
+                forwardRecoverySignalOrNotify(currentSessionId, socket, getCurrentGeneration());
             }
         });
 
@@ -563,11 +616,15 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             const requestedLastSeq = typeof data?.lastSeq === "number" && Number.isFinite(data.lastSeq) ? data.lastSeq : undefined;
             const resyncChunkedPending = getPendingChunkedSnapshot(currentSessionId);
             if (requestedLastSeq !== undefined && !resyncChunkedPending) {
-                const resyncSession = await getSharedSession(currentSessionId);
+                const [resyncSession, resyncSeq] = await Promise.all([
+                    getSharedSession(currentSessionId),
+                    getSessionSeq(currentSessionId),
+                ]);
                 const cacheHydrated = await hydrateViewerFromCache(socket, currentSessionId, {
                     lastSeq: requestedLastSeq,
                     generation: getCurrentGeneration(),
                     snapshotOverlay: resyncSession?.snapshotOverlay,
+                    latestSessionSeq: resyncSeq,
                 });
                 if (cacheHydrated) {
                     return;
@@ -579,7 +636,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 // Reaching here means only unsequenced state is left, which
                 // cannot safely fill the gap — ask the runner for a fresh one.
                 if (requestedLastSeq !== undefined && !resyncChunkedPending) {
-                    forwardRecoveryConnectedSignal(currentSessionId);
+                    forwardRecoverySignalOrNotify(currentSessionId, socket, getCurrentGeneration());
                 }
                 return;
             }

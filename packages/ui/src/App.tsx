@@ -2132,10 +2132,11 @@ export function App() {
       chunkState.loadedMessages += chunkMessages.length;
       const loaded = chunkState.loadedMessages;
       onChunkProgress(loaded, totalMessages);
-      // Chunked delivery keeps awaitingSnapshot true for as long as the transfer
-      // takes, which on a big session over a slow link legitimately exceeds the
-      // stall threshold. Treat an arriving chunk as progress so the watchdog does
-      // not restart hydration underneath a transfer that is succeeding.
+      // The chunk header cleared awaitingSnapshot, but the stall watchdog stays
+      // armed while the transfer is in flight (chunked && !hydrated). Treat an
+      // arriving chunk as progress so the watchdog does not restart hydration
+      // underneath a transfer that is succeeding — a big session over a slow
+      // link legitimately exceeds the stall threshold between retries.
       hydrationRequestedAtRef.current = Date.now();
 
       const readyToFinalize = canFinalizeChunkHydration(
@@ -3372,7 +3373,14 @@ export function App() {
       hydrationStallTimerRef.current = setInterval(() => {
         const sessionId = lifecycleRefs.activeSessionId.current;
         if (!sessionId || !nextSocket.connected) return;
-        if (!lifecycleRefs.awaitingSnapshot.current) {
+        // A chunked transfer clears awaitingSnapshot on the chunk *header*, so
+        // the transfer itself must keep the watchdog armed — a stream that
+        // stops mid-way (dropped frame, runner crash) would otherwise freeze
+        // "Loading session (x of y)…" forever with no retry. Arriving chunks
+        // reset hydrationRequestedAtRef, so a progressing transfer never trips.
+        const chunkInFlight =
+          lifecycleRefs.chunked.current !== null && !lifecycleRefs.hydrated.current;
+        if (!lifecycleRefs.awaitingSnapshot.current && !chunkInFlight) {
           hydrationRequestedAtRef.current = null;
           hydrationRetriesRef.current = 0;
           return;
@@ -3410,7 +3418,9 @@ export function App() {
       staleCheckTimerRef.current = setInterval(() => {
         if (!lifecycleRefs.activeSessionId.current) return;
         if (!nextSocket.connected) return;
-        if (!agentActiveRef.current && !lifecycleRefs.awaitingSnapshot.current) return;
+        const chunkTransferInFlight =
+          lifecycleRefs.chunked.current !== null && !lifecycleRefs.hydrated.current;
+        if (!agentActiveRef.current && !lifecycleRefs.awaitingSnapshot.current && !chunkTransferInFlight) return;
         const elapsed = Date.now() - lastViewerEventAtRef.current;
         if (elapsed > staleThresholdMsRef.current) {
           log.warn(`Stale connection detected (${Math.round(elapsed / 1000)}s since last event). Reconnecting…`);
@@ -3422,7 +3432,15 @@ export function App() {
       nextSocket.on("connect", () => {
         const currentSessionId = lifecycleRefs.activeSessionId.current;
         if (!currentSessionId) return;
-        setLifecycleStatus("Connecting…");
+        // A transport reconnect on an already-hydrated session must not flip the
+        // status back to "Connecting…": the composer gate and the "still
+        // connecting" banner key off the status STRING, so re-arming it here
+        // shows a scary offline banner on a session that is visibly fine every
+        // time a mobile tab backgrounds or WiFi blips. The reducer's CONNECTED
+        // action already keeps hydrated reconnects live; mirror that here.
+        if (!lifecycleRefs.hydrated.current) {
+          setLifecycleStatus("Connecting…");
+        }
         setViewerSwitchGeneration(nextSocket, lifecycleRefs.generation.current);
         hydrationRequestedAtRef.current = Date.now();
         hydrationRetriesRef.current = 0;

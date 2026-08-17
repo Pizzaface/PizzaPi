@@ -375,3 +375,41 @@ describe("snapshotCoverageSeq", () => {
         expect(snapshotCoversCursor(cached, 11)).toBe(false);
     });
 });
+
+describe("hydrateViewerFromCache — true-seq already-current check", () => {
+    test("uses latestSessionSeq instead of the cache-list tail when provided", async () => {
+        // broadcastSessionEventToViewers advances the true seq counter without
+        // appending to the cache list, so the tail can lag. A client matching
+        // the stale tail is genuinely behind and must NOT be told "current".
+        const getLatestCachedRelayEventSeq = mock(async () => 5); // stale tail
+        const deps = createDeps({
+            getCachedRelayEventsAfterSeq: mock(async () => []),
+            getLatestCachedSnapshotEvent: mock(async () => null),
+            getLatestCachedRelayEventSeq,
+        });
+
+        const { emit } = createMockSocket();
+        const result = await hydrateViewerFromCache(
+            { emit }, "sess-trueseq", { lastSeq: 5, latestSessionSeq: 8 }, deps,
+        );
+
+        // Real gap (client at 5, true seq 8) — must fall through to runner recovery.
+        expect(result).toBe(false);
+        expect(getLatestCachedRelayEventSeq).not.toHaveBeenCalled();
+    });
+
+    test("already-current when the cursor is at or ahead of the true seq", async () => {
+        const deps = createDeps({
+            getCachedRelayEventsAfterSeq: mock(async () => []),
+            getLatestCachedSnapshotEvent: mock(async () => null),
+        });
+
+        const { emit, calls } = createMockSocket();
+        const result = await hydrateViewerFromCache(
+            { emit }, "sess-trueseq-2", { lastSeq: 8, latestSessionSeq: 8 }, deps,
+        );
+
+        expect(result).toBe(true);
+        expect(calls.length).toBe(0);
+    });
+});
