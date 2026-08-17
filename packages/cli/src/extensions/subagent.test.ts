@@ -503,11 +503,47 @@ describe("selectLightweightModel", () => {
     test("selects across providers when multiple are available", () => {
         const registry = makeRegistry([
             { provider: "anthropic", id: "claude-opus-4-5", cost: { input: 15, output: 75, cacheRead: 0, cacheWrite: 0 } },
+            { provider: "openai", id: "gpt-5-mini", cost: { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0 } },
+            { provider: "anthropic", id: "claude-haiku-4-5", cost: { input: 0.8, output: 4, cacheRead: 0, cacheWrite: 0 } },
+        ]);
+        const selected = selectLightweightModel(registry);
+        expect(selected!.id).toBe("gpt-5-mini");
+    });
+
+    test("honors the user-configured subagent default model (PIZZAPI_SUBAGENT_MODEL)", () => {
+        const registry = makeRegistry([
+            { provider: "anthropic", id: "claude-opus-4-5", cost: { input: 15, output: 75, cacheRead: 0, cacheWrite: 0 } },
+            { provider: "anthropic", id: "claude-haiku-4-5", cost: { input: 0.8, output: 4, cacheRead: 0, cacheWrite: 0 } },
+        ]);
+        process.env.PIZZAPI_SUBAGENT_MODEL = "anthropic/claude-opus-4-5";
+        try {
+            const selected = selectLightweightModel(registry);
+            expect(selected!.id).toBe("claude-opus-4-5");
+        } finally {
+            delete process.env.PIZZAPI_SUBAGENT_MODEL;
+        }
+    });
+
+    test("falls back to auto-pick when the configured default is unavailable", () => {
+        const registry = makeRegistry([
+            { provider: "anthropic", id: "claude-haiku-4-5", cost: { input: 0.8, output: 4, cacheRead: 0, cacheWrite: 0 } },
+        ]);
+        process.env.PIZZAPI_SUBAGENT_MODEL = "openai/gpt-nonexistent";
+        try {
+            const selected = selectLightweightModel(registry);
+            expect(selected!.id).toBe("claude-haiku-4-5");
+        } finally {
+            delete process.env.PIZZAPI_SUBAGENT_MODEL;
+        }
+    });
+
+    test("never auto-picks a Google model when any other provider is available", () => {
+        const registry = makeRegistry([
             { provider: "google", id: "gemini-2.5-flash", cost: { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0 } },
             { provider: "anthropic", id: "claude-haiku-4-5", cost: { input: 0.8, output: 4, cacheRead: 0, cacheWrite: 0 } },
         ]);
         const selected = selectLightweightModel(registry);
-        expect(selected!.id).toBe("gemini-2.5-flash");
+        expect(selected!.id).toBe("claude-haiku-4-5");
     });
 
     test("does not mutate the registry's model array", () => {

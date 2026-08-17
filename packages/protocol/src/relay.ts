@@ -167,6 +167,11 @@ export interface RelayServerToClientEvents {
     hiddenModels: string[];
   }) => void;
 
+  /** Pushes the owner's subagent/workflow default model ("provider/id", null = auto) */
+  subagent_model_update: (data: {
+    model: string | null;
+  }) => void;
+
   /** Remote command execution request from viewer */
   exec: (data: {
     id: string;

@@ -30,6 +30,7 @@ import { resetRelayRegistrationGate, signalRelayRegistered } from "./registratio
 import { decideRegisteredParentState } from "../remote-registered-parent-state.js";
 import { waitForWorkerStartupComplete } from "../worker-startup-gate.js";
 import { setHiddenModelKeys } from "../../hidden-models.js";
+import { setSubagentDefaultModelKey } from "../../subagent-default-model.js";
 import { resolveInputDeliverAs } from "./deliver-as-default.js";
 import { sendSessionCompleteFollowUp } from "./session-complete-followup.js";
 
@@ -489,6 +490,10 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
 
     sock.on("hidden_models_update", (data) => {
         setHiddenModelKeys(data?.hiddenModels);
+    });
+
+    sock.on("subagent_model_update", (data) => {
+        setSubagentDefaultModelKey(data?.model);
     });
 
     sock.on("session_message", (data) => {

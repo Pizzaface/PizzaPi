@@ -6,6 +6,7 @@ import { ensureRunnerRecentFoldersTable } from "./runner-recent-folders.js";
 import { ensureRunnerTriggerListenersTable } from "./sessions/runner-trigger-listener-store.js";
 import { ensureTriggerSubscriptionTable } from "./sessions/trigger-subscription-store.js";
 import { ensureUserHiddenModelTable } from "./user-hidden-models.js";
+import { ensureUserPreferenceTable } from "./user-preferences.js";
 import { ensureExtractedAttachmentTable } from "./attachments/store.js";
 import { ensureWebhookTable } from "./webhooks/store.js";
 import { ensureSetupClaimsTable } from "./setup-claims.js";
@@ -58,6 +59,7 @@ export async function runAllMigrations(context: AuthContext): Promise<void> {
             await ensureRelaySessionTables();
             await ensurePushSubscriptionTable();
             await ensureUserHiddenModelTable();
+            await ensureUserPreferenceTable();
             await ensureRunnerRecentFoldersTable();
             await ensureRunnerTriggerListenersTable();
             await ensureTriggerSubscriptionTable();

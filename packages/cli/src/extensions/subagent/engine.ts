@@ -17,6 +17,7 @@ import {
 import { defaultAgentDir } from "../../config.js";
 import { findCachedOllamaCloudModel } from "../../ollama-cloud-models.js";
 import { isModelHidden } from "../../hidden-models.js";
+import { getSubagentDefaultModelKey } from "../../subagent-default-model.js";
 import type { SingleResult, SubagentDetails, OnUpdateCallback } from "./types.js";
 import { getFinalOutput, summarizeResultForStreaming } from "./types.js";
 import { createSubagentMirror, type SubagentMirror } from "./relay-mirror.js";
@@ -157,8 +158,27 @@ export function selectLightweightModel(registry: ModelRegistryLike): Model<any> 
     const available = registry.getAvailable().filter((m) => !isModelHidden(m.provider, m.id));
     if (available.length === 0) return undefined;
 
+    // User-configured default (web UI → Settings → Model Visibility) wins.
+    // Resolved via resolveModelSpec so provider aliasing (anthropic ↔
+    // claude-subscription) works; falls through to auto-pick when the
+    // configured model isn't available on this runner.
+    const configured = getSubagentDefaultModelKey();
+    if (configured) {
+        const spec = parseModelString(configured);
+        if (spec) {
+            const resolved = resolveModelSpec(spec, registry);
+            if (resolved) return resolved;
+        }
+    }
+
+    // Never auto-pick Google models — the free-tier "cheapest" entries (gemma
+    // etc.) rate-limit and refuse almost immediately, silently breaking
+    // subagent/workflow fan-out that didn't pin an explicit model.
+    const eligible = available.filter((m) => !/google/i.test(m.provider) && !/^gem(ini|ma)/i.test(m.id));
+    const pool = eligible.length > 0 ? eligible : available;
+
     // Sort by output token cost ascending — cheapest first
-    const sorted = [...available].sort((a, b) => a.cost.output - b.cost.output);
+    const sorted = [...pool].sort((a, b) => a.cost.output - b.cost.output);
     return sorted[0];
 }
 

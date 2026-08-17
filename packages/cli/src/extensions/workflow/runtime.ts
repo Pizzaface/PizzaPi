@@ -23,7 +23,7 @@ import type { WorkflowAgentInfo, WorkflowDetails, WorkflowPhase } from "./types.
 // untrusted repo. subagent's DEFAULT_MAX_CONCURRENCY (4) is tuned for its
 // smaller parallel-tasks feature; workflows are meant for larger fan-out,
 // so this uses its own higher cap instead of importing that constant.
-export const WORKFLOW_MAX_CONCURRENCY = 16;
+export const WORKFLOW_MAX_CONCURRENCY = 100;
 export const WORKFLOW_MAX_TOTAL_AGENTS = 1000;
 
 /** The single-agent runner signature, injectable for tests. */

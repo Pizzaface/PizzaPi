@@ -12,7 +12,7 @@
  */
 
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { runWorkflow } from "./runtime.js";
+import { runWorkflow, WORKFLOW_MAX_CONCURRENCY, WORKFLOW_MAX_TOTAL_AGENTS } from "./runtime.js";
 import { listSavedWorkflows, loadWorkflow, saveWorkflow, workflowTemplate } from "./persistence.js";
 import type { WorkflowDetails } from "./types.js";
 
@@ -69,7 +69,7 @@ export const workflowExtension = (pi: ExtensionAPI) => {
             "Execute a JavaScript workflow script that orchestrates many subagents via agent()/pipeline() primitives.",
             "Use for large fan-out work — audits, migrations, cross-checked research — where per-subagent output would otherwise flood your context.",
             "Only the script's return value comes back to you; intermediate agent results stay in script variables.",
-            `Concurrency is capped at 16 agents and 1000 agents total per run.`,
+            `Concurrency is capped at ${WORKFLOW_MAX_CONCURRENCY} agents and ${WORKFLOW_MAX_TOTAL_AGENTS} agents total per run.`,
             'Pass `save: { name }` to persist the script for reuse via run_saved_workflow.',
         ].join(" "),
         parameters: RunWorkflowParams as any,
