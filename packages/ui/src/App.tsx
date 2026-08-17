@@ -4523,6 +4523,16 @@ export function App() {
   const selectedModeUi = React.useMemo(() => resolveModeUi(selectedMode), [selectedMode]);
   const [startingTask, setStartingTask] = React.useState(false);
 
+  // Session-list launcher panel state — full-screen managers declared by
+  // runner services via panel.launcher (e.g. PizzaWork Schedules).
+  const [openLauncherPanelId, setOpenLauncherPanelId] = React.useState<string | null>(null);
+  const handleOpenLauncherPanel = React.useCallback((panel: import("@pizzapi/protocol").ServicePanelInfo) => {
+    setOpenLauncherPanelId(panel.serviceId);
+  }, []);
+  const handleCloseLauncherPanel = React.useCallback(() => {
+    setOpenLauncherPanelId(null);
+  }, []);
+
   /** Every session in the selected mode, newest first. */
   const selectedModeAllSessions = React.useMemo(() => {
     if (!selectedMode) return [];
@@ -4691,8 +4701,8 @@ export function App() {
   // Package-declared "guaranteed placement" for dynamic panels
   // (ServicePanelInfo.placement). Maps serviceId → dock zone so a package-owned
   // panel lands where its package asked (e.g. left-bottom) instead of the
-  // generic default, unless the user has since moved it. Reactive: rebuilt
-  // whenever service_announce changes the announced panels.
+  // generic default, unless the user has since moved it. Launcher panels are
+  // excluded because they render on their dedicated surface.
   const declaredPanelPlacements = React.useMemo(() => {
     const zones = new Set<string>([
       "left-top", "left-middle", "left-bottom",
@@ -4701,6 +4711,7 @@ export function App() {
     ]);
     const map = new Map<string, PanelPosition>();
     for (const p of dynamicPanels) {
+      if (p.launcher) continue;
       if (p.placement && zones.has(p.placement)) map.set(p.serviceId, p.placement as PanelPosition);
     }
     return map;
@@ -4719,15 +4730,15 @@ export function App() {
 
   // When the runner's service list changes (session switch, reconnect, etc.),
   // close any panels whose service is no longer available in this runner.
-  // This covers switching to a session on a different runner OR to a local
-  // session that has no runner at all (availableServices will be empty).
+  // Launcher panels are excluded — they live in a dedicated full-screen surface
+  // and are not tracked by useServicePanelState.
   React.useEffect(() => {
     const current = activeServicePanelsRef.current;
     if (current.size === 0) return;
     const staticAvailable = new Set(
       SERVICE_PANELS.filter(p => modeVisibleServices.has(p.serviceId)).map(p => p.serviceId),
     );
-    const dynamicAvailable = new Set(modePanels.map(p => p.serviceId));
+    const dynamicAvailable = new Set(modePanels.filter((p) => !p.launcher).map(p => p.serviceId));
     for (const id of current) {
       if (!staticAvailable.has(id) && !dynamicAvailable.has(id)) {
         closeServicePanelById(id);
@@ -4741,11 +4752,12 @@ export function App() {
   // panel is present without a click. Track which we auto-opened so a user
   // closing one doesn't fight a reopen; forget a panel once it leaves the mode
   // so re-entering the mode opens it again. The cleanup effect above closes
-  // panels that leave modePanels.
+  // panels that leave modePanels. Launcher panels are excluded — they open via
+  // their dedicated surface, not the dock.
   const autoOpenedPanelsRef = React.useRef<Set<string>>(new Set());
   React.useEffect(() => {
     const { toOpen, nextTracked } = computeAutoOpenPanels(
-      modePanels,
+      modePanels.filter((p) => !p.launcher),
       autoOpenedPanelsRef.current,
       (id) => activeServicePanelsRef.current.has(id),
     );
@@ -5362,6 +5374,10 @@ export function App() {
               onShowSessions={() => setShowRunners(false)}
               sessionsAwaitingInput={sessionsAwaitingInput}
               sessionsCompacting={sessionsCompacting}
+              dynamicPanels={modePanels}
+              onOpenLauncherPanel={handleOpenLauncherPanel}
+              openLauncherPanelId={openLauncherPanelId}
+              onCloseLauncherPanel={handleCloseLauncherPanel}
             />
           </ErrorBoundary>
         </div>

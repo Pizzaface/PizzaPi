@@ -142,6 +142,20 @@ export type ServicePanelPlacement =
   | "center-top" | "center-bottom"
   | "right-top"  | "right-middle"  | "right-bottom";
 
+/** Surfaces a package panel can anchor to instead of the generic dock grid. */
+export type ServicePanelLauncherSurface = "session-list";
+
+/** Horizontal position of a non-dock panel launcher relative to its surface. */
+export type ServicePanelLauncherPosition = "bottom-left" | "bottom-right";
+
+/** Launcher metadata for a panel rendered outside the generic dock grid. */
+export interface ServicePanelLauncher {
+  /** Surface the button lives on. */
+  surface: ServicePanelLauncherSurface;
+  /** Position within the surface. */
+  position: ServicePanelLauncherPosition;
+}
+
 /** Metadata for a service panel announced by the runner. */
 export interface ServicePanelInfo {
   /** Must match the runner service's `id`. */
@@ -175,6 +189,12 @@ export interface ServicePanelInfo {
    * a click. The user can still close it. Omit for click-to-open (default).
    */
   defaultOpen?: boolean;
+  /**
+   * Launcher metadata — when set the panel is rendered as a dedicated button
+   * on the named surface instead of a docked panel. The panel iframe is opened
+   * full-screen when the button is clicked.
+   */
+  launcher?: ServicePanelLauncher;
 }
 
 // ── Service trigger types ─────────────────────────────────────────────────────

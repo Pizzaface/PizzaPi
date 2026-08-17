@@ -18,7 +18,13 @@
  * just no longer contribute runner services.
  */
 import type { ServiceHandler } from "./service-handler.js";
-import type { ServiceModeDef, ServicePanelPlacement, ServiceTriggerDef, ServiceSigilDef } from "@pizzapi/protocol";
+import type {
+    ServiceModeDef,
+    ServicePanelLauncher,
+    ServicePanelPlacement,
+    ServiceTriggerDef,
+    ServiceSigilDef,
+} from "@pizzapi/protocol";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -36,6 +42,9 @@ export interface ServiceManifest {
         placement?: ServicePanelPlacement;
         /** Open the panel automatically in its mode(s) instead of on click. */
         defaultOpen?: boolean;
+        /** Launcher metadata — when set the panel is rendered as a dedicated
+         * surface button instead of a docked panel. */
+        launcher?: ServicePanelLauncher;
     };
     /**
      * Whether this service has a UI panel shown to users. Set explicitly so a

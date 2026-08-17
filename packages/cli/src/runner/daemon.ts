@@ -37,7 +37,7 @@ import { findSessionPathById } from "./session-list-cache.js";
 import { lookupTranscriptLink } from "./session-transcript-links.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type { ServiceModeDef, ServicePanelPlacement, ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } from "@pizzapi/protocol";
+import type { ServiceModeDef, ServicePanelLauncher, ServicePanelPlacement, ServiceTriggerDef, ServiceSigilDef, TriggerSubscriptionEntry } from "@pizzapi/protocol";
 import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
 import { extractHookSummary } from "./hook-summary.js";
 import { defaultStatePath, acquireStateAndIdentity, releaseStateLock, patchRunnerState } from "./runner-state.js";
@@ -106,6 +106,8 @@ export type PanelEntry = {
     placement?: ServicePanelPlacement;
     /** Open the panel automatically in its mode(s) instead of on click. */
     defaultOpen?: boolean;
+    /** Launcher metadata — when set the panel renders as a dedicated surface button. */
+    launcher?: ServicePanelLauncher;
     /**
      * Whether this service has a UI panel shown to users.
      * false = service has trigger/sigil defs but no panel (e.g. the time service).
@@ -305,6 +307,7 @@ export function panelEntryFromManifest(
         ...(manifest.panel?.requires ? { requires: manifest.panel.requires } : {}),
         ...(manifest.panel?.placement ? { placement: manifest.panel.placement } : {}),
         ...(manifest.panel?.defaultOpen ? { defaultOpen: true } : {}),
+        ...(manifest.panel?.launcher ? { launcher: manifest.panel.launcher } : {}),
     };
 }
 
@@ -951,6 +954,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     ...(p.modes ? { modes: p.modes } : {}),
                     ...(p.placement ? { placement: p.placement } : {}),
                     ...(p.defaultOpen ? { defaultOpen: true } : {}),
+                    ...(p.launcher ? { launcher: p.launcher } : {}),
                 }));
             // Collect all trigger defs and sigil defs across all services with manifests
             const allTriggerDefs: ServiceTriggerDef[] = [];
