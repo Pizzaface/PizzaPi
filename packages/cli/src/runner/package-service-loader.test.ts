@@ -320,6 +320,29 @@ describe("discoverPackageServices", () => {
         expect(services[0]!.manifest?.hasPanel).toBe(true);
     });
 
+    test("panel.launcher survives into the manifest (session-list launchers)", async () => {
+        const pkgDir = join(tmpDir, "launcher-pkg");
+        writeFixturePackage(pkgDir, {
+            schemaVersion: 1,
+            services: [{
+                id: "launcher-svc",
+                label: "X",
+                entry: "./service.ts",
+                panel: { dir: "./panel", launcher: { surface: "session-list", position: "bottom-right" } },
+            }],
+        });
+        writeFileSync(join(pkgDir, "service.ts"), "export default { id: 'launcher-svc', init(){}, dispose(){} };");
+        mkdirSync(join(pkgDir, "panel"), { recursive: true });
+        writeFileSync(join(pkgDir, "panel", "index.html"), "<html></html>");
+        await installLocal("../launcher-pkg");
+        const identity = "local:" + realpathSync(pkgDir);
+        grantServices(identity, ["launcher-svc"]);
+
+        const { services, errors } = await discoverPackageServices({ cwd, agentDir });
+        expect(errors).toEqual([]);
+        expect(services[0]!.manifest?.panel?.launcher).toEqual({ surface: "session-list", position: "bottom-right" });
+    });
+
     test("one invalid package does not block discovery of a valid one", async () => {
         const badPkgDir = join(tmpDir, "bad-pkg");
         const goodPkgDir = join(tmpDir, "good-pkg");

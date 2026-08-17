@@ -250,6 +250,7 @@ export async function discoverPackageServices(
                     requires: decl.panel.requires,
                     ...(decl.panel.placement ? { placement: decl.panel.placement } : {}),
                     ...(decl.panel.defaultOpen ? { defaultOpen: true } : {}),
+                    ...(decl.panel.launcher ? { launcher: decl.panel.launcher } : {}),
                 } } : {}),
                 ...(Array.isArray(decl.triggers) && decl.triggers.length > 0 ? { triggers: decl.triggers } : {}),
                 ...(Array.isArray(decl.sigils) && decl.sigils.length > 0 ? { sigils: decl.sigils } : {}),

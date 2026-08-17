@@ -26,10 +26,12 @@ interface IframeServicePanelProps {
     panelParams?: Record<string, string>;
     /** Session working directory — injected as projectDir query param. */
     cwd?: string;
+    /** Tunnel through the runner instead of a session (launcher panels with no session). */
+    runnerId?: string;
 }
 
-export function IframeServicePanel({ sessionId, port, query, fragment, panelParams, cwd }: IframeServicePanelProps) {
-    const { base, loading, error } = useTunnelSrc({ sessionId, port });
+export function IframeServicePanel({ sessionId, port, query, fragment, panelParams, cwd, runnerId }: IframeServicePanelProps) {
+    const { base, loading, error } = useTunnelSrc({ sessionId, port, runnerId });
     // Heuristic: HTTP failures inside an iframe don't fire onError, so flag a
     // panel that never fires onLoad within a grace window as likely-broken.
     const [loadTimedOut, setLoadTimedOut] = useState(false);
@@ -42,7 +44,9 @@ export function IframeServicePanel({ sessionId, port, query, fragment, panelPara
         if (panelParams) {
             for (const [key, value] of Object.entries(panelParams)) params.set(key, value);
         }
-        params.set("sessionId", sessionId);
+        if (sessionId) params.set("sessionId", sessionId);
+        else params.delete("sessionId");
+        if (runnerId) params.set("runnerId", runnerId);
         if (cwd) params.set("projectDir", cwd);
         if (query) {
             const existing = new URLSearchParams(query);
@@ -52,7 +56,7 @@ export function IframeServicePanel({ sessionId, port, query, fragment, panelPara
         if (qs) url = `${base}${base.includes("?") ? "&" : "?"}${qs}`;
         if (fragment) url += `#${fragment}`;
         return url;
-    }, [base, sessionId, port, query, fragment, panelParams, cwd]);
+    }, [base, sessionId, port, query, fragment, panelParams, cwd, runnerId]);
 
     useEffect(() => {
         setLoadTimedOut(false);

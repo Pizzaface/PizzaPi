@@ -85,6 +85,22 @@ describe("IframeServicePanel", () => {
         expect(url.hash).toBe("#section");
     });
 
+    test("runner-scoped tunnel with no session drops the empty sessionId param", () => {
+        const { container } = render(
+            React.createElement(IframeServicePanel, {
+                sessionId: "",
+                runnerId: "runner-abc",
+                port: 8080,
+                panelParams: { sessionId: "" },
+            }),
+        );
+        const src = extractSrc(container)!;
+        const url = new URL(src, "http://localhost");
+        expect(url.pathname).toBe("/api/tunnel/runner/runner-abc/8080/");
+        expect(url.searchParams.has("sessionId")).toBe(false);
+        expect(url.searchParams.get("runnerId")).toBe("runner-abc");
+    });
+
     test("uses token-authenticated relay URL in bundled mobile mode", async () => {
         localStorage.setItem("pizzapi.serverUrl", "https://relay.example.com");
         _setMobileRuntimeCache("key-123");

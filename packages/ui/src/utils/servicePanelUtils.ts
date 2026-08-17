@@ -84,3 +84,30 @@ export function resolvePanelToggleAction(
 ): "close" | "focus" {
     return resolveActiveTabIdFromIds(zoneTabIds, combinedActiveTab) === serviceId ? "close" : "focus";
 }
+
+/**
+ * Pick which runner's panels drive the session-list launcher surface.
+ *
+ * Launchers live outside any session (they hang off the session list), so with
+ * nothing open there is no active session and therefore no active runner —
+ * `useRunnerServices` returns zero panels and every launcher disappears. Fall
+ * back to the runner feed, mirroring how session modes resolve their runner.
+ */
+export function resolveLauncherSource<P extends { launcher?: { surface: string } }, R extends { runnerId: string; panels?: P[] }>(
+    activeRunnerPanels: P[] | undefined,
+    activeRunnerId: string | null | undefined,
+    feedRunners: R[],
+    selectedRunnerId: string | null,
+): { panels: P[]; runnerId: string | null } {
+    // Match on launcher panels specifically: most runners announce panels and
+    // none of them are launchers, so "first runner with any panel" silently
+    // picks a runner that can never render the launcher.
+    const isLauncher = (p: P) => p.launcher?.surface === "session-list";
+    if (activeRunnerId && (activeRunnerPanels ?? []).some(isLauncher)) {
+        return { panels: activeRunnerPanels ?? [], runnerId: activeRunnerId };
+    }
+    const hasLauncher = (r: R) => (r.panels ?? []).some(isLauncher);
+    const runner = feedRunners.find((r) => r.runnerId === selectedRunnerId && hasLauncher(r))
+        ?? feedRunners.find(hasLauncher);
+    return { panels: runner?.panels ?? [], runnerId: runner?.runnerId ?? null };
+}

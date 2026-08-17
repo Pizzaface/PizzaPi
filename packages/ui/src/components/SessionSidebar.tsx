@@ -20,7 +20,6 @@ import { pruneSwipeOffsets } from "@/lib/swipe-reveal";
 import { getSessionVisualState } from "@/lib/session-visual-state";
 import { parseHubSessionsPayload } from "@/lib/hub-sessions";
 import { cwdInWorkspace, type ServiceModeDef, type ServicePanelInfo } from "@pizzapi/protocol";
-import { IframeServicePanel } from "@/components/service-panels/IframeServicePanel";
 
 interface HubSession {
     sessionId: string;
@@ -119,10 +118,8 @@ export interface SessionSidebarProps {
     dynamicPanels?: ServicePanelInfo[];
     /** Called when a session-list launcher panel should be opened full-screen. */
     onOpenLauncherPanel?: (panel: ServicePanelInfo) => void;
-    /** Currently open launcher panel service id, if any. */
-    openLauncherPanelId?: string | null;
-    /** Called when the open launcher panel should be closed. */
-    onCloseLauncherPanel?: () => void;
+    /** Currently active launcher panel service id, if any. */
+    activeLauncherId?: string | null;
 }
 
 /** Filter by the selected mode without changing the runner/project/session tree. */
@@ -242,8 +239,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     onSelectedModeChange,
     dynamicPanels = [],
     onOpenLauncherPanel,
-    openLauncherPanelId,
-    onCloseLauncherPanel,
+    activeLauncherId,
 }: SessionSidebarProps) {
     const [collapsed, setCollapsed] = React.useState(false);
 
@@ -1685,6 +1681,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         <LauncherFooter
                             dynamicPanels={dynamicPanels}
                             activeModeId={selectedMode}
+                            activeLauncherId={activeLauncherId}
                             onOpenLauncherPanel={onOpenLauncherPanel}
                         />
                     </div>
@@ -1720,6 +1717,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     <LauncherFooter
                         dynamicPanels={dynamicPanels}
                         activeModeId={selectedMode}
+                        activeLauncherId={activeLauncherId}
                         onOpenLauncherPanel={onOpenLauncherPanel}
                         collapsed
                     />
@@ -1761,13 +1759,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             >
                 <div className="relative h-full flex-shrink-0" style={{ width: sidebarWidth }}>
                     {sidebarContent}
-                    {/* Full-screen launcher panel dialog */}
-                    <LauncherPanelDialog
-                        dynamicPanels={dynamicPanels}
-                        activeSessionId={activeSessionId}
-                        openLauncherPanelId={openLauncherPanelId}
-                        onClose={onCloseLauncherPanel}
-                    />
                 </div>
             </Resizable>
         );
@@ -1781,11 +1772,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 interface LauncherFooterProps {
   dynamicPanels: ServicePanelInfo[];
   activeModeId: string | null;
+  activeLauncherId?: string | null;
   onOpenLauncherPanel?: (panel: ServicePanelInfo) => void;
   collapsed?: boolean;
 }
 
-function LauncherFooter({ dynamicPanels, activeModeId, onOpenLauncherPanel, collapsed }: LauncherFooterProps) {
+function LauncherFooter({ dynamicPanels, activeModeId, activeLauncherId, onOpenLauncherPanel, collapsed }: LauncherFooterProps) {
   const launchers = React.useMemo(() => {
     return dynamicPanels
       .filter((p) => p.launcher?.surface === "session-list")
@@ -1803,6 +1795,8 @@ function LauncherFooter({ dynamicPanels, activeModeId, onOpenLauncherPanel, coll
 
   if (launchers.length === 0) return null;
 
+  const activeClass = (panel: ServicePanelInfo) => panel.serviceId === activeLauncherId ? " text-primary bg-sidebar-accent" : "";
+
   if (collapsed) {
     return (
       <div className="flex flex-col items-center gap-1">
@@ -1811,7 +1805,7 @@ function LauncherFooter({ dynamicPanels, activeModeId, onOpenLauncherPanel, coll
             key={panel.serviceId}
             variant="ghost"
             size="icon"
-            className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+            className={`h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent${activeClass(panel)}`}
             onClick={() => onOpenLauncherPanel?.(panel)}
             aria-label={panel.label}
             title={panel.label}
@@ -1835,7 +1829,7 @@ function LauncherFooter({ dynamicPanels, activeModeId, onOpenLauncherPanel, coll
               key={panel.serviceId}
               variant="ghost"
               size="icon"
-              className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+              className={`h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent${activeClass(panel)}`}
               onClick={() => onOpenLauncherPanel?.(panel)}
               aria-label={panel.label}
               title={panel.label}
@@ -1846,13 +1840,13 @@ function LauncherFooter({ dynamicPanels, activeModeId, onOpenLauncherPanel, coll
         </div>
       )}
       {right.length > 0 && (
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 ml-auto">
           {right.map((panel) => (
             <Button
               key={panel.serviceId}
               variant="ghost"
               size="icon"
-              className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+              className={`h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent${activeClass(panel)}`}
               onClick={() => onOpenLauncherPanel?.(panel)}
               aria-label={panel.label}
               title={panel.label}
@@ -1863,59 +1857,6 @@ function LauncherFooter({ dynamicPanels, activeModeId, onOpenLauncherPanel, coll
         </div>
       )}
     </div>
-  );
-}
-
-// ── Full-screen launcher panel dialog ───────────────────────────────────────
-
-interface LauncherPanelDialogProps {
-  dynamicPanels: ServicePanelInfo[];
-  activeSessionId: string | null;
-  openLauncherPanelId?: string | null;
-  onClose?: () => void;
-}
-
-function LauncherPanelDialog({ dynamicPanels, activeSessionId, openLauncherPanelId, onClose }: LauncherPanelDialogProps) {
-  const panel = React.useMemo(
-    () => dynamicPanels.find((p) => p.serviceId === openLauncherPanelId),
-    [dynamicPanels, openLauncherPanelId],
-  );
-  const open = Boolean(panel) && activeSessionId != null;
-
-  return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose?.(); }}>
-      <DialogContent className="max-w-none w-screen h-screen p-0 border-0 rounded-none gap-0" aria-describedby="launcher-panel-desc">
-        <DialogHeader className="sr-only">
-          <DialogTitle>{panel?.label ?? "Launcher panel"}</DialogTitle>
-          <DialogDescription id="launcher-panel-desc">Full-screen manager for {panel?.label ?? "launcher panel"}</DialogDescription>
-        </DialogHeader>
-        <div className="flex items-center justify-between px-3 py-2 border-b border-sidebar-border bg-sidebar shrink-0">
-          <div className="flex items-center gap-2 text-sm font-medium text-sidebar-foreground">
-            {panel && <DynamicLucideIcon name={panel.icon} className="h-4 w-4" />}
-            {panel?.label}
-          </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            onClick={() => onClose?.()}
-            aria-label="Close manager"
-          >
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
-        <div className="flex-1 min-h-0">
-          {panel && activeSessionId && (
-            <IframeServicePanel
-              sessionId={activeSessionId}
-              port={panel.port}
-              panelParams={panel.panelParams}
-              cwd={panel.panelParams?.projectDir}
-            />
-          )}
-        </div>
-      </DialogContent>
-    </Dialog>
   );
 }
 
