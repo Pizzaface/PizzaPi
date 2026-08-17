@@ -2,14 +2,13 @@
  * Provider usage/quota fetching and caching for the remote extension.
  *
  * Self-contained subsystem — no relay state needed. Fetches quota data from
- * Anthropic, OpenAI Codex, and Google Gemini CLI, and caches results.
+ * Anthropic and OpenAI Codex, and caches results.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { loadConfig, defaultAgentDir, expandHome } from "../config.js";
-import { getAnthropicKeychainToken, parseGeminiQuotaCredential } from "../runner/usage-auth.js";
+import { getAnthropicKeychainToken } from "../runner/usage-auth.js";
 import type { UsageWindow, ProviderUsageData } from "./remote-types.js";
 
 const DEFAULT_USAGE_CACHE_TTL = 5 * 60 * 1000; // 5 min
@@ -244,73 +243,6 @@ async function refreshCodexUsage(opts: { force?: boolean } = {}): Promise<void> 
     }
 }
 
-async function refreshGeminiUsage(opts: { force?: boolean } = {}): Promise<void> {
-    if (isCached("google-gemini-cli", opts)) return;
-    let token: string;
-    let projectId: string | null;
-    try {
-        const config = loadConfig(process.cwd());
-        const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
-        // Accepts the oauth credential a real /login writes as well as the legacy
-        // api_key wrapper whose `key` is JSON.stringify({ token, projectId }).
-        const cred = parseGeminiQuotaCredential(readStoredCredential("google-gemini-cli", join(agentDir, "auth.json")));
-        if (!cred) return;
-        token = cred.token;
-        projectId = cred.projectId;
-    } catch {
-        return;
-    }
-
-    try {
-        const endpoint = process.env["CODE_ASSIST_ENDPOINT"] ?? "https://cloudcode-pa.googleapis.com";
-        const version = process.env["CODE_ASSIST_API_VERSION"] ?? "v1internal";
-        const res = await fetch(`${endpoint}/${version}:retrieveUserQuota`, {
-            method: "POST",
-            headers: {
-                Authorization: `Bearer ${token}`,
-                "Content-Type": "application/json",
-            },
-            // `project` is optional — the endpoint resolves the caller's Code Assist
-            // project from the token, so no :loadCodeAssist round-trip is needed.
-            body: JSON.stringify(projectId ? { project: projectId } : {}),
-        });
-        if (!res.ok) {
-            // 401 = expired/invalid token, 403 = no access. Report both rather than
-            // dropping Gemini from the usage list with no explanation.
-            if (res.status === 401 || res.status === 403) {
-                usageCache.set("google-gemini-cli", {
-                    data: { windows: [], status: "unknown", errorCode: res.status },
-                    fetchedAt: Date.now(),
-                });
-            }
-            return;
-        }
-
-        const raw = (await res.json()) as {
-            buckets?: Array<{
-                remainingAmount?: string;
-                remainingFraction?: number;
-                resetTime?: string;
-                tokenType?: string;
-                modelId?: string;
-            }>;
-        };
-
-        const windows: UsageWindow[] = [];
-        for (const bucket of raw.buckets ?? []) {
-            if (bucket.remainingFraction == null || !bucket.resetTime) continue;
-            const utilization = (1 - bucket.remainingFraction) * 100;
-            const label = [bucket.tokenType, bucket.modelId].filter(Boolean).join(" / ") || "Quota";
-            windows.push({ label, utilization, resets_at: bucket.resetTime });
-        }
-        if (windows.length > 0) {
-            usageCache.set("google-gemini-cli", { data: { windows, status: "ok" }, fetchedAt: Date.now() });
-        }
-    } catch {
-        // Non-fatal
-    }
-}
-
 export async function refreshAllUsage(opts: { force?: boolean } = {}): Promise<void> {
     const force = opts.force === true;
 
@@ -322,6 +254,5 @@ export async function refreshAllUsage(opts: { force?: boolean } = {}): Promise<v
     await Promise.allSettled([
         refreshAnthropicUsage({ force }),
         refreshCodexUsage({ force }),
-        refreshGeminiUsage({ force }),
     ]);
 }

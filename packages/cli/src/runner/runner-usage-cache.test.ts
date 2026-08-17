@@ -50,11 +50,10 @@ describe("runner-usage-cache child", () => {
         mock.module("./usage-auth.js", () => ({
             getOAuthAccessToken: (raw: any) => {
                 // Return token only for anthropic
-                if (!raw || raw.type !== "oauth") return null;
+                if (!raw || raw.type !== "oauth" || !raw.access.includes("custom-agent-dir")) return null;
                 return "token:" + raw.access;
             },
             getAnthropicKeychainToken: () => null,
-            parseGeminiQuotaCredential: () => null,
         }));
 
         mock.module("./logger.js", () => ({
@@ -73,6 +72,7 @@ describe("runner-usage-cache child", () => {
         }) as Response;
 
         const {
+            getRunnerAnthropicUsageData,
             runnerUsageCacheFilePath,
             startUsageRefreshLoop,
             stopUsageRefreshLoop,
@@ -112,6 +112,15 @@ describe("runner-usage-cache child", () => {
             },
         ]);
 
+        globalThis.fetch = async () => { throw new Error("temporary outage"); };
+        expect(await getRunnerAnthropicUsageData({ force: true })).toEqual(firstCache.providers.anthropic);
+
+        globalThis.fetch = async () => ({
+            ok: true,
+            json: async () => ({
+                five_hour: { utilization: 42, resets_at: "2026-01-01T00:00:00.000Z" },
+            }),
+        }) as Response;
         authCreateCalls.length = 0;
         rmSync(cachePath, { force: true });
         untrackSessionCwd("sess-1", projectCwd);

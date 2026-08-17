@@ -1,9 +1,9 @@
-import { renameSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { loadConfig, defaultAgentDir, expandHome } from "../config.js";
-import { getOAuthAccessToken, getAnthropicKeychainToken, parseGeminiQuotaCredential } from "./usage-auth.js";
+import { getOAuthAccessToken, getAnthropicKeychainToken } from "./usage-auth.js";
 import { logInfo, logWarn } from "./logger.js";
 
 // ── Runner-wide usage cache (shared with worker processes via file) ───────────
@@ -126,7 +126,17 @@ async function fetchAnthropicUsageData(): Promise<ProviderUsageData | null> {
     }
 }
 
-async function getRunnerAnthropicUsageData(opts: { force?: boolean } = {}): Promise<ProviderUsageData | null> {
+export async function getRunnerAnthropicUsageData(opts: { force?: boolean } = {}): Promise<ProviderUsageData | null> {
+    if (!_lastAnthropicUsage) {
+        try {
+            const cached = JSON.parse(readFileSync(runnerUsageCacheFilePath(), "utf-8")) as RunnerUsageCacheFile;
+            const anthropic = cached.providers?.anthropic;
+            if (anthropic?.windows) _lastAnthropicUsage = { data: anthropic, fetchedAt: cached.fetchedAt };
+        } catch {
+            // No prior runner cache.
+        }
+    }
+
     const now = Date.now();
     const force = opts.force === true;
 
@@ -135,67 +145,13 @@ async function getRunnerAnthropicUsageData(opts: { force?: boolean } = {}): Prom
     }
 
     const data = await fetchAnthropicUsageData();
-    // Only cache successful fetches so transient failures don't suppress
-    // retries for the full 15-minute interval.
+    // Keep the last successful value through transient refresh failures. A failed
+    // poll must not erase Anthropic from the shared cache and every new worker.
     if (data !== null) {
         _lastAnthropicUsage = { data, fetchedAt: now };
+        return data;
     }
-    return data;
-}
-
-async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
-    let token: string | undefined;
-    let projectId: string | null = null;
-    try {
-        for (const authPath of getKnownAuthPaths()) {
-            // parseGeminiQuotaCredential handles both the oauth credential a real
-            // /login writes and the legacy api_key wrapper. It validates the
-            // result, so we must not short-circuit on the first truthy raw value —
-            // only on the first path that yields a usable Gemini credential.
-            const cred = parseGeminiQuotaCredential(readStoredCredential("google-gemini-cli", authPath));
-            if (cred) {
-                token = cred.token;
-                projectId = cred.projectId;
-                break;
-            }
-        }
-    } catch (err: any) {
-        logWarn(`failed to get Google credentials: ${err?.message ?? String(err)}`);
-        return null;
-    }
-    if (!token) return null;
-    try {
-        const endpoint = process.env["CODE_ASSIST_ENDPOINT"] ?? "https://cloudcode-pa.googleapis.com";
-        const version = process.env["CODE_ASSIST_API_VERSION"] ?? "v1internal";
-        const res = await fetch(`${endpoint}/${version}:retrieveUserQuota`, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-            // `project` is optional — the endpoint resolves the caller's Code Assist
-            // project from the token, so no :loadCodeAssist round-trip is needed.
-            body: JSON.stringify(projectId ? { project: projectId } : {}),
-        });
-        if (!res.ok) {
-            // 401 = expired/invalid token, 403 = no access. Report both rather than
-            // dropping Gemini from the usage list with no explanation.
-            if (res.status === 401 || res.status === 403) {
-                return { windows: [], status: "unknown", errorCode: res.status };
-            }
-            return null;
-        }
-        const raw = (await res.json()) as {
-            buckets?: Array<{ remainingFraction?: number; resetTime?: string; tokenType?: string; modelId?: string }>;
-        };
-        const windows: UsageWindow[] = [];
-        for (const bucket of raw.buckets ?? []) {
-            if (bucket.remainingFraction == null || !bucket.resetTime) continue;
-            const utilization = (1 - bucket.remainingFraction) * 100;
-            const label = [bucket.tokenType, bucket.modelId].filter(Boolean).join(" / ") || "Quota";
-            windows.push({ label, utilization, resets_at: bucket.resetTime });
-        }
-        return windows.length > 0 ? { windows, status: "ok" } : null;
-    } catch {
-        return null;
-    }
+    return _lastAnthropicUsage?.data ?? null;
 }
 
 async function fetchCodexUsageData(): Promise<ProviderUsageData | null> {
@@ -265,18 +221,14 @@ async function fetchCodexUsageData(): Promise<ProviderUsageData | null> {
  * their own API calls.
  */
 async function refreshAndWriteRunnerUsageCache(opts: { forceAnthropic?: boolean } = {}): Promise<void> {
-    const [anthropicResult, geminiResult, codexResult] = await Promise.allSettled([
+    const [anthropicResult, codexResult] = await Promise.allSettled([
         getRunnerAnthropicUsageData({ force: opts.forceAnthropic === true }),
-        fetchGeminiUsageData(),
         fetchCodexUsageData(),
     ]);
 
     const providers: Record<string, ProviderUsageData> = {};
     if (anthropicResult.status === "fulfilled" && anthropicResult.value) {
         providers.anthropic = anthropicResult.value;
-    }
-    if (geminiResult.status === "fulfilled" && geminiResult.value) {
-        providers["google-gemini-cli"] = geminiResult.value;
     }
     if (codexResult.status === "fulfilled" && codexResult.value) {
         providers["openai-codex"] = codexResult.value;
