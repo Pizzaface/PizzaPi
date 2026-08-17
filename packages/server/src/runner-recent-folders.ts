@@ -85,6 +85,9 @@ export async function recordRecentFolder(
         .where("runnerId", "=", runnerId)
         .orderBy("usageCount", "desc")
         .orderBy("lastUsedAt", "desc")
+        // id tie-break: ISO-ms timestamps collide when writes are fast (WAL) 2014
+        // without this, which tied row survives pruning is arbitrary.
+        .orderBy("id", "desc")
         .execute();
 
     if (all.length > MAX_RECENT_FOLDERS) {
@@ -125,6 +128,9 @@ export async function getRecentFolders(
         .where("runnerId", "=", runnerId)
         .orderBy("usageCount", "desc")
         .orderBy("lastUsedAt", "desc")
+        // id tie-break: ISO-ms timestamps collide when writes are fast (WAL) 2014
+        // without this, which tied row survives pruning is arbitrary.
+        .orderBy("id", "desc")
         .limit(MAX_RECENT_FOLDERS)
         .execute();
 

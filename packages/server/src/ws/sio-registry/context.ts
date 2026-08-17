@@ -242,19 +242,91 @@ export function emitToRelaySession(sessionId: string, eventName: string, data: u
  * Use this for delivery-critical paths (e.g. trigger responses) where
  * falsely reporting success would leave the client stuck.
  */
-export async function emitToRelaySessionVerified(sessionId: string, eventName: string, data: unknown): Promise<boolean> {
-    if (!io) return false;
+export type RelayEmitCheckResult = "delivered" | "empty" | "unknown";
+
+/**
+ * Like emitToRelaySessionVerified, but distinguishes a CONFIRMED empty room
+ * from a lookup we could not complete. "empty" is proof the runner is not
+ * connected anywhere in the cluster; "unknown" means the Redis adapter lookup
+ * failed and no local socket exists — a runner may still be connected on
+ * another node, so callers must not treat it as offline (no stale fallbacks,
+ * no offline errors — let client-side retry handle it).
+ */
+const RELAY_PRESENCE_LOOKUP_TIMEOUT_MS = 3_000;
+
+// One in-flight cluster presence lookup per room. See usage comment below.
+const inFlightPresenceLookups = new Map<string, Promise<number>>();
+
+function clusterPresenceLookup(nsp: ReturnType<NonNullable<typeof io>["of"]>, room: string): Promise<number> {
+    const existing = inFlightPresenceLookups.get(room);
+    if (existing) return existing;
+    const lookup = nsp.in(room).fetchSockets().then((sockets) => sockets.length);
+    inFlightPresenceLookups.set(room, lookup);
+    lookup
+        .catch(() => { /* rejection surfaces to awaiting callers; nothing to do here */ })
+        .finally(() => {
+            if (inFlightPresenceLookups.get(room) === lookup) {
+                inFlightPresenceLookups.delete(room);
+            }
+        });
+    return lookup;
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
+        promise.then(
+            (value) => { clearTimeout(timer); resolve(value); },
+            (err) => { clearTimeout(timer); reject(err); },
+        );
+    });
+}
+
+export async function emitToRelaySessionChecked(sessionId: string, eventName: string, data: unknown): Promise<RelayEmitCheckResult> {
+    if (!io) return "unknown";
     const room = relaySessionRoom(sessionId);
+    const nsp = io.of("/relay");
+
+    // Local fast-path FIRST: the node-local room map is synchronous and
+    // Redis-free. A locally connected runner must never depend on the cluster
+    // lookup below — during a Redis outage that lookup can hang or fail, and
+    // local recovery is exactly what has to keep working through a blip.
     try {
-        // ⚡ Bolt: Fast check on adapter avoids fetching full RemoteSocket objects across cluster
-        const sockets = await io.of("/relay").adapter.sockets(new Set([room]));
-        if (sockets.size === 0) return false;
-        io.of("/relay").to(room).emit(eventName, data);
-        return true;
+        const localRoom = nsp.adapter.rooms.get(room);
+        if (localRoom && localRoom.size > 0) {
+            nsp.to(room).emit(eventName, data);
+            return "delivered";
+        }
+    } catch { /* fall through to cluster lookup */ }
+
+    try {
+        // fetchSockets() is the cluster-aware presence check (adapter.sockets()
+        // is inherited from the in-memory adapter and only scans local rooms).
+        // Bound it independently: RedisAdapter.fetchSockets() awaits
+        // serverCount() BEFORE its own request timeout is armed, and with
+        // node-redis's offline queue that await can pend for an entire Redis
+        // outage — an unbounded hang here would stall recovery indefinitely.
+        // Coalesced per room: a timed-out caller leaves the underlying lookup
+        // pending in the offline queue, and retries reuse it instead of
+        // stacking a new queued command per attempt — otherwise reconnect
+        // would replay a storm of accumulated fetchSockets requests.
+        const socketCount = await withTimeout(clusterPresenceLookup(nsp, room), RELAY_PRESENCE_LOOKUP_TIMEOUT_MS);
+        if (socketCount === 0) return "empty";
+        nsp.to(room).emit(eventName, data);
+        // Presence ≠ delivery: the socket can drop between the check and the
+        // emit. Callers needing hard delivery proof must use
+        // emitToRelaySessionAwaitingAck instead.
+        return "delivered";
     } catch (err) {
-        log.warn("emitToRelaySessionVerified failed:", (err as Error)?.message);
-        return false;
+        // Lookup failure (Redis degraded, timeout) is NOT proof of an empty
+        // room — a runner may be connected on another node.
+        log.warn("emitToRelaySessionChecked cluster lookup failed — runner state unknown:", (err as Error)?.message);
+        return "unknown";
     }
+}
+
+export async function emitToRelaySessionVerified(sessionId: string, eventName: string, data: unknown): Promise<boolean> {
+    return (await emitToRelaySessionChecked(sessionId, eventName, data)) === "delivered";
 }
 
 // ── Utilities ────────────────────────────────────────────────────────────────

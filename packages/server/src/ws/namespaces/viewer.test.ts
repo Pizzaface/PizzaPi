@@ -16,6 +16,7 @@ import {
     isViewerSwitchCurrent,
     shouldAvoidSnapshotFallback,
     forwardRecoveryConnectedSignal,
+    runnerLooksLive,
     withHubMetaSource,
     withLivenessOnlyHint,
     sendCachedDeltaReplayEvents,
@@ -182,7 +183,9 @@ describe("viewer connected signal gating", () => {
         });
     });
 
-    test("socket.on(\"connected\") forwarding marks recovery before emitting to relay", () => {
+
+
+    test("socket.on(\"connected\") forwarding marks recovery before emitting to relay", async () => {
         const calls: string[] = [];
         const next = onViewerConnectedSignal(true, false);
 
@@ -191,20 +194,38 @@ describe("viewer connected signal gating", () => {
             forwardNow: true,
         });
 
-        forwardRecoveryConnectedSignal("sess-connected", {
+        const delivered = await forwardRecoveryConnectedSignal("sess-connected", {
             markPendingRecovery: mock((sessionId: string) => {
                 calls.push(`mark:${sessionId}`);
                 return "nonce-1";
             }),
-            emitToRelaySession: mock((sessionId: string, event: string) => {
+            emitToRelaySessionChecked: mock(async (sessionId: string, event: string) => {
                 calls.push(`emit:${event}:${sessionId}`);
+                return "delivered";
             }) as any,
         });
 
+        expect(delivered).toBe("delivered");
         expect(calls).toEqual([
             "mark:sess-connected",
             "emit:connected:sess-connected",
         ]);
+    });
+
+    test("recovery signal reports empty when the room is confirmed empty", async () => {
+        const result = await forwardRecoveryConnectedSignal("sess-empty-room", {
+            markPendingRecovery: mock(() => "nonce-1"),
+            emitToRelaySessionChecked: mock(async () => "empty") as any,
+        });
+        expect(result).toBe("empty");
+    });
+
+    test("recovery signal reports unknown when the adapter lookup fails", async () => {
+        const result = await forwardRecoveryConnectedSignal("sess-degraded", {
+            markPendingRecovery: mock(() => "nonce-1"),
+            emitToRelaySessionChecked: mock(async () => "unknown") as any,
+        });
+        expect(result).toBe("unknown");
     });
 
     test("flushes pending signal when viewer becomes ready", () => {
@@ -221,7 +242,7 @@ describe("viewer connected signal gating", () => {
         });
     });
 
-    test("ready-transition forwarding also marks recovery before emitting to relay", () => {
+    test("ready-transition forwarding also marks recovery before emitting to relay", async () => {
         const calls: string[] = [];
         const flush = onViewerReadyForRunnerSignal(true);
 
@@ -230,13 +251,14 @@ describe("viewer connected signal gating", () => {
             forwardNow: true,
         });
 
-        forwardRecoveryConnectedSignal("sess-pending", {
+        await forwardRecoveryConnectedSignal("sess-pending", {
             markPendingRecovery: mock((sessionId: string) => {
                 calls.push(`mark:${sessionId}`);
                 return "nonce-1";
             }),
-            emitToRelaySession: mock((sessionId: string, event: string) => {
+            emitToRelaySessionChecked: mock(async (sessionId: string, event: string) => {
                 calls.push(`emit:${event}:${sessionId}`);
+                return "delivered";
             }) as any,
         });
 
@@ -346,5 +368,22 @@ describe("checkServiceMessageRateLimit", () => {
         const result = checkServiceMessageRateLimit(2000, state);
         expect(result.allowed).toBe(true);
         expect(state.count).toBe(1);
+    });
+});
+
+describe("runnerLooksLive", () => {
+    test("live: isActive with a fresh heartbeat", () => {
+        expect(runnerLooksLive({ isActive: true, lastHeartbeatAt: new Date().toISOString() })).toBe(true);
+    });
+
+    test("not live: heartbeat older than the stale threshold despite isActive", () => {
+        const stale = new Date(Date.now() - 5 * 60_000).toISOString();
+        expect(runnerLooksLive({ isActive: true, lastHeartbeatAt: stale })).toBe(false);
+    });
+
+    test("not live: isActive false, missing or malformed heartbeat", () => {
+        expect(runnerLooksLive({ isActive: false, lastHeartbeatAt: new Date().toISOString() })).toBe(false);
+        expect(runnerLooksLive({ isActive: true, lastHeartbeatAt: null })).toBe(false);
+        expect(runnerLooksLive({ isActive: true, lastHeartbeatAt: "not-a-date" })).toBe(false);
     });
 });

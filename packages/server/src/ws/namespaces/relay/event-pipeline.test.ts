@@ -5,6 +5,9 @@ import {
     canFinalizeChunkedSnapshot,
     enqueueSessionEvent,
     finalizeChunkedSnapshot,
+    getPendingChunkedSnapshot,
+    pendingChunkedStates,
+    CHUNK_STREAM_STALE_MS,
     sessionEventQueues,
     type ChunkedSessionState,
 } from "./event-pipeline.js";
@@ -29,6 +32,7 @@ function createPendingState(): ChunkedSessionState {
         totalChunks: 0,
         receivedChunkIndexes: new Set<number>(),
         finalChunkSeen: false,
+        lastActivityAt: Date.now(),
     };
 }
 
@@ -220,6 +224,7 @@ describe("chunked snapshot assembly", () => {
             totalChunks: 2,
             receivedChunkIndexes: new Set<number>([0, 1]),
             finalChunkSeen: true,
+            lastActivityAt: Date.now(),
         };
         const updateSessionState = spyOn({
             updateSessionState: async () => {},
@@ -262,5 +267,49 @@ describe("chunked snapshot assembly", () => {
         expect(hasPendingRecovery("sess-chunked-recovery")).toBe(false);
         expect(consumePendingRecovery("sess-chunked-recovery", nonce)).toBe(false);
         expect(appendRelayEventToCache).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("getPendingChunkedSnapshot — stale stream expiry", () => {
+    afterEach(() => {
+        pendingChunkedStates.clear();
+    });
+
+    function seed(sessionId: string, lastActivityAt: number): void {
+        pendingChunkedStates.set(sessionId, {
+            snapshotId: "snap-stale",
+            metadata: { totalMessages: 3 },
+            chunks: [[{ id: "m1" }]],
+            totalChunks: 3,
+            receivedChunkIndexes: new Set<number>([0]),
+            finalChunkSeen: false,
+            lastActivityAt,
+        });
+    }
+
+    test("returns an active stream as not stale", () => {
+        seed("s-active", Date.now());
+        expect(getPendingChunkedSnapshot("s-active")?.stale).toBe(false);
+        expect(pendingChunkedStates.has("s-active")).toBe(true);
+    });
+
+    test("flags a stream with no chunk activity past the stale threshold, without deleting it", () => {
+        seed("s-stale", Date.now() - CHUNK_STREAM_STALE_MS - 1);
+        expect(getPendingChunkedSnapshot("s-stale")?.stale).toBe(true);
+        // Kept: a hung runner that resumes refreshes lastActivityAt and the
+        // stream can still finalize — deleting would discard its chunks.
+        expect(pendingChunkedStates.has("s-stale")).toBe(true);
+    });
+
+    test("chunk arrival refreshes activity and clears staleness", () => {
+        seed("s-refresh", Date.now() - CHUNK_STREAM_STALE_MS - 1);
+        const pending = pendingChunkedStates.get("s-refresh")!;
+        applyChunkToPendingState(pending, {
+            chunkIndex: 1,
+            chunkMessages: [{ id: "m2" }],
+            totalChunks: 3,
+            isFinalChunk: false,
+        });
+        expect(getPendingChunkedSnapshot("s-refresh")?.stale).toBe(false);
     });
 });

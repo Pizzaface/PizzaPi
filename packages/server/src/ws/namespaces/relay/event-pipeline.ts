@@ -44,7 +44,26 @@ export interface ChunkedSessionState {
     finalChunkSeen: boolean;
     /** Recovery nonce echoed by the runner on the chunk-start session_active. */
     recoveryNonce?: string;
+    /** Timestamp of the chunk-start SA or the most recent chunk. */
+    lastActivityAt: number;
 }
+
+/**
+ * A chunk stream that has gone this long without a new chunk is dead — the
+ * runner hung or lost the worker without its relay socket disconnecting.
+ * Left in place, the pending entry makes every viewer hydration skip the
+ * snapshot cache (viewer.ts chunkedPending gate) and wait on a runner signal
+ * that never comes, which is unrecoverable even across client retries.
+ *
+ * Healthy streams emit chunks sub-second (setImmediate cadence on the
+ * runner), so 10s of silence is unambiguous. Timing alignment matters: the
+ * client retries hydration at ~4s and ~12s after its last progress event,
+ * then surfaces a terminal error — the threshold must sit BELOW the final
+ * retry (12s) or the bypass is never exercised before the client gives up.
+ * Both clocks anchor to the same event (a chunk arrival), so 10s here
+ * guarantees the ~12s retry sees the stream as stale.
+ */
+export const CHUNK_STREAM_STALE_MS = 10_000;
 
 export interface PendingChunkUpdate {
     chunkIndex: number;
@@ -78,6 +97,7 @@ export function applyChunkToPendingState(
 
     pending.receivedChunkIndexes.add(chunkIndex);
     pending.chunks[chunkIndex] = chunkMessages;
+    pending.lastActivityAt = Date.now();
     return true;
 }
 
@@ -202,9 +222,22 @@ export function getPendingChunkedSnapshot(sessionId: string): {
     totalMessages: number;
     receivedChunks: number;
     totalChunks: number;
+    /**
+     * True when the stream has gone CHUNK_STREAM_STALE_MS without a chunk.
+     * Callers should stop gating hydration on it (serve the cache) AND request
+     * a fresh runner snapshot instead of suppressing recovery — but the entry
+     * is deliberately NOT deleted: a hung runner that resumes sending refreshes
+     * lastActivityAt and the stream can still finalize normally, and deleting
+     * it would silently discard chunks the runner still believes it delivered.
+     */
+    stale: boolean;
 } | null {
     const pending = pendingChunkedStates.get(sessionId);
     if (!pending) return null;
+    const stale = Date.now() - pending.lastActivityAt > CHUNK_STREAM_STALE_MS;
+    if (stale) {
+        log.warn(`Chunked snapshot for ${sessionId} is stale (no chunk for ${CHUNK_STREAM_STALE_MS}ms) — bypassing hydration gate`);
+    }
     const messages = pending.chunks.flat();
     return {
         metadata: pending.metadata,
@@ -213,6 +246,7 @@ export function getPendingChunkedSnapshot(sessionId: string): {
         totalMessages: (pending.metadata as any).totalMessages ?? messages.length,
         receivedChunks: pending.receivedChunkIndexes.size,
         totalChunks: pending.totalChunks,
+        stale,
     };
 }
 
@@ -285,6 +319,7 @@ export function registerEventHandler(socket: RelaySocket): void {
                     receivedChunkIndexes: new Set<number>(),
                     finalChunkSeen: false,
                     recoveryNonce: typeof event.recoveryNonce === "string" ? event.recoveryNonce : undefined,
+                    lastActivityAt: Date.now(),
                 });
                 // Touch activity but DON'T update lastState yet
                 await touchSessionActivity(sessionId);

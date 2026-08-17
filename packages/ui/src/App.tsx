@@ -823,6 +823,10 @@ export function App() {
   const hydrationStallTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   const hydrationRetriesRef = React.useRef(0);
   const HYDRATION_STALL_MS = 8_000;
+  // First retry fires sooner: a dropped first snapshot otherwise always costs
+  // the full stall window. Later retries keep the longer threshold so a slow
+  // link streaming a big snapshot isn't hammered with duplicate requests.
+  const HYDRATION_FIRST_RETRY_MS = 3_500;
   const HYDRATION_CHECK_INTERVAL_MS = 2_000;
   // ponytail: two retries, then surface the failure. Retrying forever would
   // re-request a full snapshot every 8s against a session that cannot answer.
@@ -845,6 +849,27 @@ export function App() {
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Reconnect immediately when the tab foregrounds or the network returns.
+  // socket.io's reconnect backoff can sit up to ~30s after a background
+  // suspension; a manual connect() bypasses the backoff timer entirely and
+  // is a no-op when already connected/connecting.
+  React.useEffect(() => {
+    const kickSockets = () => {
+      if (document.visibilityState !== "visible") return;
+      const viewer = viewerWsRef.current;
+      if (viewer && !viewer.connected) viewer.connect();
+      const hub = hubSocketRef.current;
+      if (hub && !hub.connected) hub.connect();
+    };
+    window.addEventListener("online", kickSockets);
+    document.addEventListener("visibilitychange", kickSockets);
+    return () => {
+      window.removeEventListener("online", kickSockets);
+      document.removeEventListener("visibilitychange", kickSockets);
+    };
   }, []);
   // How long to ignore runner queue syncs after a local queue mutation.
   const QUEUE_SYNC_SUPPRESS_MS = 5_000;
@@ -1932,6 +1957,13 @@ export function App() {
       // against them. Those deltas are already represented in this snapshot.
       deferredChunkEventsRef.current = [];
       onSnapshotStarted({ chunked: isChunked, snapshotId, totalMessages });
+      if (isChunked) {
+        // The header is real progress: preparing a big snapshot can consume
+        // most of the stall window, and the watchdog stays armed through the
+        // whole chunked transfer now — without this reset it could restart a
+        // healthy transfer right after a slow header, before chunk 0 arrives.
+        hydrationRequestedAtRef.current = Date.now();
+      }
 
       const stateModel = normalizeModel(state?.model);
       const stateModels = Array.isArray(state?.availableModels)
@@ -2132,10 +2164,11 @@ export function App() {
       chunkState.loadedMessages += chunkMessages.length;
       const loaded = chunkState.loadedMessages;
       onChunkProgress(loaded, totalMessages);
-      // Chunked delivery keeps awaitingSnapshot true for as long as the transfer
-      // takes, which on a big session over a slow link legitimately exceeds the
-      // stall threshold. Treat an arriving chunk as progress so the watchdog does
-      // not restart hydration underneath a transfer that is succeeding.
+      // The chunk header cleared awaitingSnapshot, but the stall watchdog stays
+      // armed while the transfer is in flight (chunked && !hydrated). Treat an
+      // arriving chunk as progress so the watchdog does not restart hydration
+      // underneath a transfer that is succeeding — a big session over a slow
+      // link legitimately exceeds the stall threshold between retries.
       hydrationRequestedAtRef.current = Date.now();
 
       const readyToFinalize = canFinalizeChunkHydration(
@@ -3032,6 +3065,10 @@ export function App() {
     if (!hubAuthUserId) return;
     const socket = io(socketUrl("/hub"), {
       withCredentials: true,
+      // WebSocket first: the default polling→upgrade handshake costs 2-3 extra
+      // RTTs on every connect AND reconnect. Polling stays as a fallback for
+      // proxies that block WebSockets.
+      transports: ["websocket", "polling"],
       auth: buildSocketAuth({
         protocolVersion: SOCKET_PROTOCOL_VERSION,
         clientVersion: UI_VERSION,
@@ -3263,8 +3300,11 @@ export function App() {
     // no-op and leave them with a blank transcript until a full page reload.
     if (
       relaySessionId === lifecycleRefs.activeSessionId.current &&
-      !lifecycleRefs.awaitingSnapshot.current
+      lifecycleRefs.hydrated.current
     ) {
+      // awaitingSnapshot alone is not "finished": chunked headers clear it
+      // while the transfer is still in flight, and a stalled transfer must
+      // remain re-clickable.
       return;
     }
 
@@ -3356,6 +3396,9 @@ export function App() {
         }),
         withCredentials: true,
         autoConnect: false,
+        // WebSocket first (polling fallback) — skips the polling handshake's
+        // extra round trips on every connect/reconnect.
+        transports: ["websocket", "polling"],
       });
       viewerWsRef.current = socket;
       attachServiceAnnounceListener(socket);
@@ -3372,14 +3415,22 @@ export function App() {
       hydrationStallTimerRef.current = setInterval(() => {
         const sessionId = lifecycleRefs.activeSessionId.current;
         if (!sessionId || !nextSocket.connected) return;
-        if (!lifecycleRefs.awaitingSnapshot.current) {
+        // A chunked transfer clears awaitingSnapshot on the chunk *header*, so
+        // the transfer itself must keep the watchdog armed — a stream that
+        // stops mid-way (dropped frame, runner crash) would otherwise freeze
+        // "Loading session (x of y)…" forever with no retry. Arriving chunks
+        // reset hydrationRequestedAtRef, so a progressing transfer never trips.
+        const chunkInFlight =
+          lifecycleRefs.chunked.current !== null && !lifecycleRefs.hydrated.current;
+        if (!lifecycleRefs.awaitingSnapshot.current && !chunkInFlight) {
           hydrationRequestedAtRef.current = null;
           hydrationRetriesRef.current = 0;
           return;
         }
         const requestedAt = hydrationRequestedAtRef.current;
         if (requestedAt === null) return;
-        if (Date.now() - requestedAt < HYDRATION_STALL_MS) return;
+        const stallThreshold = hydrationRetriesRef.current === 0 ? HYDRATION_FIRST_RETRY_MS : HYDRATION_STALL_MS;
+        if (Date.now() - requestedAt < stallThreshold) return;
 
         if (hydrationRetriesRef.current >= HYDRATION_MAX_RETRIES) {
           // Stop retrying, but never leave a spinner claiming progress.
@@ -3410,7 +3461,9 @@ export function App() {
       staleCheckTimerRef.current = setInterval(() => {
         if (!lifecycleRefs.activeSessionId.current) return;
         if (!nextSocket.connected) return;
-        if (!agentActiveRef.current && !lifecycleRefs.awaitingSnapshot.current) return;
+        const chunkTransferInFlight =
+          lifecycleRefs.chunked.current !== null && !lifecycleRefs.hydrated.current;
+        if (!agentActiveRef.current && !lifecycleRefs.awaitingSnapshot.current && !chunkTransferInFlight) return;
         const elapsed = Date.now() - lastViewerEventAtRef.current;
         if (elapsed > staleThresholdMsRef.current) {
           log.warn(`Stale connection detected (${Math.round(elapsed / 1000)}s since last event). Reconnecting…`);
@@ -3422,7 +3475,15 @@ export function App() {
       nextSocket.on("connect", () => {
         const currentSessionId = lifecycleRefs.activeSessionId.current;
         if (!currentSessionId) return;
-        setLifecycleStatus("Connecting…");
+        // A transport reconnect on an already-hydrated session must not flip the
+        // status back to "Connecting…": the composer gate and the "still
+        // connecting" banner key off the status STRING, so re-arming it here
+        // shows a scary offline banner on a session that is visibly fine every
+        // time a mobile tab backgrounds or WiFi blips. The reducer's CONNECTED
+        // action already keeps hydrated reconnects live; mirror that here.
+        if (!lifecycleRefs.hydrated.current) {
+          setLifecycleStatus("Connecting…");
+        }
         setViewerSwitchGeneration(nextSocket, lifecycleRefs.generation.current);
         hydrationRequestedAtRef.current = Date.now();
         hydrationRetriesRef.current = 0;
@@ -4000,6 +4061,7 @@ export function App() {
         clientVersion: UI_VERSION,
       }),
       withCredentials: true,
+      transports: ["websocket", "polling"],
     });
 
     const cleanup = () => tempSocket.disconnect();

@@ -34,6 +34,8 @@ import {
     getLocalTuiSocket,
     emitToRelaySession,
     emitToRelaySessionVerified,
+    emitToRelaySessionChecked,
+    type RelayEmitCheckResult,
     emitToRunner,
     broadcastToSessionViewers,
     markPendingRecovery,
@@ -200,23 +202,79 @@ export function checkServiceMessageRateLimit(
 
 export interface RecoveryConnectedSignalDeps {
     markPendingRecovery: typeof markPendingRecovery;
-    emitToRelaySession: typeof emitToRelaySession;
+    emitToRelaySessionChecked: typeof emitToRelaySessionChecked;
 }
 
 const defaultRecoveryConnectedSignalDeps: RecoveryConnectedSignalDeps = {
     markPendingRecovery,
-    emitToRelaySession,
+    emitToRelaySessionChecked,
 };
 
-/** @internal — exported for unit tests only */
-export function forwardRecoveryConnectedSignal(
+/**
+ * Ask the runner to rebuild and re-emit a fresh session_active.
+ *
+ * Verified: this signal is the LAST fallback tier — every cache tier has
+ * already declined — so firing it into an empty room (offline/hung runner)
+ * with a fire-and-forget emit left the viewer silently spinning for the full
+ * client watchdog window. Returns false when no runner socket is in the room
+ * so callers can tell the viewer the truth instead.
+ *
+ * @internal — exported for unit tests only
+ */
+export async function forwardRecoveryConnectedSignal(
     sessionId: string,
     deps: RecoveryConnectedSignalDeps = defaultRecoveryConnectedSignalDeps,
-): void {
+): Promise<RelayEmitCheckResult> {
     const recoveryNonce = deps.markPendingRecovery(sessionId);
     // The runner echoes recoveryNonce on its recovery session_active so the
     // event pipeline can distinguish it from real agent updates racing in.
-    deps.emitToRelaySession(sessionId, "connected" as string, { recoveryNonce });
+    const result = await deps.emitToRelaySessionChecked(sessionId, "connected" as string, { recoveryNonce });
+    if (result === "empty") {
+        log.warn(`recovery signal for ${sessionId}: room confirmed empty — runner offline or hung`);
+    } else if (result === "unknown") {
+        log.warn(`recovery signal for ${sessionId}: adapter lookup failed — runner state unknown, leaving recovery to client retry`);
+    }
+    return result;
+}
+
+/**
+ * Heartbeats arrive every ~10s from a healthy runner; this many missed beats
+ * means the runner is offline or hung regardless of what isActive says.
+ */
+const RUNNER_HEARTBEAT_STALE_MS = 45_000;
+
+/** @internal — exported for unit tests only */
+export function runnerLooksLive(session: { isActive?: boolean; lastHeartbeatAt?: string | null }): boolean {
+    if (!session.isActive) return false;
+    if (typeof session.lastHeartbeatAt !== "string" || !session.lastHeartbeatAt) return false;
+    const at = Date.parse(session.lastHeartbeatAt);
+    return Number.isFinite(at) && Date.now() - at < RUNNER_HEARTBEAT_STALE_MS;
+}
+
+/**
+ * Fire the recovery signal and, when it provably reached no runner, tell the
+ * viewer instead of leaving it awaiting a snapshot that cannot arrive.
+ */
+function forwardRecoverySignalOrNotify(
+    sessionId: string,
+    socket: ViewerSocket,
+    generation: number | undefined,
+    onConfirmedOffline?: () => Promise<void>,
+): void {
+    void forwardRecoveryConnectedSignal(sessionId).then(async (result) => {
+        // "unknown" (Redis-degraded lookup) is NOT proof the runner is gone —
+        // it may be connected on another node. Do nothing; client retry covers it.
+        if (result !== "empty") return;
+        if (socket.data.sessionId !== sessionId) return; // viewer moved on
+        if (onConfirmedOffline) {
+            await onConfirmedOffline();
+            return;
+        }
+        socket.emit("error", {
+            message: "The runner for this session is offline — the conversation will load when it reconnects.",
+            generation,
+        });
+    });
 }
 
 /**
@@ -334,12 +392,27 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
         // from triggering a runner signal when the viewer was already hydrated
         // from the server-side Redis cache.
         let suppressRunnerSignal = false;
+        // Monotonic activation token: generation checks alone cannot catch a
+        // watchdog retry that reuses the SAME generation. Two overlapping
+        // activations racing across getBestSnapshot()'s await could otherwise
+        // consume or overwrite each other's socket-wide signal flags
+        // (suppressRunnerSignal / pendingConnectedSignal) or double-signal the
+        // runner. Every await inside activateSession re-checks the token and
+        // bails if a newer activation has started.
+        let activationCounter = 0;
+        // One-shot persisted-tier fallback for a CONFIRMED-offline runner, set
+        // by the active hydration attempt. Shared so both recovery-signal
+        // paths (in-activation flush and the later client "connected" echo)
+        // behave identically regardless of arrival timing.
+        let recoveryOfflineFallback: { sessionId: string; run: () => Promise<void> } | null = null;
 
         const getCurrentSessionId = (): string | null => socket.data.sessionId ?? null;
         const getCurrentGeneration = (): number | undefined =>
             typeof socket.data.generation === "number" ? socket.data.generation : undefined;
 
         const activateSession = async (nextSessionId: string, generation?: number, lastSeq?: number): Promise<void> => {
+            const activationToken = ++activationCounter;
+            const activationCurrent = () => activationToken === activationCounter;
             // Reset on every session switch so a prior session's signal state
             // cannot bleed into the new session.  Specifically:
             //   - suppressRunnerSignal=true (cache hit) must not silence the
@@ -352,6 +425,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             suppressRunnerSignal = false;
             viewerReadyForRunnerSignal = false;
             pendingConnectedSignal = false;
+            recoveryOfflineFallback = null;
 
             if (!nextSessionId) {
                 socket.data.sessionId = undefined;
@@ -362,11 +436,11 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             const previousSessionId = getCurrentSessionId();
             if (previousSessionId && previousSessionId !== nextSessionId) {
                 await removeViewer(previousSessionId, socket);
-                if (!isViewerSwitchCurrent(getCurrentGeneration(), generation)) return;
+                if (!isViewerSwitchCurrent(getCurrentGeneration(), generation) || !activationCurrent()) return;
             }
 
             const sessionSummary = await getSharedSessionSummary(nextSessionId);
-            if (!isViewerSwitchCurrent(getCurrentGeneration(), generation)) return;
+            if (!isViewerSwitchCurrent(getCurrentGeneration(), generation) || !activationCurrent()) return;
 
             if (!sessionSummary) {
                 socket.data.sessionId = undefined;
@@ -387,8 +461,14 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 sessionSummaryHint: sessionSummary,
                 touchAsync: true,
             });
-            if (!isViewerSwitchCurrent(getCurrentGeneration(), generation)) {
-                if (ok) {
+            if (!isViewerSwitchCurrent(getCurrentGeneration(), generation) || !activationCurrent()) {
+                // Only leave the room when the viewer is no longer on this
+                // session. A same-session retry (re-click or watchdog, whether
+                // it bumped the generation or only the token) shares this room —
+                // Socket.IO rooms are not reference-counted, so removing here
+                // would kick the CURRENT activation out and silently detach the
+                // viewer from all live events.
+                if (ok && getCurrentSessionId() !== nextSessionId) {
                     await removeViewer(nextSessionId, socket);
                 }
                 return;
@@ -411,8 +491,12 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 getSessionSeq(nextSessionId),
             ]);
 
-            if (!isViewerSwitchCurrent(getCurrentGeneration(), generation)) {
-                await removeViewer(nextSessionId, socket);
+            if (!isViewerSwitchCurrent(getCurrentGeneration(), generation) || !activationCurrent()) {
+                // Same-room caveat as above: only remove when no longer on
+                // this session.
+                if (getCurrentSessionId() !== nextSessionId) {
+                    await removeViewer(nextSessionId, socket);
+                }
                 return;
             }
 
@@ -451,7 +535,8 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
 
             // ── SnapshotProvider: try server-side cache before signaling the runner
             const chunkedPending = getPendingChunkedSnapshot(nextSessionId);
-            if (!chunkedPending) {
+            const staleChunkStream = chunkedPending?.stale === true;
+            if (!chunkedPending || staleChunkStream) {
                 const snapshotResult = await getBestSnapshot(nextSessionId, {
                     lastSeq: requestedLastSeq,
                     // Without userId the SQLite tier is unreachable, so a dead
@@ -461,12 +546,19 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                     // live session whose cache merely blipped would show a stale
                     // transcript AND suppress the runner signal that would have
                     // fixed it — with no error and no retry.
-                    userId: freshSession.isActive ? undefined : viewerUserId,
+                    //
+                    // "Actually live" requires a fresh heartbeat, not just the
+                    // stored isActive flag: a hung runner keeps isActive=true
+                    // for 2+ minutes (until sweepOrphanedSessions), which
+                    // blocked the SQLite tier for exactly the sessions that
+                    // need it.
+                    userId: runnerLooksLive(freshSession) ? undefined : viewerUserId,
                     lastState: freshSession.lastState,
                     snapshotOverlay: freshSession.snapshotOverlay,
                     chunkedPending: false,
                     latestSeq: freshSeq,
                 });
+                if (!activationCurrent()) return; // newer activation owns the signal flags now
                 if (snapshotResult) {
                     // Cache hit — viewer is fully hydrated.  Suppress the
                     // runner "connected" signal so it doesn't rebuild and
@@ -474,6 +566,14 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                     snapshotResult.send(socket, generation);
                     suppressRunnerSignal = true;
                     log.info(`snapshot-provider hydration: sessionId=${nextSessionId} viewer=${socket.id} type=${snapshotResult.snapshot.type}`);
+                    if (staleChunkStream) {
+                        // The cache served a pre-stream checkpoint over a wedged
+                        // chunk stream — that transcript is old. Ask the runner
+                        // for a fresh snapshot instead of suppressing recovery,
+                        // so the viewer isn't stranded on the old checkpoint if
+                        // the stream never finishes.
+                        forwardRecoverySignalOrNotify(nextSessionId, socket, generation);
+                    }
                     return;
                 }
             }
@@ -486,8 +586,65 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             viewerReadyForRunnerSignal = true;
             const flush = onViewerReadyForRunnerSignal(pendingConnectedSignal);
             pendingConnectedSignal = flush.pendingConnectedSignal;
+
+            // Persisted-tier fallback for a CONFIRMED-offline runner: its recent
+            // heartbeat is no longer evidence of liveness, so the SQLite tier
+            // that runnerLooksLive() blocked above is fair game. One-shot, and
+            // every await re-checks that (a) this activation still owns the
+            // socket and (b) no live event advanced the session seq — a runner
+            // reconnecting mid-lookup broadcasts fresher content than anything
+            // persisted, and sending after it would rewind the transcript.
+            // Cursor-holding viewers skip the snapshot (seqless → rewind risk);
+            // their watchdog retries cursorless and lands here next attempt.
+            let fallbackAttempted = false;
+            const attemptPersistedFallback = async (): Promise<void> => {
+                if (fallbackAttempted) return;
+                fallbackAttempted = true;
+                const stillMine = () => activationCurrent() && socket.data.sessionId === nextSessionId;
+                if (!stillMine()) return;
+                try {
+                    const seqNow = await getSessionSeq(nextSessionId);
+                    if (!stillMine() || seqNow !== freshSeq) return;
+                    if (requestedLastSeq === undefined) {
+                        const persisted = await getBestSnapshot(nextSessionId, {
+                            userId: viewerUserId,
+                            lastState: freshSession.lastState,
+                            snapshotOverlay: freshSession.snapshotOverlay,
+                            chunkedPending: false,
+                            latestSeq: freshSeq,
+                        });
+                        const seqAfter = await getSessionSeq(nextSessionId);
+                        if (!stillMine() || seqAfter !== freshSeq) return;
+                        // A runner may have joined AFTER the room was confirmed
+                        // empty but before it broadcast anything (seq unmoved).
+                        // Re-signal recovery and only fall back if the room is
+                        // STILL empty — a joined runner will push a fresh
+                        // session_active (registered → emitSessionActive) that
+                        // must not be overwritten by unsequenced persisted
+                        // state. ponytail: an instant-of-send race remains; the
+                        // runner's unconditional snapshot-on-register supersedes
+                        // it on the next broadcast.
+                        const recheck = await forwardRecoveryConnectedSignal(nextSessionId);
+                        if (!stillMine() || recheck !== "empty") return;
+                        if (persisted) {
+                            persisted.send(socket, generation);
+                            log.info(`persisted fallback after confirmed-offline runner: sessionId=${nextSessionId} viewer=${socket.id} type=${persisted.snapshot.type}`);
+                            return;
+                        }
+                    }
+                } catch (err) {
+                    log.warn(`persisted fallback failed for ${nextSessionId}:`, (err as Error)?.message);
+                }
+                if (!stillMine()) return;
+                socket.emit("error", {
+                    message: "The runner for this session is offline — the conversation will load when it reconnects.",
+                    generation,
+                });
+            };
+            recoveryOfflineFallback = { sessionId: nextSessionId, run: attemptPersistedFallback };
+
             if (flush.forwardNow) {
-                forwardRecoveryConnectedSignal(nextSessionId);
+                forwardRecoverySignalOrNotify(nextSessionId, socket, generation, attemptPersistedFallback);
             }
 
             // Emit an immediate heartbeat snapshot while the runner pushes a
@@ -538,7 +695,13 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             const next = onViewerConnectedSignal(viewerReadyForRunnerSignal, pendingConnectedSignal);
             pendingConnectedSignal = next.pendingConnectedSignal;
             if (next.forwardNow) {
-                forwardRecoveryConnectedSignal(currentSessionId);
+                // Route through the activation's persisted fallback when one is
+                // armed — identical cold starts must not behave differently
+                // based on whether this echo raced the cache lookup.
+                const fallback = recoveryOfflineFallback?.sessionId === currentSessionId
+                    ? recoveryOfflineFallback.run
+                    : undefined;
+                forwardRecoverySignalOrNotify(currentSessionId, socket, getCurrentGeneration(), fallback);
             }
         });
 
@@ -561,15 +724,27 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             // getPendingChunkedSnapshot() is node-local. Multi-node deployments
             // still need sticky routing or shared pending state for this guard.
             const requestedLastSeq = typeof data?.lastSeq === "number" && Number.isFinite(data.lastSeq) ? data.lastSeq : undefined;
-            const resyncChunkedPending = getPendingChunkedSnapshot(currentSessionId);
+            // A stale stream (no chunk for CHUNK_STREAM_STALE_MS) must not gate
+            // hydration — treat it as absent for the fallback decisions below,
+            // but remember it so we still nudge the runner for a fresh snapshot.
+            const resyncPendingRaw = getPendingChunkedSnapshot(currentSessionId);
+            const resyncStaleStream = resyncPendingRaw?.stale === true;
+            const resyncChunkedPending = resyncPendingRaw && !resyncStaleStream ? resyncPendingRaw : null;
             if (requestedLastSeq !== undefined && !resyncChunkedPending) {
-                const resyncSession = await getSharedSession(currentSessionId);
+                const [resyncSession, resyncSeq] = await Promise.all([
+                    getSharedSession(currentSessionId),
+                    getSessionSeq(currentSessionId),
+                ]);
                 const cacheHydrated = await hydrateViewerFromCache(socket, currentSessionId, {
                     lastSeq: requestedLastSeq,
                     generation: getCurrentGeneration(),
                     snapshotOverlay: resyncSession?.snapshotOverlay,
+                    latestSessionSeq: resyncSeq,
                 });
                 if (cacheHydrated) {
+                    if (resyncStaleStream) {
+                        forwardRecoverySignalOrNotify(currentSessionId, socket, getCurrentGeneration());
+                    }
                     return;
                 }
             }
@@ -579,7 +754,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 // Reaching here means only unsequenced state is left, which
                 // cannot safely fill the gap — ask the runner for a fresh one.
                 if (requestedLastSeq !== undefined && !resyncChunkedPending) {
-                    forwardRecoveryConnectedSignal(currentSessionId);
+                    forwardRecoverySignalOrNotify(currentSessionId, socket, getCurrentGeneration());
                 }
                 return;
             }
@@ -594,7 +769,9 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             // Use emitToRelaySession for cluster-wide reach — the runner may
             // be on a different server node in multi-node deployments.
             const session = await getSharedSession(currentSessionId);
-            if (!session?.lastState) {
+            if (!session?.lastState || resyncStaleStream) {
+                // No usable checkpoint — or the one we just sent predates a
+                // wedged chunk stream — either way the runner should rebuild.
                 emitToRelaySession(currentSessionId, "connected" as string, {});
             }
         });
