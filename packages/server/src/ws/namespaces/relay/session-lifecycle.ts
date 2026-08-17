@@ -18,6 +18,7 @@ import { clearThinkingMaps } from "./thinking-tracker.js";
 import { forgetViewerGate } from "./viewer-gate.js";
 import { pendingChunkedStates, enqueueSessionEvent } from "./event-pipeline.js";
 import type { RelaySocket } from "./types.js";
+import { getUserPreference, PREF_SUBAGENT_MODEL } from "../../../user-preferences.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("sio/relay");
@@ -62,6 +63,18 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             // minimal for non-child or non-delinked sessions.
             ...(wasDelinked ? { wasDelinked: true } : {}),
         });
+
+        // Seed the user's subagent default model into the freshly-registered
+        // worker — same channel the settings PUT uses for live updates, so no
+        // spawn-path env threading is needed.
+        const registerUserId = socket.data.userId;
+        if (registerUserId) {
+            void getUserPreference(registerUserId, PREF_SUBAGENT_MODEL)
+                .then((model) => {
+                    if (model) (socket as { emit: (ev: string, data: unknown) => void }).emit("subagent_model_update", { model });
+                })
+                .catch(() => {});
+        }
     });
 
     // ── session_end ──────────────────────────────────────────────────────

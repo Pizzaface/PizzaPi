@@ -10,8 +10,15 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { ModelSelectorLogo } from "@/components/ai-elements/model-selector";
 import { cn } from "@/lib/utils";
-import { Eye, EyeOff, Search, RotateCcw } from "lucide-react";
+import { Eye, EyeOff, Search, RotateCcw, Bot } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 const STORAGE_KEY = "pp-hidden-models";
 
@@ -86,6 +93,9 @@ export interface HiddenModelsManagerProps {
   onHiddenModelsChange: (hidden: Set<string>) => void;
 }
 
+/** Sentinel for "auto-select" in the subagent model picker (Radix Select forbids value=""). */
+const SUBAGENT_AUTO = "__auto__";
+
 export function HiddenModelsManager({
   open,
   onOpenChange,
@@ -94,11 +104,29 @@ export function HiddenModelsManager({
   onHiddenModelsChange,
 }: HiddenModelsManagerProps) {
   const [search, setSearch] = React.useState("");
+  const [subagentModel, setSubagentModel] = React.useState<string>(SUBAGENT_AUTO);
 
-  // Reset search when dialog opens
+  // Reset search + load the subagent default when dialog opens
   React.useEffect(() => {
-    if (open) setSearch("");
+    if (!open) return;
+    setSearch("");
+    void fetch("/api/settings/subagent-model", { credentials: "include" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        setSubagentModel(typeof data?.model === "string" && data.model ? data.model : SUBAGENT_AUTO);
+      })
+      .catch(() => {});
   }, [open]);
+
+  const onSubagentModelChange = React.useCallback((value: string) => {
+    setSubagentModel(value);
+    void fetch("/api/settings/subagent-model", {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: value === SUBAGENT_AUTO ? null : value }),
+    }).catch(() => {});
+  }, []);
 
   // Group models by provider
   const groups = React.useMemo(() => {
@@ -179,6 +207,30 @@ export function HiddenModelsManager({
             Choose which models appear in the model selector. Hidden models won't show up when switching models in any session.
           </DialogDescription>
         </DialogHeader>
+
+        {/* Subagent default model */}
+        <div className="flex items-center gap-2">
+          <Bot className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+          <span className="text-xs text-muted-foreground flex-shrink-0">Subagent default</span>
+          <Select value={subagentModel} onValueChange={onSubagentModelChange}>
+            <SelectTrigger className="h-8 flex-1 text-sm" title="Default model for subagent / workflow fan-out when no model is specified">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={SUBAGENT_AUTO}>Auto (cheapest available)</SelectItem>
+              {models
+                .filter((m) => !hiddenModels.has(modelKey(m.provider, m.id)))
+                .map((m) => {
+                  const key = modelKey(m.provider, m.id);
+                  return (
+                    <SelectItem key={key} value={key}>
+                      {m.provider}/{m.name || m.id}
+                    </SelectItem>
+                  );
+                })}
+            </SelectContent>
+          </Select>
+        </div>
 
         {/* Search + reset */}
         <div className="flex items-center gap-2">

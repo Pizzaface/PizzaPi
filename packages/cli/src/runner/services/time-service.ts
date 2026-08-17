@@ -90,7 +90,16 @@ function resolveRelayUrl(): string {
 }
 
 function getApiKey(): string | null {
-    return process.env.PIZZAPI_RUNNER_API_KEY ?? process.env.PIZZAPI_API_KEY ?? null;
+    const env = process.env.PIZZAPI_RUNNER_API_KEY ?? process.env.PIZZAPI_API_KEY ?? process.env.PIZZAPI_API_TOKEN;
+    if (env) return env;
+    // The daemon itself accepts its apiKey from ~/.pizzapi/config.json (env
+    // vars are optional) — a runner configured that way must still be able to
+    // deliver schedule fires over HTTP, or every timer silently retries forever.
+    try {
+        const cfg = JSON.parse(readFileSync(join(process.env.HOME || homedir(), ".pizzapi", "config.json"), "utf-8"));
+        if (typeof cfg?.apiKey === "string" && cfg.apiKey) return cfg.apiKey;
+    } catch { /* ignore */ }
+    return null;
 }
 
 /** This runner's stable identity from ~/.pizzapi/runner.json (null when unavailable). */
@@ -812,6 +821,14 @@ export class TimeService implements ServiceHandler {
                         this.#cronIterations.delete(key);
                         this.#dropCronState(subscriptionId);
                     }
+                } else if (result === "gone" && sessionId.startsWith("runner-listener:")) {
+                    // The listener row was deleted server-side — the schedule is
+                    // gone; drop the cron instead of migrating it to a session.
+                    logWarn(`[time] cron "${cronStr}" listener ${sessionId} no longer exists — dropping schedule`);
+                    clearInterval(cur.handle);
+                    this.#crons.delete(key);
+                    this.#cronIterations.delete(key);
+                    this.#dropCronState(subscriptionId);
                 } else if (result === "gone") {
                     // The owning session no longer exists — the recurring schedule
                     // must survive: start a new session for this fire and re-own
@@ -952,6 +969,13 @@ export class TimeService implements ServiceHandler {
             if (this.#disposed) return;
             if (result === "delivered") return;
             if (result === "gone") {
+                if (sessionId.startsWith("runner-listener:")) {
+                    // A runner-listener pseudo-session fires by spawning its own
+                    // session server-side; "gone" means the listener row was
+                    // deleted — the schedule no longer exists, don't resurrect it.
+                    logWarn(`[time] ${triggerType} listener ${sessionId} no longer exists — dropping`);
+                    return;
+                }
                 const spawn = await this.#spawnReplacementSession(replacementPrompt, cwd, resumePath);
                 if ("sessionId" in spawn) {
                     // The one-shot has been handed to a live session; retire the

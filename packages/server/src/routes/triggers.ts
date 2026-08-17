@@ -88,6 +88,8 @@ import {
     getRunnerListenerTypes,
     listRunnerTriggerListeners,
     updateRunnerTriggerListener,
+    removeRunnerTriggerListener,
+    type RunnerTriggerListener,
 } from "../sessions/runner-trigger-listener-store.js";
 import {
     getPersistedRelaySessionOwner,
@@ -217,6 +219,139 @@ function inferUnsubscribeTarget(target: string, subscriptionIdParam?: string): {
  */
 async function waitForSessionSocket(sessionId: string, timeoutMs: number): Promise<boolean> {
     return waitForLocalTuiSocket(sessionId, timeoutMs);
+}
+
+/**
+ * Parse a `runner-listener:<listenerId>` pseudo-session id (as emitted in
+ * trigger subscription snapshots for runner-level auto-spawn listeners) into
+ * its listenerId and owning runnerId. Returns null when the id doesn't carry
+ * a runner segment (legacy listeners without a listenerId).
+ */
+function parseRunnerListenerSessionId(sessionId: string): { listenerId: string; runnerId: string } | null {
+    if (!sessionId.startsWith("runner-listener:")) return null;
+    const listenerId = sessionId.slice("runner-listener:".length);
+    // listenerId format: listener:<runnerId>:<triggerType>:<ts>:<rand>
+    if (!listenerId.startsWith("listener:")) return null;
+    const runnerId = listenerId.split(":")[1];
+    return runnerId ? { listenerId, runnerId } : null;
+}
+
+/**
+ * Spawn a fresh session on a runner for an auto-spawn trigger listener and
+ * deliver the trigger into it (listener prompt merged into payload.prompt).
+ * Shared by service broadcasts and point-to-point deliveries addressed to a
+ * `runner-listener:<listenerId>` pseudo-session (time:cron schedules etc.).
+ */
+async function spawnListenerSessionAndDeliver(
+    runnerId: string,
+    runnerUserId: string | undefined,
+    listener: Pick<RunnerTriggerListener, "prompt" | "cwd" | "model" | "autoClose">,
+    meta: {
+        type: string;
+        payload: Record<string, unknown>;
+        summary?: string;
+        source: string;
+        deliverAs: "steer" | "followUp";
+        expectsResponse: boolean;
+        triggerId: string;
+        ts: string;
+    },
+): Promise<{ spawned: boolean; sessionId?: string }> {
+    const runnerSocket = getLocalRunnerSocket(runnerId);
+    if (!runnerSocket) return { spawned: false };
+
+    // Fire-time hidden-model recheck: the listener's model was validated at
+    // create/update time, but may have been hidden since. Drop it (runner
+    // default) rather than failing the spawn.
+    const hiddenModels = runnerUserId
+        ? await getHiddenModels(runnerUserId).catch(() => [] as string[])
+        : [];
+    const spawnedSessionId = randomUUID();
+    const ackPromise = waitForSpawnAck(spawnedSessionId, 10_000);
+    const listenerModel = listener.model && !isHiddenModel(hiddenModels, listener.model)
+        ? listener.model
+        : undefined;
+    if (listener.model && !listenerModel) {
+        log.warn(`trigger auto-spawn: dropping hidden model ${listener.model.provider}/${listener.model.id}, using runner default`);
+    }
+    try {
+        // Don't pass the listener prompt as the initial prompt — it's merged
+        // into the trigger payload below. Sending it here would cause a race:
+        // the agent starts processing the prompt before the trigger arrives.
+        runnerSocket.emit("new_session", {
+            sessionId: spawnedSessionId,
+            ...(listener.cwd ? { cwd: listener.cwd } : {}),
+            ...(listenerModel ? { model: listenerModel } : {}),
+            ...(hiddenModels.length > 0 ? { hiddenModels } : {}),
+            ...(listener.autoClose ? { autoClose: true } : {}),
+        });
+        const ack = await ackPromise;
+        if (ack.ok === false) return { spawned: false };
+        await recordRunnerSession(runnerId, spawnedSessionId);
+        await linkSessionToRunner(runnerId, spawnedSessionId);
+
+        // Poll for the session socket to register (like webhooks do)
+        const ready = await waitForSessionSocket(spawnedSessionId, 15_000);
+        if (!ready) {
+            log.warn(`Auto-spawn listener: session ${spawnedSessionId} socket never appeared`);
+        }
+
+        const listenerPrompt = typeof listener.prompt === "string" && listener.prompt.trim()
+            ? listener.prompt.trim()
+            : undefined;
+        const spawnPayload = listenerPrompt
+            ? {
+                ...meta.payload,
+                prompt: typeof meta.payload.prompt === "string" && meta.payload.prompt.trim()
+                    ? `${listenerPrompt}\n\n${meta.payload.prompt.trim()}`
+                    : listenerPrompt,
+            }
+            : meta.payload;
+        const spawnTrigger = {
+            type: meta.type,
+            sourceSessionId: `external:${meta.source}`,
+            sourceSessionName: meta.summary ?? `Service (${meta.source})`,
+            payload: spawnPayload,
+            deliverAs: meta.deliverAs,
+            expectsResponse: meta.expectsResponse,
+            triggerId: meta.triggerId,
+            ts: meta.ts,
+            targetSessionId: spawnedSessionId,
+        };
+        const spawnHistory = {
+            triggerId: `${meta.triggerId}_spawn_${spawnedSessionId.slice(0, 8)}`,
+            type: meta.type,
+            source: `external:${meta.source}`,
+            summary: meta.summary,
+            payload: spawnPayload,
+            deliverAs: meta.deliverAs,
+            ts: meta.ts,
+            direction: "inbound" as const,
+        };
+
+        let triggerDelivered = false;
+        const spawnSocket = getLocalTuiSocket(spawnedSessionId);
+        if (spawnSocket?.connected) {
+            spawnSocket.emit("session_trigger", { trigger: spawnTrigger });
+            triggerDelivered = true;
+        } else if (await emitToRelaySessionVerified(spawnedSessionId, "session_trigger", { trigger: spawnTrigger })) {
+            triggerDelivered = true;
+        }
+        if (triggerDelivered) {
+            void Promise.resolve(pushTriggerHistory(spawnedSessionId, spawnHistory)).catch(() => {});
+            broadcastToSessionViewers(spawnedSessionId, "trigger_delivered", { triggerId: spawnHistory.triggerId });
+            log.info(`Auto-spawned session ${spawnedSessionId} for listener ${meta.type} on runner ${runnerId}`);
+            return { spawned: true, sessionId: spawnedSessionId };
+        }
+        // Kill the orphaned session if trigger delivery failed — without a
+        // prompt or trigger, the worker has no work and would sit idle forever.
+        log.warn(`Auto-spawn: trigger delivery failed for session ${spawnedSessionId} — killing orphaned worker`);
+        runnerSocket.emit("kill_session", { sessionId: spawnedSessionId });
+        return { spawned: false };
+    } catch (err) {
+        log.warn(`Failed to auto-spawn session for listener ${meta.type}: ${err}`);
+        return { spawned: false };
+    }
 }
 
 /** Shape of the POST /api/sessions/:id/trigger request body. */
@@ -546,6 +681,41 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         const deliverAs = body.deliverAs ?? "steer";
         if (deliverAs !== "steer" && deliverAs !== "followUp") {
             return Response.json({ error: "Invalid 'deliverAs' — must be 'steer' or 'followUp'" }, { status: 400 });
+        }
+
+        // A `runner-listener:<listenerId>` pseudo-session is a runner-level
+        // auto-spawn listener — there is no real session to deliver into.
+        // Fires addressed to it (the time service's cron/at/timer deliveries)
+        // spawn a fresh session from the listener's own prompt/cwd/model and
+        // deliver the trigger there, exactly like a service broadcast would.
+        if (sessionId.startsWith("runner-listener:")) {
+            const parsed = parseRunnerListenerSessionId(sessionId);
+            const runnerData = parsed ? await getRunnerData(parsed.runnerId).catch(() => null) : null;
+            if (!parsed || !runnerData || runnerData.userId !== identity.userId) {
+                return Response.json({ error: "Listener not found" }, { status: 404 });
+            }
+            const listener = (await listRunnerTriggerListeners(parsed.runnerId))
+                .find((entry) => entry.listenerId === parsed.listenerId);
+            if (!listener) {
+                return Response.json({ error: "Listener not found" }, { status: 404 });
+            }
+            const listenerTriggerId = `ext_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+            const result = await spawnListenerSessionAndDeliver(parsed.runnerId, runnerData.userId, listener, {
+                type: body.type,
+                payload: body.payload,
+                summary: body.summary,
+                source: body.source ?? "api",
+                deliverAs,
+                expectsResponse: body.expectsResponse ?? false,
+                triggerId: listenerTriggerId,
+                ts: new Date().toISOString(),
+            });
+            if (!result.spawned) {
+                // 503 (not 404): the listener still exists — the caller's
+                // schedule must retry, not treat the schedule as deleted.
+                return Response.json({ error: "Failed to spawn listener session — retry delivery" }, { status: 503 });
+            }
+            return Response.json({ ok: true, triggerId: listenerTriggerId, spawnedSessionId: result.sessionId });
         }
 
         // Where this trigger can be delivered or resumed. Falls back to the
@@ -1039,6 +1209,35 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         const target = decodeURIComponent(subsDeleteMatch[2]);
         const subscriptionIdParam = url.searchParams.get("subscriptionId")?.trim() || undefined;
 
+        // One-shot runner listeners (time:at / time:timer_fired) are retired by
+        // the time service after a successful fire via this same DELETE route —
+        // map the pseudo-session back to the durable listener row.
+        if (sessionId.startsWith("runner-listener:")) {
+            const parsed = parseRunnerListenerSessionId(sessionId);
+            const runnerData = parsed ? await getRunnerData(parsed.runnerId).catch(() => null) : null;
+            if (!parsed || !runnerData || runnerData.userId !== identity.userId) {
+                return Response.json({ error: "Listener not found" }, { status: 404 });
+            }
+            const listener = (await listRunnerTriggerListeners(parsed.runnerId))
+                .find((entry) => entry.listenerId === parsed.listenerId);
+            const removed = listener ? await removeRunnerTriggerListener(parsed.runnerId, parsed.listenerId) : false;
+            if (listener && removed) {
+                void emitTriggerSubscriptionDelta(parsed.runnerId, {
+                    action: "unsubscribe",
+                    subscription: {
+                        subscriptionId: parsed.listenerId,
+                        sessionId,
+                        triggerType: listener.triggerType,
+                        runnerId: parsed.runnerId,
+                    },
+                }).catch((err) => {
+                    log.warn("Failed to emit runner listener unsubscribe delta:", err);
+                });
+                log.info(`Removed fired runner listener ${parsed.listenerId} on ${parsed.runnerId}`);
+            }
+            return Response.json({ ok: true, removed: removed ? 1 : 0 });
+        }
+
         // Persisted fallback: cancelling a schedule whose session has ended must
         // work, and must still reach the runner below so its armed timer dies
         // with the subscription (otherwise the next fire spawns a replacement
@@ -1393,106 +1592,18 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                 }
                 return true;
             });
-            const runnerSocket = getLocalRunnerSocket(runnerId);
-            if (runnerSocket) {
-                // Fire-time hidden-model recheck: the listener's model was
-                // validated at create/update time, but may have been hidden
-                // since. Drop it (runner default) rather than failing the spawn.
-                const hiddenModels = runnerData.userId
-                    ? await getHiddenModels(runnerData.userId).catch(() => [] as string[])
-                    : [];
-                for (const listener of matchingListeners) {
-                    const spawnedSessionId = randomUUID();
-                    const ackPromise = waitForSpawnAck(spawnedSessionId, 10_000);
-                    const listenerModel = listener.model && !isHiddenModel(hiddenModels, listener.model)
-                        ? listener.model
-                        : undefined;
-                    if (listener.model && !listenerModel) {
-                        log.warn(`trigger auto-spawn: dropping hidden model ${listener.model.provider}/${listener.model.id}, using runner default`);
-                    }
-                    try {
-                        // Don't pass the listener prompt as the initial prompt —
-                        // it's already merged into the trigger payload below.
-                        // Sending it here would cause a race: the agent starts
-                        // processing the prompt before the trigger data arrives.
-                        runnerSocket.emit("new_session", {
-                            sessionId: spawnedSessionId,
-                            ...(listener.cwd ? { cwd: listener.cwd } : {}),
-                            ...(listenerModel ? { model: listenerModel } : {}),
-                            ...(hiddenModels.length > 0 ? { hiddenModels } : {}),
-                            ...(listener.autoClose ? { autoClose: true } : {}),
-                        });
-                        const ack = await ackPromise;
-                        if (ack.ok !== false) {
-                            await recordRunnerSession(runnerId, spawnedSessionId);
-                            await linkSessionToRunner(runnerId, spawnedSessionId);
-
-                            // Poll for the session socket to register (like webhooks do)
-                            const ready = await waitForSessionSocket(spawnedSessionId, 15_000);
-                            if (!ready) {
-                                log.warn(`Auto-spawn listener: session ${spawnedSessionId} socket never appeared`);
-                            }
-
-                            const listenerPrompt = typeof listener.prompt === "string" && listener.prompt.trim()
-                                ? listener.prompt.trim()
-                                : undefined;
-                            const spawnPayload = listenerPrompt
-                                ? {
-                                    ...body.payload,
-                                    prompt: typeof body.payload.prompt === "string" && body.payload.prompt.trim()
-                                        ? `${listenerPrompt}\n\n${body.payload.prompt.trim()}`
-                                        : listenerPrompt,
-                                }
-                                : body.payload;
-                            const spawnTrigger = {
-                                ...trigger,
-                                payload: spawnPayload,
-                                targetSessionId: spawnedSessionId,
-                            };
-                            const spawnHistory = {
-                                triggerId: `${triggerId}_spawn_${spawned + 1}`,
-                                type: body.type,
-                                source: `external:${body.source ?? "service"}`,
-                                summary: body.summary,
-                                payload: spawnPayload,
-                                deliverAs,
-                                ts,
-                                direction: "inbound" as const,
-                            };
-
-                            let triggerDelivered = false;
-                            const spawnSocket = getLocalTuiSocket(spawnedSessionId);
-                            if (spawnSocket?.connected) {
-                                spawnSocket.emit("session_trigger", { trigger: spawnTrigger });
-                                void pushTriggerHistory(spawnedSessionId, spawnHistory).catch(() => {});
-                                broadcastToSessionViewers(spawnedSessionId, "trigger_delivered", { triggerId: spawnHistory.triggerId });
-                                triggerDelivered = true;
-                                spawned++;
-                            } else {
-                                const cross = await emitToRelaySessionVerified(
-                                    spawnedSessionId, "session_trigger", { trigger: spawnTrigger },
-                                );
-                                if (cross) {
-                                    void pushTriggerHistory(spawnedSessionId, spawnHistory).catch(() => {});
-                                    broadcastToSessionViewers(spawnedSessionId, "trigger_delivered", { triggerId: spawnHistory.triggerId });
-                                    triggerDelivered = true;
-                                    spawned++;
-                                }
-                            }
-
-                            // Kill the orphaned session if trigger delivery failed —
-                            // without a prompt or trigger, the worker has no work to do
-                            // and would sit idle indefinitely.
-                            if (!triggerDelivered) {
-                                log.warn(`Auto-spawn: trigger delivery failed for session ${spawnedSessionId} — killing orphaned worker`);
-                                runnerSocket.emit("kill_session", { sessionId: spawnedSessionId });
-                            }
-                            log.info(`Auto-spawned session ${spawnedSessionId} for listener ${body.type} on runner ${runnerId}`);
-                        }
-                    } catch (err) {
-                        log.warn(`Failed to auto-spawn session for listener ${body.type}: ${err}`);
-                    }
-                }
+            for (const listener of matchingListeners) {
+                const result = await spawnListenerSessionAndDeliver(runnerId, runnerData.userId, listener, {
+                    type: body.type,
+                    payload: body.payload,
+                    summary: body.summary,
+                    source: body.source ?? "service",
+                    deliverAs,
+                    expectsResponse: body.expectsResponse ?? false,
+                    triggerId,
+                    ts,
+                });
+                if (result.spawned) spawned++;
             }
         }
 

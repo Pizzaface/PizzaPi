@@ -73,6 +73,7 @@ mock.module("../sessions/runner-trigger-listener-store.js", () => ({
     getRunnerTriggerListener: mock(() => Promise.resolve(null)),
     listRunnerTriggerListeners: mock(() => Promise.resolve([])),
     updateRunnerTriggerListener: mock(() => Promise.resolve(false)),
+    removeRunnerTriggerListener: mock(() => Promise.resolve(false)),
 }));
 
 mock.module("../ws/runner-control.js", () => ({

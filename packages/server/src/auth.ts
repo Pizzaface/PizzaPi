@@ -148,6 +148,14 @@ export interface UserHiddenModelTable {
     createdAt: string;
 }
 
+export interface UserPreferenceTable {
+    id: string;
+    userId: string;
+    key: string;
+    value: string;
+    updatedAt: string;
+}
+
 export interface ExtractedAttachmentTable {
     attachmentId: string;
     sessionId: string;
@@ -245,6 +253,7 @@ export interface DB {
     runner_trigger_listener: RunnerTriggerListenerTable;
     trigger_subscription: TriggerSubscriptionTable;
     user_hidden_model: UserHiddenModelTable;
+    user_preference: UserPreferenceTable;
     extracted_attachment: ExtractedAttachmentTable;
     webhook: WebhookTable;
     setup_claim: SetupClaimTable;
