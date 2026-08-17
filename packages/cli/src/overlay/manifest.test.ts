@@ -154,6 +154,40 @@ describe("readOverlayManifest", () => {
         expect(result.issues.some((i) => i.field === "services[0].panel.dir")).toBe(true);
     });
 
+    test("panel.placement and defaultOpen are accepted and preserved on the overlay", () => {
+        const dir = fixturePkg({
+            schemaVersion: 1,
+            services: [{ id: "svc", label: "x", entry: "./service.ts", panel: { dir: "./panel", placement: "left-bottom", defaultOpen: true } }],
+        }, (d) => { mkdirSync(join(d, "panel")); });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.issues).toHaveLength(0);
+        expect(result.overlay?.services?.[0]?.panel?.placement).toBe("left-bottom");
+        expect(result.overlay?.services?.[0]?.panel?.defaultOpen).toBe(true);
+    });
+
+    test("an unknown panel dock zone is rejected", () => {
+        const dir = fixturePkg({
+            schemaVersion: 1,
+            services: [{ id: "svc", label: "x", entry: "./service.ts", panel: { dir: "./panel", placement: "middle" } }],
+        }, (d) => { mkdirSync(join(d, "panel")); });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.overlay).toBeNull();
+        expect(result.issues.some((i) => i.field === "services[0].panel.placement")).toBe(true);
+    });
+
+    test("a non-boolean panel.defaultOpen is rejected", () => {
+        const dir = fixturePkg({
+            schemaVersion: 1,
+            services: [{ id: "svc", label: "x", entry: "./service.ts", panel: { dir: "./panel", defaultOpen: "yes" } }],
+        }, (d) => { mkdirSync(join(d, "panel")); });
+        dirs.push(dir);
+        const result = readOverlayManifest(dir, provenance);
+        expect(result.overlay).toBeNull();
+        expect(result.issues.some((i) => i.field === "services[0].panel.defaultOpen")).toBe(true);
+    });
+
     // ── mcp sidecar shape/format ────────────────────────────────────────────
 
     test("mcp sidecar with malformed JSON is rejected", () => {

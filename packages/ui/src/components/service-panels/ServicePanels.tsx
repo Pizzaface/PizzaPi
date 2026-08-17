@@ -231,7 +231,19 @@ export interface PanelNavParams {
     fragment?: string;
 }
 
-export function useServicePanelState() {
+/**
+ * @param resolveDeclaredPlacement Optional resolver returning a package-declared
+ *   dock position for a service panel (from `ServicePanelInfo.placement`). Used
+ *   as the guaranteed default position when the user has not moved the panel.
+ */
+export function useServicePanelState(
+    resolveDeclaredPlacement?: (serviceId: string) => PanelPosition | undefined,
+) {
+    // Keep the resolver in a ref so getPanelPosition stays referentially stable
+    // (its identity feeds panelGroups memoization) while still reading the
+    // latest declared placements after a service_announce.
+    const declaredPlacementRef = React.useRef(resolveDeclaredPlacement);
+    declaredPlacementRef.current = resolveDeclaredPlacement;
     const [activePanelIds, setActivePanelIds] = useState<Set<string>>(new Set());
     const [panelPositions, setPanelPositions] = useState<Map<string, PanelPosition>>(loadPanelPositions);
     // Ephemeral (non-persisted) position overrides used for auto-placement.
@@ -315,7 +327,9 @@ export function useServicePanelState() {
         // Migrate old 3-value positions from localStorage to new 8-value format.
         // Cast to string for comparison since localStorage may hold pre-migration values.
         const stored: string | undefined = ephemeralPositions.get(serviceId) ?? panelPositions.get(serviceId);
-        if (!stored) return "right-middle";
+        // No user-chosen position: honor the package's declared "guaranteed
+        // placement" if it supplied one, else fall back to the generic default.
+        if (!stored) return declaredPlacementRef.current?.(serviceId) ?? "right-middle";
         if (stored === "right")  return "right-middle";
         if (stored === "left")   return "left-middle";
         if (stored === "bottom") return "center-bottom";

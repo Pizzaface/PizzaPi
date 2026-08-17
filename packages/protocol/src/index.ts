@@ -17,6 +17,7 @@ export type {
   Attachment,
   ServiceEnvelope,
   ServicePanelInfo,
+  ServicePanelPlacement,
   ServiceTriggerDef,
   ServiceTriggerParamDef,
   ServiceSigilDef,

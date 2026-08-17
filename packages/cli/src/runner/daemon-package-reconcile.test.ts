@@ -74,6 +74,23 @@ describe("panelEntryFromManifest (fix #3: hasPanel routing)", () => {
         expect(unscoped?.modes).toBeUndefined();
     });
 
+    test("manifest panel placement + defaultOpen are carried onto the panel entry", () => {
+        const manifest: ServiceManifest = {
+            id: "svc",
+            label: "Svc",
+            icon: "square",
+            panel: { dir: "/abs/panel", placement: "left-bottom", defaultOpen: true },
+            modes: ["work"],
+        };
+        const entry = panelEntryFromManifest("svc", manifest);
+        expect(entry?.placement).toBe("left-bottom");
+        expect(entry?.defaultOpen).toBe(true);
+        // Omitting them leaves the entry fields undefined (host uses its default).
+        const bare = panelEntryFromManifest("svc", { id: "svc", label: "Svc", icon: "square", panel: { dir: "/abs/panel" } });
+        expect(bare?.placement).toBeUndefined();
+        expect(bare?.defaultOpen).toBeUndefined();
+    });
+
     test("a service with only triggers/sigils and no panel gets hasPanel: false", () => {
         const manifest: ServiceManifest = {
             id: "svc",

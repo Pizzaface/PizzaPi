@@ -130,6 +130,18 @@ export interface ServiceEnvelope {
 
 // ── Service panel types ───────────────────────────────────────────────────────
 
+/**
+ * Declarative dock placement for a service panel. Mirrors the host's 9-zone
+ * layout grid minus the center-middle main-content area, so a package can
+ * guarantee where its panel lands (e.g. "left-bottom") instead of inheriting
+ * the generic default or a stale user-dragged position. The host maps these
+ * values onto its own panel-position type.
+ */
+export type ServicePanelPlacement =
+  | "left-top"   | "left-middle"   | "left-bottom"
+  | "center-top" | "center-bottom"
+  | "right-top"  | "right-middle"  | "right-bottom";
+
 /** Metadata for a service panel announced by the runner. */
 export interface ServicePanelInfo {
   /** Must match the runner service's `id`. */
@@ -151,6 +163,18 @@ export interface ServicePanelInfo {
    * `modes`). Absent/empty = shown for every session.
    */
   modes?: string[];
+  /**
+   * Declarative dock zone the host places this panel in by default — a
+   * "guaranteed placement". The host uses it in place of its generic default
+   * when the user has not moved the panel. Omit to use the host default.
+   */
+  placement?: ServicePanelPlacement;
+  /**
+   * When true the host opens this panel automatically wherever it is visible
+   * (respecting `modes` scoping), so a package-owned panel is present without
+   * a click. The user can still close it. Omit for click-to-open (default).
+   */
+  defaultOpen?: boolean;
 }
 
 // ── Service trigger types ─────────────────────────────────────────────────────

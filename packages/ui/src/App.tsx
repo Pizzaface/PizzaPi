@@ -82,7 +82,7 @@ import { resolveFilePath } from "@/components/file-explorer/utils";
 import { ServicePanelButtons, ServicePanelOverflowItems, useServicePanelState, useVisibleServicePanels } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
-import { resolveNewPanelPosition, resolveActiveTabIdFromIds, resolvePanelToggleAction } from "@/utils/servicePanelUtils";
+import { resolveNewPanelPosition, resolveActiveTabIdFromIds, resolvePanelToggleAction, computeAutoOpenPanels } from "@/utils/servicePanelUtils";
 import { IframeServicePanel } from "@/components/service-panels/IframeServicePanel";
 import {
   ModelSelector,
@@ -4603,7 +4603,29 @@ export function App() {
     sessionNamesById: attentionSessionNames,
   });
 
-  const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, closePanelById: closeServicePanelById, closeAllPanels: closeAllServicePanels, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition, setEphemeralPanelPosition: setEphemeralServicePanelPosition, getNavParams: getServicePanelNavParams } = useServicePanelState();
+  // Package-declared "guaranteed placement" for dynamic panels
+  // (ServicePanelInfo.placement). Maps serviceId → dock zone so a package-owned
+  // panel lands where its package asked (e.g. left-bottom) instead of the
+  // generic default, unless the user has since moved it. Reactive: rebuilt
+  // whenever service_announce changes the announced panels.
+  const declaredPanelPlacements = React.useMemo(() => {
+    const zones = new Set<string>([
+      "left-top", "left-middle", "left-bottom",
+      "center-top", "center-bottom",
+      "right-top", "right-middle", "right-bottom",
+    ]);
+    const map = new Map<string, PanelPosition>();
+    for (const p of dynamicPanels) {
+      if (p.placement && zones.has(p.placement)) map.set(p.serviceId, p.placement as PanelPosition);
+    }
+    return map;
+  }, [dynamicPanels]);
+  const resolveDeclaredPanelPlacement = React.useCallback(
+    (serviceId: string) => declaredPanelPlacements.get(serviceId),
+    [declaredPanelPlacements],
+  );
+
+  const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, closePanelById: closeServicePanelById, closeAllPanels: closeAllServicePanels, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition, setEphemeralPanelPosition: setEphemeralServicePanelPosition, getNavParams: getServicePanelNavParams } = useServicePanelState(resolveDeclaredPanelPlacement);
 
   // Always-current ref so the runner-change effect below can read the active
   // panel set without listing it as a dependency (avoids a close→reopen loop).
@@ -4628,6 +4650,23 @@ export function App() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modeVisibleServices, modePanels, closeServicePanelById]);
+
+  // Auto-open package panels that ask for it (ServicePanelInfo.defaultOpen) when
+  // they become visible in the active mode, so a package-owned, mode-scoped
+  // panel is present without a click. Track which we auto-opened so a user
+  // closing one doesn't fight a reopen; forget a panel once it leaves the mode
+  // so re-entering the mode opens it again. The cleanup effect above closes
+  // panels that leave modePanels.
+  const autoOpenedPanelsRef = React.useRef<Set<string>>(new Set());
+  React.useEffect(() => {
+    const { toOpen, nextTracked } = computeAutoOpenPanels(
+      modePanels,
+      autoOpenedPanelsRef.current,
+      (id) => activeServicePanelsRef.current.has(id),
+    );
+    autoOpenedPanelsRef.current = nextTracked;
+    for (const id of toOpen) toggleServicePanel(id);
+  }, [modePanels, toggleServicePanel]);
 
   // Tell the server whether the tab is actually being looked at, so it can
   // suppress native push while a viewer is visible. "Visible" ignores window

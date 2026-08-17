@@ -245,7 +245,12 @@ export async function discoverPackageServices(
                 // key downstream) so a service with only triggers/sigils gets
                 // announceSigilServer, not announcePanel, at init time.
                 hasPanel: !!decl.panel,
-                ...(decl.panel ? { panel: { dir: panelDir, requires: decl.panel.requires } } : {}),
+                ...(decl.panel ? { panel: {
+                    dir: panelDir,
+                    requires: decl.panel.requires,
+                    ...(decl.panel.placement ? { placement: decl.panel.placement } : {}),
+                    ...(decl.panel.defaultOpen ? { defaultOpen: true } : {}),
+                } } : {}),
                 ...(Array.isArray(decl.triggers) && decl.triggers.length > 0 ? { triggers: decl.triggers } : {}),
                 ...(Array.isArray(decl.sigils) && decl.sigils.length > 0 ? { sigils: decl.sigils } : {}),
                 ...(Array.isArray(decl.sessionModes) && decl.sessionModes.length > 0 ? { sessionModes: decl.sessionModes } : {}),
