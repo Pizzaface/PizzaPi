@@ -44,7 +44,18 @@ export interface ChunkedSessionState {
     finalChunkSeen: boolean;
     /** Recovery nonce echoed by the runner on the chunk-start session_active. */
     recoveryNonce?: string;
+    /** Timestamp of the chunk-start SA or the most recent chunk. */
+    lastActivityAt: number;
 }
+
+/**
+ * A chunk stream that has gone this long without a new chunk is dead — the
+ * runner hung or lost the worker without its relay socket disconnecting.
+ * Left in place, the pending entry makes every viewer hydration skip the
+ * snapshot cache (viewer.ts chunkedPending gate) and wait on a runner signal
+ * that never comes, which is unrecoverable even across client retries.
+ */
+export const CHUNK_STREAM_STALE_MS = 30_000;
 
 export interface PendingChunkUpdate {
     chunkIndex: number;
@@ -78,6 +89,7 @@ export function applyChunkToPendingState(
 
     pending.receivedChunkIndexes.add(chunkIndex);
     pending.chunks[chunkIndex] = chunkMessages;
+    pending.lastActivityAt = Date.now();
     return true;
 }
 
@@ -205,6 +217,14 @@ export function getPendingChunkedSnapshot(sessionId: string): {
 } | null {
     const pending = pendingChunkedStates.get(sessionId);
     if (!pending) return null;
+    if (Date.now() - pending.lastActivityAt > CHUNK_STREAM_STALE_MS) {
+        // Dead stream — drop it so viewer hydration falls back to the snapshot
+        // cache instead of gating on a transfer that will never finish. If the
+        // runner comes back it starts a fresh chunk-start session_active anyway.
+        log.warn(`Dropping stale chunked snapshot for ${sessionId} (no chunk for ${CHUNK_STREAM_STALE_MS}ms)`);
+        pendingChunkedStates.delete(sessionId);
+        return null;
+    }
     const messages = pending.chunks.flat();
     return {
         metadata: pending.metadata,
@@ -285,6 +305,7 @@ export function registerEventHandler(socket: RelaySocket): void {
                     receivedChunkIndexes: new Set<number>(),
                     finalChunkSeen: false,
                     recoveryNonce: typeof event.recoveryNonce === "string" ? event.recoveryNonce : undefined,
+                    lastActivityAt: Date.now(),
                 });
                 // Touch activity but DON'T update lastState yet
                 await touchSessionActivity(sessionId);

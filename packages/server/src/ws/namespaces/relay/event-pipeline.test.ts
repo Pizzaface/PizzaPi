@@ -5,6 +5,9 @@ import {
     canFinalizeChunkedSnapshot,
     enqueueSessionEvent,
     finalizeChunkedSnapshot,
+    getPendingChunkedSnapshot,
+    pendingChunkedStates,
+    CHUNK_STREAM_STALE_MS,
     sessionEventQueues,
     type ChunkedSessionState,
 } from "./event-pipeline.js";
@@ -29,6 +32,7 @@ function createPendingState(): ChunkedSessionState {
         totalChunks: 0,
         receivedChunkIndexes: new Set<number>(),
         finalChunkSeen: false,
+        lastActivityAt: Date.now(),
     };
 }
 
@@ -220,6 +224,7 @@ describe("chunked snapshot assembly", () => {
             totalChunks: 2,
             receivedChunkIndexes: new Set<number>([0, 1]),
             finalChunkSeen: true,
+            lastActivityAt: Date.now(),
         };
         const updateSessionState = spyOn({
             updateSessionState: async () => {},
@@ -262,5 +267,48 @@ describe("chunked snapshot assembly", () => {
         expect(hasPendingRecovery("sess-chunked-recovery")).toBe(false);
         expect(consumePendingRecovery("sess-chunked-recovery", nonce)).toBe(false);
         expect(appendRelayEventToCache).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("getPendingChunkedSnapshot — stale stream expiry", () => {
+    afterEach(() => {
+        pendingChunkedStates.clear();
+    });
+
+    function seed(sessionId: string, lastActivityAt: number): void {
+        pendingChunkedStates.set(sessionId, {
+            snapshotId: "snap-stale",
+            metadata: { totalMessages: 3 },
+            chunks: [[{ id: "m1" }]],
+            totalChunks: 3,
+            receivedChunkIndexes: new Set<number>([0]),
+            finalChunkSeen: false,
+            lastActivityAt,
+        });
+    }
+
+    test("returns an active stream", () => {
+        seed("s-active", Date.now());
+        expect(getPendingChunkedSnapshot("s-active")).not.toBeNull();
+        expect(pendingChunkedStates.has("s-active")).toBe(true);
+    });
+
+    test("drops a stream with no chunk activity past the stale threshold", () => {
+        seed("s-stale", Date.now() - CHUNK_STREAM_STALE_MS - 1);
+        expect(getPendingChunkedSnapshot("s-stale")).toBeNull();
+        // Deleted so viewer hydration falls back to the snapshot cache.
+        expect(pendingChunkedStates.has("s-stale")).toBe(false);
+    });
+
+    test("chunk arrival refreshes activity and keeps the stream alive", () => {
+        seed("s-refresh", Date.now() - CHUNK_STREAM_STALE_MS - 1);
+        const pending = pendingChunkedStates.get("s-refresh")!;
+        applyChunkToPendingState(pending, {
+            chunkIndex: 1,
+            chunkMessages: [{ id: "m2" }],
+            totalChunks: 3,
+            isFinalChunk: false,
+        });
+        expect(getPendingChunkedSnapshot("s-refresh")).not.toBeNull();
     });
 });
