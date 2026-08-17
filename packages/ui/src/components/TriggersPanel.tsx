@@ -155,24 +155,24 @@ function RelativeTime({ isoTs }: { isoTs: string }) {
 function SourceIcon({ source, className }: { source: string; className?: string }) {
   const src = source.toLowerCase();
   if (src.includes("github") || src.includes("pr") || src.includes("issue")) {
-    return <GitPullRequest className={cn("size-3.5 text-purple-400", className)} />;
+    return <GitPullRequest className={cn("size-3.5 text-muted-foreground", className)} />;
   }
   if (src.includes("webhook") || src.includes("http")) {
-    return <Globe className={cn("size-3.5 text-sky-400", className)} />;
+    return <Globe className={cn("size-3.5 text-muted-foreground", className)} />;
   }
   if (src.includes("cron") || src.includes("schedule") || src.includes("time")) {
-    return <Clock className={cn("size-3.5 text-emerald-400", className)} />;
+    return <Clock className={cn("size-3.5 text-muted-foreground", className)} />;
   }
   if (src.includes("service")) {
-    return <Settings className={cn("size-3.5 text-zinc-400", className)} />;
+    return <Settings className={cn("size-3.5 text-muted-foreground", className)} />;
   }
   if (src === "api" || src.startsWith("external")) {
-    return <Globe className={cn("size-3.5 text-blue-400", className)} />;
+    return <Globe className={cn("size-3.5 text-muted-foreground", className)} />;
   }
   if (src.length >= 8 && /^[a-z0-9-]+$/.test(src)) {
-    return <Cpu className={cn("size-3.5 text-blue-400", className)} />;
+    return <Cpu className={cn("size-3.5 text-muted-foreground", className)} />;
   }
-  return <Wrench className={cn("size-3.5 text-zinc-400", className)} />;
+  return <Wrench className={cn("size-3.5 text-muted-foreground", className)} />;
 }
 
 function sourceLabel(source: string): string {
@@ -657,21 +657,21 @@ function EventRow({ entry }: { entry: TriggerHistoryEntry }) {
         <span className="text-xs font-mono font-medium text-foreground/90 truncate">{entry.type}</span>
 
         {entry.deliverAs === "steer" ? (
-          <Badge variant="outline" className="px-1.5 py-0 text-[9px] h-4 font-mono border-amber-500/30 text-amber-400/90 bg-amber-500/5">
+          <Badge variant="outline" className="px-1.5 py-0.5 text-[10px] font-mono border-amber-500/30 text-amber-400/90 bg-amber-500/5">
             steer
           </Badge>
         ) : (
-          <Badge variant="outline" className="px-1.5 py-0 text-[9px] h-4 font-mono border-blue-500/30 text-blue-400/90 bg-blue-500/5">
+          <Badge variant="outline" className="px-1.5 py-0.5 text-[10px] font-mono border-blue-500/30 text-blue-400/90 bg-blue-500/5">
             follow-up
           </Badge>
         )}
 
-        <span className="text-[10px] text-muted-foreground/60 ml-auto shrink-0 font-mono">
+        <span className="text-[11px] text-muted-foreground/60 ml-auto shrink-0 font-mono">
           <RelativeTime isoTs={entry.ts} />
         </span>
 
         {entry.response && (
-          <span className="inline-flex items-center gap-1 text-[10px] font-medium text-emerald-400 shrink-0 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-400 shrink-0 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
             ✓ {entry.response.action ?? "responded"}
           </span>
         )}
@@ -2184,6 +2184,22 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
     }
   }, [triggers.length, hasCatalog]);
 
+  // Filter state for history tab
+  const [historyFilter, setHistoryFilter] = React.useState<"all" | "pending" | "sessions" | "services">("all");
+
+  const filteredSourceGroups = React.useMemo(() => {
+    if (historyFilter === "pending") {
+      return sourceGroups.filter((g) => !!g.pendingTrigger);
+    }
+    if (historyFilter === "sessions") {
+      return sourceGroups.filter((g) => g.isLinkedSession);
+    }
+    if (historyFilter === "services") {
+      return sourceGroups.filter((g) => !g.isLinkedSession);
+    }
+    return sourceGroups;
+  }, [sourceGroups, historyFilter]);
+
   const pendingCount = pendingGroups.length;
 
   return (
@@ -2285,7 +2301,65 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
               </div>
             ) : (
               <div className="flex flex-col gap-2.5 p-3">
-                {sourceGroups.map((group) => (
+                {/* Source Filter Chips when multiple sources exist */}
+                {sourceGroups.length > 2 && (
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-[11px]">
+                    <span className="text-[10px] font-semibold uppercase text-muted-foreground tracking-wider mr-1">Filter:</span>
+                    <button
+                      type="button"
+                      onClick={() => setHistoryFilter("all")}
+                      className={cn(
+                        "px-2 py-0.5 rounded-md font-medium border transition-colors",
+                        historyFilter === "all"
+                          ? "bg-zinc-800 border-zinc-700 text-foreground"
+                          : "bg-muted/20 border-border/40 text-muted-foreground hover:bg-muted/40",
+                      )}
+                    >
+                      All ({sourceGroups.length})
+                    </button>
+                    {pendingCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setHistoryFilter("pending")}
+                        className={cn(
+                          "px-2 py-0.5 rounded-md font-medium border transition-colors flex items-center gap-1",
+                          historyFilter === "pending"
+                            ? "bg-amber-500/20 border-amber-500/40 text-amber-300"
+                            : "bg-muted/20 border-border/40 text-amber-400/80 hover:bg-amber-500/10",
+                        )}
+                      >
+                        <span className="size-1.5 rounded-full bg-amber-400"></span>
+                        Pending ({pendingCount})
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setHistoryFilter("sessions")}
+                      className={cn(
+                        "px-2 py-0.5 rounded-md font-medium border transition-colors",
+                        historyFilter === "sessions"
+                          ? "bg-zinc-800 border-zinc-700 text-foreground"
+                          : "bg-muted/20 border-border/40 text-muted-foreground hover:bg-muted/40",
+                      )}
+                    >
+                      Sessions
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setHistoryFilter("services")}
+                      className={cn(
+                        "px-2 py-0.5 rounded-md font-medium border transition-colors",
+                        historyFilter === "services"
+                          ? "bg-zinc-800 border-zinc-700 text-foreground"
+                          : "bg-muted/20 border-border/40 text-muted-foreground hover:bg-muted/40",
+                      )}
+                    >
+                      Services
+                    </button>
+                  </div>
+                )}
+
+                {filteredSourceGroups.map((group) => (
                   <SourceAccordion
                     key={group.source}
                     group={group}
