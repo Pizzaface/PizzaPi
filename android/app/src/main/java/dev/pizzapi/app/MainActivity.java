@@ -13,6 +13,11 @@ public class MainActivity extends BridgeActivity {
         // bridge initializes. registerPlugin must be called before super.onCreate.
         registerPlugin(NtfyPushPlugin.class);
         super.onCreate(savedInstanceState);
+        // WebView drops target="_blank"/window.open() by default (no
+        // onCreateWindow handler, multi-window unsupported) — route them to
+        // the system browser instead. See ExternalLinkWebChromeClient.
+        getBridge().getWebView().getSettings().setSupportMultipleWindows(true);
+        getBridge().getWebView().setWebChromeClient(new ExternalLinkWebChromeClient(getBridge()));
         // Cold start: the launch intent may already carry a tapped-notification
         // session id (see NtfyForegroundService#buildTapIntent).
         handleTapIntent(getIntent());
