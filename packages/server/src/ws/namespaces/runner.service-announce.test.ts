@@ -41,6 +41,32 @@ describe("isSameServiceAnnounce", () => {
         expect(isSameServiceAnnounce(left, right)).toBe(false);
     });
 
+    test("returns false when panel placement differs", () => {
+        const left = {
+            serviceIds: ["tunnel"],
+            panels: [{ serviceId: "tunnel", port: 4173, label: "Tunnel", icon: "globe", placement: "left-bottom" as const }],
+        };
+        const right = {
+            serviceIds: ["tunnel"],
+            panels: [{ serviceId: "tunnel", port: 4173, label: "Tunnel", icon: "globe", placement: "right-top" as const }],
+        };
+
+        expect(isSameServiceAnnounce(left, right)).toBe(false);
+    });
+
+    test("returns false when panel defaultOpen differs", () => {
+        const left = {
+            serviceIds: ["tunnel"],
+            panels: [{ serviceId: "tunnel", port: 4173, label: "Tunnel", icon: "globe", defaultOpen: true }],
+        };
+        const right = {
+            serviceIds: ["tunnel"],
+            panels: [{ serviceId: "tunnel", port: 4173, label: "Tunnel", icon: "globe", defaultOpen: false }],
+        };
+
+        expect(isSameServiceAnnounce(left, right)).toBe(false);
+    });
+
     test("returns false when either side is null/undefined", () => {
         const valid = { serviceIds: ["tunnel"], panels: [] };
 
@@ -331,6 +357,23 @@ describe("computeServiceAnnounceDelta", () => {
         expect(delta.added.panels).toEqual([]);
         expect(delta.removed.panels).toEqual([]);
         expect(delta.updated.panels).toEqual([{ serviceId: "a", port: 8080, label: "A", icon: "box" }]);
+    });
+
+    test("detects panels updated by placement/defaultOpen only", () => {
+        const prev = {
+            serviceIds: ["a"],
+            panels: [{ serviceId: "a", port: 4173, label: "A", icon: "box" }],
+        };
+        const next = {
+            serviceIds: ["a"],
+            panels: [{ serviceId: "a", port: 4173, label: "A", icon: "box", placement: "left-bottom" as const, defaultOpen: true }],
+        };
+        const delta = computeServiceAnnounceDelta(prev, next)!;
+        expect(delta.added.panels).toEqual([]);
+        expect(delta.removed.panels).toEqual([]);
+        expect(delta.updated.panels).toEqual([
+            { serviceId: "a", port: 4173, label: "A", icon: "box", placement: "left-bottom", defaultOpen: true },
+        ]);
     });
 
     test("detects added triggerDefs", () => {

@@ -46,7 +46,9 @@ export function isSameServiceAnnounce(
             left.serviceId !== right.serviceId ||
             left.port !== right.port ||
             left.label !== right.label ||
-            left.icon !== right.icon
+            left.icon !== right.icon ||
+            left.placement !== right.placement ||
+            left.defaultOpen !== right.defaultOpen
         ) {
             return false;
         }
@@ -136,7 +138,14 @@ export function shouldSkipServiceAnnounceFanout({
 // ── Delta computation ────────────────────────────────────────────────────────
 
 function samePanelInfo(a: ServicePanelInfo, b: ServicePanelInfo): boolean {
-    if (a.serviceId !== b.serviceId || a.port !== b.port || a.label !== b.label || a.icon !== b.icon) return false;
+    if (
+        a.serviceId !== b.serviceId ||
+        a.port !== b.port ||
+        a.label !== b.label ||
+        a.icon !== b.icon ||
+        a.placement !== b.placement ||
+        a.defaultOpen !== b.defaultOpen
+    ) return false;
     const aModes = a.modes !== undefined ? JSON.stringify(a.modes) : undefined;
     const bModes = b.modes !== undefined ? JSON.stringify(b.modes) : undefined;
     return aModes === bModes;
