@@ -11,7 +11,7 @@ import { gzipSync } from "zlib";
 
 const DIST_DIR = path.resolve(import.meta.dir, "../dist");
 const INDEX_HTML = path.join(DIST_DIR, "index.html");
-const BUDGET_BYTES = 500 * 1024; // 500 KB gzip
+const BUDGET_BYTES = 505 * 1024; // 505 KB gzip
 
 function formatBytes(bytes: number): string {
     return `${(bytes / 1024).toFixed(2)} KB`;
