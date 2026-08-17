@@ -6,7 +6,7 @@
  * that creates an auto-spawn listener — when that trigger fires, the server
  * spawns a new session and delivers the trigger into it.
  *
- * Triggers with configurable params show an inline form (dropdowns, checkboxes,
+ * Triggers with configurable params show an inline wizard (dropdowns, checkboxes,
  * text inputs) before subscribing, so listeners can filter which events spawn.
  */
 import * as React from "react";
@@ -22,6 +22,19 @@ import {
   FolderOpen,
   Pencil,
   RotateCcw,
+  Sparkles,
+  Bot,
+  Layers,
+  Clock,
+  Globe,
+  GitPullRequest,
+  Check,
+  Cpu,
+  Sliders,
+  Filter,
+  ArrowRight,
+  ArrowLeft,
+  CheckCircle2,
 } from "lucide-react";
 import { useRunnerModels, type RunnerModel } from "@/hooks/useRunnerModels";
 import { formatPathTail } from "@/lib/path";
@@ -35,11 +48,6 @@ import type { JsonValue, ServiceTriggerDef, ServiceTriggerParamDef } from "@pizz
 function servicePrefix(type: string): string {
   const idx = type.indexOf(":");
   return idx > 0 ? type.slice(0, idx) : type;
-}
-
-function eventName(type: string): string {
-  const idx = type.indexOf(":");
-  return idx > 0 ? type.slice(idx + 1) : type;
 }
 
 function truncateCompactId(id?: string, fallback?: string, maxLen = 18): string {
@@ -73,6 +81,23 @@ function renderParamValueBadges(
   );
 }
 
+function SourceIcon({ source, className }: { source: string; className?: string }) {
+  const src = source.toLowerCase();
+  if (src.includes("github") || src.includes("pr") || src.includes("issue")) {
+    return <GitPullRequest className={cn("size-3.5 text-muted-foreground", className)} />;
+  }
+  if (src.includes("webhook") || src.includes("http")) {
+    return <Globe className={cn("size-3.5 text-muted-foreground", className)} />;
+  }
+  if (src.includes("cron") || src.includes("schedule") || src.includes("time")) {
+    return <Clock className={cn("size-3.5 text-muted-foreground", className)} />;
+  }
+  if (src.includes("service")) {
+    return <Settings className={cn("size-3.5 text-muted-foreground", className)} />;
+  }
+  return <Layers className={cn("size-3.5 text-muted-foreground", className)} />;
+}
+
 // ── Service Group ──────────────────────────────────────────────────────────
 
 interface ServiceGroup {
@@ -91,7 +116,7 @@ function groupByService(defs: ServiceTriggerDef[]): ServiceGroup[] {
   return Array.from(map.entries()).map(([service, d]) => ({ service, defs: d }));
 }
 
-// ── Param Form ─────────────────────────────────────────────────────────────
+// ── Param Form (Wizard Architecture) ───────────────────────────────────────
 
 interface ParamFormProps {
   params: ServiceTriggerParamDef[];
@@ -112,250 +137,391 @@ function ParamForm({
   params, values, onChange, sessionConfig, onSessionConfigChange,
   error, onSubmit, onCancel, isPending, models, recentFolders, submitLabel = "Subscribe",
 }: ParamFormProps) {
+  const [step, setStep] = React.useState<number>(1);
+  const hasParams = params.length > 0;
+  const maxStep = hasParams ? 3 : 2;
+
   const updateValue = (name: string, value: string | string[]) => {
     onChange({ ...values, [name]: value });
   };
-  const updateConfig = (field: keyof SessionConfig, value: string) => {
+  const updateConfig = (field: keyof SessionConfig, value: string | boolean) => {
     onSessionConfigChange({ ...sessionConfig, [field]: value });
   };
 
   return (
-    <div className="mt-2 rounded border border-violet-500/20 bg-violet-950/10 p-2.5 space-y-2.5">
-      <div className="text-[11px] font-medium text-violet-300/80">Configure auto-spawn listener</div>
+    <div className="mt-3 rounded-xl border border-violet-500/30 bg-violet-950/20 p-4 space-y-4 shadow-inner">
+      {/* Wizard Stepper Rail Header */}
+      <div className="flex items-center justify-between border-b border-violet-500/20 pb-3">
+        <div className="flex items-center gap-2">
+          <span className="size-6 rounded-full bg-primary text-primary-foreground font-bold text-xs flex items-center justify-center shadow-sm">
+            {step}
+          </span>
+          <span className="text-xs font-semibold text-foreground">
+            {hasParams ? (
+              <>
+                {step === 1 && "1. Event Parameters"}
+                {step === 2 && "2. Target Session"}
+                {step === 3 && "3. Review & Activate"}
+              </>
+            ) : (
+              <>
+                {step === 1 && "1. Target Session"}
+                {step === 2 && "2. Review & Activate"}
+              </>
+            )}
+          </span>
+        </div>
 
-      {/* Session config: cwd, prompt, model */}
-      <div className="space-y-2 pb-2 border-b border-violet-500/10">
-        <div className="flex items-start gap-2">
-          <label className="text-[11px] text-muted-foreground/70 w-24 shrink-0 pt-0.5">
-            Working Dir
-          </label>
-          <div className="flex-1 space-y-1">
-            <input
-              type="text"
-              placeholder="/path/to/project"
-              value={sessionConfig.cwd}
-              onChange={(e) => updateConfig("cwd", e.target.value)}
-              className="w-full rounded border border-border bg-background px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+        {/* Step dots / tabs */}
+        <div className="flex items-center gap-1.5">
+          {[1, 2, ...(hasParams ? [3] : [])].map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => setStep(s)}
+              className={cn(
+                "size-2.5 rounded-full transition-all",
+                step === s
+                  ? "bg-primary ring-2 ring-primary/30 scale-110"
+                  : step > s
+                  ? "bg-emerald-500"
+                  : "bg-muted-foreground/30 hover:bg-muted-foreground/50",
+              )}
+              title={`Jump to Step ${s}`}
             />
-            {recentFolders.length > 0 && (
-              <div className="flex flex-wrap gap-1">
-                {recentFolders.slice(0, 6).map((folder) => {
-                  const tail = formatPathTail(folder, 1);
-                  const isSelected = sessionConfig.cwd === folder;
-                  return (
-                    <button
-                      key={folder}
-                      type="button"
-                      title={folder}
-                      onClick={() => updateConfig("cwd", folder)}
-                      className={cn(
-                        "inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-mono border transition-colors",
-                        isSelected
-                          ? "border-primary/40 bg-primary/10 text-primary"
-                          : "border-border/50 bg-muted/30 text-muted-foreground hover:bg-muted/60",
+          ))}
+        </div>
+      </div>
+
+      {/* Step: Event Filter Parameters (Step 1 when params exist) */}
+      {((step === 1 && hasParams)) && (
+        <div className="space-y-3">
+          <div className="text-xs font-semibold text-violet-300 uppercase tracking-wider flex items-center gap-1.5">
+            <Filter className="size-3" /> Event Filter Parameters
+          </div>
+
+          <div className="space-y-2.5">
+            {params.map((p) => {
+              const currentVal = values[p.name];
+              const selectedArr = Array.isArray(currentVal) ? currentVal : [];
+
+              return (
+                <div key={p.name} className="space-y-1">
+                  <label
+                    className="text-xs font-medium text-foreground/80 flex items-center justify-between"
+                    title={p.description ?? p.name}
+                  >
+                    <span>{p.label}{p.required ? <span className="text-destructive ml-0.5">*</span> : ""}</span>
+                    {p.description && <span className="text-[10px] text-muted-foreground/60 font-normal">{p.description}</span>}
+                  </label>
+
+                  {/* Multiselect: checkboxes */}
+                  {p.multiselect && p.enum ? (
+                    <div className="space-y-1.5">
+                      {selectedArr.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {selectedArr.map((value, index) => (
+                            <Badge key={`${p.name}:${value}:${index}`} variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-violet-500/30 text-violet-300 bg-violet-500/5">
+                              {value}
+                            </Badge>
+                          ))}
+                        </div>
                       )}
+                      <div className="flex flex-wrap gap-x-3 gap-y-1">
+                        {p.enum.map((opt) => {
+                          const optStr = String(opt);
+                          const checked = selectedArr.includes(optStr);
+                          return (
+                            <label key={optStr} className="flex items-center gap-1.5 cursor-pointer text-xs text-foreground/80">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => {
+                                  const next = checked
+                                    ? selectedArr.filter(v => v !== optStr)
+                                    : [...selectedArr, optStr];
+                                  updateValue(p.name, next);
+                                }}
+                                className="accent-primary size-3 rounded"
+                              />
+                              {optStr}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                  /* Enum single select: dropdown */
+                  ) : p.enum ? (
+                    <select
+                      value={typeof currentVal === "string" ? currentVal : ""}
+                      onChange={(e) => updateValue(p.name, e.target.value)}
+                      className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                     >
-                      <FolderOpen className="size-2.5 shrink-0" />
-                      {tail}
-                    </button>
-                  );
+                      <option value="">—</option>
+                      {p.enum.map((opt) => (
+                        <option key={String(opt)} value={String(opt)}>{String(opt)}</option>
+                      ))}
+                    </select>
+
+                  /* JSON */
+                  ) : p.type === "json" ? (
+                    <textarea
+                      rows={3}
+                      placeholder={p.default !== undefined ? formatParamValue(p.default) : "{}"}
+                      value={typeof currentVal === "string" ? currentVal : ""}
+                      onChange={(e) => updateValue(p.name, e.target.value)}
+                      className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary resize-y"
+                    />
+
+                  /* Boolean */
+                  ) : p.type === "boolean" ? (
+                    <select
+                      value={typeof currentVal === "string" ? currentVal : ""}
+                      onChange={(e) => updateValue(p.name, e.target.value)}
+                      className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                    >
+                      <option value="">—</option>
+                      <option value="true">true</option>
+                      <option value="false">false</option>
+                    </select>
+
+                  /* Default: text/number input */
+                  ) : (
+                    <input
+                      type={p.type === "number" ? "number" : "text"}
+                      placeholder={p.default !== undefined ? formatParamValue(p.default) : undefined}
+                      value={typeof currentVal === "string" ? currentVal : ""}
+                      onChange={(e) => updateValue(p.name, e.target.value)}
+                      className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Step: Session Target Config (Step 2 when params exist, Step 1 when no params) */}
+      {((step === 2 && hasParams) || (step === 1 && !hasParams)) && (
+        <div className="space-y-3.5">
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-foreground/80 flex items-center justify-between">
+              <span>Working Dir</span>
+              <span className="text-[10px] text-muted-foreground/60 font-normal">execution folder</span>
+            </label>
+            <div className="space-y-1.5">
+              <input
+                type="text"
+                placeholder="/path/to/project"
+                value={sessionConfig.cwd}
+                onChange={(e) => updateConfig("cwd", e.target.value)}
+                className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              {recentFolders.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {recentFolders.slice(0, 6).map((folder) => {
+                    const tail = formatPathTail(folder, 1);
+                    const isSelected = sessionConfig.cwd === folder;
+                    return (
+                      <button
+                        key={folder}
+                        type="button"
+                        title={folder}
+                        onClick={() => updateConfig("cwd", folder)}
+                        className={cn(
+                          "inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono border transition-all",
+                          isSelected
+                            ? "border-primary/50 bg-primary/20 text-primary-foreground font-semibold"
+                            : "border-border/60 bg-muted/20 text-muted-foreground hover:bg-muted/40 hover:text-foreground",
+                        )}
+                      >
+                        <FolderOpen className="size-3 shrink-0 text-muted-foreground" />
+                        {tail}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-foreground/80">
+              Prompt
+            </label>
+            <textarea
+              rows={2}
+              placeholder="Instructions for the spawned session"
+              value={sessionConfig.prompt}
+              onChange={(e) => updateConfig("prompt", e.target.value)}
+              className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary resize-y leading-relaxed"
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-foreground/80">
+                Model
+              </label>
+              {models.length > 0 ? (
+                <select
+                  value={sessionConfig.modelProvider && sessionConfig.modelId
+                    ? `${sessionConfig.modelProvider}/${sessionConfig.modelId}`
+                    : ""}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (!val) {
+                      onSessionConfigChange({ ...sessionConfig, modelProvider: "", modelId: "" });
+                    } else {
+                      const sep = val.indexOf("/");
+                      onSessionConfigChange({
+                        ...sessionConfig,
+                        modelProvider: val.slice(0, sep),
+                        modelId: val.slice(sep + 1),
+                      });
+                    }
+                  }}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                >
+                  <option value="">Runner default</option>
+                  {models.map((m) => (
+                    <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
+                      {m.name ?? m.id} ({m.provider})
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <input
+                    type="text"
+                    placeholder="provider"
+                    value={sessionConfig.modelProvider}
+                    onChange={(e) => updateConfig("modelProvider", e.target.value)}
+                    className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                  <input
+                    type="text"
+                    placeholder="model-id"
+                    value={sessionConfig.modelId}
+                    onChange={(e) => updateConfig("modelId", e.target.value)}
+                    className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-foreground/80">
+                Auto-close
+              </label>
+              <label className="flex items-center gap-2 pt-1 text-xs text-foreground/90 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={sessionConfig.autoClose}
+                  onChange={(e) => onSessionConfigChange({ ...sessionConfig, autoClose: e.target.checked })}
+                  className="accent-primary size-3.5 rounded"
+                />
+                Shut down on completion
+              </label>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Review Step (Step 3 or Step 2 if no params) */}
+      {((step === 3 && hasParams) || (step === 2 && !hasParams)) && (
+        <div className="space-y-3">
+          <div className="p-3 rounded-xl border border-zinc-800 bg-zinc-950/80 space-y-2.5">
+            <div className="text-xs font-semibold text-foreground flex items-center justify-between">
+              <span>Listener Summary</span>
+              <span className="text-[11px] font-mono text-muted-foreground/60">Auto-spawn</span>
+            </div>
+
+            {sessionConfig.prompt ? (
+              <p className="text-xs font-medium text-white leading-snug">"{sessionConfig.prompt}"</p>
+            ) : (
+              <p className="text-xs text-muted-foreground italic">No custom prompt instructions</p>
+            )}
+
+            <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-zinc-800 text-[11px]">
+              {sessionConfig.cwd && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-zinc-800 text-zinc-300 font-mono">
+                  <FolderOpen className="size-3 text-muted-foreground" />
+                  {formatPathTail(sessionConfig.cwd, 1)}
+                </span>
+              )}
+              {(sessionConfig.modelId || sessionConfig.modelProvider) && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-zinc-800 text-zinc-300 font-mono">
+                  <Bot className="size-3 text-muted-foreground" />
+                  {sessionConfig.modelId || sessionConfig.modelProvider}
+                </span>
+              )}
+              {sessionConfig.autoClose && (
+                <span className="px-2 py-0.5 rounded-md bg-zinc-800/80 text-zinc-400 font-mono">
+                  auto-close: on
+                </span>
+              )}
+            </div>
+
+            {Object.keys(values).length > 0 && (
+              <div className="pt-1 border-t border-zinc-800 flex items-center gap-1 flex-wrap">
+                {Object.entries(values).flatMap(([k, v]) => {
+                  const badges = renderParamValueBadges(k, v as JsonValue, "px-2 py-0.5 text-[11px] rounded-md border-emerald-500/30 text-emerald-300 bg-emerald-500/5 font-mono");
+                  return Array.isArray(badges) ? badges : [badges];
                 })}
               </div>
             )}
           </div>
         </div>
-        <div className="flex items-start gap-2">
-          <label className="text-[11px] text-muted-foreground/70 w-24 shrink-0 pt-0.5">
-            Prompt
-          </label>
-          <textarea
-            rows={2}
-            placeholder="Instructions for the spawned session"
-            value={sessionConfig.prompt}
-            onChange={(e) => updateConfig("prompt", e.target.value)}
-            className="flex-1 rounded border border-border bg-background px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring resize-y"
-          />
-        </div>
-        <div className="flex items-start gap-2">
-          <label className="text-[11px] text-muted-foreground/70 w-24 shrink-0 pt-0.5">
-            Model
-          </label>
-          {models.length > 0 ? (
-            <select
-              value={sessionConfig.modelProvider && sessionConfig.modelId
-                ? `${sessionConfig.modelProvider}/${sessionConfig.modelId}`
-                : ""}
-              onChange={(e) => {
-                const val = e.target.value;
-                if (!val) {
-                  onSessionConfigChange({ ...sessionConfig, modelProvider: "", modelId: "" });
-                } else {
-                  const sep = val.indexOf("/");
-                  onSessionConfigChange({
-                    ...sessionConfig,
-                    modelProvider: val.slice(0, sep),
-                    modelId: val.slice(sep + 1),
-                  });
-                }
-              }}
-              className="flex-1 rounded border border-border bg-background px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
-            >
-              <option value="">Runner default</option>
-              {models.map((m) => (
-                <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
-                  {m.name ?? m.id} ({m.provider})
-                </option>
-              ))}
-            </select>
-          ) : (
-            <div className="flex-1 grid grid-cols-2 gap-1.5">
-              <input
-                type="text"
-                placeholder="provider"
-                value={sessionConfig.modelProvider}
-                onChange={(e) => updateConfig("modelProvider", e.target.value)}
-                className="rounded border border-border bg-background px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
-              />
-              <input
-                type="text"
-                placeholder="model-id"
-                value={sessionConfig.modelId}
-                onChange={(e) => updateConfig("modelId", e.target.value)}
-                className="rounded border border-border bg-background px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
-              />
-            </div>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <label className="text-[11px] text-muted-foreground/70 w-24 shrink-0">
-            Auto-close
-          </label>
-          <label className="flex items-center gap-1.5 cursor-pointer text-[11px] text-foreground/80">
-            <input
-              type="checkbox"
-              checked={sessionConfig.autoClose}
-              onChange={(e) => onSessionConfigChange({ ...sessionConfig, autoClose: e.target.checked })}
-              className="accent-primary size-3"
-            />
-            Shut down session on successful completion
-          </label>
-        </div>
-      </div>
-
-      {/* Trigger params */}
-      {params.length > 0 && (
-        <div className="text-[10px] font-medium text-muted-foreground/60 uppercase tracking-wide">
-          Filter params
-        </div>
       )}
-      {params.map((p) => {
-        const currentVal = values[p.name];
-        const selectedArr = Array.isArray(currentVal) ? currentVal : [];
 
-        return (
-          <div key={p.name} className="flex items-start gap-2">
-            <label
-              className="text-[11px] text-muted-foreground/70 w-24 shrink-0 truncate pt-0.5"
-              title={p.description ?? p.name}
-            >
-              {p.label}{p.required ? <span className="text-amber-400">*</span> : ""}
-            </label>
+      {error && (
+        <p className="text-xs text-destructive bg-destructive/10 border border-destructive/30 px-3 py-2 rounded-md">
+          {error}
+        </p>
+      )}
 
-            {/* Multiselect: checkboxes */}
-            {p.multiselect && p.enum ? (
-              <div className="flex-1 space-y-1">
-                {selectedArr.length > 0 && (
-                  <div className="flex flex-wrap gap-1">
-                    {selectedArr.map((value, index) => (
-                      <Badge key={`${p.name}:${value}:${index}`} variant="outline" className="px-1 py-0 text-[10px] h-4 border-violet-500/30 text-violet-300/80 bg-violet-500/5">
-                        {value}
-                      </Badge>
-                    ))}
-                  </div>
-                )}
-                <div className="flex flex-wrap gap-x-3 gap-y-1">
-                  {p.enum.map((opt) => {
-                    const optStr = String(opt);
-                    const checked = selectedArr.includes(optStr);
-                    return (
-                      <label key={optStr} className="flex items-center gap-1 cursor-pointer text-[11px] text-foreground/80">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => {
-                            const next = checked
-                              ? selectedArr.filter(v => v !== optStr)
-                              : [...selectedArr, optStr];
-                            updateValue(p.name, next);
-                          }}
-                          className="accent-primary size-3"
-                        />
-                        {optStr}
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-
-            /* Enum single select: dropdown */
-            ) : p.enum ? (
-              <select
-                value={typeof currentVal === "string" ? currentVal : ""}
-                onChange={(e) => updateValue(p.name, e.target.value)}
-                className="flex-1 rounded border border-border bg-background px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
-              >
-                <option value="">—</option>
-                {p.enum.map((opt) => (
-                  <option key={String(opt)} value={String(opt)}>{String(opt)}</option>
-                ))}
-              </select>
-
-            /* JSON */
-            ) : p.type === "json" ? (
-              <textarea
-                rows={3}
-                placeholder={p.default !== undefined ? formatParamValue(p.default) : "{}"}
-                value={typeof currentVal === "string" ? currentVal : ""}
-                onChange={(e) => updateValue(p.name, e.target.value)}
-                className="flex-1 rounded border border-border bg-background px-2 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-ring resize-y"
-              />
-
-            /* Boolean */
-            ) : p.type === "boolean" ? (
-              <select
-                value={typeof currentVal === "string" ? currentVal : ""}
-                onChange={(e) => updateValue(p.name, e.target.value)}
-                className="flex-1 rounded border border-border bg-background px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
-              >
-                <option value="">—</option>
-                <option value="true">true</option>
-                <option value="false">false</option>
-              </select>
-
-            /* Default: text/number input */
-            ) : (
-              <input
-                type={p.type === "number" ? "number" : "text"}
-                placeholder={p.default !== undefined ? formatParamValue(p.default) : undefined}
-                value={typeof currentVal === "string" ? currentVal : ""}
-                onChange={(e) => updateValue(p.name, e.target.value)}
-                className="flex-1 rounded border border-border bg-background px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
-              />
-            )}
-          </div>
-        );
-      })}
-
-      {error && <p className="text-[10px] text-destructive">{error}</p>}
-
-      <div className="flex items-center gap-2 pt-1">
-        <Button size="sm" variant="outline" className="h-6 text-[11px] px-2" onClick={onCancel}>
+      {/* Navigation Footer */}
+      <div className="flex items-center justify-between pt-3 border-t border-violet-500/20 gap-2">
+        <Button size="sm" variant="outline" className="h-7 text-xs px-2.5" onClick={onCancel}>
           Cancel
         </Button>
-        <Button size="sm" className="h-6 text-[11px] px-2" disabled={isPending} onClick={onSubmit}>
-          {isPending ? <Loader2 className="size-3 animate-spin mr-1" /> : null}
-          {submitLabel}
-        </Button>
+
+        <div className="flex items-center gap-2">
+          {step > 1 && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs px-2.5 gap-1"
+              onClick={() => setStep((s) => Math.max(1, s - 1))}
+            >
+              <ArrowLeft className="size-3" /> Back
+            </Button>
+          )}
+
+          {step < maxStep && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs px-3 gap-1 border-primary/40 text-primary hover:bg-primary/10"
+              onClick={() => setStep((s) => Math.min(maxStep, s + 1))}
+            >
+              Next <ArrowRight className="size-3" />
+            </Button>
+          )}
+
+          <Button
+            size="sm"
+            className="h-7 text-xs px-3.5 font-semibold bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm gap-1.5"
+            disabled={isPending}
+            onClick={onSubmit}
+          >
+            {isPending ? <Loader2 className="size-3 animate-spin mr-1" /> : <Zap className="size-3" />}
+            {submitLabel}
+          </Button>
+        </div>
       </div>
     </div>
   );
@@ -371,7 +537,7 @@ function CollapsibleParams({ params }: { params: ServiceTriggerParamDef[] }) {
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="flex items-center gap-1 text-[10px] text-muted-foreground/60 hover:text-muted-foreground/80 transition-colors"
+        className="flex items-center gap-1 text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition-colors"
       >
         {expanded ? <ChevronDown className="size-2.5" /> : <ChevronRight className="size-2.5" />}
         <span>{params.length} param{params.length !== 1 ? "s" : ""}</span>
@@ -379,17 +545,17 @@ function CollapsibleParams({ params }: { params: ServiceTriggerParamDef[] }) {
       {expanded && (
         <div className="mt-1 space-y-0.5 pl-3.5">
           {params.map((p) => (
-            <div key={p.name} className="text-[10px] text-muted-foreground/60">
-              <span className="font-mono text-foreground/70">{p.name}</span>
+            <div key={p.name} className="text-[10px] text-muted-foreground/70">
+              <span className="font-mono text-foreground/80">{p.name}</span>
               <span className="text-muted-foreground/40">: {p.type}</span>
-              {p.required && <span className="text-amber-400/60 ml-1">required</span>}
-              {p.multiselect && <span className="text-violet-400/60 ml-1">multiselect</span>}
+              {p.required && <span className="text-amber-400/70 ml-1 font-medium">required</span>}
+              {p.multiselect && <span className="text-violet-400/70 ml-1">multiselect</span>}
               {p.enum && (
-                <span className="text-muted-foreground/40 ml-1">
+                <span className="text-muted-foreground/50 ml-1">
                   {"{" + p.enum.map(String).join(", ") + "}"}
                 </span>
               )}
-              {p.description && <span className="ml-1">— {p.description}</span>}
+              {p.description && <span className="ml-1 text-muted-foreground/60">— {p.description}</span>}
             </div>
           ))}
         </div>
@@ -430,31 +596,30 @@ function TriggerItem({
   const isListening = listeners.length > 0;
 
   return (
-    <div className="px-3 py-2.5">
+    <div className="p-3 space-y-2 hover:bg-white/[0.01] transition-colors">
       {/* Header: label as primary, type as secondary */}
-      <div className="flex items-start gap-2">
-        <Zap className={cn("size-3.5 mt-0.5 shrink-0", isListening ? "text-emerald-400" : "text-muted-foreground/40")} />
+      <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-xs font-medium text-foreground">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-semibold text-foreground">
               {def.label}
             </span>
             {isListening && (
-              <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-emerald-500/40 text-emerald-400 shrink-0">
+              <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-emerald-500/40 text-emerald-400 bg-emerald-500/5 shrink-0 font-medium">
                 {listeners.length} active
               </Badge>
             )}
             {hasParams && !isListening && (
-              <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-violet-500/30 text-violet-400/70 shrink-0">
+              <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-violet-500/30 text-violet-400/80 bg-violet-500/5 shrink-0">
                 configurable
               </Badge>
             )}
           </div>
-          <span className="text-[10px] font-mono text-muted-foreground/50 block">
+          <span className="text-[10px] font-mono text-muted-foreground/60 block mt-0.5">
             {def.type}
           </span>
           {def.description && (
-            <p className="text-[11px] text-muted-foreground/70 mt-0.5 leading-snug">
+            <p className="text-[11px] text-muted-foreground/80 mt-1 leading-relaxed">
               {def.description}
             </p>
           )}
@@ -466,11 +631,13 @@ function TriggerItem({
           onClick={() => onToggle(def, false)}
           disabled={isPending}
           className={cn(
-            "inline-flex items-center gap-1 shrink-0 px-2 py-1 rounded text-[11px] font-medium transition-colors",
-            "text-muted-foreground hover:text-emerald-400 hover:bg-emerald-500/10 border border-transparent hover:border-emerald-500/20",
+            "inline-flex items-center gap-1 shrink-0 px-2 py-1 rounded-md text-xs font-medium transition-all",
+            isListening
+              ? "text-muted-foreground hover:text-emerald-400 hover:bg-emerald-500/10 border border-transparent hover:border-emerald-500/20"
+              : "bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm",
             isPending && "opacity-50 cursor-not-allowed",
           )}
-          title={isListening ? "Add another auto-spawn listener" : "Add auto-spawn listener \u2014 spawns a new session when this trigger fires"}
+          title={isListening ? "Add another auto-spawn listener" : "Add auto-spawn listener — spawns a new session when this trigger fires"}
           aria-label={isListening ? `Add another listener for ${def.type}` : `Add listener for ${def.type}`}
         >
           {isPending ? (
@@ -484,7 +651,7 @@ function TriggerItem({
 
       {/* Existing listeners */}
       {isListening && (
-        <div className="mt-2 ml-[22px] space-y-1.5">
+        <div className="mt-2 space-y-2">
           {listeners.map((listener, index) => {
             const listenerKey = listener.listenerId ?? `${def.type}-${index}`;
             const isPendingListener = pendingTypes.has(listener.listenerId ?? "") || isPending;
@@ -494,7 +661,7 @@ function TriggerItem({
             if (listener.autoClose) details.push("auto-close");
             const paramBadges = listener.params
               ? Object.entries(listener.params).flatMap(([k, v]) => {
-                  const badges = renderParamValueBadges(k, v, "px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60");
+                  const badges = renderParamValueBadges(k, v, "px-1.5 py-0 text-[10px] h-4 border-emerald-500/30 text-emerald-400/90 bg-emerald-500/5 font-mono");
                   return Array.isArray(badges) ? badges : [badges];
                 })
               : [];
@@ -503,38 +670,54 @@ function TriggerItem({
                 details.push(`${k}=${formatParamValue(v)}`);
               }
             }
+
             return (
-              <div key={listenerKey} className="rounded-md border border-border/40 bg-muted/20 px-2.5 py-1.5">
-                <div className="flex items-center gap-2">
-                  <div className="flex-1 min-w-0">
-                    {listener.prompt && (
-                      <p className="text-[11px] text-foreground/80 truncate" title={listener.prompt}>
-                        {listener.prompt.length > 60 ? listener.prompt.slice(0, 60) + "\u2026" : listener.prompt}
+              <div key={listenerKey} className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 hover:border-zinc-700 transition-all space-y-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex-1 min-w-0 space-y-1">
+                    {listener.prompt ? (
+                      <p className="text-xs font-medium text-foreground leading-snug" title={listener.prompt}>
+                        "{listener.prompt.length > 80 ? listener.prompt.slice(0, 80) + "…" : listener.prompt}"
                       </p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground/60 italic">No custom prompt</p>
                     )}
-                    {details.length > 0 && (
-                      <div className="space-y-1">
-                        <p className="text-[10px] font-mono text-muted-foreground/50 truncate">
-                          {details.join(" \u00B7 ")}
-                        </p>
-                        {paramBadges.length > 0 && (
-                          <div className="flex items-center gap-1 flex-wrap">
-                            {paramBadges}
-                          </div>
-                        )}
+
+                    {/* Metadata Pills */}
+                    <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+                      {listener.cwd && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-zinc-800/80 text-zinc-300 border border-zinc-700 font-mono text-[10px]">
+                          <FolderOpen className="size-3 text-muted-foreground" />
+                          {formatPathTail(listener.cwd, 1)}
+                        </span>
+                      )}
+                      {listener.model && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-zinc-800/80 text-zinc-300 border border-zinc-700 font-mono text-[10px]">
+                          <Bot className="size-3 text-muted-foreground" />
+                          {listener.model.id}
+                        </span>
+                      )}
+                      {listener.autoClose && (
+                        <span className="px-1.5 py-0.5 rounded-md bg-zinc-800/50 text-zinc-400 text-[10px] border border-border/40">
+                          auto-close
+                        </span>
+                      )}
+                    </div>
+
+                    {paramBadges.length > 0 && (
+                      <div className="flex items-center gap-1 flex-wrap pt-1">
+                        {paramBadges}
                       </div>
                     )}
-                    {!listener.prompt && details.length === 0 && (
-                      <p className="text-[10px] text-muted-foreground/40 italic">No config</p>
-                    )}
                   </div>
-                  <div className="flex items-center gap-0.5 shrink-0">
+
+                  <div className="flex items-center gap-1 shrink-0">
                     <button
                       type="button"
                       onClick={() => onEdit(def, listener)}
                       disabled={isPendingListener}
                       className={cn(
-                        "p-1 rounded transition-colors text-muted-foreground/40 hover:text-blue-400 hover:bg-blue-500/10",
+                        "p-1.5 rounded-lg border border-border/40 bg-zinc-900 text-muted-foreground hover:text-blue-400 hover:bg-blue-500/10 transition-colors",
                         isPendingListener && "opacity-50 cursor-not-allowed",
                       )}
                       title="Edit listener"
@@ -547,7 +730,7 @@ function TriggerItem({
                       onClick={() => onToggle(def, true, listener.listenerId)}
                       disabled={isPendingListener}
                       className={cn(
-                        "p-1 rounded transition-colors text-muted-foreground/40 hover:text-red-400 hover:bg-red-500/10",
+                        "p-1.5 rounded-lg border border-border/40 bg-zinc-900 text-muted-foreground hover:text-rose-400 hover:bg-rose-500/10 transition-colors",
                         isPendingListener && "opacity-50 cursor-not-allowed",
                       )}
                       title="Remove listener"
@@ -582,7 +765,7 @@ function TriggerItem({
           isPending={isPending}
           models={models}
           recentFolders={recentFolders}
-          submitLabel={editMode ? "Update" : "Subscribe"}
+          submitLabel={editMode ? "Update Listener" : "Subscribe"}
         />
       )}
     </div>
@@ -622,33 +805,35 @@ function ServiceAccordion({
 
   return (
     <div className={cn(
-      "rounded-lg border overflow-hidden",
-      listenedCount > 0 ? "border-emerald-500/20 bg-emerald-950/10" : "border-border/50 bg-muted/10",
+      "rounded-xl border overflow-hidden shadow-sm transition-all",
+      listenedCount > 0
+        ? "border-emerald-500/30 bg-zinc-900/40"
+        : "border-border/60 bg-zinc-900/30",
     )}>
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-white/[0.02] transition-colors"
+        className="w-full flex items-center gap-2.5 px-3.5 py-2.5 hover:bg-white/[0.02] transition-colors"
       >
-        <Settings className="size-3.5 text-muted-foreground" />
-        <span className="text-sm font-medium text-foreground/90 flex-1 text-left capitalize">
+        <SourceIcon source={group.service} className="size-4 shrink-0" />
+        <span className="text-xs font-semibold text-foreground/90 capitalize flex-1 text-left">
           {group.service}
         </span>
-        <span className="text-xs text-muted-foreground/50">
+        <span className="text-[11px] text-muted-foreground/60">
           {group.defs.length} trigger{group.defs.length !== 1 ? "s" : ""}
         </span>
         {listenedCount > 0 && (
-          <span className="inline-flex items-center justify-center size-4 rounded-full bg-emerald-500/20 text-emerald-400 text-[9px] font-bold">
+          <span className="inline-flex items-center justify-center px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-bold border border-emerald-500/30">
             {listenedCount}
           </span>
         )}
-        <div className="shrink-0 text-muted-foreground/40">
+        <div className="shrink-0 text-muted-foreground/50 ml-1">
           {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
         </div>
       </button>
 
       {expanded && (
-        <div className="border-t border-border/30 divide-y divide-border/30">
+        <div className="border-t border-border/40 divide-y divide-border/30 bg-zinc-950/20">
           {group.defs.map((def) => (
             <TriggerItem
               key={def.type}
@@ -786,13 +971,6 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
     return map;
   }, [listeners]);
 
-  // Find trigger def by type (for param validation)
-  const defsByType = React.useMemo(() => {
-    const map = new Map<string, ServiceTriggerDef>();
-    for (const d of triggerDefs) map.set(d.type, d);
-    return map;
-  }, [triggerDefs]);
-
   /** Open the config form pre-populated with current listener config for editing. */
   const handleEdit = React.useCallback((def: ServiceTriggerDef, listener?: ListenerInfo) => {
     setParamFormOpen(def.type);
@@ -898,150 +1076,181 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
         return;
       }
       if (!str) continue;
-      if (p.type === "number") {
-        const num = Number(str);
-        if (isNaN(num)) { setParamError(`'${p.label}' must be a number`); return; }
-        params[p.name] = num;
-      } else if (p.type === "boolean") {
-        params[p.name] = str === "true";
-      } else if (p.type === "json") {
+
+      if (p.type === "json") {
         try {
-          params[p.name] = JSON.parse(str) as JsonValue;
+          params[p.name] = JSON.parse(str);
         } catch {
           setParamError(`'${p.label}' must be valid JSON`);
           return;
         }
+      } else if (p.type === "number") {
+        const num = Number(str);
+        if (isNaN(num)) {
+          setParamError(`'${p.label}' must be a number`);
+          return;
+        }
+        params[p.name] = num;
+      } else if (p.type === "boolean") {
+        params[p.name] = str === "true";
       } else {
         params[p.name] = str;
       }
     }
 
-    const sc = sessionConfigs[def.type] ?? { cwd: "", prompt: "", modelProvider: "", modelId: "", autoClose: false };
-    const cwd = sc.cwd.trim() || undefined;
-    const prompt = sc.prompt.trim() || undefined;
-    const model = sc.modelProvider.trim() && sc.modelId.trim()
-      ? { provider: sc.modelProvider.trim(), id: sc.modelId.trim() }
-      : undefined;
+    const cfg = sessionConfigs[def.type];
+    const sessionConfig = cfg ? {
+      cwd: cfg.cwd.trim() || undefined,
+      prompt: cfg.prompt.trim() || undefined,
+      model: (cfg.modelProvider.trim() && cfg.modelId.trim())
+        ? { provider: cfg.modelProvider.trim(), id: cfg.modelId.trim() }
+        : undefined,
+      autoClose: cfg.autoClose || undefined,
+    } : undefined;
 
-    const pendingKey = editingListenerId ?? def.type;
-    setPendingTypes((prev) => new Set([...prev, pendingKey]));
+    setPendingTypes((prev) => new Set([...prev, editingListenerId ?? def.type]));
     setParamError(null);
+
     void (async () => {
       try {
-        // Use PUT when editing an existing listener, POST when creating new
-        const url = editMode
-          ? `/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners/${encodeURIComponent(editingListenerId ?? def.type)}`
-          : `/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners`;
-        const method = editMode ? "PUT" : "POST";
-        const res = await fetch(url, {
-            method,
+        if (editMode) {
+          const res = await fetch(
+            `/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners/${encodeURIComponent(def.type)}`,
+            {
+              method: "PUT",
+              credentials: "include",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                listenerId: editingListenerId ?? undefined,
+                params: Object.keys(params).length > 0 ? params : undefined,
+                ...sessionConfig,
+              }),
+            },
+          );
+          if (res.ok) {
+            const data = await res.json() as { listener?: ListenerInfo };
+            if (data.listener) {
+              setListeners((prev) => prev.map((l) => (
+                (editingListenerId && l.listenerId === editingListenerId)
+                || (!editingListenerId && l.triggerType === def.type)
+                  ? data.listener!
+                  : l
+              )));
+            }
+            setParamFormOpen(null);
+            setEditingListenerId(null);
+            setEditMode(false);
+          } else {
+            const data = await res.json().catch(() => ({})) as { error?: string };
+            setParamError(data.error ?? `HTTP ${res.status}`);
+          }
+        } else {
+          const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners`, {
+            method: "POST",
             credentials: "include",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              ...(editMode ? {} : { triggerType: def.type }),
-              ...(Object.keys(params).length > 0 ? { params } : {}),
-              ...(cwd ? { cwd } : {}),
-              ...(prompt ? { prompt } : {}),
-              ...(model ? { model } : {}),
-              autoClose: sc.autoClose,
+              triggerType: def.type,
+              params: Object.keys(params).length > 0 ? params : undefined,
+              ...sessionConfig,
             }),
-          },
-        );
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({})) as { error?: string };
-          setParamError(data.error ?? `HTTP ${res.status}`);
-          return;
-        }
-        const data = await res.json().catch(() => ({})) as { listenerId?: string };
-        setParamFormOpen(null);
-        setEditMode(false);
-        setEditingListenerId(null);
-            setListeners((prev) => {
-          const existing = editingListenerId
-            ? prev.find((listener) => listener.listenerId === editingListenerId)
-            : undefined;
-          const nextListener: ListenerInfo = {
-            listenerId: data.listenerId ?? editingListenerId ?? undefined,
-            triggerType: def.type,
-            params: Object.keys(params).length > 0 ? params : undefined,
-            cwd,
-            prompt,
-            model,
-            autoClose: sc.autoClose || undefined,
-            createdAt: existing?.createdAt ?? new Date().toISOString(),
-          };
-          if (editingListenerId) {
-            return prev.map((listener) => listener.listenerId === editingListenerId ? nextListener : listener);
+          });
+          if (res.ok) {
+            const data = await res.json() as { listener?: ListenerInfo };
+            if (data.listener) {
+              setListeners((prev) => [...prev, data.listener!]);
+            }
+            setParamFormOpen(null);
+            setEditingListenerId(null);
+            setEditMode(false);
+          } else {
+            const data = await res.json().catch(() => ({})) as { error?: string };
+            setParamError(data.error ?? `HTTP ${res.status}`);
           }
-          return [...prev, nextListener];
+        }
+      } catch (err) {
+        setParamError(err instanceof Error ? err.message : "Failed to save listener");
+      } finally {
+        setPendingTypes((prev) => {
+          const next = new Set(prev);
+          next.delete(editingListenerId ?? def.type);
+          return next;
         });
-      } catch { /* best-effort */ } finally {
-        setPendingTypes((prev) => { const n = new Set(prev); n.delete(pendingKey); return n; });
       }
     })();
-  }, [runnerId, paramValues, sessionConfigs, editMode, editingListenerId]);
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center gap-2 p-8 text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" />
-        <span className="text-sm">Loading triggers…</span>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="flex flex-col items-center justify-center gap-3 p-6">
-        <p className="text-sm text-destructive">{error}</p>
-        <Button size="sm" variant="outline" onClick={() => void fetchData()}>
-          <RotateCcw className="h-3.5 w-3.5 mr-1" />
-          Retry
-        </Button>
-      </div>
-    );
-  }
-
-  if (triggerDefs.length === 0 && listeners.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
-        <BookOpen className="size-10 text-muted-foreground/30" />
-        <div>
-          <p className="text-sm text-muted-foreground">No trigger types available</p>
-          <p className="text-xs text-muted-foreground/60 mt-1 max-w-xs">
-            Runner services declare triggers that agents subscribe to. Add a
-            service that exposes triggers to populate this list — see the
-            “creating-runner-services” guide.
-          </p>
-        </div>
-      </div>
-    );
-  }
+  }, [paramValues, sessionConfigs, runnerId, editMode, editingListenerId]);
 
   return (
-    <div className="flex flex-col gap-2">
-      {serviceGroups.map((group) => (
-        <ServiceAccordion
-          key={group.service}
-          group={group}
-          listenedTypes={listenedTypes}
-          listenersByType={listenersByType}
-          pendingTypes={pendingTypes}
-          paramFormOpen={paramFormOpen}
-          editMode={editMode}
-          paramValues={paramValues}
-          paramError={paramError}
-          sessionConfigs={sessionConfigs}
-          onToggle={handleToggle}
-          onEdit={handleEdit}
-          onParamValuesChange={(type, vals) => setParamValues((prev) => ({ ...prev, [type]: vals }))}
-          onSessionConfigChange={(type, config) => setSessionConfigs((prev) => ({ ...prev, [type]: config }))}
-          onParamSubmit={handleParamSubmit}
-          onParamCancel={() => { setParamFormOpen(null); setEditMode(false); setEditingListenerId(null); setParamError(null); }}
-          models={models}
-          recentFolders={recentFolders}
-        />
-      ))}
+    <div className="space-y-4">
+      {/* Header Info */}
+      <div className="flex items-center justify-between px-1">
+        <div className="flex items-center gap-2">
+          <span className="size-6 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center text-primary">
+            <Zap className="size-3.5" />
+          </span>
+          <div>
+            <h3 className="text-xs font-semibold text-foreground uppercase tracking-wider">
+              Service Trigger Catalog
+            </h3>
+            <p className="text-[11px] text-muted-foreground mt-0.5">
+              Auto-spawn sessions when runner service events occur.
+            </p>
+          </div>
+        </div>
+
+        {listeners.length > 0 && (
+          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-semibold">
+            <span className="size-1.5 rounded-full bg-emerald-400"></span>
+            {listeners.length} listener{listeners.length !== 1 ? "s" : ""}
+          </span>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="flex flex-col items-center justify-center h-36 gap-2 text-muted-foreground">
+          <Loader2 className="size-5 animate-spin text-primary" />
+          <span className="text-xs font-medium">Loading triggers…</span>
+        </div>
+      ) : error ? (
+        <p className="text-xs text-destructive text-center bg-destructive/10 border border-destructive/20 p-3 rounded-lg">{error}</p>
+      ) : triggerDefs.length === 0 ? (
+        <div className="flex flex-col items-center justify-center gap-2 p-6 text-center rounded-xl border border-dashed border-border/60">
+          <BookOpen className="size-8 text-muted-foreground/30" />
+          <p className="text-xs text-muted-foreground">
+            No trigger types available. Services declare triggers via manifests.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-2.5">
+          {serviceGroups.map((group) => (
+            <ServiceAccordion
+              key={group.service}
+              group={group}
+              listenedTypes={listenedTypes}
+              listenersByType={listenersByType}
+              pendingTypes={pendingTypes}
+              paramFormOpen={paramFormOpen}
+              editMode={editMode}
+              paramValues={paramValues}
+              paramError={paramError}
+              sessionConfigs={sessionConfigs}
+              onToggle={handleToggle}
+              onEdit={handleEdit}
+              onParamValuesChange={(type, vals) => setParamValues((prev) => ({ ...prev, [type]: vals }))}
+              onSessionConfigChange={(type, config) => setSessionConfigs((prev) => ({ ...prev, [type]: config }))}
+              onParamSubmit={handleParamSubmit}
+              onParamCancel={() => {
+                setParamFormOpen(null);
+                setEditingListenerId(null);
+                setEditMode(false);
+                setParamError(null);
+              }}
+              models={models}
+              recentFolders={recentFolders}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

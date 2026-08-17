@@ -35,6 +35,15 @@ import {
   HelpCircle,
   XCircle,
   Pencil,
+  Copy,
+  Check,
+  Filter,
+  Cpu,
+  Layers,
+  Sparkles,
+  GitPullRequest,
+  ArrowRight,
+  ArrowLeft,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -147,12 +156,25 @@ function RelativeTime({ isoTs }: { isoTs: string }) {
 /** Returns a lucide icon for the trigger source */
 function SourceIcon({ source, className }: { source: string; className?: string }) {
   const src = source.toLowerCase();
-  if (src.includes("webhook") || src.includes("http")) return <Globe className={cn("size-3.5", className)} />;
-  if (src.includes("cron") || src.includes("schedule")) return <Clock className={cn("size-3.5", className)} />;
-  if (src.includes("service")) return <Settings className={cn("size-3.5", className)} />;
-  if (src === "api" || src.startsWith("external")) return <Globe className={cn("size-3.5", className)} />;
-  if (src.length >= 8 && /^[a-z0-9-]+$/.test(src)) return <Link className={cn("size-3.5", className)} />;
-  return <Wrench className={cn("size-3.5", className)} />;
+  if (src.includes("github") || src.includes("pr") || src.includes("issue")) {
+    return <GitPullRequest className={cn("size-3.5 text-muted-foreground", className)} />;
+  }
+  if (src.includes("webhook") || src.includes("http")) {
+    return <Globe className={cn("size-3.5 text-muted-foreground", className)} />;
+  }
+  if (src.includes("cron") || src.includes("schedule") || src.includes("time")) {
+    return <Clock className={cn("size-3.5 text-muted-foreground", className)} />;
+  }
+  if (src.includes("service")) {
+    return <Settings className={cn("size-3.5 text-muted-foreground", className)} />;
+  }
+  if (src === "api" || src.startsWith("external")) {
+    return <Globe className={cn("size-3.5 text-muted-foreground", className)} />;
+  }
+  if (src.length >= 8 && /^[a-z0-9-]+$/.test(src)) {
+    return <Cpu className={cn("size-3.5 text-muted-foreground", className)} />;
+  }
+  return <Wrench className={cn("size-3.5 text-muted-foreground", className)} />;
 }
 
 function sourceLabel(source: string): string {
@@ -465,18 +487,20 @@ function SendTriggerDialog({ open, onOpenChange, sessionId, onSent, triggerDefs 
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Zap className="size-4 text-amber-400" />
+      <DialogContent className="sm:max-w-lg border-border/80 bg-zinc-950/95 backdrop-blur-xl shadow-2xl">
+        <DialogHeader className="pb-2 border-b border-border/50">
+          <DialogTitle className="flex items-center gap-2.5 text-base font-semibold text-foreground">
+            <span className="size-7 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
+              <Zap className="size-4" />
+            </span>
             Send Trigger
           </DialogTitle>
         </DialogHeader>
 
-        <div className="flex flex-col gap-3">
-          <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-              Type <span className="text-destructive">*</span>
+        <div className="flex flex-col gap-3.5 py-1">
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-foreground/90 uppercase tracking-wider flex items-center gap-1">
+              Trigger Type <span className="text-destructive">*</span>
             </label>
             <input
               type="text"
@@ -484,7 +508,7 @@ function SendTriggerDialog({ open, onOpenChange, sessionId, onSent, triggerDefs 
               placeholder="e.g. webhook, custom_event"
               value={triggerType}
               onChange={(e) => setTriggerType(e.target.value)}
-              className="w-full rounded border border-border bg-background px-2.5 py-1.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              className="w-full rounded-lg border border-border/80 bg-background/80 px-3 py-2 text-xs font-mono placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary/50 transition-colors"
             />
             {triggerDefs && triggerDefs.length > 0 && (
               <datalist id="trigger-type-suggestions">
@@ -495,66 +519,100 @@ function SendTriggerDialog({ open, onOpenChange, sessionId, onSent, triggerDefs 
             )}
           </div>
 
-          <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-              Source <span className="text-muted-foreground/50">(optional)</span>
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-foreground/90 uppercase tracking-wider flex items-center justify-between">
+              <span>Source</span>
+              <span className="text-[11px] font-normal text-muted-foreground/60">optional</span>
             </label>
             <input
               type="text"
               placeholder="e.g. github, godmother"
               value={source}
               onChange={(e) => setSource(e.target.value)}
-              className="w-full rounded border border-border bg-background px-2.5 py-1.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              className="w-full rounded-lg border border-border/80 bg-background/80 px-3 py-2 text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary/50 transition-colors"
             />
           </div>
 
-          <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-foreground/90 uppercase tracking-wider">
               Payload (JSON)
             </label>
             <textarea
               rows={4}
               value={payloadText}
               onChange={(e) => setPayloadText(e.target.value)}
-              className="w-full rounded border border-border bg-background px-2.5 py-1.5 font-mono text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring resize-y"
+              className="w-full rounded-lg border border-border/80 bg-background/80 px-3 py-2 font-mono text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary/50 transition-colors resize-y leading-relaxed"
               spellCheck={false}
             />
           </div>
 
-          <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-foreground/90 uppercase tracking-wider">
               Deliver As
             </label>
-            <div className="flex gap-3">
-              {(["steer", "followUp"] as const).map((mode) => (
-                <label key={mode} className="flex items-center gap-1.5 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="deliverAs"
-                    value={mode}
-                    checked={deliverAs === mode}
-                    onChange={() => setDeliverAs(mode)}
-                    className="accent-primary"
-                  />
-                  <span className="text-sm capitalize">{mode === "steer" ? "Steer (interrupt)" : "Follow-Up (queue)"}</span>
-                </label>
-              ))}
+            <div className="grid grid-cols-2 gap-2">
+              <label
+                className={cn(
+                  "flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-all",
+                  deliverAs === "steer"
+                    ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
+                    : "border-border/60 bg-muted/20 text-muted-foreground hover:bg-muted/40 hover:text-foreground",
+                )}
+              >
+                <input
+                  type="radio"
+                  name="deliverAs"
+                  value="steer"
+                  checked={deliverAs === "steer"}
+                  onChange={() => setDeliverAs("steer")}
+                  className="sr-only"
+                />
+                <Zap className="size-3.5 shrink-0 text-amber-400" />
+                <div className="flex flex-col min-w-0">
+                  <span className="text-xs font-medium leading-none">Steer (interrupt)</span>
+                  <span className="text-[10px] text-muted-foreground/80 mt-0.5">Interrupt turn</span>
+                </div>
+              </label>
+
+              <label
+                className={cn(
+                  "flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-all",
+                  deliverAs === "followUp"
+                    ? "border-blue-500/40 bg-blue-500/10 text-blue-300"
+                    : "border-border/60 bg-muted/20 text-muted-foreground hover:bg-muted/40 hover:text-foreground",
+                )}
+              >
+                <input
+                  type="radio"
+                  name="deliverAs"
+                  value="followUp"
+                  checked={deliverAs === "followUp"}
+                  onChange={() => setDeliverAs("followUp")}
+                  className="sr-only"
+                />
+                <Clock className="size-3.5 shrink-0 text-blue-400" />
+                <div className="flex flex-col min-w-0">
+                  <span className="text-xs font-medium leading-none">Follow-Up (queue)</span>
+                  <span className="text-[10px] text-muted-foreground/80 mt-0.5">Queue after turn</span>
+                </div>
+              </label>
             </div>
           </div>
 
           {error && (
-            <p className="rounded bg-destructive/10 border border-destructive/30 px-2.5 py-1.5 text-xs text-destructive">
+            <p className="rounded-lg bg-destructive/10 border border-destructive/30 px-3 py-2 text-xs text-destructive flex items-center gap-2">
+              <AlertCircle className="size-3.5 shrink-0" />
               {error}
             </p>
           )}
         </div>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={sending}>
+        <DialogFooter className="pt-2 border-t border-border/50 gap-2">
+          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)} disabled={sending} className="h-8 px-3 text-xs">
             Cancel
           </Button>
-          <Button onClick={handleSend} disabled={sending || !triggerType.trim()}>
-            {sending ? <Loader2 className="size-3.5 animate-spin mr-1.5" /> : <Send className="size-3.5 mr-1.5" />}
+          <Button size="sm" onClick={handleSend} disabled={sending || !triggerType.trim()} className="h-8 px-3.5 text-xs font-semibold gap-1.5 bg-primary hover:bg-primary/90 text-primary-foreground">
+            {sending ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
             Send
           </Button>
         </DialogFooter>
@@ -567,61 +625,81 @@ function SendTriggerDialog({ open, onOpenChange, sessionId, onSent, triggerDefs 
 
 function EventRow({ entry }: { entry: TriggerHistoryEntry }) {
   const [expanded, setExpanded] = React.useState(false);
+  const [copied, setCopied] = React.useState(false);
   const hasPayload = Object.keys(entry.payload).length > 0;
   const payloadStr = hasPayload ? JSON.stringify(entry.payload, null, 2) : null;
 
+  const handleCopy = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (payloadStr) {
+      void navigator.clipboard.writeText(payloadStr);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
+  };
+
   return (
-    <div className="border-b border-border/30 last:border-0">
+    <div className="border-b border-border/40 last:border-0 hover:bg-white/[0.015] transition-colors">
       <button
         type="button"
         onClick={() => hasPayload && setExpanded((v) => !v)}
         className={cn(
-          "w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors",
+          "w-full flex items-center gap-2 px-3 py-2 text-left transition-colors",
           hasPayload ? "hover:bg-muted/40 cursor-pointer" : "cursor-default",
         )}
       >
         <div className="shrink-0">
           {entry.direction === "inbound" ? (
-            <ArrowDownCircle className="size-3 text-blue-400/70" />
+            <ArrowDownCircle className="size-3.5 text-blue-400/80" />
           ) : (
-            <ArrowUpCircle className="size-3 text-violet-400/70" />
+            <ArrowUpCircle className="size-3.5 text-violet-400/80" />
           )}
         </div>
 
-        <span className="text-[11px] font-medium text-foreground/80">{entry.type}</span>
+        <span className="text-xs font-mono font-medium text-foreground/90 truncate">{entry.type}</span>
 
         {entry.deliverAs === "steer" ? (
-          <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-amber-500/30 text-amber-400/70">
+          <Badge variant="outline" className="px-1.5 py-0.5 text-[10px] font-mono border-amber-500/30 text-amber-400/90 bg-amber-500/5">
             steer
           </Badge>
         ) : (
-          <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-blue-500/30 text-blue-400/70">
+          <Badge variant="outline" className="px-1.5 py-0.5 text-[10px] font-mono border-blue-500/30 text-blue-400/90 bg-blue-500/5">
             follow-up
           </Badge>
         )}
 
-        <span className="text-[10px] text-muted-foreground/50 ml-auto shrink-0">
+        <span className="text-[11px] text-muted-foreground/60 ml-auto shrink-0 font-mono">
           <RelativeTime isoTs={entry.ts} />
         </span>
 
         {entry.response && (
-          <span className="text-[10px] text-emerald-500/70 shrink-0">
+          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-400 shrink-0 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
             ✓ {entry.response.action ?? "responded"}
           </span>
         )}
 
         {hasPayload && (
-          <div className="shrink-0 text-muted-foreground/40">
-            {expanded ? <ChevronDown className="size-2.5" /> : <ChevronRight className="size-2.5" />}
+          <div className="shrink-0 text-muted-foreground/50 ml-0.5">
+            {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
           </div>
         )}
       </button>
 
       {expanded && payloadStr && (
-        <div className="px-3 pb-1.5">
-          <pre className="rounded bg-muted/60 border border-border/50 px-2 py-1.5 text-[9px] font-mono text-foreground/70 overflow-auto max-h-32 whitespace-pre-wrap break-all">
-            {payloadStr}
-          </pre>
+        <div className="px-3 pb-2 pt-0.5 relative group">
+          <div className="relative">
+            <pre className="rounded-lg bg-zinc-950/80 border border-border/60 p-2.5 text-[10px] font-mono text-zinc-300 overflow-auto max-h-40 whitespace-pre-wrap break-all leading-relaxed shadow-inner">
+              {payloadStr}
+            </pre>
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="absolute top-2 right-2 p-1 rounded-md bg-zinc-900 border border-zinc-700 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors shadow-sm"
+              title="Copy payload JSON"
+            >
+              {copied ? <Check className="size-3 text-emerald-400" /> : <Copy className="size-3" />}
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -654,48 +732,53 @@ function LinkedSessionCard({ group, statusUpdates }: LinkedSessionCardProps) {
 
   const colorMap = {
     amber: {
-      border: "border-amber-500/30",
-      bg: "bg-amber-950/20",
-      headerBg: "bg-amber-950/30",
+      border: "border-amber-500/40",
+      bg: "bg-gradient-to-b from-amber-500/[0.08] to-zinc-900/30",
+      highlightBar: "from-transparent via-amber-400 to-transparent",
       text: "text-amber-300",
-      badge: "border-amber-500/40 text-amber-400",
+      badge: "border-amber-500/40 bg-amber-500/10 text-amber-400",
       icon: "text-amber-400",
+      iconBg: "bg-amber-500/20 border-amber-500/30",
       pulse: true,
     },
     blue: {
-      border: "border-blue-500/30",
-      bg: "bg-blue-950/20",
-      headerBg: "bg-blue-950/30",
+      border: "border-blue-500/40",
+      bg: "bg-gradient-to-b from-blue-500/[0.08] to-zinc-900/30",
+      highlightBar: "from-transparent via-blue-400 to-transparent",
       text: "text-blue-300",
-      badge: "border-blue-500/40 text-blue-400",
+      badge: "border-blue-500/40 bg-blue-500/10 text-blue-400",
       icon: "text-blue-400",
+      iconBg: "bg-blue-500/20 border-blue-500/30",
       pulse: true,
     },
     red: {
-      border: "border-red-500/30",
-      bg: "bg-red-950/20",
-      headerBg: "bg-red-950/30",
+      border: "border-red-500/40",
+      bg: "bg-gradient-to-b from-red-500/[0.08] to-zinc-900/30",
+      highlightBar: "from-transparent via-red-400 to-transparent",
       text: "text-red-300",
-      badge: "border-red-500/40 text-red-400",
+      badge: "border-red-500/40 bg-red-500/10 text-red-400",
       icon: "text-red-400",
+      iconBg: "bg-red-500/20 border-red-500/30",
       pulse: true,
     },
     emerald: {
-      border: "border-emerald-500/20",
-      bg: "bg-emerald-950/10",
-      headerBg: "bg-emerald-950/20",
+      border: "border-emerald-500/30",
+      bg: "bg-zinc-900/40",
+      highlightBar: "from-transparent via-emerald-400/40 to-transparent",
       text: "text-emerald-300",
-      badge: "border-emerald-500/40 text-emerald-400",
+      badge: "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
       icon: "text-emerald-400",
+      iconBg: "bg-emerald-500/10 border-emerald-500/20",
       pulse: false,
     },
     zinc: {
-      border: "border-border/50",
-      bg: "bg-muted/10",
-      headerBg: "bg-muted/20",
+      border: "border-border/60",
+      bg: "bg-zinc-900/30",
+      highlightBar: "from-transparent via-zinc-500/20 to-transparent",
       text: "text-muted-foreground",
-      badge: "border-border text-muted-foreground",
+      badge: "border-border/80 bg-muted/40 text-muted-foreground",
       icon: "text-muted-foreground",
+      iconBg: "bg-muted/40 border-border/40",
       pulse: false,
     },
   };
@@ -703,30 +786,32 @@ function LinkedSessionCard({ group, statusUpdates }: LinkedSessionCardProps) {
   const colors = colorMap[status.color];
 
   return (
-    <div className={cn("rounded-lg border overflow-hidden", colors.border, colors.bg)}>
+    <div className={cn("rounded-xl border overflow-hidden shadow-md relative transition-all", colors.border, colors.bg)}>
+      {isPending && (
+        <div className={cn("absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r", colors.highlightBar)} />
+      )}
+
       {/* Main clickable header */}
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className={cn(
-          "w-full flex items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-white/[0.02]",
-        )}
+        className="w-full flex items-start gap-3 p-3 text-left transition-colors hover:bg-white/[0.02]"
       >
-        {/* Status icon */}
-        <div className={cn("mt-0.5 shrink-0", colors.icon, colors.pulse && "animate-pulse")}>
+        {/* Status icon badge */}
+        <div className={cn("size-7 rounded-lg border flex items-center justify-center shrink-0 mt-0.5 shadow-sm", colors.iconBg, colors.icon, colors.pulse && "animate-pulse")}>
           {status.icon}
         </div>
 
         {/* Content */}
         <div className="flex-1 min-w-0">
           {/* Session name + status */}
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-xs font-mono text-foreground/90 truncate">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-semibold text-foreground truncate">
               {group.lastSummary || truncateId(group.source)}
             </span>
             <Badge
               variant="outline"
-              className={cn("px-1.5 py-0 text-[10px] h-4 shrink-0", colors.badge)}
+              className={cn("px-2 py-0.5 text-[10px] font-medium rounded-md shrink-0 capitalize", colors.badge)}
             >
               {status.label}
             </Badge>
@@ -734,25 +819,27 @@ function LinkedSessionCard({ group, statusUpdates }: LinkedSessionCardProps) {
 
           {/* Pending trigger detail */}
           {isPending && (
-            <div className="mt-1">
-              <span className={cn("text-[11px] font-medium", colors.text)}>
-                {group.pendingTrigger!.type === "ask_user_question" && "Waiting for your answer"}
-                {group.pendingTrigger!.type === "plan_review" && "Waiting for plan approval"}
-                {group.pendingTrigger!.type === "session_complete" && "Session finished — needs acknowledgement"}
-                {group.pendingTrigger!.type === "escalate" && "Escalated — needs human attention"}
-                {!["ask_user_question", "plan_review", "session_complete", "escalate"].includes(group.pendingTrigger!.type) && `Awaiting response to ${group.pendingTrigger!.type}`}
-              </span>
-              <span className="text-[10px] text-muted-foreground/60 ml-2">
-                <RelativeTime isoTs={group.pendingTrigger!.ts} />
-              </span>
+            <div className="mt-1.5 p-2 rounded-lg bg-zinc-950/60 border border-border/50 space-y-1">
+              <div className="flex items-center justify-between">
+                <span className={cn("text-xs font-medium", colors.text)}>
+                  {group.pendingTrigger!.type === "ask_user_question" && "Waiting for your answer"}
+                  {group.pendingTrigger!.type === "plan_review" && "Waiting for plan approval"}
+                  {group.pendingTrigger!.type === "session_complete" && "Session finished — needs acknowledgement"}
+                  {group.pendingTrigger!.type === "escalate" && "Escalated — needs human attention"}
+                  {!["ask_user_question", "plan_review", "session_complete", "escalate"].includes(group.pendingTrigger!.type) && `Awaiting response to ${group.pendingTrigger!.type}`}
+                </span>
+                <span className="text-[10px] text-muted-foreground/70 font-mono ml-2">
+                  <RelativeTime isoTs={group.pendingTrigger!.ts} />
+                </span>
+              </div>
             </div>
           )}
 
           {/* Streaming status update */}
           {latestStatusUpdate && (
-            <div className="mt-1 flex items-center gap-1.5">
-              <Loader2 className="size-2.5 animate-spin text-muted-foreground/60 shrink-0" />
-              <span className="text-[10px] text-muted-foreground/80 italic truncate">
+            <div className="mt-1.5 flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-blue-950/30 border border-blue-500/20">
+              <Loader2 className="size-3 animate-spin text-blue-400 shrink-0" />
+              <span className="text-[11px] text-blue-200/90 font-medium truncate">
                 {latestStatusUpdate.statusText}
               </span>
             </div>
@@ -760,40 +847,78 @@ function LinkedSessionCard({ group, statusUpdates }: LinkedSessionCardProps) {
 
           {/* Non-pending: show last event summary */}
           {!isPending && !latestStatusUpdate && (
-            <div className="flex items-center gap-2 mt-0.5">
-              <span className="text-[10px] text-muted-foreground/60">
-                Last: <span className="text-muted-foreground/80">{group.lastType}</span>
+            <div className="flex items-center gap-2 mt-1 text-[11px] text-muted-foreground/70">
+              <span>
+                Last: <span className="font-mono text-foreground/80">{group.lastType}</span>
               </span>
-              <span className="text-[10px] text-muted-foreground/40">
+              <span>·</span>
+              <span className="font-mono text-muted-foreground/50">
                 <RelativeTime isoTs={group.lastTs} />
               </span>
             </div>
           )}
 
           {/* Event count + session ID hint */}
-          <div className="flex items-center gap-2 mt-0.5">
-            <span className="text-[10px] text-muted-foreground/40">
+          <div className="flex items-center gap-2 mt-1.5 text-[10px] text-muted-foreground/50">
+            <span className="font-medium bg-muted/40 px-1.5 py-0.5 rounded border border-border/40">
               {group.events.length} event{group.events.length !== 1 ? "s" : ""}
             </span>
             {group.lastSummary && (
-              <span className="text-[10px] font-mono text-muted-foreground/30 truncate">
-                {truncateId(group.source)}
+              <span className="font-mono text-muted-foreground/40 truncate">
+                #{truncateId(group.source)}
               </span>
             )}
           </div>
         </div>
 
         {/* Expand chevron */}
-        <div className="mt-0.5 shrink-0 text-muted-foreground/40">
-          {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        <div className="mt-0.5 shrink-0 text-muted-foreground/40 p-1 hover:text-foreground">
+          {expanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
         </div>
       </button>
 
       {/* Expanded event history */}
       {expanded && (
-        <div className={cn("border-t", colors.border)}>
+        <div className={cn("border-t bg-zinc-950/40 divide-y divide-border/30", colors.border)}>
           {group.events.map((event) => (
             <EventRow key={event.triggerId} entry={event} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Collapsible Param Defs ──────────────────────────────────────────────────
+
+function CollapsibleParamDefs({ params }: { params: ServiceTriggerParamDef[] }) {
+  const [expanded, setExpanded] = React.useState(false);
+
+  return (
+    <div className="mt-1.5">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex items-center gap-1 text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+      >
+        {expanded ? <ChevronDown className="size-2.5" /> : <ChevronRight className="size-2.5" />}
+        <span>{params.length} param{params.length !== 1 ? "s" : ""}</span>
+      </button>
+      {expanded && (
+        <div className="mt-1 space-y-0.5 pl-3.5">
+          {params.map((p) => (
+            <div key={p.name} className="text-[10px] text-muted-foreground/70">
+              <span className="font-mono text-foreground/80">{p.name}</span>
+              <span className="text-muted-foreground/40">: {p.type}</span>
+              {p.required && <span className="text-amber-400/70 ml-1 font-medium">required</span>}
+              {p.multiselect && <span className="text-violet-400/70 ml-1">multiselect</span>}
+              {p.enum && (
+                <span className="text-muted-foreground/50 ml-1">
+                  {"{" + p.enum.map(String).join(", ") + "}"}
+                </span>
+              )}
+              {p.description && <span className="ml-1 text-muted-foreground/60">— {p.description}</span>}
+            </div>
           ))}
         </div>
       )}
@@ -813,15 +938,11 @@ interface TriggerCatalogSectionProps {
 function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscriptionsChange }: TriggerCatalogSectionProps) {
   const [collapsed, setCollapsed] = React.useState(true);
   const [pending, setPending] = React.useState<Set<string>>(new Set());
-  // Track which trigger type has its param/filter form open
   const [paramFormOpen, setParamFormOpen] = React.useState<string | null>(null);
   const [editingSubscriptionId, setEditingSubscriptionId] = React.useState<string | null>(null);
-  // Track whether the open form is for editing (PUT) vs subscribing (POST)
   const [editMode, setEditMode] = React.useState(false);
-  // Track param form values keyed by trigger type (string for scalar, string[] for multiselect)
   const [paramValues, setParamValues] = React.useState<Record<string, Record<string, string | string[]>>>({});
   const [paramError, setParamError] = React.useState<string | null>(null);
-  // Track filter form values keyed by trigger type → field → value
   const [filterValues, setFilterValues] = React.useState<Record<string, Record<string, string>>>({});
   const [filterMode, setFilterMode] = React.useState<Record<string, "and" | "or">>({});
 
@@ -868,29 +989,23 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
     setPending((prev) => new Set([...prev, triggerType]));
     setParamError(null);
     try {
-      const res = await fetch(
-        `/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions`,
-        {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            triggerType,
-            ...(params ? { params } : {}),
-            ...(filters && filters.length > 0 ? { filters } : {}),
-            ...(filterMode ? { filterMode } : {}),
-          }),
-        },
-      );
-      if (!res.ok) {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ triggerType, params, filters, filterMode }),
+      });
+      if (res.ok) {
+        setParamFormOpen(null);
+        setEditingSubscriptionId(null);
+        setEditMode(false);
+        onSubscriptionsChange();
+      } else {
         const data = await res.json().catch(() => ({})) as { error?: string };
         setParamError(data.error ?? `HTTP ${res.status}`);
-        return;
       }
-      setParamFormOpen(null);
-      onSubscriptionsChange();
-    } catch {
-      // ignore
+    } catch (err) {
+      setParamError(err instanceof Error ? err.message : "Failed to subscribe");
     } finally {
       setPending((prev) => {
         const next = new Set(prev);
@@ -902,40 +1017,32 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
 
   const handleUpdate = React.useCallback(async (
     triggerType: string,
+    subscriptionId?: string,
     params?: Record<string, unknown>,
     filters?: Array<{ field: string; value: unknown; op?: string }>,
-    filterModeVal?: string,
+    filterMode?: string,
   ) => {
-    const pendingKey = editingSubscriptionId ?? triggerType;
+    const pendingKey = subscriptionId ?? triggerType;
     setPending((prev) => new Set([...prev, pendingKey]));
     setParamError(null);
     try {
-      const url = new URL(`/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions/${encodeURIComponent(triggerType)}`, window.location.origin);
-      if (editingSubscriptionId) url.searchParams.set("subscriptionId", editingSubscriptionId);
-      const res = await fetch(
-        url.toString().replace(window.location.origin, ""),
-        {
-          method: "PUT",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ...(params ? { params } : {}),
-            ...(filters && filters.length > 0 ? { filters } : {}),
-            ...(filterModeVal ? { filterMode: filterModeVal } : {}),
-          }),
-        },
-      );
-      if (!res.ok) {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions/${encodeURIComponent(triggerType)}`, {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subscriptionId, params, filters, filterMode }),
+      });
+      if (res.ok) {
+        setParamFormOpen(null);
+        setEditingSubscriptionId(null);
+        setEditMode(false);
+        onSubscriptionsChange();
+      } else {
         const data = await res.json().catch(() => ({})) as { error?: string };
         setParamError(data.error ?? `HTTP ${res.status}`);
-        return;
       }
-      setParamFormOpen(null);
-      setEditMode(false);
-      setEditingSubscriptionId(null);
-      onSubscriptionsChange();
-    } catch {
-      // ignore
+    } catch (err) {
+      setParamError(err instanceof Error ? err.message : "Failed to update subscription");
     } finally {
       setPending((prev) => {
         const next = new Set(prev);
@@ -943,85 +1050,85 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
         return next;
       });
     }
-  }, [sessionId, onSubscriptionsChange, editingSubscriptionId]);
+  }, [sessionId, onSubscriptionsChange]);
 
-  /** Open the param/filter form pre-populated with the current subscription values. */
-  const handleEdit = React.useCallback((def: ServiceTriggerDef, sub?: TriggerSubscription) => {
+  const handleToggle = React.useCallback((def: ServiceTriggerDef, isListening = false, subscriptionId?: string) => {
+    const isSubscribed = subscribedTypes.has(def.type);
+    const hasParams = def.params && def.params.length > 0;
+    const hasOutputSchema = !!(def.schema as any)?.properties;
+
+    if (isListening) {
+      void handleUnsubscribe(def.type, subscriptionId);
+    } else if (hasParams || hasOutputSchema) {
+      setParamFormOpen(def.type);
+      setEditingSubscriptionId(null);
+      setEditMode(false);
+      setParamError(null);
+      const defaults: Record<string, string | string[]> = {};
+      if (def.params) {
+        for (const p of def.params) {
+          if (p.multiselect) {
+            defaults[p.name] = [];
+          } else if (p.default !== undefined) {
+            defaults[p.name] = formatParamValue(p.default);
+          }
+        }
+      }
+      setParamValues((prev) => ({ ...prev, [def.type]: { ...defaults, ...prev[def.type] } }));
+    } else if (isSubscribed && !subscriptionId) {
+      void handleUnsubscribe(def.type);
+    } else {
+      void handleSubscribe(def.type);
+    }
+  }, [subscribedTypes, handleUnsubscribe, handleSubscribe]);
+
+  const handleEdit = React.useCallback((def: ServiceTriggerDef, subscription?: TriggerSubscription) => {
     setParamFormOpen(def.type);
+    setEditingSubscriptionId(subscription?.subscriptionId ?? null);
     setEditMode(true);
-    setEditingSubscriptionId(sub?.subscriptionId ?? null);
     setParamError(null);
 
-    // Pre-populate param values from current subscription
     const vals: Record<string, string | string[]> = {};
     const paramDefsByName = new Map((def.params ?? []).map((param) => [param.name, param]));
-    if (sub?.params) {
-      for (const [k, v] of Object.entries(sub.params)) {
+    if (subscription?.params) {
+      for (const [k, v] of Object.entries(subscription.params)) {
         const paramDef = paramDefsByName.get(k);
-        if (paramDef?.multiselect && Array.isArray(v)) vals[k] = v.map(String);
-        else vals[k] = formatParamValue(v);
+        if (paramDef?.multiselect && Array.isArray(v)) {
+          vals[k] = v.map(String);
+        } else {
+          vals[k] = formatParamValue(v);
+        }
       }
     }
     if (def.params) {
       for (const p of def.params) {
         if (vals[p.name] !== undefined) continue;
-        if (p.multiselect) vals[p.name] = [];
-        else if (p.default !== undefined) vals[p.name] = formatParamValue(p.default);
+        if (p.multiselect) {
+          vals[p.name] = [];
+        } else if (p.default !== undefined) {
+          vals[p.name] = formatParamValue(p.default);
+        }
       }
     }
     setParamValues((prev) => ({ ...prev, [def.type]: vals }));
 
-    // Pre-populate filter values
     const fVals: Record<string, string> = {};
-    if (sub?.filters) {
-      for (const f of sub.filters) {
-        fVals[f.field] = Array.isArray(f.value) ? f.value.map(String).join(", ") : String(f.value);
+    if (subscription?.filters) {
+      for (const f of subscription.filters) {
+        fVals[f.field] = Array.isArray(f.value) ? f.value.map(String).join(",") : String(f.value);
       }
     }
     setFilterValues((prev) => ({ ...prev, [def.type]: fVals }));
-
-    if (sub?.filterMode) {
-      setFilterMode((prev) => ({ ...prev, [def.type]: sub.filterMode! }));
-    }
+    setFilterMode((prev) => ({ ...prev, [def.type]: subscription?.filterMode ?? "and" }));
   }, []);
-
-  const handleToggle = React.useCallback((def: ServiceTriggerDef, isSubscribed: boolean, subscriptionId?: string) => {
-    const hasParams = def.params && def.params.length > 0;
-    const schemaProps = (def.schema as any)?.properties ?? {};
-    const hasFilterableFields = Object.keys(schemaProps).length > 0;
-
-    if (isSubscribed) {
-      handleUnsubscribe(def.type, subscriptionId);
-    } else if (hasParams || hasFilterableFields) {
-      // Open param/filter form instead of subscribing directly
-      setParamFormOpen(def.type);
-      setEditMode(false);
-      setEditingSubscriptionId(null);
-      setParamError(null);
-      // Pre-fill param defaults
-      if (hasParams) {
-        const defaults: Record<string, string | string[]> = {};
-        for (const p of def.params!) {
-          if (p.multiselect) {
-            defaults[p.name] = defaults[p.name] ?? [];
-          } else if (p.default !== undefined) {
-            defaults[p.name] = formatParamValue(p.default);
-          }
-        }
-        setParamValues((prev) => ({ ...prev, [def.type]: { ...defaults, ...prev[def.type] } }));
-      }
-    } else {
-      handleSubscribe(def.type);
-    }
-  }, [handleUnsubscribe, handleSubscribe]);
 
   const handleParamSubmit = React.useCallback((def: ServiceTriggerDef) => {
     const vals = paramValues[def.type] ?? {};
-    const params: Record<string, JsonValue> = {};
+    const params: Record<string, unknown> = {};
+
     for (const p of (def.params ?? [])) {
       const raw = vals[p.name];
 
-      // Multiselect: value is string[]
       if (p.multiselect && p.enum) {
         const selected = Array.isArray(raw) ? raw : [];
         if (selected.length === 0 && p.required) {
@@ -1029,25 +1136,31 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
           return;
         }
         if (selected.length === 0) continue;
-        // Coerce array items to the declared type
         if (p.type === "number") {
-          params[p.name] = selected.map(Number).filter(n => !isNaN(n));
+          params[p.name] = selected.map(Number).filter((n) => !isNaN(n));
         } else if (p.type === "boolean") {
-          params[p.name] = selected.map(v => v === "true");
+          params[p.name] = selected.map((v) => v === "true");
         } else {
           params[p.name] = selected;
         }
         continue;
       }
 
-      // Scalar
       const str = (typeof raw === "string" ? raw : "").trim();
       if (!str && p.required) {
         setParamError(`'${p.label}' is required`);
         return;
       }
       if (!str) continue;
-      if (p.type === "number") {
+
+      if (p.type === "json") {
+        try {
+          params[p.name] = JSON.parse(str);
+        } catch {
+          setParamError(`'${p.label}' must be valid JSON`);
+          return;
+        }
+      } else if (p.type === "number") {
         const num = Number(str);
         if (isNaN(num)) {
           setParamError(`'${p.label}' must be a number`);
@@ -1056,104 +1169,131 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
         params[p.name] = num;
       } else if (p.type === "boolean") {
         params[p.name] = str === "true";
-      } else if (p.type === "json") {
-        try {
-          params[p.name] = JSON.parse(str) as JsonValue;
-        } catch {
-          setParamError(`'${p.label}' must be valid JSON`);
-          return;
-        }
       } else {
         params[p.name] = str;
       }
     }
-    // Build filters from filterValues, coercing to the schema's declared type
-    const schemaProps = (def.schema as any)?.properties ?? {};
-    const filterableFields = Object.keys(schemaProps);
-    const filters: Array<{ field: string; value: string | number | boolean; op?: string }> = [];
+
     const fVals = filterValues[def.type] ?? {};
-    for (const field of filterableFields) {
-      const val = (fVals[field] ?? "").trim();
-      if (!val) continue;
+    const filters: Array<{ field: string; value: unknown; op?: string }> = [];
+    const schemaProps = (def.schema as any)?.properties ?? {};
+
+    for (const [field, rawVal] of Object.entries(fVals)) {
+      const str = rawVal.trim();
+      if (!str) continue;
       const propDef = schemaProps[field];
       if (propDef?.type === "boolean") {
-        filters.push({ field, value: val === "true" });
-      } else if (propDef?.type === "number" || propDef?.type === "integer") {
-        const num = Number(val);
-        if (isNaN(num)) {
-          setParamError(`Filter '${field}' must be a valid number`);
-          return;
-        }
-        filters.push({ field, value: num });
+        filters.push({ field, value: str === "true", op: "eq" });
+      } else if (propDef?.type === "number") {
+        const num = Number(str);
+        if (!isNaN(num)) filters.push({ field, value: num, op: "eq" });
       } else {
-        filters.push({ field, value: val });
+        filters.push({ field, value: str, op: "eq" });
       }
     }
+
     const fMode = filterMode[def.type] ?? "and";
 
-    const submitFn = editMode ? handleUpdate : handleSubscribe;
-    submitFn(
-      def.type,
-      Object.keys(params).length > 0 ? params : undefined,
-      filters.length > 0 ? filters : undefined,
-      filters.length > 1 ? fMode : undefined,
-    );
-  }, [paramValues, filterValues, filterMode, handleSubscribe, handleUpdate, editMode]);
+    if (editMode) {
+      void handleUpdate(
+        def.type,
+        editingSubscriptionId ?? undefined,
+        Object.keys(params).length > 0 ? params : undefined,
+        filters.length > 0 ? filters : undefined,
+        filters.length > 0 ? fMode : undefined,
+      );
+    } else {
+      void handleSubscribe(
+        def.type,
+        Object.keys(params).length > 0 ? params : undefined,
+        filters.length > 0 ? filters : undefined,
+        filters.length > 0 ? fMode : undefined,
+      );
+    }
+  }, [paramValues, filterValues, filterMode, editMode, editingSubscriptionId, handleUpdate, handleSubscribe]);
 
-  // Group trigger defs by service prefix (part before ':')
-  const serviceGroups = React.useMemo(() => {
+  // Group triggerDefs by service prefix
+  const groupedByService = React.useMemo(() => {
     const map = new Map<string, ServiceTriggerDef[]>();
     for (const def of triggerDefs) {
-      const colonIdx = def.type.indexOf(":");
-      const service = colonIdx > 0 ? def.type.slice(0, colonIdx) : def.type;
-      const existing = map.get(service);
-      if (existing) {
-        existing.push(def);
-      } else {
-        map.set(service, [def]);
-      }
+      const prefix = def.type.includes(":") ? def.type.split(":")[0] : "other";
+      const list = map.get(prefix) ?? [];
+      list.push(def);
+      map.set(prefix, list);
     }
-    return Array.from(map.entries()).map(([service, defs]) => ({
-      service,
-      defs,
-      subscribedCount: defs.filter((d) => subscribedTypes.has(d.type)).length,
-    }));
-  }, [triggerDefs, subscribedTypes]);
-
-  if (triggerDefs.length === 0) return null;
+    return map;
+  }, [triggerDefs]);
 
   return (
-    <div className="flex flex-col gap-1.5 p-2">
-      {serviceGroups.map(({ service, defs, subscribedCount }) => (
-        <ServiceCatalogAccordion
-          key={service}
-          service={service}
-          defs={defs}
-          subscribedCount={subscribedCount}
-          subscribedTypes={subscribedTypes}
-          subscriptionsByType={subscriptionsByType}
-          pending={pending}
-          paramFormOpen={paramFormOpen}
-          editMode={editMode}
-          paramValues={paramValues}
-          paramError={paramError}
-          filterValues={filterValues}
-          filterModeValues={filterMode}
-          onToggle={handleToggle}
-          onEdit={handleEdit}
-          onParamSubmit={handleParamSubmit}
-          onParamFormOpen={setParamFormOpen}
-          onParamFormClose={() => { setParamFormOpen(null); setEditMode(false); setEditingSubscriptionId(null); setParamError(null); }}
-          onParamValuesChange={setParamValues}
-          onFilterValuesChange={setFilterValues}
-          onFilterModeChange={setFilterMode}
-        />
-      ))}
+    <div className="p-3 space-y-3">
+      {/* Available Triggers header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="size-6 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
+            <Layers className="size-3.5" />
+          </span>
+          <span className="text-xs font-semibold text-foreground uppercase tracking-wider">
+            Available Triggers ({triggerDefs.length})
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() => setCollapsed((v) => !v)}
+          className="text-xs font-medium text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors px-2 py-1 rounded-md hover:bg-muted/40"
+        >
+          <span>{collapsed ? "Expand all" : "Collapse all"}</span>
+          {collapsed ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />}
+        </button>
+      </div>
+
+      {/* Service groups */}
+      <div className="space-y-2.5">
+        {Array.from(groupedByService.entries()).map(([service, defs]) => {
+          const subscribedCount = defs.filter((d) => subscribedTypes.has(d.type)).length;
+          return (
+            <ServiceCatalogAccordion
+              key={service}
+              service={service}
+              defs={defs}
+              subscribedCount={subscribedCount}
+              subscribedTypes={subscribedTypes}
+              subscriptionsByType={subscriptionsByType}
+              pending={pending}
+              paramFormOpen={paramFormOpen}
+              editingSubscriptionId={editingSubscriptionId}
+              editMode={editMode}
+              paramValues={paramValues}
+              paramError={paramError}
+              filterValues={filterValues}
+              filterModeValues={filterMode}
+              onToggle={handleToggle}
+              onEdit={handleEdit}
+              onUnsubscribe={handleUnsubscribe}
+              onParamFormOpen={(type) => {
+                setParamFormOpen(type);
+                setEditingSubscriptionId(null);
+                setEditMode(false);
+                setParamError(null);
+              }}
+              onParamFormClose={() => {
+                setParamFormOpen(null);
+                setEditingSubscriptionId(null);
+                setEditMode(false);
+                setParamError(null);
+              }}
+              onParamValuesChange={setParamValues}
+              onFilterValuesChange={setFilterValues}
+              onFilterModeChange={setFilterMode}
+              onParamSubmit={handleParamSubmit}
+            />
+          );
+        })}
+      </div>
     </div>
   );
 }
 
-// ── Service Catalog Accordion (one per service prefix) ─────────────────────
+// ── Service Catalog Accordion ──────────────────────────────────────────────
 
 interface ServiceCatalogAccordionProps {
   service: string;
@@ -1163,138 +1303,128 @@ interface ServiceCatalogAccordionProps {
   subscriptionsByType: Map<string, TriggerSubscription[]>;
   pending: Set<string>;
   paramFormOpen: string | null;
+  editingSubscriptionId: string | null;
   editMode: boolean;
   paramValues: Record<string, Record<string, string | string[]>>;
   paramError: string | null;
   filterValues: Record<string, Record<string, string>>;
   filterModeValues: Record<string, "and" | "or">;
-  onToggle: (def: ServiceTriggerDef, isSubscribed: boolean, subscriptionId?: string) => void;
-  onEdit: (def: ServiceTriggerDef, sub?: TriggerSubscription) => void;
-  onParamSubmit: (def: ServiceTriggerDef) => void;
+  onToggle: (def: ServiceTriggerDef, isListening?: boolean, subscriptionId?: string) => void;
+  onEdit: (def: ServiceTriggerDef, subscription?: TriggerSubscription) => void;
+  onUnsubscribe: (triggerType: string, subscriptionId?: string) => void;
   onParamFormOpen: (type: string) => void;
   onParamFormClose: () => void;
   onParamValuesChange: React.Dispatch<React.SetStateAction<Record<string, Record<string, string | string[]>>>>;
   onFilterValuesChange: React.Dispatch<React.SetStateAction<Record<string, Record<string, string>>>>;
   onFilterModeChange: React.Dispatch<React.SetStateAction<Record<string, "and" | "or">>>;
-}
-
-// ── Collapsible Param Definitions ──────────────────────────────────────────
-
-function CollapsibleParamDefs({ params }: { params: ServiceTriggerParamDef[] }) {
-  const [expanded, setExpanded] = React.useState(false);
-
-  return (
-    <div className="mt-1">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="flex items-center gap-1 text-[9px] text-muted-foreground/50 hover:text-muted-foreground/70 transition-colors"
-      >
-        {expanded ? <ChevronDown className="size-2.5" /> : <ChevronRight className="size-2.5" />}
-        <span>{params.length} param{params.length !== 1 ? "s" : ""}</span>
-      </button>
-      {expanded && (
-        <div className="mt-0.5 space-y-0.5 pl-3.5">
-          {params.map((p) => (
-            <div key={p.name} className="text-[9px] text-muted-foreground/50">
-              <span className="font-mono">{p.name}</span>
-              <span className="text-muted-foreground/30">: {p.type}</span>
-              {p.required && <span className="text-amber-400/50 ml-1">required</span>}
-              {p.multiselect && <span className="text-violet-400/50 ml-1">multiselect</span>}
-              {p.enum && (
-                <span className="text-muted-foreground/30 ml-1">
-                  {"{" + p.enum.map(String).join(", ") + "}"}
-                </span>
-              )}
-              {p.description && <span className="ml-1">— {p.description}</span>}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+  onParamSubmit: (def: ServiceTriggerDef) => void;
 }
 
 function ServiceCatalogAccordion({
-  service, defs, subscribedCount, subscribedTypes, subscriptionsByType,
-  pending, paramFormOpen, editMode, paramValues, paramError,
-  filterValues, filterModeValues,
-  onToggle, onEdit, onParamSubmit, onParamFormOpen, onParamFormClose, onParamValuesChange,
-  onFilterValuesChange, onFilterModeChange,
+  service,
+  defs,
+  subscribedCount,
+  subscribedTypes,
+  subscriptionsByType,
+  pending,
+  paramFormOpen,
+  editingSubscriptionId,
+  editMode,
+  paramValues,
+  paramError,
+  filterValues,
+  filterModeValues,
+  onToggle,
+  onEdit,
+  onUnsubscribe,
+  onParamFormOpen,
+  onParamFormClose,
+  onParamValuesChange,
+  onFilterValuesChange,
+  onFilterModeChange,
+  onParamSubmit,
 }: ServiceCatalogAccordionProps) {
   const [expanded, setExpanded] = React.useState(false);
 
   return (
     <div className={cn(
-      "rounded-lg border overflow-hidden",
-      subscribedCount > 0 ? "border-emerald-500/20 bg-emerald-950/10" : "border-border/50 bg-muted/10",
+      "rounded-xl border overflow-hidden shadow-sm transition-all",
+      subscribedCount > 0
+        ? "border-emerald-500/30 bg-zinc-900/40"
+        : "border-border/60 bg-zinc-900/30",
     )}>
+      {/* Service Header */}
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-white/[0.02] transition-colors"
+        className="w-full flex items-center gap-2.5 px-3.5 py-2.5 hover:bg-white/[0.02] transition-colors"
       >
-        <Settings className="size-3.5 text-muted-foreground" />
-        <span className="text-xs font-medium text-foreground/90 flex-1 text-left capitalize">
+        <SourceIcon source={service} className="size-4 shrink-0" />
+        <span className="text-xs font-semibold text-foreground/90 capitalize flex-1 text-left">
           {service}
         </span>
-        <span className="text-[10px] text-muted-foreground/50">
+        <span className="text-[11px] text-muted-foreground/60">
           {defs.length} trigger{defs.length !== 1 ? "s" : ""}
         </span>
         {subscribedCount > 0 && (
-          <span className="inline-flex items-center justify-center size-4 rounded-full bg-emerald-500/20 text-emerald-400 text-[9px] font-bold">
+          <span className="inline-flex items-center justify-center px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-bold border border-emerald-500/30">
             {subscribedCount}
           </span>
         )}
-        <div className="shrink-0 text-muted-foreground/40">
+        <div className="shrink-0 text-muted-foreground/50 ml-1">
           {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
         </div>
       </button>
 
+      {/* Expanded trigger list */}
       {expanded && (
-        <div className="border-t border-border/30 divide-y divide-border/50">
+        <div className="border-t border-border/40 divide-y divide-border/30 bg-zinc-950/20">
           {defs.map((def) => {
             const triggerSubscriptions = subscriptionsByType.get(def.type) ?? [];
             const isSubscribed = triggerSubscriptions.length > 0;
             const isPendingToggle = pending.has(def.type);
             const isParamFormVisible = paramFormOpen === def.type;
             const hasParams = def.params && def.params.length > 0;
+            const hasOutputSchema = !!(def.schema as any)?.properties;
+            const isCronParam = def.type.startsWith("time:") && def.params?.some((p) => p.name === "cron");
 
             return (
-              <div key={def.type} className="px-3 py-2">
-                {/* Header: label as primary, type as secondary */}
-                <div className="flex items-start gap-2">
-                  <ZapIcon className={cn("size-3.5 mt-0.5 shrink-0", isSubscribed ? "text-emerald-400" : "text-muted-foreground/40")} />
+              <div key={def.type} className="p-3 space-y-2 hover:bg-white/[0.01] transition-colors">
+                <div className="flex items-start justify-between gap-3">
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-xs font-medium text-foreground">{def.label}</span>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-semibold text-foreground">{def.label}</span>
                       {isSubscribed && (
-                        <Badge variant="outline" className="px-1 py-0 text-[10px] h-4 border-emerald-500/40 text-emerald-400 shrink-0">
+                        <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-emerald-500/40 text-emerald-400 shrink-0">
                           {triggerSubscriptions.length} active
                         </Badge>
                       )}
                       {hasParams && !isSubscribed && (
-                        <Badge variant="outline" className="px-1 py-0 text-[10px] h-4 border-violet-500/30 text-violet-400/70 shrink-0">
+                        <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-violet-500/30 text-violet-400/80 bg-violet-500/5">
                           configurable
                         </Badge>
                       )}
                     </div>
-                    <span className="text-[10px] font-mono text-muted-foreground/50 block">{def.type}</span>
+                    <span className="text-[10px] font-mono text-muted-foreground/60 block mt-0.5">
+                      {def.type}
+                    </span>
                     {def.description && (
-                      <p className="text-[10px] text-muted-foreground/70 mt-0.5 leading-snug">
+                      <p className="text-[11px] text-muted-foreground/80 mt-1 leading-relaxed">
                         {def.description}
                       </p>
                     )}
                   </div>
 
-                  {/* Add button */}
+                  {/* Add / Subscribe button */}
                   <button
                     type="button"
                     onClick={() => onToggle(def, false)}
                     disabled={isPendingToggle}
                     className={cn(
-                      "inline-flex items-center gap-1 shrink-0 px-2 py-1 rounded text-[11px] font-medium transition-colors",
-                      "text-muted-foreground hover:text-emerald-400 hover:bg-emerald-500/10 border border-transparent hover:border-emerald-500/20",
+                      "inline-flex items-center gap-1 shrink-0 px-2 py-1 rounded-md text-xs font-medium transition-all",
+                      isSubscribed
+                        ? "text-muted-foreground hover:text-emerald-400 hover:bg-emerald-500/10 border border-transparent hover:border-emerald-500/20"
+                        : "bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm",
                       isPendingToggle && "opacity-50 cursor-not-allowed",
                     )}
                     title={isSubscribed ? "Add another subscription" : "Subscribe"}
@@ -1305,39 +1435,42 @@ function ServiceCatalogAccordion({
                     ) : (
                       <Plus className="size-3.5" />
                     )}
-                    Add
+                    {isSubscribed ? "Add" : "Subscribe"}
                   </button>
                 </div>
 
-                {/* Existing subscriptions */}
+                {/* Existing Subscriptions list */}
                 {isSubscribed && (
-                  <div className="mt-2 ml-[22px] space-y-1.5">
+                  <div className="mt-2 space-y-1.5">
                     {triggerSubscriptions.map((sub, index) => {
                       const subKey = sub.subscriptionId ?? `${def.type}-${index}`;
                       const isPendingSub = pending.has(subKey) || isPendingToggle;
                       const details: string[] = [];
                       const paramBadges: React.ReactNode[] = [];
+
                       if (sub.params && Object.keys(sub.params).length > 0) {
                         for (const [k, v] of Object.entries(sub.params)) {
                           details.push(`${k}=${formatParamValue(v)}`);
-                          const badges = renderParamValueBadges(k, v, "px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60");
+                          const badges = renderParamValueBadges(k, v, "px-1.5 py-0 text-[10px] h-4 border-emerald-500/30 text-emerald-400/90 bg-emerald-500/5 font-mono");
                           if (Array.isArray(badges)) paramBadges.push(...badges);
                           else paramBadges.push(badges);
                         }
                       }
+
                       if (sub.filters && sub.filters.length > 0) {
                         const mode = sub.filterMode === "or" ? "OR" : "AND";
                         const filterStrs = sub.filters.map((f) => `${f.field}${f.op === "contains" ? "~" : "="}${Array.isArray(f.value) ? f.value.map(String).join("|") : String(f.value)}`);
                         details.push(`${mode}(${filterStrs.join(", ")})`);
                       }
+
                       return (
-                        <div key={subKey} className="rounded-md border border-border/40 bg-muted/20 px-2.5 py-1.5">
+                        <div key={subKey} className="rounded-lg border border-border/60 bg-zinc-900/60 p-2.5">
                           <div className="flex items-center gap-2">
                             <div className="flex-1 min-w-0">
                               {details.length > 0 ? (
                                 <div className="space-y-1">
-                                  <p className="text-[10px] font-mono text-muted-foreground/50 truncate">
-                                    {details.join(" \u00B7 ")}
+                                  <p className="text-[10px] font-mono text-muted-foreground/70 truncate">
+                                    {details.join(" · ")}
                                   </p>
                                   {paramBadges.length > 0 && (
                                     <div className="flex items-center gap-1 flex-wrap">
@@ -1346,17 +1479,18 @@ function ServiceCatalogAccordion({
                                   )}
                                 </div>
                               ) : (
-                                <p className="text-[10px] text-muted-foreground/40 italic">No filters</p>
+                                <p className="text-[10px] text-muted-foreground/50 italic">No filters</p>
                               )}
                             </div>
-                            <div className="flex items-center gap-0.5 shrink-0">
-                              {(hasParams || Object.keys((def.schema as any)?.properties ?? {}).length > 0) && (
+
+                            <div className="flex items-center gap-1 shrink-0">
+                              {(hasParams || hasOutputSchema) && (
                                 <button
                                   type="button"
                                   onClick={() => onEdit(def, sub)}
                                   disabled={isPendingSub}
                                   className={cn(
-                                    "p-1 rounded transition-colors text-muted-foreground/40 hover:text-blue-400 hover:bg-blue-500/10",
+                                    "p-1 rounded-md transition-colors text-muted-foreground hover:text-blue-400 hover:bg-blue-500/10",
                                     isPendingSub && "opacity-50 cursor-not-allowed",
                                   )}
                                   title="Edit subscription"
@@ -1370,7 +1504,7 @@ function ServiceCatalogAccordion({
                                 onClick={() => onToggle(def, true, sub.subscriptionId)}
                                 disabled={isPendingSub}
                                 className={cn(
-                                  "p-1 rounded transition-colors text-muted-foreground/40 hover:text-red-400 hover:bg-red-500/10",
+                                  "p-1 rounded-md transition-colors text-muted-foreground hover:text-rose-400 hover:bg-rose-500/10",
                                   isPendingSub && "opacity-50 cursor-not-allowed",
                                 )}
                                 title="Remove subscription"
@@ -1385,251 +1519,30 @@ function ServiceCatalogAccordion({
                     })}
                   </div>
                 )}
+
                 {/* Collapsible param definitions when not subscribed */}
                 {hasParams && !isSubscribed && !isParamFormVisible && def.params && (
                   <CollapsibleParamDefs params={def.params} />
                 )}
 
-                {/* Inline param form */}
-                {isParamFormVisible && (hasParams || Object.keys((def.schema as any)?.properties ?? {}).length > 0) && (
-                  <div className="mt-2 rounded border border-violet-500/20 bg-violet-950/10 p-2 space-y-1.5">
-                    {hasParams && <div className="text-[10px] font-medium text-violet-300/80">Service params</div>}
-                    {hasParams && def.params!.map((p) => {
-                      const currentVal = paramValues[def.type]?.[p.name];
-                      const selectedArr = Array.isArray(currentVal) ? currentVal : [];
-
-                      return (
-                        <div key={p.name} className="flex items-start gap-1.5">
-                          <label className="text-[10px] text-muted-foreground/70 w-20 shrink-0 truncate pt-0.5" title={p.description ?? p.name}>
-                            {p.label}{p.required ? <span className="text-amber-400">*</span> : ""}
-                          </label>
-
-                          {/* Multiselect: checkboxes for each enum value */}
-                          {p.multiselect && p.enum ? (
-                            <div className="flex-1 space-y-1">
-                              {selectedArr.length > 0 && (
-                                <div className="flex flex-wrap gap-1">
-                                  {selectedArr.map((value, index) => (
-                                    <Badge key={`${p.name}:${value}:${index}`} variant="outline" className="px-1 py-0 text-[9px] h-4 border-violet-500/30 text-violet-300/80 bg-violet-500/5">
-                                      {value}
-                                    </Badge>
-                                  ))}
-                                </div>
-                              )}
-                              <div className="flex flex-wrap gap-x-2.5 gap-y-1">
-                                {p.enum.map((opt) => {
-                                const optStr = String(opt);
-                                const checked = selectedArr.includes(optStr);
-                                return (
-                                  <label key={optStr} className="flex items-center gap-1 cursor-pointer text-[10px] text-foreground/80">
-                                    <input
-                                      type="checkbox"
-                                      checked={checked}
-                                      onChange={() => {
-                                        onParamValuesChange((prev) => {
-                                          const cur = Array.isArray(prev[def.type]?.[p.name]) ? [...(prev[def.type][p.name] as string[])] : [];
-                                          const next = checked ? cur.filter(v => v !== optStr) : [...cur, optStr];
-                                          return { ...prev, [def.type]: { ...prev[def.type], [p.name]: next } };
-                                        });
-                                      }}
-                                      className="accent-primary size-3"
-                                    />
-                                    {optStr}
-                                  </label>
-                                );
-                                })}
-                              </div>
-                            </div>
-
-                          /* Enum (single select): dropdown */
-                          ) : p.enum ? (
-                            <select
-                              value={typeof currentVal === "string" ? currentVal : ""}
-                              onChange={(e) => onParamValuesChange((prev) => ({
-                                ...prev,
-                                [def.type]: { ...prev[def.type], [p.name]: e.target.value },
-                              }))}
-                              className="flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
-                            >
-                              <option value="">—</option>
-                              {p.enum.map((opt) => (
-                                <option key={String(opt)} value={String(opt)}>{String(opt)}</option>
-                              ))}
-                            </select>
-
-                          /* JSON */
-                          ) : p.type === "json" ? (
-                            <textarea
-                              rows={3}
-                              placeholder={p.default !== undefined ? formatParamValue(p.default) : "{}"}
-                              value={typeof currentVal === "string" ? currentVal : ""}
-                              onChange={(e) => onParamValuesChange((prev) => ({
-                                ...prev,
-                                [def.type]: { ...prev[def.type], [p.name]: e.target.value },
-                              }))}
-                              className="flex-1 rounded border border-border bg-background px-1.5 py-1 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-ring resize-y"
-                            />
-
-                          /* Boolean */
-                          ) : p.type === "boolean" ? (
-                            <select
-                              value={typeof currentVal === "string" ? currentVal : ""}
-                              onChange={(e) => onParamValuesChange((prev) => ({
-                                ...prev,
-                                [def.type]: { ...prev[def.type], [p.name]: e.target.value },
-                              }))}
-                              className="flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
-                            >
-                              <option value="">—</option>
-                              <option value="true">true</option>
-                              <option value="false">false</option>
-                            </select>
-
-                          /* Cron expression: friendly recurring-schedule builder */
-                          ) : p.name === "cron" ? (
-                            <CronScheduleBuilder
-                              value={typeof currentVal === "string" ? currentVal : ""}
-                              onChange={(v) => onParamValuesChange((prev) => ({
-                                ...prev,
-                                [def.type]: { ...prev[def.type], [p.name]: v },
-                              }))}
-                            />
-
-                          /* Default: text/number input */
-                          ) : (
-                            <input
-                              type={p.type === "number" ? "number" : "text"}
-                              placeholder={p.default !== undefined ? String(p.default) : undefined}
-                              value={typeof currentVal === "string" ? currentVal : ""}
-                              onChange={(e) => onParamValuesChange((prev) => ({
-                                ...prev,
-                                [def.type]: { ...prev[def.type], [p.name]: e.target.value },
-                              }))}
-                              className="flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
-                            />
-                          )}
-                        </div>
-                      );
-                    })}
-                    {/* Filter fields (from output schema) */}
-                    {(() => {
-                      const schemaProps = (def.schema as any)?.properties ?? {};
-                      const fields = Object.keys(schemaProps);
-                      if (fields.length === 0) return null;
-                      const currentMode = filterModeValues[def.type] ?? "and";
-                      return (
-                        <>
-                          <div className="border-t border-border/30 mt-1.5 pt-1.5">
-                            <div className="flex items-center gap-2 mb-1">
-                              <span className="text-[10px] font-medium text-blue-300/80">Delivery Filters</span>
-                              {fields.length > 1 && (
-                                <div className="flex items-center gap-1">
-                                  <button
-                                    type="button"
-                                    onClick={() => onFilterModeChange((prev) => ({ ...prev, [def.type]: "and" }))}
-                                    className={cn(
-                                      "text-[9px] px-1.5 py-0.5 rounded transition-colors",
-                                      currentMode === "and"
-                                        ? "bg-blue-500/20 text-blue-300"
-                                        : "text-muted-foreground/50 hover:text-muted-foreground",
-                                    )}
-                                  >
-                                    AND
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => onFilterModeChange((prev) => ({ ...prev, [def.type]: "or" }))}
-                                    className={cn(
-                                      "text-[9px] px-1.5 py-0.5 rounded transition-colors",
-                                      currentMode === "or"
-                                        ? "bg-blue-500/20 text-blue-300"
-                                        : "text-muted-foreground/50 hover:text-muted-foreground",
-                                    )}
-                                  >
-                                    OR
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                            {fields.map((field) => {
-                              const propDef = schemaProps[field];
-                              const desc = propDef?.description ?? field;
-                              const enumVals = propDef?.enum as string[] | undefined;
-                              const currentVal = filterValues[def.type]?.[field] ?? "";
-                              return (
-                                <div key={field} className="flex items-start gap-1.5 mb-1">
-                                  <label className="text-[10px] text-muted-foreground/70 w-20 shrink-0 truncate pt-0.5" title={desc}>
-                                    {field}
-                                  </label>
-                                  {enumVals ? (
-                                    <select
-                                      value={currentVal}
-                                      onChange={(e) => onFilterValuesChange((prev) => ({
-                                        ...prev,
-                                        [def.type]: { ...prev[def.type], [field]: e.target.value },
-                                      }))}
-                                      className="flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
-                                    >
-                                      <option value="">— any —</option>
-                                      {enumVals.map((v) => (
-                                        <option key={String(v)} value={String(v)}>{String(v)}</option>
-                                      ))}
-                                    </select>
-                                  ) : propDef?.type === "boolean" ? (
-                                    <select
-                                      value={currentVal}
-                                      onChange={(e) => onFilterValuesChange((prev) => ({
-                                        ...prev,
-                                        [def.type]: { ...prev[def.type], [field]: e.target.value },
-                                      }))}
-                                      className="flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
-                                    >
-                                      <option value="">— any —</option>
-                                      <option value="true">true</option>
-                                      <option value="false">false</option>
-                                    </select>
-                                  ) : (
-                                    <input
-                                      type="text"
-                                      placeholder={`filter by ${field}`}
-                                      value={currentVal}
-                                      onChange={(e) => onFilterValuesChange((prev) => ({
-                                        ...prev,
-                                        [def.type]: { ...prev[def.type], [field]: e.target.value },
-                                      }))}
-                                      className="flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
-                                    />
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </>
-                      );
-                    })()}
-                    {paramError && (
-                      <p className="text-[9px] text-destructive">{paramError}</p>
-                    )}
-                    <div className="flex items-center gap-1.5 pt-0.5">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-5 text-[10px] px-1.5"
-                        onClick={onParamFormClose}
-                      >
-                        Cancel
-                      </Button>
-                      <Button
-                        size="sm"
-                        className="h-5 text-[10px] px-1.5"
-                        disabled={isPendingToggle || (editMode && triggerSubscriptions.length === 0)}
-                        onClick={() => onParamSubmit(def)}
-                      >
-                        {isPendingToggle ? <Loader2 className="size-2.5 animate-spin mr-1" /> : null}
-                        {editMode ? "Update" : "Subscribe"}
-                      </Button>
-                    </div>
-                  </div>
+                {/* Inline param form (Wizard) */}
+                {isParamFormVisible && (hasParams || hasOutputSchema) && (
+                  <SubscriptionWizard
+                    def={def}
+                    isCronParam={isCronParam}
+                    paramValues={paramValues}
+                    onParamValuesChange={onParamValuesChange}
+                    filterValues={filterValues}
+                    onFilterValuesChange={onFilterValuesChange}
+                    filterModeValues={filterModeValues}
+                    onFilterModeChange={onFilterModeChange}
+                    paramError={paramError}
+                    editMode={editMode}
+                    isPendingToggle={isPendingToggle}
+                    triggerSubscriptions={triggerSubscriptions}
+                    onParamSubmit={onParamSubmit}
+                    onParamFormClose={onParamFormClose}
+                  />
                 )}
               </div>
             );
@@ -1640,9 +1553,398 @@ function ServiceCatalogAccordion({
   );
 }
 
-// ── Catalog Section (wraps service accordions) ─────────────────────────────
-// TriggerCatalogSection is the parent that holds subscribe/param logic
-// and delegates rendering per-service to ServiceCatalogAccordion above.
+// ── Subscription Wizard ────────────────────────────────────────────────────
+
+interface SubscriptionWizardProps {
+  def: ServiceTriggerDef;
+  isCronParam?: boolean;
+  paramValues: Record<string, Record<string, string | string[]>>;
+  onParamValuesChange: React.Dispatch<React.SetStateAction<Record<string, Record<string, string | string[]>>>>;
+  filterValues: Record<string, Record<string, string>>;
+  onFilterValuesChange: React.Dispatch<React.SetStateAction<Record<string, Record<string, string>>>>;
+  filterModeValues: Record<string, "and" | "or">;
+  onFilterModeChange: React.Dispatch<React.SetStateAction<Record<string, "and" | "or">>>;
+  paramError: string | null;
+  editMode: boolean;
+  isPendingToggle: boolean;
+  triggerSubscriptions: TriggerSubscription[];
+  onParamSubmit: (def: ServiceTriggerDef) => void;
+  onParamFormClose: () => void;
+}
+
+/**
+ * Guided step-by-step wizard for configuring a trigger subscription.
+ *
+ * Steps adapt to the trigger definition:
+ *   - Params step  (only when the trigger declares params)
+ *   - Filters step (only when the trigger declares an output schema)
+ *   - Review step  (always last)
+ *
+ * The submit button stays mounted on every step so a user who knows what they
+ * want can subscribe without walking the whole rail.
+ */
+function SubscriptionWizard({
+  def,
+  isCronParam,
+  paramValues,
+  onParamValuesChange,
+  filterValues,
+  onFilterValuesChange,
+  filterModeValues,
+  onFilterModeChange,
+  paramError,
+  editMode,
+  isPendingToggle,
+  triggerSubscriptions,
+  onParamSubmit,
+  onParamFormClose,
+}: SubscriptionWizardProps) {
+  const schemaProps = ((def.schema as any)?.properties ?? {}) as Record<string, any>;
+  const filterFields = Object.keys(schemaProps);
+  const hasParams = !!(def.params && def.params.length > 0);
+  const hasFilters = filterFields.length > 0;
+
+  // Build the ordered step list for this specific trigger definition.
+  const steps = React.useMemo(() => {
+    const list: Array<{ id: "params" | "filters" | "review"; label: string }> = [];
+    if (hasParams) list.push({ id: "params", label: "Parameters" });
+    if (hasFilters) list.push({ id: "filters", label: "Delivery Filters" });
+    list.push({ id: "review", label: "Review" });
+    return list;
+  }, [hasParams, hasFilters]);
+
+  const [stepIndex, setStepIndex] = React.useState(0);
+  // Guard against a def changing shape under us (e.g. schema arrives late).
+  const safeIndex = Math.min(stepIndex, steps.length - 1);
+  const current = steps[safeIndex];
+  const isLast = safeIndex === steps.length - 1;
+
+  const currentParams = paramValues[def.type] ?? {};
+  const currentFilters = filterValues[def.type] ?? {};
+  const currentMode = filterModeValues[def.type] ?? "and";
+
+  const filledParams = Object.entries(currentParams).filter(([, v]) => (Array.isArray(v) ? v.length > 0 : String(v ?? "").trim() !== ""));
+  const filledFilters = Object.entries(currentFilters).filter(([, v]) => String(v ?? "").trim() !== "");
+
+  return (
+    <div className="rounded-xl border border-blue-500/30 bg-blue-950/20 p-3.5 space-y-3 mt-2 shadow-inner">
+      {/* Wizard stepper rail */}
+      <div className="flex items-center justify-between pb-2 border-b border-blue-500/20 gap-2">
+        <span className="text-xs font-semibold text-blue-300 flex items-center gap-1.5 min-w-0">
+          <span className="size-5 rounded-full bg-primary text-primary-foreground font-bold text-[10px] flex items-center justify-center shrink-0">
+            {safeIndex + 1}
+          </span>
+          <span className="truncate">
+            {safeIndex + 1}. {current.label}
+          </span>
+        </span>
+
+        <div className="flex items-center gap-1.5 shrink-0">
+          {steps.map((s, i) => (
+            <button
+              key={s.id}
+              type="button"
+              onClick={() => setStepIndex(i)}
+              aria-label={`Go to step ${i + 1}: ${s.label}`}
+              className={cn(
+                "size-2.5 rounded-full transition-all",
+                i === safeIndex
+                  ? "bg-primary ring-2 ring-primary/30 scale-110"
+                  : i < safeIndex
+                  ? "bg-emerald-500"
+                  : "bg-muted-foreground/30 hover:bg-muted-foreground/60",
+              )}
+            />
+          ))}
+        </div>
+      </div>
+
+      {/* ── Step: Parameters ── */}
+      {current.id === "params" && def.params?.map((p) => {
+        const currentVal = currentParams[p.name];
+        const selectedArr = Array.isArray(currentVal) ? currentVal : [];
+
+        if (isCronParam && p.name === "cron") {
+          return (
+            <div key={p.name} className="space-y-1.5">
+              <label className="text-xs font-medium text-foreground/90 flex items-center gap-1">
+                Schedule {p.required && <span className="text-destructive">*</span>}
+              </label>
+              <CronScheduleBuilder
+                value={typeof currentVal === "string" ? currentVal : ""}
+                onChange={(val) => onParamValuesChange((prev) => ({
+                  ...prev,
+                  [def.type]: { ...prev[def.type], [p.name]: val },
+                }))}
+              />
+            </div>
+          );
+        }
+
+        return (
+          <div key={p.name} className="space-y-1">
+            <label className="text-xs font-medium text-foreground/80 flex items-center justify-between" title={p.description ?? p.name}>
+              <span>{p.label}{p.required && <span className="text-destructive ml-0.5">*</span>}</span>
+              {p.description && <span className="text-[10px] text-muted-foreground/60 font-normal">{p.description}</span>}
+            </label>
+
+            {p.multiselect && p.enum ? (
+              <div className="space-y-1.5">
+                {selectedArr.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {selectedArr.map((value, index) => (
+                      <Badge key={`${p.name}:${value}:${index}`} variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-violet-500/30 text-violet-300 bg-violet-500/5">
+                        {value}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-x-2.5 gap-y-1">
+                  {p.enum.map((opt) => {
+                    const optStr = String(opt);
+                    const checked = selectedArr.includes(optStr);
+                    return (
+                      <label key={optStr} className="flex items-center gap-1.5 cursor-pointer text-xs text-foreground/80">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            onParamValuesChange((prev) => {
+                              const cur = Array.isArray(prev[def.type]?.[p.name]) ? [...(prev[def.type][p.name] as string[])] : [];
+                              const next = checked ? cur.filter((v) => v !== optStr) : [...cur, optStr];
+                              return { ...prev, [def.type]: { ...prev[def.type], [p.name]: next } };
+                            });
+                          }}
+                          className="accent-primary size-3 rounded"
+                        />
+                        {optStr}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : p.enum ? (
+              <select
+                value={typeof currentVal === "string" ? currentVal : ""}
+                onChange={(e) => onParamValuesChange((prev) => ({
+                  ...prev,
+                  [def.type]: { ...prev[def.type], [p.name]: e.target.value },
+                }))}
+                className="w-full rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              >
+                <option value="">—</option>
+                {p.enum.map((opt) => (
+                  <option key={String(opt)} value={String(opt)}>{String(opt)}</option>
+                ))}
+              </select>
+            ) : p.type === "json" ? (
+              <textarea
+                rows={3}
+                placeholder={p.default !== undefined ? formatParamValue(p.default) : "{}"}
+                value={typeof currentVal === "string" ? currentVal : ""}
+                onChange={(e) => onParamValuesChange((prev) => ({
+                  ...prev,
+                  [def.type]: { ...prev[def.type], [p.name]: e.target.value },
+                }))}
+                className="w-full rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+            ) : (
+              <input
+                type={p.type === "number" ? "number" : "text"}
+                placeholder={p.default !== undefined ? String(p.default) : undefined}
+                value={typeof currentVal === "string" ? currentVal : ""}
+                onChange={(e) => onParamValuesChange((prev) => ({
+                  ...prev,
+                  [def.type]: { ...prev[def.type], [p.name]: e.target.value },
+                }))}
+                className="w-full rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+            )}
+          </div>
+        );
+      })}
+
+      {/* ── Step: Delivery Filters ── */}
+      {current.id === "filters" && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-blue-300 flex items-center gap-1.5">
+              <Filter className="size-3" /> Delivery Filters
+            </span>
+            {filterFields.length > 1 && (
+              <div className="flex items-center p-0.5 rounded-md bg-zinc-900 border border-border/60">
+                <button
+                  type="button"
+                  onClick={() => onFilterModeChange((prev) => ({ ...prev, [def.type]: "and" }))}
+                  className={cn(
+                    "text-[10px] font-semibold px-2 py-0.5 rounded transition-colors",
+                    currentMode === "and"
+                      ? "bg-blue-500/30 text-blue-200"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  AND
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onFilterModeChange((prev) => ({ ...prev, [def.type]: "or" }))}
+                  className={cn(
+                    "text-[10px] font-semibold px-2 py-0.5 rounded transition-colors",
+                    currentMode === "or"
+                      ? "bg-blue-500/30 text-blue-200"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  OR
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-1.5">
+            {filterFields.map((field) => {
+              const propDef = schemaProps[field];
+              const enumVals = propDef?.enum as string[] | undefined;
+              const currentVal = currentFilters[field] ?? "";
+
+              return (
+                <div key={field} className="flex items-center gap-2">
+                  <label className="text-xs text-muted-foreground w-24 shrink-0 font-mono truncate">
+                    {field}
+                  </label>
+                  {enumVals ? (
+                    <select
+                      value={currentVal}
+                      onChange={(e) => onFilterValuesChange((prev) => ({
+                        ...prev,
+                        [def.type]: { ...prev[def.type], [field]: e.target.value },
+                      }))}
+                      className="flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs"
+                    >
+                      <option value="">— any —</option>
+                      {enumVals.map((v) => (
+                        <option key={String(v)} value={String(v)}>{String(v)}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      placeholder={`filter by ${field}`}
+                      value={currentVal}
+                      onChange={(e) => onFilterValuesChange((prev) => ({
+                        ...prev,
+                        [def.type]: { ...prev[def.type], [field]: e.target.value },
+                      }))}
+                      className="flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs"
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── Step: Review ── */}
+      {current.id === "review" && (
+        <div className="space-y-2.5">
+          <div className="p-3 rounded-xl border border-border/60 bg-zinc-950/80 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-mono font-semibold text-foreground truncate">{def.type}</span>
+              <span className="text-[11px] text-muted-foreground shrink-0">
+                {editMode ? "Update subscription" : "New subscription"}
+              </span>
+            </div>
+
+            {filledParams.length > 0 ? (
+              <div className="flex items-center gap-1 flex-wrap">
+                {filledParams.flatMap(([k, v]) => {
+                  const badges = renderParamValueBadges(k, v as JsonValue, "px-2 py-0.5 text-[11px] rounded-md border-emerald-500/30 text-emerald-300 bg-emerald-500/5 font-mono");
+                  return Array.isArray(badges) ? badges : [badges];
+                })}
+              </div>
+            ) : (
+              <p className="text-[11px] text-muted-foreground italic">No parameters set</p>
+            )}
+
+            {filledFilters.length > 0 && (
+              <div className="flex items-center gap-1 flex-wrap pt-1 border-t border-border/40">
+                <Badge variant="outline" className="px-2 py-0.5 text-[11px] rounded-md border-blue-500/30 text-blue-300 bg-blue-500/5 font-semibold">
+                  {currentMode === "or" ? "OR" : "AND"}
+                </Badge>
+                {filledFilters.map(([field, value]) => (
+                  <Badge key={field} variant="outline" className="px-2 py-0.5 text-[11px] rounded-md border-blue-500/30 text-blue-300 bg-blue-500/5 font-mono">
+                    {field}={value}
+                  </Badge>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="p-2.5 rounded-lg bg-emerald-500/5 border border-emerald-500/20 flex items-start gap-2">
+            <CheckCircle2 className="size-4 shrink-0 text-emerald-400 mt-0.5" />
+            <p className="text-[11px] text-emerald-300 leading-relaxed">
+              This session will receive <span className="font-mono">{def.type}</span> events
+              {filledFilters.length > 0 ? " matching the filters above." : " as they fire."}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {paramError && (
+        <p className="text-xs text-destructive bg-destructive/10 border border-destructive/30 px-2.5 py-1.5 rounded-md">
+          {paramError}
+        </p>
+      )}
+
+      {/* Wizard navigation */}
+      <div className="flex items-center justify-between gap-2 pt-2 border-t border-border/40">
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 text-xs px-2.5"
+          onClick={onParamFormClose}
+        >
+          Cancel
+        </Button>
+
+        <div className="flex items-center gap-2">
+          {safeIndex > 0 && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs px-2.5 gap-1"
+              onClick={() => setStepIndex(Math.max(0, safeIndex - 1))}
+            >
+              <ArrowLeft className="size-3" /> Back
+            </Button>
+          )}
+
+          {!isLast && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs px-3 gap-1 border-primary/40 text-primary hover:bg-primary/10"
+              onClick={() => setStepIndex(Math.min(steps.length - 1, safeIndex + 1))}
+            >
+              Next <ArrowRight className="size-3" />
+            </Button>
+          )}
+
+          <Button
+            size="sm"
+            className="h-7 text-xs px-3 font-semibold bg-primary hover:bg-primary/90 text-primary-foreground"
+            disabled={isPendingToggle || (editMode && triggerSubscriptions.length === 0)}
+            onClick={() => onParamSubmit(def)}
+          >
+            {isPendingToggle ? <Loader2 className="size-3 animate-spin mr-1" /> : null}
+            {editMode ? "Update" : "Subscribe"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ── Active Subscriptions Section ───────────────────────────────────────────
 
@@ -1651,51 +1953,65 @@ function ActiveSubscriptionsSection({ subscriptions }: { subscriptions: TriggerS
     map.set(sub.triggerType, (map.get(sub.triggerType) ?? 0) + 1);
     return map;
   }, new Map<string, number>());
+
   if (subscriptions.length === 0) return null;
 
   return (
-    <div>
-      <div className="px-3 py-2 flex items-center gap-1.5">
-        <BellRing className="size-3 text-emerald-400" />
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+    <div className="p-3 space-y-2.5 border-t border-border/60">
+      <div className="flex items-center gap-2">
+        <span className="size-6 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+          <BellRing className="size-3.5" />
+        </span>
+        <span className="text-xs font-semibold uppercase tracking-wider text-foreground">
           Active Subscriptions ({subscriptions.length})
         </span>
       </div>
-      <div className="divide-y divide-border/50">
+
+      <div className="space-y-1.5">
         {subscriptions.map((sub, index) => (
-          <div key={sub.subscriptionId ?? `${sub.triggerType}-${index}`} className="flex items-center gap-2 px-3 py-1.5 flex-wrap">
-            <span className="text-xs font-mono text-foreground truncate flex-1">{sub.triggerType}</span>
+          <div
+            key={sub.subscriptionId ?? `${sub.triggerType}-${index}`}
+            className="p-2.5 rounded-xl border border-zinc-800 bg-zinc-900/50 hover:border-zinc-700 transition-all flex items-center gap-2 flex-wrap"
+          >
+            <span className="text-xs font-mono font-medium text-foreground truncate flex-1">{sub.triggerType}</span>
+
             {sub.subscriptionId && (
-              <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60">
+              <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 font-mono border-emerald-500/30 text-emerald-400 bg-emerald-500/5">
                 {truncateSubscriptionLabel(sub.subscriptionId, undefined, 18)}
               </Badge>
             )}
+
             {(countsByType.get(sub.triggerType) ?? 0) > 1 && !sub.subscriptionId && (
-              <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60">
+              <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-emerald-500/30 text-emerald-400">
                 #{index + 1}
               </Badge>
             )}
+
             {sub.params && Object.keys(sub.params).length > 0 && (
               <div className="flex items-center gap-1 flex-wrap">
                 {Object.entries(sub.params).flatMap(([k, v]) => {
-                  const badges = renderParamValueBadges(k, v, "px-1 py-0 text-[9px] h-3.5 border-emerald-500/20 text-emerald-400/60");
+                  const badges = renderParamValueBadges(k, v, "px-1.5 py-0 text-[10px] h-4 border-emerald-500/30 text-emerald-400 bg-emerald-500/5 font-mono");
                   return Array.isArray(badges) ? badges : [badges];
                 })}
               </div>
             )}
+
             {sub.filters && sub.filters.length > 0 && (
               <div className="flex items-center gap-1 flex-wrap">
-                <Badge variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-blue-500/20 text-blue-400/60">
+                <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-blue-500/30 text-blue-400 bg-blue-500/5">
                   {sub.filterMode === "or" ? "OR" : "AND"}
                 </Badge>
                 {sub.filters.map((f, i) => (
-                  <Badge key={i} variant="outline" className="px-1 py-0 text-[9px] h-3.5 border-blue-500/20 text-blue-400/60">
+                  <Badge key={i} variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-blue-500/30 text-blue-400 bg-blue-500/5">
                     {f.field}{f.op === "contains" ? "~" : "="}{Array.isArray(f.value) ? f.value.map(String).join("|") : String(f.value)}
                   </Badge>
                 ))}
               </div>
             )}
-            <span className="text-[10px] text-muted-foreground/50 shrink-0">on {sub.runnerId.slice(0, 8)}</span>
+
+            <span className="text-[10px] text-muted-foreground/60 shrink-0 font-mono ml-auto">
+              on {sub.runnerId.slice(0, 8)}
+            </span>
           </div>
         ))}
       </div>
@@ -1711,12 +2027,12 @@ function OtherTriggerRow({ entry }: { entry: TriggerHistoryEntry }) {
   const payloadStr = hasPayload ? JSON.stringify(entry.payload, null, 2) : null;
 
   return (
-    <div className="border-b border-border/30 last:border-0">
+    <div className="border-b border-border/40 last:border-0 hover:bg-white/[0.015] transition-colors">
       <button
         type="button"
         onClick={() => hasPayload && setExpanded((v) => !v)}
         className={cn(
-          "w-full flex items-center gap-2 px-3 py-2 text-left transition-colors",
+          "w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors",
           hasPayload ? "hover:bg-muted/40 cursor-pointer" : "cursor-default",
         )}
       >
@@ -1734,84 +2050,45 @@ function OtherTriggerRow({ entry }: { entry: TriggerHistoryEntry }) {
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-xs font-medium text-foreground truncate">{entry.type}</span>
-            <Badge variant="outline" className="px-1 py-0 text-[10px] h-4">
+            <span className="text-xs font-semibold text-foreground truncate">{entry.type}</span>
+            <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4">
               {sourceLabel(entry.source)}
             </Badge>
             {entry.deliverAs === "steer" ? (
-              <Badge variant="outline" className="px-1 py-0 text-[10px] h-4 border-amber-500/40 text-amber-400">
+              <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-amber-500/40 text-amber-400 bg-amber-500/5">
                 steer
               </Badge>
             ) : (
-              <Badge variant="outline" className="px-1 py-0 text-[10px] h-4 border-blue-500/40 text-blue-400">
+              <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-blue-500/40 text-blue-400 bg-blue-500/5">
                 follow-up
               </Badge>
             )}
           </div>
-          <div className="flex items-center gap-2 mt-0.5">
-            <span className="text-[10px] text-muted-foreground/70"><RelativeTime isoTs={entry.ts} /></span>
+          <div className="flex items-center gap-2 mt-0.5 text-[11px]">
+            <span className="text-[10px] text-muted-foreground/70 font-mono"><RelativeTime isoTs={entry.ts} /></span>
             {entry.response && (
-              <span className="text-[10px] text-emerald-500">
+              <span className="text-[10px] text-emerald-400 font-medium">
                 ✓ {entry.response.action ?? "responded"}
               </span>
             )}
             {entry.summary && (
-              <span className="text-[10px] text-muted-foreground/60 truncate">{entry.summary}</span>
+              <span className="text-[11px] text-muted-foreground/70 truncate">{entry.summary}</span>
             )}
           </div>
         </div>
 
         {hasPayload && (
           <div className="shrink-0 text-muted-foreground/50">
-            {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+            {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
           </div>
         )}
       </button>
 
       {expanded && payloadStr && (
-        <div className="px-3 pb-2.5">
-          <pre className="rounded bg-muted/60 border border-border/50 px-2.5 py-2 text-[10px] font-mono text-foreground/80 overflow-auto max-h-40 whitespace-pre-wrap break-all">
+        <div className="px-3 pb-2.5 pt-0.5">
+          <pre className="rounded-lg bg-zinc-950/80 border border-border/60 p-2.5 text-[10px] font-mono text-zinc-300 overflow-auto max-h-40 whitespace-pre-wrap break-all leading-relaxed shadow-inner">
             {payloadStr}
           </pre>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Other Source Group (collapsible group of events from the same source) ──
-
-interface OtherSourceGroupProps {
-  group: { source: string; label: string; events: TriggerHistoryEntry[] };
-}
-
-function OtherSourceGroup({ group }: OtherSourceGroupProps) {
-  const [expanded, setExpanded] = React.useState(false);
-
-  return (
-    <div className="rounded-lg border border-border/50 bg-muted/10 overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-muted/30 transition-colors"
-      >
-        <SourceIcon source={group.source} className="text-muted-foreground" />
-        <span className="text-[11px] font-medium text-foreground/90 flex-1 text-left truncate">
-          {group.label}
-        </span>
-        <span className="text-[10px] text-muted-foreground/50 shrink-0">
-          {group.events.length} event{group.events.length !== 1 ? "s" : ""}
-        </span>
-        <div className="shrink-0 text-muted-foreground/40">
-          {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
-        </div>
-      </button>
-
-      {expanded && (
-        <div className="border-t border-border/30">
-          {group.events.map((entry) => (
-            <OtherTriggerRow key={entry.triggerId} entry={entry} />
-          ))}
         </div>
       )}
     </div>
@@ -1854,36 +2131,40 @@ function SourceAccordion({ group, statusUpdates }: SourceAccordionProps) {
   }, [group.events, statusUpdates]);
 
   const colorMap = {
-    amber: { border: "border-amber-500/30", bg: "bg-amber-950/20", badge: "border-amber-500/40 text-amber-400", icon: "text-amber-400", pulse: true },
-    blue: { border: "border-blue-500/30", bg: "bg-blue-950/20", badge: "border-blue-500/40 text-blue-400", icon: "text-blue-400", pulse: true },
-    red: { border: "border-red-500/30", bg: "bg-red-950/20", badge: "border-red-500/40 text-red-400", icon: "text-red-400", pulse: true },
-    emerald: { border: "border-emerald-500/20", bg: "bg-emerald-950/10", badge: "border-emerald-500/40 text-emerald-400", icon: "text-emerald-400", pulse: false },
-    zinc: { border: "border-border/50", bg: "bg-muted/10", badge: "border-border text-muted-foreground", icon: "text-muted-foreground", pulse: false },
+    amber: { border: "border-amber-500/40", bg: "bg-gradient-to-b from-amber-500/[0.08] to-zinc-900/30", badge: "border-amber-500/40 bg-amber-500/10 text-amber-400", icon: "text-amber-400", pulse: true },
+    blue: { border: "border-blue-500/40", bg: "bg-gradient-to-b from-blue-500/[0.08] to-zinc-900/30", badge: "border-blue-500/40 bg-blue-500/10 text-blue-400", icon: "text-blue-400", pulse: true },
+    red: { border: "border-red-500/40", bg: "bg-gradient-to-b from-red-500/[0.08] to-zinc-900/30", badge: "border-red-500/40 bg-red-500/10 text-red-400", icon: "text-red-400", pulse: true },
+    emerald: { border: "border-emerald-500/30", bg: "bg-zinc-900/40", badge: "border-emerald-500/30 bg-emerald-500/10 text-emerald-400", icon: "text-emerald-400", pulse: false },
+    zinc: { border: "border-border/60", bg: "bg-zinc-900/30", badge: "border-border/80 bg-muted/40 text-muted-foreground", icon: "text-muted-foreground", pulse: false },
   };
 
-  const colors = status ? colorMap[status.color] : { border: "border-border/50", bg: "bg-muted/10", badge: "border-border text-muted-foreground", icon: "text-muted-foreground", pulse: false };
+  const colors = status ? colorMap[status.color] : { border: "border-border/60", bg: "bg-zinc-900/30", badge: "border-border/80 bg-muted/40 text-muted-foreground", icon: "text-muted-foreground", pulse: false };
 
   return (
-    <div className={cn("rounded-lg border overflow-hidden", colors.border, colors.bg)}>
+    <div className={cn("rounded-xl border overflow-hidden shadow-sm transition-all relative", colors.border, colors.bg)}>
+      {isPending && (
+        <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-amber-400 to-transparent" />
+      )}
+
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-white/[0.02]"
+        className="w-full flex items-start gap-3 p-3 text-left transition-colors hover:bg-white/[0.02]"
       >
         {/* Icon */}
-        <div className={cn("mt-0.5 shrink-0", colors.icon, colors.pulse && "animate-pulse")}>
+        <div className={cn("size-7 rounded-lg border border-border/40 bg-muted/30 flex items-center justify-center shrink-0 mt-0.5 shadow-sm", colors.icon, colors.pulse && "animate-pulse")}>
           {status ? status.icon : <SourceIcon source={group.source} />}
         </div>
 
         {/* Content */}
         <div className="flex-1 min-w-0">
           {/* Name + status badge */}
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-xs font-mono text-foreground/90 truncate">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-semibold text-foreground truncate">
               {group.lastSummary || group.label || truncateId(group.source)}
             </span>
             {status && (
-              <Badge variant="outline" className={cn("px-1.5 py-0 text-[10px] h-4 shrink-0", colors.badge)}>
+              <Badge variant="outline" className={cn("px-2 py-0.5 text-[10px] font-medium rounded-md shrink-0 capitalize", colors.badge)}>
                 {status.label}
               </Badge>
             )}
@@ -1891,25 +2172,27 @@ function SourceAccordion({ group, statusUpdates }: SourceAccordionProps) {
 
           {/* Pending trigger detail */}
           {isPending && group.isLinkedSession && (
-            <div className="mt-1">
-              <span className={cn("text-[11px] font-medium", status ? `text-${status.color}-300` : "text-amber-300")}>
-                {group.pendingTrigger!.type === "ask_user_question" && "Waiting for your answer"}
-                {group.pendingTrigger!.type === "plan_review" && "Waiting for plan approval"}
-                {group.pendingTrigger!.type === "session_complete" && "Session finished — needs acknowledgement"}
-                {group.pendingTrigger!.type === "escalate" && "Escalated — needs human attention"}
-                {!["ask_user_question", "plan_review", "session_complete", "escalate"].includes(group.pendingTrigger!.type) && `Awaiting response to ${group.pendingTrigger!.type}`}
-              </span>
-              <span className="text-[10px] text-muted-foreground/60 ml-2">
-                <RelativeTime isoTs={group.pendingTrigger!.ts} />
-              </span>
+            <div className="mt-1.5 p-2 rounded-lg bg-zinc-950/60 border border-border/50 space-y-1">
+              <div className="flex items-center justify-between">
+                <span className={cn("text-xs font-medium", status ? `text-${status.color}-300` : "text-amber-300")}>
+                  {group.pendingTrigger!.type === "ask_user_question" && "Waiting for your answer"}
+                  {group.pendingTrigger!.type === "plan_review" && "Waiting for plan approval"}
+                  {group.pendingTrigger!.type === "session_complete" && "Session finished — needs acknowledgement"}
+                  {group.pendingTrigger!.type === "escalate" && "Escalated — needs human attention"}
+                  {!["ask_user_question", "plan_review", "session_complete", "escalate"].includes(group.pendingTrigger!.type) && `Awaiting response to ${group.pendingTrigger!.type}`}
+                </span>
+                <span className="text-[10px] text-muted-foreground/70 font-mono ml-2">
+                  <RelativeTime isoTs={group.pendingTrigger!.ts} />
+                </span>
+              </div>
             </div>
           )}
 
           {/* Streaming status update */}
           {latestStatusUpdate && (
-            <div className="mt-1 flex items-center gap-1.5">
-              <Loader2 className="size-2.5 animate-spin text-muted-foreground/60 shrink-0" />
-              <span className="text-[10px] text-muted-foreground/80 italic truncate">
+            <div className="mt-1.5 flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-blue-950/30 border border-blue-500/20">
+              <Loader2 className="size-3 animate-spin text-blue-400 shrink-0" />
+              <span className="text-[11px] text-blue-200/90 font-medium truncate">
                 {latestStatusUpdate.statusText}
               </span>
             </div>
@@ -1917,38 +2200,39 @@ function SourceAccordion({ group, statusUpdates }: SourceAccordionProps) {
 
           {/* Last event + time */}
           {!isPending && !latestStatusUpdate && (
-            <div className="flex items-center gap-2 mt-0.5">
-              <span className="text-[10px] text-muted-foreground/60">
-                Last: <span className="text-muted-foreground/80">{group.events[0]?.type}</span>
+            <div className="flex items-center gap-2 mt-1 text-[11px] text-muted-foreground/70">
+              <span>
+                Last: <span className="font-mono text-foreground/80">{group.events[0]?.type}</span>
               </span>
-              <span className="text-[10px] text-muted-foreground/40">
+              <span>·</span>
+              <span className="font-mono text-muted-foreground/50">
                 <RelativeTime isoTs={group.lastTs} />
               </span>
             </div>
           )}
 
           {/* Event count + source ID hint */}
-          <div className="flex items-center gap-2 mt-0.5">
-            <span className="text-[10px] text-muted-foreground/40">
+          <div className="flex items-center gap-2 mt-1.5 text-[10px] text-muted-foreground/50">
+            <span className="font-medium bg-muted/40 px-1.5 py-0.5 rounded border border-border/40">
               {group.events.length} event{group.events.length !== 1 ? "s" : ""}
             </span>
             {group.lastSummary && group.isLinkedSession && (
-              <span className="text-[10px] font-mono text-muted-foreground/30 truncate">
-                {truncateId(group.source)}
+              <span className="font-mono text-muted-foreground/40 truncate">
+                #{truncateId(group.source)}
               </span>
             )}
           </div>
         </div>
 
         {/* Expand chevron */}
-        <div className="mt-0.5 shrink-0 text-muted-foreground/40">
-          {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        <div className="mt-0.5 shrink-0 text-muted-foreground/40 p-1 hover:text-foreground">
+          {expanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
         </div>
       </button>
 
       {/* Expanded event history */}
       {expanded && (
-        <div className={cn("border-t", colors.border)}>
+        <div className={cn("border-t bg-zinc-950/40 divide-y divide-border/30", colors.border)}>
           {group.events.map((event) => (
             <EventRow key={event.triggerId} entry={event} />
           ))}
@@ -2072,8 +2356,6 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
   }, [fetchTriggers]);
 
   // Tab state: "history" or "catalog"
-  // Default to "history" when there are trigger history items (they may need attention),
-  // falling back to "catalog" only when history is empty.
   const hasCatalog = triggerDefs.length > 0 || subscriptions.length > 0;
   const userSelectedTabRef = React.useRef(false);
   const [activeTab, setActiveTab] = React.useState<"history" | "catalog">("history");
@@ -2086,29 +2368,44 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
     }
   }, [triggers.length, hasCatalog]);
 
-  // Count for badges
+  // Filter state for history tab
+  const [historyFilter, setHistoryFilter] = React.useState<"all" | "pending" | "sessions" | "services">("all");
+
+  const filteredSourceGroups = React.useMemo(() => {
+    if (historyFilter === "pending") {
+      return sourceGroups.filter((g) => !!g.pendingTrigger);
+    }
+    if (historyFilter === "sessions") {
+      return sourceGroups.filter((g) => g.isLinkedSession);
+    }
+    if (historyFilter === "services") {
+      return sourceGroups.filter((g) => !g.isLinkedSession);
+    }
+    return sourceGroups;
+  }, [sourceGroups, historyFilter]);
+
   const pendingCount = pendingGroups.length;
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
-      {/* Toolbar with tabs */}
-      <div className="flex items-center border-b border-border bg-muted/20 shrink-0">
-        {/* Tab buttons */}
-        <div className="flex items-center flex-1 min-w-0 gap-0">
+    <div className="flex flex-col h-full overflow-hidden bg-background">
+      {/* Modern Toolbar with Segmented Tab Control & Action Buttons */}
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border/80 bg-zinc-950/60 backdrop-blur-md shrink-0 gap-2">
+        {/* Segmented Tabs */}
+        <div className="flex items-center p-0.5 rounded-lg bg-zinc-900 border border-border/60">
           <button
             type="button"
             onClick={() => { userSelectedTabRef.current = true; setActiveTab("history"); }}
             className={cn(
-              "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors border-b-2",
+              "flex items-center gap-1.5 px-3 py-1 text-xs font-semibold rounded-md transition-all",
               activeTab === "history"
-                ? "text-foreground border-primary"
-                : "text-muted-foreground hover:text-foreground border-transparent",
+                ? "bg-zinc-800 text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
             )}
           >
-            <Clock className="size-3" />
-            History
+            <Clock className="size-3 text-blue-400" />
+            <span>History</span>
             {pendingCount > 0 && (
-              <span className="inline-flex items-center justify-center size-4 rounded-full bg-amber-500/20 text-amber-400 text-[9px] font-bold">
+              <span className="inline-flex items-center justify-center px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold">
                 {pendingCount}
               </span>
             )}
@@ -2119,16 +2416,16 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
               type="button"
               onClick={() => { userSelectedTabRef.current = true; setActiveTab("catalog"); }}
               className={cn(
-                "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors border-b-2",
+                "flex items-center gap-1.5 px-3 py-1 text-xs font-semibold rounded-md transition-all",
                 activeTab === "catalog"
-                  ? "text-foreground border-primary"
-                  : "text-muted-foreground hover:text-foreground border-transparent",
+                  ? "bg-zinc-800 text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
               )}
             >
-              <BookOpen className="size-3" />
-              Catalog
+              <BookOpen className="size-3 text-emerald-400" />
+              <span>Catalog</span>
               {subscriptions.length > 0 && (
-                <span className="inline-flex items-center justify-center size-4 rounded-full bg-emerald-500/20 text-emerald-400 text-[9px] font-bold">
+                <span className="inline-flex items-center justify-center px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">
                   {subscriptions.length}
                 </span>
               )}
@@ -2136,13 +2433,13 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
           )}
         </div>
 
-        {/* Actions */}
-        <div className="flex items-center gap-1 px-2 shrink-0">
+        {/* Action Buttons */}
+        <div className="flex items-center gap-1.5 shrink-0">
           <button
             type="button"
             onClick={handleRefresh}
             disabled={refreshing}
-            className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+            className="size-7 rounded-lg border border-border/80 bg-zinc-900/60 text-muted-foreground hover:text-foreground hover:bg-zinc-800 hover:border-border flex items-center justify-center transition-all disabled:opacity-50"
             title="Refresh"
             aria-label="Refresh trigger history"
           >
@@ -2151,40 +2448,102 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
 
           <Button
             size="sm"
-            variant="outline"
-            className="h-6 text-[11px] px-2 gap-1"
+            className="h-7 text-xs px-2.5 gap-1.5 font-semibold bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm shadow-primary/20 rounded-lg transition-all"
             onClick={() => setSendOpen(true)}
           >
             <Send className="size-3" />
-            Send
+            <span>Send</span>
           </Button>
         </div>
       </div>
 
       {/* Tab content */}
-      <div className="flex-1 overflow-y-auto min-h-0">
+      <div className="flex-1 overflow-y-auto min-h-0 custom-scrollbar">
         {/* ─── History tab ─── */}
         {activeTab === "history" && (
           <>
             {loading ? (
-              <div className="flex items-center justify-center h-32 gap-2 text-muted-foreground">
-                <Loader2 className="size-4 animate-spin" />
-                <span className="text-xs">Loading triggers…</span>
+              <div className="flex flex-col items-center justify-center h-48 gap-3 text-muted-foreground">
+                <Loader2 className="size-5 animate-spin text-primary" />
+                <span className="text-xs font-medium">Loading triggers…</span>
               </div>
             ) : error ? (
-              <div className="flex items-center justify-center p-4">
-                <p className="text-xs text-destructive text-center">{error}</p>
+              <div className="flex items-center justify-center p-6">
+                <p className="text-xs text-destructive text-center bg-destructive/10 border border-destructive/20 p-3 rounded-lg">{error}</p>
               </div>
             ) : triggers.length === 0 ? (
-              <div className="flex flex-col items-center justify-center gap-2 p-6 text-center">
-                <Zap className="size-8 text-muted-foreground/30" />
-                <p className="text-xs text-muted-foreground">
-                  No triggers yet. External systems can send triggers via the API.
-                </p>
+              <div className="flex flex-col items-center justify-center gap-3 p-8 text-center my-auto">
+                <div className="size-12 rounded-2xl bg-zinc-900 border border-border/80 flex items-center justify-center text-muted-foreground/40 shadow-inner">
+                  <Zap className="size-6" />
+                </div>
+                <div className="space-y-1 max-w-[240px]">
+                  <p className="text-xs font-semibold text-foreground">No triggers yet</p>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    No triggers yet. External systems can send triggers via the API.
+                  </p>
+                </div>
               </div>
             ) : (
-              <div className="flex flex-col gap-1.5 p-2">
-                {sourceGroups.map((group) => (
+              <div className="flex flex-col gap-2.5 p-3">
+                {/* Source Filter Chips when multiple sources exist */}
+                {sourceGroups.length > 2 && (
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-[11px]">
+                    <span className="text-[10px] font-semibold uppercase text-muted-foreground tracking-wider mr-1">Filter:</span>
+                    <button
+                      type="button"
+                      onClick={() => setHistoryFilter("all")}
+                      className={cn(
+                        "px-2 py-0.5 rounded-md font-medium border transition-colors",
+                        historyFilter === "all"
+                          ? "bg-zinc-800 border-zinc-700 text-foreground"
+                          : "bg-muted/20 border-border/40 text-muted-foreground hover:bg-muted/40",
+                      )}
+                    >
+                      All ({sourceGroups.length})
+                    </button>
+                    {pendingCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setHistoryFilter("pending")}
+                        className={cn(
+                          "px-2 py-0.5 rounded-md font-medium border transition-colors flex items-center gap-1",
+                          historyFilter === "pending"
+                            ? "bg-amber-500/20 border-amber-500/40 text-amber-300"
+                            : "bg-muted/20 border-border/40 text-amber-400/80 hover:bg-amber-500/10",
+                        )}
+                      >
+                        <span className="size-1.5 rounded-full bg-amber-400"></span>
+                        Pending ({pendingCount})
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setHistoryFilter("sessions")}
+                      className={cn(
+                        "px-2 py-0.5 rounded-md font-medium border transition-colors",
+                        historyFilter === "sessions"
+                          ? "bg-zinc-800 border-zinc-700 text-foreground"
+                          : "bg-muted/20 border-border/40 text-muted-foreground hover:bg-muted/40",
+                      )}
+                    >
+                      Sessions
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setHistoryFilter("services")}
+                      className={cn(
+                        "px-2 py-0.5 rounded-md font-medium border transition-colors",
+                        historyFilter === "services"
+                          ? "bg-zinc-800 border-zinc-700 text-foreground"
+                          : "bg-muted/20 border-border/40 text-muted-foreground hover:bg-muted/40",
+                      )}
+                    >
+                      Services
+                    </button>
+                  </div>
+                )}
+
+                {filteredSourceGroups.map((group) => (
                   <SourceAccordion
                     key={group.source}
                     group={group}
@@ -2215,11 +2574,16 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
             )}
 
             {triggerDefs.length === 0 && subscriptions.length === 0 && (
-              <div className="flex flex-col items-center justify-center gap-2 p-6 text-center">
-                <BookOpen className="size-8 text-muted-foreground/30" />
-                <p className="text-xs text-muted-foreground">
-                  No trigger types available. Runner services can declare triggers for agents to subscribe to.
-                </p>
+              <div className="flex flex-col items-center justify-center gap-3 p-8 text-center my-auto">
+                <div className="size-12 rounded-2xl bg-zinc-900 border border-border/80 flex items-center justify-center text-muted-foreground/40 shadow-inner">
+                  <BookOpen className="size-6" />
+                </div>
+                <div className="space-y-1 max-w-[260px]">
+                  <p className="text-xs font-semibold text-foreground">No trigger types available</p>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    Runner services can declare triggers for agents and workflows to subscribe to.
+                  </p>
+                </div>
               </div>
             )}
           </>
@@ -2243,7 +2607,7 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const DEFAULT_SCHEDULE: RecurringSchedule = { freq: "daily", hour: 9, minute: 0, day: 1 };
 
-const cronInputCls = "rounded border border-border bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring";
+const cronInputCls = "rounded-lg border border-border bg-background px-2.5 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary";
 
 /**
  * Friendly Daily/Weekly/Monthly builder for cron params. The user picks a
@@ -2255,7 +2619,6 @@ function CronScheduleBuilder({ value, onChange }: { value: string; onChange: (va
   const parsed = React.useMemo(() => scheduleFromCron(value), [value]);
   const [customMode, setCustomMode] = React.useState(() => value.trim() !== "" && !parsed);
 
-  // Seed the default schedule so subscribing without touching the form works.
   React.useEffect(() => {
     if (!customMode && value.trim() === "") onChange(cronFromSchedule(DEFAULT_SCHEDULE));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2265,17 +2628,16 @@ function CronScheduleBuilder({ value, onChange }: { value: string; onChange: (va
   const set = (patch: Partial<RecurringSchedule>) => onChange(cronFromSchedule({ ...sched, ...patch }));
 
   return (
-    <div className="flex-1 space-y-1">
-      <div className="flex flex-wrap items-center gap-1.5">
+    <div className="flex-1 space-y-2 p-3 rounded-xl border border-border/80 bg-zinc-900/50">
+      <div className="flex flex-wrap items-center gap-2">
         <select
           value={customMode ? "custom" : sched.freq}
           onChange={(e) => {
-            const freq = e.target.value;
-            if (freq === "custom") {
+            if (e.target.value === "custom") {
               setCustomMode(true);
             } else {
               setCustomMode(false);
-              set({ freq: freq as RecurringSchedule["freq"], day: 1 });
+              set({ freq: e.target.value as RecurringSchedule["freq"] });
             }
           }}
           className={cronInputCls}
@@ -2283,65 +2645,67 @@ function CronScheduleBuilder({ value, onChange }: { value: string; onChange: (va
           <option value="daily">Daily</option>
           <option value="weekly">Weekly</option>
           <option value="monthly">Monthly</option>
-          <option value="custom">Custom (cron)</option>
+          <option value="custom">Custom (raw cron)</option>
         </select>
 
         {!customMode && sched.freq === "weekly" && (
           <select
-            value={String(sched.day)}
+            value={sched.day ?? 1}
             onChange={(e) => set({ day: Number(e.target.value) })}
             className={cronInputCls}
           >
-            {WEEKDAYS.map((name, i) => (
-              <option key={name} value={String(i)}>{name}</option>
+            {WEEKDAYS.map((name, idx) => (
+              <option key={name} value={idx}>{name}</option>
             ))}
           </select>
         )}
 
         {!customMode && sched.freq === "monthly" && (
-          <label className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
-            day
+          <div className="flex items-center gap-1">
+            <span className="text-[11px] text-muted-foreground">Day</span>
             <input
               type="number"
               min={1}
               max={31}
-              value={sched.day}
-              onChange={(e) => {
-                const n = Number(e.target.value);
-                if (Number.isInteger(n) && n >= 1 && n <= 31) set({ day: n });
-              }}
-              className={cn(cronInputCls, "w-12")}
+              value={sched.day ?? 1}
+              onChange={(e) => set({ day: Math.max(1, Math.min(31, Number(e.target.value))) })}
+              className={cn(cronInputCls, "w-14")}
             />
-          </label>
+          </div>
         )}
 
         {!customMode && (
-          <label className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
-            at
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] text-muted-foreground">at</span>
             <input
               type="time"
               value={`${String(sched.hour).padStart(2, "0")}:${String(sched.minute).padStart(2, "0")}`}
               onChange={(e) => {
                 const [h, m] = e.target.value.split(":").map(Number);
-                if (Number.isInteger(h) && Number.isInteger(m)) set({ hour: h, minute: m });
+                if (!isNaN(h) && !isNaN(m)) set({ hour: h, minute: m });
               }}
               className={cronInputCls}
             />
-          </label>
+          </div>
         )}
       </div>
 
       {customMode ? (
-        <input
-          type="text"
-          placeholder="*/30 * * * * (UTC)"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          className={cn(cronInputCls, "w-full font-mono")}
-        />
+        <div className="space-y-1">
+          <input
+            type="text"
+            placeholder="* * * * * (minute hour dom month dow)"
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            className={cn(cronInputCls, "w-full font-mono")}
+          />
+          <p className="text-[10px] text-muted-foreground/60">
+            5-field cron expression evaluated in UTC.
+          </p>
+        </div>
       ) : (
-        <p className="text-[9px] text-muted-foreground/60">
-          <span className="font-mono">{value || cronFromSchedule(sched)}</span> — local time, stored as UTC cron
+        <p className="text-[11px] font-mono text-muted-foreground/60">
+          UTC: <span className="text-foreground/80">{cronFromSchedule(sched)}</span>
         </p>
       )}
     </div>

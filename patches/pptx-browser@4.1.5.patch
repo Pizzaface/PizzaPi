@@ -1,0 +1,21 @@
+diff --git a/src/render.js b/src/render.js
+index 8d0e215b7823cb7fa8ae1c0b6f2d5d6e8dd6bdac..5cec1e8b566806c195818dc2d71297aa399c50b7 100644
+--- a/src/render.js
++++ b/src/render.js
+@@ -596,6 +596,8 @@ export async function renderTextBody(ctx, txBody, bx, by, bw, bh, scale, themeCo
+     const marL = attrInt(pPr, 'marL', 0) * scale;
+     const indent = attrInt(pPr, 'indent', 0) * scale;
+ 
++    const defRPr = g1(pPr, 'defRPr');
++
+     // ── Bullet / list marker ─────────────────────────────────────────────────
+     const bullet = pPr ? parseBullet(pPr, defRPr, themeColors, themeData) : null;
+ 
+@@ -603,7 +605,6 @@ export async function renderTextBody(ctx, txBody, bx, by, bw, bh, scale, themeCo
+     const spcBef = g1(pPr, 'spcBef');
+     const spcAft = g1(pPr, 'spcAft');
+     const lnSpc = g1(pPr, 'lnSpc');
+-    const defRPr = g1(pPr, 'defRPr');
+ 
+     // Default font size: lstStyle (lowest) → pPr defRPr (higher) → run rPr (highest)
+     let paraDefSz = defaultFontSz;

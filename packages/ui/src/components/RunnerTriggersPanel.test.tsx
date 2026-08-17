@@ -300,3 +300,186 @@ describe("RunnerTriggersPanel", () => {
     });
   });
 });
+
+describe("RunnerTriggersPanel — listener setup wizard", () => {
+  /** Open the accordion, then open the wizard for svc:event. */
+  async function openWizard(container: HTMLElement) {
+    const accordionBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("svc"));
+    await act(async () => { fireEvent.click(accordionBtn!); });
+
+    const addBtn = Array.from(container.getElementsByTagName("button")).find(
+      (b) => b.getAttribute("aria-label")?.startsWith("Add") && b.getAttribute("aria-label")?.includes("svc:event"),
+    );
+    await act(async () => { fireEvent.click(addBtn!); });
+  }
+
+  const findByText = (container: HTMLElement, text: string) =>
+    Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes(text));
+
+  test("a trigger with params starts on the params step, not the session step", async () => {
+    fetchState.response = {
+      ok: true,
+      body: {
+        triggerDefs: [{ type: "svc:event", label: "Service Event", params: [{ name: "branch", label: "Branch Filter", type: "string" }] }],
+        listeners: [],
+      },
+    };
+
+    let container!: HTMLElement;
+    await act(async () => { ({ container } = render(<RunnerTriggersPanel runnerId="runner-1" />)); });
+    await openWizard(container);
+
+    // Step 1 is the param step for param-bearing triggers.
+    expect(container.textContent).toContain("1. Event Parameters");
+    expect(container.textContent).toContain("Branch Filter");
+    // The session-target fields belong to a later step.
+    expect(container.textContent).not.toContain("Working Dir");
+  });
+
+  test("a trigger with no params skips the params step entirely", async () => {
+    fetchState.response = {
+      ok: true,
+      body: {
+        triggerDefs: [{ type: "svc:event", label: "Service Event" }],
+        listeners: [],
+      },
+    };
+
+    let container!: HTMLElement;
+    await act(async () => { ({ container } = render(<RunnerTriggersPanel runnerId="runner-1" />)); });
+    await openWizard(container);
+
+    expect(container.textContent).toContain("1. Target Session");
+    expect(container.textContent).toContain("Working Dir");
+    expect(container.textContent).not.toContain("Event Parameters");
+  });
+
+  test("Next walks params → session → review, and Back returns", async () => {
+    fetchState.response = {
+      ok: true,
+      body: {
+        triggerDefs: [{ type: "svc:event", label: "Service Event", params: [{ name: "branch", label: "Branch Filter", type: "string" }] }],
+        listeners: [],
+      },
+    };
+
+    let container!: HTMLElement;
+    await act(async () => { ({ container } = render(<RunnerTriggersPanel runnerId="runner-1" />)); });
+    await openWizard(container);
+
+    expect(container.textContent).toContain("1. Event Parameters");
+
+    await act(async () => { fireEvent.click(findByText(container, "Next")!); });
+    expect(container.textContent).toContain("2. Target Session");
+    expect(container.textContent).toContain("Working Dir");
+
+    await act(async () => { fireEvent.click(findByText(container, "Next")!); });
+    expect(container.textContent).toContain("3. Review & Activate");
+    expect(container.textContent).toContain("Listener Summary");
+    // Last step has nothing further to advance to.
+    expect(findByText(container, "Next")).toBeUndefined();
+
+    await act(async () => { fireEvent.click(findByText(container, "Back")!); });
+    expect(container.textContent).toContain("2. Target Session");
+  });
+
+  test("the review step echoes the values entered in earlier steps", async () => {
+    fetchState.response = {
+      ok: true,
+      body: {
+        triggerDefs: [{
+          type: "svc:event",
+          label: "Service Event",
+          params: [{ name: "channel", label: "Channel", type: "string", enum: ["alerts", "debug"], multiselect: true }],
+        }],
+        listeners: [],
+      },
+    };
+
+    let container!: HTMLElement;
+    await act(async () => { ({ container } = render(<RunnerTriggersPanel runnerId="runner-1" />)); });
+    await openWizard(container);
+
+    const alertsCheckbox = Array.from(container.getElementsByTagName("input"))
+      .filter((i) => (i as HTMLInputElement).type === "checkbox")
+      .find((i) => i.parentElement?.textContent?.includes("alerts")) as HTMLInputElement | undefined;
+    expect(alertsCheckbox).toBeDefined();
+    await act(async () => { fireEvent.click(alertsCheckbox!); });
+
+    // params -> session -> review
+    await act(async () => { fireEvent.click(findByText(container, "Next")!); });
+    await act(async () => { fireEvent.click(findByText(container, "Next")!); });
+
+    expect(container.textContent).toContain("Listener Summary");
+    expect(container.textContent).toContain("channel=alerts");
+  });
+
+  test("the submit action stays available on every step (no forced walkthrough)", async () => {
+    fetchState.response = {
+      ok: true,
+      body: {
+        triggerDefs: [{ type: "svc:event", label: "Service Event", params: [{ name: "branch", label: "Branch Filter", type: "string" }] }],
+        listeners: [],
+      },
+    };
+
+    let container!: HTMLElement;
+    await act(async () => { ({ container } = render(<RunnerTriggersPanel runnerId="runner-1" />)); });
+    await openWizard(container);
+
+    // Step 1 already offers Subscribe.
+    expect(findByText(container, "Subscribe")).toBeDefined();
+
+    await act(async () => { fireEvent.click(findByText(container, "Next")!); });
+    expect(findByText(container, "Subscribe")).toBeDefined();
+  });
+
+  test("the stepper dots jump directly to a step", async () => {
+    fetchState.response = {
+      ok: true,
+      body: {
+        triggerDefs: [{ type: "svc:event", label: "Service Event", params: [{ name: "branch", label: "Branch Filter", type: "string" }] }],
+        listeners: [],
+      },
+    };
+
+    let container!: HTMLElement;
+    await act(async () => { ({ container } = render(<RunnerTriggersPanel runnerId="runner-1" />)); });
+    await openWizard(container);
+
+    const jumpToReview = Array.from(container.getElementsByTagName("button")).find((b) => b.getAttribute("title") === "Jump to Step 3");
+    expect(jumpToReview).toBeDefined();
+
+    await act(async () => { fireEvent.click(jumpToReview!); });
+    expect(container.textContent).toContain("3. Review & Activate");
+  });
+
+  test("editing an existing listener opens the wizard pre-populated", async () => {
+    fetchState.response = {
+      ok: true,
+      body: {
+        triggerDefs: [{ type: "svc:event", label: "Service Event", params: [{ name: "branch", label: "Branch Filter", type: "string" }] }],
+        listeners: [
+          { listenerId: "listener-1", triggerType: "svc:event", prompt: "review the merge", params: { branch: "main" }, createdAt: "2026-04-03T00:00:00.000Z" },
+        ],
+      },
+    };
+
+    let container!: HTMLElement;
+    await act(async () => { ({ container } = render(<RunnerTriggersPanel runnerId="runner-1" />)); });
+
+    const accordionBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("svc"));
+    await act(async () => { fireEvent.click(accordionBtn!); });
+
+    const editBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.getAttribute("aria-label") === "Edit listener listener-1 for svc:event");
+    await act(async () => { fireEvent.click(editBtn!); });
+
+    // Opens on the params step with the saved value, and submits as an update.
+    expect(container.textContent).toContain("1. Event Parameters");
+    const branchInput = Array.from(container.getElementsByTagName("input")).find(
+      (i) => (i as HTMLInputElement).value === "main",
+    );
+    expect(branchInput).toBeDefined();
+    expect(findByText(container, "Update Listener")).toBeDefined();
+  });
+});

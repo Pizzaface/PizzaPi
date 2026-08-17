@@ -813,6 +813,192 @@ describe("TriggersPanel — trigger catalog", () => {
   });
 });
 
+describe("TriggersPanel — subscription wizard", () => {
+  const findByText = (container: HTMLElement, text: string) =>
+    Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes(text));
+
+  /** Expand the svc accordion and open the wizard for svc:event. */
+  async function openWizard(container: HTMLElement) {
+    const accordionBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("svc"));
+    await act(async () => { fireEvent.click(accordionBtn!); });
+
+    const subscribeBtn = Array.from(container.getElementsByTagName("button")).find(
+      (b) => b.getAttribute("aria-label")?.startsWith("Subscribe to"),
+    );
+    await act(async () => { fireEvent.click(subscribeBtn!); });
+  }
+
+  test("a params-only trigger gets a params step then a review step", async () => {
+    fetchState.response = { ok: true, body: { triggers: [] } };
+    const triggerDefs = [{
+      type: "svc:event",
+      label: "Service Event",
+      params: [{ name: "branch", label: "Branch", type: "string" }],
+    }];
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
+    });
+    await openWizard(container);
+
+    expect(container.textContent).toContain("1. Parameters");
+    expect(container.textContent).toContain("Branch");
+
+    await act(async () => { fireEvent.click(findByText(container, "Next")!); });
+    expect(container.textContent).toContain("2. Review");
+    // Only two steps exist, so there is nothing further to advance to.
+    expect(findByText(container, "Next")).toBeUndefined();
+  });
+
+  test("a schema-only trigger opens straight on the filters step", async () => {
+    fetchState.response = { ok: true, body: { triggers: [] } };
+    const triggerDefs = [{
+      type: "svc:event",
+      label: "Service Event",
+      schema: { properties: { status: { type: "string", enum: ["open", "closed"] } } },
+    }];
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
+    });
+    await openWizard(container);
+
+    expect(container.textContent).toContain("1. Delivery Filters");
+    expect(container.textContent).toContain("status");
+  });
+
+  test("a trigger with both params and a schema walks params → filters → review", async () => {
+    fetchState.response = { ok: true, body: { triggers: [] } };
+    const triggerDefs = [{
+      type: "svc:event",
+      label: "Service Event",
+      params: [{ name: "branch", label: "Branch", type: "string" }],
+      schema: { properties: { status: { type: "string" } } },
+    }];
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
+    });
+    await openWizard(container);
+
+    expect(container.textContent).toContain("1. Parameters");
+
+    await act(async () => { fireEvent.click(findByText(container, "Next")!); });
+    expect(container.textContent).toContain("2. Delivery Filters");
+
+    await act(async () => { fireEvent.click(findByText(container, "Next")!); });
+    expect(container.textContent).toContain("3. Review");
+
+    await act(async () => { fireEvent.click(findByText(container, "Back")!); });
+    expect(container.textContent).toContain("2. Delivery Filters");
+  });
+
+  test("the review step summarises the trigger type and reports empty params honestly", async () => {
+    fetchState.response = { ok: true, body: { triggers: [] } };
+    const triggerDefs = [{
+      type: "svc:event",
+      label: "Service Event",
+      params: [{ name: "branch", label: "Branch", type: "string" }],
+    }];
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
+    });
+    await openWizard(container);
+    await act(async () => { fireEvent.click(findByText(container, "Next")!); });
+
+    expect(container.textContent).toContain("New subscription");
+    expect(container.textContent).toContain("No parameters set");
+    expect(container.textContent).toContain("svc:event");
+  });
+
+  test("Subscribe stays available on the first step", async () => {
+    fetchState.response = { ok: true, body: { triggers: [] } };
+    const triggerDefs = [{
+      type: "svc:event",
+      label: "Service Event",
+      params: [{ name: "branch", label: "Branch", type: "string" }],
+    }];
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
+    });
+    await openWizard(container);
+
+    expect(container.textContent).toContain("1. Parameters");
+    expect(findByText(container, "Subscribe")).toBeDefined();
+  });
+
+  test("the stepper dots jump directly to a step", async () => {
+    fetchState.response = { ok: true, body: { triggers: [] } };
+    const triggerDefs = [{
+      type: "svc:event",
+      label: "Service Event",
+      params: [{ name: "branch", label: "Branch", type: "string" }],
+      schema: { properties: { status: { type: "string" } } },
+    }];
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
+    });
+    await openWizard(container);
+
+    const jumpToReview = Array.from(container.getElementsByTagName("button")).find(
+      (b) => b.getAttribute("aria-label") === "Go to step 3: Review",
+    );
+    expect(jumpToReview).toBeDefined();
+
+    await act(async () => { fireEvent.click(jumpToReview!); });
+    expect(container.textContent).toContain("3. Review");
+  });
+
+  test("editing an existing subscription labels the review step as an update", async () => {
+    fetchState.response = { ok: true, body: { triggers: [] } };
+    fetchState.urlOverrides = {
+      "trigger-subscriptions": {
+        ok: true,
+        body: { subscriptions: [{ subscriptionId: "sub-1", triggerType: "svc:event", runnerId: "runner-A", params: { branch: "main" } }] },
+      },
+    };
+    const triggerDefs = [{
+      type: "svc:event",
+      label: "Service Event",
+      params: [{ name: "branch", label: "Branch", type: "string" }],
+    }];
+
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<TriggersPanel sessionId="sess-abc" triggerDefs={triggerDefs} />));
+    });
+
+    const accordionBtn = Array.from(container.getElementsByTagName("button")).find((b) => b.textContent?.includes("svc"));
+    await act(async () => { fireEvent.click(accordionBtn!); });
+
+    const editBtn = Array.from(container.getElementsByTagName("button")).find(
+      (b) => b.getAttribute("aria-label") === "Edit subscription sub-1 for svc:event",
+    );
+    expect(editBtn).toBeDefined();
+    await act(async () => { fireEvent.click(editBtn!); });
+
+    // Saved value is pre-filled, and the action reads as an update.
+    const branchInput = Array.from(container.getElementsByTagName("input")).find(
+      (i) => (i as HTMLInputElement).value === "main",
+    );
+    expect(branchInput).toBeDefined();
+    expect(findByText(container, "Update")).toBeDefined();
+
+    await act(async () => { fireEvent.click(findByText(container, "Next")!); });
+    expect(container.textContent).toContain("Update subscription");
+    expect(container.textContent).toContain("branch=main");
+  });
+});
+
 describe("TriggersPanel — status updates", () => {
   test("subscribes to trigger_status_update events on viewer socket", async () => {
     fetchState.response = { ok: true, body: { triggers: [] } };
