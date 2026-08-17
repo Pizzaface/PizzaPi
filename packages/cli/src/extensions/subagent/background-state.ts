@@ -43,3 +43,15 @@ export function resetSubagentState(): void {
     followUpStarted = false;
     idleListeners.clear();
 }
+
+/**
+ * Reset the slot counters WITHOUT dropping idle listeners.
+ *
+ * Used on `/new` (session reset in place): the conversation restarts but the
+ * extension — and the lifecycle handler's onSubagentsIdle listener that gates
+ * session completion — lives on, so its listener must survive.
+ */
+export function resetSubagentCounters(): void {
+    activeSlots = 0;
+    followUpStarted = false;
+}

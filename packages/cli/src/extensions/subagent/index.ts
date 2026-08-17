@@ -43,7 +43,7 @@ import {
 } from "./types.js";
 import { runSingleAgent, mapWithConcurrencyLimit, type ModelOverride } from "./engine.js";
 import { renderSubagentCall, renderSubagentResult } from "./render.js";
-import { reserveSubagentSlots, resetSubagentState } from "./background-state.js";
+import { reserveSubagentSlots, resetSubagentState, resetSubagentCounters } from "./background-state.js";
 
 // ── Tool parameter schemas (JSON Schema) ───────────────────────────────
 
@@ -115,11 +115,25 @@ const SubagentParams = {
 export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) => {
     const backgroundTasks = new Map<AbortController, Promise<void>>();
 
-    pi.on("session_shutdown", async () => {
+    // Abort every in-flight background subagent and wait for their finally
+    // blocks to release slots + end their relay mirror. `preserveListeners`
+    // keeps the lifecycle onSubagentsIdle listener alive across `/new`.
+    const abortAll = async (preserveListeners: boolean) => {
         for (const controller of backgroundTasks.keys()) controller.abort();
         await Promise.allSettled(backgroundTasks.values());
         backgroundTasks.clear();
-        resetSubagentState();
+        if (preserveListeners) resetSubagentCounters();
+        else resetSubagentState();
+    };
+
+    pi.on("session_shutdown", async () => { await abortAll(false); });
+
+    // `/new` resets the conversation in place: an aborted subagent's result
+    // (and its lingering mirror session) must not bleed into the new one, and a
+    // still-reserved slot would otherwise leave the fresh conversation looking
+    // "never settled" (hasActiveSubagents stays true across the reset).
+    pi.on("session_switch" as any, async (event: any) => {
+        if (event?.reason === "new") await abortAll(true);
     });
 
     pi.registerTool({

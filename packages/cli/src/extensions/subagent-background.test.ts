@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import { subagentExtension, type SingleResult } from "./subagent.js";
-import { hasActiveSubagents, reserveSubagentSlots } from "./subagent/background-state.js";
+import { hasActiveSubagents, reserveSubagentSlots, onSubagentsIdle } from "./subagent/background-state.js";
 
 const result: SingleResult = {
     agent: "task",
@@ -23,18 +23,25 @@ function resultFor(task: string, output: string): SingleResult {
 function harness(runAgent: (...args: any[]) => Promise<SingleResult>) {
     let tool: any;
     let shutdown: (() => void | Promise<void>) | undefined;
+    let switchTo: ((event: any) => void | Promise<void>) | undefined;
     const sent: Array<{ content: string; details?: unknown; options?: { deliverAs?: string; triggerTurn?: boolean } }> = [];
     const pi = {
         registerTool(value: any) { tool = value; },
-        on(event: string, handler: () => void) {
+        on(event: string, handler: (event?: any) => void) {
             if (event === "session_shutdown") shutdown = handler;
+            if (event === "session_switch") switchTo = handler;
         },
         sendMessage(message: { content: string; details?: unknown }, options?: { deliverAs?: string; triggerTurn?: boolean }) {
             sent.push({ content: message.content, details: message.details, options });
         },
     };
     subagentExtension(pi as any, runAgent as any);
-    return { tool, sent, shutdown: async () => { await shutdown?.(); } };
+    return {
+        tool,
+        sent,
+        shutdown: async () => { await shutdown?.(); },
+        newConversation: async () => { await switchTo?.({ reason: "new" }); },
+    };
 }
 
 const nextTask = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -125,6 +132,32 @@ describe("background subagents", () => {
 
         expect(aborted).toBe(true);
         expect(sent).toEqual([]);
+    });
+
+    test("aborts background work on /new without injecting a result, and keeps idle listeners", async () => {
+        const runAgent = mock((...args: any[]) => new Promise<SingleResult>((_resolve, reject) => {
+            const signal = args[6] as AbortSignal;
+            signal.addEventListener("abort", () => reject(new Error("Subagent was aborted")), { once: true });
+        }));
+        const { tool, sent, newConversation } = harness(runAgent);
+
+        // A lifecycle-style idle listener that must survive a /new reset.
+        let idleFired = 0;
+        const stop = onSubagentsIdle(() => { idleFired++; });
+
+        await tool.execute("call-new", { agent: "task", task: "Investigate" }, undefined, undefined, ctx);
+        expect(hasActiveSubagents()).toBe(true);
+
+        await newConversation();
+
+        // Aborted: no result bled into the new conversation, slot released.
+        expect(sent).toEqual([]);
+        expect(hasActiveSubagents()).toBe(false);
+
+        // Listener preserved: a fresh reserve/release cycle still notifies it.
+        reserveSubagentSlots(1, 2)!();
+        expect(idleFired).toBeGreaterThan(0);
+        stop();
     });
 
     test("aborts background work on session shutdown without injecting a result", async () => {

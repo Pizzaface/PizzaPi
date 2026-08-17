@@ -4396,7 +4396,16 @@ export function App() {
   // cross-runner switch can briefly pair the old runner's modes with the new
   // runner's id — and a mode that hides chrome closes those panels for good.
   const modesSource = React.useMemo(() => {
-    if (activeRunnerInfo) {
+    // Prefer the active session's runner, but only when it actually declares
+    // modes — otherwise the mode list and mode home vanish the moment you open
+    // a session on a modeless runner (a subagent child, a plain coding runner).
+    // Modes and their owning runner id are still read from the SAME runner
+    // object, so a cross-runner switch can't pair one runner's modes with
+    // another's id. activeMode stays correct because findSessionMode requires
+    // the session's own runnerId to match modesSource.runnerId — a session on a
+    // modeless runner resolves to no mode (standard UI) even while the fallback
+    // runner's modes keep showing in the sidebar.
+    if (activeRunnerInfo && (activeRunnerInfo.sessionModes?.length ?? 0) > 0) {
       return { modes: activeRunnerInfo.sessionModes ?? [], runnerId: activeRunnerInfo.runnerId };
     }
     const runner = feedRunners.find((candidate) => (candidate.sessionModes?.length ?? 0) > 0);
