@@ -6,7 +6,7 @@
  * that creates an auto-spawn listener — when that trigger fires, the server
  * spawns a new session and delivers the trigger into it.
  *
- * Triggers with configurable params show an inline form (dropdowns, checkboxes,
+ * Triggers with configurable params show an inline wizard (dropdowns, checkboxes,
  * text inputs) before subscribing, so listeners can filter which events spawn.
  */
 import * as React from "react";
@@ -32,6 +32,9 @@ import {
   Cpu,
   Sliders,
   Filter,
+  ArrowRight,
+  ArrowLeft,
+  CheckCircle2,
 } from "lucide-react";
 import { useRunnerModels, type RunnerModel } from "@/hooks/useRunnerModels";
 import { formatPathTail } from "@/lib/path";
@@ -81,18 +84,18 @@ function renderParamValueBadges(
 function SourceIcon({ source, className }: { source: string; className?: string }) {
   const src = source.toLowerCase();
   if (src.includes("github") || src.includes("pr") || src.includes("issue")) {
-    return <GitPullRequest className={cn("size-3.5 text-purple-400", className)} />;
+    return <GitPullRequest className={cn("size-3.5 text-muted-foreground", className)} />;
   }
   if (src.includes("webhook") || src.includes("http")) {
-    return <Globe className={cn("size-3.5 text-sky-400", className)} />;
+    return <Globe className={cn("size-3.5 text-muted-foreground", className)} />;
   }
   if (src.includes("cron") || src.includes("schedule") || src.includes("time")) {
-    return <Clock className={cn("size-3.5 text-emerald-400", className)} />;
+    return <Clock className={cn("size-3.5 text-muted-foreground", className)} />;
   }
   if (src.includes("service")) {
-    return <Settings className={cn("size-3.5 text-zinc-400", className)} />;
+    return <Settings className={cn("size-3.5 text-muted-foreground", className)} />;
   }
-  return <Layers className={cn("size-3.5 text-blue-400", className)} />;
+  return <Layers className={cn("size-3.5 text-muted-foreground", className)} />;
 }
 
 // ── Service Group ──────────────────────────────────────────────────────────
@@ -113,7 +116,7 @@ function groupByService(defs: ServiceTriggerDef[]): ServiceGroup[] {
   return Array.from(map.entries()).map(([service, d]) => ({ service, defs: d }));
 }
 
-// ── Param Form ─────────────────────────────────────────────────────────────
+// ── Param Form (Wizard Architecture) ───────────────────────────────────────
 
 interface ParamFormProps {
   params: ServiceTriggerParamDef[];
@@ -134,6 +137,10 @@ function ParamForm({
   params, values, onChange, sessionConfig, onSessionConfigChange,
   error, onSubmit, onCancel, isPending, models, recentFolders, submitLabel = "Subscribe",
 }: ParamFormProps) {
+  const [step, setStep] = React.useState<number>(1);
+  const hasParams = params.length > 0;
+  const maxStep = hasParams ? 3 : 2;
+
   const updateValue = (name: string, value: string | string[]) => {
     onChange({ ...values, [name]: value });
   };
@@ -142,145 +149,58 @@ function ParamForm({
   };
 
   return (
-    <div className="mt-3 rounded-xl border border-violet-500/30 bg-violet-950/20 p-4 space-y-3.5 shadow-inner">
-      <div className="flex items-center justify-between pb-2 border-b border-violet-500/20">
-        <span className="text-xs font-semibold text-violet-300 flex items-center gap-1.5">
-          <Sliders className="size-3.5" />
-          Configure auto-spawn listener
-        </span>
-      </div>
-
-      {/* Session config: cwd, prompt, model */}
-      <div className="space-y-3 pb-3 border-b border-violet-500/20">
-        <div className="space-y-1.5">
-          <label className="text-xs font-medium text-foreground/80 flex items-center justify-between">
-            <span>Working Dir</span>
-            <span className="text-[10px] text-muted-foreground/60 font-normal">execution folder</span>
-          </label>
-          <div className="space-y-1.5">
-            <input
-              type="text"
-              placeholder="/path/to/project"
-              value={sessionConfig.cwd}
-              onChange={(e) => updateConfig("cwd", e.target.value)}
-              className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
-            />
-            {recentFolders.length > 0 && (
-              <div className="flex flex-wrap gap-1">
-                {recentFolders.slice(0, 6).map((folder) => {
-                  const tail = formatPathTail(folder, 1);
-                  const isSelected = sessionConfig.cwd === folder;
-                  return (
-                    <button
-                      key={folder}
-                      type="button"
-                      title={folder}
-                      onClick={() => updateConfig("cwd", folder)}
-                      className={cn(
-                        "inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono border transition-all",
-                        isSelected
-                          ? "border-primary/50 bg-primary/20 text-primary-foreground font-semibold"
-                          : "border-border/60 bg-muted/20 text-muted-foreground hover:bg-muted/40 hover:text-foreground",
-                      )}
-                    >
-                      <FolderOpen className="size-3 shrink-0 text-muted-foreground" />
-                      {tail}
-                    </button>
-                  );
-                })}
-              </div>
+    <div className="mt-3 rounded-xl border border-violet-500/30 bg-violet-950/20 p-4 space-y-4 shadow-inner">
+      {/* Wizard Stepper Rail Header */}
+      <div className="flex items-center justify-between border-b border-violet-500/20 pb-3">
+        <div className="flex items-center gap-2">
+          <span className="size-6 rounded-full bg-primary text-primary-foreground font-bold text-xs flex items-center justify-center shadow-sm">
+            {step}
+          </span>
+          <span className="text-xs font-semibold text-foreground">
+            {hasParams ? (
+              <>
+                {step === 1 && "1. Event Parameters"}
+                {step === 2 && "2. Target Session"}
+                {step === 3 && "3. Review & Activate"}
+              </>
+            ) : (
+              <>
+                {step === 1 && "1. Target Session"}
+                {step === 2 && "2. Review & Activate"}
+              </>
             )}
-          </div>
+          </span>
         </div>
 
-        <div className="space-y-1">
-          <label className="text-xs font-medium text-foreground/80">
-            Prompt
-          </label>
-          <textarea
-            rows={2}
-            placeholder="Instructions for the spawned session"
-            value={sessionConfig.prompt}
-            onChange={(e) => updateConfig("prompt", e.target.value)}
-            className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary resize-y leading-relaxed"
-          />
-        </div>
-
-        <div className="space-y-1">
-          <label className="text-xs font-medium text-foreground/80">
-            Model
-          </label>
-          {models.length > 0 ? (
-            <select
-              value={sessionConfig.modelProvider && sessionConfig.modelId
-                ? `${sessionConfig.modelProvider}/${sessionConfig.modelId}`
-                : ""}
-              onChange={(e) => {
-                const val = e.target.value;
-                if (!val) {
-                  onSessionConfigChange({ ...sessionConfig, modelProvider: "", modelId: "" });
-                } else {
-                  const sep = val.indexOf("/");
-                  onSessionConfigChange({
-                    ...sessionConfig,
-                    modelProvider: val.slice(0, sep),
-                    modelId: val.slice(sep + 1),
-                  });
-                }
-              }}
-              className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-            >
-              <option value="">Runner default</option>
-              {models.map((m) => (
-                <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
-                  {m.name ?? m.id} ({m.provider})
-                </option>
-              ))}
-            </select>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <input
-                type="text"
-                placeholder="provider"
-                value={sessionConfig.modelProvider}
-                onChange={(e) => updateConfig("modelProvider", e.target.value)}
-                className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-              />
-              <input
-                type="text"
-                placeholder="model-id"
-                value={sessionConfig.modelId}
-                onChange={(e) => updateConfig("modelId", e.target.value)}
-                className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-              />
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2 pt-0.5">
-          <label className="text-xs font-medium text-foreground/80 w-24 shrink-0">
-            Auto-close
-          </label>
-          <label className="flex items-center gap-2 cursor-pointer text-xs text-foreground/90">
-            <input
-              type="checkbox"
-              checked={sessionConfig.autoClose}
-              onChange={(e) => onSessionConfigChange({ ...sessionConfig, autoClose: e.target.checked })}
-              className="accent-primary size-3.5 rounded"
+        {/* Step dots / tabs */}
+        <div className="flex items-center gap-1.5">
+          {[1, 2, ...(hasParams ? [3] : [])].map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => setStep(s)}
+              className={cn(
+                "size-2.5 rounded-full transition-all",
+                step === s
+                  ? "bg-primary ring-2 ring-primary/30 scale-110"
+                  : step > s
+                  ? "bg-emerald-500"
+                  : "bg-muted-foreground/30 hover:bg-muted-foreground/50",
+              )}
+              title={`Jump to Step ${s}`}
             />
-            Shut down session on successful completion
-          </label>
+          ))}
         </div>
       </div>
 
-      {/* Trigger params */}
-      {params.length > 0 && (
-        <div className="space-y-2 pt-1">
+      {/* Step: Event Filter Parameters (Step 1 when params exist) */}
+      {((step === 1 && hasParams)) && (
+        <div className="space-y-3">
           <div className="text-xs font-semibold text-violet-300 uppercase tracking-wider flex items-center gap-1.5">
-            <Filter className="size-3" /> Filter params
+            <Filter className="size-3" /> Event Filter Parameters
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-2.5">
             {params.map((p) => {
               const currentVal = values[p.name];
               const selectedArr = Array.isArray(currentVal) ? currentVal : [];
@@ -383,20 +303,225 @@ function ParamForm({
         </div>
       )}
 
+      {/* Step: Session Target Config (Step 2 when params exist, Step 1 when no params) */}
+      {((step === 2 && hasParams) || (step === 1 && !hasParams)) && (
+        <div className="space-y-3.5">
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-foreground/80 flex items-center justify-between">
+              <span>Working Dir</span>
+              <span className="text-[10px] text-muted-foreground/60 font-normal">execution folder</span>
+            </label>
+            <div className="space-y-1.5">
+              <input
+                type="text"
+                placeholder="/path/to/project"
+                value={sessionConfig.cwd}
+                onChange={(e) => updateConfig("cwd", e.target.value)}
+                className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              {recentFolders.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {recentFolders.slice(0, 6).map((folder) => {
+                    const tail = formatPathTail(folder, 1);
+                    const isSelected = sessionConfig.cwd === folder;
+                    return (
+                      <button
+                        key={folder}
+                        type="button"
+                        title={folder}
+                        onClick={() => updateConfig("cwd", folder)}
+                        className={cn(
+                          "inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono border transition-all",
+                          isSelected
+                            ? "border-primary/50 bg-primary/20 text-primary-foreground font-semibold"
+                            : "border-border/60 bg-muted/20 text-muted-foreground hover:bg-muted/40 hover:text-foreground",
+                        )}
+                      >
+                        <FolderOpen className="size-3 shrink-0 text-muted-foreground" />
+                        {tail}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-foreground/80">
+              Prompt
+            </label>
+            <textarea
+              rows={2}
+              placeholder="Instructions for the spawned session"
+              value={sessionConfig.prompt}
+              onChange={(e) => updateConfig("prompt", e.target.value)}
+              className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary resize-y leading-relaxed"
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-foreground/80">
+                Model
+              </label>
+              {models.length > 0 ? (
+                <select
+                  value={sessionConfig.modelProvider && sessionConfig.modelId
+                    ? `${sessionConfig.modelProvider}/${sessionConfig.modelId}`
+                    : ""}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (!val) {
+                      onSessionConfigChange({ ...sessionConfig, modelProvider: "", modelId: "" });
+                    } else {
+                      const sep = val.indexOf("/");
+                      onSessionConfigChange({
+                        ...sessionConfig,
+                        modelProvider: val.slice(0, sep),
+                        modelId: val.slice(sep + 1),
+                      });
+                    }
+                  }}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                >
+                  <option value="">Runner default</option>
+                  {models.map((m) => (
+                    <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
+                      {m.name ?? m.id} ({m.provider})
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <input
+                    type="text"
+                    placeholder="provider"
+                    value={sessionConfig.modelProvider}
+                    onChange={(e) => updateConfig("modelProvider", e.target.value)}
+                    className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                  <input
+                    type="text"
+                    placeholder="model-id"
+                    value={sessionConfig.modelId}
+                    onChange={(e) => updateConfig("modelId", e.target.value)}
+                    className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-foreground/80">
+                Auto-close
+              </label>
+              <label className="flex items-center gap-2 pt-1 text-xs text-foreground/90 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={sessionConfig.autoClose}
+                  onChange={(e) => onSessionConfigChange({ ...sessionConfig, autoClose: e.target.checked })}
+                  className="accent-primary size-3.5 rounded"
+                />
+                Shut down on completion
+              </label>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Review Step (Step 3 or Step 2 if no params) */}
+      {((step === 3 && hasParams) || (step === 2 && !hasParams)) && (
+        <div className="space-y-3">
+          <div className="p-3 rounded-xl border border-zinc-800 bg-zinc-950/80 space-y-2.5">
+            <div className="text-xs font-semibold text-foreground flex items-center justify-between">
+              <span>Listener Summary</span>
+              <span className="text-[11px] font-mono text-muted-foreground/60">Auto-spawn</span>
+            </div>
+
+            {sessionConfig.prompt ? (
+              <p className="text-xs font-medium text-white leading-snug">"{sessionConfig.prompt}"</p>
+            ) : (
+              <p className="text-xs text-muted-foreground italic">No custom prompt instructions</p>
+            )}
+
+            <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-zinc-800 text-[11px]">
+              {sessionConfig.cwd && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-zinc-800 text-zinc-300 font-mono">
+                  <FolderOpen className="size-3 text-muted-foreground" />
+                  {formatPathTail(sessionConfig.cwd, 1)}
+                </span>
+              )}
+              {(sessionConfig.modelId || sessionConfig.modelProvider) && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-zinc-800 text-zinc-300 font-mono">
+                  <Bot className="size-3 text-muted-foreground" />
+                  {sessionConfig.modelId || sessionConfig.modelProvider}
+                </span>
+              )}
+              {sessionConfig.autoClose && (
+                <span className="px-2 py-0.5 rounded-md bg-zinc-800/80 text-zinc-400 font-mono">
+                  auto-close: on
+                </span>
+              )}
+            </div>
+
+            {Object.keys(values).length > 0 && (
+              <div className="pt-1 border-t border-zinc-800 flex items-center gap-1 flex-wrap">
+                {Object.entries(values).flatMap(([k, v]) => {
+                  const badges = renderParamValueBadges(k, v as JsonValue, "px-2 py-0.5 text-[11px] rounded-md border-emerald-500/30 text-emerald-300 bg-emerald-500/5 font-mono");
+                  return Array.isArray(badges) ? badges : [badges];
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {error && (
         <p className="text-xs text-destructive bg-destructive/10 border border-destructive/30 px-3 py-2 rounded-md">
           {error}
         </p>
       )}
 
-      <div className="flex items-center justify-end gap-2 pt-2 border-t border-violet-500/20">
+      {/* Navigation Footer */}
+      <div className="flex items-center justify-between pt-3 border-t border-violet-500/20 gap-2">
         <Button size="sm" variant="outline" className="h-7 text-xs px-2.5" onClick={onCancel}>
           Cancel
         </Button>
-        <Button size="sm" className="h-7 text-xs px-3.5 font-semibold bg-primary hover:bg-primary/90 text-primary-foreground" disabled={isPending} onClick={onSubmit}>
-          {isPending ? <Loader2 className="size-3 animate-spin mr-1.5" /> : null}
-          {submitLabel}
-        </Button>
+
+        <div className="flex items-center gap-2">
+          {step > 1 && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs px-2.5 gap-1"
+              onClick={() => setStep((s) => Math.max(1, s - 1))}
+            >
+              <ArrowLeft className="size-3" /> Back
+            </Button>
+          )}
+
+          {step < maxStep && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs px-3 gap-1 border-primary/40 text-primary hover:bg-primary/10"
+              onClick={() => setStep((s) => Math.min(maxStep, s + 1))}
+            >
+              Next <ArrowRight className="size-3" />
+            </Button>
+          )}
+
+          <Button
+            size="sm"
+            className="h-7 text-xs px-3.5 font-semibold bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm gap-1.5"
+            disabled={isPending}
+            onClick={onSubmit}
+          >
+            {isPending ? <Loader2 className="size-3 animate-spin mr-1" /> : <Zap className="size-3" />}
+            {submitLabel}
+          </Button>
+        </div>
       </div>
     </div>
   );
@@ -640,7 +765,7 @@ function TriggerItem({
           isPending={isPending}
           models={models}
           recentFolders={recentFolders}
-          submitLabel={editMode ? "Update" : "Subscribe"}
+          submitLabel={editMode ? "Update Listener" : "Subscribe"}
         />
       )}
     </div>
@@ -845,13 +970,6 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
     }
     return map;
   }, [listeners]);
-
-  // Find trigger def by type (for param validation)
-  const defsByType = React.useMemo(() => {
-    const map = new Map<string, ServiceTriggerDef>();
-    for (const d of triggerDefs) map.set(d.type, d);
-    return map;
-  }, [triggerDefs]);
 
   /** Open the config form pre-populated with current listener config for editing. */
   const handleEdit = React.useCallback((def: ServiceTriggerDef, listener?: ListenerInfo) => {

@@ -42,6 +42,8 @@ import {
   Layers,
   Sparkles,
   GitPullRequest,
+  ArrowRight,
+  ArrowLeft,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -1523,241 +1525,423 @@ function ServiceCatalogAccordion({
                   <CollapsibleParamDefs params={def.params} />
                 )}
 
-                {/* Inline param form */}
+                {/* Inline param form (Wizard) */}
                 {isParamFormVisible && (hasParams || hasOutputSchema) && (
-                  <div className="rounded-xl border border-blue-500/30 bg-blue-950/20 p-3.5 space-y-3 mt-2 shadow-inner">
-                    <div className="flex items-center justify-between pb-2 border-b border-blue-500/20">
-                      <span className="text-xs font-semibold text-blue-300 flex items-center gap-1.5">
-                        <Sparkles className="size-3.5" />
-                        {hasParams ? "Service params" : "Configure subscription"}
-                      </span>
-                    </div>
-
-                    {/* Param inputs */}
-                    {def.params?.map((p) => {
-                      const currentVal = paramValues[def.type]?.[p.name];
-                      const selectedArr = Array.isArray(currentVal) ? currentVal : [];
-
-                      if (isCronParam && p.name === "cron") {
-                        return (
-                          <div key={p.name} className="space-y-1.5">
-                            <label className="text-xs font-medium text-foreground/90 flex items-center gap-1">
-                              Schedule {p.required && <span className="text-destructive">*</span>}
-                            </label>
-                            <CronScheduleBuilder
-                              value={typeof currentVal === "string" ? currentVal : ""}
-                              onChange={(val) => onParamValuesChange((prev) => ({
-                                ...prev,
-                                [def.type]: { ...prev[def.type], [p.name]: val },
-                              }))}
-                            />
-                          </div>
-                        );
-                      }
-
-                      return (
-                        <div key={p.name} className="space-y-1">
-                          <label className="text-xs font-medium text-foreground/80 flex items-center justify-between" title={p.description ?? p.name}>
-                            <span>{p.label}{p.required && <span className="text-destructive ml-0.5">*</span>}</span>
-                            {p.description && <span className="text-[10px] text-muted-foreground/60 font-normal">{p.description}</span>}
-                          </label>
-
-                          {p.multiselect && p.enum ? (
-                            <div className="space-y-1.5">
-                              {selectedArr.length > 0 && (
-                                <div className="flex flex-wrap gap-1">
-                                  {selectedArr.map((value, index) => (
-                                    <Badge key={`${p.name}:${value}:${index}`} variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-violet-500/30 text-violet-300 bg-violet-500/5">
-                                      {value}
-                                    </Badge>
-                                  ))}
-                                </div>
-                              )}
-                              <div className="flex flex-wrap gap-x-2.5 gap-y-1">
-                                {p.enum.map((opt) => {
-                                  const optStr = String(opt);
-                                  const checked = selectedArr.includes(optStr);
-                                  return (
-                                    <label key={optStr} className="flex items-center gap-1.5 cursor-pointer text-xs text-foreground/80">
-                                      <input
-                                        type="checkbox"
-                                        checked={checked}
-                                        onChange={() => {
-                                          onParamValuesChange((prev) => {
-                                            const cur = Array.isArray(prev[def.type]?.[p.name]) ? [...(prev[def.type][p.name] as string[])] : [];
-                                            const next = checked ? cur.filter((v) => v !== optStr) : [...cur, optStr];
-                                            return { ...prev, [def.type]: { ...prev[def.type], [p.name]: next } };
-                                          });
-                                        }}
-                                        className="accent-primary size-3 rounded"
-                                      />
-                                      {optStr}
-                                    </label>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          ) : p.enum ? (
-                            <select
-                              value={typeof currentVal === "string" ? currentVal : ""}
-                              onChange={(e) => onParamValuesChange((prev) => ({
-                                ...prev,
-                                [def.type]: { ...prev[def.type], [p.name]: e.target.value },
-                              }))}
-                              className="w-full rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                            >
-                              <option value="">—</option>
-                              {p.enum.map((opt) => (
-                                <option key={String(opt)} value={String(opt)}>{String(opt)}</option>
-                              ))}
-                            </select>
-                          ) : p.type === "json" ? (
-                            <textarea
-                              rows={3}
-                              placeholder={p.default !== undefined ? formatParamValue(p.default) : "{}"}
-                              value={typeof currentVal === "string" ? currentVal : ""}
-                              onChange={(e) => onParamValuesChange((prev) => ({
-                                ...prev,
-                                [def.type]: { ...prev[def.type], [p.name]: e.target.value },
-                              }))}
-                              className="w-full rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                            />
-                          ) : (
-                            <input
-                              type={p.type === "number" ? "number" : "text"}
-                              placeholder={p.default !== undefined ? String(p.default) : undefined}
-                              value={typeof currentVal === "string" ? currentVal : ""}
-                              onChange={(e) => onParamValuesChange((prev) => ({
-                                ...prev,
-                                [def.type]: { ...prev[def.type], [p.name]: e.target.value },
-                              }))}
-                              className="w-full rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                            />
-                          )}
-                        </div>
-                      );
-                    })}
-
-                    {/* Delivery Filters */}
-                    {(() => {
-                      const schemaProps = (def.schema as any)?.properties ?? {};
-                      const fields = Object.keys(schemaProps);
-                      if (fields.length === 0) return null;
-                      const currentMode = filterModeValues[def.type] ?? "and";
-
-                      return (
-                        <div className="pt-2 border-t border-border/40 space-y-2">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-semibold text-blue-300 flex items-center gap-1.5">
-                              <Filter className="size-3" /> Delivery Filters
-                            </span>
-                            {fields.length > 1 && (
-                              <div className="flex items-center p-0.5 rounded-md bg-zinc-900 border border-border/60">
-                                <button
-                                  type="button"
-                                  onClick={() => onFilterModeChange((prev) => ({ ...prev, [def.type]: "and" }))}
-                                  className={cn(
-                                    "text-[10px] font-semibold px-2 py-0.5 rounded transition-colors",
-                                    currentMode === "and"
-                                      ? "bg-blue-500/30 text-blue-200"
-                                      : "text-muted-foreground hover:text-foreground",
-                                  )}
-                                >
-                                  AND
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => onFilterModeChange((prev) => ({ ...prev, [def.type]: "or" }))}
-                                  className={cn(
-                                    "text-[10px] font-semibold px-2 py-0.5 rounded transition-colors",
-                                    currentMode === "or"
-                                      ? "bg-blue-500/30 text-blue-200"
-                                      : "text-muted-foreground hover:text-foreground",
-                                  )}
-                                >
-                                  OR
-                                </button>
-                              </div>
-                            )}
-                          </div>
-
-                          <div className="space-y-1.5">
-                            {fields.map((field) => {
-                              const propDef = schemaProps[field];
-                              const enumVals = propDef?.enum as string[] | undefined;
-                              const currentVal = filterValues[def.type]?.[field] ?? "";
-
-                              return (
-                                <div key={field} className="flex items-center gap-2">
-                                  <label className="text-xs text-muted-foreground w-24 shrink-0 font-mono truncate">
-                                    {field}
-                                  </label>
-                                  {enumVals ? (
-                                    <select
-                                      value={currentVal}
-                                      onChange={(e) => onFilterValuesChange((prev) => ({
-                                        ...prev,
-                                        [def.type]: { ...prev[def.type], [field]: e.target.value },
-                                      }))}
-                                      className="flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs"
-                                    >
-                                      <option value="">— any —</option>
-                                      {enumVals.map((v) => (
-                                        <option key={String(v)} value={String(v)}>{String(v)}</option>
-                                      ))}
-                                    </select>
-                                  ) : (
-                                    <input
-                                      type="text"
-                                      placeholder={`filter by ${field}`}
-                                      value={currentVal}
-                                      onChange={(e) => onFilterValuesChange((prev) => ({
-                                        ...prev,
-                                        [def.type]: { ...prev[def.type], [field]: e.target.value },
-                                      }))}
-                                      className="flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs"
-                                    />
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })()}
-
-                    {paramError && (
-                      <p className="text-xs text-destructive bg-destructive/10 border border-destructive/30 px-2.5 py-1.5 rounded-md">
-                        {paramError}
-                      </p>
-                    )}
-
-                    <div className="flex items-center justify-end gap-2 pt-2 border-t border-border/40">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 text-xs px-2.5"
-                        onClick={onParamFormClose}
-                      >
-                        Cancel
-                      </Button>
-                      <Button
-                        size="sm"
-                        className="h-7 text-xs px-3 font-semibold bg-primary hover:bg-primary/90 text-primary-foreground"
-                        disabled={isPendingToggle || (editMode && triggerSubscriptions.length === 0)}
-                        onClick={() => onParamSubmit(def)}
-                      >
-                        {isPendingToggle ? <Loader2 className="size-3 animate-spin mr-1" /> : null}
-                        {editMode ? "Update" : "Subscribe"}
-                      </Button>
-                    </div>
-                  </div>
+                  <SubscriptionWizard
+                    def={def}
+                    isCronParam={isCronParam}
+                    paramValues={paramValues}
+                    onParamValuesChange={onParamValuesChange}
+                    filterValues={filterValues}
+                    onFilterValuesChange={onFilterValuesChange}
+                    filterModeValues={filterModeValues}
+                    onFilterModeChange={onFilterModeChange}
+                    paramError={paramError}
+                    editMode={editMode}
+                    isPendingToggle={isPendingToggle}
+                    triggerSubscriptions={triggerSubscriptions}
+                    onParamSubmit={onParamSubmit}
+                    onParamFormClose={onParamFormClose}
+                  />
                 )}
               </div>
             );
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Subscription Wizard ────────────────────────────────────────────────────
+
+interface SubscriptionWizardProps {
+  def: ServiceTriggerDef;
+  isCronParam?: boolean;
+  paramValues: Record<string, Record<string, string | string[]>>;
+  onParamValuesChange: React.Dispatch<React.SetStateAction<Record<string, Record<string, string | string[]>>>>;
+  filterValues: Record<string, Record<string, string>>;
+  onFilterValuesChange: React.Dispatch<React.SetStateAction<Record<string, Record<string, string>>>>;
+  filterModeValues: Record<string, "and" | "or">;
+  onFilterModeChange: React.Dispatch<React.SetStateAction<Record<string, "and" | "or">>>;
+  paramError: string | null;
+  editMode: boolean;
+  isPendingToggle: boolean;
+  triggerSubscriptions: TriggerSubscription[];
+  onParamSubmit: (def: ServiceTriggerDef) => void;
+  onParamFormClose: () => void;
+}
+
+/**
+ * Guided step-by-step wizard for configuring a trigger subscription.
+ *
+ * Steps adapt to the trigger definition:
+ *   - Params step  (only when the trigger declares params)
+ *   - Filters step (only when the trigger declares an output schema)
+ *   - Review step  (always last)
+ *
+ * The submit button stays mounted on every step so a user who knows what they
+ * want can subscribe without walking the whole rail.
+ */
+function SubscriptionWizard({
+  def,
+  isCronParam,
+  paramValues,
+  onParamValuesChange,
+  filterValues,
+  onFilterValuesChange,
+  filterModeValues,
+  onFilterModeChange,
+  paramError,
+  editMode,
+  isPendingToggle,
+  triggerSubscriptions,
+  onParamSubmit,
+  onParamFormClose,
+}: SubscriptionWizardProps) {
+  const schemaProps = ((def.schema as any)?.properties ?? {}) as Record<string, any>;
+  const filterFields = Object.keys(schemaProps);
+  const hasParams = !!(def.params && def.params.length > 0);
+  const hasFilters = filterFields.length > 0;
+
+  // Build the ordered step list for this specific trigger definition.
+  const steps = React.useMemo(() => {
+    const list: Array<{ id: "params" | "filters" | "review"; label: string }> = [];
+    if (hasParams) list.push({ id: "params", label: "Parameters" });
+    if (hasFilters) list.push({ id: "filters", label: "Delivery Filters" });
+    list.push({ id: "review", label: "Review" });
+    return list;
+  }, [hasParams, hasFilters]);
+
+  const [stepIndex, setStepIndex] = React.useState(0);
+  // Guard against a def changing shape under us (e.g. schema arrives late).
+  const safeIndex = Math.min(stepIndex, steps.length - 1);
+  const current = steps[safeIndex];
+  const isLast = safeIndex === steps.length - 1;
+
+  const currentParams = paramValues[def.type] ?? {};
+  const currentFilters = filterValues[def.type] ?? {};
+  const currentMode = filterModeValues[def.type] ?? "and";
+
+  const filledParams = Object.entries(currentParams).filter(([, v]) => (Array.isArray(v) ? v.length > 0 : String(v ?? "").trim() !== ""));
+  const filledFilters = Object.entries(currentFilters).filter(([, v]) => String(v ?? "").trim() !== "");
+
+  return (
+    <div className="rounded-xl border border-blue-500/30 bg-blue-950/20 p-3.5 space-y-3 mt-2 shadow-inner">
+      {/* Wizard stepper rail */}
+      <div className="flex items-center justify-between pb-2 border-b border-blue-500/20 gap-2">
+        <span className="text-xs font-semibold text-blue-300 flex items-center gap-1.5 min-w-0">
+          <span className="size-5 rounded-full bg-primary text-primary-foreground font-bold text-[10px] flex items-center justify-center shrink-0">
+            {safeIndex + 1}
+          </span>
+          <span className="truncate">
+            {safeIndex + 1}. {current.label}
+          </span>
+        </span>
+
+        <div className="flex items-center gap-1.5 shrink-0">
+          {steps.map((s, i) => (
+            <button
+              key={s.id}
+              type="button"
+              onClick={() => setStepIndex(i)}
+              aria-label={`Go to step ${i + 1}: ${s.label}`}
+              className={cn(
+                "size-2.5 rounded-full transition-all",
+                i === safeIndex
+                  ? "bg-primary ring-2 ring-primary/30 scale-110"
+                  : i < safeIndex
+                  ? "bg-emerald-500"
+                  : "bg-muted-foreground/30 hover:bg-muted-foreground/60",
+              )}
+            />
+          ))}
+        </div>
+      </div>
+
+      {/* ── Step: Parameters ── */}
+      {current.id === "params" && def.params?.map((p) => {
+        const currentVal = currentParams[p.name];
+        const selectedArr = Array.isArray(currentVal) ? currentVal : [];
+
+        if (isCronParam && p.name === "cron") {
+          return (
+            <div key={p.name} className="space-y-1.5">
+              <label className="text-xs font-medium text-foreground/90 flex items-center gap-1">
+                Schedule {p.required && <span className="text-destructive">*</span>}
+              </label>
+              <CronScheduleBuilder
+                value={typeof currentVal === "string" ? currentVal : ""}
+                onChange={(val) => onParamValuesChange((prev) => ({
+                  ...prev,
+                  [def.type]: { ...prev[def.type], [p.name]: val },
+                }))}
+              />
+            </div>
+          );
+        }
+
+        return (
+          <div key={p.name} className="space-y-1">
+            <label className="text-xs font-medium text-foreground/80 flex items-center justify-between" title={p.description ?? p.name}>
+              <span>{p.label}{p.required && <span className="text-destructive ml-0.5">*</span>}</span>
+              {p.description && <span className="text-[10px] text-muted-foreground/60 font-normal">{p.description}</span>}
+            </label>
+
+            {p.multiselect && p.enum ? (
+              <div className="space-y-1.5">
+                {selectedArr.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {selectedArr.map((value, index) => (
+                      <Badge key={`${p.name}:${value}:${index}`} variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-violet-500/30 text-violet-300 bg-violet-500/5">
+                        {value}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-x-2.5 gap-y-1">
+                  {p.enum.map((opt) => {
+                    const optStr = String(opt);
+                    const checked = selectedArr.includes(optStr);
+                    return (
+                      <label key={optStr} className="flex items-center gap-1.5 cursor-pointer text-xs text-foreground/80">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            onParamValuesChange((prev) => {
+                              const cur = Array.isArray(prev[def.type]?.[p.name]) ? [...(prev[def.type][p.name] as string[])] : [];
+                              const next = checked ? cur.filter((v) => v !== optStr) : [...cur, optStr];
+                              return { ...prev, [def.type]: { ...prev[def.type], [p.name]: next } };
+                            });
+                          }}
+                          className="accent-primary size-3 rounded"
+                        />
+                        {optStr}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : p.enum ? (
+              <select
+                value={typeof currentVal === "string" ? currentVal : ""}
+                onChange={(e) => onParamValuesChange((prev) => ({
+                  ...prev,
+                  [def.type]: { ...prev[def.type], [p.name]: e.target.value },
+                }))}
+                className="w-full rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              >
+                <option value="">—</option>
+                {p.enum.map((opt) => (
+                  <option key={String(opt)} value={String(opt)}>{String(opt)}</option>
+                ))}
+              </select>
+            ) : p.type === "json" ? (
+              <textarea
+                rows={3}
+                placeholder={p.default !== undefined ? formatParamValue(p.default) : "{}"}
+                value={typeof currentVal === "string" ? currentVal : ""}
+                onChange={(e) => onParamValuesChange((prev) => ({
+                  ...prev,
+                  [def.type]: { ...prev[def.type], [p.name]: e.target.value },
+                }))}
+                className="w-full rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+            ) : (
+              <input
+                type={p.type === "number" ? "number" : "text"}
+                placeholder={p.default !== undefined ? String(p.default) : undefined}
+                value={typeof currentVal === "string" ? currentVal : ""}
+                onChange={(e) => onParamValuesChange((prev) => ({
+                  ...prev,
+                  [def.type]: { ...prev[def.type], [p.name]: e.target.value },
+                }))}
+                className="w-full rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+            )}
+          </div>
+        );
+      })}
+
+      {/* ── Step: Delivery Filters ── */}
+      {current.id === "filters" && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-blue-300 flex items-center gap-1.5">
+              <Filter className="size-3" /> Delivery Filters
+            </span>
+            {filterFields.length > 1 && (
+              <div className="flex items-center p-0.5 rounded-md bg-zinc-900 border border-border/60">
+                <button
+                  type="button"
+                  onClick={() => onFilterModeChange((prev) => ({ ...prev, [def.type]: "and" }))}
+                  className={cn(
+                    "text-[10px] font-semibold px-2 py-0.5 rounded transition-colors",
+                    currentMode === "and"
+                      ? "bg-blue-500/30 text-blue-200"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  AND
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onFilterModeChange((prev) => ({ ...prev, [def.type]: "or" }))}
+                  className={cn(
+                    "text-[10px] font-semibold px-2 py-0.5 rounded transition-colors",
+                    currentMode === "or"
+                      ? "bg-blue-500/30 text-blue-200"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  OR
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-1.5">
+            {filterFields.map((field) => {
+              const propDef = schemaProps[field];
+              const enumVals = propDef?.enum as string[] | undefined;
+              const currentVal = currentFilters[field] ?? "";
+
+              return (
+                <div key={field} className="flex items-center gap-2">
+                  <label className="text-xs text-muted-foreground w-24 shrink-0 font-mono truncate">
+                    {field}
+                  </label>
+                  {enumVals ? (
+                    <select
+                      value={currentVal}
+                      onChange={(e) => onFilterValuesChange((prev) => ({
+                        ...prev,
+                        [def.type]: { ...prev[def.type], [field]: e.target.value },
+                      }))}
+                      className="flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs"
+                    >
+                      <option value="">— any —</option>
+                      {enumVals.map((v) => (
+                        <option key={String(v)} value={String(v)}>{String(v)}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      placeholder={`filter by ${field}`}
+                      value={currentVal}
+                      onChange={(e) => onFilterValuesChange((prev) => ({
+                        ...prev,
+                        [def.type]: { ...prev[def.type], [field]: e.target.value },
+                      }))}
+                      className="flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs"
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── Step: Review ── */}
+      {current.id === "review" && (
+        <div className="space-y-2.5">
+          <div className="p-3 rounded-xl border border-border/60 bg-zinc-950/80 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-mono font-semibold text-foreground truncate">{def.type}</span>
+              <span className="text-[11px] text-muted-foreground shrink-0">
+                {editMode ? "Update subscription" : "New subscription"}
+              </span>
+            </div>
+
+            {filledParams.length > 0 ? (
+              <div className="flex items-center gap-1 flex-wrap">
+                {filledParams.flatMap(([k, v]) => {
+                  const badges = renderParamValueBadges(k, v as JsonValue, "px-2 py-0.5 text-[11px] rounded-md border-emerald-500/30 text-emerald-300 bg-emerald-500/5 font-mono");
+                  return Array.isArray(badges) ? badges : [badges];
+                })}
+              </div>
+            ) : (
+              <p className="text-[11px] text-muted-foreground italic">No parameters set</p>
+            )}
+
+            {filledFilters.length > 0 && (
+              <div className="flex items-center gap-1 flex-wrap pt-1 border-t border-border/40">
+                <Badge variant="outline" className="px-2 py-0.5 text-[11px] rounded-md border-blue-500/30 text-blue-300 bg-blue-500/5 font-semibold">
+                  {currentMode === "or" ? "OR" : "AND"}
+                </Badge>
+                {filledFilters.map(([field, value]) => (
+                  <Badge key={field} variant="outline" className="px-2 py-0.5 text-[11px] rounded-md border-blue-500/30 text-blue-300 bg-blue-500/5 font-mono">
+                    {field}={value}
+                  </Badge>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="p-2.5 rounded-lg bg-emerald-500/5 border border-emerald-500/20 flex items-start gap-2">
+            <CheckCircle2 className="size-4 shrink-0 text-emerald-400 mt-0.5" />
+            <p className="text-[11px] text-emerald-300 leading-relaxed">
+              This session will receive <span className="font-mono">{def.type}</span> events
+              {filledFilters.length > 0 ? " matching the filters above." : " as they fire."}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {paramError && (
+        <p className="text-xs text-destructive bg-destructive/10 border border-destructive/30 px-2.5 py-1.5 rounded-md">
+          {paramError}
+        </p>
+      )}
+
+      {/* Wizard navigation */}
+      <div className="flex items-center justify-between gap-2 pt-2 border-t border-border/40">
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 text-xs px-2.5"
+          onClick={onParamFormClose}
+        >
+          Cancel
+        </Button>
+
+        <div className="flex items-center gap-2">
+          {safeIndex > 0 && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs px-2.5 gap-1"
+              onClick={() => setStepIndex(Math.max(0, safeIndex - 1))}
+            >
+              <ArrowLeft className="size-3" /> Back
+            </Button>
+          )}
+
+          {!isLast && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs px-3 gap-1 border-primary/40 text-primary hover:bg-primary/10"
+              onClick={() => setStepIndex(Math.min(steps.length - 1, safeIndex + 1))}
+            >
+              Next <ArrowRight className="size-3" />
+            </Button>
+          )}
+
+          <Button
+            size="sm"
+            className="h-7 text-xs px-3 font-semibold bg-primary hover:bg-primary/90 text-primary-foreground"
+            disabled={isPendingToggle || (editMode && triggerSubscriptions.length === 0)}
+            onClick={() => onParamSubmit(def)}
+          >
+            {isPendingToggle ? <Loader2 className="size-3 animate-spin mr-1" /> : null}
+            {editMode ? "Update" : "Subscribe"}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
