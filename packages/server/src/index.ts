@@ -1,4 +1,5 @@
 import { createAuthContext, runWithAuthContext } from "./auth.js";
+import { isTransientRedisError } from "./transient-redis-error.js";
 import { handleFetch } from "./handler.js";
 import {
     getEphemeralSweepIntervalMs,
@@ -47,6 +48,18 @@ function handleProcessError(err: Error, origin: string): void {
     // level and continue rather than triggering a full shutdown.
     if (code === "ECONNRESET" || code === "ERR_STREAM_DESTROYED" || code === "ENOTCONN") {
         processLog.warn(`Caught transient network error (${code}) via ${origin} — logging and continuing:`, err.message);
+        return;
+    }
+
+    // node-redis transient connection errors carry NO ErrnoException code —
+    // they are plain Error subclasses identified by name. The client
+    // auto-reconnects on its own, so a dropped/slow Redis (restart, redeploy,
+    // event-loop stall past the connect timeout) must not shut the relay down;
+    // that would disconnect every viewer and runner over a blip Redis itself
+    // recovers from. Seen live: SocketClosedUnexpectedlyError during a Redis
+    // container restart fataled the whole server.
+    if (isTransientRedisError(err)) {
+        processLog.warn(`Caught transient Redis error (${err.name}) via ${origin} — logging and continuing:`, err.message);
         return;
     }
 
