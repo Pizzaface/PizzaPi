@@ -4,7 +4,7 @@ Patches in this directory are applied automatically by Bun via the
 `patchedDependencies` field in the root `package.json`. They are reapplied on
 every `bun install` — no postinstall script is needed.
 
-## @earendil-works/pi-agent-core@0.82.1
+## @earendil-works/pi-agent-core@0.84.2
 
 Refreshes the agent's system prompt and tool list before every assistant
 response, not just at loop start. `dist/agent.js` exposes the current
@@ -15,7 +15,7 @@ updates the prompt mid-turn (e.g. `search_tools`) wouldn't take effect until
 the *next* user turn. See the "pi-agent-core dynamic tool refresh" tests in
 `packages/cli/src/patches.test.ts`.
 
-## @earendil-works/pi-tui@0.82.1
+## @earendil-works/pi-tui@0.84.2
 
 Adds a Windows console lifecycle to `dist/terminal.js`:
 `createWindowsConsoleLifecycle()` enables VT output processing and switches
@@ -26,7 +26,7 @@ mode/code pages on `stop()`. This fixes garbled Unicode/ANSI rendering in
 Windows terminals; it's a no-op (best-effort, swallows failures) on other
 platforms. See `packages/cli/src/patches.test.ts`.
 
-## @earendil-works/pi-ai@0.82.1
+## @earendil-works/pi-ai@0.84.2
 
 Same intent as 0.80.6 (Anthropic web-search passthrough, Claude Code
 credentials fallback, retryable-JSON-parse patterns), ported to upstream's
@@ -35,9 +35,9 @@ restructured 0.82.0 layout:
 - The Anthropic OAuth module moved from `dist/utils/oauth/anthropic.js` to
   `dist/auth/oauth/anthropic.js`, and its shape changed: the old
   `anthropicOAuthProvider.refreshToken(credentials)` object is gone, replaced
-  by `anthropicOAuth.refresh(credential)` on the same `anthropicOAuth` object
-  used for login. The Claude Code Keychain/file fallback now lives inside
-  that `refresh()` method.
+  by `anthropicOAuth.refresh(credential, signal)` on the same `anthropicOAuth`
+  object used for login. The Claude Code Keychain/file fallback now lives
+  inside that `refresh()` method.
 
 **Ollama Cloud is no longer part of this patch (Task 0.2, Godmother idea
 Uq2WsWiW).** Earlier revisions inlined an `ollamaCloudProvider()` factory
@@ -67,7 +67,7 @@ assertions that the pi-ai patch no longer carries any ollama-cloud hunks.
 | `dist/auth/oauth/anthropic.js` | Claude Code Keychain/file credentials fallback, now inside `anthropicOAuth.refresh()` |
 | `dist/utils/retry.js` | Same retryable-JSON-parse patterns as 0.80.6 (unchanged file) |
 
-## @earendil-works/pi-coding-agent@0.82.1
+## @earendil-works/pi-coding-agent@0.84.2
 
 Same PizzaPi integration changes as 0.80.6, ported forward, with two upstream
 removals absorbed elsewhere rather than restored:
@@ -144,9 +144,10 @@ was rewired to call `rctx.sessionHost.sendUserMessage()` directly instead of
 `PromptOptions` field) — the patched `AgentSession.sendUserMessage()` method
 and its `ExtensionAPI`/`SendUserMessageHandler` typings in `types.d.ts` were
 never reached anymore. Both hunks (`dist/core/agent-session.js` and the two
-`dist/core/extensions/types.d.ts` hunks) were dropped from the patch.
-`patches.test.ts` has negative-guard tests asserting they do not silently
-reappear on a version bump.
+`dist/core/extensions/types.d.ts` hunks) were dropped from the patch. As of
+0.84.2, upstream provides the same opt-in API natively; `patches.test.ts`
+asserts that native behavior remains while PizzaPi's old patch markers stay
+absent.
 
 ### packages/cli auth call-site migration (not a patch — our own source)
 
