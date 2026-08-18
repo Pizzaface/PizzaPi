@@ -59,7 +59,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { X, TerminalIcon, FolderTree, GitBranch, EyeOff, Zap, BarChart3, FileText } from "lucide-react";
+import { X, TerminalIcon, FolderTree, GitBranch, EyeOff, Zap, BarChart3, FileText, Briefcase } from "lucide-react";
 import { ArtifactViewerContent } from "@/components/session-viewer/ArtifactCard";
 import type { TriggerHistoryEntry } from "@/components/TriggersPanel";
 import type { ProviderUsageMap } from "@/components/UsageIndicator";
@@ -82,7 +82,7 @@ import { resolveFilePath } from "@/components/file-explorer/utils";
 import { ServicePanelButtons, ServicePanelOverflowItems, useServicePanelState, useVisibleServicePanels } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
-import { resolveNewPanelPosition, resolveActiveTabIdFromIds, resolvePanelToggleAction, computeAutoOpenPanels } from "@/utils/servicePanelUtils";
+import { resolveNewPanelPosition, resolveActiveTabIdFromIds, resolvePanelToggleAction, computeAutoOpenPanels, resolveLauncherSource } from "@/utils/servicePanelUtils";
 import { IframeServicePanel } from "@/components/service-panels/IframeServicePanel";
 import {
   ModelSelector,
@@ -4570,6 +4570,14 @@ export function App() {
     () => dynamicPanels.filter((p) => surfaceVisibleInMode(p.modes, activeMode)),
     [dynamicPanels, activeMode],
   );
+
+  // Session-list launchers hang off the session list, not a session, so they
+  // read panels from the runner feed when nothing is open (no active session =
+  // no active runner = no announced panels).
+  const launcherSource = React.useMemo(
+    () => resolveLauncherSource(dynamicPanels, activeRunnerInfo?.runnerId ?? null, feedRunners, selectedRunnerId),
+    [dynamicPanels, activeRunnerInfo?.runnerId, feedRunners, selectedRunnerId],
+  );
   const modeTriggerDefs = React.useMemo(
     () => runnerTriggerDefs.filter((t) => surfaceVisibleInMode(t.modes, activeMode)),
     [runnerTriggerDefs, activeMode],
@@ -4589,7 +4597,7 @@ export function App() {
   // runner services via panel.launcher (e.g. PizzaWork Schedules).
   const [openLauncherPanelId, setOpenLauncherPanelId] = React.useState<string | null>(null);
   const handleOpenLauncherPanel = React.useCallback((panel: import("@pizzapi/protocol").ServicePanelInfo) => {
-    setOpenLauncherPanelId(panel.serviceId);
+    setOpenLauncherPanelId((prev) => (prev === panel.serviceId ? null : panel.serviceId));
   }, []);
   const handleCloseLauncherPanel = React.useCallback(() => {
     setOpenLauncherPanelId(null);
@@ -5101,7 +5109,7 @@ export function App() {
       });
     }
     return tabs;
-  }, [activeServicePanels, tunnelSessionId, activeSessionId, dynamicPanels, startPanelDragWith, setServicePanelPosition, closeServicePanelById, handleCombinedTabChange, getServicePanelNavParams]);
+  }, [activeServicePanels, tunnelSessionId, activeSessionId, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, dynamicPanels, startPanelDragWith, setServicePanelPosition, closeServicePanelById, handleCombinedTabChange, getServicePanelNavParams]);
 
   const panelGroups = React.useMemo(() => {
     type PG = import("@/hooks/usePanelLayout").PanelPosition;
@@ -5436,10 +5444,9 @@ export function App() {
               onShowSessions={() => setShowRunners(false)}
               sessionsAwaitingInput={sessionsAwaitingInput}
               sessionsCompacting={sessionsCompacting}
-              dynamicPanels={modePanels}
+              dynamicPanels={launcherSource.panels}
               onOpenLauncherPanel={handleOpenLauncherPanel}
-              openLauncherPanelId={openLauncherPanelId}
-              onCloseLauncherPanel={handleCloseLauncherPanel}
+              activeLauncherId={openLauncherPanelId}
             />
           </ErrorBoundary>
         </div>
@@ -5615,7 +5622,14 @@ export function App() {
 
               {/* ── Center content ───────────────────────────────────────── */}
               <div id="main-content" role="main" tabIndex={-1} className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
-                  {showRunners ? (
+                  {openLauncherPanelId ? (
+                    <LauncherPanelView
+                      panelId={openLauncherPanelId}
+                      panels={launcherSource.panels}
+                      runnerId={launcherSource.runnerId}
+                      onClose={handleCloseLauncherPanel}
+                    />
+                  ) : showRunners ? (
                     <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
                       <Suspense fallback={<PanelFallback label="Runners" />}>
                         <LazyRunnerManager
@@ -6222,5 +6236,46 @@ export function App() {
     </ViewerSocketContext.Provider>
     </HubSocketContext.Provider>
     </ThemeProvider>
+  );
+}
+
+interface LauncherPanelViewProps {
+  panelId: string;
+  panels: import("@pizzapi/protocol").ServicePanelInfo[];
+  runnerId: string | null;
+  onClose: () => void;
+}
+
+function LauncherPanelView({ panelId, panels, runnerId, onClose }: LauncherPanelViewProps) {
+  const panel = React.useMemo(() => panels.find((p) => p.serviceId === panelId), [panelId, panels]);
+  if (!panel || !runnerId) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
+        <p className="text-sm">Launcher panel unavailable.</p>
+        <Button variant="ghost" size="sm" onClick={onClose}>Back to sessions</Button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col h-full min-h-0 bg-background">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-border shrink-0">
+        <div className="flex items-center gap-2 text-sm font-medium">
+          {panel.icon ? <DynamicLucideIcon name={panel.icon} className="h-4 w-4" /> : <Briefcase className="h-4 w-4" />}
+          {panel.label}
+        </div>
+        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClose} aria-label="Close schedule viewer">
+          <X className="h-4 w-4" />
+        </Button>
+      </div>
+      <div className="flex-1 min-h-0">
+        <IframeServicePanel
+          sessionId=""
+          runnerId={runnerId}
+          port={panel.port}
+          panelParams={panel.panelParams}
+          cwd={panel.panelParams?.projectDir}
+        />
+      </div>
+    </div>
   );
 }
