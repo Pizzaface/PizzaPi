@@ -1,11 +1,6 @@
-diff --git a/node_modules/@earendil-works/pi-coding-agent/.bun-tag-b578a4d857002209 b/.bun-tag-b578a4d857002209
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/config.js b/dist/config.js
-index 4600b23493be21d2316303d056ef135313dcef43..85bd9b0d26c0de32a7aabfd0e254fed05659f958 100644
---- a/dist/config.js
-+++ b/dist/config.js
-@@ -358,6 +358,10 @@ export function getExamplesPath() {
+index 0000000..0000000 100644
+@@ -358,6 +358,10 @@
  }
  /** Get path to CHANGELOG.md */
  export function getChangelogPath() {
@@ -16,7 +11,7 @@ index 4600b23493be21d2316303d056ef135313dcef43..85bd9b0d26c0de32a7aabfd0e254fed0
      return resolve(join(getPackageDir(), "CHANGELOG.md"));
  }
  /**
-@@ -391,7 +395,7 @@ const piConfigName = pkg.piConfig?.name;
+@@ -391,7 +395,7 @@
  export const PACKAGE_NAME = pkg.name || "@earendil-works/pi-coding-agent";
  export const APP_NAME = piConfigName || "pi";
  export const APP_TITLE = piConfigName ? APP_NAME : "π";
@@ -25,7 +20,7 @@ index 4600b23493be21d2316303d056ef135313dcef43..85bd9b0d26c0de32a7aabfd0e254fed0
  export const VERSION = pkg.version || "0.0.0";
  // e.g., PI_CODING_AGENT_DIR or TAU_CODING_AGENT_DIR
  export const ENV_AGENT_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;
-@@ -414,7 +418,8 @@ export function getAgentDir() {
+@@ -414,7 +418,8 @@
      if (envDir) {
          return expandTildePath(envDir);
      }
@@ -36,10 +31,8 @@ index 4600b23493be21d2316303d056ef135313dcef43..85bd9b0d26c0de32a7aabfd0e254fed0
  /** Get path to user's custom themes directory */
  export function getCustomThemesDir() {
 diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
-index 4cd51566b17e362a4c9c149fa3a339458abc30f6..6f41d5c16b9e476dfe01c312cf86fe0bdce96dac 100644
---- a/dist/core/model-resolver.js
-+++ b/dist/core/model-resolver.js
-@@ -21,6 +21,7 @@ export const defaultModelPerProvider = {
+index 0000000..0000000 100644
+@@ -21,6 +21,7 @@
      "google-vertex": "gemini-3.1-pro-preview",
      "github-copilot": "gpt-5.4",
      openrouter: "moonshotai/kimi-k2.6",
@@ -48,13 +41,12 @@ index 4cd51566b17e362a4c9c149fa3a339458abc30f6..6f41d5c16b9e476dfe01c312cf86fe0b
      xai: "grok-4.5",
      groq: "openai/gpt-oss-120b",
 diff --git a/dist/core/model-runtime.js b/dist/core/model-runtime.js
-index e81a5368e8072e452a16ffbbfb4db7767a3a0e38..c90c3a087a48af85bff2e0504e10df6e27f72a03 100644
---- a/dist/core/model-runtime.js
-+++ b/dist/core/model-runtime.js
-@@ -8,6 +8,32 @@ import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.
- import { composeModelProvider, configuredRequestAuthStatus, resolveCompatibilityRequestConfig, resolveConfiguredModelHeaders, validateExtensionProvider, } from "./provider-composer.js";
- import { withRemoteCatalog } from "./remote-catalog-provider.js";
- import { RuntimeCredentials } from "./runtime-credentials.js";
+index 0000000..0000000 100644
+@@ -21,6 +21,32 @@
+         this.operation = operation;
+         this.credential = credential;
+     }
++}
 +// PATCH(pizzapi): Report OpenAI API's published context capacity instead of
 +// the lower short-context pricing threshold used by Pi's model catalog.
 +const OPENAI_CONTEXT_WINDOWS = {
@@ -80,11 +72,10 @@ index e81a5368e8072e452a16ffbbfb4db7767a3a0e38..c90c3a087a48af85bff2e0504e10df6e
 +                : { ...model, contextWindow };
 +        }),
 +    };
-+}
+ }
  function mergeHeaders(base, override) {
      if (!base && !override)
-         return undefined;
-@@ -109,7 +135,7 @@ export class ModelRuntime {
+@@ -131,7 +157,7 @@
          ]);
      }
      recomposeProvider(providerId) {
@@ -94,11 +85,9 @@ index e81a5368e8072e452a16ffbbfb4db7767a3a0e38..c90c3a087a48af85bff2e0504e10df6e
          if (!base && !this.config.getProvider(providerId) && !extension) {
              this.models.deleteProvider(providerId);
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index e91e38f8bedfabb6e67305f9739277d1ebacde22..8ee1013bedc3895457115c714122c40b65871ed8 100644
---- a/dist/index.d.ts
-+++ b/dist/index.d.ts
-@@ -13,6 +13,7 @@ export { type ModelScopeDiagnostic, type ResolveCliModelResult, type ResolveMode
- export { type CreateModelRuntimeOptions, ModelRuntime, type ModelRuntimeAuthOverrides, } from "./core/model-runtime.ts";
+index 0000000..0000000 100644
+@@ -13,6 +13,7 @@
+ export { type CreateModelRuntimeOptions, CredentialSynchronizationError, type CredentialSynchronizationOperation, ModelRuntime, type ModelRuntimeAuthOverrides, } from "./core/model-runtime.ts";
  export type { PackageManager, PathMetadata, ProgressCallback, ProgressEvent, ResolvedPaths, ResolvedResource, } from "./core/package-manager.ts";
  export { DefaultPackageManager } from "./core/package-manager.ts";
 +export { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
@@ -106,22 +95,18 @@ index e91e38f8bedfabb6e67305f9739277d1ebacde22..8ee1013bedc3895457115c714122c40b
  export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
  export { AgentSessionRuntime, type AgentSessionRuntimeDiagnostic, type AgentSessionServices, type CreateAgentSessionFromServicesOptions, type CreateAgentSessionOptions, type CreateAgentSessionResult, type CreateAgentSessionRuntimeFactory, type CreateAgentSessionRuntimeResult, type CreateAgentSessionServicesOptions, createAgentSession, createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices, createBashTool, createCodingTools, createEditTool, createFindTool, createGrepTool, createLsTool, createReadOnlyTools, createReadTool, createWriteTool, type PromptTemplate, } from "./core/sdk.ts";
 diff --git a/dist/index.js b/dist/index.js
-index a2ee19264ac2c192d67bb4a601aa32b63a508562..730bc336253592faacd434918c20a0c4969951db 100644
---- a/dist/index.js
-+++ b/dist/index.js
-@@ -13,6 +13,7 @@ export { ModelRegistry } from "./core/model-registry.js";
+index 0000000..0000000 100644
+@@ -13,6 +13,7 @@
  export { resolveCliModel, resolveModelScopeWithDiagnostics, } from "./core/model-resolver.js";
- export { ModelRuntime, } from "./core/model-runtime.js";
+ export { CredentialSynchronizationError, ModelRuntime, } from "./core/model-runtime.js";
  export { DefaultPackageManager } from "./core/package-manager.js";
 +export { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.js";
  export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.js";
  // SDK for programmatic usage
  export { AgentSessionRuntime, 
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index b93d41c0ce6b41e5a6c440bcb1926252eb598fcb..b24b9637c481f180bd946717b3657fab862fdbec 100644
---- a/dist/modes/interactive/interactive-mode.js
-+++ b/dist/modes/interactive/interactive-mode.js
-@@ -33,7 +33,6 @@ import { getCwdRelativePath } from "../../utils/paths.js";
+index 0000000..0000000 100644
+@@ -36,7 +36,6 @@
  import { getPiUserAgent } from "../../utils/pi-user-agent.js";
  import { killTrackedDetachedChildren } from "../../utils/shell.js";
  import { ensureTool } from "../../utils/tools-manager.js";
@@ -129,9 +114,9 @@ index b93d41c0ce6b41e5a6c440bcb1926252eb598fcb..b24b9637c481f180bd946717b3657fab
  import { ArminComponent } from "./components/armin.js";
  import { AssistantMessageComponent } from "./components/assistant-message.js";
  import { BashExecutionComponent } from "./components/bash-execution.js";
-@@ -587,12 +586,6 @@ export class InteractiveMode {
-                 .then(() => this.updateAvailableProviderCount())
-                 .catch(() => { });
+@@ -777,12 +776,6 @@
+                 .catch(() => { })
+                 .finally(() => clearTimeout(timeout));
          }
 -        // Start version check asynchronously
 -        checkForNewPiVersion(this.version).then((newRelease) => {
@@ -142,10 +127,12 @@ index b93d41c0ce6b41e5a6c440bcb1926252eb598fcb..b24b9637c481f180bd946717b3657fab
          // Start package update check asynchronously
          this.checkForPackageUpdates()
              .then((updates) => {
-@@ -3169,29 +3162,6 @@ export class InteractiveMode {
+@@ -3415,29 +3408,6 @@
+     showWarning(warningMessage) {
+         this.chatContainer.addChild(new Spacer(1));
          this.chatContainer.addChild(new Text(theme.fg("warning", `Warning: ${warningMessage}`), 1, 0));
-         this.ui.requestRender();
-     }
+-        this.ui.requestRender();
+-    }
 -    showNewVersionNotification(release) {
 -        const action = theme.fg("accent", `${APP_NAME} update`);
 -        const updateInstruction = theme.fg("muted", `New version ${release.version} is available. Run `) + action;
@@ -167,8 +154,6 @@ index b93d41c0ce6b41e5a6c440bcb1926252eb598fcb..b24b9637c481f180bd946717b3657fab
 -        }
 -        this.chatContainer.addChild(new Text(changelogLine, 1, 0));
 -        this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
--        this.ui.requestRender();
--    }
+         this.ui.requestRender();
+     }
      showPackageUpdateNotification(packages) {
-         const action = theme.fg("accent", `${APP_NAME} update --extensions`);
-         const updateInstruction = theme.fg("muted", "Package updates are available. Run ") + action;

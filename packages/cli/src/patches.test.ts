@@ -79,29 +79,25 @@ async function withIsolatedModelRuntime(run: (runtime: any) => void | Promise<vo
 // ---------------------------------------------------------------------------
 
 describe("pi-coding-agent patch application", () => {
-    // Phase 2 (SessionHost sendUserMessage routing): the expandPromptTemplates
-    // opt-in hunk was removed. PizzaPi's remote extension no longer calls the
-    // patched ExtensionAPI.sendUserMessage at all — connection-handlers-factory.ts
-    // drives SessionHost.sendUserMessage, which calls session.prompt() directly
-    // (packages/cli/src/runner/session-host.ts). These guards prevent the hunk
-    // from silently reappearing on a version bump.
-    test("agent-session.js: extension sendUserMessage does NOT special-case expandPromptTemplates (removed — PizzaPi routes through SessionHost)", async () => {
+    // Phase 2 (SessionHost sendUserMessage routing): PizzaPi's
+    // expandPromptTemplates hunk was removed. As of pi 0.84.2, upstream owns the
+    // same opt-in API; these guards verify the native behavior without restoring
+    // PizzaPi's old patch.
+    test("agent-session.js: upstream owns sendUserMessage expandPromptTemplates", async () => {
         const source = await Bun.file(
             piCodingAgentPath("dist/core/agent-session.js"),
         ).text();
 
         expect(source).not.toContain("PATCH(pizzapi): allow callers to opt into command/template expansion");
-        expect(source).not.toContain("options?.expandPromptTemplates ?? false");
-        // Upstream's original hardcoded false is back in place.
-        expect(source).toContain("expandPromptTemplates: false,");
+        expect(source).toContain("expandPromptTemplates: options?.expandPromptTemplates ?? false,");
     });
 
-    test("types.d.ts: ExtensionAPI.sendUserMessage does NOT carry the expandPromptTemplates PATCH (removed — SessionHost owns expansion)", async () => {
+    test("types.d.ts: upstream types ExtensionAPI.sendUserMessage expandPromptTemplates", async () => {
         const source = await Bun.file(
             piCodingAgentPath("dist/core/extensions/types.d.ts"),
         ).text();
 
-        expect(source).not.toContain("expandPromptTemplates");
+        expect(source).toContain("expandPromptTemplates?: boolean;");
         expect(source).not.toContain("PATCH(pizzapi): opt into slash-command and template expansion");
     });
 
@@ -274,13 +270,16 @@ describe("pi-coding-agent patched runtime behavior", () => {
 
             await provider.refreshModels({
                 allowNetwork: false,
-                store: {
-                    read: async () => ({
-                        checkedAt: Date.now(),
-                        lastModified: Number.MAX_SAFE_INTEGER,
-                        models: [futureModel],
-                    }),
-                    write: async () => undefined,
+                force: false,
+                signal: new AbortController().signal,
+                stored: {
+                    checkedAt: Date.now(),
+                    lastModified: Number.MAX_SAFE_INTEGER,
+                    models: [futureModel],
+                },
+                publish: async (publication: { update?: () => void }) => {
+                    publication.update?.();
+                    return true;
                 },
             });
             expect(runtime.getModel("openai", "gpt-future")?.contextWindow).toBe(777_000);
@@ -641,7 +640,7 @@ describe("pi-ai patch application — Claude Code credentials fallback (Keychain
         expect(source).toContain("PATCH(pizzapi): try Claude Code credentials first");
         // Verify the fallback awaits tryReadClaudeCodeCredentials before refreshAnthropicToken
         const ccCredsIndex = source.indexOf("await tryReadClaudeCodeCredentials()");
-        const refreshIndex = source.indexOf("refreshAnthropicToken(credential.refresh)");
+        const refreshIndex = source.indexOf("refreshAnthropicToken(credential.refresh, signal)");
         expect(ccCredsIndex).toBeGreaterThan(-1);
         expect(refreshIndex).toBeGreaterThan(-1);
         expect(ccCredsIndex).toBeLessThan(refreshIndex);
