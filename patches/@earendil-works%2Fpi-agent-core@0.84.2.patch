@@ -1,8 +1,6 @@
 diff --git a/dist/agent-loop.js b/dist/agent-loop.js
-index 5b5da78..e562421 100644
---- a/dist/agent-loop.js
-+++ b/dist/agent-loop.js
-@@ -102,6 +102,9 @@ async function runLoop(initialContext, newMessages, initialConfig, signal, emit,
+index 0000000..0000000 100644
+@@ -102,6 +102,9 @@
                  }
                  pendingMessages = [];
              }
@@ -13,10 +11,8 @@ index 5b5da78..e562421 100644
              const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFunction);
              newMessages.push(message);
 diff --git a/dist/agent.js b/dist/agent.js
-index e26aedf..673e432 100644
---- a/dist/agent.js
-+++ b/dist/agent.js
-@@ -275,6 +275,9 @@ export class Agent {
+index 0000000..0000000 100644
+@@ -280,6 +280,9 @@
      createContextSnapshot() {
          return {
              systemPrompt: this._state.systemPrompt,
