@@ -17,7 +17,7 @@
 
 import { execFileSync, spawn } from "child_process";
 import { createECDH, createHash, randomBytes } from "crypto";
-import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from "fs";
 import { join, dirname } from "path";
 import { homedir, arch } from "os";
 import { c } from "./cli-colors.js";
@@ -45,6 +45,12 @@ export interface WebConfig {
     tunnelDomain?: string;
     /** Run a bundled Caddy that terminates wildcard TLS for tunnelDomain (persisted). */
     caddy?: boolean;
+    /** DNS-01 provider module for wildcard ACME (e.g. "cloudflare", persisted). */
+    caddyDnsProvider?: string;
+    /** API token for caddyDnsProvider (persisted — config.json is chmod 600). */
+    caddyDnsToken?: string;
+    /** Override Caddy image; must bundle the caddyDnsProvider module (persisted). */
+    caddyImage?: string;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -502,9 +508,27 @@ export function loadWebConfig(): WebConfig {
 }
 
 /** Save config to disk */
+/**
+ * Write JSON 0600. Exported (and path-taking) so it can be tested without
+ * redirecting HOME — Bun's os.homedir() ignores $HOME, so a test that doctors
+ * HOME would write over the caller's real config.
+ */
+export function writeJsonSecure(path: string, value: unknown): void {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
+    // `mode` above only applies when writeFileSync CREATES the file. Configs
+    // written before caddyDnsToken existed are already on disk at 0644, so the
+    // token would land world-readable without an explicit chmod.
+    try {
+        chmodSync(path, 0o600);
+    } catch (err) {
+        log.warn(`Could not restrict permissions on ${path} (it holds secrets):`, err);
+    }
+}
+
 export function saveWebConfig(config: WebConfig): void {
-    mkdirSync(WEB_DIR, { recursive: true });
-    writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n");
+    // Holds betterAuthSecret, the VAPID private key, and caddyDnsToken.
+    writeJsonSecure(CONFIG_PATH, config);
 }
 
 // ─── Docker helpers ───────────────────────────────────────────────────────────
@@ -595,6 +619,8 @@ export interface CaddyConfig {
     dnsProvider: string | null;
     /** Container image — must include the DNS provider module when dnsProvider is set. */
     image: string;
+    /** API token for the DNS-01 challenge; "" when dnsProvider is null. */
+    dnsToken: string;
     /** Compose service Caddy proxies to. */
     upstream: string;
 }
@@ -610,11 +636,17 @@ export interface CaddyConfig {
  *   - `PIZZAPI_CADDY_DNS_PROVIDER` + `PIZZAPI_CADDY_DNS_TOKEN` → DNS-01 wildcard
  *     from Let's Encrypt. Publicly trusted, still no inbound :80 required.
  *
+ * DNS settings come from the persisted config first, env only as a fallback:
+ * `runWeb` folds env into config before calling this, so a later bare
+ * `pizza web --build` keeps DNS-01 instead of silently reverting to the
+ * untrusted internal CA (which breaks tunnel iframes — browsers never show the
+ * cert interstitial in a subframe, so the panel just goes blank).
+ *
  * ponytail: only the prebuilt cloudflare image is known; any other provider
  * needs PIZZAPI_CADDY_IMAGE pointing at an xcaddy build with that module.
  */
 export function resolveCaddyConfig(
-    config: Pick<WebConfig, "caddy" | "tunnelDomain">,
+    config: Pick<WebConfig, "caddy" | "tunnelDomain" | "caddyDnsProvider" | "caddyDnsToken" | "caddyImage">,
     upstream: string,
     env: Record<string, string | undefined> = process.env,
 ): { caddy: CaddyConfig | null; warning?: string; error?: string } {
@@ -640,8 +672,9 @@ export function resolveCaddyConfig(
         return { caddy: null, error: `PIZZAPI_TUNNEL_DOMAIN (${raw}) is http:// — drop the scheme or use https:// to front it with Caddy.` };
     }
 
-    const dnsProvider = env.PIZZAPI_CADDY_DNS_PROVIDER?.trim() || null;
-    const image = env.PIZZAPI_CADDY_IMAGE?.trim()
+    const dnsProvider = config.caddyDnsProvider?.trim() || env.PIZZAPI_CADDY_DNS_PROVIDER?.trim() || null;
+    const dnsToken = config.caddyDnsToken?.trim() || env.PIZZAPI_CADDY_DNS_TOKEN?.trim() || "";
+    const image = config.caddyImage?.trim() || env.PIZZAPI_CADDY_IMAGE?.trim()
         || (dnsProvider === "cloudflare" ? "ghcr.io/caddybuilds/caddy-cloudflare:2.11.4" : dnsProvider ? "" : "caddy:2-alpine");
     if (!image) {
         return {
@@ -649,11 +682,11 @@ export function resolveCaddyConfig(
             error: `No prebuilt Caddy image is known for DNS provider "${dnsProvider}" — set PIZZAPI_CADDY_IMAGE to an xcaddy build including github.com/caddy-dns/${dnsProvider}.`,
         };
     }
-    if (dnsProvider && !env.PIZZAPI_CADDY_DNS_TOKEN?.trim()) {
+    if (dnsProvider && !dnsToken) {
         return { caddy: null, error: "PIZZAPI_CADDY_DNS_PROVIDER is set but PIZZAPI_CADDY_DNS_TOKEN is empty — DNS-01 cannot solve the wildcard challenge." };
     }
 
-    return { caddy: { host, port, dnsProvider, image, upstream } };
+    return { caddy: { host, port, dnsProvider, image, dnsToken, upstream } };
 }
 
 /** Caddyfile for the wildcard tunnel vhost. */
@@ -676,8 +709,8 @@ export function buildCaddyfile(c: CaddyConfig): string {
     ].join("\n");
 }
 
-function caddyServiceBlock(c: CaddyConfig, caddyfilePath: string, dnsToken: string): string {
-    const tokenLine = c.dnsProvider ? `    environment:\n      - PIZZAPI_CADDY_DNS_TOKEN=${dnsToken}\n` : "";
+function caddyServiceBlock(c: CaddyConfig, caddyfilePath: string): string {
+    const tokenLine = c.dnsProvider ? `    environment:\n      - PIZZAPI_CADDY_DNS_TOKEN=${c.dnsToken}\n` : "";
     return `  caddy:\n    image: ${c.image}\n    platform: ${getDockerPlatform()}\n    ports:\n      - "${c.port}:${c.port}"\n${tokenLine}    volumes:\n      - ${caddyfilePath}:/etc/caddy/Caddyfile:ro\n      - caddy-data:/data\n      - caddy-config:/config\n    depends_on:\n      ${c.upstream}:\n        condition: service_started\n    restart: unless-stopped\n\n`;
 }
 
@@ -892,6 +925,18 @@ export function generateComposeFile(opts: {
         config.caddy = readBooleanEnv(process.env.PIZZAPI_CADDY, false);
     }
 
+    // Caddy DNS-01 settings: env overrides config and gets persisted back, so a
+    // later bare `pizza web --build` keeps the publicly-trusted wildcard cert.
+    // Empty string clears, matching PIZZAPI_TUNNEL_DOMAIN.
+    for (const [envVar, key] of [
+        ["PIZZAPI_CADDY_DNS_PROVIDER", "caddyDnsProvider"],
+        ["PIZZAPI_CADDY_DNS_TOKEN", "caddyDnsToken"],
+        ["PIZZAPI_CADDY_IMAGE", "caddyImage"],
+    ] as const) {
+        const v = process.env[envVar]?.trim();
+        if (v !== undefined) config[key] = v || undefined;
+    }
+
     // Persist any env-driven changes back to config.json
     saveWebConfig(config);
 
@@ -958,7 +1003,7 @@ export function generateComposeFile(opts: {
     let caddyVolumes = "";
     if (caddy) {
         writeFileSync(caddyfilePath, buildCaddyfile(caddy));
-        caddyBlock = caddyServiceBlock(caddy, caddyfilePath, process.env.PIZZAPI_CADDY_DNS_TOKEN?.trim() ?? "");
+        caddyBlock = caddyServiceBlock(caddy, caddyfilePath);
         caddyVolumes = "  caddy-data:\n  caddy-config:\n";
         if (config.trustProxy !== true) {
             log.warn(

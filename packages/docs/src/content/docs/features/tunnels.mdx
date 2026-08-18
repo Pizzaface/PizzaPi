@@ -98,13 +98,34 @@ nothing else changes. Two certificate modes:
 
 | Mode | When | Trade-off |
 |------|------|-----------|
-| **Internal CA** (default) | No DNS credentials given | Zero setup, works on a private LAN/tailnet with no inbound reachability — but every device must trust Caddy's root CA once |
+| **Internal CA** (default) | No DNS credentials given | Zero setup, works on a private LAN/tailnet with no inbound reachability — but every device must trust Caddy's root CA once, **or tunnels break in the web UI** (see below) |
 | **DNS-01 wildcard** | `PIZZAPI_CADDY_DNS_PROVIDER` + `PIZZAPI_CADDY_DNS_TOKEN` | Publicly trusted Let's Encrypt cert, still no inbound `:80` needed — requires a real domain and a DNS API token |
 
 DNS-01 is the one to want: the certificate is publicly trusted, so no device ever
 has to install a root CA, and the challenge is solved over the DNS API — the
 relay itself never has to be reachable from the internet. A tailnet-only relay
 can hold a real Let's Encrypt wildcard.
+
+:::caution[Untrusted certs break the in-app tunnel preview]
+If a tunnel loads in a new browser tab but the Tunnels panel stays blank, the
+certificate is almost always untrusted (internal CA, or a root the device never
+installed). A top-level tab shows the "Your connection is not private"
+interstitial and lets you click through; **an iframe never does** — browsers
+treat a TLS failure in a subframe as fatal and silent.
+
+It also cannot be clicked away once and forgotten: every tunnel gets a fresh
+random subdomain, so each one is a new origin needing its own exception. Use
+DNS-01, or install Caddy's root CA on every viewing device.
+
+Confirm with:
+
+```bash
+echo | openssl s_client -connect probe.t.example.com:8444 \
+  -servername probe.t.example.com 2>&1 | grep -E 'issuer=|Verify return code'
+```
+
+`issuer=CN=Caddy Local Authority` plus `Verify return code: 20` is this problem.
+:::
 
 Either way you supply the wildcard DNS record yourself: `*.t.example.com` → the
 relay host. `<ip-with-dashes>.sslip.io` covers that for free on a LAN or tailnet

@@ -82,6 +82,7 @@ import { resolveFilePath } from "@/components/file-explorer/utils";
 import { ServicePanelButtons, ServicePanelOverflowItems, useServicePanelState, useVisibleServicePanels } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
+import { parsePanelId } from "@/components/service-panels/panel-instance";
 import { resolveNewPanelPosition, resolveActiveTabIdFromIds, resolvePanelToggleAction, computeAutoOpenPanels, resolveLauncherSource } from "@/utils/servicePanelUtils";
 import { IframeServicePanel } from "@/components/service-panels/IframeServicePanel";
 import {
@@ -5081,35 +5082,39 @@ export function App() {
     if (activeServicePanels.size === 0 || !effectiveSessionId) return [];
 
     const tabs: CombinedPanelTab[] = [];
-    for (const serviceId of activeServicePanels) {
+    for (const panelId of activeServicePanels) {
+      // Panel ids may carry an instance suffix (`tunnel#3000`) when a panel has
+      // detached a sub-view into its own dock tab — registry lookup uses the base.
+      const { serviceId, instance } = parsePanelId(panelId);
       // Try static registry first, then dynamic panels
       const staticDef = SERVICE_PANELS.find(p => p.serviceId === serviceId);
       const dynamicDef = !staticDef ? dynamicPanels.find(p => p.serviceId === serviceId) : null;
       if (!staticDef && !dynamicDef) continue;
 
-      const label = staticDef?.label ?? dynamicDef!.label;
+      const baseLabel = staticDef?.label ?? dynamicDef!.label;
+      const label = instance ? `${baseLabel} ${instance}` : baseLabel;
       const icon = staticDef?.icon ?? <DynamicLucideIcon name={dynamicDef!.icon} />;
-      const navParams = getServicePanelNavParams(serviceId);
+      const navParams = getServicePanelNavParams(panelId);
       const content = staticDef
-        ? <staticDef.component sessionId={effectiveSessionId} runnerId={activeSessionInfo?.runnerId ?? undefined} />
+        ? <staticDef.component sessionId={effectiveSessionId} runnerId={activeSessionInfo?.runnerId ?? undefined} panelId={panelId} onSpawnPanel={handleToggleServicePanel} />
         : <IframeServicePanel sessionId={effectiveSessionId} port={dynamicDef!.port} query={navParams?.query} fragment={navParams?.fragment} panelParams={dynamicDef!.panelParams} cwd={activeSessionInfo?.cwd ?? undefined} />;
 
       tabs.push({
-        id: serviceId,
+        id: panelId,
         label,
         icon,
         onDragStart: (e) => startPanelDragWith(e, (pos) => {
-          setServicePanelPosition(serviceId, pos);
+          setServicePanelPosition(panelId, pos);
           // Re-assert focus on the moved panel so the destination group
           // highlights it rather than falling back to tabs[0] (Tunnels).
-          handleCombinedTabChange(serviceId);
+          handleCombinedTabChange(panelId);
         }),
-        onClose: () => closeServicePanelById(serviceId),
+        onClose: () => closeServicePanelById(panelId),
         content,
       });
     }
     return tabs;
-  }, [activeServicePanels, tunnelSessionId, activeSessionId, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, dynamicPanels, startPanelDragWith, setServicePanelPosition, closeServicePanelById, handleCombinedTabChange, getServicePanelNavParams]);
+  }, [activeServicePanels, tunnelSessionId, activeSessionId, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, dynamicPanels, startPanelDragWith, setServicePanelPosition, closeServicePanelById, handleCombinedTabChange, handleToggleServicePanel, getServicePanelNavParams]);
 
   const panelGroups = React.useMemo(() => {
     type PG = import("@/hooks/usePanelLayout").PanelPosition;
