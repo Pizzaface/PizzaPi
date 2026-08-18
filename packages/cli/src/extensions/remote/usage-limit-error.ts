@@ -31,6 +31,24 @@ const USAGE_LIMIT_PHRASES: ReadonlyArray<RegExp> = [
 ];
 
 /**
+ * Known phrases that indicate provider-side capacity saturation (as opposed
+ * to a hard quota). These are retried by the agent core; once retries are
+ * exhausted, consumers such as the fallback-model extension may switch to an
+ * alternate configured model.
+ *
+ * Matches Anthropic's `overloaded_error`, HTTP 529 overload responses, and
+ * generic throttling/backpressure wording.
+ */
+const PROVIDER_CAPACITY_PHRASES: ReadonlyArray<RegExp> = [
+    // Anthropic's explicit stream error type, e.g. "overloaded_error: Overloaded"
+    /\boverloaded/i,
+    // HTTP 529 / "Error 529: overloaded"
+    /\b529\b/i,
+    // Throttled / throttling backpressure
+    /\bthrottl/i,
+];
+
+/**
  * Returns true if the error message indicates a hard provider usage limit.
  *
  * Examples that should match:
@@ -50,6 +68,28 @@ const USAGE_LIMIT_PHRASES: ReadonlyArray<RegExp> = [
  */
 export function isUsageLimitError(message: string): boolean {
     for (const pattern of USAGE_LIMIT_PHRASES) {
+        if (pattern.test(message)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Returns true if the error message indicates provider capacity saturation
+ * rather than a hard usage/quota limit.
+ *
+ * Examples that should match:
+ *   "overloaded_error: Overloaded [status=200; ...]"
+ *   "Error 529: overloaded"
+ *   "Request throttled due to high traffic"
+ *
+ * Examples that must NOT match:
+ *   "Failed to generate a response"   — unrelated
+ *   "Service capacity exceeded"       — already covered by isUsageLimitError
+ */
+export function isProviderCapacityError(message: string): boolean {
+    for (const pattern of PROVIDER_CAPACITY_PHRASES) {
         if (pattern.test(message)) {
             return true;
         }

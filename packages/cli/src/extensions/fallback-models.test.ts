@@ -105,6 +105,34 @@ describe("fallbackModelsExtension", () => {
         expect(pi.sendUserMessage).not.toHaveBeenCalled();
     });
 
+    test("switches to first fallback and retries the last prompt on provider-overload error", async () => {
+        writeSettings(["openai-codex:gpt-5.5"]);
+        const pi = makeFakePi();
+        const ctx = makeFakeContext();
+        ctx.modelRegistry._register("openai-codex", "gpt-5.5");
+
+        fallbackModelsExtension(pi);
+        pi._handlers.session_start({}, ctx);
+        pi._handlers.input({ text: "say hi" }, ctx);
+
+        await pi._handlers.turn_end(
+            {
+                message: {
+                    role: "assistant",
+                    stopReason: "error",
+                    errorMessage:
+                        "overloaded_error: Overloaded [status=200; request_id=req_011CeAZaCn185y5ESxRDYZMu; saw_message_stop=false; saw_tool_block=false]",
+                },
+            },
+            ctx,
+        );
+
+        expect(pi.setModel).toHaveBeenCalledWith({ provider: "openai-codex", id: "gpt-5.5", hasAuth: true });
+        expect(pi._userMessages).toHaveLength(1);
+        expect(pi._userMessages[0]).toEqual(["say hi", { deliverAs: "steer" }]);
+        expect(pi._sent[0]?.customType).toBe("fallback_status");
+    });
+
     test("switches to first fallback and retries the last prompt on rate-limit error", async () => {
         writeSettings(["openai-codex:gpt-5.5"]);
         const pi = makeFakePi();

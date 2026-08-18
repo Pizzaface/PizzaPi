@@ -1,7 +1,8 @@
 /**
- * Fallback model chain for rate-limit / quota errors.
+ * Fallback model chain for rate-limit / quota / provider-capacity errors.
  *
- * When the active model returns a hard usage-limit error, this extension
+ * When the active model returns a hard usage-limit error or a provider
+ * capacity error (e.g. Anthropic "overloaded_error"), this extension
  * automatically switches to the next configured fallback model and retries
  * the last user prompt as a steer message. It cascades through the chain
  * until one model succeeds or the chain is exhausted.
@@ -16,7 +17,7 @@ import type { ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { isUsageLimitError } from "./remote/usage-limit-error.js";
+import { isProviderCapacityError, isUsageLimitError } from "./remote/usage-limit-error.js";
 import { findCachedOllamaCloudModel } from "../ollama-cloud-models.js";
 
 type UserContent = string | (TextContent | ImageContent)[];
@@ -141,7 +142,8 @@ export const fallbackModelsExtension: ExtensionFactory = (pi) => {
             return;
         }
 
-        if (!isUsageLimitError(msg.errorMessage ?? "")) return;
+        const errorMessage = msg.errorMessage ?? "";
+        if (!isUsageLimitError(errorMessage) && !isProviderCapacityError(errorMessage)) return;
 
         const currentModel = ctx.model;
         const currentKey = currentModel ? modelKey(currentModel) : undefined;
@@ -169,7 +171,7 @@ export const fallbackModelsExtension: ExtensionFactory = (pi) => {
 
         pi.sendMessage({
             customType: "fallback_status",
-            content: `${currentModel ? modelKey(currentModel) : "Primary model"} hit a rate limit. Retrying with ${selected.ref}.`,
+            content: `${currentModel ? modelKey(currentModel) : "Primary model"} hit a provider limit. Retrying with ${selected.ref}.`,
             display: true,
         });
 
