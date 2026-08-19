@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { isUsageLimitError } from "./usage-limit-error.js";
+import { isProviderCapacityError, isUsageLimitError } from "./usage-limit-error.js";
 
 describe("isUsageLimitError", () => {
     // ── True positives ────────────────────────────────────────────────────
@@ -135,6 +135,60 @@ describe("isUsageLimitError", () => {
 
         test("server error", () => {
             expect(isUsageLimitError("Internal server error (500)")).toBe(false);
+        });
+    });
+});
+
+describe("isProviderCapacityError", () => {
+    // ── True positives ────────────────────────────────────────────────────
+
+    describe("matches known provider-capacity phrases", () => {
+        test("Anthropic 'overloaded_error'", () => {
+            expect(
+                isProviderCapacityError(
+                    "overloaded_error: Overloaded [status=200; request_id=req_011CeAZaCn185y5ESxRDYZMu; saw_message_stop=false; saw_tool_block=false]",
+                ),
+            ).toBe(true);
+        });
+
+        test("'overloaded' word", () => {
+            expect(isProviderCapacityError("The model is currently overloaded, please try again")).toBe(true);
+        });
+
+        test("'Overloaded' capitalized", () => {
+            expect(isProviderCapacityError("Provider returned error: Overloaded")).toBe(true);
+        });
+
+        test("HTTP 529", () => {
+            expect(isProviderCapacityError("Error 529: overloaded")).toBe(true);
+        });
+
+        test("'throttled'", () => {
+            expect(isProviderCapacityError("Request throttled due to high traffic")).toBe(true);
+        });
+
+        test("'throttling'", () => {
+            expect(isProviderCapacityError("Server is throttling your requests")).toBe(true);
+        });
+    });
+
+    // ── False positives (must NOT match) ──────────────────────────────────
+
+    describe("does NOT match unrelated errors", () => {
+        test("generic error", () => {
+            expect(isProviderCapacityError("Something broke")).toBe(false);
+        });
+
+        test("empty string", () => {
+            expect(isProviderCapacityError("")).toBe(false);
+        });
+
+        test("usage-limit error (other classifier)", () => {
+            expect(isProviderCapacityError("Rate limit reached")).toBe(false);
+        });
+
+        test("'capacity' standalone", () => {
+            expect(isProviderCapacityError("Service capacity exceeded for this region")).toBe(false);
         });
     });
 });
