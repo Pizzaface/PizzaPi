@@ -189,3 +189,54 @@ describe("TunnelPanel — stale tunnel state fix", () => {
         expect(getIframes(container).length).toBe(0);
     });
 });
+
+describe("TunnelPanel — detached instance panels", () => {
+    test("tab detach button spawns a panel id for that port", async () => {
+        channelState.available = true;
+        const spawned: string[] = [];
+        let container!: HTMLElement;
+
+        await act(async () => {
+            ({ container } = render(
+                <TunnelPanel sessionId="sess" panelId="tunnel" onSpawnPanel={(id) => spawned.push(id)} />,
+            ));
+        });
+        await act(async () => {
+            capturedOnMessage?.("tunnel_list_result", { tunnels: [makeTunnel(3000), makeTunnel(5173)] });
+        });
+
+        const buttons = [...container.getElementsByTagName("button")] as HTMLButtonElement[];
+        const detach = buttons.find((b) =>
+            b.getAttribute("aria-label") === "Detach tunnel 5173 into its own panel",
+        );
+        expect(detach).toBeDefined();
+        await act(async () => { detach!.click(); });
+
+        expect(spawned).toEqual(["tunnel#5173"]);
+    });
+
+    test("detached panel previews only its own port and hides the expose form", async () => {
+        channelState.available = true;
+        let container!: HTMLElement;
+
+        await act(async () => {
+            ({ container } = render(<TunnelPanel sessionId="sess" panelId="tunnel#5173" />));
+        });
+        // Another tunnel exists first — the detached panel must ignore it.
+        await act(async () => {
+            capturedOnMessage?.("tunnel_list_result", { tunnels: [makeTunnel(3000), makeTunnel(5173)] });
+        });
+
+        const iframes = getIframes(container);
+        expect(iframes.length).toBe(1);
+        expect(iframes[0]!.getAttribute("title")).toBe("Tunnel preview — port 5173");
+        // No port/name inputs, and no tab for the unrelated tunnel
+        expect(container.getElementsByTagName("input").length).toBe(0);
+        expect(container.textContent).not.toContain("3000");
+
+        // Closing that tunnel leaves a notice, not a dead iframe
+        await act(async () => { capturedOnMessage?.("tunnel_removed", { port: 5173 }); });
+        expect(getIframes(container).length).toBe(0);
+        expect(container.textContent).toContain("was closed");
+    });
+});

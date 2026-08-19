@@ -103,9 +103,13 @@ any browser, on any device, in a webview, or in `curl`. It lives in Redis with a
 
    This adds a `caddy` service to the generated compose file and writes
    `~/.pizzapi/web/Caddyfile`. The listen port is taken from
-   `PIZZAPI_TUNNEL_DOMAIN`; the upstream is the relay container. Both settings
-   persist in `~/.pizzapi/web/config.json`, so later `pizza web` runs need no
-   environment variables.
+   `PIZZAPI_TUNNEL_DOMAIN`; the upstream is the relay container.
+
+   All five settings — including the DNS provider, token, and image — persist to
+   `~/.pizzapi/web/config.json` (mode `0600`), so later `pizza web` and
+   `pizza web --build` runs need no environment variables and keep issuing the
+   same publicly trusted certificate. Pass an env var again only to change a
+   value; pass it empty (e.g. `PIZZAPI_CADDY_DNS_PROVIDER=`) to clear it.
 
    ```text title="~/.pizzapi/web/Caddyfile"
    *.t.example.com:8444 {

@@ -26,6 +26,15 @@ import { TunnelPanel } from "@/components/TunnelPanel";
 import { ProcessPanel } from "@/components/ProcessPanel";
 import { MemoryPanel } from "@/components/MemoryPanel";
 
+export interface ServicePanelProps {
+    sessionId: string;
+    runnerId?: string;
+    /** Full dock panel id — `"tunnel"` or `"tunnel#3000"` for a detached instance. */
+    panelId?: string;
+    /** Open (or focus) another dock panel by id — lets a panel detach a sub-view into its own tab. */
+    onSpawnPanel?: (panelId: string) => void;
+}
+
 export interface ServicePanelDef {
     /** Must match the runner service's `id` */
     serviceId: string;
@@ -33,8 +42,8 @@ export interface ServicePanelDef {
     label: string;
     /** Icon component (lucide) */
     icon: React.ReactNode;
-    /** The panel component to render. Receives sessionId and optional runnerId as props. */
-    component: React.ComponentType<{ sessionId: string; runnerId?: string }>;
+    /** The panel component to render. */
+    component: React.ComponentType<ServicePanelProps>;
 }
 
 /**

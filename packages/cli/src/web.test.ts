@@ -639,6 +639,7 @@ describe("resolveCaddyConfig", () => {
             port: 443,
             dnsProvider: null,
             image: "caddy:2-alpine",
+            dnsToken: "",
             upstream: "server",
         });
         expect(buildCaddyfile(caddy!)).toContain("*.t.example.com:443 {");
@@ -684,5 +685,45 @@ describe("resolveCaddyConfig", () => {
             PIZZAPI_CADDY_DNS_TOKEN: "t",
             PIZZAPI_CADDY_IMAGE: "my/caddy:1",
         }).caddy?.image).toBe("my/caddy:1");
+    });
+
+    // Regression: DNS settings used to be env-only while `caddy`/`tunnelDomain`
+    // persisted, so a bare `pizza web --build` silently regenerated `tls
+    // internal`. An untrusted cert is fatal in an iframe (no click-through
+    // interstitial in a subframe), so tunnel panels went blank while an
+    // external tab still worked.
+    test("keeps DNS-01 from persisted config with no env at all", () => {
+        const { caddy } = resolveCaddyConfig(
+            { ...on, caddyDnsProvider: "cloudflare", caddyDnsToken: "tok" },
+            "server",
+            {},
+        );
+        expect(caddy?.dnsProvider).toBe("cloudflare");
+        expect(caddy?.dnsToken).toBe("tok");
+        expect(caddy?.image).toBe("ghcr.io/caddybuilds/caddy-cloudflare:2.11.4");
+        expect(buildCaddyfile(caddy!)).not.toContain("tls internal");
+    });
+
+    test("persisted config beats a stale env value, and persisted image wins", () => {
+        const { caddy } = resolveCaddyConfig(
+            { ...on, caddyDnsProvider: "route53", caddyDnsToken: "new", caddyImage: "my/caddy:2" },
+            "server",
+            { PIZZAPI_CADDY_DNS_PROVIDER: "cloudflare", PIZZAPI_CADDY_DNS_TOKEN: "old" },
+        );
+        expect(caddy?.dnsProvider).toBe("route53");
+        expect(caddy?.dnsToken).toBe("new");
+        expect(caddy?.image).toBe("my/caddy:2");
+    });
+
+    test("a persisted provider with no token still refuses rather than silently downgrading", () => {
+        expect(resolveCaddyConfig({ ...on, caddyDnsProvider: "cloudflare" }, "server", {}).error)
+            .toContain("PIZZAPI_CADDY_DNS_TOKEN");
+    });
+
+    test("no DNS provider anywhere still yields the internal CA", () => {
+        const { caddy } = resolveCaddyConfig(on, "server", {});
+        expect(caddy?.dnsProvider).toBeNull();
+        expect(caddy?.dnsToken).toBe("");
+        expect(buildCaddyfile(caddy!)).toContain("tls internal");
     });
 });
