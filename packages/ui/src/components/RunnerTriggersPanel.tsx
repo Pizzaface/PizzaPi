@@ -32,6 +32,7 @@ import {
   Cpu,
   Sliders,
   Filter,
+  RefreshCw,
   ArrowRight,
   ArrowLeft,
   CheckCircle2,
@@ -1198,15 +1199,27 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
           </div>
         </div>
 
-        {listeners.length > 0 && (
-          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-semibold">
-            <span className="size-1.5 rounded-full bg-emerald-400"></span>
-            {listeners.length} listener{listeners.length !== 1 ? "s" : ""}
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          {listeners.length > 0 && (
+            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-semibold">
+              <span className="size-1.5 rounded-full bg-emerald-400"></span>
+              {listeners.length} listener{listeners.length !== 1 ? "s" : ""}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={fetchData}
+            disabled={loading}
+            className="inline-flex items-center justify-center size-7 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50"
+            title="Refresh triggers"
+            aria-label="Refresh triggers"
+          >
+            <RefreshCw className={`size-3.5 ${loading ? "animate-spin" : ""}`} />
+          </button>
+        </div>
       </div>
 
-      {loading ? (
+      {loading && triggerDefs.length === 0 ? (
         <div className="flex flex-col items-center justify-center h-36 gap-2 text-muted-foreground">
           <Loader2 className="size-5 animate-spin text-primary" />
           <span className="text-xs font-medium">Loading triggers…</span>

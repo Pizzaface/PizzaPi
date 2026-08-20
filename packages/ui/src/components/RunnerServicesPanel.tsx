@@ -7,7 +7,7 @@
  * visibility of service panel buttons in the session header.
  */
 import * as React from "react";
-import { Loader2, Server, ExternalLink, Eye, EyeOff, Zap, Hash } from "lucide-react";
+import { Loader2, Server, ExternalLink, Eye, EyeOff, Zap, Hash, RefreshCw } from "lucide-react";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { Switch } from "@/components/ui/switch";
@@ -223,37 +223,6 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
     });
   }, []);
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center gap-2 p-8 text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" />
-        <span className="text-sm">Loading services…</span>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="flex items-center justify-center p-6">
-        <p className="text-sm text-destructive">{error}</p>
-      </div>
-    );
-  }
-
-  if (services.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
-        <Server className="size-10 text-muted-foreground/30" />
-        <div>
-          <p className="text-sm text-muted-foreground">No services installed</p>
-          <p className="text-xs text-muted-foreground/60 mt-1">
-            Drop service plugins into ~/.pizzapi/services/ to add them.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
   const handleOpen = (panel: ServicePanel) => {
     // Mobile needs an absolute, token-authed relay URL (relative paths resolve
     // against the local bundle and carry no auth) — same fix as iframe panels.
@@ -265,7 +234,34 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
     );
   };
 
-  return (
+  let body: React.ReactNode;
+  if (loading && services.length === 0) {
+    body = (
+      <div className="flex items-center justify-center gap-2 p-8 text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" />
+        <span className="text-sm">Loading services…</span>
+      </div>
+    );
+  } else if (error) {
+    body = (
+      <div className="flex items-center justify-center p-6">
+        <p className="text-sm text-destructive">{error}</p>
+      </div>
+    );
+  } else if (services.length === 0) {
+    body = (
+      <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
+        <Server className="size-10 text-muted-foreground/30" />
+        <div>
+          <p className="text-sm text-muted-foreground">No services installed</p>
+          <p className="text-xs text-muted-foreground/60 mt-1">
+            Drop service plugins into ~/.pizzapi/services/ to add them.
+          </p>
+        </div>
+      </div>
+    );
+  } else {
+    body = (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
       {toggleError && (
         <div className="col-span-1 sm:col-span-2 flex items-center gap-2 px-3 py-2 rounded-lg border border-destructive/50 bg-destructive/10 text-destructive text-sm">
@@ -408,6 +404,25 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
           </div>
         );
       })}
+    </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-end">
+        <button
+          type="button"
+          onClick={fetchServices}
+          disabled={loading}
+          className="inline-flex items-center justify-center size-7 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50"
+          title="Refresh services"
+          aria-label="Refresh services"
+        >
+          <RefreshCw className={`size-3.5 ${loading ? "animate-spin" : ""}`} />
+        </button>
+      </div>
+      {body}
     </div>
   );
 }
