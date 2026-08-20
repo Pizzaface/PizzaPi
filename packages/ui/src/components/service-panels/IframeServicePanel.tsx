@@ -12,6 +12,7 @@
  * signed token so the absolute relay URL loads inside the Capacitor webview.
  */
 import { useEffect, useMemo, useState } from "react";
+import { RefreshCw } from "lucide-react";
 import { useTunnelSrc } from "@/hooks/useTunnelSrc";
 import { reportError } from "@/lib/frontend-log";
 
@@ -36,6 +37,8 @@ export function IframeServicePanel({ sessionId, port, query, fragment, panelPara
     // panel that never fires onLoad within a grace window as likely-broken.
     const [loadTimedOut, setLoadTimedOut] = useState(false);
     const [loaded, setLoaded] = useState(false);
+    // Bumped to force an iframe remount (reload).
+    const [reloadKey, setReloadKey] = useState(0);
 
     const src = useMemo(() => {
         if (!base) return null;
@@ -66,7 +69,7 @@ export function IframeServicePanel({ sessionId, port, query, fragment, panelPara
         // successful onLoad suppresses it even after the timer elapses.
         const t = setTimeout(() => setLoadTimedOut(true), 12_000);
         return () => clearTimeout(t);
-    }, [src]);
+    }, [src, reloadKey]);
 
     if (error) {
         return (
@@ -83,7 +86,17 @@ export function IframeServicePanel({ sessionId, port, query, fragment, panelPara
 
     return (
         <div className="relative h-full w-full">
+            <button
+                type="button"
+                onClick={() => setReloadKey((k) => k + 1)}
+                className="absolute right-2 top-2 z-10 inline-flex items-center justify-center rounded bg-background/70 p-1 text-muted-foreground backdrop-blur hover:text-foreground"
+                title="Reload panel"
+                aria-label="Reload panel"
+            >
+                <RefreshCw className="size-3.5" />
+            </button>
             <iframe
+                key={reloadKey}
                 src={src}
                 className="h-full w-full border-0"
                 title={`Service panel — port ${port}`}

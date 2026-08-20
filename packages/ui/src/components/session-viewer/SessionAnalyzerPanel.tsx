@@ -1,6 +1,6 @@
 /** Live context & cache analysis panel inside SessionViewer. */
 import * as React from "react";
-import { BarChart3, Info } from "lucide-react";
+import { BarChart3, Info, RefreshCw } from "lucide-react";
 import { CombinedPanel } from "@/components/CombinedPanel";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Treemap } from "../session-inspector/Treemap";
@@ -158,6 +158,8 @@ function Sparkline({
 export function SessionAnalyzerBody({ analysis, runnerId, sessionId }: SessionAnalyzerBodyProps) {
   const [hoveredBlock, setHoveredBlock] = React.useState<ContextBlock | null>(null);
   const [fetchedAnalysis, setFetchedAnalysis] = React.useState<SessionAnalysis | null>(null);
+  const [refreshKey, setRefreshKey] = React.useState(0);
+  const [refreshing, setRefreshing] = React.useState(false);
 
   React.useEffect(() => {
     if (!runnerId || !sessionId) {
@@ -167,6 +169,7 @@ export function SessionAnalyzerBody({ analysis, runnerId, sessionId }: SessionAn
 
     let cancelled = false;
     setFetchedAnalysis(null);
+    setRefreshing(true);
 
     void fetch(`/api/runners/${encodeURIComponent(runnerId)}/analysis/${encodeURIComponent(sessionId)}`, {
       headers: { Accept: "application/json" },
@@ -181,10 +184,13 @@ export function SessionAnalyzerBody({ analysis, runnerId, sessionId }: SessionAn
       })
       .catch(() => {
         if (!cancelled) setFetchedAnalysis(null);
+      })
+      .finally(() => {
+        if (!cancelled) setRefreshing(false);
       });
 
     return () => { cancelled = true; };
-  }, [runnerId, sessionId]);
+  }, [runnerId, sessionId, refreshKey]);
 
   const effectiveAnalysis = analysis ?? fetchedAnalysis;
 
@@ -239,8 +245,23 @@ export function SessionAnalyzerBody({ analysis, runnerId, sessionId }: SessionAn
   );
   const latestGrowth = growthPoints.length ? growthPoints[growthPoints.length - 1]!.value : null;
 
+  const canRefresh = !!runnerId && !!sessionId;
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 overflow-auto px-3 py-3">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">Analysis</span>
+        <button
+          type="button"
+          onClick={() => setRefreshKey((k) => k + 1)}
+          disabled={!canRefresh || refreshing}
+          className="inline-flex items-center justify-center size-7 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50"
+          title={canRefresh ? "Refresh analysis" : "Live analysis — nothing to refetch"}
+          aria-label="Refresh analysis"
+        >
+          <RefreshCw className={`size-3.5 ${refreshing ? "animate-spin" : ""}`} />
+        </button>
+      </div>
       {!effectiveAnalysis ? (
         <p className="text-xs text-muted-foreground py-1">Waiting for first response…</p>
       ) : (
