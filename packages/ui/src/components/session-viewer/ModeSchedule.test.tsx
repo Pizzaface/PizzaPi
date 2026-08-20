@@ -137,6 +137,20 @@ describe("ModeSchedule", () => {
         expect(cancelled).toEqual([instruction]);
     });
 
+    test("guards against concurrent cancellation while the request is pending", async () => {
+        let resolveCancel!: () => void;
+        const onCancel = () => new Promise<void>((resolve) => { resolveCancel = resolve; });
+        const { getByLabelText } = render(
+            <ModeSchedule instructions={[instruction]} sessionNoun="task" onOpenSession={noop} onCancel={onCancel} />,
+        );
+        const button = getByLabelText(/Cancel Every day at 08:00/i) as HTMLButtonElement;
+        fireEvent.click(button);
+        fireEvent.click(button);
+        expect(button.disabled).toBe(true);
+        resolveCancel();
+        await new Promise((resolve) => queueMicrotask(resolve));
+    });
+
     test("an instruction with no message still says what it does", () => {
         const { getByText } = render(
             <ModeSchedule

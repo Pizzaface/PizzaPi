@@ -168,7 +168,7 @@ export function ModeSchedule({
                 onClick={() => void cancel(instruction, i)}
                 aria-label={`Cancel ${describeSchedule(instruction.triggerType, instruction.params)}`}
               >
-                {cancelling === key ? <Loader2Icon className="size-3.5 animate-spin" /> : <XIcon className="size-3.5" />}
+                {cancelling.has(key) ? <Loader2Icon className="size-3.5 animate-spin" /> : <XIcon className="size-3.5" />}
               </Button>
             </div>
           );
