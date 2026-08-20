@@ -38,7 +38,7 @@ export function ModeHome({
   modeUi: ResolvedModeUi;
   recentSessions: ModeHomeSession[];
   /** Start a task in this mode with the given prompt (may be empty). */
-  onStartTask: (prompt: string) => void;
+  onStartTask: (prompt: string) => void | Promise<void>;
   onOpenSession: (sessionId: string) => void;
   /** A task is being started — the composer is locked until it resolves. */
   busy?: boolean;
@@ -51,16 +51,22 @@ export function ModeHome({
   };
 }) {
   const [draft, setDraft] = React.useState("");
+  const [startError, setStartError] = React.useState<string | null>(null);
   const inputRef = React.useRef<HTMLTextAreaElement>(null);
 
-  const submit = () => {
+  const submit = async () => {
     if (busy) return;
     const text = draft.trim();
     if (!text) return;
     // The draft is kept, not cleared: a successful start opens the new task and
     // unmounts this view, while a failed one would otherwise throw away what
     // the user typed.
-    onStartTask(text);
+    setStartError(null);
+    try {
+      await Promise.resolve(onStartTask(text));
+    } catch (err) {
+      setStartError(err instanceof Error ? err.message : "Failed to start task");
+    }
   };
 
   const chooseSuggestion = (suggestion: ServiceModeSuggestion) => {
@@ -114,6 +120,8 @@ export function ModeHome({
             </Button>
           </div>
         </div>
+
+        {startError && <p role="alert" className="mt-2 text-xs text-destructive">{startError}</p>}
 
         {modeUi.suggestions.length > 0 && (
           <div className="mt-4 flex flex-wrap gap-2">

@@ -5,7 +5,7 @@
  *
  * Fetches on mount, on session change, and on trigger_delivered events.
  */
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { type TriggerHistoryEntry, getIncompleteTriggers } from "@/components/TriggersPanel";
 
 export interface TriggerCounts {
@@ -33,7 +33,10 @@ export function useTriggerCount(
 ): TriggerCounts {
   const [counts, setCounts] = useState<TriggerCounts>({ pending: 0, subscriptions: 0, total: 0, latestTriggerKey: "" });
 
+  const generation = useRef(0);
+
   const refresh = useCallback(async () => {
+    const current = ++generation.current;
     if (!sessionId) {
       setCounts({ pending: 0, subscriptions: 0, total: 0, latestTriggerKey: "" });
       return;
@@ -50,9 +53,9 @@ export function useTriggerCount(
       const subscriptions = subRes.ok
         ? ((await subRes.json()) as { subscriptions?: unknown[] }).subscriptions?.length ?? 0
         : 0;
-      setCounts({ pending, subscriptions, total: pending + subscriptions, latestTriggerKey: triggerHistory[0]?.triggerId ?? "" });
+      if (current === generation.current) setCounts({ pending, subscriptions, total: pending + subscriptions, latestTriggerKey: triggerHistory[0]?.triggerId ?? "" });
     } catch {
-      setCounts({ pending: 0, subscriptions: 0, total: 0, latestTriggerKey: "" });
+      if (current === generation.current) setCounts({ pending: 0, subscriptions: 0, total: 0, latestTriggerKey: "" });
     }
   }, [sessionId]);
 

@@ -2614,7 +2614,9 @@ export function App() {
           void fetch(`/api/sessions/${encodeURIComponent(sid)}/triggers`, {
             method: "DELETE",
             credentials: "include",
-          }).catch(() => {});
+          }).then((res) => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          }).catch((err) => console.error("Failed to clear trigger history:", err));
         }
         setLifecycleStatus("New session started");
         return;

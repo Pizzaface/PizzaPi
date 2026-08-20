@@ -967,7 +967,8 @@ function TriggerCatalogSection({ sessionId, triggerDefs, subscriptions, onSubscr
     try {
       const url = new URL(`/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions/${encodeURIComponent(triggerType)}`, window.location.origin);
       if (subscriptionId) url.searchParams.set("subscriptionId", subscriptionId);
-      await fetch(url.toString().replace(window.location.origin, ""), { method: "DELETE", credentials: "include" });
+      const res = await fetch(url.toString().replace(window.location.origin, ""), { method: "DELETE", credentials: "include" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       onSubscriptionsChange();
     } catch {
       // ignore
@@ -2262,6 +2263,7 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
 
   // Ephemeral status updates keyed by triggerId
   const [statusUpdates, setStatusUpdates] = React.useState<Map<string, TriggerStatusUpdate>>(new Map());
+  const fetchGeneration = React.useRef(0);
 
   const fetchSubscriptions = React.useCallback(async () => {
     try {
@@ -2279,6 +2281,7 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
   }, [sessionId]);
 
   const fetchTriggers = React.useCallback(async (silent = false) => {
+    const generation = ++fetchGeneration.current;
     if (!silent) setLoading(true);
     else setRefreshing(true);
 
@@ -2294,10 +2297,11 @@ export function TriggersPanel({ sessionId, triggerDefs = [], viewerSocket }: Tri
         throw new Error(`HTTP ${triggersRes.status}`);
       }
       const data = await triggersRes.json() as { triggers: TriggerHistoryEntry[] };
+      if (generation !== fetchGeneration.current) return;
       setTriggers(data.triggers ?? []);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load triggers");
+      if (generation === fetchGeneration.current) setError(err instanceof Error ? err.message : "Failed to load triggers");
     } finally {
       setLoading(false);
       setRefreshing(false);
