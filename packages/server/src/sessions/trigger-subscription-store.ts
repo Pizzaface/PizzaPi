@@ -636,7 +636,9 @@ export async function getSubscriptionFilters(
                 ...(isNewFormat ? { filters: sub.filters ?? [], filterMode: sub.filterMode, isNewFormat: true } : {}),
             });
         }
-        return matches.length > 0 ? matches : undefined;
+        // Legacy values have no filter fields; return undefined so callers can
+        // reach the params-based compatibility path.
+        return matches.some((match) => match.isNewFormat) ? matches : undefined;
     } catch (err) {
         log.warn("Failed to get subscription filters:", err);
         return undefined;
@@ -874,24 +876,29 @@ export async function getSubscriptionsForSessionTrigger(
 export async function unsubscribeSessionSubscription(
     sessionId: string,
     subscriptionId: string,
-): Promise<void> {
+): Promise<{ removed: number; triggerType?: string }> {
     const redis = await getClient();
-    if (!redis) return;
+    if (!redis) return { removed: 0 };
 
     const sessionKey = SESSION_SUBS_KEY(sessionId);
     try {
         const raw = await redis.hGet(sessionKey, subscriptionId);
-        if (!raw) return;
+        if (!raw) return { removed: 0 };
         const sub = parseSubValues(subscriptionId, raw)[0];
-        if (!sub) return;
+        if (!sub) return { removed: 0 }; 
         const pipeline = redis.multi();
         pipeline.hDel(sessionKey, subscriptionId);
-        pipeline.sRem(RUNNER_TYPE_INDEX_KEY(sub.runnerId, sub.triggerType), sessionId);
+        const siblings = (await listSessionSubscriptions(sessionId)).filter((entry) => entry.subscriptionId !== subscriptionId);
+        if (!siblings.some((entry) => entry.runnerId === sub.runnerId && entry.triggerType === sub.triggerType)) {
+            pipeline.sRem(RUNNER_TYPE_INDEX_KEY(sub.runnerId, sub.triggerType), sessionId);
+        }
         await pipeline.exec();
         await deleteSubscriptionRows({ subscriptionIds: [subscriptionId] });
         await maybeDropRunnerSessionIndex(sessionId, sub.runnerId);
+        return { removed: 1, triggerType: sub.triggerType };
     } catch (err) {
         log.warn("Failed to unsubscribe session subscription:", err);
+        return { removed: 0 };
     }
 }
 

@@ -1247,15 +1247,24 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Session not found" }, { status: 404 });
         }
 
-        const { triggerType, subscriptionId, mode } = inferUnsubscribeTarget(target, subscriptionIdParam);
+        let { triggerType, subscriptionId, mode } = inferUnsubscribeTarget(target, subscriptionIdParam);
         let removed = 0;
 
         if (mode === "subscriptionId" && subscriptionId) {
-            await unsubscribeSessionSubscription(sessionId, subscriptionId);
-            removed = 1;
+            const result = await unsubscribeSessionSubscription(sessionId, subscriptionId);
+            removed = result?.removed ?? 1;
+            if (result?.triggerType) {
+                // The query parameter may target an ID whose trigger type differs
+                // from the path target; report and fan out the real metadata.
+                triggerType = result.triggerType;
+            }
         } else {
             const result = await unsubscribeSessionFromTrigger(sessionId, triggerType);
             removed = result.removed;
+        }
+
+        if (removed === 0) {
+            return Response.json({ error: `Subscription '${subscriptionId ?? triggerType}' not found` }, { status: 404 });
         }
 
         log.info(`Session ${sessionId} unsubscribed from trigger target '${subscriptionId ?? triggerType}'`);
@@ -1520,6 +1529,11 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                 // Only deliver to sessions belonging to the same user (ownership check)
                 // and sessions that are actually connected.
                 if (!targetSession || targetSession.userId !== identity.userId) return false;
+
+                // Re-check mode scope at fire time; modes and cwd can change after subscribe.
+                const services = await getRunnerServices(runnerId);
+                const triggerDef = services?.triggerDefs?.find((def) => def.type === body.type);
+                if (triggerDef && !triggerAllowedForCwd(triggerDef, services?.sessionModes, targetSession.cwd, runnerId)) return false;
 
                 // Filter by subscription filters (based on output schema fields).
                 // New subscriptions always have a filterData result (even with filters=[]).
