@@ -215,6 +215,12 @@ describe("parseTimeString", () => {
         expect(result).toBe(now + 600_000);
     });
 
+    test("rejects rollover and non-UTC ISO strings", () => {
+        expect(parseTimeString("2023-02-30T22:13:20.000Z", now)).toBeNull();
+        expect(parseTimeString("2023-11-14T22:13:20", now)).toBeNull();
+        expect(parseTimeString("14:30", now)).toBeNull();
+    });
+
     test("returns null for invalid input", () => {
         expect(parseTimeString("", now)).toBeNull();
         expect(parseTimeString("not-a-time", now)).toBeNull();
@@ -270,6 +276,12 @@ describe("parseCron", () => {
         expect(parseCron("* * *")).toBeNull();
         expect(parseCron("60 * * * *")).toBeNull();
         expect(parseCron("* 25 * * *")).toBeNull();
+        expect(parseCron("0 9 1x * *")).toBeNull();
+    });
+
+    test("uses POSIX OR semantics for restricted DOM and DOW", () => {
+        const cron = parseCron("0 9 1 * 1")!;
+        expect(new Date(nextCronTime(cron, new Date("2026-06-02T10:00:00Z").getTime())!).toISOString()).toBe("2026-06-08T09:00:00.000Z");
     });
 });
 

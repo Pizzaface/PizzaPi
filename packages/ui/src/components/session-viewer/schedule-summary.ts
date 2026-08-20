@@ -22,7 +22,7 @@ function literalTime(minute: string, hour: string): string | null {
   const m = Number(minute);
   const h = Number(hour);
   if (m > 59 || h > 23) return null;
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")} UTC`;
 }
 
 /**
@@ -70,10 +70,12 @@ export function describeCron(expression: string): string {
 /** Describe an absolute time, in the viewer's locale. */
 export function describeAt(value: string): string {
   // "HH:MM" / "HH:MMUTC" shorthand, as accepted by the time service.
-  const shorthand = /^(\d{1,2}):(\d{2})\s*(UTC)?$/i.exec(value.trim());
+  const shorthand = /^(\d{1,2}):(\d{2})\s*UTC$/i.exec(value.trim());
   if (shorthand) {
-    const [, h, m, utc] = shorthand;
-    return `At ${String(Number(h)).padStart(2, "0")}:${m}${utc ? " UTC" : ""}`;
+    const [, h, m] = shorthand;
+    const hour = Number(h);
+    const minute = Number(m);
+    if (hour < 24 && minute < 60) return `At ${String(hour).padStart(2, "0")}:${m} UTC`;
   }
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) return value;

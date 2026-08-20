@@ -196,17 +196,22 @@ export function parseTimeString(input: string, nowMs?: number): number | null {
 
     const now = nowMs ?? Date.now();
 
-    // ISO 8601
-    const isoDate = new Date(trimmed);
-    if (!isNaN(isoDate.getTime()) && /^\d{4}-/.test(trimmed)) {
-        return isoDate.getTime();
+    // ISO 8601 with an explicit timezone. Date.parse accepts rollover values
+    // and non-ISO strings, so validate the grammar before constructing a Date.
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/.test(trimmed)) {
+        const isoDate = new Date(trimmed);
+        const isoParts = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(trimmed);
+        if (Number.isFinite(isoDate.getTime()) && isoParts &&
+            isoDate.getUTCFullYear() === Number(isoParts[1]) &&
+            isoDate.getUTCMonth() + 1 === Number(isoParts[2]) &&
+            isoDate.getUTCDate() === Number(isoParts[3])) return isoDate.getTime();
     }
 
     // HH:MMUTC format (e.g. "14:30UTC", "00:00UTC")
     const utcMatch = trimmed.match(/^(\d{1,2}):(\d{2})\s*UTC$/i);
     if (utcMatch) {
-        const hours = parseInt(utcMatch[1], 10);
-        const minutes = parseInt(utcMatch[2], 10);
+        const hours = Number(utcMatch[1]);
+        const minutes = Number(utcMatch[2]);
         if (hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60) {
             const today = new Date(now);
             today.setUTCHours(hours, minutes, 0, 0);
@@ -261,6 +266,7 @@ export function parseCron(expression: string): CronExpression | null {
         const values = new Set<number>();
 
         for (const segment of field.split(",")) {
+            if (!segment) return null;
             // Step: */N or range/N
             const stepMatch = segment.match(/^(.+)\/(\d+)$/);
             let range: string;
@@ -279,13 +285,15 @@ export function parseCron(expression: string): CronExpression | null {
                 for (let i = min; i <= max; i += step) values.add(i);
             } else if (range.includes("-")) {
                 const [startStr, endStr] = range.split("-");
-                const start = parseInt(startStr, 10);
-                const end = parseInt(endStr, 10);
+                if (!/^\d+$/.test(startStr) || !/^\d+$/.test(endStr)) return null;
+                const start = Number(startStr);
+                const end = Number(endStr);
                 if (isNaN(start) || isNaN(end) || start < min || end > max || start > end) return null;
                 for (let i = start; i <= end; i += step) values.add(i);
             } else {
-                const val = parseInt(range, 10);
-                if (isNaN(val) || val < min || val > max) return null;
+                if (!/^\d+$/.test(range)) return null;
+                const val = Number(range);
+                if (!Number.isInteger(val) || val < min || val > max) return null;
                 values.add(val);
             }
         }
@@ -325,8 +333,8 @@ export function nextCronTime(cron: CronExpression, afterMs?: number): number | n
 
         if (
             cron.months.has(month) &&
-            cron.daysOfMonth.has(dayOfMonth) &&
-            cron.daysOfWeek.has(dayOfWeek) &&
+            // POSIX cron uses OR when both DOM and DOW are restricted.
+            (cron.daysOfMonth.has(dayOfMonth) || cron.daysOfWeek.has(dayOfWeek)) &&
             cron.hours.has(hour) &&
             cron.minutes.has(minute)
         ) {
