@@ -4853,8 +4853,13 @@ export function App() {
   // Auto-open Tunnel panel when a non-pinned tunnel is registered.
   React.useEffect(() => {
     if (!viewerSocket) return;
-    const handler = (envelope: { serviceId: string; type: string; payload: unknown }) => {
+    const handler = (envelope: { serviceId: string; type: string; sessionId?: string; generation?: number; payload: unknown }) => {
       if (envelope.serviceId !== "tunnel" || envelope.type !== "tunnel_registered") return;
+      if (
+        typeof envelope.sessionId !== "string" ||
+        !matchesViewerSession(lifecycleRefs.activeSessionId.current, envelope.sessionId) ||
+        !matchesViewerGeneration(lifecycleRefs.generation.current, envelope.generation)
+      ) return;
       const info = envelope.payload as { pinned?: boolean } | undefined;
       if (info?.pinned) return; // Don't auto-open for daemon-pinned panel ports
       // Open the Tunnel panel if not already open
