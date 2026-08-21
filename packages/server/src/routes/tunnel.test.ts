@@ -672,7 +672,12 @@ describe("tunnel route streaming proxy", () => {
             sendRequestDataEnd() {},
         };
         const response = await proxyTunnelRequestViaRelay(
-            new Request("http://localhost/api/tunnel/s-1/3000/data", { method: "POST", body, duplex: "half" }),
+            new Request("http://localhost/api/tunnel/s-1/3000/data", {
+                method: "POST",
+                body,
+                // @ts-expect-error Bun supports duplex
+                duplex: "half",
+            }),
             relay as never,
             "runner-1", "request-1", "/api/tunnel/s-1/3000", 3000, "/data", "/data", {},
         );
@@ -696,7 +701,13 @@ describe("tunnel route streaming proxy", () => {
             sendRequestDataEnd() {},
         };
         void proxyTunnelRequestViaRelay(
-            new Request("http://localhost/api/tunnel/s-1/3000/data", { method: "POST", body, signal: client.signal, duplex: "half" }),
+            new Request("http://localhost/api/tunnel/s-1/3000/data", {
+                method: "POST",
+                body,
+                signal: client.signal,
+                // @ts-expect-error Bun supports duplex
+                duplex: "half",
+            }),
             relay as never,
             "runner-1", "request-1", "/api/tunnel/s-1/3000", 3000, "/data", "/data", {},
         );
@@ -705,6 +716,53 @@ describe("tunnel route streaming proxy", () => {
         await new Promise<void>((resolve) => queueMicrotask(resolve));
         expect(cancelled).toBe(true);
         expect(sendCount).toBe(0);
+    });
+
+    test("cancels a stalled request body and detaches the client listener when the response ends", async () => {
+        let callbacks: {
+            onResponseStart: (statusCode: number, statusMessage: string, headers: Record<string, string>) => void;
+            onResponseData: (data: Buffer) => void;
+            onResponseEnd: () => void;
+            onError: (error: string) => void;
+        } | undefined;
+        let bodyCancelled = false;
+        let relayCancelCount = 0;
+        const body = new ReadableStream<Uint8Array>({
+            pull() { return new Promise<void>(() => {}); },
+            cancel() { bodyCancelled = true; },
+        });
+        const client = new AbortController();
+        const relay = {
+            proxyHttpRequest: (_runnerId: string, _request: unknown, cb: NonNullable<typeof callbacks>) => {
+                callbacks = cb;
+                return { cancel() { relayCancelCount++; } };
+            },
+            sendRequestData() {},
+            sendRequestDataEnd() {},
+        };
+
+        const responsePromise = proxyTunnelRequestViaRelay(
+            new Request("http://localhost/api/tunnel/s-1/3000/data", {
+                method: "POST",
+                body,
+                signal: client.signal,
+                // @ts-expect-error Bun supports duplex
+                duplex: "half",
+            }),
+            relay as never,
+            "runner-1", "request-1", "/api/tunnel/s-1/3000", 3000, "/data", "/data", {},
+        );
+        callbacks!.onResponseStart(200, "OK", { "content-type": "text/plain" });
+        callbacks!.onResponseEnd();
+
+        const response = await responsePromise;
+        expect(response.status).toBe(200);
+        await new Promise<void>((resolve) => queueMicrotask(resolve));
+        expect(bodyCancelled).toBe(true);
+
+        client.abort();
+        await new Promise<void>((resolve) => queueMicrotask(resolve));
+        expect(relayCancelCount).toBe(0);
     });
 
     test("closes an already-started streaming response cleanly when relay reports a late error", async () => {

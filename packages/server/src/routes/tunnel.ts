@@ -476,10 +476,29 @@ function proxyTunnelRequestViaRelay(
 ): Promise<Response> {
     return new Promise<Response>((resolve) => {
         const bodyAbortController = new AbortController();
-        let relayCancel: () => void = () => {};
-        const cancelRequest = (): void => {
-            bodyAbortController.abort();
+        let relayCancel: (() => void) | undefined;
+        let relayCancelRequested = false;
+        let relayCancelled = false;
+        let clientAbortListenerAttached = true;
+
+        const cancelRelay = (): void => {
+            relayCancelRequested = true;
+            if (!relayCancel || relayCancelled) return;
+            relayCancelled = true;
             relayCancel();
+        };
+        const removeClientAbortListener = (): void => {
+            if (!clientAbortListenerAttached) return;
+            clientAbortListenerAttached = false;
+            req.signal.removeEventListener("abort", cancelRequest);
+        };
+        const finishRequestBody = (): void => {
+            removeClientAbortListener();
+            bodyAbortController.abort();
+        };
+        const cancelRequest = (): void => {
+            finishRequestBody();
+            cancelRelay();
         };
         req.signal.addEventListener("abort", cancelRequest, { once: true });
         let responseStarted = false;
@@ -591,6 +610,7 @@ function proxyTunnelRequestViaRelay(
                     }
                 },
                 onResponseEnd: () => {
+                    finishRequestBody();
                     if (shouldBuffer) {
                         if (!responseStarted) {
                             resolveOnce(tunnelErrorResponse("Tunnel response missing headers"));
@@ -630,6 +650,7 @@ function proxyTunnelRequestViaRelay(
             },
         );
         relayCancel = cancel;
+        if (relayCancelRequested) cancelRelay();
         if (req.signal.aborted) cancelRequest();
 
         void streamRequestBodyToRelay(req, relay, runnerId, requestId, bodyAbortController.signal).catch((error) => {
