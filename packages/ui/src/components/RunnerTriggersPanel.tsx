@@ -903,6 +903,7 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
   const [paramValues, setParamValues] = React.useState<Record<string, Record<string, string | string[]>>>({});
   const [paramError, setParamError] = React.useState<string | null>(null);
   const [sessionConfigs, setSessionConfigs] = React.useState<Record<string, SessionConfig>>({});
+  const fetchGeneration = React.useRef(0);
 
   // Runner-level data: models + recent folders
   const { models } = useRunnerModels(runnerId);
@@ -920,6 +921,7 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
   }, [runnerId]);
 
   const fetchData = React.useCallback(async () => {
+    const generation = ++fetchGeneration.current;
     setLoading(true);
     try {
       const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/triggers`, {
@@ -927,11 +929,12 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json() as { triggerDefs?: ServiceTriggerDef[]; listeners?: ListenerInfo[] };
+      if (generation !== fetchGeneration.current) return;
       setFetchedDefs(data.triggerDefs ?? []);
       setListeners(data.listeners ?? []);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load triggers");
+      if (generation === fetchGeneration.current) setError(err instanceof Error ? err.message : "Failed to load triggers");
     } finally {
       setLoading(false);
     }
@@ -1022,10 +1025,11 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
             `/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners/${encodeURIComponent(target)}`,
             { method: "DELETE", credentials: "include" },
           );
-          if (res.ok) {
-            setListeners((prev) => prev.filter((l) => (listenerId ? l.listenerId !== listenerId : l.triggerType !== def.type)));
-          }
-        } catch { /* best-effort */ } finally {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          setListeners((prev) => prev.filter((l) => (listenerId ? l.listenerId !== listenerId : l.triggerType !== def.type)));
+        } catch (err) {
+          setParamError(err instanceof Error ? err.message : "Failed to remove listener");
+        } finally {
           setPendingTypes((prev) => { const n = new Set(prev); n.delete(listenerId ?? def.type); return n; });
         }
       })();
