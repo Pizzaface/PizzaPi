@@ -216,7 +216,7 @@ export function SessionViewer({
       if (!onSendInput || !sessionId) return false;
       try {
         const result = await Promise.resolve(onSendInput(text));
-        return result !== false;
+        return result === true;
       } catch {
         return false;
       }
@@ -571,7 +571,7 @@ export function SessionViewer({
 
       try {
         const result = await onSendInput(payload);
-        if (result !== false) {
+        if (result === true) {
           if (sessionIdRef.current === originSessionId) {
             setInput("");
             setCommandOpen(false);
@@ -1122,7 +1122,7 @@ export function SessionViewer({
                   const text = formatAnswersForAgent(answers);
                   return Promise.resolve(onSendInput(text))
                     .then((result) => {
-                      if (result !== false) {
+                      if (result === true) {
                         setComposerError(null);
                         setInput("");
                         if (sessionId) void dismissNotificationsForSession(sessionId);
@@ -1156,7 +1156,7 @@ export function SessionViewer({
                   });
                   return Promise.resolve(onSendInput(payload))
                     .then((result) => {
-                      if (result !== false) {
+                      if (result === true) {
                         setComposerError(null);
                         setInput("");
                         if (sessionId) void dismissNotificationsForSession(sessionId);
