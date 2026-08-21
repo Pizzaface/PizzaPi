@@ -8,6 +8,7 @@ import {
     emitToRelaySessionAwaitingAck,
     emitToRunner,
     endSharedSession,
+    countSocketsInRoomCluster,
 } from "../../sio-registry.js";
 import {
     removeChildSession,
@@ -171,14 +172,12 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
                 command: "end_session",
             });
 
-            // ⚡ Bolt: Fast socket presence check via adapter.sockets() avoids expensive cluster-wide network overhead of fetchSockets()
-            const relaySockets = await io.of("/relay").adapter.sockets(new Set([`session:${childSessionId}`]));
-            const hasRelayRecipient = relaySockets instanceof Set ? relaySockets.size > 0 : (relaySockets as any[]).length > 0;
+            const presence = await countSocketsInRoomCluster(io.of("/relay"), `session:${childSessionId}`);
 
             // Clean up child-index entry
             void removeChildSession(sessionId, childSessionId);
 
-            if (!hasRelayRecipient) {
+            if (presence.kind === "count" && presence.count === 0) {
                 // No relay socket is currently joined for this child anywhere in
                 // the cluster, so there is no disconnect handler left to finish
                 // cleanup. Complete teardown now so acknowledged children don't

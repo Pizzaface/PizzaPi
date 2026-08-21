@@ -12,6 +12,7 @@ const sessions = new Map<string, Record<string, unknown>>();
 const childSets = new Map<string, Set<string>>();
 const emittedToRelay: Array<{ sessionId: string; event: string; payload: unknown }> = [];
 const endedSessions: Array<{ sessionId: string; reason: string; opts?: unknown }> = [];
+let relayPresence: { kind: "count"; count: number } | { kind: "unknown" } = { kind: "count", count: 0 };
 
 mock.module("../../sio-registry.js", () => ({
     getSharedSessionSummary: async (id: string) => sessions.get(id) ?? null,
@@ -20,6 +21,7 @@ mock.module("../../sio-registry.js", () => ({
     },
     emitToRelaySessionAwaitingAck: async () => ({ hadListeners: false, acked: false }),
     emitToRunner: () => {},
+    countSocketsInRoomCluster: async () => relayPresence,
     endSharedSession: async (sessionId: string, reason: string, opts?: unknown) => {
         endedSessions.push({ sessionId, reason, opts });
         sessions.delete(sessionId);
@@ -71,13 +73,9 @@ function makeSocket(sessionId: string, token = "tok") {
     };
 }
 
-/** Fake io whose adapter reports whether the child has a relay socket. */
-function makeIo(hasRecipient: boolean) {
-    return {
-        of: () => ({
-            adapter: { sockets: async () => (hasRecipient ? new Set(["sock-1"]) : new Set()) },
-        }),
-    } as never;
+/** Fake io; cluster presence is controlled independently of local rooms. */
+function makeIo() {
+    return { of: () => ({}) } as never;
 }
 
 function seed(parentId: string, childId: string, extra: Record<string, unknown> = {}) {
@@ -94,12 +92,14 @@ describe("cleanup_child_session ack ordering", () => {
         endedSessions.length = 0;
         childTerminationWait.timeoutMs = 300;
         childTerminationWait.pollMs = 20;
+        relayPresence = { kind: "count", count: 0 };
     });
 
     it("acks plain ok once child termination is observed", async () => {
         seed("parent", "child");
+        relayPresence = { kind: "count", count: 1 };
         const { socket, fire } = makeSocket("parent");
-        registerChildLifecycleHandlers(socket, makeIo(true));
+        registerChildLifecycleHandlers(socket, makeIo());
 
         // Simulate the child terminating shortly after the exec is sent.
         setTimeout(() => sessions.delete("child"), 50);
@@ -116,8 +116,9 @@ describe("cleanup_child_session ack ordering", () => {
 
     it("acks pending when the child does not terminate within the bounded wait", async () => {
         seed("parent", "child");
+        relayPresence = { kind: "count", count: 1 };
         const { socket, fire } = makeSocket("parent");
-        registerChildLifecycleHandlers(socket, makeIo(true));
+        registerChildLifecycleHandlers(socket, makeIo());
 
         const ack = (await fire("cleanup_child_session", { token: "tok", childSessionId: "child" })) as {
             ok: boolean;
@@ -130,7 +131,7 @@ describe("cleanup_child_session ack ordering", () => {
     it("ends the child directly (confirmedTerminal) when no relay recipient exists", async () => {
         seed("parent", "child");
         const { socket, fire } = makeSocket("parent");
-        registerChildLifecycleHandlers(socket, makeIo(false));
+        registerChildLifecycleHandlers(socket, makeIo());
 
         const ack = (await fire("cleanup_child_session", { token: "tok", childSessionId: "child" })) as {
             ok: boolean;
@@ -141,11 +142,22 @@ describe("cleanup_child_session ack ordering", () => {
         ]);
     });
 
+    it("keeps the child when cluster presence is unknown", async () => {
+        seed("parent", "child");
+        relayPresence = { kind: "unknown" };
+        childTerminationWait.timeoutMs = 0;
+        const { socket, fire } = makeSocket("parent");
+        registerChildLifecycleHandlers(socket, makeIo());
+
+        await fire("cleanup_child_session", { token: "tok", childSessionId: "child" });
+        expect(endedSessions).toEqual([]);
+    });
+
     it("removes the stale membership entry when the child is already gone", async () => {
         sessions.set("parent", { sessionId: "parent", userId: "u1", parentSessionId: null });
         childSets.set("parent", new Set(["ghost-child"]));
         const { socket, fire } = makeSocket("parent");
-        registerChildLifecycleHandlers(socket, makeIo(false));
+        registerChildLifecycleHandlers(socket, makeIo());
 
         const ack = (await fire("cleanup_child_session", { token: "tok", childSessionId: "ghost-child" })) as {
             ok: boolean;

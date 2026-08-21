@@ -3,7 +3,7 @@ import { beforeEach, describe, it, expect, mock } from "bun:test";
 const finishedCalls: unknown[][] = [];
 const needsInputCalls: unknown[][] = [];
 
-let viewerCount = 1;
+let viewerCount: { kind: "count"; count: number } | { kind: "unknown" } = { kind: "count", count: 1 };
 let visibleViewer = true;
 
 mock.module("../../../push.js", () => ({
@@ -32,13 +32,13 @@ const { checkPushNotifications, extractLastAssistantText } = await import("./pus
 beforeEach(() => {
     finishedCalls.splice(0);
     needsInputCalls.splice(0);
-    viewerCount = 1;
+    viewerCount = { kind: "count", count: 1 };
     visibleViewer = true;
 });
 
 describe("checkPushNotifications", () => {
     it("viewer connected + tab visible suppresses both web and native", async () => {
-        viewerCount = 1;
+        viewerCount = { kind: "count", count: 1 };
         visibleViewer = true;
 
         await checkPushNotifications("sess-connected", {
@@ -57,7 +57,7 @@ describe("checkPushNotifications", () => {
     });
 
     it("viewer connected + tab hidden suppresses web only", async () => {
-        viewerCount = 1;
+        viewerCount = { kind: "count", count: 1 };
         visibleViewer = false;
 
         await checkPushNotifications("sess-hidden", {
@@ -76,7 +76,7 @@ describe("checkPushNotifications", () => {
     });
 
     it("no viewer at all suppresses neither", async () => {
-        viewerCount = 0;
+        viewerCount = { kind: "count", count: 0 };
         visibleViewer = false;
 
         await checkPushNotifications("sess-empty", {
@@ -94,8 +94,17 @@ describe("checkPushNotifications", () => {
         ]]);
     });
 
+    it("unknown viewer presence does not suppress web push", async () => {
+        viewerCount = { kind: "unknown" };
+        visibleViewer = false;
+
+        await checkPushNotifications("sess-unknown", { type: "agent_end" });
+
+        expect(finishedCalls[0]?.at(-1)).toEqual({ web: false, native: false });
+    });
+
     it("plan_mode start produces a needs-input push with no option buttons", async () => {
-        viewerCount = 0;
+        viewerCount = { kind: "count", count: 0 };
         visibleViewer = false;
 
         await checkPushNotifications("sess-plan", {
