@@ -822,11 +822,11 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             // reachable — a local-socket check would report a perfectly healthy
             // multi-node deployment as "runner down".
             const wakeRunnerData = await getRunnerData(target.runnerId).catch(() => null);
-            // SECURITY: fail-closed — if the runner was reclaimed by another user
-            // after the session ended, refuse the wake. Never emit a resume
-            // command to another user's runner (cross-user command injection).
-            if (wakeRunnerData && wakeRunnerData.userId !== identity.userId) {
-                log.warn(`wake: runner ${target.runnerId} is owned by a different user — refusing cross-user wake for session ${sessionId}`);
+            // SECURITY: fail-closed — refuse if runner data is missing/unknown OR
+            // the runner was reclaimed by another user. Never emit a resume command
+            // to an unknown or foreign runner (cross-user command injection).
+            if (!wakeRunnerData || wakeRunnerData.userId !== identity.userId) {
+                log.warn(`wake: runner ${target.runnerId} is missing or owned by a different user — refusing wake for session ${sessionId}`);
                 return Response.json({ error: "Session not found or not connected" }, { status: 404 });
             }
             const runnerReachable = !!getLocalRunnerSocket(target.runnerId) || !!wakeRunnerData;
@@ -1315,7 +1315,9 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             // emitting a delta — a reclaimed runner must not receive cross-user subscription
             // mutation events.
             const unsubRunnerData = await getRunnerData(owner.runnerId).catch(() => null);
-            if (!unsubRunnerData || unsubRunnerData.userId === identity.userId) {
+            // SECURITY: fail-closed — only emit the delta when runner data is PRESENT
+            // AND owned by the caller. Missing/unknown runner data must skip the emit.
+            if (unsubRunnerData && unsubRunnerData.userId === identity.userId) {
                 void emitTriggerSubscriptionDelta(owner.runnerId, {
                     action: "unsubscribe",
                     subscription: {
@@ -1326,7 +1328,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                     },
                 });
             } else {
-                log.warn(`subscription delete: runner ${owner.runnerId} belongs to a different user — skipping delta for session ${sessionId}`);
+                log.warn(`subscription delete: runner ${owner.runnerId} is missing or belongs to a different user — skipping delta for session ${sessionId}`);
             }
         }
 
@@ -1488,7 +1490,9 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             // emitting a delta — a reclaimed runner must not receive cross-user subscription
             // mutation events.
             const updateRunnerData = await getRunnerData(owner.runnerId).catch(() => null);
-            if (!updateRunnerData || updateRunnerData.userId === identity.userId) {
+            // SECURITY: fail-closed — only emit the delta when runner data is PRESENT
+            // AND owned by the caller. Missing/unknown runner data must skip the emit.
+            if (updateRunnerData && updateRunnerData.userId === identity.userId) {
                 void emitTriggerSubscriptionDelta(owner.runnerId, {
                     action: "update",
                     subscription: {
@@ -1502,7 +1506,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                     },
                 });
             } else {
-                log.warn(`subscription update: runner ${owner.runnerId} belongs to a different user — skipping delta for session ${sessionId}`);
+                log.warn(`subscription update: runner ${owner.runnerId} is missing or belongs to a different user — skipping delta for session ${sessionId}`);
             }
         }
 

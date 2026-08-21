@@ -2177,11 +2177,12 @@ describe("POST /api/sessions/:id/trigger — wakeSession", () => {
         expect(mockEmitToRunnerCalls).toHaveLength(0);
     });
 
-    test("wakeSession with a runner that is gone entirely 503s for retry and does not claim to be waking", async () => {
+    // SECURITY: fail-closed — when getRunnerData returns null (runner gone/unknown)
+    // the wake must be REFUSED (404, zero emits) regardless of local socket state.
+    test("NULL RUNNER: refuses wake with 404 and zero emits when runner data is null", async () => {
         mockGetSharedSession.mockReturnValue(Promise.resolve(offlineSession()));
-        mockGetLocalRunnerSocket.mockReturnValue(null);
-        // Absent locally AND absent from Redis — genuinely gone, not merely
-        // attached to another relay node.
+        // Local socket present so runnerReachable would be true without the fix.
+        mockGetLocalRunnerSocket.mockReturnValue({ emit: mock(() => {}) });
         mockGetRunnerData.mockReturnValue(Promise.resolve(null as any));
 
         const [req, url] = makeReq("POST", "/api/sessions/sess-wake/trigger", {
@@ -2190,12 +2191,35 @@ describe("POST /api/sessions/:id/trigger — wakeSession", () => {
             wakeSession: true,
         });
         const res = await handleTriggersRoute(req, url);
-        expect(res!.status).toBe(503);
+        // Fail-closed: 404, not 503/waking
+        expect(res!.status).toBe(404);
         const body = await res!.json() as { waking?: boolean };
-        // Not "waking" — the runner is down, not the session. The caller retries
-        // rather than spawning a replacement on a runner that is coming back.
         expect(body.waking).toBeUndefined();
         await new Promise((r) => setTimeout(r, 20));
+        // Zero emissions — the guard fired before wakeOfflineSession was called
+        expect(mockEmitToRunnerCalls).toHaveLength(0);
+    });
+
+    test("wakeSession with a runner that is gone entirely 503s for retry and does not claim to be waking", async () => {
+        mockGetSharedSession.mockReturnValue(Promise.resolve(offlineSession()));
+        mockGetLocalRunnerSocket.mockReturnValue(null);
+        // Absent locally AND absent from Redis — genuinely gone, not merely
+        // attached to another relay node. With fail-closed guard, null runner
+        // data now returns 404 immediately (before reachability check).
+        mockGetRunnerData.mockReturnValue(Promise.resolve(null as any));
+
+        const [req, url] = makeReq("POST", "/api/sessions/sess-wake/trigger", {
+            type: "time:timer_fired",
+            payload: {},
+            wakeSession: true,
+        });
+        const res = await handleTriggersRoute(req, url);
+        // Fail-closed: returns 404 (unknown runner — refuse)
+        expect(res!.status).toBe(404);
+        const body = await res!.json() as { waking?: boolean };
+        expect(body.waking).toBeUndefined();
+        await new Promise((r) => setTimeout(r, 20));
+        expect(mockEmitToRunnerCalls).toHaveLength(0);
     });
 
     test("wakes a runner attached to another relay node (no local socket)", async () => {
@@ -2440,6 +2464,60 @@ describe("subscription routes — schedule whose owning session has ended", () =
         );
         const res = await handleTriggersRoute(req, url);
         // Unsubscribe from Redis succeeds
+        expect(res!.status).toBe(200);
+        // But no delta is emitted to user-2's runner
+        expect(mockEmitDeltaCalls).toHaveLength(0);
+    });
+
+    // SECURITY: fail-closed — NULL runner data must SKIP the delta (same as
+    // reclaimed). The Redis unsubscribe still completes (200).
+    test("NULL RUNNER: DELETE completes but skips delta when getRunnerData returns null", async () => {
+        mockGetRunnerData.mockReturnValue(Promise.resolve(null as any));
+        mockUnsubscribeSessionSubscription.mockReturnValue(Promise.resolve(true));
+
+        const [req, url] = makeReq(
+            "DELETE",
+            "/api/sessions/sess-ended/trigger-subscriptions/time:cron?subscriptionId=sub-cron",
+        );
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        // Zero emits — guard fired before emitTriggerSubscriptionDelta
+        expect(mockEmitDeltaCalls).toHaveLength(0);
+    });
+
+    // SECURITY: fail-closed — NULL runner data must SKIP the PUT delta.
+    // The Redis update still completes (200).
+    test("NULL RUNNER: PUT completes but skips delta when getRunnerData returns null", async () => {
+        mockGetRunnerData.mockReturnValue(Promise.resolve(null as any));
+        mockGetRunnerServices.mockReturnValue(Promise.resolve({ serviceIds: [], triggerDefs: [] }));
+        mockUpdateSessionSubscription.mockReturnValue(Promise.resolve({ updated: true, runnerId: "runner-A" }));
+
+        const [req, url] = makeReq(
+            "PUT",
+            "/api/sessions/sess-ended/trigger-subscriptions/time:cron?subscriptionId=sub-cron",
+            { params: { cron: "0 10 * * *" } },
+        );
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        // Zero emits — guard fired before emitTriggerSubscriptionDelta
+        expect(mockEmitDeltaCalls).toHaveLength(0);
+    });
+
+    // SECURITY regression: cross-user runner ownership check on PUT subscription
+    // path. The persisted runnerId (runner-A) was reclaimed by user-2.
+    // PUT must succeed (updates Redis) but must NOT emit a delta to user-2's runner.
+    test("CROSS-USER: PUT completes but skips delta when runner was reclaimed by another user", async () => {
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-2", runnerId: "runner-A" } as any));
+        mockGetRunnerServices.mockReturnValue(Promise.resolve({ serviceIds: [], triggerDefs: [] }));
+        mockUpdateSessionSubscription.mockReturnValue(Promise.resolve({ updated: true, runnerId: "runner-A" }));
+
+        const [req, url] = makeReq(
+            "PUT",
+            "/api/sessions/sess-ended/trigger-subscriptions/time:cron?subscriptionId=sub-cron",
+            { params: { cron: "0 10 * * *" } },
+        );
+        const res = await handleTriggersRoute(req, url);
+        // Update to Redis succeeds
         expect(res!.status).toBe(200);
         // But no delta is emitted to user-2's runner
         expect(mockEmitDeltaCalls).toHaveLength(0);
