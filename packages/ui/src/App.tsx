@@ -3827,6 +3827,13 @@ export function App() {
       inputDedupeRef.current = failInputAttempt(inputDedupeRef.current, attemptId);
     };
 
+    const viewerStillMatches = () =>
+      matchesViewerSession(lifecycleRefs.activeSessionId.current, sessionId) &&
+      matchesViewerGeneration(lifecycleRefs.generation.current, capturedGeneration);
+    const setAttachmentStatus = (status: string) => {
+      if (viewerStillMatches()) setLifecycleStatus(status);
+    };
+
     const rawFiles = (payload.files ?? [])
       .filter((f) => typeof f?.url === "string" && f.url.length > 0)
       .map((f) => ({
@@ -3843,7 +3850,7 @@ export function App() {
 
       for (const [index, file] of rawFiles.entries()) {
         const displayName = file.filename || `attachment-${index + 1}`;
-        setLifecycleStatus(`Uploading attachment ${index + 1}/${rawFiles.length}: ${displayName}`);
+        setAttachmentStatus(`Uploading attachment ${index + 1}/${rawFiles.length}: ${displayName}`);
 
         const formData = new FormData();
         try {
@@ -3861,7 +3868,7 @@ export function App() {
                 );
           formData.append("files", uploadFile);
         } catch {
-          setLifecycleStatus(`Failed to prepare attachment: ${displayName}`);
+          setAttachmentStatus(`Failed to prepare attachment: ${displayName}`);
           failCurrentAttempt();
           return false;
         }
@@ -3876,7 +3883,7 @@ export function App() {
           if (!uploadRes.ok) {
             const body = await uploadRes.json().catch(() => null);
             const message = body && typeof body.error === "string" ? body.error : `Upload failed for ${displayName}`;
-            setLifecycleStatus(message);
+            setAttachmentStatus(message);
             failCurrentAttempt();
             return false;
           }
@@ -3884,7 +3891,7 @@ export function App() {
           const body = await uploadRes.json().catch(() => null) as any;
           const first = Array.isArray(body?.attachments) ? body.attachments[0] : null;
           if (!first || typeof first.attachmentId !== "string") {
-            setLifecycleStatus(`Upload failed for ${displayName}`);
+            setAttachmentStatus(`Upload failed for ${displayName}`);
             failCurrentAttempt();
             return false;
           }
@@ -3897,14 +3904,13 @@ export function App() {
             expiresAt: typeof first.expiresAt === "string" ? first.expiresAt : undefined,
           });
         } catch {
-          setLifecycleStatus(`Upload failed for ${displayName}`);
+          setAttachmentStatus(`Upload failed for ${displayName}`);
           failCurrentAttempt();
           return false;
         }
       }
 
       attachments = uploaded;
-      setLifecycleStatus(`Uploaded ${attachments.length} attachment${attachments.length === 1 ? "" : "s"}. Sending…`);
     }
 
     const deliverAs = typeof message === "object" ? message.deliverAs : undefined;
@@ -3912,12 +3918,13 @@ export function App() {
 
     // Guard: if the viewer switched sessions during the async upload, cancel.
     // Re-emitting to the wrong session would send A's attachment to B.
-    if (
-      !matchesViewerSession(lifecycleRefs.activeSessionId.current, sessionId) ||
-      !matchesViewerGeneration(lifecycleRefs.generation.current, capturedGeneration)
-    ) {
+    if (!viewerStillMatches()) {
       failCurrentAttempt();
       return false;
+    }
+
+    if (attachments.length > 0) {
+      setLifecycleStatus(`Uploaded ${attachments.length} attachment${attachments.length === 1 ? "" : "s"}. Sending…`);
     }
 
     try {

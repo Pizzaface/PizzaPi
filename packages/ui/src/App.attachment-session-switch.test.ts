@@ -57,16 +57,23 @@ describe("sendSessionInput attachment cross-session switch guard", () => {
     // upload slot is released and the dedup entry is marked failed.
     const guardBlock = fn.slice(fn.indexOf("// Guard: if the viewer switched"));
     const untilEmit = guardBlock.slice(0, guardBlock.indexOf('socket.emit("input"'));
+    expect(untilEmit).toMatch(/if \(!viewerStillMatches\(\)\)/);
     expect(untilEmit).toMatch(/failCurrentAttempt\(\)/);
     expect(untilEmit).toMatch(/return false/);
   });
 
-  test("guard appears after the upload loop (same-session upload still completes)", () => {
-    // The guard is placed after the attachment upload loop so that if the
-    // session never changed, uploads proceed normally and only the emit is guarded.
-    const uploadLoopEnd = fn.lastIndexOf("attachments = uploaded;");
+  test("only writes attachment progress while the captured viewer still matches", () => {
+    const uploadBlock = fn.slice(
+      fn.indexOf("if (rawFiles.length > 0)"),
+      fn.indexOf("const deliverAs ="),
+    );
     const guardIdx = fn.indexOf("// Guard: if the viewer switched");
-    expect(uploadLoopEnd).toBeGreaterThan(-1);
-    expect(guardIdx).toBeGreaterThan(uploadLoopEnd);
+    const uploadedStatusIdx = fn.indexOf("Uploaded ${attachments.length}");
+
+    // Upload progress (including errors) must use the guarded helper, and
+    // the final sending status must only be written after the explicit guard.
+    expect(uploadBlock).not.toContain("setLifecycleStatus(");
+    expect(uploadBlock).toContain("setAttachmentStatus(");
+    expect(uploadedStatusIdx).toBeGreaterThan(guardIdx);
   });
 });
