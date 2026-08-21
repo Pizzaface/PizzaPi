@@ -218,7 +218,8 @@ export function spawnSession(
         // command's detached group-leader PID, so the daemon can enumerate and
         // kill background processes that escaped the worker's own process group.
         PIZZAPI_SESSION_PROC_FILE: sessionProcFilePath(sessionId),
-        ...(requestedCwd ? { PIZZAPI_WORKER_CWD: requestedCwd } : {}),
+        // ponytail: always set so any worker is distinguishable from local-TUI
+        PIZZAPI_WORKER_CWD: requestedCwd || process.cwd(),
         // Initial prompt and model for the new session (set by spawn_session tool).
         ...(options?.prompt ? { PIZZAPI_WORKER_INITIAL_PROMPT: options.prompt } : {}),
         ...(options?.imageUrls && options.imageUrls.length > 0

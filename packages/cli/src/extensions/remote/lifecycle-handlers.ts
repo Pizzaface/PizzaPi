@@ -274,9 +274,6 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
     // Use the env var to distinguish the two paths.
     const localTuiTransitionCleanup = !process.env.PIZZAPI_WORKER_CWD;
 
-    // Counts session_start invocations so we skip cleanup on the first (startup).
-    let sessionStartCount = 0;
-
     // Session-local error-fired flag (not shared — only used inside agent_end/turn_start).
     let sessionErrorFired = false;
     // Messages from the last agent_end, consumed by agent_settled. agent_end
@@ -316,13 +313,15 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
 
     // ── Session lifecycle ─────────────────────────────────────────────────────
 
-    pi.on("session_start", (_event: any, ctx: any) => {
-        sessionStartCount += 1;
+    pi.on("session_start", (event: any, ctx: any) => {
         // Local-TUI: /new, /resume, /fork fire session_start (not session_switch).
-        // Run the same transition cleanup as session_switch, but only for
-        // non-startup starts (sessionStartCount > 1). The worker path sets
-        // localTuiTransitionCleanup=false and emits session_switch itself.
-        if (localTuiTransitionCleanup && sessionStartCount > 1) {
+        // Only run transition cleanup for real transitions — skip "startup" (first
+        // load) and "reload" (/restart, /skills reload, plugin-change reloads).
+        // Reason gate is the primary discriminator; localTuiTransitionCleanup
+        // ensures worker path (which drives transitions via session_switch) never
+        // double-cleans even if PIZZAPI_WORKER_CWD is unset.
+        const isTransitionReason = event?.reason === "new" || event?.reason === "resume" || event?.reason === "fork";
+        if (localTuiTransitionCleanup && isTransitionReason) {
             performSessionTransitionCleanup({ state, rctx, triggerWaits, delinkManager, cancellationManager, followUpGrace });
         }
         rctx.latestCtx = ctx;

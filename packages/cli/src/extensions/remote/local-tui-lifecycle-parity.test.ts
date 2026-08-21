@@ -166,31 +166,30 @@ describe("local-TUI transition cleanup parity", () => {
             state.pendingCancellations.push({ triggerId: "t1", childSessionId: "child-a" });
             const genBefore = state.sessionCompleteGeneration;
 
-            sessionStart({}, minimalCtx);
+            sessionStart({ reason: "startup" }, minimalCtx);
 
             // First session_start must NOT clear stale state
             expect(state.staleChildIds.has("child-session-old")).toBe(true);
             expect(state.pendingCancellations).toHaveLength(1);
             // session-complete generation must NOT be bumped by cleanup
-            // (no cleanup ran; session_start itself doesn't bump it)
             expect(state.sessionCompleteGeneration).toBe(genBefore);
         });
 
-        test("second session_start DOES clear stale child links and reset session-complete state", () => {
+        test("session_start with reason:new DOES clear stale child links and reset session-complete state", () => {
             delete process.env.PIZZAPI_WORKER_CWD;
             const { handlers, state } = makeMinimalDeps();
             const sessionStart = handlers.get("session_start")!;
 
-            // First (startup) call
-            sessionStart({}, minimalCtx);
+            // Startup
+            sessionStart({ reason: "startup" }, minimalCtx);
 
             // Seed stale state to verify cleanup
             state.staleChildIds.add("child-stale");
             state.sessionCompleteFired = true;
             const genBefore = state.sessionCompleteGeneration;
 
-            // Second call (transition: /new, /resume, /fork)
-            sessionStart({}, minimalCtx);
+            // Transition: /new
+            sessionStart({ reason: "new" }, minimalCtx);
 
             expect(state.staleChildIds.has("child-stale")).toBe(false);
             expect(state.pendingDelink).toBe(true);
@@ -198,23 +197,68 @@ describe("local-TUI transition cleanup parity", () => {
             expect(state.sessionCompleteGeneration).toBe(genBefore + 1);
         });
 
-        test("third session_start also cleans (every subsequent start is a transition)", () => {
+        test("session_start with reason:resume and reason:fork also clean", () => {
             delete process.env.PIZZAPI_WORKER_CWD;
             const { handlers, state } = makeMinimalDeps();
             const sessionStart = handlers.get("session_start")!;
 
-            sessionStart({}, minimalCtx); // startup
-            sessionStart({}, minimalCtx); // transition 1
+            sessionStart({ reason: "startup" }, minimalCtx);
 
-            state.staleChildIds.add("child-2");
+            state.staleChildIds.add("child-resume");
             state.sessionCompleteFired = true;
+            let genBefore = state.sessionCompleteGeneration;
+
+            sessionStart({ reason: "resume" }, minimalCtx);
+            expect(state.staleChildIds.has("child-resume")).toBe(false);
+            expect(state.sessionCompleteGeneration).toBe(genBefore + 1);
+
+            state.staleChildIds.add("child-fork");
+            state.sessionCompleteFired = true;
+            genBefore = state.sessionCompleteGeneration;
+
+            sessionStart({ reason: "fork" }, minimalCtx);
+            expect(state.staleChildIds.has("child-fork")).toBe(false);
+            expect(state.sessionCompleteGeneration).toBe(genBefore + 1);
+        });
+
+        test("session_start with reason:reload does NOT clean (regression guard)", () => {
+            delete process.env.PIZZAPI_WORKER_CWD;
+            const { handlers, state } = makeMinimalDeps();
+            const sessionStart = handlers.get("session_start")!;
+
+            sessionStart({ reason: "startup" }, minimalCtx);
+
+            // Simulate in-flight child state that must survive a /reload
+            state.staleChildIds.add("child-in-flight");
+            state.pendingCancellations.push({ triggerId: "t-reload", childSessionId: "child-in-flight" });
             const genBefore = state.sessionCompleteGeneration;
 
-            sessionStart({}, minimalCtx); // transition 2
+            // /reload fires session_start with reason:"reload"
+            sessionStart({ reason: "reload" }, minimalCtx);
 
-            expect(state.staleChildIds.has("child-2")).toBe(false);
-            expect(state.sessionCompleteFired).toBe(false);
-            expect(state.sessionCompleteGeneration).toBe(genBefore + 1);
+            // Must NOT be cleaned
+            expect(state.staleChildIds.has("child-in-flight")).toBe(true);
+            expect(state.pendingCancellations).toHaveLength(1);
+            expect(state.sessionCompleteGeneration).toBe(genBefore);
+        });
+
+        test("session_start with reason:startup after a transition does NOT clean", () => {
+            delete process.env.PIZZAPI_WORKER_CWD;
+            const { handlers, state } = makeMinimalDeps();
+            const sessionStart = handlers.get("session_start")!;
+
+            // Startup then a real transition
+            sessionStart({ reason: "startup" }, minimalCtx);
+            sessionStart({ reason: "new" }, minimalCtx);
+
+            state.staleChildIds.add("child-should-survive");
+            const genBefore = state.sessionCompleteGeneration;
+
+            // Another startup-reason (shouldn't happen in practice, but must be safe)
+            sessionStart({ reason: "startup" }, minimalCtx);
+
+            expect(state.staleChildIds.has("child-should-survive")).toBe(true);
+            expect(state.sessionCompleteGeneration).toBe(genBefore);
         });
     });
 
@@ -224,13 +268,13 @@ describe("local-TUI transition cleanup parity", () => {
             const { handlers, state } = makeMinimalDeps();
             const sessionStart = handlers.get("session_start")!;
 
-            sessionStart({}, minimalCtx); // startup
+            sessionStart({ reason: "startup" }, minimalCtx);
 
             state.staleChildIds.add("child-stale");
             state.sessionCompleteFired = true;
             const genBefore = state.sessionCompleteGeneration;
 
-            sessionStart({}, minimalCtx); // second call — should NOT clean
+            sessionStart({ reason: "new" }, minimalCtx); // second call — should NOT clean (worker path)
 
             expect(state.staleChildIds.has("child-stale")).toBe(true);
             expect(state.sessionCompleteFired).toBe(true);
@@ -244,7 +288,7 @@ describe("local-TUI transition cleanup parity", () => {
             const sessionSwitch = handlers.get("session_switch")!;
 
             // Worker fires session_start first (pi's native event)
-            sessionStart({}, minimalCtx);
+            sessionStart({ reason: "startup" }, minimalCtx);
 
             state.staleChildIds.add("child-stale");
             state.sessionCompleteFired = true;
