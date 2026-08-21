@@ -62,4 +62,34 @@ describe("CsvTable", () => {
     fireEvent.click(getByText("Product"));
     expect(columnValues(container, 0)).toEqual(["Cable", "Gadget", "Widget"]);
   });
+
+  test("sortable headers are focusable and support Enter and Space", () => {
+    const { getByRole, container } = render(<CsvTable content={CSV} />);
+    const total = getByRole("button", { name: "Total" });
+
+    total.focus();
+    expect(document.activeElement).toBe(total);
+
+    fireEvent.keyDown(total, { key: "Enter" });
+    expect(columnValues(container, 2)).toEqual(["37.25", "49.90", "149.95"]);
+
+    fireEvent.keyDown(total, { key: " " });
+    expect(columnValues(container, 2)).toEqual(["149.95", "49.90", "37.25"]);
+  });
+
+  test("headers expose their sort state", () => {
+    const { getByRole } = render(<CsvTable content={CSV} />);
+    const product = getByRole("columnheader", { name: "Product" });
+    const total = getByRole("columnheader", { name: "Total" });
+
+    expect(product.getAttribute("aria-sort")).toBe("none");
+    expect(total.getAttribute("aria-sort")).toBe("none");
+
+    fireEvent.click(getByRole("button", { name: "Total" }));
+    expect(total.getAttribute("aria-sort")).toBe("ascending");
+    expect(product.getAttribute("aria-sort")).toBe("none");
+
+    fireEvent.click(getByRole("button", { name: "Total" }));
+    expect(total.getAttribute("aria-sort")).toBe("descending");
+  });
 });
