@@ -72,6 +72,7 @@ import { HubSocketContext } from "@/lib/hub-socket-context";
 import { resetStaleBaselineOnVisibilityChange, shouldStopViewerReconnect } from "@/lib/viewer-connection";
 import { mapUserError } from "@/lib/user-error-message";
 import { classifySessionInput } from "@/lib/session-empty-state";
+import { emitInputWithAck } from "@/lib/input-delivery";
 import { getConfirmedMetaSubscriptionTargets } from "@/lib/meta-subscriptions";
 import { evaluateVersionNegotiation } from "@/lib/version-negotiation";
 import { useRunnerServices, attachServiceAnnounceListener, seedServiceCache, setViewerSwitchGeneration } from "@/hooks/useRunnerServices";
@@ -3941,32 +3942,12 @@ export function App() {
     const suppressOptimistic = typeof message === "object" && message.suppressOptimistic;
 
     try {
-      const delivered = await new Promise<boolean>((resolve) => {
-        let settled = false;
-        const settle = (value: boolean) => {
-          if (settled) return;
-          settled = true;
-          socket.off("disconnect", onDisconnect);
-          resolve(value === true);
-        };
-        const onDisconnect = () => settle(false);
-        const timeout = window.setTimeout(() => settle(false), 10_000);
-        const ack = (value: boolean) => {
-          window.clearTimeout(timeout);
-          settle(value);
-        };
-        socket.once("disconnect", onDisconnect);
-        try {
-          (socket.emit as (...args: unknown[]) => void)("input", {
-            text: trimmed,
-            attachments,
-            client: "web",
-            ...(deliverAs ? { deliverAs } : {}),
-          }, ack);
-        } catch {
-          window.clearTimeout(timeout);
-          settle(false);
-        }
+      const delivered = await emitInputWithAck(socket, {
+        text: trimmed,
+        attachments,
+        client: "web",
+        requestId: crypto.randomUUID(),
+        ...(deliverAs ? { deliverAs } : {}),
       });
       if (!delivered) {
         setLifecycleStatus("Failed to send message");

@@ -448,9 +448,9 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         handlers.clearFollowUpGrace();
 
         const inputText = data.text;
-        if (consumePendingApprovalFromWeb(rctx, inputText)) { settle(false); return; }
-        if (consumePendingAskUserQuestionFromWeb(rctx, inputText)) { settle(false); return; }
-        if (consumePendingPlanModeFromWeb(rctx, inputText)) { settle(false); return; }
+        if (consumePendingApprovalFromWeb(rctx, inputText)) { settle(true); return; }
+        if (consumePendingAskUserQuestionFromWeb(rctx, inputText)) { settle(true); return; }
+        if (consumePendingPlanModeFromWeb(rctx, inputText)) { settle(true); return; }
 
         const attachments = normalizeRemoteInputAttachments(data.attachments);
         const deliverAs = data.deliverAs === "followUp" ? "followUp" as const

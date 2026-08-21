@@ -22,7 +22,55 @@ import {
     sendCachedDeltaReplayEvents,
     checkServiceMessageSize,
     checkServiceMessageRateLimit,
+    forwardInputToRunner,
 } from "./viewer.js";
+
+describe("forwardInputToRunner", () => {
+    test("reports success when an acknowledgement-capable runner consumes input", async () => {
+        const clear = mock(() => {});
+        const socket = {
+            connected: true,
+            emit: mock((_event: string, _payload: Record<string, unknown>, ack: (delivered: boolean) => void) => ack(true)),
+        };
+
+        const delivered = await forwardInputToRunner(socket, { text: "hello", requestId: "req-1" }, 9_500, {
+            set: mock(() => 1 as unknown as ReturnType<typeof setTimeout>),
+            clear,
+        });
+
+        expect(delivered).toBe(true);
+        expect(clear).toHaveBeenCalledTimes(1);
+    });
+
+    test("reports an explicit runner rejection", async () => {
+        const socket = {
+            connected: true,
+            emit: mock((_event: string, _payload: Record<string, unknown>, ack: (delivered: boolean) => void) => ack(false)),
+        };
+
+        expect(await forwardInputToRunner(socket, { text: "bad" }, 20)).toBe(false);
+    });
+
+    test("treats acknowledgement timeout from an old runner as delivered", async () => {
+        let fireTimeout: (() => void) | undefined;
+        const clear = mock(() => {});
+        const socket = {
+            connected: true,
+            emit: mock(() => true),
+        };
+        const result = forwardInputToRunner(socket, { text: "legacy", requestId: "req-legacy" }, 9_500, {
+            set: mock((callback: () => void) => {
+                fireTimeout = callback;
+                return 1 as unknown as ReturnType<typeof setTimeout>;
+            }),
+            clear,
+        });
+
+        fireTimeout?.();
+        expect(await result).toBe(true);
+        expect(clear).toHaveBeenCalledTimes(1);
+    });
+});
 
 // ── isAgentEndEvent ──────────────────────────────────────────────────────────
 

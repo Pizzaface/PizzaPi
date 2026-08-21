@@ -129,7 +129,7 @@ describe("remote-input", () => {
 
         test("throws when an explicitly supplied relay attachment cannot be retrieved", async () => {
             const originalFetch = globalThis.fetch;
-            globalThis.fetch = (async () => new Response("expired", { status: 404 })) as typeof fetch;
+            globalThis.fetch = (async () => new Response("expired", { status: 404 })) as unknown as typeof fetch;
             try {
                 await expect(buildUserMessageFromRemoteInput("see this", [{ attachmentId: "expired-1" }], "https://relay", "key"))
                     .rejects.toThrow(/could not be retrieved|expired/);

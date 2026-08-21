@@ -57,6 +57,45 @@ export { hydrateViewerFromCache, sendCachedDeltaReplayEvents } from "./viewer-ca
 
 const log = createLogger("sio/viewer");
 
+interface InputRelaySocket {
+    connected: boolean;
+    emit: (event: string, payload: Record<string, unknown>, ack: (delivered: boolean) => void) => unknown;
+}
+
+/**
+ * Forward input to a runner and normalize acknowledgement semantics.
+ * A missing callback is success because pre-ack runners still consume the emitted
+ * input. Explicit false and synchronous emit failures remain real failures.
+ * @internal — exported for unit tests only
+ */
+export function forwardInputToRunner(
+    tuiSocket: InputRelaySocket,
+    payload: Record<string, unknown>,
+    timeoutMs = 9_500,
+    timers: {
+        set: (callback: () => void, ms: number) => ReturnType<typeof setTimeout>;
+        clear: (timer: ReturnType<typeof setTimeout>) => void;
+    } = { set: setTimeout, clear: clearTimeout },
+): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+        let settled = false;
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const finish = (delivered: boolean) => {
+            if (settled) return;
+            settled = true;
+            if (timeout !== undefined) timers.clear(timeout);
+            resolve(delivered === true);
+        };
+
+        timeout = timers.set(() => finish(true), timeoutMs);
+        try {
+            tuiSocket.emit("input", payload, (delivered: boolean) => finish(delivered));
+        } catch {
+            finish(false);
+        }
+    });
+}
+
 type ViewerSocket = Socket<
     ViewerClientToServerEvents,
     ViewerServerToClientEvents,
@@ -784,7 +823,6 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 settled = true;
                 ack?.(delivered === true);
             };
-            const timeout = setTimeout(() => settle(false), 10_000);
             try {
                 const currentSessionId = getCurrentSessionId();
                 if (!currentSessionId) return;
@@ -794,57 +832,42 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 const tuiSocket = getLocalTuiSocket(currentSessionId);
                 if (!tuiSocket || !tuiSocket.connected) return;
 
-            // Parse and validate attachments
-            const attachments = Array.isArray(data.attachments)
-                ? data.attachments
-                      .filter(
-                          (entry): entry is Record<string, unknown> =>
-                              entry !== null && typeof entry === "object",
-                      )
-                      .map((item) => ({
-                          attachmentId:
-                              typeof item.attachmentId === "string" ? item.attachmentId : undefined,
-                          mediaType: typeof item.mediaType === "string" ? item.mediaType : undefined,
-                          filename: typeof item.filename === "string" ? item.filename : undefined,
-                          url: typeof item.url === "string" ? item.url : undefined,
-                      }))
-                      .filter(
-                          (item) =>
-                              (typeof item.attachmentId === "string" && item.attachmentId.length > 0) ||
-                              (typeof item.url === "string" && item.url.length > 0),
-                      )
-                : [];
+                // Parse and validate attachments
+                const attachments = Array.isArray(data.attachments)
+                    ? data.attachments
+                          .filter(
+                              (entry): entry is Record<string, unknown> =>
+                                  entry !== null && typeof entry === "object",
+                          )
+                          .map((item) => ({
+                              attachmentId:
+                                  typeof item.attachmentId === "string" ? item.attachmentId : undefined,
+                              mediaType: typeof item.mediaType === "string" ? item.mediaType : undefined,
+                              filename: typeof item.filename === "string" ? item.filename : undefined,
+                              url: typeof item.url === "string" ? item.url : undefined,
+                          }))
+                          .filter(
+                              (item) =>
+                                  (typeof item.attachmentId === "string" && item.attachmentId.length > 0) ||
+                                  (typeof item.url === "string" && item.url.length > 0),
+                          )
+                    : [];
 
-            const payload: Record<string, unknown> = {
-                text: data.text,
-                attachments,
-            };
-            if (data.client) payload.client = data.client;
-            if (data.deliverAs === "steer" || data.deliverAs === "followUp") {
-                payload.deliverAs = data.deliverAs;
-            }
+                const payload: Record<string, unknown> = {
+                    text: data.text,
+                    attachments,
+                };
+                if (data.client) payload.client = data.client;
+                if (data.deliverAs === "steer" || data.deliverAs === "followUp") {
+                    payload.deliverAs = data.deliverAs;
+                }
+                const requestId = (data as typeof data & { requestId?: unknown }).requestId;
+                if (typeof requestId === "string") payload.requestId = requestId;
 
-                await new Promise<boolean>((resolve) => {
-                    let done = false;
-                    const finish = (value: boolean) => {
-                        if (done) return;
-                        done = true;
-                        resolve(value === true);
-                    };
-                    try {
-                        tuiSocket.emit("input" as string, payload, (delivered: boolean) => finish(delivered));
-                    } catch {
-                        finish(false);
-                    }
-                    setTimeout(() => finish(false), 9_500);
-                }).then((delivered) => {
-                    if (delivered === true && tuiSocket.connected) settle(true);
-                    else settle(false);
-                });
+                settle(await forwardInputToRunner(tuiSocket, payload));
             } catch {
                 settle(false);
             } finally {
-                clearTimeout(timeout);
                 settle(false);
             }
         });
