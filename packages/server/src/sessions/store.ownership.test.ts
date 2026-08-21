@@ -162,15 +162,43 @@ describe("recordRelaySessionStart — ended-session ownership guard", () => {
             isEphemeral: false,
         });
 
-        // The upsert should have proceeded (userId was null, so no conflict)
+        // The upsert must RECONCILE ownership: the null owner is replaced by the
+        // adopting user, not preserved as null.
         const row = await memDb
             .selectFrom("relay_session")
             .select(["id", "userId"])
             .where("id", "=", "own-anon")
             .executeTakeFirst();
-        // userId stays null (the upsert doesn't overwrite userId on conflict),
-        // but the important thing is it didn't throw or skip entirely.
-        expect(row).toBeDefined();
+        expect(row?.userId).toBe(USER_A);
+    });
+
+    it("does not overwrite a real owner with null on anonymous reconnect", async () => {
+        // User A owns the session
+        await recordRelaySessionStart({
+            sessionId: "own-keep-owner",
+            userId: USER_A,
+            cwd: "/repo",
+            shareUrl: "http://test/own-keep-owner",
+            startedAt: new Date().toISOString(),
+            isEphemeral: false,
+        });
+
+        // An anonymous reconnect (userId undefined) must NOT clear the owner
+        await recordRelaySessionStart({
+            sessionId: "own-keep-owner",
+            userId: undefined,
+            cwd: "/repo",
+            shareUrl: "http://test/own-keep-owner",
+            startedAt: new Date().toISOString(),
+            isEphemeral: false,
+        });
+
+        const row = await memDb
+            .selectFrom("relay_session")
+            .select(["id", "userId"])
+            .where("id", "=", "own-keep-owner")
+            .executeTakeFirst();
+        expect(row?.userId).toBe(USER_A);
     });
 });
 

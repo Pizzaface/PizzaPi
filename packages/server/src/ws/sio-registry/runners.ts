@@ -418,10 +418,26 @@ export async function removeRunnerSession(runnerId: string, sessionId: string): 
  * Used after a runner daemon restart to let it re-adopt orphaned worker processes.
  */
 export async function getConnectedSessionsForRunner(runnerId: string): Promise<Array<{ sessionId: string; cwd: string; sessionFile?: string }>> {
+    // Ownership guard: a runner may only re-adopt sessions it actually owns.
+    // On Redis-loss fallback a persisted runner can otherwise be re-attached to
+    // a session that was adopted by a *different* user, letting the old runner
+    // re-adopt foreign events (cross-user session/event leak).
+    const runner = await getRunnerState(runnerId);
+    const runnerUserId = runner?.userId ?? null;
+
     const allSessions = await getAllSessionSummaries();
     const results: Array<{ sessionId: string; cwd: string; sessionFile?: string }> = [];
     for (const s of allSessions) {
         if (s.runnerId !== runnerId) continue;
+        // Skip sessions owned by a user other than this runner's owner (or by a
+        // user when this runner is anonymous). Anonymous sessions (userId null)
+        // remain adoptable by any runner.
+        if (s.userId !== null && s.userId !== runnerUserId) {
+            log.warn(
+                `getConnectedSessionsForRunner: skipping session ${s.sessionId} owned by a different user (runner ${runnerId})`,
+            );
+            continue;
+        }
         // Only include sessions whose TUI socket is still connected (worker is alive)
         const tuiSocket = localTuiSockets.get(s.sessionId);
         if (tuiSocket && tuiSocket.connected) {
