@@ -523,6 +523,16 @@ function proxyTunnelRequestViaRelay(
             }
         };
 
+        const errorStream = (err: unknown): void => {
+            if (streamClosed) return;
+            streamClosed = true;
+            try {
+                streamController?.error(err instanceof Error ? err : new Error(String(err)));
+            } catch {
+                // Stream may already be closed or the client disconnected.
+            }
+        };
+
         const resolveOnce = (response: Response): void => {
             if (resolved) return;
             resolved = true;
@@ -642,12 +652,10 @@ function proxyTunnelRequestViaRelay(
                         return;
                     }
 
-                    // Once a streaming HTTP response has started, we can no
-                    // longer change the status code. Do not error the fetch
-                    // stream: Bun surfaces that as an unhandled server write
-                    // after the response may already be ended. Close the body
-                    // instead so the connection terminates cleanly.
-                    closeStream();
+                    // The response headers are already sent — error the
+                    // ReadableStream so the browser observes a failed/truncated
+                    // response rather than a clean end-of-body.
+                    errorStream(error);
                 },
             },
         );
