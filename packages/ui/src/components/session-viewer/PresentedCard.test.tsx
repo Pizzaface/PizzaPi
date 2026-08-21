@@ -3,7 +3,7 @@
  */
 import { afterEach, describe, test, expect } from "bun:test";
 import { Window } from "happy-dom";
-import { render, cleanup } from "@testing-library/react";
+import { render, cleanup, fireEvent } from "@testing-library/react";
 import React from "react";
 import type { PresentedCard as PresentedCardData } from "./presented-card";
 
@@ -67,5 +67,77 @@ describe("PresentedCard", () => {
     const { queryByText, getByText } = render(<PresentedCardGroup cards={[card]} />);
     expect(getByText("Bob's Handyman")).toBeDefined();
     expect(queryByText(/results$/)).toBeNull();
+  });
+});
+
+describe("PresentedCard — external image privacy gating", () => {
+  const externalImageCard: PresentedCardData = {
+    kind: "business",
+    title: "Evil Corp",
+    icon: "store",
+    image: "https://attacker.example/track.gif",
+    badges: [],
+    fields: [],
+    actions: [],
+  };
+
+  test("does NOT render <img> for external image on initial render", () => {
+    const { container } = render(<PresentedCard card={externalImageCard} />);
+    const imgs = container.querySelectorAll("img");
+    expect(imgs.length).toBe(0);
+  });
+
+  test("shows a 'Load image' button for external image", () => {
+    const { getByTitle } = render(<PresentedCard card={externalImageCard} />);
+    expect(getByTitle("Load image")).toBeDefined();
+  });
+
+  test("renders <img> with correct src after clicking Load image", () => {
+    const { getByTitle, container } = render(<PresentedCard card={externalImageCard} />);
+    fireEvent.click(getByTitle("Load image"));
+    const img = container.querySelector("img") as HTMLImageElement | null;
+    expect(img).not.toBeNull();
+    expect(img?.getAttribute("src")).toBe("https://attacker.example/track.gif");
+  });
+
+  test("requires re-approval when the image URL changes", () => {
+    const { getByTitle, container, rerender } = render(<PresentedCard card={externalImageCard} />);
+    fireEvent.click(getByTitle("Load image"));
+    expect(container.querySelector("img")?.getAttribute("src")).toBe(externalImageCard.image);
+
+    const updatedCard = { ...externalImageCard, image: "https://other.example/track.gif" };
+    rerender(<PresentedCard card={updatedCard} />);
+    expect(container.querySelector("img")).toBeNull();
+    fireEvent.click(getByTitle("Load image"));
+    expect(container.querySelector("img")?.getAttribute("src")).toBe(updatedCard.image);
+  });
+
+  test("card without image renders kind icon, no Load image button", () => {
+    const noImageCard: PresentedCardData = { ...externalImageCard, image: undefined };
+    const { container, queryByTitle } = render(<PresentedCard card={noImageCard} />);
+    expect(container.querySelectorAll("img").length).toBe(0);
+    expect(queryByTitle("Load image")).toBeNull();
+  });
+
+  test("browser-normalized network-path images are gated on initial render", () => {
+    for (const image of ["//attacker.example/track.gif", "\\\\attacker.example/track.gif"]) {
+      const networkPathCard: PresentedCardData = { ...externalImageCard, image };
+      const { container, getByTitle, unmount } = render(<PresentedCard card={networkPathCard} />);
+      expect(container.querySelectorAll("img").length).toBe(0);
+      expect(getByTitle("Load image")).toBeDefined();
+      unmount();
+    }
+  });
+
+  test("protocol-relative image renders after clicking Load image", () => {
+    const protoRelCard: PresentedCardData = {
+      ...externalImageCard,
+      image: "//attacker.example/track.gif",
+    };
+    const { getByTitle, container } = render(<PresentedCard card={protoRelCard} />);
+    fireEvent.click(getByTitle("Load image"));
+    const img = container.querySelector("img") as HTMLImageElement | null;
+    expect(img).not.toBeNull();
+    expect(img?.getAttribute("src")).toBe("//attacker.example/track.gif");
   });
 });

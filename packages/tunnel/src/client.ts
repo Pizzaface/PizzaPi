@@ -117,6 +117,7 @@ export class TunnelClient extends EventEmitter {
       bodyChunks: Buffer[] | null;
       bodyBytes: number;
       bodyEnded: boolean;
+      responseStarted: boolean;
     }
   >();
   /**
@@ -459,9 +460,35 @@ export class TunnelClient extends EventEmitter {
         ...(useTls ? { rejectUnauthorized: false } : {}),
       },
       (response) => {
+        const requestIsActive = (): boolean => {
+          const active = this.activeRequests.get(id);
+          return active?.req === req && !controller.signal.aborted;
+        };
+        let responseStarted = false;
+        let responseSettled = false;
+        const finalizeResponse = (error?: Error): void => {
+          if (responseSettled) return;
+          responseSettled = true;
+          const active = this.activeRequests.get(id);
+          if (!active || active.req !== req || controller.signal.aborted) return;
+          this.activeRequests.delete(id);
+          if (!responseStarted && error) {
+            this.send({ type: "response-start", id, statusCode: 502, statusMessage: "Bad Gateway", headers: {} });
+            this.send({ type: "response-data", id, data: error.message });
+          }
+          this.send({ type: "response-data-end", id });
+        };
+
+        if (!requestIsActive()) {
+          response.destroy();
+          return;
+        }
         this.loopbackHost.set(port, hostname);
         const active = this.activeRequests.get(id);
-        if (active) active.bodyChunks = null; // connected — replay buffer no longer needed
+        if (active) {
+          active.bodyChunks = null; // connected — replay buffer no longer needed
+          active.responseStarted = true;
+        }
         const responseHeaders: Record<string, string | string[]> = {};
         for (const [key, value] of Object.entries(response.headers)) {
           if (value === undefined) continue;
@@ -472,6 +499,7 @@ export class TunnelClient extends EventEmitter {
           responseHeaders[key] = value;
         }
 
+        responseStarted = true;
         this.send({
           type: "response-start",
           id,
@@ -481,13 +509,16 @@ export class TunnelClient extends EventEmitter {
         });
 
         response.on("data", (chunk: Buffer) => {
+          if (!requestIsActive() || responseSettled) return;
           this.send({ type: "response-data", id, data: chunk.toString("binary") });
         });
 
         response.on("end", () => {
-          this.activeRequests.delete(id);
-          this.send({ type: "response-data-end", id });
+          if (!requestIsActive()) return;
+          finalizeResponse();
         });
+        response.on("error", (error) => finalizeResponse(error instanceof Error ? error : new Error(String(error))));
+        response.on("close", () => finalizeResponse(new Error("Local response closed prematurely")));
 
         controller.signal.addEventListener(
           "abort",
@@ -500,13 +531,15 @@ export class TunnelClient extends EventEmitter {
     );
 
     req.on("error", (error) => {
+      const active = this.activeRequests.get(id);
+      if (!active || active.req !== req || controller.signal.aborted) return;
       const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ABORT_ERR" || controller.signal.aborted) {
+      if (code === "ABORT_ERR") {
         this.activeRequests.delete(id);
         return;
       }
-      const active = this.activeRequests.get(id);
-      if (code === "ECONNREFUSED" && canRetry && active?.bodyChunks) {
+      if (active.responseStarted) return;
+      if (code === "ECONNREFUSED" && canRetry && active.bodyChunks) {
         // Local service may be listening on the other loopback family
         // (IPv6-only binds are common on Windows). Retry once, replaying
         // any buffered request body.
@@ -542,7 +575,7 @@ export class TunnelClient extends EventEmitter {
     };
 
     const req = attempt(this.loopbackHost.get(port) ?? "127.0.0.1", true);
-    this.activeRequests.set(id, { controller, req, bodyChunks: [], bodyBytes: 0, bodyEnded: false });
+    this.activeRequests.set(id, { controller, req, bodyChunks: [], bodyBytes: 0, bodyEnded: false, responseStarted: false });
   }
 
   private handleRequestData(msg: TunnelRequestDataMessage): void {

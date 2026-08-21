@@ -162,6 +162,12 @@ export async function runSupervisor(_args: string[] = []): Promise<number> {
 
         if (exitCode === 42) {
             // Daemon requested a self-restart (e.g. via /restart command).
+            // Guard: a shutdown signal may have arrived in the window between
+            // the child's exit and this point — honour it instead of respawning.
+            if (isShuttingDown) {
+                logInfo("shutdown requested — skipping restart after code-42 exit.");
+                return 0;
+            }
             logInfo("daemon requested restart — re-spawning immediately…");
             restartDelay = RESTART_DELAY_BASE; // reset back-off
             continue;

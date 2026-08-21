@@ -18,6 +18,9 @@ import {
     getSessionField,
     updateSessionFields,
     deleteSession,
+    deleteSessionIfOwner,
+    acquireSessionOwnershipLock,
+    releaseSessionOwnershipLock,
     getAllSessionSummaries,
     refreshSessionTTL,
     incrementSeq,
@@ -157,6 +160,28 @@ export async function registerTuiSession(
     opts: RegisterTuiSessionOpts = {},
 ): Promise<{ sessionId: string; token: string; shareUrl: string; parentSessionId: string | null; wasDelinked: boolean }> {
     const requestedSessionId = typeof opts.sessionId === "string" ? opts.sessionId.trim() : "";
+    const lockSessionId = requestedSessionId.length > 0 ? requestedSessionId : randomUUID();
+    const lockOwner = randomUUID();
+    await acquireSessionOwnershipLock(lockSessionId, lockOwner);
+    try {
+        return await registerTuiSessionUnlocked(
+            socket,
+            cwd,
+            { ...opts, sessionId: requestedSessionId || lockSessionId },
+            requestedSessionId.length === 0,
+        );
+    } finally {
+        await releaseSessionOwnershipLock(lockSessionId, lockOwner);
+    }
+}
+
+async function registerTuiSessionUnlocked(
+    socket: Socket,
+    cwd: string = "",
+    opts: RegisterTuiSessionOpts = {},
+    generatedSessionId = false,
+): Promise<{ sessionId: string; token: string; shareUrl: string; parentSessionId: string | null; wasDelinked: boolean }> {
+    const requestedSessionId = typeof opts.sessionId === "string" ? opts.sessionId.trim() : "";
     let sessionId = requestedSessionId.length > 0 ? requestedSessionId : randomUUID();
     const token = randomBytes(32).toString("hex");
     let shareUrl = `${process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173"}/session/${sessionId}`;
@@ -197,7 +222,7 @@ export async function registerTuiSession(
             if (oldSocket && oldSocket !== socket) {
                 oldSocket.data.sessionId = undefined;
             }
-            await endSharedSession(sessionId, "Session reconnected");
+            await endSharedSessionUnlocked(sessionId, "Session reconnected");
         }
     }
 
@@ -208,7 +233,7 @@ export async function registerTuiSession(
     // bypassed because `existing` is null, but the persisted row still has the
     // original owner.  Generate a fresh session ID so this user gets their own
     // slot without touching the other owner's persisted data.
-    if (!existing && requestedSessionId.length > 0 && sessionId === requestedSessionId) {
+    if (!existing && !generatedSessionId && requestedSessionId.length > 0 && sessionId === requestedSessionId) {
         const persistedUserId = await getRelaySessionUserId(sessionId);
         if (persistedUserId !== null && persistedUserId !== userId) {
             log.warn(
@@ -853,6 +878,25 @@ export async function updateSessionHeartbeat(
     }
 }
 
+/**
+ * Fetch the current connection owner token from shared (Redis) state.
+ *
+ * This is regenerated every time `registerTuiSession` is called, so if a
+ * replacement session registers on a DIFFERENT node (cross-node reconnect),
+ * the Redis token will differ from the stale socket's `socket.data.token`.
+ *
+ * Only the socket whose token MATCHES the current shared token may end/delete
+ * the session or emit accepted events.  All others are stale/superseded.
+ */
+export async function getSessionOwnerToken(sessionId: string): Promise<string | null> {
+    try {
+        return await getSessionField(sessionId, "token");
+    } catch (err) {
+        log.warn("getSessionOwnerToken: Redis read error; ownership is unknown", err);
+        throw err;
+    }
+}
+
 /** Get the current seq counter for a session. */
 export async function getSessionSeq(sessionId: string): Promise<number> {
     return getSeq(sessionId);
@@ -901,13 +945,43 @@ function viewerDisconnectPayload(reason: string): { reason: string; code?: "sess
 export async function endSharedSession(
     sessionId: string,
     reason: string = "Session ended",
-    opts: { confirmedTerminal?: boolean } = {},
-): Promise<void> {
+    opts: {
+        confirmedTerminal?: boolean;
+        expectedOwnerToken?: string;
+        onOwnerConfirmed?: () => void | Promise<void>;
+    } = {},
+): Promise<boolean> {
+    const lockOwner = randomUUID();
+    await acquireSessionOwnershipLock(sessionId, lockOwner);
+    try {
+        return await endSharedSessionUnlocked(sessionId, reason, opts);
+    } finally {
+        await releaseSessionOwnershipLock(sessionId, lockOwner);
+    }
+}
+
+async function endSharedSessionUnlocked(
+    sessionId: string,
+    reason: string = "Session ended",
+    opts: {
+        confirmedTerminal?: boolean;
+        expectedOwnerToken?: string;
+        onOwnerConfirmed?: () => void | Promise<void>;
+    } = {},
+): Promise<boolean> {
     const io = getIo();
+    if (opts.expectedOwnerToken !== undefined) {
+        const currentOwnerToken = await getSessionOwnerToken(sessionId);
+        if (currentOwnerToken !== opts.expectedOwnerToken) {
+            log.info(`endSharedSession: owner changed for ${sessionId}; skipping teardown`);
+            return false;
+        }
+    }
+    await opts.onOwnerConfirmed?.();
     await deletePendingRunnerLink(sessionId);
 
     const session = await getSession(sessionId);
-    if (!session) return;
+    if (!session) return true;
 
     // On a CONFIRMED terminal end (graceful session_end, expiry, orphan sweep,
     // parent-acknowledged cleanup) remove this child from its parent's
@@ -1004,8 +1078,13 @@ export async function endSharedSession(
         );
     }
 
-    // Delete from Redis
-    await deleteSession(sessionId);
+    // The lock and this atomic delete are defense in depth: ownership was
+    // checked before teardown, and the delete still requires an exact token.
+    if (opts.expectedOwnerToken !== undefined) {
+        if (!(await deleteSessionIfOwner(sessionId, opts.expectedOwnerToken))) return false;
+    } else {
+        await deleteSession(sessionId);
+    }
     lastRelaySessionStateWriteTimes.delete(sessionId);
 
     // Persist end in SQLite
@@ -1015,6 +1094,7 @@ export async function endSharedSession(
 
     // Broadcast removal to hub
     await broadcastToHub("session_removed", { sessionId }, session.userId ?? undefined);
+    return true;
 }
 
 /** Sweep expired ephemeral sessions (Redis + Socket.IO rooms). */

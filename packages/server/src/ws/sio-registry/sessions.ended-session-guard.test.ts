@@ -74,7 +74,7 @@ const mockRedis = {
     multi: mock(() => mockMulti()),
     on: mock(() => mockRedis),
     connect: mock(async () => {}),
-    set: mock(async (key: string, value: string, _opts?: unknown) => { store.set(key, value); }),
+    set: mock(async (key: string, value: string, _opts?: unknown) => { store.set(key, value); return "OK" as const; }),
     get: mock(async (key: string) => store.get(key) ?? null),
     del: mock(async (key: string) => {
         store.delete(key);

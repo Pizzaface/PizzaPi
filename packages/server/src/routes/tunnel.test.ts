@@ -647,6 +647,124 @@ import bar from "../lib/bar.js";`;
 });
 
 describe("tunnel route streaming proxy", () => {
+    test("cancels a stalled request body on timeout and forwards no later chunks", async () => {
+        let cancelled = false;
+        let sendCount = 0;
+        const body = new ReadableStream<Uint8Array>({
+            pull() {
+                return new Promise<void>(() => {});
+            },
+            cancel() {
+                cancelled = true;
+            },
+        });
+        const relay = {
+            proxyHttpRequest: (_runnerId: string, _request: unknown, cb: {
+                onResponseStart: (code: number, message: string, headers: Record<string, string>) => void;
+                onResponseData: (data: Buffer) => void;
+                onResponseEnd: () => void;
+                onError: (error: string) => void;
+            }) => {
+                setTimeout(() => cb.onError("Tunnel request timed out"), 0);
+                return { cancel() {} };
+            },
+            sendRequestData() { sendCount++; },
+            sendRequestDataEnd() {},
+        };
+        const response = await proxyTunnelRequestViaRelay(
+            new Request("http://localhost/api/tunnel/s-1/3000/data", {
+                method: "POST",
+                body,
+                // @ts-expect-error Bun supports duplex
+                duplex: "half",
+            }),
+            relay as never,
+            "runner-1", "request-1", "/api/tunnel/s-1/3000", 3000, "/data", "/data", {},
+        );
+        expect(response.status).toBe(504);
+        await new Promise<void>((resolve) => queueMicrotask(resolve));
+        expect(cancelled).toBe(true);
+        expect(sendCount).toBe(0);
+    });
+
+    test("cancels a stalled request body when the client disconnects", async () => {
+        let cancelled = false;
+        let sendCount = 0;
+        const body = new ReadableStream<Uint8Array>({
+            pull() { return new Promise<void>(() => {}); },
+            cancel() { cancelled = true; },
+        });
+        const client = new AbortController();
+        const relay = {
+            proxyHttpRequest: () => ({ cancel() {} }),
+            sendRequestData() { sendCount++; },
+            sendRequestDataEnd() {},
+        };
+        void proxyTunnelRequestViaRelay(
+            new Request("http://localhost/api/tunnel/s-1/3000/data", {
+                method: "POST",
+                body,
+                signal: client.signal,
+                // @ts-expect-error Bun supports duplex
+                duplex: "half",
+            }),
+            relay as never,
+            "runner-1", "request-1", "/api/tunnel/s-1/3000", 3000, "/data", "/data", {},
+        );
+        await new Promise<void>((resolve) => queueMicrotask(resolve));
+        client.abort();
+        await new Promise<void>((resolve) => queueMicrotask(resolve));
+        expect(cancelled).toBe(true);
+        expect(sendCount).toBe(0);
+    });
+
+    test("cancels a stalled request body and detaches the client listener when the response ends", async () => {
+        let callbacks: {
+            onResponseStart: (statusCode: number, statusMessage: string, headers: Record<string, string>) => void;
+            onResponseData: (data: Buffer) => void;
+            onResponseEnd: () => void;
+            onError: (error: string) => void;
+        } | undefined;
+        let bodyCancelled = false;
+        let relayCancelCount = 0;
+        const body = new ReadableStream<Uint8Array>({
+            pull() { return new Promise<void>(() => {}); },
+            cancel() { bodyCancelled = true; },
+        });
+        const client = new AbortController();
+        const relay = {
+            proxyHttpRequest: (_runnerId: string, _request: unknown, cb: NonNullable<typeof callbacks>) => {
+                callbacks = cb;
+                return { cancel() { relayCancelCount++; } };
+            },
+            sendRequestData() {},
+            sendRequestDataEnd() {},
+        };
+
+        const responsePromise = proxyTunnelRequestViaRelay(
+            new Request("http://localhost/api/tunnel/s-1/3000/data", {
+                method: "POST",
+                body,
+                signal: client.signal,
+                // @ts-expect-error Bun supports duplex
+                duplex: "half",
+            }),
+            relay as never,
+            "runner-1", "request-1", "/api/tunnel/s-1/3000", 3000, "/data", "/data", {},
+        );
+        callbacks!.onResponseStart(200, "OK", { "content-type": "text/plain" });
+        callbacks!.onResponseEnd();
+
+        const response = await responsePromise;
+        expect(response.status).toBe(200);
+        await new Promise<void>((resolve) => queueMicrotask(resolve));
+        expect(bodyCancelled).toBe(true);
+
+        client.abort();
+        await new Promise<void>((resolve) => queueMicrotask(resolve));
+        expect(relayCancelCount).toBe(0);
+    });
+
     test("closes an already-started streaming response cleanly when relay reports a late error", async () => {
         let callbacks: {
             onResponseStart: (statusCode: number, statusMessage: string, headers: Record<string, string>) => void;

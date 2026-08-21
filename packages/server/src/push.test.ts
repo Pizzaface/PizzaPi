@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, spyOn } from "bun:test";
 import { createTestAuthContext, getKysely, runWithAuthContext } from "./auth.js";
-import { unsubscribePush, updateSuppressChildNotifications, getSubscriptionsForUser, isValidPushEndpoint, registerNativePush, unregisterNativePush, getNativeRegistrationsForUser, ensureNativePushRegistrationTable, sendPushToUser } from "./push.js";
+import { unsubscribePush, updateSuppressChildNotifications, getSubscriptionsForUser, isValidPushEndpoint, registerNativePush, unregisterNativePush, getNativeRegistrationsForUser, ensureNativePushRegistrationTable, sendPushToUser, updateNativeSuppressChildNotifications } from "./push.js";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -307,6 +307,50 @@ describe("isValidPushEndpoint", () => {
 // on PIZZAPI_NTFY_URL — tests set it via env to exercise the publish path.
 
 describe("native push registration", () => {
+    it("migration preserves suppression for existing native registrations", async () => {
+        const migrationDir = mkdtempSync(join(tmpdir(), "push-migration-test-"));
+        const migrationContext = createTestAuthContext({ dbPath: join(migrationDir, "test.db") });
+        try {
+            await runWithAuthContext(migrationContext, async () => {
+                const db = getKysely();
+                await db.schema
+                    .createTable("native_push_registration")
+                    .addColumn("id", "text", (col) => col.primaryKey())
+                    .addColumn("userId", "text", (col) => col.notNull())
+                    .addColumn("platform", "text", (col) => col.notNull())
+                    .addColumn("topic", "text", (col) => col.notNull())
+                    .addColumn("ntfyUser", "text")
+                    .addColumn("ntfyPass", "text")
+                    .addColumn("createdAt", "text", (col) => col.notNull())
+                    .execute();
+                await db
+                    .insertInto("native_push_registration" as any)
+                    .values({
+                        id: "legacy-registration",
+                        userId: "legacy-user",
+                        platform: "android",
+                        topic: "pizzapi-legacy",
+                        ntfyUser: null,
+                        ntfyPass: null,
+                        createdAt: new Date().toISOString(),
+                    })
+                    .execute();
+
+                await ensureNativePushRegistrationTable();
+
+                const row = await db
+                    .selectFrom("native_push_registration" as any)
+                    .selectAll()
+                    .where("id", "=", "legacy-registration")
+                    .executeTakeFirstOrThrow();
+                expect((row as any).suppressChildNotifications).toBe(1);
+                await db.destroy();
+            });
+        } finally {
+            rmSync(migrationDir, { recursive: true, force: true });
+        }
+    });
+
     authIt("registerNativePush assigns an unguessable topic and persists it", async () => {
         const reg = await registerNativePush({ userId: "user-A", platform: "android" });
         expect(reg.userId).toBe("user-A");
@@ -314,6 +358,7 @@ describe("native push registration", () => {
         expect(reg.topic).toMatch(/^pizzapi-[0-9a-f]{48}$/);
         expect(reg.ntfyUser).toBeNull();
         expect(reg.ntfyPass).toBeNull();
+        expect(reg.suppressChildNotifications).toBe(1);
 
         // Round-trips through the store.
         const rows = await getNativeRegistrationsForUser("user-A");
@@ -691,7 +736,7 @@ describe("sendPushToUser — child-session suppression", () => {
         expect(subs).toHaveLength(0);
     });
 
-    authIt("ntfy: suppresses by default for a child session (no fetch attempted)", async () => {
+    authIt("ntfy: suppresses child sessions by default", async () => {
         await registerNativePush({ userId: "user-child-ntfy-1", platform: "android" });
         process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
 
@@ -704,12 +749,33 @@ describe("sendPushToUser — child-session suppression", () => {
                 title: "Agent finished",
                 body: "done",
                 sessionId: "sess-child-ntfy-1",
-            }, true);
+            }, true /* isChildSession */);
         } finally {
             (globalThis as any).fetch = origFetch;
             delete process.env.PIZZAPI_NTFY_URL;
         }
         expect(fetchCalled).toBe(false);
+    });
+
+    authIt("ntfy: delivers child session when suppressChildNotifications is false", async () => {
+        await registerNativePush({ userId: "user-child-ntfy-deliver", platform: "android", suppressChildNotifications: false });
+        process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
+
+        let fetchCalled = false;
+        const origFetch = globalThis.fetch;
+        (globalThis as any).fetch = () => { fetchCalled = true; return Promise.resolve(new Response("ok", { status: 200 })); };
+        try {
+            await sendPushToUser("user-child-ntfy-deliver", {
+                type: "agent_finished",
+                title: "Agent finished",
+                body: "done",
+                sessionId: "sess-child-ntfy-deliver",
+            }, true /* isChildSession */);
+        } finally {
+            (globalThis as any).fetch = origFetch;
+            delete process.env.PIZZAPI_NTFY_URL;
+        }
+        expect(fetchCalled).toBe(true);
     });
 
     authIt("ntfy: still publishes for a non-child session", async () => {
@@ -731,5 +797,122 @@ describe("sendPushToUser — child-session suppression", () => {
             delete process.env.PIZZAPI_NTFY_URL;
         }
         expect(fetchCalled).toBe(true);
+    });
+
+    authIt("ntfy: non-child notification is delivered even when suppressChildNotifications is true", async () => {
+        // Regression: the suppressChildNotifications flag must ONLY gate child
+        // sessions (isChildSession=true). A top-level session notification must
+        // still be published regardless of how the flag is set.
+        await registerNativePush({ userId: "user-suppress-nochild", platform: "android", suppressChildNotifications: true });
+        process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
+
+        let fetchCalled = false;
+        const origFetch = globalThis.fetch;
+        (globalThis as any).fetch = () => { fetchCalled = true; return Promise.resolve(new Response("ok", { status: 200 })); };
+        try {
+            await sendPushToUser("user-suppress-nochild", {
+                type: "agent_needs_input",
+                title: "Input needed",
+                body: "Agent asks a question",
+                sessionId: "sess-suppress-nochild",
+            }, false /* isChildSession=false → must deliver despite suppressChildNotifications=true */);
+        } finally {
+            (globalThis as any).fetch = origFetch;
+            delete process.env.PIZZAPI_NTFY_URL;
+        }
+        // suppressChildNotifications only suppresses child-session notifications —
+        // a top-level session must always be delivered.
+        expect(fetchCalled).toBe(true);
+    });
+
+    authIt("ntfy: per-registration: suppressed reg skipped, unsuppressed reg delivered", async () => {
+        // Two registrations for different users: one suppress=true, one suppress=false.
+        // Only the unsuppressed one should receive the child-session notification.
+        await registerNativePush({ userId: "user-multi-suppress", platform: "android", suppressChildNotifications: true });
+        await registerNativePush({ userId: "user-multi-deliver", platform: "android", suppressChildNotifications: false });
+        process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
+
+        let deliverCount = 0;
+        const origFetch = globalThis.fetch;
+        (globalThis as any).fetch = () => { deliverCount++; return Promise.resolve(new Response("ok", { status: 200 })); };
+        try {
+            // isChildSession=true: suppress reg must skip, deliver reg must publish.
+            await sendPushToUser("user-multi-suppress", {
+                type: "agent_needs_input",
+                title: "Input needed",
+                body: "child asks",
+                sessionId: "sess-multi",
+            }, true);
+            const afterSuppress = deliverCount;
+
+            await sendPushToUser("user-multi-deliver", {
+                type: "agent_needs_input",
+                title: "Input needed",
+                body: "child asks",
+                sessionId: "sess-multi-2",
+            }, true);
+            const afterDeliver = deliverCount;
+
+            expect(afterSuppress).toBe(0); // suppressed → no fetch
+            expect(afterDeliver).toBe(1);  // deliver → one fetch
+        } finally {
+            (globalThis as any).fetch = origFetch;
+            delete process.env.PIZZAPI_NTFY_URL;
+        }
+    });
+});
+
+// ── updateNativeSuppressChildNotifications ────────────────────────────────────
+
+describe("updateNativeSuppressChildNotifications", () => {
+    authIt("persists true and makes sendNtfyToUser skip the registration for child sessions", async () => {
+        await registerNativePush({ userId: "user-nscn-1", platform: "android" });
+        await updateNativeSuppressChildNotifications("user-nscn-1", "android", true);
+
+        const rows = await getNativeRegistrationsForUser("user-nscn-1");
+        expect(rows[0].suppressChildNotifications).toBe(1);
+
+        process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
+        let fetchCalled = false;
+        const origFetch = globalThis.fetch;
+        (globalThis as any).fetch = () => { fetchCalled = true; return Promise.resolve(new Response("ok")); };
+        try {
+            await sendPushToUser("user-nscn-1", { type: "agent_finished", title: "done", body: "x", sessionId: "s" }, true);
+        } finally {
+            (globalThis as any).fetch = origFetch;
+            delete process.env.PIZZAPI_NTFY_URL;
+        }
+        expect(fetchCalled).toBe(false);
+    });
+
+    authIt("persists false and makes sendNtfyToUser deliver to the registration for child sessions", async () => {
+        await registerNativePush({ userId: "user-nscn-2", platform: "android", suppressChildNotifications: true });
+        await updateNativeSuppressChildNotifications("user-nscn-2", "android", false);
+
+        const rows = await getNativeRegistrationsForUser("user-nscn-2");
+        expect(rows[0].suppressChildNotifications).toBe(0);
+
+        process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
+        let fetchCalled = false;
+        const origFetch = globalThis.fetch;
+        (globalThis as any).fetch = () => { fetchCalled = true; return Promise.resolve(new Response("ok", { status: 200 })); };
+        try {
+            await sendPushToUser("user-nscn-2", { type: "agent_finished", title: "done", body: "x", sessionId: "s" }, true);
+        } finally {
+            (globalThis as any).fetch = origFetch;
+            delete process.env.PIZZAPI_NTFY_URL;
+        }
+        expect(fetchCalled).toBe(true);
+    });
+
+    authIt("returns 0 when no registration exists", async () => {
+        const count = await updateNativeSuppressChildNotifications("user-nscn-none", "android", true);
+        expect(count).toBe(0);
+    });
+
+    authIt("returns 1 when a registration is updated", async () => {
+        await registerNativePush({ userId: "user-nscn-3", platform: "android" });
+        const count = await updateNativeSuppressChildNotifications("user-nscn-3", "android", true);
+        expect(count).toBe(1);
     });
 });

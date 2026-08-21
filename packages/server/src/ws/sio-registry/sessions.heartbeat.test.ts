@@ -13,6 +13,9 @@ const mockRefreshRunnerAssociationTTL = mock(async () => {});
 const noopAsync = async () => {};
 
 mock.module("../sio-state/index.js", () => ({
+    acquireSessionOwnershipLock: noopAsync,
+    releaseSessionOwnershipLock: noopAsync,
+    deleteSessionIfOwner: async () => true,
     setSession: noopAsync,
     getSession: mockGetSession,
     getSessionSummary: mockGetSession,

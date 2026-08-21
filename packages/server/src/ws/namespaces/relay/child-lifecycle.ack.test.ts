@@ -29,6 +29,8 @@ mock.module("../../sio-registry.js", () => ({
 }));
 
 mock.module("../../sio-state/index.js", () => ({
+    acquireSessionOwnershipLock: async () => {},
+    releaseSessionOwnershipLock: async () => {},
     removeChildSession: async (parentId: string, childId: string) => {
         childSets.get(parentId)?.delete(childId);
     },

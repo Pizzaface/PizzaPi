@@ -19,6 +19,8 @@ mock.module("../../sio-registry.js", () => ({
 }));
 
 mock.module("../../sio-state/index.js", () => ({
+    acquireSessionOwnershipLock: async () => {},
+    releaseSessionOwnershipLock: async () => {},
     isChildOfParent: mockIsChildOfParent,
     isPendingParentDelinkChild: mockIsPendingParentDelinkChild,
     refreshChildSessionsTTL: mockRefreshChildSessionsTTL,

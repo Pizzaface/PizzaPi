@@ -431,25 +431,35 @@ async function streamRequestBodyToRelay(
     relay: TunnelRelay,
     runnerId: string,
     requestId: string,
+    signal: AbortSignal,
 ): Promise<void> {
     if (!req.body || req.method === "GET" || req.method === "HEAD") {
-        relay.sendRequestDataEnd(runnerId, requestId);
+        if (!signal.aborted) relay.sendRequestDataEnd(runnerId, requestId);
         return;
     }
 
     const reader = req.body.getReader();
+    let cancelled = false;
+    const cancelReader = (): void => {
+        if (cancelled) return;
+        cancelled = true;
+        void reader.cancel(signal.reason).catch(() => {});
+    };
+    signal.addEventListener("abort", cancelReader, { once: true });
     try {
-        while (true) {
+        while (!signal.aborted) {
             const { done, value } = await reader.read();
-            if (done) break;
+            if (done || signal.aborted) break;
             if (!value || value.byteLength === 0) continue;
             relay.sendRequestData(runnerId, requestId, Buffer.from(value));
         }
     } finally {
+        signal.removeEventListener("abort", cancelReader);
+        if (signal.aborted) cancelReader();
         reader.releaseLock();
     }
 
-    relay.sendRequestDataEnd(runnerId, requestId);
+    if (!signal.aborted) relay.sendRequestDataEnd(runnerId, requestId);
 }
 
 function proxyTunnelRequestViaRelay(
@@ -465,6 +475,32 @@ function proxyTunnelRequestViaRelay(
     allowCrossOriginFrame = false,
 ): Promise<Response> {
     return new Promise<Response>((resolve) => {
+        const bodyAbortController = new AbortController();
+        let relayCancel: (() => void) | undefined;
+        let relayCancelRequested = false;
+        let relayCancelled = false;
+        let clientAbortListenerAttached = true;
+
+        const cancelRelay = (): void => {
+            relayCancelRequested = true;
+            if (!relayCancel || relayCancelled) return;
+            relayCancelled = true;
+            relayCancel();
+        };
+        const removeClientAbortListener = (): void => {
+            if (!clientAbortListenerAttached) return;
+            clientAbortListenerAttached = false;
+            req.signal.removeEventListener("abort", cancelRequest);
+        };
+        const finishRequestBody = (): void => {
+            removeClientAbortListener();
+            bodyAbortController.abort();
+        };
+        const cancelRequest = (): void => {
+            finishRequestBody();
+            cancelRelay();
+        };
+        req.signal.addEventListener("abort", cancelRequest, { once: true });
         let responseStarted = false;
         let resolved = false;
         let statusCode = 502;
@@ -529,7 +565,7 @@ function proxyTunnelRequestViaRelay(
                     if (shouldBuffer && contentLength) {
                         const length = Number.parseInt(contentLength, 10);
                         if (Number.isFinite(length) && length > TUNNEL_MAX_BUFFERED_BYTES) {
-                            cancel();
+                            cancelRequest();
                             resolveOnce(tunnelErrorResponse("Response body too large"));
                             return;
                         }
@@ -543,7 +579,7 @@ function proxyTunnelRequestViaRelay(
                         },
                         cancel() {
                             streamClosed = true;
-                            cancel();
+                            cancelRequest();
                         },
                     });
 
@@ -555,7 +591,7 @@ function proxyTunnelRequestViaRelay(
                 onResponseData: (chunk) => {
                     if (shouldBuffer) {
                         if (bufferedBytes + chunk.length > TUNNEL_MAX_BUFFERED_BYTES) {
-                            cancel();
+                            cancelRequest();
                             resolveOnce(tunnelErrorResponse("Response body too large"));
                             return;
                         }
@@ -574,6 +610,7 @@ function proxyTunnelRequestViaRelay(
                     }
                 },
                 onResponseEnd: () => {
+                    finishRequestBody();
                     if (shouldBuffer) {
                         if (!responseStarted) {
                             resolveOnce(tunnelErrorResponse("Tunnel response missing headers"));
@@ -597,6 +634,7 @@ function proxyTunnelRequestViaRelay(
                     closeStream();
                 },
                 onError: (error) => {
+                    cancelRequest();
                     if (!responseStarted || shouldBuffer) {
                         resolveOnce(tunnelErrorResponse(error));
                         return;
@@ -611,9 +649,12 @@ function proxyTunnelRequestViaRelay(
                 },
             },
         );
+        relayCancel = cancel;
+        if (relayCancelRequested) cancelRelay();
+        if (req.signal.aborted) cancelRequest();
 
-        void streamRequestBodyToRelay(req, relay, runnerId, requestId).catch((error) => {
-            cancel();
+        void streamRequestBodyToRelay(req, relay, runnerId, requestId, bodyAbortController.signal).catch((error) => {
+            cancelRequest();
             const message = error instanceof Error ? error.message : String(error);
 
             if (!responseStarted) {

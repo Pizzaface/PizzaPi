@@ -8,17 +8,29 @@
 import { afterAll, describe, it, expect, beforeEach, mock } from "bun:test";
 
 const endedSessions: Array<{ sessionId: string; reason?: string; opts?: unknown }> = [];
+let sharedOwnerToken = "tok";
 
 mock.module("../../sio-registry.js", () => ({
     registerTuiSession: async () => ({ sessionId: "s", token: "t", shareUrl: "", parentSessionId: null, wasDelinked: false }),
     getLocalTuiSocket: () => undefined,
     broadcastToViewers: () => {},
-    endSharedSession: async (sessionId: string, reason?: string, opts?: unknown) => {
+    endSharedSession: async (
+        sessionId: string,
+        reason?: string,
+        opts?: { onOwnerConfirmed?: () => void | Promise<void> },
+    ) => {
+        await opts?.onOwnerConfirmed?.();
         endedSessions.push({ sessionId, reason, opts });
+        return true;
     },
+    // A2-017: cross-node owner token guard — return matching token so
+    // the existing disconnect tests are not blocked by the stale-socket guard.
+    getSessionOwnerToken: async () => sharedOwnerToken,
 }));
 
 mock.module("../../sio-state/index.js", () => ({
+    acquireSessionOwnershipLock: async () => {},
+    releaseSessionOwnershipLock: async () => {},
     clearPushPendingQuestion: async () => {},
     deleteRunnerAssociation: async () => {},
 }));
@@ -59,6 +71,7 @@ function makeSocket(sessionId: string, token = "tok") {
 describe("session_end handler", () => {
     beforeEach(() => {
         endedSessions.length = 0;
+        sharedOwnerToken = "tok";
     });
 
     it("ends the session with confirmedTerminal so parent membership is removed", async () => {
@@ -67,9 +80,22 @@ describe("session_end handler", () => {
 
         await fire("session_end", { token: "tok" });
 
-        expect(endedSessions).toEqual([
-            { sessionId: "child-mirror", reason: "Session ended", opts: { confirmedTerminal: true } },
-        ]);
+        expect(endedSessions).toHaveLength(1);
+        expect(endedSessions[0]).toEqual({
+            sessionId: "child-mirror",
+            reason: "Session ended",
+            opts: expect.objectContaining({ confirmedTerminal: true, expectedOwnerToken: "tok" }),
+        });
+    });
+
+    it("stale cross-node session_end cannot end the replacement", async () => {
+        const { socket, fire } = makeSocket("child-mirror", "old-token");
+        sharedOwnerToken = "new-token";
+        registerSessionLifecycleHandlers(socket);
+
+        await fire("session_end", { token: "old-token" });
+
+        expect(endedSessions).toHaveLength(0);
     });
 
     it("plain disconnect does NOT mark the end as confirmed terminal", async () => {
@@ -80,6 +106,6 @@ describe("session_end handler", () => {
 
         expect(endedSessions.length).toBe(1);
         expect(endedSessions[0].sessionId).toBe("child-mirror");
-        expect(endedSessions[0].opts).toBeUndefined();
+        expect(endedSessions[0].opts).toEqual(expect.objectContaining({ expectedOwnerToken: "tok" }));
     });
 });

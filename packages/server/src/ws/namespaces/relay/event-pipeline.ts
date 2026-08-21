@@ -13,6 +13,7 @@ import {
     broadcastSessionEventToViewers,
     publishSessionEvent,
     consumePendingRecovery,
+    getSessionOwnerToken,
 } from "../../sio-registry.js";
 import { appendRelayEventToCache } from "../../../sessions/redis.js";
 import { isDeltaEvent, shouldPublishDelta } from "./viewer-gate.js";
@@ -20,7 +21,12 @@ import { storeAndReplaceImagesInEvent, stripImagesFromPipelineEvent } from "../.
 import { updateSessionMetaState, broadcastToSessionMeta, getSessionMetaState } from "../../sio-registry/meta.js";
 import { buildSnapshotPatchFromCapabilities, buildSnapshotPatchFromMetadata } from "../../sio-registry/snapshot-state.js";
 import { isMetaRelayEvent, metaEventToPatch, type MetaRelayEvent, type SessionMetaState } from "@pizzapi/protocol";
-import { updateSessionFields } from "../../sio-state/index.js";
+import {
+    acquireSessionOwnershipLock,
+    releaseSessionOwnershipLock,
+    updateSessionFields,
+} from "../../sio-state/index.js";
+import { randomUUID } from "node:crypto";
 import { updateRelaySessionName } from "../../../sessions/store.js";
 import {
     trackThinkingDeltas,
@@ -270,6 +276,34 @@ export function registerEventHandler(socket: RelaySocket): void {
 
         // Serialize async processing per session to guarantee chunk order.
         enqueueSessionEvent(sessionId, async () => {
+        // Registration and teardown use this same distributed lock. Holding it
+        // across the full event prevents a replacement from rotating ownership
+        // after the check while this event is still mutating shared state.
+        const lockOwner = randomUUID();
+        try {
+            await acquireSessionOwnershipLock(sessionId, lockOwner);
+        } catch (err) {
+            log.warn(`Could not acquire ownership lock for event on ${sessionId}; dropping event:`, err);
+            return;
+        }
+        try {
+
+        // ── Cross-node stale socket guard ────────────────────────────────
+        // A replacement session may have registered on a different relay node.
+        // Compare this socket's captured token against the current shared
+        // (Redis) owner token.  If they differ, this socket is stale and
+        // superseded — reject the event silently (do not update any state or
+        // broadcast to viewers).
+        let sharedOwnerToken: string | null;
+        try {
+            sharedOwnerToken = await getSessionOwnerToken(sessionId);
+        } catch {
+            console.warn(`[sio/relay] Redis ownership lookup failed for ${sessionId}; dropping event`);
+            return;
+        }
+        if (sharedOwnerToken !== socket.data.token) {
+            return; // stale or unknown owner; never process sensitive events
+        }
 
         // ── Single-pass image stripping ──────────────────────────────────
         // Strip inline base64 images ONCE at ingestion so all downstream
@@ -421,7 +455,7 @@ export function registerEventHandler(socket: RelaySocket): void {
                         : null;
                     await updateSessionFields(sessionId, { sessionName: normalizedSessionName });
                     // Also persist to SQLite so historical session listings show names.
-                    void updateRelaySessionName(sessionId, normalizedSessionName).catch(() => {});
+                    await updateRelaySessionName(sessionId, normalizedSessionName).catch(() => {});
                 }
             }
         } else if (event.type === "capabilities") {
@@ -509,14 +543,18 @@ export function registerEventHandler(socket: RelaySocket): void {
             (event.type === "tool_execution_start" || event.type === "tool_execution_end")) {
             await trackPushPendingState(sessionId, event);
         }
-        // Push notifications (fire-and-forget — not on hot path). Bun does NOT
-        // route unhandled promise rejections through process.on('uncaughtException'),
-        // so an uncaught error here silently vanishes with no push-specific log
-        // line. Catch and log explicitly so push failures are greppable.
-        void checkPushNotifications(sessionId, event).catch((err) => {
+        // Keep event-derived side effects inside the ownership critical section
+        // so a replacement cannot become current while stale notification work
+        // is still running.
+        await checkPushNotifications(sessionId, event).catch((err) => {
             log.error(`push notification check failed for session ${sessionId} (event=${event.type}):`, err);
         });
 
+        } finally {
+            await releaseSessionOwnershipLock(sessionId, lockOwner).catch((err) => {
+                log.error(`Failed to release ownership lock for event on ${sessionId}:`, err);
+            });
+        }
         }); // end enqueueSessionEvent
     });
 }
