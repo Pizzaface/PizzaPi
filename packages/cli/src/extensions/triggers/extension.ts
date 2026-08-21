@@ -45,7 +45,7 @@ function isJsonValue(value: unknown): value is JsonValue {
  *  long time to respond must never find its own bookkeeping expired the
  *  trigger out from under it — see waitForTriggerResponse, which likewise no
  *  longer times out the child side of this same wait. */
-export const receivedTriggers = new Map<string, { sourceSessionId: string; type: string; trackedAt: number }>();
+export const receivedTriggers = new Map<string, { sourceSessionId: string; type: string; trackedAt: number; delivered?: boolean }>();
 // Dedup guard so a re-delivered triggerId (e.g. after escalation) isn't re-tracked as new.
 const handledTriggerTombstones = new Map<string, number>();
 
@@ -149,6 +149,35 @@ export function trackReceivedTrigger(triggerId: string, sourceSessionId: string,
     if (receivedTriggers.has(triggerId) || handledTriggerTombstones.has(triggerId)) return false;
     receivedTriggers.set(triggerId, { sourceSessionId, type, trackedAt: Date.now() });
     return true;
+}
+
+/** Split a debounced trigger batch by delivery mode so a steering trigger
+ *  interrupts on its own without upgrading unrelated followUp triggers that
+ *  shared the same debounce window (and vice versa). Steer group first. */
+export function partitionTriggerBatchByDeliveryMode<T extends { deliverAs: "steer" | "followUp" }>(
+    batch: T[],
+): Array<{ deliverAs: "steer" | "followUp"; items: T[] }> {
+    return [
+        { deliverAs: "steer" as const, items: batch.filter((b) => b.deliverAs === "steer") },
+        { deliverAs: "followUp" as const, items: batch.filter((b) => b.deliverAs !== "steer") },
+    ].filter((g) => g.items.length > 0);
+}
+
+/** Mark a tracked trigger as injected into the agent conversation. Received
+ *  (tracked) and delivered (agent saw it) are distinct states: dedupe of a
+ *  redelivery is only correct once the agent actually got the message. */
+export function markTriggerDelivered(triggerId: string): void {
+    const entry = receivedTriggers.get(triggerId);
+    if (entry) entry.delivered = true;
+}
+
+/** Remove the dedupe entry for a trigger whose agent injection failed, so a
+ *  relay redelivery of the same triggerId is accepted instead of being dropped
+ *  as a duplicate — otherwise a single failed sendUserMessage is permanent
+ *  trigger loss. No tombstone is written: the agent never saw the trigger. */
+export function markTriggerInjectionFailed(triggerId: string): void {
+    const entry = receivedTriggers.get(triggerId);
+    if (entry && !entry.delivered) receivedTriggers.delete(triggerId);
 }
 
 // ── Built-in sigils ──────────────────────────────────────────────────────────

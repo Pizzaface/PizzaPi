@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { TriggerSubscriptionEntry } from "@pizzapi/protocol";
-import { applyTriggerSubscriptionDeltaToCache, reconcileSnapshotSubscriptions } from "./daemon.js";
+import { applyTriggerSubscriptionDeltaToCache, reconcileSnapshotSubscriptions, replayNewerTriggerDeltas } from "./daemon.js";
 import { ServiceRegistry, type ServiceHandler, type ServiceInitOptions, type ReconcileOptions } from "./service-handler.js";
 import type { Socket } from "socket.io-client";
 
@@ -53,6 +53,59 @@ describe("applyTriggerSubscriptionDeltaToCache", () => {
             ...first,
             subscriptionId: "legacy:all:time:timer_fired",
         })).toEqual([other]);
+    });
+});
+
+describe("replayNewerTriggerDeltas — snapshot/delta race", () => {
+    // Regression: the server reserves snapshotRevision BEFORE the async
+    // subscription read, so a delta at revision N+1 can be applied by the
+    // daemon and then overwritten by a snapshot at revision N that predates
+    // it. Replaying buffered deltas with revision > snapshot revision must
+    // restore the newer state.
+    test("a subscribe delta newer than the snapshot survives snapshot install", () => {
+        const preexisting = entry("session-1", "time:cron", "sub-old");
+        const newSub = entry("session-2", "github:pr_comment", "sub-new");
+        // Snapshot at revision 10 was read before sub-new was stored.
+        const result = replayNewerTriggerDeltas([preexisting], 10, [
+            { revision: 11, action: "subscribe", subscription: newSub },
+        ]);
+        expect(result).toEqual([preexisting, newSub]);
+    });
+
+    test("an unsubscribe delta newer than the snapshot survives snapshot install", () => {
+        const kept = entry("session-1", "time:cron", "sub-kept");
+        const removed = entry("session-1", "time:at", "sub-removed");
+        // Snapshot (rev 10) still contains sub-removed because the store read
+        // happened before the unsubscribe (rev 12) landed.
+        const result = replayNewerTriggerDeltas([kept, removed], 10, [
+            { revision: 12, action: "unsubscribe", subscription: removed },
+        ]);
+        expect(result).toEqual([kept]);
+    });
+
+    test("deltas at or below the snapshot revision are NOT replayed", () => {
+        const current = entry("session-1", "time:cron", "sub-1");
+        const stale = entry("session-1", "time:cron", "sub-1");
+        // A delta already reflected in the snapshot (revision ≤ snapshot) must
+        // not be re-applied — e.g. an old unsubscribe would wrongly delete a
+        // re-created subscription the snapshot carries.
+        const result = replayNewerTriggerDeltas([current], 10, [
+            { revision: 9, action: "unsubscribe", subscription: stale },
+            { revision: 10, action: "unsubscribe", subscription: stale },
+        ]);
+        expect(result).toEqual([current]);
+    });
+
+    test("multiple newer deltas replay in order on top of the baseline", () => {
+        const base = entry("session-1", "time:cron", "sub-a");
+        const added = entry("session-2", "svc:event", "sub-b");
+        const updated = { ...added, params: { x: "1" } };
+        const result = replayNewerTriggerDeltas([base], 5, [
+            { revision: 6, action: "subscribe", subscription: added },
+            { revision: 7, action: "update", subscription: updated },
+            { revision: 8, action: "unsubscribe", subscription: base },
+        ]);
+        expect(result).toEqual([updated]);
     });
 });
 

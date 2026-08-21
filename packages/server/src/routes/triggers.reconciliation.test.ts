@@ -140,7 +140,9 @@ const SESSION_WITH_RUNNER = {
 describe("trigger subscription reconciliation — delta emission", () => {
     beforeEach(() => {
         mockEmitDelta.mockClear();
+        mockBroadcastToSessionViewers.mockClear();
         mockGetSharedSession.mockReset();
+        mockSubscribeSessionToTrigger.mockReturnValue(Promise.resolve("sub-default"));
         mockRequireSession.mockReturnValue(
             Promise.resolve({ userId: "user-1", userName: "TestUser" }),
         );
@@ -285,6 +287,29 @@ describe("trigger subscription reconciliation — delta emission", () => {
             expect(delta.subscription.subscriptionId).toBe("sub-with-filters");
             expect(delta.subscription.filters?.[0].field).toBe("status");
             expect(delta.subscription.filterMode).toBe("and");
+        });
+
+        test("store failure returns 503 and emits NO delta and NO viewer broadcast", async () => {
+            mockGetSharedSession.mockReturnValue(
+                Promise.resolve({ ...SESSION_WITH_RUNNER } as any),
+            );
+            // Store failure (Redis down / write error) — typed null, not "".
+            mockSubscribeSessionToTrigger.mockReturnValue(Promise.resolve(null as any));
+
+            const [req, url] = makeReq(
+                "POST",
+                "/api/sessions/sess-1/trigger-subscriptions",
+                { triggerType: "godmother:idea_moved" },
+            );
+            const res = await handleTriggersRoute(req, url);
+            expect(res!.status).toBe(503);
+            const body = await res!.json() as any;
+            expect(body.ok).toBeUndefined();
+            expect(body.error).toContain("Failed to store");
+            // No empty-ID delta may reach the runner, and viewers must not be
+            // told a subscription exists.
+            expect(mockEmitDelta).not.toHaveBeenCalled();
+            expect(mockBroadcastToSessionViewers).not.toHaveBeenCalled();
         });
 
         test("does NOT emit a delta when session has no runner", async () => {
