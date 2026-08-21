@@ -365,6 +365,8 @@ export interface PromptInputMessage {
   files: PromptInputAttachment[];
 }
 
+export const shouldClearPromptInputAfterSubmit = (succeeded: boolean) => succeeded;
+
 export type PromptInputProps = Omit<
   HTMLAttributes<HTMLFormElement>,
   "onSubmit" | "onError"
@@ -389,7 +391,7 @@ export type PromptInputProps = Omit<
   onSubmit: (
     message: PromptInputMessage,
     event: FormEvent<HTMLFormElement>
-  ) => void | Promise<void>;
+  ) => boolean | Promise<boolean>;
 };
 
 export const PromptInput = ({
@@ -760,21 +762,8 @@ export const PromptInput = ({
           })
         );
 
-        const result = onSubmit({ files: convertedFiles, text }, event);
-
-        // Handle both sync and async onSubmit
-        if (result instanceof Promise) {
-          try {
-            await result;
-            clear();
-            if (usingProvider) {
-              controller.textInput.clear();
-            }
-          } catch {
-            // Don't clear on error - user may want to retry
-          }
-        } else {
-          // Sync function completed without throwing, clear inputs
+        const succeeded = await onSubmit({ files: convertedFiles, text }, event);
+        if (shouldClearPromptInputAfterSubmit(succeeded)) {
           clear();
           if (usingProvider) {
             controller.textInput.clear();
