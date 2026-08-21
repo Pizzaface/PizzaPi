@@ -379,6 +379,13 @@ export class TunnelRelay {
       }
     }
 
+    // If the socket dropped while we awaited authorization or evicted the
+    // previous connection, do not register a ghost runner.
+    if (ws.readyState !== WebSocket.OPEN) {
+      this.log.warn("[tunnel-relay] Registration socket closed before handshake completed:", msg.runnerId);
+      return;
+    }
+
     const now = Date.now();
     this.runners.set(msg.runnerId, { runnerId: msg.runnerId, userId, ws, lastPongAt: now });
     this.wsToRunner.set(ws, msg.runnerId);
