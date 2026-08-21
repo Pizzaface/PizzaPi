@@ -183,6 +183,8 @@ describe("GitService status caching", () => {
             payload: { cwd: "/repo" },
         });
 
+        // cwd authorization is async now — wait for the (single) status exec to start.
+        await waitForCondition(() => statusCalls === 1);
         expect(statusCalls).toBe(1);
 
         releaseStatus();

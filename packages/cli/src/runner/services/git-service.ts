@@ -232,15 +232,26 @@ export class GitService implements ServiceHandler {
     private readonly _sessionCwd = new Map<string, string>();
     private readonly _repoWatchers = new Map<string, RepoWatchState>();
     /**
-     * Mutation lock map: repoRoot → mutation token.
+     * Mutation lock map: lock key → mutation token.
      *
-     * Only used for operations that genuinely conflict with each other
-     * (checkout, commit, push, pull, merge, rebase, set-upstream).
-     * Stage/unstage are NOT locked here — git's own index lock serializes
-     * concurrent `git add`/`git restore --staged` safely, and the UI
-     * already disables buttons while an operation is in-flight.
+     * Two lock granularities share this map (keys are prefixed so they never
+     * collide):
+     *   - `repo:<git-common-dir>` — shared repo state (refs, config, stash).
+     *     Linked worktrees of one repository resolve to the SAME common dir,
+     *     so ref/config/stash mutations across worktrees serialize correctly.
+     *   - `wt:<toplevel>` — per-worktree index state (stage/unstage).
+     * Shared-scope mutations acquire BOTH keys (they touch the index too);
+     * index-scope mutations acquire only their worktree key.
      */
     private readonly _activeRepoMutations = new Map<string, string>();
+    /** cwd → canonical `git rev-parse --git-common-dir` (identifies the repo across linked worktrees). */
+    private readonly _cwdCommonDir = new Map<string, string>();
+    /** commonDir → monotonically increasing repo-change version for git_repo_changed broadcasts. */
+    private readonly _repoVersion = new Map<string, number>();
+    /** Runner-owned session cwd lookup — the authority for what repo a session may mutate. */
+    private readonly _getSessionCwd: ((sessionId: string) => string | null) | null;
+    /** cwds of live sessions — used to refuse removing an in-use worktree. */
+    private readonly _getActiveSessionCwds: (() => string[]) | null;
 
     constructor(options?: {
         execGit?: GitExec;
@@ -250,7 +261,11 @@ export class GitService implements ServiceHandler {
         now?: () => number;
         rm?: GitRm;
         generateCommitMessage?: (diff: string) => Promise<{ subject: string; body: string } | null>;
+        getSessionCwd?: (sessionId: string) => string | null;
+        getActiveSessionCwds?: () => string[];
     }) {
+        this._getSessionCwd = options?.getSessionCwd ?? null;
+        this._getActiveSessionCwds = options?.getActiveSessionCwds ?? null;
         this._execGit = options?.execGit ?? ((args, execOptions) => execFileAsync("git", args, execOptions));
         this._watchFs = options?.watchFs ?? ((path, listener) => watch(path, { persistent: false }, listener));
         this._setTimeout = options?.setTimeoutFn ?? ((callback, delayMs) => setTimeout(callback, delayMs));
@@ -382,6 +397,8 @@ export class GitService implements ServiceHandler {
         this._cwdSubscribers.clear();
         this._sessionCwd.clear();
         this._cwdRepoRoot.clear();
+        this._cwdCommonDir.clear();
+        this._repoVersion.clear();
         this._statusCache.clear();
         this._statusGeneration.clear();
         this._statusInFlight.clear();
@@ -418,26 +435,51 @@ export class GitService implements ServiceHandler {
      * be released instead of immediately rejecting. This eliminates the
      * "Another git operation is already running" error for brief overlaps.
      */
+    private async resolveCommonDir(cwd: string): Promise<string> {
+        const cached = this._cwdCommonDir.get(cwd);
+        if (cached) return cached;
+        try {
+            const { stdout } = await this._execGit(
+                ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+                { cwd, timeout: 5000 },
+            );
+            const dir = stdout.trim();
+            const key = dir ? resolve(dir) : cwd;
+            this._cwdCommonDir.set(cwd, key);
+            return key;
+        } catch {
+            return cwd;
+        }
+    }
+
+    private async lockKeysFor(cwd: string, scope: "shared" | "index"): Promise<string[]> {
+        const toplevel = this._cwdRepoRoot.get(cwd) ?? await this.resolveRepoRoot(cwd);
+        if (!this._cwdRepoRoot.has(cwd)) this._cwdRepoRoot.set(cwd, toplevel);
+        if (scope === "index") return [`wt:${toplevel}`];
+        const commonDir = await this.resolveCommonDir(cwd);
+        return [`repo:${commonDir}`, `wt:${toplevel}`];
+    }
+
     private async beginRepoMutation(
         cwd: string,
         type: string,
         mutationName: string,
         requestId?: string,
         sessionId?: string,
-        { waitMs = 5000 }: { waitMs?: number } = {},
-    ): Promise<{ key: string; token: string } | null> {
-        const key = this._cwdRepoRoot.get(cwd) ?? await this.resolveRepoRoot(cwd);
-        // Cache for future calls
-        if (!this._cwdRepoRoot.has(cwd)) this._cwdRepoRoot.set(cwd, key);
+        { waitMs = 5000, scope = "shared" }: { waitMs?: number; scope?: "shared" | "index" } = {},
+    ): Promise<{ keys: string[]; token: string } | null> {
+        const keys = await this.lockKeysFor(cwd, scope);
 
-        // Wait for existing mutation to complete (with timeout)
+        // Wait for existing mutations on any required key to complete (with timeout)
         const deadline = this._now() + waitMs;
-        while (this._activeRepoMutations.has(key)) {
+        while (keys.some((key) => this._activeRepoMutations.has(key))) {
             if (this._now() >= deadline) {
-                const activeMutation = this._activeRepoMutations.get(key) ?? "unknown";
+                const busyKey = keys.find((key) => this._activeRepoMutations.has(key));
+                const activeMutation = (busyKey && this._activeRepoMutations.get(busyKey)) ?? "unknown";
                 this.emit(type, {
                     ok: false,
                     reason: "busy",
+                    retryable: true,
                     message: `Another git operation (${activeMutation}) is still running after ${waitMs / 1000}s. Try again.`,
                 }, requestId, sessionId);
                 return null;
@@ -446,14 +488,16 @@ export class GitService implements ServiceHandler {
         }
 
         const token = `${mutationName}:${requestId ?? `${Date.now()}`}`;
-        this._activeRepoMutations.set(key, token);
-        return { key, token };
+        for (const key of keys) this._activeRepoMutations.set(key, token);
+        return { keys, token };
     }
 
-    private endRepoMutation(mutation: { key: string; token: string } | null): void {
+    private endRepoMutation(mutation: { keys: string[]; token: string } | null): void {
         if (!mutation) return;
-        if (this._activeRepoMutations.get(mutation.key) === mutation.token) {
-            this._activeRepoMutations.delete(mutation.key);
+        for (const key of mutation.keys) {
+            if (this._activeRepoMutations.get(key) === mutation.token) {
+                this._activeRepoMutations.delete(key);
+            }
         }
     }
 
@@ -466,6 +510,41 @@ export class GitService implements ServiceHandler {
         }
         if (!isCwdAllowed(cwd)) {
             this.emitError(responseType, "Path outside allowed roots", requestId, sessionId);
+            return null;
+        }
+        return cwd;
+    }
+
+    /**
+     * Validate AND authorize a caller-provided cwd against the runner-owned
+     * session cwd. A payload cwd is only accepted when it belongs to the same
+     * repository family (same `git --git-common-dir`) as the session's actual
+     * working directory — a collab viewer cannot point the git service at an
+     * arbitrary repo under the globally allowed roots.
+     *
+     * Falls back to plain allowed-roots validation when the daemon has no cwd
+     * metadata for the session (e.g. adopted sessions before re-registration).
+     */
+    private async authorizeCwd(
+        rawCwd: unknown,
+        responseType: string,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<string | null> {
+        const cwd = this.validateCwd(rawCwd, responseType, requestId, sessionId);
+        if (!cwd) return null;
+        if (!sessionId || !this._getSessionCwd) return cwd;
+        const sessionCwd = this._getSessionCwd(sessionId);
+        if (!sessionCwd) return cwd;
+        if (resolve(cwd) === resolve(sessionCwd)) return cwd;
+        const [requested, owned] = await Promise.all([
+            this.resolveCommonDir(cwd),
+            this.resolveCommonDir(sessionCwd),
+        ]);
+        // resolveCommonDir falls back to the input path outside a git repo —
+        // two non-repo paths never spuriously match unless they are equal.
+        if (requested !== owned) {
+            this.emitError(responseType, "Path outside this session's repository", requestId, sessionId);
             return null;
         }
         return cwd;
@@ -625,7 +704,7 @@ export class GitService implements ServiceHandler {
 
         watchState.refreshInFlight = true;
         try {
-            await this.invalidateStatusCacheFamily(cwd);
+            await this.notifyRepoChanged(cwd);
             let snapshot = await this.getStatusSnapshot(cwd);
             if (snapshot.generation !== (this._statusGeneration.get(cwd) ?? 0)) {
                 snapshot = await this.getStatusSnapshot(cwd);
@@ -740,6 +819,39 @@ export class GitService implements ServiceHandler {
         }
     }
 
+    /**
+     * Invalidate caches for the whole repository family (all linked worktrees
+     * sharing one `--git-common-dir`), rebuild metadata watchers (HEAD/upstream
+     * refs may have changed — e.g. after a checkout), and broadcast a versioned
+     * `git_repo_changed` to EVERY subscriber of the family so non-initiating
+     * viewers refresh branches/worktrees/commits, not just status.
+     */
+    private async notifyRepoChanged(cwd: string): Promise<void> {
+        await this.invalidateStatusCacheFamily(cwd);
+        const commonDir = await this.resolveCommonDir(cwd);
+        const version = (this._repoVersion.get(commonDir) ?? 0) + 1;
+        this._repoVersion.set(commonDir, version);
+
+        for (const knownCwd of [...this._cwdSubscribers.keys()]) {
+            const knownCommon = await this.resolveCommonDir(knownCwd);
+            if (knownCommon !== commonDir) continue;
+            // Linked worktrees have different toplevels, so the toplevel-keyed
+            // family invalidation above missed them — invalidate directly.
+            this.invalidateStatusCache(knownCwd);
+            // ponytail: unconditional watcher rebuild per change — diff the
+            // resolved watch paths first if fs.watch churn ever shows up.
+            if (this._repoWatchers.has(knownCwd)) {
+                this.stopWatchingRepo(knownCwd);
+                void this.startWatchingRepo(knownCwd);
+            }
+            const subscribers = this._cwdSubscribers.get(knownCwd);
+            if (!subscribers) continue;
+            for (const sessionId of subscribers) {
+                this.emit("git_repo_changed", { cwd: knownCwd, version }, undefined, sessionId);
+            }
+        }
+    }
+
     private async getStatusSnapshot(cwd: string): Promise<GitStatusSnapshot> {
         const now = this._now();
         const generation = this._statusGeneration.get(cwd) ?? 0;
@@ -842,7 +954,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_status_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_status_result", requestId, sessionId);
         if (!cwd) return;
         this.registerSubscriber(cwd, sessionId);
 
@@ -864,7 +976,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_diff_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_diff_result", requestId, sessionId);
         if (!cwd) return;
 
         const filePath = typeof payload.path === "string" ? payload.path : "";
@@ -961,7 +1073,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_branches_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_branches_result", requestId, sessionId);
         if (!cwd) return;
         this.registerSubscriber(cwd, sessionId);
 
@@ -981,7 +1093,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_full_status_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_full_status_result", requestId, sessionId);
         if (!cwd) return;
         this.registerSubscriber(cwd, sessionId);
 
@@ -1043,7 +1155,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_checkout_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_checkout_result", requestId, sessionId);
         if (!cwd) return;
 
         const branch = typeof payload.branch === "string" ? payload.branch : "";
@@ -1084,7 +1196,7 @@ export class GitService implements ServiceHandler {
             }
 
             await this._execGit(args, { cwd, timeout: 15000 });
-            await this.invalidateStatusCacheFamily(cwd);
+            await this.notifyRepoChanged(cwd);
 
             this.emit("git_checkout_result", {
                 ok: true,
@@ -1104,7 +1216,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_stage_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_stage_result", requestId, sessionId);
         if (!cwd) return;
 
         const all = payload.all === true;
@@ -1125,6 +1237,11 @@ export class GitService implements ServiceHandler {
             }
         }
 
+        // Serialize index mutations per worktree — a concurrent session gets a
+        // retryable "busy" result instead of racing git's index.lock.
+        const mutation = await this.beginRepoMutation(cwd, "git_stage_result", "stage", requestId, sessionId, { scope: "index", waitMs: 3000 });
+        if (!mutation) return;
+
         try {
             // Resolve repo root — paths from git status are repo-root-relative,
             // so operations must run from repo root for paths to resolve correctly.
@@ -1133,10 +1250,12 @@ export class GitService implements ServiceHandler {
 
             const args = all ? ["add", "--all"] : ["add", "--", ...paths];
             await this._execGit(args, { cwd: repoRoot, timeout: 15000 });
-            await this.invalidateStatusCacheFamily(cwd);
+            await this.notifyRepoChanged(cwd);
             this.emit("git_stage_result", { ok: true }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_stage_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
         }
     }
 
@@ -1147,7 +1266,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_unstage_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_unstage_result", requestId, sessionId);
         if (!cwd) return;
 
         const all = payload.all === true;
@@ -1167,6 +1286,9 @@ export class GitService implements ServiceHandler {
             }
         }
 
+        const mutation = await this.beginRepoMutation(cwd, "git_unstage_result", "unstage", requestId, sessionId, { scope: "index", waitMs: 3000 });
+        if (!mutation) return;
+
         try {
             // Resolve repo root — run from there so repo-root-relative paths work.
             // For unstage-all, use ":/" pathspec (magic "repo root") instead of "."
@@ -1178,10 +1300,12 @@ export class GitService implements ServiceHandler {
                 ? ["restore", "--staged", ":/"]
                 : ["restore", "--staged", "--", ...paths];
             await this._execGit(args, { cwd: repoRoot, timeout: 15000 });
-            await this.invalidateStatusCacheFamily(cwd);
+            await this.notifyRepoChanged(cwd);
             this.emit("git_unstage_result", { ok: true }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_unstage_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
         }
     }
 
@@ -1192,7 +1316,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_commit_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_commit_result", requestId, sessionId);
         if (!cwd) return;
 
         const message = typeof payload.message === "string" ? payload.message.trim() : "";
@@ -1211,7 +1335,7 @@ export class GitService implements ServiceHandler {
 
             // Parse the short summary (e.g. "[main abc1234] Fix thing\n 1 file changed...")
             const firstLine = stdout.split("\n")[0] ?? "";
-            await this.invalidateStatusCacheFamily(cwd);
+            await this.notifyRepoChanged(cwd);
 
             this.emit("git_commit_result", {
                 ok: true,
@@ -1236,7 +1360,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_commit_message_suggest_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_commit_message_suggest_result", requestId, sessionId);
         if (!cwd) return;
 
         try {
@@ -1460,7 +1584,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_worktrees_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_worktrees_result", requestId, sessionId);
         if (!cwd) return;
         this.registerSubscriber(cwd, sessionId);
 
@@ -1578,7 +1702,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_pull_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_pull_result", requestId, sessionId);
         if (!cwd) return;
         const rebase = payload.rebase !== false;
         const mutation = await this.beginRepoMutation(cwd, "git_pull_result", "pull", requestId, sessionId);
@@ -1615,7 +1739,7 @@ export class GitService implements ServiceHandler {
                 integrateResult.stderr,
             ].join("\n").trim();
 
-            await this.invalidateStatusCacheFamily(cwd);
+            await this.notifyRepoChanged(cwd);
 
             this.emit("git_pull_result", {
                 ok: true,
@@ -1628,7 +1752,7 @@ export class GitService implements ServiceHandler {
             const message = err instanceof Error ? err.message : String(err);
             const classified = this.classifySyncFailure(message);
             if (classified.reason === "conflict") {
-                await this.invalidateStatusCacheFamily(cwd);
+                await this.notifyRepoChanged(cwd);
             }
             this.emit("git_pull_result", {
                 ok: false,
@@ -1646,7 +1770,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_set_upstream_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_set_upstream_result", requestId, sessionId);
         if (!cwd) return;
 
         const remote = typeof payload.remote === "string" ? payload.remote.trim() : "";
@@ -1676,7 +1800,7 @@ export class GitService implements ServiceHandler {
             }
 
             await this._execGit(["branch", `--set-upstream-to=${remote}/${branch}`, localBranch], { cwd, timeout: 15000 });
-            await this.invalidateStatusCacheFamily(cwd);
+            await this.notifyRepoChanged(cwd);
             this.emit("git_set_upstream_result", {
                 ok: true,
                 summary: `Branch ${localBranch} now tracks ${remote}/${branch}`,
@@ -1697,7 +1821,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_merge_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_merge_result", requestId, sessionId);
         if (!cwd) return;
 
         const branch = typeof payload.branch === "string" ? payload.branch : "";
@@ -1722,13 +1846,13 @@ export class GitService implements ServiceHandler {
             // a ref, never as a git option (guards against e.g. "--abort" injection).
             const result = await this._execGit(["merge", "--", branch], { cwd, timeout: 60000 });
             const output = (result.stdout + "\n" + result.stderr).trim();
-            await this.invalidateStatusCacheFamily(cwd);
+            await this.notifyRepoChanged(cwd);
             this.emit("git_merge_result", { ok: true, output }, requestId, sessionId);
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             const classified = this.classifySyncFailure(message);
             if (classified.reason === "conflict") {
-                await this.invalidateStatusCacheFamily(cwd);
+                await this.notifyRepoChanged(cwd);
             }
             this.emit("git_merge_result", {
                 ok: false,
@@ -1748,7 +1872,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_merge_abort_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_merge_abort_result", requestId, sessionId);
         if (!cwd) return;
 
         const mutation = await this.beginRepoMutation(cwd, "git_merge_abort_result", "merge-abort", requestId, sessionId);
@@ -1756,7 +1880,7 @@ export class GitService implements ServiceHandler {
 
         try {
             await this._execGit(["merge", "--abort"], { cwd, timeout: 30000 });
-            await this.invalidateStatusCacheFamily(cwd);
+            await this.notifyRepoChanged(cwd);
             this.emit("git_merge_abort_result", { ok: true }, requestId, sessionId);
         } catch (err) {
             this.emit("git_merge_abort_result", {
@@ -1775,7 +1899,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_push_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_push_result", requestId, sessionId);
         if (!cwd) return;
 
         const setUpstream = payload.setUpstream === true;
@@ -1817,7 +1941,7 @@ export class GitService implements ServiceHandler {
             // git push writes to stderr (progress), use a larger timeout for network ops
             const result = await this._execGit(args, { cwd, timeout: 60000 });
             const output = (result.stdout + "\n" + result.stderr).trim();
-            await this.invalidateStatusCacheFamily(cwd);
+            await this.notifyRepoChanged(cwd);
 
             this.emit("git_push_result", {
                 ok: true,
@@ -1844,7 +1968,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_rebase_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_rebase_result", requestId, sessionId);
         if (!cwd) return;
 
         const branch = typeof payload.branch === "string" ? payload.branch.trim() : "";
@@ -1859,13 +1983,13 @@ export class GitService implements ServiceHandler {
         try {
             const result = await this._execGit(["rebase", "--", branch], { cwd, timeout: 60000 });
             const output = (result.stdout + "\n" + result.stderr).trim();
-            await this.invalidateStatusCacheFamily(cwd);
+            await this.notifyRepoChanged(cwd);
             this.emit("git_rebase_result", { ok: true, output }, requestId, sessionId);
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             const classified = this.classifySyncFailure(message);
             if (classified.reason === "conflict") {
-                await this.invalidateStatusCacheFamily(cwd);
+                await this.notifyRepoChanged(cwd);
             }
             this.emit("git_rebase_result", {
                 ok: false,
@@ -1883,7 +2007,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_rebase_abort_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_rebase_abort_result", requestId, sessionId);
         if (!cwd) return;
 
         const mutation = await this.beginRepoMutation(cwd, "git_rebase_abort_result", "rebase-abort", requestId, sessionId);
@@ -1892,7 +2016,7 @@ export class GitService implements ServiceHandler {
         try {
             const result = await this._execGit(["rebase", "--abort"], { cwd, timeout: 30000 });
             const output = (result.stdout + "\n" + result.stderr).trim();
-            await this.invalidateStatusCacheFamily(cwd);
+            await this.notifyRepoChanged(cwd);
             this.emit("git_rebase_abort_result", { ok: true, output }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_rebase_abort_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
@@ -1906,7 +2030,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_rebase_continue_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_rebase_continue_result", requestId, sessionId);
         if (!cwd) return;
 
         const mutation = await this.beginRepoMutation(cwd, "git_rebase_continue_result", "rebase-continue", requestId, sessionId);
@@ -1920,13 +2044,13 @@ export class GitService implements ServiceHandler {
                 { cwd, timeout: 60000, env: { ...process.env, GIT_EDITOR: "true" } },
             );
             const output = (result.stdout + "\n" + result.stderr).trim();
-            await this.invalidateStatusCacheFamily(cwd);
+            await this.notifyRepoChanged(cwd);
             this.emit("git_rebase_continue_result", { ok: true, output }, requestId, sessionId);
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             const classified = this.classifySyncFailure(message);
             if (classified.reason === "conflict") {
-                await this.invalidateStatusCacheFamily(cwd);
+                await this.notifyRepoChanged(cwd);
             }
             this.emit("git_rebase_continue_result", {
                 ok: false,
@@ -1946,7 +2070,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_worktree_add_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_worktree_add_result", requestId, sessionId);
         if (!cwd) return;
 
         const branch = typeof payload.branch === "string" ? payload.branch.trim() : "";
@@ -2014,7 +2138,7 @@ export class GitService implements ServiceHandler {
             }
 
             await this._execGit(args, { cwd, timeout: 30000 });
-            await this.invalidateStatusCacheFamily(cwd);
+            await this.notifyRepoChanged(cwd);
             this.emit("git_worktree_add_result", {
                 ok: true,
                 branch: resultBranch,
@@ -2032,11 +2156,12 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_worktree_remove_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_worktree_remove_result", requestId, sessionId);
         if (!cwd) return;
 
         const worktreePath = typeof payload.path === "string" ? payload.path.trim() : "";
         const force = payload.force === true;
+        const overrideInUse = payload.overrideInUse === true;
 
         if (!worktreePath) {
             this.emitError("git_worktree_remove_result", "Missing worktree path", requestId, sessionId);
@@ -2068,6 +2193,24 @@ export class GitService implements ServiceHandler {
             return;
         }
 
+        // Refuse to remove a worktree that is the working directory of a live
+        // session (even with --force) unless the caller explicitly overrides.
+        if (!overrideInUse && this._getActiveSessionCwds) {
+            const wtResolved = resolve(resolvedPath);
+            const inUse = this._getActiveSessionCwds().some((sessionCwd) => {
+                const rc = resolve(sessionCwd);
+                return rc === wtResolved || rc.startsWith(wtResolved + "/");
+            });
+            if (inUse) {
+                this.emit("git_worktree_remove_result", {
+                    ok: false,
+                    reason: "in_use",
+                    message: "Worktree is the working directory of a live session. Close the session first, or retry with overrideInUse.",
+                }, requestId, sessionId);
+                return;
+            }
+        }
+
         const mutation = await this.beginRepoMutation(cwd, "git_worktree_remove_result", "worktree-remove", requestId, sessionId);
         if (!mutation) return;
 
@@ -2076,7 +2219,7 @@ export class GitService implements ServiceHandler {
                 ? ["worktree", "remove", "--force", "--", worktreePath]
                 : ["worktree", "remove", "--", worktreePath];
             await this._execGit(args, { cwd, timeout: 30000 });
-            await this.invalidateStatusCacheFamily(cwd);
+            await this.notifyRepoChanged(cwd);
             this.emit("git_worktree_remove_result", { ok: true, path: worktreePath }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_worktree_remove_result", err instanceof Error ? err.message : String(err), requestId, sessionId);
@@ -2093,7 +2236,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_worktree_prune_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_worktree_prune_result", requestId, sessionId);
         if (!cwd) return;
 
         const mutation = await this.beginRepoMutation(cwd, "git_worktree_prune_result", "worktree-prune", requestId, sessionId);
@@ -2103,7 +2246,7 @@ export class GitService implements ServiceHandler {
             const { stdout, stderr } = await this._execGit(["worktree", "prune", "-v"], { cwd, timeout: 15000 });
             const lines = [(stdout + "\n" + stderr).trim()].filter(Boolean);
             lines.push(...await this.removeMergedWorktrees(cwd));
-            await this.invalidateStatusCacheFamily(cwd);
+            await this.notifyRepoChanged(cwd);
             const output = lines.join("\n");
             this.emit("git_worktree_prune_result", { ok: true, ...(output ? { message: output } : {}) }, requestId, sessionId);
         } catch (err) {
@@ -2186,7 +2329,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_stash_list_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_stash_list_result", requestId, sessionId);
         if (!cwd) return;
 
         try {
@@ -2224,7 +2367,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_stash_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_stash_result", requestId, sessionId);
         if (!cwd) return;
 
         const message = typeof payload.message === "string" ? payload.message.trim() : "";
@@ -2239,7 +2382,7 @@ export class GitService implements ServiceHandler {
             if (message) args.push("-m", message);
             const { stdout, stderr } = await this._execGit(args, { cwd, timeout: 15000 });
             const output = (stdout + "\n" + stderr).trim();
-            await this.invalidateStatusCacheFamily(cwd);
+            await this.notifyRepoChanged(cwd);
             this.emit(
                 "git_stash_result",
                 { ok: true, ...(output ? { message: output } : {}) },
@@ -2260,7 +2403,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_stash_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_stash_result", requestId, sessionId);
         if (!cwd) return;
 
         const index = typeof payload.index === "number" && payload.index >= 0 ? payload.index : 0;
@@ -2274,7 +2417,7 @@ export class GitService implements ServiceHandler {
                 { cwd, timeout: 30000 },
             );
             const output = (stdout + "\n" + stderr).trim();
-            await this.invalidateStatusCacheFamily(cwd);
+            await this.notifyRepoChanged(cwd);
             this.emit(
                 "git_stash_result",
                 { ok: true, ...(output ? { message: output } : {}) },
@@ -2284,7 +2427,7 @@ export class GitService implements ServiceHandler {
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             const conflict = /CONFLICT|could not apply|unmerged|Automatic merge failed/i.test(message);
-            if (conflict) await this.invalidateStatusCacheFamily(cwd);
+            if (conflict) await this.notifyRepoChanged(cwd);
             this.emit(
                 "git_stash_result",
                 { ok: true, conflict, ...(message ? { message } : {}) },
@@ -2303,7 +2446,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_stash_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_stash_result", requestId, sessionId);
         if (!cwd) return;
 
         const index = typeof payload.index === "number" && payload.index >= 0 ? payload.index : 0;
@@ -2318,7 +2461,7 @@ export class GitService implements ServiceHandler {
             const args = ["stash", "apply", `stash@{${index}}`];
             const { stdout, stderr } = await this._execGit(args, { cwd, timeout: 30000 });
             const output = (stdout + "\n" + stderr).trim();
-            await this.invalidateStatusCacheFamily(cwd);
+            await this.notifyRepoChanged(cwd);
             this.emit(
                 "git_stash_result",
                 { ok: true, ...(output ? { message: output } : {}) },
@@ -2328,7 +2471,7 @@ export class GitService implements ServiceHandler {
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             const conflict = /CONFLICT|could not apply|unmerged|Automatic merge failed/i.test(message);
-            if (conflict) await this.invalidateStatusCacheFamily(cwd);
+            if (conflict) await this.notifyRepoChanged(cwd);
             this.emit(
                 "git_stash_result",
                 { ok: true, conflict, ...(message ? { message } : {}) },
@@ -2347,7 +2490,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_stash_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_stash_result", requestId, sessionId);
         if (!cwd) return;
 
         const index = typeof payload.index === "number" && payload.index >= 0 ? payload.index : 0;
@@ -2361,7 +2504,7 @@ export class GitService implements ServiceHandler {
                 { cwd, timeout: 15000 },
             );
             const output = (stdout + "\n" + stderr).trim();
-            await this.invalidateStatusCacheFamily(cwd);
+            await this.notifyRepoChanged(cwd);
             this.emit(
                 "git_stash_result",
                 { ok: true, ...(output ? { message: output } : {}) },
@@ -2382,7 +2525,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_log_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_log_result", requestId, sessionId);
         if (!cwd) return;
 
         let limit = typeof payload.limit === "number" ? payload.limit : 50;
@@ -2457,7 +2600,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_diff_revs_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_diff_revs_result", requestId, sessionId);
         if (!cwd) return;
 
         const base = typeof payload.base === "string" ? payload.base.trim() : "";
@@ -2501,7 +2644,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_blame_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_blame_result", requestId, sessionId);
         if (!cwd) return;
 
         const path = typeof payload.path === "string" ? payload.path : "";
@@ -2616,7 +2759,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_commit_files_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_commit_files_result", requestId, sessionId);
         if (!cwd) return;
 
         const revision = typeof payload.revision === "string" ? payload.revision.trim() : "";
@@ -2682,7 +2825,7 @@ export class GitService implements ServiceHandler {
         requestId?: string,
         sessionId?: string,
     ): Promise<void> {
-        const cwd = this.validateCwd(payload.cwd, "git_discard_result", requestId, sessionId);
+        const cwd = await this.authorizeCwd(payload.cwd, "git_discard_result", requestId, sessionId);
         if (!cwd) return;
 
         const paths = Array.isArray(payload.paths)
@@ -2732,7 +2875,7 @@ export class GitService implements ServiceHandler {
                 }
             }
 
-            await this.invalidateStatusCacheFamily(cwd);
+            await this.notifyRepoChanged(cwd);
             this.emit("git_discard_result", { ok: true, paths }, requestId, sessionId);
         } catch (err) {
             this.emitError("git_discard_result", err instanceof Error ? err.message : String(err), requestId, sessionId);

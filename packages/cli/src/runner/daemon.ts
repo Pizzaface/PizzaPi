@@ -782,6 +782,18 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         } else {
             registry.register(new GitService({
                 generateCommitMessage: makeCommitMessageGenerator(resolveConfiguredAgentDir()).generate,
+                // Runner-owned session cwd authority — sessionCloseMetadata is
+                // populated at spawn/adopt time and outlives worker restarts.
+                // (Declared below; closures run only after daemon init completes.)
+                getSessionCwd: (sessionId) => sessionCloseMetadata.get(sessionId)?.cwd ?? null,
+                getActiveSessionCwds: () => {
+                    const cwds: string[] = [];
+                    for (const id of runningSessions.keys()) {
+                        const cwd = sessionCloseMetadata.get(id)?.cwd;
+                        if (cwd) cwds.push(cwd);
+                    }
+                    return cwds;
+                },
             }));
         }
         if (isServiceDisabled("process")) {
