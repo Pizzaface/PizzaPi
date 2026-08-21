@@ -197,6 +197,12 @@ export interface RedisSessionData {
      * at read time so metadata events never rewrite the multi-MB state blob.
      */
     snapshotOverlay?: string | null;
+    /**
+     * Lifecycle generation (epoch) captured at session registration. Bumped on
+     * every (re)registration so a delayed session-end from a prior socket can
+     * be matched against the current generation and ignored if stale.
+     */
+    generation?: string | null;
 }
 
 /**
@@ -378,6 +384,7 @@ function parseSessionFromHash(hash: Record<string, string>): RedisSessionData | 
         linkedParentId: hash.linkedParentId || null,
         metaState: hash.metaState || null,
         snapshotOverlay: hash.snapshotOverlay || null,
+        generation: hash.generation || null,
     };
 }
 

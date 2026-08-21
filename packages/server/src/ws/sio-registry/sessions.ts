@@ -381,6 +381,9 @@ export async function registerTuiSession(
         seq: 0,
         parentSessionId: resolvedParentSessionId,
         linkedParentId,
+        // Fresh lifecycle generation on every (re)registration so a delayed
+        // session-end from a prior socket can be matched and ignored.
+        generation: randomUUID(),
     };
 
     await setSession(sessionId, sessionData);
@@ -436,6 +439,7 @@ export async function registerTuiSession(
         isEphemeral,
         runnerId,
         runnerName,
+        generation: sessionData.generation,
     }).catch((error) => {
         log.error("Failed to persist relay session start:", error);
     });
@@ -1006,7 +1010,7 @@ export async function endSharedSession(
     lastRelaySessionStateWriteTimes.delete(sessionId);
 
     // Persist end in SQLite
-    void recordRelaySessionEnd(sessionId).catch((error) => {
+    void recordRelaySessionEnd(sessionId, session.generation).catch((error) => {
         log.error("Failed to persist relay session end:", error);
     });
 
