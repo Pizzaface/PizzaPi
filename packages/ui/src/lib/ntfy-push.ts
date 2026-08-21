@@ -58,8 +58,12 @@ export function isNativePushAvailable(): boolean {
     return androidNative();
 }
 
-// ponytail: one localStorage flag is the entire "disabled" preference store.
+// ponytail: two localStorage flags are the entire preference store — one for
+// disabled state, one for child-suppression. Both are synced to the server on
+// write; on read they serve as a cache so no round-trip is needed in the
+// render path.
 const NTFY_DISABLED_KEY = "pizzapi.ntfyPushDisabled";
+const NTFY_SUPPRESS_CHILD_KEY = "pizzapi.ntfySuppressChild";
 
 /** User preference: native push explicitly disabled from the UI. */
 export function isNativePushDisabled(): boolean {
@@ -76,6 +80,42 @@ export function setNativePushDisabled(disabled: boolean): void {
         else localStorage.removeItem(NTFY_DISABLED_KEY);
     } catch {
         // ignore
+    }
+}
+
+/**
+ * Read the cached native child-suppression preference (from localStorage).
+ * Written by `setNativeSuppressChildNotifications` and by `startNtfyPush`
+ * when the server returns the current value.
+ */
+export function getNativeSuppressChildNotifications(): boolean {
+    try {
+        return localStorage.getItem(NTFY_SUPPRESS_CHILD_KEY) === "1";
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Persist the native child-suppression preference to the server and update
+ * the local cache. Returns true on success, false on network/server error.
+ */
+export async function setNativeSuppressChildNotifications(suppress: boolean): Promise<boolean> {
+    try {
+        const res = await fetch(resolveMobileUrl("/api/push/child-notifications-native"), {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ suppress }),
+        });
+        if (!res.ok) return false;
+        // Update local cache after confirmed server write.
+        try {
+            if (suppress) localStorage.setItem(NTFY_SUPPRESS_CHILD_KEY, "1");
+            else localStorage.removeItem(NTFY_SUPPRESS_CHILD_KEY);
+        } catch { /* ignore */ }
+        return true;
+    } catch {
+        return false;
     }
 }
 
@@ -142,7 +182,13 @@ export async function startNtfyPush(): Promise<NtfyStartResult> {
             topic?: string;
             ntfyUser?: string | null;
             ntfyPass?: string | null;
+            suppressChildNotifications?: boolean;
         };
+        // Cache the current server-side preference locally.
+        try {
+            if (body.suppressChildNotifications) localStorage.setItem(NTFY_SUPPRESS_CHILD_KEY, "1");
+            else localStorage.removeItem(NTFY_SUPPRESS_CHILD_KEY);
+        } catch { /* ignore */ }
         if (!body.ntfyPublicUrl || !body.topic) {
             console.error("ntfy register-native returned no topic/url");
             return { ok: false, reason: "error" };
