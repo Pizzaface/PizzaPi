@@ -375,3 +375,70 @@ describe("createSubagentMirror", () => {
         expect(name.endsWith("…")).toBe(true);
     });
 });
+
+// ── Reconnect behavior ────────────────────────────────────────────────────────
+
+describe("subagent mirror reconnect", () => {
+    test("re-registers the same sessionId after a relay blip and replays the last snapshot", () => {
+        const fake = makeFakeSocket();
+        const mirror = createSubagentMirror({
+            agentName: "a",
+            task: "t",
+            cwd: "/repo",
+            env: ENV,
+            socketFactory: () => fake.socket,
+            now: (() => { let t = 0; return () => (t += 20000); })(),
+        })!;
+        fake.fire("connect");
+        fake.fire("registered", { token: "tok-1" });
+        mirror.update(result({ messages: [{ role: "assistant", content: "hi" }] as any }));
+        const firstSessionId = fake.emitted.find((e) => e.event === "register")!.payload.sessionId;
+
+        // Relay blip
+        fake.fire("disconnect");
+        const countBefore = fake.emitted.length;
+        // Emits while disconnected are suppressed (token invalidated)
+        mirror.update(result());
+        expect(fake.emitted.length).toBe(countBefore);
+
+        // Reconnect: register re-sent with the SAME session id
+        fake.fire("connect");
+        const registers = fake.emitted.filter((e) => e.event === "register");
+        expect(registers.length).toBe(2);
+        expect(registers[1].payload.sessionId).toBe(firstSessionId);
+        expect(registers[1].payload.parentSessionId).toBe("parent-session");
+
+        // New token accepted; pending/last snapshot flushed under it
+        fake.fire("registered", { token: "tok-2" });
+        const events = fake.emitted.filter((e) => e.event === "event");
+        const last = events[events.length - 1];
+        expect(last.payload.token).toBe("tok-2");
+    });
+
+    test("replays last snapshot on re-register even with no pending update", () => {
+        const fake = makeFakeSocket();
+        const mirror = createSubagentMirror({
+            agentName: "a",
+            task: "t",
+            cwd: "/repo",
+            env: ENV,
+            socketFactory: () => fake.socket,
+            now: (() => { let t = 0; return () => (t += 20000); })(),
+        })!;
+        fake.fire("connect");
+        fake.fire("registered", { token: "tok-1" });
+        mirror.update(result({ messages: [{ role: "assistant", content: "hi" }] as any }));
+        const eventsBefore = fake.emitted.filter((e) => e.event === "event").length;
+        expect(eventsBefore).toBeGreaterThan(0);
+
+        fake.fire("disconnect");
+        fake.fire("connect");
+        fake.fire("registered", { token: "tok-2" });
+
+        const active = fake.emitted
+            .filter((e) => e.event === "event" && e.payload.event.type === "session_active")
+            .pop()!;
+        expect(active.payload.token).toBe("tok-2");
+        expect(active.payload.event.state.messages.length).toBe(1);
+    });
+});

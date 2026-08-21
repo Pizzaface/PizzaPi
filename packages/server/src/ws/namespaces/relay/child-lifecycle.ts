@@ -65,6 +65,27 @@ export async function countLinkedChildrenForParent(
     return checks.filter(Boolean).length;
 }
 
+/** Tunable for tests. */
+export const childTerminationWait = { timeoutMs: 5000, pollMs: 200 };
+
+/**
+ * Poll until the child's Redis session record disappears (termination
+ * observed) or the bounded wait elapses. Returns true iff termination was
+ * observed.
+ */
+export async function waitForChildTermination(
+    childSessionId: string,
+    deps: { getSession?: typeof getSessionSummary } = {},
+): Promise<boolean> {
+    const _getSession = deps.getSession ?? getSessionSummary;
+    const deadline = Date.now() + childTerminationWait.timeoutMs;
+    for (;;) {
+        if (!(await _getSession(childSessionId))) return true;
+        if (Date.now() >= deadline) return false;
+        await new Promise((r) => setTimeout(r, childTerminationWait.pollMs));
+    }
+}
+
 export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIOServer): void {
     socket.on("get_linked_child_count", async (data, ack) => {
         const sessionId = socket.data.sessionId;
@@ -102,7 +123,10 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
         // Validate the sender is the parent of the target child session
         const childSession = await getSharedSessionSummary(childSessionId);
         if (!childSession) {
-            // Child already gone — nothing to clean up (idempotent)
+            // Child already gone — remove any stale membership entry so the
+            // dead ID doesn't linger in the parent's children set, then ack
+            // (idempotent).
+            await removeChildSession(sessionId, childSessionId).catch(() => {});
             if (typeof ack === "function") ack({ ok: true });
             return;
         }
@@ -159,7 +183,7 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
                 // the cluster, so there is no disconnect handler left to finish
                 // cleanup. Complete teardown now so acknowledged children don't
                 // linger in Redis/sidebar until the orphan sweeper runs.
-                await endSharedSession(childSessionId, "Parent acknowledged completion");
+                await endSharedSession(childSessionId, "Parent acknowledged completion", { confirmedTerminal: true });
                 if (typeof ack === "function") ack({ ok: true });
                 return;
             }
@@ -173,8 +197,19 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
             // before that node can process the disconnect, turning its
             // endSharedSession into a no-op and leaving adopted-session entries
             // stranded in runningSessions on the remote runner.
-
-            if (typeof ack === "function") ack({ ok: true });
+            //
+            // Ack ordering: only ack plain { ok: true } once the child's
+            // termination is actually OBSERVED (its Redis session record is
+            // gone). If it hasn't terminated within the bounded wait, ack
+            // { ok: true, pending: true } — teardown was initiated and the
+            // orphan sweeper backstops it, but the caller knows termination
+            // was not yet confirmed.
+            const terminated = await waitForChildTermination(childSessionId);
+            if (typeof ack === "function") {
+                (ack as (r: { ok: boolean; pending?: boolean; error?: string }) => void)(
+                    terminated ? { ok: true } : { ok: true, pending: true },
+                );
+            }
         } catch (err: any) {
             log.error(`cleanup_child_session failed: parent=${sessionId} child=${childSessionId}`, err);
             if (typeof ack === "function") ack({ ok: false, error: err?.message ?? "Internal error" });

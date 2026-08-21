@@ -286,6 +286,16 @@ export async function registerTuiSession(
     // the parent's Redis key has expired) so that parent links survive restarts.
     if (resolvedParentSessionId) {
         const candidateParentId = resolvedParentSessionId;
+        // Atomic parent transfer: if this child is switching to a different
+        // parent, scrub it from every former parent's membership and
+        // pending-delink sets FIRST so the old parent stops passing
+        // isChildOfParent() the moment the new link is established.
+        for (const formerParent of new Set([previousParentSessionId, previousLinkedParentId])) {
+            if (formerParent && formerParent !== candidateParentId) {
+                await removeChildSession(formerParent, sessionId);
+                await removePendingParentDelinkChild(formerParent, sessionId);
+            }
+        }
         const parentSession = await getSession(resolvedParentSessionId);
         if (!parentSession) {
             // Redis miss means the parent is temporarily offline.
@@ -885,12 +895,30 @@ function viewerDisconnectPayload(reason: string): { reason: string; code?: "sess
 }
 
 /** End a shared session: notify viewers, clean up Redis, broadcast to hub. */
-export async function endSharedSession(sessionId: string, reason: string = "Session ended"): Promise<void> {
+export async function endSharedSession(
+    sessionId: string,
+    reason: string = "Session ended",
+    opts: { confirmedTerminal?: boolean } = {},
+): Promise<void> {
     const io = getIo();
     await deletePendingRunnerLink(sessionId);
 
     const session = await getSession(sessionId);
     if (!session) return;
+
+    // On a CONFIRMED terminal end (graceful session_end, expiry, orphan sweep,
+    // parent-acknowledged cleanup) remove this child from its parent's
+    // membership set so dead child IDs don't linger until the 24h TTL.
+    // Deliberately NOT done for transient disconnects — that races with
+    // delink_children (see the disconnect handler in session-lifecycle.ts).
+    if (opts.confirmedTerminal) {
+        const parentId = session.parentSessionId || session.linkedParentId;
+        if (parentId) {
+            await removeChildSession(parentId, sessionId).catch((err) => {
+                log.warn(`endSharedSession: failed to remove child ${sessionId} from parent ${parentId}:`, err);
+            });
+        }
+    }
 
     const disconnectPayload = viewerDisconnectPayload(reason);
 
@@ -998,7 +1026,7 @@ export async function sweepExpiredSessions(nowMs: number = Date.now()): Promise<
             tuiSocket.disconnect(true);
         }
 
-        await endSharedSession(sessionId, "Session expired");
+        await endSharedSession(sessionId, "Session expired", { confirmedTerminal: true });
     }
 
     // Sweep orphaned sessions: sessions in Redis with no active relay socket
@@ -1069,7 +1097,7 @@ export async function sweepOrphanedSessions(nowMs: number): Promise<void> {
             `Sweeping orphaned session ${candidate.sessionId} ` +
             `(last activity: ${new Date(candidate.lastActivity).toISOString()})`,
         );
-        await endSharedSession(candidate.sessionId, "Session orphaned (no active relay connection)");
+        await endSharedSession(candidate.sessionId, "Session orphaned (no active relay connection)", { confirmedTerminal: true });
     }
 }
 

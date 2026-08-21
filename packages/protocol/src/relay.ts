@@ -83,11 +83,14 @@ export interface RelayClientToServerEvents {
   }, ack?: (result: { ok: boolean; error?: string }) => void) => void;
 
   /** Parent requests cleanup of a completed child session.
-   *  The server validates the parent↔child relationship and tears down the child. */
+   *  The server validates the parent↔child relationship and tears down the child.
+   *  Ack: `{ ok: true }` once child termination is observed; `{ ok: true,
+   *  pending: true }` when teardown was initiated but not yet confirmed
+   *  (the orphan sweeper backstops completion). */
   cleanup_child_session: (data: {
     token: string;
     childSessionId: string;
-  }, ack?: (result: { ok: boolean; error?: string }) => void) => void;
+  }, ack?: (result: { ok: boolean; pending?: boolean; error?: string }) => void) => void;
 
   /** Returns how many linked child sessions are still associated with this parent. */
   get_linked_child_count: (data: {
