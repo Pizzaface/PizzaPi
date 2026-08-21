@@ -134,18 +134,30 @@ export function SpreadsheetTable({
                 {hg.headers.map((h) => {
                   const numeric = numericColumns[Number(h.column.id)];
                   const sorted = h.column.getIsSorted();
+                  const toggleSorting = h.column.getToggleSortingHandler();
                   return (
                     <th
                       key={h.id}
-                      onClick={h.column.getToggleSortingHandler()}
-                      className={cn(
-                        "cursor-pointer select-none border-b border-border px-2 py-1.5 font-medium",
-                        "hover:bg-muted",
-                        numeric ? "text-right" : "text-left",
-                      )}
-                      title="Sort"
+                      aria-sort={
+                        sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : "none"
+                      }
+                      className="border-b border-border p-0 font-medium"
                     >
-                      <span className={cn("inline-flex items-center gap-1", numeric && "flex-row-reverse")}>
+                      <button
+                        type="button"
+                        onClick={toggleSorting}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            toggleSorting?.(event);
+                          }
+                        }}
+                        className={cn(
+                          "flex w-full select-none items-center gap-1 px-2 py-1.5 hover:bg-muted",
+                          numeric ? "flex-row-reverse text-right" : "text-left",
+                        )}
+                        title="Sort"
+                      >
                         <span className="truncate">{String(h.column.columnDef.header)}</span>
                         {sorted === "asc" ? (
                           <ChevronUpIcon className="size-3 shrink-0" />
@@ -154,7 +166,7 @@ export function SpreadsheetTable({
                         ) : (
                           <ChevronsUpDownIcon className="size-3 shrink-0 opacity-30" />
                         )}
-                      </span>
+                      </button>
                     </th>
                   );
                 })}
