@@ -187,21 +187,25 @@ export async function redeemMobileLink(id: string): Promise<MobileLinkStatus | n
     if (current.status !== "approved") {
         return toStatus(current);
     }
+    if (!current.apiKey) return toStatus(current);
 
-    const status: MobileLinkStatus = {
-        ...toStatus(current),
-        apiKey: current.apiKey ?? undefined,
-    };
-
-    if (current.apiKey) {
-        await getKysely()
-            .updateTable("mobile_link")
-            .set({ apiKey: null })
-            .where("id", "=", id)
-            .execute();
+    // Atomic compare-and-clear: gate the UPDATE on the key value we read.
+    // Concurrent redeemers read the same key, but exactly one UPDATE matches
+    // (apiKey is cleared by the winner before the losers' statements run);
+    // losers see numUpdatedRows=0 and get nothing. SQLite serializes writers,
+    // so no transaction wrapper is needed. (Can't use RETURNING here: SQLite
+    // RETURNING yields post-update values, i.e. the NULL we just wrote.)
+    const cleared = await getKysely()
+        .updateTable("mobile_link")
+        .set({ apiKey: null })
+        .where("id", "=", id)
+        .where("apiKey", "=", current.apiKey)
+        .executeTakeFirst();
+    if (Number(cleared.numUpdatedRows ?? 0) === 0) {
+        return toStatus(current);
     }
 
-    return status;
+    return { ...toStatus(current), apiKey: current.apiKey };
 }
 
 /** Delete expired mobile links. Safe to call periodically. */
