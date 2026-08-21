@@ -1,7 +1,8 @@
 import { describe, test, expect } from "bun:test";
-import { isPizzaPiHostInfo, detectPizzaPiHost, onPizzaPiHost } from "@pizzapi/extension-sdk";
+import { isPizzaPiHostInfo, detectPizzaPiHost, onPizzaPiHost, sendServiceMessage } from "@pizzapi/extension-sdk";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { hostAnnounceExtension, buildHostInfo } from "./host-announce.js";
+import { createServiceMessageBridgeExtension } from "./service-message-bridge.js";
 
 /** Minimal synchronous pi.events fake — enough to exercise probe/ready semantics. */
 function fakePiEvents() {
@@ -43,7 +44,7 @@ describe("hostAnnounceExtension", () => {
         expect(detectPizzaPiHost(pi as any)).toEqual(buildHostInfo());
     });
 
-    test("onPizzaPiHost() delivers via the ready event when subscribed BEFORE the host factory runs", () => {
+    test("onPizzaPiHost() delivers via the ready event when subscribed BEFORE the host factory runs", async () => {
         // Mirrors the real ordering constraint: package extensions run their
         // factory (and may call onPizzaPiHost) before PizzaPi's own inline
         // host-announce factory runs.
@@ -56,6 +57,10 @@ describe("hostAnnounceExtension", () => {
 
         hostAnnounceExtension(pi as any);
 
+        // The ready emit is deferred to the next macrotask so capability
+        // bridges (service-message-bridge, etc.) install their listeners first.
+        expect(delivered).toBeUndefined();
+        await new Promise((resolve) => setImmediate(resolve));
         expect(delivered).toEqual(buildHostInfo());
     });
 
@@ -95,6 +100,58 @@ describe("hostAnnounceExtension", () => {
             fireShutdown: () => { for (const h of shutdownHandlers.splice(0)) h(); },
         };
     }
+
+    test("a package reacting to host:ready can send a service message that is NOT dropped", async () => {
+        // Mirrors the real ordering: the package factory runs first (subscribes
+        // via onPizzaPiHost), then PizzaPi inline factories run in order —
+        // host-announce first, service-message-bridge later. The ready emit is
+        // deferred to the next macrotask so the bridge's listener is installed
+        // before the package's host:ready callback fires. With the old
+        // synchronous emit, sendServiceMessage() would fire before the bridge
+        // subscribed and the message would be silently dropped.
+        const emitted: Array<{ event: string; payload: any }> = [];
+        const busHandlers = new Map<string, Array<(data: unknown) => void>>();
+        const pi = {
+            events: {
+                on(type: string, handler: (data: unknown) => void) {
+                    const arr = busHandlers.get(type) ?? [];
+                    arr.push(handler);
+                    busHandlers.set(type, arr);
+                    return () => busHandlers.set(type, (busHandlers.get(type) ?? []).filter((h) => h !== handler));
+                },
+                emit(type: string, payload: unknown) {
+                    for (const h of busHandlers.get(type) ?? []) h(payload);
+                },
+            },
+            on(_type: string, _handler: () => void) {},
+            socket: {
+                emit(event: string, payload: any) {
+                    emitted.push({ event, payload });
+                },
+            },
+        };
+
+        // 1. Package extension factory runs first (before PizzaPi inline factories).
+        onPizzaPiHost(pi as any, () => {
+            sendServiceMessage(pi as any, "connector", "session_post", { content: "hello" });
+        });
+
+        // 2. PizzaPi inline factories run in order: host-announce, then the bridge.
+        hostAnnounceExtension(pi as any);
+        createServiceMessageBridgeExtension({
+            getRelaySocket: (() => ({ socket: pi.socket })) as any,
+            getRelaySessionId: (() => "sess-1") as any,
+            newId: () => "id-1",
+        })(pi as any);
+
+        // 3. Ready fires on the next macrotask, after the bridge listener is installed.
+        await new Promise((resolve) => setImmediate(resolve));
+
+        expect(emitted).toHaveLength(1);
+        expect(emitted[0].event).toBe("service_message");
+        expect(emitted[0].payload.serviceId).toBe("connector");
+        expect(emitted[0].payload.type).toBe("session_post");
+    });
 
     test("session_shutdown removes the probe listener from the real pi event bus (no accumulation across reloads)", () => {
         const { pi, bus, fireShutdown } = realBusPi();

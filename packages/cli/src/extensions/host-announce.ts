@@ -11,11 +11,15 @@
  * a package that calls `onPizzaPiHost()` during its factory registers a
  * `pizzapi:host:ready` listener FIRST (its factory already ran), so when
  * this factory runs afterward and emits `pizzapi:host:ready`, every such
- * listener — already subscribed — receives it synchronously.
+ * listener — already subscribed — receives it. The emit is deferred to the
+ * next macrotask so the capability bridges (service-message-bridge, etc.)
+ * install their listeners first; a package reacting to host:ready can then
+ * synchronously call capability APIs (e.g. sendServiceMessage()) without
+ * the message being dropped.
  *
  * Must be registered as early as possible among PizzaPi's own inline
- * factories (see factories.ts) so the ready announcement isn't delayed
- * behind unrelated PizzaPi setup work.
+ * factories (see factories.ts) so the probe responder is available to any
+ * early `detectPizzaPiHost()` call.
  */
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import type { PizzaPiHostInfo } from "@pizzapi/extension-sdk";
@@ -64,10 +68,16 @@ export const hostAnnounceExtension: ExtensionFactory = (pi) => {
         if (typeof respond === "function") respond(hostInfo);
     });
 
-    // Announce readiness now, while still inside factory execution — any
-    // package extension whose factory already ran and subscribed to
-    // "pizzapi:host:ready" receives this synchronously.
-    pi.events.emit("pizzapi:host:ready", hostInfo);
+    // Announce readiness on the next macrotask, AFTER every inline factory
+    // (including the capability bridges such as service-message-bridge) has
+    // registered its listeners. Emitting synchronously here would fire before
+    // those bridges subscribe — a package that reacts to host:ready by calling
+    // sendServiceMessage() would have its message silently dropped. The probe
+    // responder above stays synchronous, so early detectPizzaPiHost() calls
+    // still work.
+    setImmediate(() => {
+        pi.events.emit("pizzapi:host:ready", hostInfo);
+    });
 
     pi.on("session_shutdown", () => {
         unsubscribeProbe();
