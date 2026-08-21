@@ -93,7 +93,7 @@ function isHttpStatus(value: unknown): boolean {
 }
 
 function isOptionalCloseCode(value: unknown): boolean {
-  return value === undefined || (typeof value === "number" && Number.isInteger(value) && (value === 1000 || (value >= 3000 && value <= 4999)));
+  return value === undefined || (typeof value === "number" && Number.isInteger(value) && ((value >= 1000 && value <= 1015) || (value >= 3000 && value <= 4999)));
 }
 
 function isOptionalCloseReason(value: unknown): boolean {

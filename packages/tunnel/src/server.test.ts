@@ -89,13 +89,16 @@ describe("TunnelRelay message handling", () => {
     mockWs.emit("message", { data: JSON.stringify({ type: "ws-close", id: 1, code: "1000" }) });
     mockWs.emit("message", { data: JSON.stringify({ type: "response-start", id: "req1", statusCode: 0, statusMessage: "", headers: {} }) });
     mockWs.emit("message", { data: JSON.stringify({ type: "ws-close", id: "ws1", code: 1001 }) });
+    mockWs.emit("message", { data: JSON.stringify({ type: "ws-close", id: "ws1", code: 999 }) });
+    mockWs.emit("message", { data: JSON.stringify({ type: "ws-close", id: "ws1", code: 5000 }) });
+    mockWs.emit("message", { data: JSON.stringify({ type: "ws-close", id: "ws1", code: 1000.5 }) });
     mockWs.emit("message", { data: JSON.stringify({ type: "ws-close", id: "ws1", reason: "x".repeat(124) }) });
     mockWs.emit("message", {
       data: JSON.stringify({ type: "register", runnerId: "r1", apiKey: "key1" }),
     });
     await waitForMicrotask();
 
-    expect(warnings).toHaveLength(6);
+    expect(warnings).toHaveLength(8);
     expect(relay.hasRunner("r1")).toBe(true);
   });
 
@@ -444,10 +447,23 @@ describe("TunnelRelay WebSocket proxy callbacks", () => {
       data: JSON.stringify({ type: "ws-data", id: "ws1", data: "hello", binary: false }),
     });
     mockWs.emit("message", {
-      data: JSON.stringify({ type: "ws-close", id: "ws1", code: 1000, reason: "done" }),
+      data: JSON.stringify({ type: "ws-close", id: "ws1", code: 1001, reason: "done" }),
+    });
+    relay.proxyWsOpen(
+      "r1",
+      { id: "ws1", port: 8080, path: "/socket", protocols: ["chat"], headers: {} },
+      {
+        onOpened() {},
+        onData() {},
+        onClose(code, reason) { events.push(`close:${code}:${reason}`); },
+        onError() {},
+      },
+    );
+    mockWs.emit("message", {
+      data: JSON.stringify({ type: "ws-close", id: "ws1", code: 1011, reason: "failed" }),
     });
     await waitForMicrotask();
 
-    expect(events).toEqual(["opened:chat", "data:hello:text", "close:1000:done"]);
+    expect(events).toEqual(["opened:chat", "data:hello:text", "close:1001:done", "close:1011:failed"]);
   });
 });

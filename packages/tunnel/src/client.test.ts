@@ -351,11 +351,31 @@ describe("TunnelClient", () => {
     (client as any).handleMessage(JSON.stringify({ type: "unknown", id: "req1" }));
     (client as any).handleMessage(JSON.stringify({ type: "ws-open", id: 1, port: "3000", path: "/", headers: {} }));
     (client as any).handleMessage(JSON.stringify({ type: "ws-close", id: "ws1", code: 1001 }));
+    (client as any).handleMessage(JSON.stringify({ type: "ws-close", id: "ws1", code: 999 }));
+    (client as any).handleMessage(JSON.stringify({ type: "ws-close", id: "ws1", code: 5000 }));
+    (client as any).handleMessage(JSON.stringify({ type: "ws-close", id: "ws1", code: 1000.5 }));
     (client as any).handleMessage(JSON.stringify({ type: "ws-close", id: "ws1", reason: "x".repeat(124) }));
     (client as any).handleMessage(JSON.stringify({ type: "ping" }));
 
-    expect(warnings).toHaveLength(5);
+    expect(warnings).toHaveLength(7);
     expect(decodeSent(sent)).toEqual([{ type: "pong" }]);
+  });
+
+  test("normalizes received protocol close codes for the browser WebSocket API", () => {
+    const client = new TunnelClient({
+      runnerId: "r1",
+      apiKey: "key1",
+      relayUrl: "ws://localhost:9999/_tunnel",
+      autoReconnect: false,
+    });
+    const closed: Array<[number, string]> = [];
+
+    for (const [id, code] of [["ws-1001", 1001], ["ws-1011", 1011]] as const) {
+      (client as any).activeWs.set(id, { close(closeCode: number, reason: string) { closed.push([closeCode, reason]); } });
+      (client as any).handleMessage(JSON.stringify({ type: "ws-close", id, code, reason: "relay closed" }));
+    }
+
+    expect(closed).toEqual([[1000, "relay closed"], [1000, "relay closed"]]);
   });
 
   test("responds to ping with pong", () => {

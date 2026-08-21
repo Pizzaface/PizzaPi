@@ -93,7 +93,11 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 }
 
 function isOptionalCloseCode(value: unknown): boolean {
-  return value === undefined || (typeof value === "number" && Number.isInteger(value) && (value === 1000 || (value >= 3000 && value <= 4999)));
+  return value === undefined || (typeof value === "number" && Number.isInteger(value) && ((value >= 1000 && value <= 1015) || (value >= 3000 && value <= 4999)));
+}
+
+function browserCloseCode(code: number | undefined): number {
+  return code === 1000 || (code !== undefined && code >= 3000) ? code : 1000;
 }
 
 function isOptionalCloseReason(value: unknown): boolean {
@@ -754,7 +758,7 @@ export class TunnelClient extends EventEmitter {
     if (!ws) return;
     this.activeWs.delete(msg.id);
     try {
-      ws.close(msg.code ?? 1000, msg.reason ?? "");
+      ws.close(browserCloseCode(msg.code), msg.reason ?? "");
     } catch {
       // ignore close errors
     }
