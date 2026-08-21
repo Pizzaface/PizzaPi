@@ -100,4 +100,13 @@ describe("PromptInput submit", () => {
     expect(revokeObjectURL).toHaveBeenCalledTimes(1);
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:attachment");
   });
+
+  test("revokes retained attachment URLs when unmounted", async () => {
+    const view = await submitWithAttachment(false);
+
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+    view.unmount();
+    expect(revokeObjectURL).toHaveBeenCalledTimes(1);
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:attachment");
+  });
 });
