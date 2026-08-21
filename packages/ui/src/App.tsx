@@ -3345,6 +3345,7 @@ export function App() {
     paginationStateRef.current = null;
     setLoadingOlderMessages(false);
     setRetryState(null);
+    setArtifactViewer(null);
     setActiveToolCalls(new Map());
     setMcpOAuthPastes([]);
     setIsChangingModel(false);
