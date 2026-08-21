@@ -99,7 +99,9 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
         // Graceful end — delete the durable runner association so it
         // isn't restored if a new session reuses this ID later.
         await deleteRunnerAssociation(sessionId);
-        await endSharedSession(sessionId);
+        // Graceful session_end is a confirmed terminal end — remove this child
+        // from its parent's membership set (fixes subagent-mirror leak).
+        await endSharedSession(sessionId, "Session ended", { confirmedTerminal: true });
         socket.data.sessionId = undefined;
         socketAckedSeqs.delete(socket.id);
     });

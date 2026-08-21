@@ -130,7 +130,14 @@ const defaultSocketFactory: SocketFactory = (url, apiKey): Socket =>
     io(`${url}/relay`, {
         auth: { apiKey, protocolVersion: SOCKET_PROTOCOL_VERSION },
         transports: ["websocket"],
-        reconnection: false,
+        // Controlled reconnect: a relay blip must not permanently kill subagent
+        // visibility while the subagent keeps running. On reconnect we re-emit
+        // register with the SAME sessionId (see the "connect" handler), so the
+        // server reconciles state and the mirror resumes under the same child.
+        reconnection: true,
+        reconnectionAttempts: 20,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 15000,
     });
 
 export interface MirrorOptions {
@@ -181,6 +188,8 @@ export function createSubagentMirror(opts: MirrorOptions): SubagentMirror | null
     let lastSnapshotAt = 0;
     /** Snapshot held back by the throttle, flushed by the next update/finish. */
     let pending: SingleResult | null = null;
+    /** Last snapshot sent — replayed after a reconnect re-registration. */
+    let lastResult: SingleResult | null = null;
     let throttleTimer: ReturnType<typeof setTimeout> | null = null;
 
     const emit = (event: unknown) => {
@@ -247,6 +256,7 @@ export function createSubagentMirror(opts: MirrorOptions): SubagentMirror | null
         if (!pending) return;
         const result = pending;
         pending = null;
+        lastResult = result;
         lastSnapshotAt = now();
         snapshot(result, true);
     };
@@ -267,7 +277,11 @@ export function createSubagentMirror(opts: MirrorOptions): SubagentMirror | null
         if (closed) return;
         token = typeof data?.token === "string" ? data.token : null;
         // Flush whatever the subagent has produced while we were connecting.
+        // On a RE-registration (reconnect after a relay blip) there may be no
+        // pending update for a while — replay the last snapshot so the fresh
+        // server-side session record isn't empty until the next update.
         if (pending) flushPending();
+        else if (lastResult) snapshot(lastResult, true);
     });
 
     // Keep the child session visibly alive between snapshots — a long tool call
@@ -289,6 +303,12 @@ export function createSubagentMirror(opts: MirrorOptions): SubagentMirror | null
 
     socket.on("connect_error", (err: unknown) => {
         log.warn("subagent mirror connect failed:", err);
+    });
+
+    // Invalidate the token on disconnect — the server issues a fresh one on
+    // re-registration, and emitting with the stale token would be rejected.
+    socket.on("disconnect", () => {
+        if (!closed) token = null;
     });
 
     const teardown = () => {
