@@ -309,33 +309,35 @@ export class TunnelRelay {
       return;
     }
 
+    const sourceRunnerId = this.wsToRunner.get(ws);
+
     switch (msg.type) {
       case "register":
         await this.handleRegister(ws, msg);
         break;
       case "response-start":
-        this.handleResponseStart(msg);
+        this.handleResponseStart(sourceRunnerId, msg);
         break;
       case "response-data":
-        this.handleResponseData(msg);
+        this.handleResponseData(sourceRunnerId, msg);
         break;
       case "response-data-end":
-        this.handleResponseDataEnd(msg);
+        this.handleResponseDataEnd(sourceRunnerId, msg);
         break;
       case "request-end":
-        this.handleRequestEnd(msg);
+        this.handleRequestEnd(sourceRunnerId, msg);
         break;
       case "ws-opened":
-        this.handleWsOpened(msg);
+        this.handleWsOpened(sourceRunnerId, msg);
         break;
       case "ws-data":
-        this.handleWsData(msg);
+        this.handleWsData(sourceRunnerId, msg);
         break;
       case "ws-close":
-        this.handleWsClose(msg);
+        this.handleWsClose(sourceRunnerId, msg);
         break;
       case "ws-error":
-        this.handleWsError(msg);
+        this.handleWsError(sourceRunnerId, msg);
         break;
       case "pong": {
         const runnerId = this.wsToRunner.get(ws);
@@ -386,9 +388,13 @@ export class TunnelRelay {
     this.send(ws, { type: "registered", runnerId: msg.runnerId });
   }
 
-  private handleResponseStart(msg: TunnelResponseStartMessage): void {
+  private handleResponseStart(sourceRunnerId: string | undefined, msg: TunnelResponseStartMessage): void {
     const pending = this.pendingRequests.get(msg.id);
     if (!pending) return;
+    if (pending.runnerId !== sourceRunnerId) {
+      this.log.warn("[tunnel-relay] Rejecting response-start for request owned by another runner:", msg.id);
+      return;
+    }
     // The timeout only protects the initial response handshake. Once headers
     // have arrived, the response may legitimately be long-lived (SSE, logs,
     // streaming dev servers), so do not abort it solely because it stays open.
@@ -396,52 +402,80 @@ export class TunnelRelay {
     pending.onResponseStart(msg.statusCode, msg.statusMessage, msg.headers);
   }
 
-  private handleResponseData(msg: TunnelResponseDataMessage): void {
+  private handleResponseData(sourceRunnerId: string | undefined, msg: TunnelResponseDataMessage): void {
     const pending = this.pendingRequests.get(msg.id);
     if (!pending) return;
+    if (pending.runnerId !== sourceRunnerId) {
+      this.log.warn("[tunnel-relay] Rejecting response-data for request owned by another runner:", msg.id);
+      return;
+    }
     pending.onResponseData(Buffer.from(msg.data, "binary"));
   }
 
-  private handleResponseDataEnd(msg: TunnelResponseDataEndMessage): void {
+  private handleResponseDataEnd(sourceRunnerId: string | undefined, msg: TunnelResponseDataEndMessage): void {
     const pending = this.pendingRequests.get(msg.id);
     if (!pending) return;
+    if (pending.runnerId !== sourceRunnerId) {
+      this.log.warn("[tunnel-relay] Rejecting response-data-end for request owned by another runner:", msg.id);
+      return;
+    }
     clearTimeout(pending.timer);
     this.pendingRequests.delete(msg.id);
     pending.onResponseEnd();
   }
 
-  private handleRequestEnd(msg: TunnelRequestEndMessage): void {
+  private handleRequestEnd(sourceRunnerId: string | undefined, msg: TunnelRequestEndMessage): void {
     const pending = this.pendingRequests.get(msg.id);
     if (!pending) return;
+    if (pending.runnerId !== sourceRunnerId) {
+      this.log.warn("[tunnel-relay] Rejecting request-end for request owned by another runner:", msg.id);
+      return;
+    }
     clearTimeout(pending.timer);
     this.pendingRequests.delete(msg.id);
     pending.onError("Runner aborted request");
   }
 
-  private handleWsOpened(msg: TunnelWsOpenedMessage): void {
+  private handleWsOpened(sourceRunnerId: string | undefined, msg: TunnelWsOpenedMessage): void {
     const pending = this.pendingWs.get(msg.id);
     if (!pending) return;
+    if (pending.runnerId !== sourceRunnerId) {
+      this.log.warn("[tunnel-relay] Rejecting ws-opened for ws owned by another runner:", msg.id);
+      return;
+    }
     clearTimeout(pending.timer);
     pending.onOpened(msg.protocol);
   }
 
-  private handleWsData(msg: TunnelWsDataMessage): void {
+  private handleWsData(sourceRunnerId: string | undefined, msg: TunnelWsDataMessage): void {
     const pending = this.pendingWs.get(msg.id);
     if (!pending) return;
+    if (pending.runnerId !== sourceRunnerId) {
+      this.log.warn("[tunnel-relay] Rejecting ws-data for ws owned by another runner:", msg.id);
+      return;
+    }
     pending.onData(msg.data, msg.binary);
   }
 
-  private handleWsClose(msg: TunnelWsCloseMessage): void {
+  private handleWsClose(sourceRunnerId: string | undefined, msg: TunnelWsCloseMessage): void {
     const pending = this.pendingWs.get(msg.id);
     if (!pending) return;
+    if (pending.runnerId !== sourceRunnerId) {
+      this.log.warn("[tunnel-relay] Rejecting ws-close for ws owned by another runner:", msg.id);
+      return;
+    }
     clearTimeout(pending.timer);
     this.pendingWs.delete(msg.id);
     pending.onClose(msg.code, msg.reason);
   }
 
-  private handleWsError(msg: TunnelWsErrorMessage): void {
+  private handleWsError(sourceRunnerId: string | undefined, msg: TunnelWsErrorMessage): void {
     const pending = this.pendingWs.get(msg.id);
     if (!pending) return;
+    if (pending.runnerId !== sourceRunnerId) {
+      this.log.warn("[tunnel-relay] Rejecting ws-error for ws owned by another runner:", msg.id);
+      return;
+    }
     clearTimeout(pending.timer);
     this.pendingWs.delete(msg.id);
     pending.onError(msg.message);
