@@ -91,15 +91,24 @@ describe("pruneSessionAttachments", () => {
 
             expect(await getStoredAttachment(attachment.attachmentId)).toBeNull();
             expect(existsSync(attachment.filePath)).toBe(false);
+
+            // DB-level: attachment row must be gone (fire-and-forget regression guard)
+            const dbRow = await getKysely()
+                .selectFrom("attachment" as any)
+                .select("attachmentId")
+                .where("attachmentId", "=", attachment.attachmentId)
+                .executeTakeFirst();
+            expect(dbRow).toBeUndefined();
         });
     });
 
     test("deletes extracted image when only pruned session references it", async () => {
         await withAuth(async () => {
             const prunedSession = "prune-extracted-solo-session";
+            const attachmentId = crypto.randomUUID();
 
             const img = await storeExtractedImage({
-                attachmentId: crypto.randomUUID(),
+                attachmentId,
                 sessionId: prunedSession,
                 ownerUserId: "user-1",
                 mimeType: "image/png",
@@ -113,6 +122,22 @@ describe("pruneSessionAttachments", () => {
 
             expect(await getStoredAttachment(img.attachmentId)).toBeNull();
             expect(existsSync(img.filePath)).toBe(false);
+
+            // DB-level: extracted_attachment row must be gone
+            const dbRow = await getKysely()
+                .selectFrom("extracted_attachment")
+                .select("attachmentId")
+                .where("attachmentId", "=", attachmentId)
+                .executeTakeFirst();
+            expect(dbRow).toBeUndefined();
+
+            // DB-level: junction ref must be gone
+            const junctionRow = await getKysely()
+                .selectFrom("extracted_attachment_session" as any)
+                .select("attachmentId")
+                .where("attachmentId", "=", attachmentId)
+                .executeTakeFirst();
+            expect(junctionRow).toBeUndefined();
         });
     });
 
@@ -156,6 +181,32 @@ describe("pruneSessionAttachments", () => {
             // File must still exist — durable session still references it.
             expect(existsSync(img.filePath)).toBe(true);
             expect(await getStoredAttachment(img.attachmentId)).not.toBeNull();
+
+            // DB-level: extracted_attachment row must still exist
+            const dbRow = await getKysely()
+                .selectFrom("extracted_attachment")
+                .select("attachmentId")
+                .where("attachmentId", "=", attachmentId)
+                .executeTakeFirst();
+            expect(dbRow).not.toBeUndefined();
+
+            // DB-level: durable session junction ref must still exist
+            const junctionRow = await getKysely()
+                .selectFrom("extracted_attachment_session" as any)
+                .select("sessionId")
+                .where("attachmentId", "=", attachmentId)
+                .where("sessionId", "=", durableSession)
+                .executeTakeFirst();
+            expect(junctionRow).not.toBeUndefined();
+
+            // DB-level: pruned session junction ref must be gone
+            const prunedJunctionRow = await getKysely()
+                .selectFrom("extracted_attachment_session" as any)
+                .select("sessionId")
+                .where("attachmentId", "=", attachmentId)
+                .where("sessionId", "=", prunedSession)
+                .executeTakeFirst();
+            expect(prunedJunctionRow).toBeUndefined();
         });
     });
 

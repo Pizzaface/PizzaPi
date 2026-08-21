@@ -143,14 +143,14 @@ export async function deleteStoredAttachment(attachmentId: string): Promise<void
     if (!record) return;
     attachments.delete(attachmentId);
     extractedImageSessionRefs.delete(attachmentId);
-    try {
-        await rm(record.filePath, { force: true });
-    } catch {}
-    void Promise.all([
+    await Promise.all([
+        rm(record.filePath, { force: true }).catch((err) => {
+            log.error("Failed to delete attachment file:", err);
+        }),
         removePersistedAttachment(attachmentId),
         removePersistedUploadedAttachment(attachmentId),
         removePersistedSessionRefs(attachmentId),
-    ]).catch(() => {});
+    ]);
 }
 
 // ── Extracted image storage ──────────────────────────────────────────────────
