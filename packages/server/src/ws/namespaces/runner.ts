@@ -1303,6 +1303,21 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
                     return;
                 }
 
+                // Stale replacement guard: if this runner has already
+                // re-registered on a NEWER socket, this disconnect belongs to
+                // a dead connection. Cleaning up by runnerId would tear down
+                // the live replacement's Redis state, runner secret, terminal
+                // ownership, and the localRunnerSockets entry — so a replaced
+                // socket's disconnect is a NO-OP. Only the currently-
+                // registered socket performs real teardown.
+                if (getLocalRunnerSocket(runnerId) !== socket) {
+                    log.info(
+                        `ignoring stale disconnect for runner ${runnerId}: `
+                        + `socket ${socket.id} is no longer the registered connection`,
+                    );
+                    return;
+                }
+
                 // Clean up local session and terminal tracking
                 runnerSessionIds.delete(runnerId);
                 // Reject any pending session ownership checks for this runner so
