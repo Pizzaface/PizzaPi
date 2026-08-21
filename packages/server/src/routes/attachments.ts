@@ -224,6 +224,7 @@ export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
                 "content-disposition": buildContentDisposition(attachment.filename, dispositionMode),
                 "x-attachment-id": attachment.attachmentId,
                 "x-attachment-filename": encodeHeaderFilename(attachment.filename),
+                "cache-control": "private, no-store",
             },
         });
     }
