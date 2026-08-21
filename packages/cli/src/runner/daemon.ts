@@ -484,6 +484,25 @@ export function applyTriggerSubscriptionDeltaToCache(
     return action === "unsubscribe" ? next : [...next, subscription];
 }
 
+/**
+ * Replay deltas that overtook an async snapshot read: any buffered delta with a
+ * revision strictly greater than the snapshot's revision was emitted after the
+ * server reserved the snapshot revision, so the baseline must not erase it.
+ */
+export function replayNewerTriggerDeltas(
+    snapshot: TriggerSubscriptionEntry[],
+    snapshotRevision: number,
+    deltas: Array<{ revision: number; action: "subscribe" | "update" | "unsubscribe"; subscription: TriggerSubscriptionEntry }>,
+): TriggerSubscriptionEntry[] {
+    let result = snapshot;
+    for (const delta of deltas) {
+        if (delta.revision > snapshotRevision) {
+            result = applyTriggerSubscriptionDeltaToCache(result, delta.action, delta.subscription);
+        }
+    }
+    return result;
+}
+
 export function reconcileSnapshotSubscriptions(
     registry: ServiceRegistry,
     subscriptions: TriggerSubscriptionEntry[],
@@ -1629,14 +1648,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 lastAppliedRevision = revision;
 
                 logInfo(`[trigger-reconciliation] received snapshot revision=${revision} with ${subscriptions.length} subscriptions`);
-                cachedTriggerSubscriptions = subscriptions as TriggerSubscriptionEntry[];
                 // A delta may have overtaken the async snapshot read. Replay the
                 // remembered newer deltas so the baseline cannot erase them.
-                for (const delta of recentTriggerDeltas) {
-                    if (delta.revision > revision) {
-                        cachedTriggerSubscriptions = applyTriggerSubscriptionDeltaToCache(cachedTriggerSubscriptions, delta.action, delta.subscription);
-                    }
-                }
+                cachedTriggerSubscriptions = replayNewerTriggerDeltas(subscriptions as TriggerSubscriptionEntry[], revision, recentTriggerDeltas);
 
                 const { applied: totalApplied, errors: allErrors } = reconcileSnapshotSubscriptions(registry, cachedTriggerSubscriptions);
 

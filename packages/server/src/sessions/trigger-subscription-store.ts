@@ -459,9 +459,9 @@ export async function subscribeSessionToTrigger(
     params?: SubscriptionParams,
     filters?: SubscriptionFilter[],
     filterMode?: SubscriptionFilterMode,
-): Promise<string> {
+): Promise<string | null> {
     const redis = await getClient();
-    if (!redis) return "";
+    if (!redis) return null;
 
     const sessionKey = SESSION_SUBS_KEY(sessionId);
     const indexKey = RUNNER_TYPE_INDEX_KEY(runnerId, triggerType);
@@ -498,7 +498,7 @@ export async function subscribeSessionToTrigger(
         return subscriptionId;
     } catch (err) {
         log.warn("Failed to subscribe session to trigger:", err);
-        return "";
+        return null;
     }
 }
 

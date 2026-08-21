@@ -1162,6 +1162,13 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         }
 
         const subscriptionId = await subscribeSessionToTrigger(sessionId, session.runnerId, triggerType, undefined, subParams, subFilters, subFilterMode);
+        if (!subscriptionId) {
+            // Store failure (Redis down or write error). Do NOT report success or
+            // emit a delta — an empty-ID subscribe delta would poison the runner's
+            // subscription cache with an unremovable phantom entry.
+            log.warn(`Failed to persist trigger subscription for session ${sessionId} type '${triggerType}'`);
+            return Response.json({ error: "Failed to store trigger subscription" }, { status: 503 });
+        }
         const logParts: string[] = [];
         if (subParams) logParts.push(`params=${JSON.stringify(subParams)}`);
         if (subFilters) logParts.push(`filters=${JSON.stringify(subFilters)} mode=${subFilterMode ?? "and"}`);

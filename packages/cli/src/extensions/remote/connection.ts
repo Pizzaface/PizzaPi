@@ -22,7 +22,7 @@ import { cancelPendingApproval, consumePendingApprovalFromWeb } from "../remote-
 import { normalizeRemoteInputAttachments, buildUserMessageFromRemoteInput } from "../remote-input.js";
 import { handleExecFromWeb } from "../remote-exec-handler.js";
 import { renderTrigger, renderTriggerBatch } from "../triggers/registry.js";
-import { trackReceivedTrigger, receivedTriggers, sendTriggerResponseWithAck, markTriggerHandled } from "../triggers/extension.js";
+import { trackReceivedTrigger, receivedTriggers, sendTriggerResponseWithAck, markTriggerHandled, markTriggerDelivered, markTriggerInjectionFailed, partitionTriggerBatchByDeliveryMode } from "../triggers/extension.js";
 import type { ConversationTrigger } from "../triggers/types.js";
 import type { RelayContext } from "../remote-types.js";
 import { emitSessionActive } from "./chunked-delivery.js";
@@ -262,20 +262,27 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         triggerBatchTimer = null;
         if (pendingTriggerBatch.length === 0) return;
         const batch = pendingTriggerBatch.splice(0);
-        // If ANY trigger in the batch explicitly requested "steer", the batch
-        // interrupts: an explicit interrupt intent (e.g. a usage-limit
-        // session_error) must not be silently downgraded just because it was
-        // debounced alongside a "followUp" trigger like session_complete.
-        const deliverAs = batch.some((b) => b.deliverAs === "steer") ? "steer" as const : "followUp" as const;
-        const rendered = renderTriggerBatch(batch.map((b) => b.trigger));
+        // Batch per delivery mode: a steering trigger must interrupt, but it
+        // must not upgrade unrelated followUp triggers that happened to arrive
+        // in the same debounce window into an interruption (and vice versa).
+        const groups = partitionTriggerBatchByDeliveryMode(batch);
         void (async () => {
-            try {
-                await waitForWorkerStartupComplete();
-                await handlers.sendUserMessage(rendered, { deliverAs });
-            } catch (err) {
-                const message = err instanceof Error ? err.message : String(err);
-                log.error(`pizzapi: failed to deliver trigger batch: ${message}`);
-                rctx.forwardEvent({ type: "cli_error", message: `Failed to deliver trigger batch: ${message}`, source: "remote", ts: Date.now() });
+            for (const group of groups) {
+                const rendered = renderTriggerBatch(group.items.map((b) => b.trigger));
+                try {
+                    await waitForWorkerStartupComplete();
+                    await handlers.sendUserMessage(rendered, { deliverAs: group.deliverAs });
+                    // Received → delivered: only now is deduping a redelivery safe.
+                    for (const item of group.items) markTriggerDelivered(item.trigger.triggerId);
+                } catch (err) {
+                    // Injection failed — drop the dedupe entries so a relay
+                    // redelivery of these triggerIds is accepted rather than
+                    // silently discarded as duplicates (permanent trigger loss).
+                    for (const item of group.items) markTriggerInjectionFailed(item.trigger.triggerId);
+                    const message = err instanceof Error ? err.message : String(err);
+                    log.error(`pizzapi: failed to deliver trigger batch (${group.deliverAs}): ${message}`);
+                    rctx.forwardEvent({ type: "cli_error", message: `Failed to deliver trigger batch: ${message}`, source: "remote", ts: Date.now() });
+                }
             }
         })();
     };

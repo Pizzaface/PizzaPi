@@ -115,6 +115,29 @@ function resetState() {
 describe("subscribeSessionToTrigger", () => {
     beforeEach(resetState);
 
+    test("returns a non-empty subscriptionId on success", async () => {
+        const id = await subscribeSessionToTrigger("session-1", "runner-A", "svc:event");
+        expect(id).toBeTruthy();
+        expect(typeof id).toBe("string");
+    });
+
+    test("returns null (typed failure) when the Redis write fails", async () => {
+        _injectRedisForTesting({
+            ...mockRedisClient,
+            multi: () => ({
+                hSet: function () { return this; },
+                sAdd: function () { return this; },
+                expire: function () { return this; },
+                exec: () => Promise.reject(new Error("redis down")),
+            }),
+        });
+        const id = await subscribeSessionToTrigger("session-1", "runner-A", "svc:event");
+        expect(id).toBeNull();
+        // Nothing half-written into the visible state.
+        const subs = await listSessionSubscriptions("session-1");
+        expect(subs).toHaveLength(0);
+    });
+
     test("adds triggerType → runnerId to session hash", async () => {
         await subscribeSessionToTrigger("session-1", "runner-A", "godmother:idea_moved");
         const subs = await listSessionSubscriptions("session-1");
