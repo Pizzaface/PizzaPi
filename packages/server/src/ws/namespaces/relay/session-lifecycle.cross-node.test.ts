@@ -51,6 +51,8 @@ mock.module("../../sio-registry.js", () => ({
 }));
 
 mock.module("../../sio-state/index.js", () => ({
+    acquireSessionOwnershipLock: async () => {},
+    releaseSessionOwnershipLock: async () => {},
     clearPushPendingQuestion: async () => {},
     deleteRunnerAssociation: async () => {},
 }));
@@ -186,9 +188,9 @@ describe("A2-017: cross-node stale socket protection", () => {
         expect(endedSessions[0].sessionId).toBe("sess-1");
     });
 
-    it("Redis read throws on disconnect → fail-open: teardown proceeds as current owner", async () => {
+    it("Redis read throws on disconnect → fail-closed: teardown is skipped", async () => {
         // Simulate a Redis error during the owner-token read in the disconnect guard.
-        // The guard must treat unknown-owner (null) as fail-open → endSharedSession IS called.
+        // Unknown ownership must never authorize destructive teardown.
         const { socket: socketA, fire: fireA } = makeSocket("sess-1", "token-node-a");
         localSocketMap.set("sess-1", socketA);
         registerSessionLifecycleHandlers(socketA);
@@ -197,9 +199,7 @@ describe("A2-017: cross-node stale socket protection", () => {
 
         await fireA("disconnect", "transport close");
 
-        // Fail-open: teardown must NOT be blocked — treat as matching (unknown) owner.
-        expect(endedSessions).toHaveLength(1);
-        expect(endedSessions[0].sessionId).toBe("sess-1");
+        expect(endedSessions).toHaveLength(0);
     });
 
     it("single-node reconnect still works (same-token re-register does not block teardown)", async () => {

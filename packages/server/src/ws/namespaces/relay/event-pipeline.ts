@@ -278,9 +278,15 @@ export function registerEventHandler(socket: RelaySocket): void {
         // (Redis) owner token.  If they differ, this socket is stale and
         // superseded — reject the event silently (do not update any state or
         // broadcast to viewers).
-        const _sharedOwnerToken = await getSessionOwnerToken(sessionId);
-        if (_sharedOwnerToken !== null && _sharedOwnerToken !== socket.data.token) {
-            return; // ponytail: stale cross-node event, replacement session owns sessionId
+        let sharedOwnerToken: string | null;
+        try {
+            sharedOwnerToken = await getSessionOwnerToken(sessionId);
+        } catch {
+            console.warn(`[sio/relay] Redis ownership lookup failed for ${sessionId}; dropping event`);
+            return;
+        }
+        if (sharedOwnerToken !== socket.data.token) {
+            return; // stale or unknown owner; never process sensitive events
         }
 
         // ── Single-pass image stripping ──────────────────────────────────

@@ -19,6 +19,8 @@ import {
     updateSessionFields,
     deleteSession,
     deleteSessionIfOwner,
+    acquireSessionOwnershipLock,
+    releaseSessionOwnershipLock,
     getAllSessionSummaries,
     refreshSessionTTL,
     incrementSeq,
@@ -155,6 +157,28 @@ export async function registerTuiSession(
     opts: RegisterTuiSessionOpts = {},
 ): Promise<{ sessionId: string; token: string; shareUrl: string; parentSessionId: string | null; wasDelinked: boolean }> {
     const requestedSessionId = typeof opts.sessionId === "string" ? opts.sessionId.trim() : "";
+    const lockSessionId = requestedSessionId.length > 0 ? requestedSessionId : randomUUID();
+    const lockOwner = randomUUID();
+    await acquireSessionOwnershipLock(lockSessionId, lockOwner);
+    try {
+        return await registerTuiSessionUnlocked(
+            socket,
+            cwd,
+            { ...opts, sessionId: requestedSessionId || lockSessionId },
+            requestedSessionId.length === 0,
+        );
+    } finally {
+        await releaseSessionOwnershipLock(lockSessionId, lockOwner);
+    }
+}
+
+async function registerTuiSessionUnlocked(
+    socket: Socket,
+    cwd: string = "",
+    opts: RegisterTuiSessionOpts = {},
+    generatedSessionId = false,
+): Promise<{ sessionId: string; token: string; shareUrl: string; parentSessionId: string | null; wasDelinked: boolean }> {
+    const requestedSessionId = typeof opts.sessionId === "string" ? opts.sessionId.trim() : "";
     let sessionId = requestedSessionId.length > 0 ? requestedSessionId : randomUUID();
     const token = randomBytes(32).toString("hex");
     let shareUrl = `${process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173"}/session/${sessionId}`;
@@ -195,7 +219,7 @@ export async function registerTuiSession(
             if (oldSocket && oldSocket !== socket) {
                 oldSocket.data.sessionId = undefined;
             }
-            await endSharedSession(sessionId, "Session reconnected");
+            await endSharedSessionUnlocked(sessionId, "Session reconnected");
         }
     }
 
@@ -206,7 +230,7 @@ export async function registerTuiSession(
     // bypassed because `existing` is null, but the persisted row still has the
     // original owner.  Generate a fresh session ID so this user gets their own
     // slot without touching the other owner's persisted data.
-    if (!existing && requestedSessionId.length > 0 && sessionId === requestedSessionId) {
+    if (!existing && !generatedSessionId && requestedSessionId.length > 0 && sessionId === requestedSessionId) {
         const persistedUserId = await getRelaySessionUserId(sessionId);
         if (persistedUserId !== null && persistedUserId !== userId) {
             log.warn(
@@ -865,9 +889,8 @@ export async function getSessionOwnerToken(sessionId: string): Promise<string | 
     try {
         return await getSessionField(sessionId, "token");
     } catch (err) {
-        // ponytail: fail-open on Redis read error — treat as unknown owner (same as null)
-        log.warn("getSessionOwnerToken: Redis read error, treating as unknown owner (fail-open)", err);
-        return null;
+        log.warn("getSessionOwnerToken: Redis read error; ownership is unknown", err);
+        throw err;
     }
 }
 
@@ -921,7 +944,28 @@ export async function endSharedSession(
     reason: string = "Session ended",
     opts: { confirmedTerminal?: boolean; expectedOwnerToken?: string } = {},
 ): Promise<void> {
+    const lockOwner = randomUUID();
+    await acquireSessionOwnershipLock(sessionId, lockOwner);
+    try {
+        await endSharedSessionUnlocked(sessionId, reason, opts);
+    } finally {
+        await releaseSessionOwnershipLock(sessionId, lockOwner);
+    }
+}
+
+async function endSharedSessionUnlocked(
+    sessionId: string,
+    reason: string = "Session ended",
+    opts: { confirmedTerminal?: boolean; expectedOwnerToken?: string } = {},
+): Promise<void> {
     const io = getIo();
+    if (opts.expectedOwnerToken !== undefined) {
+        const currentOwnerToken = await getSessionOwnerToken(sessionId);
+        if (currentOwnerToken !== opts.expectedOwnerToken) {
+            log.info(`endSharedSession: owner changed for ${sessionId}; skipping teardown`);
+            return;
+        }
+    }
     await deletePendingRunnerLink(sessionId);
 
     const session = await getSession(sessionId);
@@ -1022,15 +1066,10 @@ export async function endSharedSession(
         );
     }
 
-    // Delete atomically with the owner check so a replacement cannot win
-    // between the disconnect check and teardown. Redis errors remain fail-open.
-    if (opts.expectedOwnerToken) {
-        try {
-            if (!(await deleteSessionIfOwner(sessionId, opts.expectedOwnerToken))) return;
-        } catch (err) {
-            log.warn("endSharedSession: owner-guard Redis error, failing open", err);
-            await deleteSession(sessionId);
-        }
+    // The lock and this atomic delete are defense in depth: ownership was
+    // checked before teardown, and the delete still requires an exact token.
+    if (opts.expectedOwnerToken !== undefined) {
+        if (!(await deleteSessionIfOwner(sessionId, opts.expectedOwnerToken))) return;
     } else {
         await deleteSession(sessionId);
     }

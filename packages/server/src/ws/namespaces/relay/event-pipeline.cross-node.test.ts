@@ -85,6 +85,8 @@ mock.module("../../../sessions/store.js", () => ({
 }));
 
 mock.module("../../sio-state/index.js", () => ({
+    acquireSessionOwnershipLock: async () => {},
+    releaseSessionOwnershipLock: async () => {},
     updateSessionFields: async () => {},
 }));
 
@@ -162,15 +164,14 @@ describe("A2-017: event pipeline stale cross-node socket rejection", () => {
         expect(broadcasts).toEqual(["sess-1"]);
     });
 
-    it("Redis read throws → fail-open: event is accepted (not dropped)", async () => {
-        // When the Redis hGet call throws, getSessionOwnerToken returns null.
-        // null → fail-open: the guard must NOT drop the event.
+    it("Redis read throws → fail-closed: event is dropped", async () => {
+        // Unknown ownership must never authorize processing a sensitive event.
         const { socket: socketA, fire: fireA } = makeSocket("sess-1", "token-node-a");
         registerEventHandler(socketA);
 
         tokenReadShouldThrow = true; // Redis throws on next read
 
-        // Must not reject — event proceeds through the pipeline.
+        // The socket-level acknowledgement is harmless, but processing is dropped.
         await fireA("event", {
             token: "token-node-a",
             seq: 1,
@@ -178,23 +179,23 @@ describe("A2-017: event pipeline stale cross-node socket rejection", () => {
         });
         await drainPipeline("sess-1");
 
-        expect(stateUpdates).toEqual(["sess-1"]);
-        expect(broadcasts).toEqual(["sess-1"]);
+        expect(stateUpdates).toHaveLength(0);
+        expect(broadcasts).toHaveLength(0);
     });
 
-    it("accepts events when Redis has no session yet (sharedOwnerToken === null)", async () => {
+    it("drops events when Redis has no session owner token", async () => {
         redisOwnerToken = null; // session deleted or not yet written
         const { socket: socketA, fire: fireA } = makeSocket("sess-1", "token-node-a");
         registerEventHandler(socketA);
 
-        // Should NOT reject — null means session doesn't exist yet.
         await fireA("event", {
             token: "token-node-a",
             seq: 1,
-            event: { type: "heartbeat", active: false },
+            event: { type: "session_active", state: { sessionFile: "missing.json" } },
         });
         await drainPipeline("sess-1");
 
-        expect(stateUpdates).toHaveLength(0); // heartbeat doesn't write state
+        expect(stateUpdates).toHaveLength(0);
+        expect(broadcasts).toHaveLength(0);
     });
 });

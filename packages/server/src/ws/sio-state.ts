@@ -113,6 +113,33 @@ function userSessionsKey(userId: string): string {
     return `${KEY_PREFIX}:user-sessions:${userId}`;
 }
 
+const SESSION_OWNERSHIP_LOCK_TTL_MS = 30_000;
+function sessionOwnershipLockKey(sessionId: string): string {
+    return `${KEY_PREFIX}:session-lock:${sessionId}`;
+}
+
+/** Serialize registration and destructive teardown for one session ID. */
+export async function acquireSessionOwnershipLock(sessionId: string, owner: string): Promise<void> {
+    const r = requireRedis();
+    const key = sessionOwnershipLockKey(sessionId);
+    for (;;) {
+        const acquired = await r.set(key, owner, { NX: true, PX: SESSION_OWNERSHIP_LOCK_TTL_MS });
+        if (acquired === "OK") return;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+}
+
+/** Release only the lock still owned by this caller. */
+export async function releaseSessionOwnershipLock(sessionId: string, owner: string): Promise<void> {
+    const r = requireRedis();
+    await r.eval(`
+        if redis.call('GET', KEYS[1]) == ARGV[1] then
+            return redis.call('DEL', KEYS[1])
+        end
+        return 0
+    `, { keys: [sessionOwnershipLockKey(sessionId)], arguments: [owner] });
+}
+
 /** Global set of all active session IDs. */
 function allSessionsKey(): string {
     return `${KEY_PREFIX}:all-sessions`;

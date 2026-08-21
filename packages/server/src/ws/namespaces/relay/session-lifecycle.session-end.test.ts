@@ -23,6 +23,8 @@ mock.module("../../sio-registry.js", () => ({
 }));
 
 mock.module("../../sio-state/index.js", () => ({
+    acquireSessionOwnershipLock: async () => {},
+    releaseSessionOwnershipLock: async () => {},
     clearPushPendingQuestion: async () => {},
     deleteRunnerAssociation: async () => {},
 }));

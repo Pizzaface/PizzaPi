@@ -1,9 +1,8 @@
 // ============================================================================
 // sessions.owner-token.test.ts — Unit tests for getSessionOwnerToken (A2-017)
 //
-// Verifies that getSessionOwnerToken is fail-open: when the underlying Redis
-// read throws, it returns null (identical to "not found") instead of
-// propagating the error.  A genuine stored token is still returned correctly.
+// Verifies that getSessionOwnerToken fails closed: Redis errors propagate so
+// sensitive lifecycle operations can skip rather than treating unknown as owner.
 // ============================================================================
 
 import { afterAll, describe, it, expect, mock } from "bun:test";
@@ -21,6 +20,9 @@ mock.module("../sio-state/index.js", () => ({
         if (fieldShouldThrow) throw new Error("Redis ECONNRESET (test)");
         return fieldValue;
     },
+    acquireSessionOwnershipLock: noopAsync,
+    releaseSessionOwnershipLock: noopAsync,
+    deleteSessionIfOwner: async () => true,
     updateSessionFields: noopAsync,
     deleteSession: noopAsync,
     getAllSessionSummaries: async () => [],
@@ -71,11 +73,10 @@ afterAll(() => mock.restore());
 
 const { getSessionOwnerToken } = await import("./sessions.js");
 
-describe("getSessionOwnerToken (A2-017 expo fix: fail-open on Redis error)", () => {
-    it("returns null when Redis read throws — does NOT propagate the error", async () => {
+describe("getSessionOwnerToken (A2-017 fail-closed ownership)", () => {
+    it("propagates Redis errors so callers skip sensitive operations", async () => {
         fieldShouldThrow = true;
-        const result = await getSessionOwnerToken("sess-1");
-        expect(result).toBeNull();
+        await expect(getSessionOwnerToken("sess-1")).rejects.toThrow("Redis ECONNRESET");
         fieldShouldThrow = false;
     });
 

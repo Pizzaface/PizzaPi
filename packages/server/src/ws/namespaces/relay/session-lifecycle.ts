@@ -85,9 +85,15 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             socket.emit("error", { message: "Invalid token" });
             return;
         }
-        const sharedOwnerToken = await getSessionOwnerToken(sessionId);
-        if (sharedOwnerToken !== null && sharedOwnerToken !== socket.data.token) {
-            log.info(`session_end for ${socket.id} — stale cross-node socket, skipping teardown`);
+        let sharedOwnerToken: string | null;
+        try {
+            sharedOwnerToken = await getSessionOwnerToken(sessionId);
+        } catch {
+            log.warn(`session_end for ${socket.id} — Redis ownership lookup failed; skipping teardown`);
+            return;
+        }
+        if (sharedOwnerToken !== socket.data.token) {
+            log.info(`session_end for ${socket.id} — stale or unknown owner, skipping teardown`);
             return;
         }
 
@@ -145,11 +151,17 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             // state: if it differs from this socket's captured token, this
             // socket is stale/superseded — the replacement session owns the
             // session ID now.  Only the matching token may end the session.
-            const sharedOwnerToken = await getSessionOwnerToken(sessionId);
-            if (sharedOwnerToken !== null && sharedOwnerToken !== socket.data.token) {
+            let sharedOwnerToken: string | null;
+            try {
+                sharedOwnerToken = await getSessionOwnerToken(sessionId);
+            } catch {
+                log.warn(`disconnect for ${socket.id} — Redis ownership lookup failed; skipping teardown`);
+                socketAckedSeqs.delete(socket.id);
+                return;
+            }
+            if (sharedOwnerToken !== socket.data.token) {
                 log.info(
-                    `disconnect for ${socket.id} — stale cross-node socket for session ${sessionId}` +
-                    ` (token mismatch), skipping teardown to protect replacement session`,
+                    `disconnect for ${socket.id} — stale or unknown owner for session ${sessionId}, skipping teardown`,
                 );
                 socketAckedSeqs.delete(socket.id);
                 return;
