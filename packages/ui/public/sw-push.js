@@ -145,8 +145,9 @@ function openAppToSession(sessionId) {
             }
             // No window open — open one already pointed at the session, so a
             // cold start lands on the right place instead of the session list.
+            // Use the canonical `/session/<id>` pathname that App.tsx parses.
             return self.clients.openWindow(
-                sessionId ? "/#/sessions/" + encodeURIComponent(sessionId) : "/",
+                sessionId ? "/session/" + encodeURIComponent(sessionId) : "/",
             );
         });
 }

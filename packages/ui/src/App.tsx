@@ -138,6 +138,7 @@ import {
 import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "@/lib/session-ui-cache";
 import { removeMessagesByStableKey, replaceMessageByStableKey } from "@/lib/mcp-auth-banners";
 import { useSessionLifecycle } from "@/lib/use-session-lifecycle";
+import { parseSessionDeepLink } from "@/lib/session-deep-link";
 import { createWizardSpawnHandler } from "@/lib/wizard-spawn-handler";
 import { sessionLifecycleActions as lifecycleActions } from "@/lib/session-lifecycle";
 import {
@@ -966,10 +967,7 @@ export function App() {
   // session ID on mount so we can open it once auth + liveSessions are ready.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const deepLinkSessionIdRef = React.useRef<string | null>(
-    (() => {
-      const m = window.location.pathname.match(/^\/session\/([^/]+)(?:\/|$)/);
-      return m ? decodeURIComponent(m[1]) : null;
-    })(),
+    parseSessionDeepLink(window.location.pathname),
   );
 
   // Tracks a session that was restarted via the remote exec "restart" command.
