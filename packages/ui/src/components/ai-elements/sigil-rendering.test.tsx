@@ -60,6 +60,23 @@ describe("sigil rendering pipeline", () => {
     );
   });
 
+  test("action sigil survives markdown emphasis (tildes) and commas inside parens", async () => {
+    const text =
+      '[[action:choose question="Scope for the new shift — 71 viable dishes is a lot" options="All 71 dishes,Security lane only (B-, 17 dishes),Top-band A dishes only (~60),Curated top ~20 across lanes"]]';
+    renderSigilMarkdown(text);
+    await waitFor(
+      () => {
+        const labels = Array.from(document.body.querySelectorAll("button")).map(
+          (b) => b.textContent,
+        );
+        expect(labels).toContain("Security lane only (B-, 17 dishes)");
+        expect(labels).toContain("Top-band A dishes only (~60)");
+        expect(labels.length).toBe(4);
+      },
+      { timeout: 10000 },
+    );
+  });
+
   test("simple confirm action sigil with label renders as button", async () => {
     renderSigilMarkdown("Pick one [[action:confirm id=x label=Yes]]");
     await waitFor(
