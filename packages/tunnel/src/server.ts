@@ -267,9 +267,17 @@ export class TunnelRelay {
   }
 
   sendWsClose(runnerId: string, wsId: string, code?: number, reason?: string): void {
-    const runner = this.runners.get(runnerId);
-    if (!runner) return;
-    this.send(runner.ws, { type: "ws-close", id: wsId, code, reason });
+    const pending = this.pendingWs.get(wsId);
+    if (!pending) return;
+
+    try {
+      const runner = this.runners.get(runnerId);
+      if (runner) this.send(runner.ws, { type: "ws-close", id: wsId, code, reason });
+    } finally {
+      clearTimeout(pending.timer);
+      this.pendingWs.delete(wsId);
+      pending.onClose(code, reason);
+    }
   }
 
   dispose(): void {

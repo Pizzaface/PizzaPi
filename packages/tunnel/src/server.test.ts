@@ -345,6 +345,52 @@ describe("TunnelRelay HTTP proxy callbacks", () => {
 });
 
 describe("TunnelRelay WebSocket proxy callbacks", () => {
+  test("viewer close releases pending state and settles callbacks without waiting for an ack", async () => {
+    const relay = new TunnelRelay({ apiKeys: ["key1"] });
+    const mockWs = createMockWebSocket();
+    const pendingWs = Reflect.get(relay, "pendingWs") as Map<string, unknown>;
+
+    relay.handleConnection(mockWs.ws);
+    mockWs.emit("message", {
+      data: JSON.stringify({ type: "register", runnerId: "r1", apiKey: "key1" }),
+    });
+    await waitForMicrotask();
+
+    const events: string[] = [];
+    relay.proxyWsOpen(
+      "r1",
+      { id: "ws1", port: 8080, path: "/socket", headers: {} },
+      {
+        onOpened() {},
+        onData() {},
+        onClose(code, reason) {
+          events.push(`close:${code}:${reason}`);
+        },
+        onError(message) {
+          events.push(`error:${message}`);
+        },
+      },
+    );
+
+    expect(pendingWs.size).toBe(1);
+
+    relay.sendWsClose("r1", "ws1", 1000, "viewer closed");
+
+    expect(pendingWs.size).toBe(0);
+    expect(events).toEqual(["close:1000:viewer closed"]);
+    expect(JSON.parse(mockWs.sent.at(-1)!)).toEqual({
+      type: "ws-close",
+      id: "ws1",
+      code: 1000,
+      reason: "viewer closed",
+    });
+
+    const sentBeforeSecondClose = mockWs.sent.length;
+    relay.sendWsClose("r1", "ws1", 1000, "viewer closed");
+    expect(events).toEqual(["close:1000:viewer closed"]);
+    expect(mockWs.sent).toHaveLength(sentBeforeSecondClose);
+  });
+
   test("ws-opened, ws-data, and ws-close route to callbacks", async () => {
     const relay = new TunnelRelay({ apiKeys: ["key1"] });
     const mockWs = createMockWebSocket();
