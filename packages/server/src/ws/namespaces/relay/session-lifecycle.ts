@@ -85,6 +85,11 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             socket.emit("error", { message: "Invalid token" });
             return;
         }
+        const sharedOwnerToken = await getSessionOwnerToken(sessionId);
+        if (sharedOwnerToken !== null && sharedOwnerToken !== socket.data.token) {
+            log.info(`session_end for ${socket.id} — stale cross-node socket, skipping teardown`);
+            return;
+        }
 
         clearThinkingMaps(sessionId);
         forgetViewerGate(sessionId);
@@ -102,7 +107,10 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
         await deleteRunnerAssociation(sessionId);
         // Graceful session_end is a confirmed terminal end — remove this child
         // from its parent's membership set (fixes subagent-mirror leak).
-        await endSharedSession(sessionId, "Session ended", { confirmedTerminal: true });
+        await endSharedSession(sessionId, "Session ended", {
+            confirmedTerminal: true,
+            expectedOwnerToken: socket.data.token,
+        });
         socket.data.sessionId = undefined;
         socketAckedSeqs.delete(socket.id);
     });
@@ -174,7 +182,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             // to the parent's new conversation.  Leaving the membership in
             // place is harmless — delink_children will clean it up, and
             // stale entries are pruned when the session key expires.
-            await endSharedSession(sessionId);
+            await endSharedSession(sessionId, "Session ended", { expectedOwnerToken: socket.data.token });
         }
         socketAckedSeqs.delete(socket.id);
     });

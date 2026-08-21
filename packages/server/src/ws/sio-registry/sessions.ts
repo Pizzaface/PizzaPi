@@ -18,6 +18,7 @@ import {
     getSessionField,
     updateSessionFields,
     deleteSession,
+    deleteSessionIfOwner,
     getAllSessionSummaries,
     refreshSessionTTL,
     incrementSeq,
@@ -918,7 +919,7 @@ function viewerDisconnectPayload(reason: string): { reason: string; code?: "sess
 export async function endSharedSession(
     sessionId: string,
     reason: string = "Session ended",
-    opts: { confirmedTerminal?: boolean } = {},
+    opts: { confirmedTerminal?: boolean; expectedOwnerToken?: string } = {},
 ): Promise<void> {
     const io = getIo();
     await deletePendingRunnerLink(sessionId);
@@ -1021,8 +1022,18 @@ export async function endSharedSession(
         );
     }
 
-    // Delete from Redis
-    await deleteSession(sessionId);
+    // Delete atomically with the owner check so a replacement cannot win
+    // between the disconnect check and teardown. Redis errors remain fail-open.
+    if (opts.expectedOwnerToken) {
+        try {
+            if (!(await deleteSessionIfOwner(sessionId, opts.expectedOwnerToken))) return;
+        } catch (err) {
+            log.warn("endSharedSession: owner-guard Redis error, failing open", err);
+            await deleteSession(sessionId);
+        }
+    } else {
+        await deleteSession(sessionId);
+    }
     lastRelaySessionStateWriteTimes.delete(sessionId);
 
     // Persist end in SQLite

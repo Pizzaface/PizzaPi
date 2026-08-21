@@ -541,6 +541,27 @@ export async function deleteSession(sessionId: string): Promise<void> {
     await multi.exec();
 }
 
+/** Delete only if the session still belongs to expectedToken (one Redis op). */
+export async function deleteSessionIfOwner(sessionId: string, expectedToken: string): Promise<boolean> {
+    const r = requireRedis();
+    const result = await r.eval(`
+        if redis.call('HGET', KEYS[1], 'token') ~= ARGV[1] then
+            return 0
+        end
+        local userId = redis.call('HGET', KEYS[1], 'userId')
+        redis.call('DEL', KEYS[1], KEYS[2])
+        redis.call('SREM', KEYS[3], ARGV[2])
+        if userId and userId ~= '' then
+            redis.call('SREM', ARGV[3] .. userId, ARGV[2])
+        end
+        return 1
+    `, {
+        keys: [sessionKey(sessionId), seqKey(sessionId), allSessionsKey()],
+        arguments: [expectedToken, sessionId, `${KEY_PREFIX}:user-sessions:`],
+    });
+    return result === 1;
+}
+
 export async function getAllSessionSummaries(filterUserId?: string): Promise<RedisSessionSummaryData[]> {
     const r = requireRedis();
 

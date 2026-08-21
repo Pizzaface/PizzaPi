@@ -18,6 +18,10 @@ const endedSessions: Array<{ sessionId: string; reason?: string; opts?: unknown 
 let redisOwnerToken: string | null = "token-node-a";
 // Set to true to simulate a Redis read error (fix returns null, not throws).
 let tokenReadShouldThrow = false;
+let getSessionOwnerTokenForTest = async (_sessionId: string) => {
+    if (tokenReadShouldThrow) return null;
+    return redisOwnerToken;
+};
 
 mock.module("../../sio-registry.js", () => ({
     registerTuiSession: async (_socket: unknown, _cwd: string, opts: { sessionId?: string }) => ({
@@ -34,16 +38,16 @@ mock.module("../../sio-registry.js", () => ({
         return localSocketMap.get(sessionId);
     },
     broadcastToViewers: () => {},
-    endSharedSession: async (sessionId: string, reason?: string, opts?: unknown) => {
+    endSharedSession: async (sessionId: string, reason?: string, opts?: { expectedOwnerToken?: string }) => {
+        // Model the atomic delete guard: a replacement that rotates the token
+        // after the lifecycle check must still prevent deletion.
+        if (opts?.expectedOwnerToken && redisOwnerToken !== opts.expectedOwnerToken) return;
         endedSessions.push({ sessionId, reason, opts });
     },
     // Returns the CURRENT shared (Redis) owner token — bumped by node-B's register.
     // After the A2-017 expo fix, getSessionOwnerToken catches Redis errors and
     // returns null (fail-open).  Simulate that: return null when shouldThrow.
-    getSessionOwnerToken: async (_sessionId: string) => {
-        if (tokenReadShouldThrow) return null;
-        return redisOwnerToken;
-    },
+    getSessionOwnerToken: (sessionId: string) => getSessionOwnerTokenForTest(sessionId),
 }));
 
 mock.module("../../sio-state/index.js", () => ({
@@ -97,6 +101,10 @@ describe("A2-017: cross-node stale socket protection", () => {
         endedSessions.length = 0;
         redisOwnerToken = "token-node-a";
         tokenReadShouldThrow = false;
+        getSessionOwnerTokenForTest = async (_sessionId: string) => {
+            if (tokenReadShouldThrow) return null;
+            return redisOwnerToken;
+        };
         localSocketMap.clear();
     });
 
@@ -144,6 +152,23 @@ describe("A2-017: cross-node stale socket protection", () => {
         });
 
         // Session must not have been ended.
+        expect(endedSessions).toHaveLength(0);
+    });
+
+    it("token rotation between ownership check and teardown does NOT end replacement", async () => {
+        const { socket, fire } = makeSocket("sess-1", "token-node-a");
+        localSocketMap.set("sess-1", socket);
+        registerSessionLifecycleHandlers(socket);
+
+        // The check returns the old owner, then a replacement wins before
+        // endSharedSession receives the expected token.
+        const original = getSessionOwnerTokenForTest;
+        getSessionOwnerTokenForTest = async () => {
+            getSessionOwnerTokenForTest = original;
+            redisOwnerToken = "token-node-b";
+            return "token-node-a";
+        };
+        await fire("disconnect", "transport close");
         expect(endedSessions).toHaveLength(0);
     });
 
