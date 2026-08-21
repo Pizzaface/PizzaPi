@@ -56,6 +56,66 @@ describe("setup-claims store", () => {
         });
     });
 
+    // B-016: redemption must clear the plaintext key from the row in the same
+    // atomic UPDATE that marks it redeemed — no redeemed-but-key-still-present
+    // window for DB backups/readers.
+    test("redemption clears the stored apiKey column while still serving the caller", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492");
+            const approve = await approveSetupClaim(token, "user-clear", "Clear");
+            expect(approve).not.toBeNull();
+
+            const { getKysely } = await import("./auth.js");
+            const before = await getKysely()
+                .selectFrom("setup_claim")
+                .select(["apiKey", "status"])
+                .where("id", "=", token)
+                .executeTakeFirstOrThrow();
+            expect(before.status).toBe("approved");
+            expect(before.apiKey).toBe(approve!.apiKey);
+
+            // Legitimate poller still receives the key.
+            const first = await pollSetupClaim(token);
+            expect(first!.status).toBe("approved");
+            expect(first!.apiKey).toBe(approve!.apiKey);
+
+            // But the row no longer holds it — cleared atomically with the redeem.
+            const after = await getKysely()
+                .selectFrom("setup_claim")
+                .select(["apiKey", "status", "redeemedAt"])
+                .where("id", "=", token)
+                .executeTakeFirstOrThrow();
+            expect(after.status).toBe("redeemed");
+            expect(after.apiKey).toBeNull();
+            expect(after.redeemedAt).not.toBeNull();
+
+            // Second poll reports redeemed and never re-serves the key.
+            const second = await pollSetupClaim(token);
+            expect(second!.status).toBe("redeemed");
+            expect(second!.apiKey).toBeUndefined();
+        });
+    });
+
+    test("concurrent polls serve the key exactly once", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492");
+            const approve = await approveSetupClaim(token, "user-race", "Race");
+            expect(approve).not.toBeNull();
+
+            const results = await Promise.all([
+                pollSetupClaim(token),
+                pollSetupClaim(token),
+                pollSetupClaim(token),
+            ]);
+            const served = results.filter((r) => r!.apiKey === approve!.apiKey);
+            expect(served.length).toBe(1);
+            for (const r of results.filter((r) => r!.apiKey !== approve!.apiKey)) {
+                expect(r!.apiKey).toBeUndefined();
+                expect(r!.status).toBe("redeemed");
+            }
+        });
+    });
+
     test("unknown token returns null", async () => {
         await runWithAuthContext(authContext, async () => {
             const status = await pollSetupClaim("definitely-not-a-token");
