@@ -605,7 +605,12 @@ describe("TunnelClient probe timeout fallback", () => {
     let index = 0;
     return jest.spyOn(https, "request").mockImplementation((options: any) => {
       const req = new EventEmitter() as any;
-      req.destroy = () => {};
+      // Simulate the real node behaviour: req.destroy() emits an async 'error'
+      // ("socket hang up" / ERR_HTTP_SOCKET_CLOSED). The timedOut guard in
+      // tryFamily must block the error handler from firing a second retry.
+      req.destroy = () => {
+        queueMicrotask(() => req.emit("error", new Error("socket hang up")));
+      };
       req.end = () => {
         const behavior = behaviors[index++] ?? "timeout";
         queueMicrotask(() => req.emit(behavior, new Error(behavior)));
@@ -618,7 +623,12 @@ describe("TunnelClient probe timeout fallback", () => {
     let index = 0;
     return jest.spyOn(net, "connect").mockImplementation(() => {
       const sock = new EventEmitter() as any;
-      sock.destroy = () => {};
+      // Simulate sock.destroy() emitting 'error' to exercise the sockTimedOut
+      // symmetry guard (in production this rarely happens, but the guard must
+      // hold when it does).
+      sock.destroy = () => {
+        queueMicrotask(() => sock.emit("error", new Error("socket destroyed")));
+      };
       sock.setTimeout = (_ms: number, cb: () => void) => {
         sock._timeoutCb = cb;
       };
