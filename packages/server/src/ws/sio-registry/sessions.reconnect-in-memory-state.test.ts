@@ -36,7 +36,6 @@ mock.module("../../sessions/store.js", () => ({
     updateRelaySessionRunner: async () => false,
     updateRelaySessionName: async () => false,
     getActiveRelaySessionUserId: async () => null,
-    recordRelaySessionEnd: async () => {},
     getPersistedRelaySessionOwner: async () => null,
     listPersistedRelaySessionsForUser: async () => [],
     listPinnedRelaySessionsForUser: async () => [],

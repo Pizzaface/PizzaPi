@@ -2,12 +2,14 @@ import { describe, test, expect } from "bun:test";
 import { isPizzaPiHostInfo, detectPizzaPiHost, onPizzaPiHost } from "@pizzapi/extension-sdk";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { hostAnnounceExtension, buildHostInfo } from "./host-announce.js";
+import { serviceMessageBridgeExtension } from "./service-message-bridge.js";
 
 /** Minimal synchronous pi.events fake — enough to exercise probe/ready semantics. */
 function fakePiEvents() {
     const listeners = new Map<string, Array<(payload: unknown) => void>>();
     return {
         events: {
+            listeners,
             on(type: string, handler: (payload: unknown) => void) {
                 const arr = listeners.get(type) ?? [];
                 arr.push(handler);
@@ -95,6 +97,34 @@ describe("hostAnnounceExtension", () => {
             fireShutdown: () => { for (const h of shutdownHandlers.splice(0)) h(); },
         };
     }
+
+    test("host ready is emitted before the service-message-bridge listener exists", () => {
+        // Mirrors the real factory ordering in factories.ts:
+        // hostAnnounceExtension is index 0; serviceMessageBridgeExtension is
+        // registered later. Because package extensions run BEFORE inline
+        // factories, their onPizzaPiHost() callback fires during hostAnnounce
+        // — while the bridge listener that would handle sendServiceMessage()
+        // is still unattached.
+        const pi = fakePiEvents();
+        let readyDelivered = false;
+        let serviceListenersAtReady = 0;
+
+        onPizzaPiHost(pi as any, () => {
+            readyDelivered = true;
+            // A package extension that uses the advertised "serviceMessages"
+            // capability immediately sends a service message. At this moment
+            // the service-message-bridge listener has not been registered yet.
+            serviceListenersAtReady = (pi.events.listeners.get("pizzapi:service_message") ?? []).length;
+            pi.events.emit("pizzapi:service_message", { serviceId: "discord", type: "ready", payload: {} });
+        });
+
+        hostAnnounceExtension(pi as any);
+        expect(readyDelivered).toBe(true);
+        expect(serviceListenersAtReady).toBe(0); // bridge isn't bound yet
+
+        serviceMessageBridgeExtension(pi as any);
+        expect((pi.events.listeners.get("pizzapi:service_message") ?? []).length).toBeGreaterThan(0);
+    });
 
     test("session_shutdown removes the probe listener from the real pi event bus (no accumulation across reloads)", () => {
         const { pi, bus, fireShutdown } = realBusPi();

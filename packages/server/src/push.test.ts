@@ -731,3 +731,41 @@ describe("sendPushToUser — child-session suppression", () => {
         expect(fetchCalled).toBe(true);
     });
 });
+
+// ── Viewer-presence suppression + stale subscription cleanup ────────────────
+//
+// `checkPushNotifications` sets suppress.web=true whenever any viewer socket
+// is connected to the session. In `sendPushToUser` that flag causes the
+// per-subscription callback to return early, BEFORE `JSON.parse(sub.keys)`
+// runs. The result: a subscription with malformed/unparseable keys is never
+// discovered as stale while the user keeps a viewer tab open, so bad rows
+// accumulate in push_subscription indefinitely.
+//
+// This is distinct from child suppression (isChildSession), device scope,
+// route mismatch, and stale deep links.
+
+describe("sendPushToUser — viewer-presence suppression leaks stale subscriptions", () => {
+    authIt("malformed web-push subscription survives while a viewer is connected", async () => {
+        await insertSub("sub-viewer-stale", "user-viewer-stale", "https://example.com/push/viewer-stale");
+        await getKysely()
+            .updateTable("push_subscription" as any)
+            .set({ keys: "not-json" })
+            .where("id", "=", "sub-viewer-stale")
+            .execute();
+
+        // suppressWebPush=true simulates any viewer socket being connected.
+        await sendPushToUser("user-viewer-stale", {
+            type: "agent_finished",
+            title: "Agent finished",
+            body: "done",
+            sessionId: "sess-viewer-stale",
+        }, false, true);
+
+        // Current behavior leaves the row in place; desired behavior is to
+        // prune it even while web push is suppressed so stale subscriptions do
+        // not accumulate as long as any viewer is connected.
+        const subs = await getSubscriptionsForUser("user-viewer-stale");
+        expect(subs).toHaveLength(0);
+    });
+});
+
