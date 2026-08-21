@@ -8,6 +8,7 @@ import {
     getLocalTuiSocket,
     broadcastToViewers,
     endSharedSession,
+    getSessionOwnerToken,
 } from "../../sio-registry.js";
 import {
     clearPushPendingQuestion,
@@ -118,13 +119,30 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
         log.info(`disconnected: ${socket.id} (${reason})`);
         const sessionId = socket.data.sessionId;
         if (sessionId) {
-            // If a newer socket already re-registered this session (reconnect),
-            // don't tear down the new session.  registerTuiSession clears our
-            // sessionId as a primary guard, but this check is defense-in-depth
-            // for any remaining race windows.
+            // Guard 1 (single-node): if a newer socket already re-registered
+            // this session on THIS node, don't tear down the new session.
+            // registerTuiSession clears our sessionId as a primary guard, but
+            // this check is defense-in-depth for any remaining race windows.
             const currentSocket = getLocalTuiSocket(sessionId);
             if (currentSocket && currentSocket !== socket) {
                 log.info(`disconnect for ${socket.id} — session ${sessionId} already owned by ${currentSocket.id}, skipping teardown`);
+                socketAckedSeqs.delete(socket.id);
+                return;
+            }
+
+            // Guard 2 (cross-node): a replacement session may have registered
+            // on a DIFFERENT node (multi-node relay).  The local socket map
+            // cannot see cross-node sockets, so guard 1 is blind to them.
+            // Fetch the current connection-owner token from shared (Redis)
+            // state: if it differs from this socket's captured token, this
+            // socket is stale/superseded — the replacement session owns the
+            // session ID now.  Only the matching token may end the session.
+            const sharedOwnerToken = await getSessionOwnerToken(sessionId);
+            if (sharedOwnerToken !== null && sharedOwnerToken !== socket.data.token) {
+                log.info(
+                    `disconnect for ${socket.id} — stale cross-node socket for session ${sessionId}` +
+                    ` (token mismatch), skipping teardown to protect replacement session`,
+                );
                 socketAckedSeqs.delete(socket.id);
                 return;
             }

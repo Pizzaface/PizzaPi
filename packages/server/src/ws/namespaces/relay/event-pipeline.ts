@@ -13,6 +13,7 @@ import {
     broadcastSessionEventToViewers,
     publishSessionEvent,
     consumePendingRecovery,
+    getSessionOwnerToken,
 } from "../../sio-registry.js";
 import { appendRelayEventToCache } from "../../../sessions/redis.js";
 import { isDeltaEvent, shouldPublishDelta } from "./viewer-gate.js";
@@ -270,6 +271,17 @@ export function registerEventHandler(socket: RelaySocket): void {
 
         // Serialize async processing per session to guarantee chunk order.
         enqueueSessionEvent(sessionId, async () => {
+
+        // ── Cross-node stale socket guard ────────────────────────────────
+        // A replacement session may have registered on a different relay node.
+        // Compare this socket's captured token against the current shared
+        // (Redis) owner token.  If they differ, this socket is stale and
+        // superseded — reject the event silently (do not update any state or
+        // broadcast to viewers).
+        const _sharedOwnerToken = await getSessionOwnerToken(sessionId);
+        if (_sharedOwnerToken !== null && _sharedOwnerToken !== socket.data.token) {
+            return; // ponytail: stale cross-node event, replacement session owns sessionId
+        }
 
         // ── Single-pass image stripping ──────────────────────────────────
         // Strip inline base64 images ONCE at ingestion so all downstream

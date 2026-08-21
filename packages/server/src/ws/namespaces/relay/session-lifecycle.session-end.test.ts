@@ -16,6 +16,9 @@ mock.module("../../sio-registry.js", () => ({
     endSharedSession: async (sessionId: string, reason?: string, opts?: unknown) => {
         endedSessions.push({ sessionId, reason, opts });
     },
+    // A2-017: cross-node owner token guard — return matching token so
+    // the existing disconnect tests are not blocked by the stale-socket guard.
+    getSessionOwnerToken: async () => "tok",
 }));
 
 mock.module("../../sio-state/index.js", () => ({

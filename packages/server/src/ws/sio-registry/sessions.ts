@@ -850,6 +850,20 @@ export async function updateSessionHeartbeat(
     }
 }
 
+/**
+ * Fetch the current connection owner token from shared (Redis) state.
+ *
+ * This is regenerated every time `registerTuiSession` is called, so if a
+ * replacement session registers on a DIFFERENT node (cross-node reconnect),
+ * the Redis token will differ from the stale socket's `socket.data.token`.
+ *
+ * Only the socket whose token MATCHES the current shared token may end/delete
+ * the session or emit accepted events.  All others are stale/superseded.
+ */
+export async function getSessionOwnerToken(sessionId: string): Promise<string | null> {
+    return getSessionField(sessionId, "token");
+}
+
 /** Get the current seq counter for a session. */
 export async function getSessionSeq(sessionId: string): Promise<number> {
     return getSeq(sessionId);

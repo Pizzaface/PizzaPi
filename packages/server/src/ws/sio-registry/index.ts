@@ -27,6 +27,7 @@ export {
     getSessionLastHeartbeat,
     sendSnapshotToViewer,
     endSharedSession,
+    getSessionOwnerToken,
     sweepExpiredSessions,
     sweepOrphanedSessions,
     addViewer,
