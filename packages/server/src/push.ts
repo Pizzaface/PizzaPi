@@ -253,6 +253,8 @@ export interface NativePushRegistrationTable {
     ntfyUser: string | null;
     ntfyPass: string | null;
     createdAt: string;
+    /** 0 = deliver child-session notifications; 1 = suppress them. Defaults to 1. */
+    suppressChildNotifications: number;
 }
 
 export async function ensureNativePushRegistrationTable(): Promise<void> {
@@ -267,6 +269,18 @@ export async function ensureNativePushRegistrationTable(): Promise<void> {
         .addColumn("ntfyPass", "text")
         .addColumn("createdAt", "text", (col) => col.notNull())
         .execute();
+
+    // Migration: add suppressChildNotifications if the column doesn't exist yet.
+    // Same idempotent pattern used for push_subscription above.
+    try {
+        await getKysely().schema
+            .alterTable("native_push_registration")
+            .addColumn("suppressChildNotifications", "integer", (col) => col.notNull().defaultTo(1))
+            .execute();
+    } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes("duplicate column name")) throw err;
+    }
 
     await getKysely().schema
         .createIndex("native_push_registration_user_idx")
@@ -286,6 +300,8 @@ export async function ensureNativePushRegistrationTable(): Promise<void> {
 export interface RegisterNativeInput {
     userId: string;
     platform: string;
+    /** When provided, persisted as the per-registration child-suppression preference. */
+    suppressChildNotifications?: boolean;
 }
 
 /**
@@ -304,7 +320,19 @@ export async function registerNativePush(input: RegisterNativeInput): Promise<Na
         .where("userId", "=", input.userId)
         .where("platform", "=", platform)
         .executeTakeFirst();
-    if (existing) return existing as unknown as NativePushRegistrationTable;
+    if (existing) {
+        // Update suppressChildNotifications if a new preference was provided.
+        if (input.suppressChildNotifications !== undefined) {
+            const val = input.suppressChildNotifications ? 1 : 0;
+            await getKysely()
+                .updateTable("native_push_registration" as any)
+                .set({ suppressChildNotifications: val })
+                .where("id", "=", (existing as any).id)
+                .execute();
+            return { ...(existing as unknown as NativePushRegistrationTable), suppressChildNotifications: val };
+        }
+        return existing as unknown as NativePushRegistrationTable;
+    }
 
     const row: NativePushRegistrationTable = {
         id: crypto.randomUUID(),
@@ -313,6 +341,7 @@ export async function registerNativePush(input: RegisterNativeInput): Promise<Na
         topic: generateNtfyTopic(),
         ntfyUser: null,
         ntfyPass: null,
+        suppressChildNotifications: input.suppressChildNotifications === false ? 0 : 1,
         createdAt: new Date().toISOString(),
     };
     await getKysely()
@@ -320,6 +349,24 @@ export async function registerNativePush(input: RegisterNativeInput): Promise<Na
         .values(row as any)
         .execute();
     return row;
+}
+
+/**
+ * Update the child-notification suppression preference for a user's native registration.
+ * Returns the number of rows updated (0 if no registration exists for user+platform).
+ */
+export async function updateNativeSuppressChildNotifications(
+    userId: string,
+    platform: string,
+    suppress: boolean,
+): Promise<number> {
+    const result = await getKysely()
+        .updateTable("native_push_registration" as any)
+        .set({ suppressChildNotifications: suppress ? 1 : 0 })
+        .where("userId", "=", userId)
+        .where("platform", "=", platform)
+        .execute();
+    return Number((result as any)[0]?.numUpdatedRows ?? 0);
 }
 
 export async function unregisterNativePush(userId: string, platform: string): Promise<boolean> {
@@ -380,14 +427,13 @@ function buildNtfyPublish(payload: PushPayload): Record<string, unknown> {
  * (sendPushToUser) treats this as best-effort alongside the Web Push fan-out.
  * Native devices alert only when the agent needs input or finishes.
  *
- * Linked child sessions never send native push by default (docs: "only
- * top-level sessions send push notifications") — native registrations have
- * no per-subscription preference columns to offer a granular opt-out today,
- * so this is unconditional. (Unlike the Web Push path below, there is no
- * per-registration escape hatch yet — add one here if that's ever needed.)
+ * Child-session suppression is now per-registration: each registration's
+ * `suppressChildNotifications` column controls whether child-session
+ * notifications are delivered (0 = deliver, 1 = suppress). This is feature
+ * parity with the Web Push per-subscription `suppressChildNotifications` flag.
  */
 async function sendNtfyToUser(userId: string, payload: PushPayload, isChildSession: boolean): Promise<void> {
-    if (isChildSession || (payload.type !== "agent_needs_input" && payload.type !== "agent_finished")) return;
+    if (payload.type !== "agent_needs_input" && payload.type !== "agent_finished") return;
     const cfg = ntfyConfig();
     if (!cfg.url) return;
     const registrations = await getNativeRegistrationsForUser(userId);
@@ -419,6 +465,10 @@ async function sendNtfyToUser(userId: string, payload: PushPayload, isChildSessi
 
     await Promise.allSettled(
         registrations.map(async (reg) => {
+            // Per-registration child-session suppression: skip if the user opted out
+            // of child-session notifications for this device registration.
+            if (isChildSession && reg.suppressChildNotifications) return;
+
             let res: Response;
             try {
                 res = await publishOnce(reg);

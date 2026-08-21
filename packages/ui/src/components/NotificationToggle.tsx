@@ -33,12 +33,70 @@ import {
     requestNativePushPermission,
     startNtfyPush,
     stopNtfyPush,
+    getNativeSuppressChildNotifications,
+    setNativeSuppressChildNotifications,
 } from "@/lib/ntfy-push";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("push");
 
-export function usePushState() {
+export interface PushDependencies {
+    isPushSupported: typeof isPushSupported;
+    isPushSubscribed: typeof isPushSubscribed;
+    subscribeToPush: typeof subscribeToPush;
+    unsubscribeFromPush: typeof unsubscribeFromPush;
+    getNotificationPermission: typeof getNotificationPermission;
+    getSuppressChildNotifications: typeof getSuppressChildNotifications;
+    setSuppressChildNotifications: typeof setSuppressChildNotifications;
+    isNativePushAvailable: typeof isNativePushAvailable;
+    isNativePushDisabled: typeof isNativePushDisabled;
+    setNativePushDisabled: typeof setNativePushDisabled;
+    hasNativePushPermission: typeof hasNativePushPermission;
+    requestNativePushPermission: typeof requestNativePushPermission;
+    startNtfyPush: typeof startNtfyPush;
+    stopNtfyPush: typeof stopNtfyPush;
+    getNativeSuppressChildNotifications: typeof getNativeSuppressChildNotifications;
+    setNativeSuppressChildNotifications: typeof setNativeSuppressChildNotifications;
+}
+
+const defaultPushDependencies: PushDependencies = {
+    isPushSupported,
+    isPushSubscribed,
+    subscribeToPush,
+    unsubscribeFromPush,
+    getNotificationPermission,
+    getSuppressChildNotifications,
+    setSuppressChildNotifications,
+    isNativePushAvailable,
+    isNativePushDisabled,
+    setNativePushDisabled,
+    hasNativePushPermission,
+    requestNativePushPermission,
+    startNtfyPush,
+    stopNtfyPush,
+    getNativeSuppressChildNotifications,
+    setNativeSuppressChildNotifications,
+};
+
+export function usePushState(dependencies: PushDependencies = defaultPushDependencies) {
+    const {
+        isPushSupported,
+        isPushSubscribed,
+        subscribeToPush,
+        unsubscribeFromPush,
+        getNotificationPermission,
+        getSuppressChildNotifications,
+        setSuppressChildNotifications,
+        isNativePushAvailable,
+        isNativePushDisabled,
+        setNativePushDisabled,
+        hasNativePushPermission,
+        requestNativePushPermission,
+        startNtfyPush,
+        stopNtfyPush,
+        getNativeSuppressChildNotifications,
+        setNativeSuppressChildNotifications,
+    } = dependencies;
     // Android native app: no service worker / Web Push in the WebView — use the
     // ntfy foreground-service path gated on the OS notification permission.
     const native = isNativePushAvailable();
@@ -60,6 +118,7 @@ export function usePushState() {
                 if (!granted || isNativePushDisabled()) {
                     setSubscribed(false);
                     setNativeUnconfigured(false);
+                    setSuppressChild(false);
                     setLoading(false);
                     return;
                 }
@@ -69,6 +128,8 @@ export function usePushState() {
                 const result = await startNtfyPush();
                 setSubscribed(result.ok);
                 setNativeUnconfigured(!result.ok && result.reason === "unconfigured");
+                // startNtfyPush caches the server value in localStorage.
+                if (result.ok) setSuppressChild(getNativeSuppressChildNotifications());
                 setLoading(false);
             });
             return;
@@ -151,7 +212,10 @@ export function usePushState() {
         setSuppressChildLoading(true);
         try {
             const next = !suppressChild;
-            const ok = await setSuppressChildNotifications(next);
+            // Route to the native or web API depending on platform.
+            const ok = native
+                ? await setNativeSuppressChildNotifications(next)
+                : await setSuppressChildNotifications(next);
             if (ok) {
                 setSuppressChild(next);
                 window.dispatchEvent(new CustomEvent("pp-push-state-changed"));
@@ -161,7 +225,7 @@ export function usePushState() {
         } finally {
             setSuppressChildLoading(false);
         }
-    }, [suppressChild, suppressChildLoading, subscribed]);
+    }, [suppressChild, suppressChildLoading, subscribed, native]);
 
     // On native, "denied" only after an explicit request came back denied —
     // Android can't distinguish never-asked from denied, and the fix lives in
@@ -171,8 +235,8 @@ export function usePushState() {
     return { subscribed, loading, supported, native, permissionDenied, nativeUnconfigured, toggle, suppressChild, suppressChildLoading, toggleSuppressChild };
 }
 
-export function NotificationToggle() {
-    const { subscribed, loading, supported, native, permissionDenied, nativeUnconfigured, toggle, suppressChild, suppressChildLoading, toggleSuppressChild } = usePushState();
+export function NotificationToggle({ dependencies }: { dependencies?: PushDependencies } = {}) {
+    const { subscribed, loading, supported, native, permissionDenied, nativeUnconfigured, toggle, suppressChild, suppressChildLoading, toggleSuppressChild } = usePushState(dependencies);
 
     if (!supported) return null;
 
@@ -230,10 +294,9 @@ export function NotificationToggle() {
                 <DropdownMenuContent align="end" className="w-64">
                     <DropdownMenuLabel>Notification settings</DropdownMenuLabel>
                     <DropdownMenuSeparator />
-                    {/* Suppress-child is a Web Push (endpoint) setting — hidden on native. */}
-                    {!native && (<>
                     {/*
                      * Suppress child session notifications.
+                     * Available for both Web Push and native (ntfy) registrations.
                      * The Switch is a pure visual indicator — clicking anywhere on the
                      * row (text or switch) fires onSelect exactly once via the MenuItem.
                      * We do NOT attach onCheckedChange to Switch to avoid a double-toggle
@@ -256,7 +319,6 @@ export function NotificationToggle() {
                         />
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
-                    </>)}
                     <DropdownMenuItem
                         className="text-destructive focus:text-destructive"
                         onSelect={(e) => {
@@ -326,7 +388,7 @@ export function MobileNotificationMenuItem() {
                       ? "Push not configured on this server"
                       : "Enable notifications"}
             </DropdownMenuItem>
-            {subscribed && !native && (
+            {subscribed && (
                 <DropdownMenuItem
                     className="md:hidden flex items-center justify-between gap-2 cursor-default"
                     disabled={suppressChildLoading}
