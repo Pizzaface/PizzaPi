@@ -484,10 +484,25 @@ export class TunnelClient extends EventEmitter {
           this.send({ type: "response-data", id, data: chunk.toString("binary") });
         });
 
-        response.on("end", () => {
+        // Idempotent terminal: delete from map + send end frame exactly once.
+        let settled = false;
+        const terminate = () => {
+          if (settled) return;
+          settled = true;
           this.activeRequests.delete(id);
           this.send({ type: "response-data-end", id });
-        });
+        };
+
+        response.on("end", terminate);
+
+        // Mid-stream failures (socket reset / service crash after headers sent).
+        // Each fires terminate() which is a no-op after the first call.
+        response.on("error", terminate);
+        // "aborted" is a legacy Node.js event still fired by some runtimes.
+        response.on("aborted", terminate);
+        // "close" fires on premature socket teardown AND after a clean end —
+        // the settled guard makes it a no-op in the happy path.
+        response.on("close", terminate);
 
         controller.signal.addEventListener(
           "abort",

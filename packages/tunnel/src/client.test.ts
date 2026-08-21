@@ -379,6 +379,87 @@ describe("TunnelClient", () => {
   });
 });
 
+describe("TunnelClient mid-stream local HTTP failure", () => {
+  test("sends response-data-end and clears activeRequests when local socket is destroyed after headers", async () => {
+    const { server, port } = await startHttpServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.write("partial");
+      // Small delay: let headers traverse loopback to the client before killing
+      // the socket, so we exercise the response-level error path (not req.on('error')).
+      setTimeout(() => res.socket?.destroy(), 20);
+    });
+
+    try {
+      const client = new TunnelClient({
+        runnerId: "r1",
+        apiKey: "key1",
+        relayUrl: "ws://localhost:9999/_tunnel",
+        autoReconnect: false,
+      });
+      client.exposePort(port);
+      const sent = attachMockRelay(client);
+
+      (client as any).handleMessage(
+        JSON.stringify({ type: "request-start", id: "req-fail", port, method: "GET", url: "/", headers: {} }),
+      );
+      (client as any).handleMessage(JSON.stringify({ type: "request-data-end", id: "req-fail" }));
+
+      // Terminal frame must arrive despite the mid-stream socket destruction.
+      await waitUntil(() => decodeSent(sent).some((m) => m.type === "response-data-end" && m.id === "req-fail"));
+
+      const messages = decodeSent(sent);
+      // Headers arrived before destruction — response-start must be present.
+      expect(messages.find((m) => m.type === "response-start")).toMatchObject({ id: "req-fail", statusCode: 200 });
+      // activeRequests entry must be gone.
+      expect((client as any).activeRequests.has("req-fail")).toBe(false);
+      // Exactly one terminal frame — settled flag prevents double-send.
+      const terminalFrames = messages.filter((m) => m.type === "response-data-end" && m.id === "req-fail");
+      expect(terminalFrames).toHaveLength(1);
+    } finally {
+      await stopHttpServer(server);
+    }
+  });
+
+  test("late 'end' after settled error is a no-op (no double response-data-end)", async () => {
+    // Manually trigger the settled-flag logic: inject a fake settled response.
+    const client = new TunnelClient({
+      runnerId: "r1",
+      apiKey: "key1",
+      relayUrl: "ws://localhost:9999/_tunnel",
+      autoReconnect: false,
+    });
+    const sent = attachMockRelay(client);
+
+    // Simulate the settled flag by checking that terminate() is idempotent.
+    // We do this by running a real server test and counting terminal frames.
+    const { server, port } = await startHttpServer((_req, res) => {
+      res.writeHead(200);
+      res.write("x");
+      // Delay so headers arrive first, then kill the socket to trigger
+      // close/error which sets settled=true. Any subsequent close/end is no-op.
+      setTimeout(() => res.socket?.destroy(), 20);
+    });
+
+    try {
+      client.exposePort(port);
+
+      (client as any).handleMessage(
+        JSON.stringify({ type: "request-start", id: "req-idem", port, method: "GET", url: "/", headers: {} }),
+      );
+      (client as any).handleMessage(JSON.stringify({ type: "request-data-end", id: "req-idem" }));
+
+      await waitUntil(() => decodeSent(sent).some((m) => m.type === "response-data-end" && m.id === "req-idem"));
+      // Allow a tick for any duplicate frames to arrive.
+      await new Promise((r) => setTimeout(r, 50));
+
+      const terminalFrames = decodeSent(sent).filter((m) => m.type === "response-data-end" && m.id === "req-idem");
+      expect(terminalFrames).toHaveLength(1);
+    } finally {
+      await stopHttpServer(server);
+    }
+  });
+});
+
 describe("TunnelClient loopback fallback", () => {
   test("retries [::1] and replays the body when 127.0.0.1 is refused (IPv6-only local server)", async () => {
     let received = "";
