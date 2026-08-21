@@ -178,6 +178,28 @@ export async function listRunnerSchedules(runnerId: string): Promise<RunnerSched
 }
 
 /**
+ * Runner that owns durable subscription rows for a session, or null.
+ *
+ * Used as the last-resort ownership fallback when both the live session record
+ * and the persisted relay_session row are gone (the relay-session pruner
+ * deletes ended sessions, but durable time:* schedules outlive them). A
+ * schedule that still exists must remain manageable, or it fires forever.
+ */
+export async function getDurableSubscriptionRunnerId(sessionId: string): Promise<string | null> {
+    try {
+        const row = await getKysely()
+            .selectFrom(SUBSCRIPTION_TABLE)
+            .select(["runnerId"])
+            .where("sessionId", "=", sessionId)
+            .executeTakeFirst();
+        return row?.runnerId ?? null;
+    } catch (err) {
+        log.warn("Failed to resolve durable subscription runner:", err);
+        return null;
+    }
+}
+
+/**
  * Rebuild this runner's Redis subscription state from the durable table.
  *
  * Called when a runner registers, BEFORE the reconnect snapshot is built, so a

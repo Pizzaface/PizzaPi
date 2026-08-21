@@ -80,6 +80,7 @@ import {
     getSubscriptionParams,
     getSubscriptionFilters,
     updateSessionSubscription,
+    getDurableSubscriptionRunnerId,
     type SubscriptionParams,
     type SubscriptionFilter,
     type SubscriptionFilterMode,
@@ -475,11 +476,22 @@ async function resolveSubscriptionOwner(
             : null;
     }
     const persisted = await getPersistedRelaySessionOwner(sessionId);
-    if (!persisted || !persisted.userId || persisted.userId !== userId) return null;
-    return {
-        runnerId: persisted.runnerId,
-        ...(persisted.cwd ? { cwd: persisted.cwd } : {}),
-    };
+    if (persisted) {
+        if (!persisted.userId || persisted.userId !== userId) return null;
+        return {
+            runnerId: persisted.runnerId,
+            ...(persisted.cwd ? { cwd: persisted.cwd } : {}),
+        };
+    }
+    // Last resort: the relay-session pruner deletes ended sessions, but durable
+    // time:* schedules outlive them. Resolve ownership through the schedule's
+    // runner — a schedule that exists must stay manageable by the runner's
+    // owner, or it fires forever with no way to cancel it.
+    const runnerId = await getDurableSubscriptionRunnerId(sessionId);
+    if (!runnerId) return null;
+    const runner = await getRunnerData(runnerId).catch(() => null);
+    if (!runner || runner.userId !== userId) return null;
+    return { runnerId };
 }
 
 /** Authenticate via session cookie or API key. */
