@@ -127,6 +127,17 @@ describe("remote-input", () => {
             expect(result).toBe("hello");
         });
 
+        test("throws when an explicitly supplied relay attachment cannot be retrieved", async () => {
+            const originalFetch = globalThis.fetch;
+            globalThis.fetch = (async () => new Response("expired", { status: 404 })) as typeof fetch;
+            try {
+                await expect(buildUserMessageFromRemoteInput("see this", [{ attachmentId: "expired-1" }], "https://relay", "key"))
+                    .rejects.toThrow(/could not be retrieved|expired/);
+            } finally {
+                globalThis.fetch = originalFetch;
+            }
+        });
+
         test("includes image attachments as image parts", async () => {
             const attachments = [{ url: "data:image/png;base64,iVBOR" }];
             const result = await buildUserMessageFromRemoteInput("look", attachments, "", "");

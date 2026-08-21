@@ -427,12 +427,19 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         emitSessionActive(rctx, recoveryNonce);
     });
 
-    sock.on("input", (data) => {
+    sock.on("input", (data, ack?: (delivered: boolean) => void) => {
+        let settled = false;
+        const settle = (delivered: boolean) => {
+            if (settled) return;
+            settled = true;
+            ack?.(delivered === true);
+        };
         // While waiting for delink_own_parent to be confirmed by the server,
         // the old parent can still inject tell_child / follow-up input.
         // Drop agent-originated input until the server-side link is severed.
         if (handlers.isPendingDelinkOwnParent() && (data as any).client === "agent") {
             log.info("pizzapi: dropping stale parent tell_child/follow-up input — delink_own_parent pending");
+            settle(false);
             return;
         }
 
@@ -441,9 +448,9 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         handlers.clearFollowUpGrace();
 
         const inputText = data.text;
-        if (consumePendingApprovalFromWeb(rctx, inputText)) return;
-        if (consumePendingAskUserQuestionFromWeb(rctx, inputText)) return;
-        if (consumePendingPlanModeFromWeb(rctx, inputText)) return;
+        if (consumePendingApprovalFromWeb(rctx, inputText)) { settle(false); return; }
+        if (consumePendingAskUserQuestionFromWeb(rctx, inputText)) { settle(false); return; }
+        if (consumePendingPlanModeFromWeb(rctx, inputText)) { settle(false); return; }
 
         const attachments = normalizeRemoteInputAttachments(data.attachments);
         const deliverAs = data.deliverAs === "followUp" ? "followUp" as const
@@ -473,6 +480,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                 try {
                     if (abortForSlashCommand) await rctx.sessionHost?.abort();
                     await handlers.sendUserMessage(message, { expandPromptTemplates: true, ...(effectiveDeliverAs ? { deliverAs: effectiveDeliverAs } : {}) });
+                    settle(true);
                 } finally {
                     if (abortForSlashCommand) rctx.pendingSteeringSlashCommands -= 1;
                 }
@@ -480,6 +488,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                 const errMessage = err instanceof Error ? err.message : String(err);
                 log.error(`pizzapi: failed to deliver remote input: ${errMessage}`);
                 rctx.forwardEvent({ type: "cli_error", message: `Failed to deliver remote input: ${errMessage}`, source: "remote", ts: Date.now() });
+                settle(false);
             }
         })();
     });

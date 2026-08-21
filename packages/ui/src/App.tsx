@@ -3325,6 +3325,13 @@ export function App() {
     // in the header / model selector.
     const sessions = liveSessionsRef.current;
     const prevSessionId = lifecycleRefs.activeSessionId.current;
+    // Session switches cancel queued sends for the old session. Never leave
+    // PromptInput awaiting a promise that can no longer be flushed.
+    const retainedHydrationInputs = pendingHydrationInputsRef.current.filter((item) => item.sessionId === relaySessionId);
+    for (const item of pendingHydrationInputsRef.current) {
+      if (item.sessionId !== relaySessionId) item.resolve(false);
+    }
+    pendingHydrationInputsRef.current = retainedHydrationInputs;
     const prevRunnerId = prevSessionId
       ? sessions.find((s) => s.sessionId === prevSessionId)?.runnerId ?? null
       : null;
@@ -3767,7 +3774,7 @@ export function App() {
 
   // Messages submitted while the session was still hydrating (e.g. the runner
   // was loading MCP servers). Flushed once the snapshot completes.
-  const pendingHydrationInputsRef = React.useRef<Array<{ sessionId: string; message: SessionInputMessage }>>([]);
+  const pendingHydrationInputsRef = React.useRef<Array<{ sessionId: string; message: SessionInputMessage; resolve: (delivered: boolean) => void }>>([]);
 
   const requestOlderMessages = React.useCallback(() => {
     const socket = viewerWsRef.current;
@@ -3798,11 +3805,12 @@ export function App() {
       // Session is still hydrating (usually MCP servers loading on the
       // runner). Queue the message and flush it once the snapshot completes
       // instead of rejecting and forcing the user to retry.
-      pendingHydrationInputsRef.current.push({ sessionId, message });
       // PromptInput clears/revokes files only for a strict true result. The
       // queued send has not been delivered yet, so retain the files until the
       // flush can report actual delivery.
-      return false;
+      return new Promise<boolean>((resolve) => {
+        pendingHydrationInputsRef.current.push({ sessionId, message, resolve });
+      });
     }
     if (gate === "reject") return false;
     if (!socket || !socket.connected) {
@@ -3812,6 +3820,15 @@ export function App() {
 
     const payload = typeof message === "string" ? { text: message, files: [] } : message;
     const trimmed = payload.text.trim();
+
+    const rawFiles = (payload.files ?? [])
+      .filter((f) => typeof f?.url === "string" && f.url.length > 0)
+      .map((f) => ({
+        file: f.file instanceof File ? f.file : undefined,
+        mediaType: typeof f.mediaType === "string" ? f.mediaType : undefined,
+        filename: typeof f.filename === "string" ? f.filename : undefined,
+        url: f.url as string,
+      }));
 
     // Dedup only an identical text + file selection. File object identity is
     // enough to distinguish two same-caption submissions without reading the
@@ -3832,11 +3849,13 @@ export function App() {
     const dedupeKey = `${trimmed}\u0000${fileKey}`;
     const now = Date.now();
     if (shouldDeduplicateInput(inputDedupeRef.current, dedupeKey, now, 500)) {
-      return true; // silently deduplicate
+      // A pending duplicate must not clear/revoke the caller's draft. A sent
+      // duplicate is harmless and can report the same successful phase.
+      return inputDedupeRef.current?.phase === "sent";
     }
 
     let attemptId: number | null = null;
-    if (trimmed) {
+    if (trimmed || rawFiles.length > 0) {
       attemptId = ++inputAttemptIdRef.current;
       inputDedupeRef.current = beginInputAttempt(dedupeKey, now, attemptId);
     }
@@ -3845,15 +3864,6 @@ export function App() {
       if (attemptId === null) return;
       inputDedupeRef.current = failInputAttempt(inputDedupeRef.current, attemptId);
     };
-
-    const rawFiles = (payload.files ?? [])
-      .filter((f) => typeof f?.url === "string" && f.url.length > 0)
-      .map((f) => ({
-        file: f.file instanceof File ? f.file : undefined,
-        mediaType: typeof f.mediaType === "string" ? f.mediaType : undefined,
-        filename: typeof f.filename === "string" ? f.filename : undefined,
-        url: f.url as string,
-      }));
 
     let attachments: Array<{ attachmentId: string; filename?: string; mediaType?: string; size?: number; expiresAt?: string }> = [];
 
@@ -3930,14 +3940,40 @@ export function App() {
     const suppressOptimistic = typeof message === "object" && message.suppressOptimistic;
 
     try {
-      socket.emit("input", {
-        text: trimmed,
-        attachments,
-        client: "web",
-        ...(deliverAs ? { deliverAs } : {}),
+      const delivered = await new Promise<boolean>((resolve) => {
+        let settled = false;
+        const settle = (value: boolean) => {
+          if (settled) return;
+          settled = true;
+          socket.off("disconnect", onDisconnect);
+          resolve(value === true);
+        };
+        const onDisconnect = () => settle(false);
+        const timeout = window.setTimeout(() => settle(false), 10_000);
+        const ack = (value: boolean) => {
+          window.clearTimeout(timeout);
+          settle(value);
+        };
+        socket.once("disconnect", onDisconnect);
+        try {
+          (socket.emit as (...args: unknown[]) => void)("input", {
+            text: trimmed,
+            attachments,
+            client: "web",
+            ...(deliverAs ? { deliverAs } : {}),
+          }, ack);
+        } catch {
+          window.clearTimeout(timeout);
+          settle(false);
+        }
       });
+      if (!delivered) {
+        setLifecycleStatus("Failed to send message");
+        failCurrentAttempt();
+        return false;
+      }
 
-      // Mark dedupe as sent only after successful emit.
+      // Mark dedupe as sent only after the server and runner acknowledge delivery.
       if (attemptId !== null) {
         inputDedupeRef.current = completeInputAttempt(inputDedupeRef.current, attemptId, Date.now());
       }
@@ -3990,6 +4026,10 @@ export function App() {
 
   const sendSessionInputRef = React.useRef(sendSessionInput);
   React.useEffect(() => { sendSessionInputRef.current = sendSessionInput; });
+  React.useEffect(() => () => {
+    for (const item of pendingHydrationInputsRef.current) item.resolve(false);
+    pendingHydrationInputsRef.current = [];
+  }, []);
 
   // Flush input queued during hydration once the session goes live. Entries
   // for a session the user has since switched away from are dropped.
@@ -3999,10 +4039,19 @@ export function App() {
     if (pending.length === 0) return;
     pendingHydrationInputsRef.current = [];
     const activeId = lifecycleRefs.activeSessionId.current;
-    for (const item of pending) {
-      if (item.sessionId !== activeId) continue;
-      void sendSessionInputRef.current(item.message);
-    }
+    void (async () => {
+      for (const item of pending) {
+        if (item.sessionId !== activeId) {
+          item.resolve(false);
+          continue;
+        }
+        try {
+          item.resolve((await sendSessionInputRef.current(item.message)) === true);
+        } catch {
+          item.resolve(false);
+        }
+      }
+    })();
   }, [lifecycle.isLive, lifecycleRefs]);
 
   const sendRemoteExec = React.useCallback((payload: any) => {
