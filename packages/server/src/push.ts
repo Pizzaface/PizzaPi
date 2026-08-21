@@ -416,7 +416,7 @@ function buildNtfyPublish(payload: PushPayload): Record<string, unknown> {
     // (PIZZAPI_BASE_URL); omitted when that is unset rather than pointing at the wrong host.
     const baseUrl = (process.env.PIZZAPI_BASE_URL ?? "").replace(/\/+$/, "");
     if (payload.sessionId && baseUrl) {
-        fields.click = `${baseUrl}/session/${payload.sessionId}`;
+        fields.click = `${baseUrl}/session/${encodeURIComponent(payload.sessionId)}`;
     }
     return fields;
 }
