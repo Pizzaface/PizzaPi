@@ -119,6 +119,47 @@ describe("setup-claims store", () => {
         });
     });
 
+    test("concurrent two-user approval: exactly one wins, loser rejected, loser key revoked", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492");
+            // Both approvers start from the same pending claim. Both pass the
+            // read + mint; the CAS lets exactly one flip pending→approved.
+            const [a, b] = await Promise.all([
+                approveSetupClaim(token, "user-race-1", "RacerOne"),
+                approveSetupClaim(token, "user-race-2", "RacerTwo"),
+            ]);
+            const winners = [a, b].filter((r) => r !== null);
+            expect(winners.length).toBe(1);
+
+            // Exactly one surviving api key for this claim — the winner's.
+            // (Both racers mint with the same keyName; a leaked loser key
+            // would show up as a second row.)
+            const { getKysely } = await import("./auth.js");
+            const rows = await getKysely()
+                .selectFrom("apikey")
+                .select(["start", "userId"])
+                .where("name", "=", `setup-claim-${token.slice(0, 8)}`)
+                .execute();
+            expect(rows.length).toBe(1);
+            expect(rows[0]!.start).toBe(winners[0]!.apiKey.slice(0, 8));
+
+            // The winner's key is what the CLI redeems.
+            const claim = await pollSetupClaim(token);
+            expect(claim!.status).toBe("approved");
+            expect(claim!.apiKey).toBe(winners[0]!.apiKey);
+
+            // And the loser can't approve afterwards either (still single winner).
+            const late = await approveSetupClaim(token, "user-race-3", "Late");
+            expect(late).toBeNull();
+            const rowsAfter = await getKysely()
+                .selectFrom("apikey")
+                .select(["start"])
+                .where("name", "=", `setup-claim-${token.slice(0, 8)}`)
+                .execute();
+            expect(rowsAfter.length).toBe(1);
+        });
+    });
+
     test("approval fails for already-approved claims", async () => {
         await runWithAuthContext(authContext, async () => {
             const { token } = await createSetupClaim("http://localhost:7492");

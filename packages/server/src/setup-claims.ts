@@ -146,6 +146,25 @@ export async function pollSetupClaim(token: string): Promise<SetupClaimStatus | 
     return { status: row.status, relayUrl: row.relayUrl, label: row.label ?? undefined };
 }
 
+/**
+ * Delete a freshly minted ephemeral key. Used when an approval loses the
+ * atomic claim race, so the loser's key never survives as an orphaned
+ * credential. Hashes exactly like mintEphemeralApiKey (better-auth's
+ * defaultKeyHasher) and removes the stored row, making the raw key invalid.
+ */
+async function deleteEphemeralApiKey(rawKey: string, userId: string): Promise<void> {
+    const keyHashBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(rawKey));
+    const hashedKey = btoa(String.fromCharCode(...new Uint8Array(keyHashBuf)))
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=/g, "");
+    await getKysely()
+        .deleteFrom("apikey")
+        .where("key", "=", hashedKey)
+        .where("userId", "=", userId)
+        .execute();
+}
+
 export interface SetupClaimInfo {
     status: SetupClaimTable["status"] | "expired";
     label?: string;
@@ -175,6 +194,10 @@ export async function getSetupClaimInfo(token: string): Promise<SetupClaimInfo |
  * Approve a pending claim. Creates an API key for the approving user and stores
  * it on the claim so the polling CLI can redeem it.
  *
+ * The pending→approved transition is ATOMIC: the update is gated on
+ * `status='pending'`, so of N concurrent approvers exactly one wins. A losing
+ * approver deletes the key it just minted, leaving no orphaned credential.
+ *
  * Returns `null` when the claim does not exist or is no longer pending.
  */
 export async function approveSetupClaim(
@@ -198,9 +221,14 @@ export async function approveSetupClaim(
         ? SETUP_CLAIM_API_KEY_TTL_SECONDS
         : Math.min(SETUP_CLAIM_API_KEY_TTL_SECONDS, maxTtlSeconds);
     const keyName = row.label ? `runner-${row.label}`.slice(0, LABEL_MAX_LENGTH + 7) : `setup-claim-${token.slice(0, 8)}`;
+    // Mint before claiming: if the atomic claim below is lost, this key is
+    // deleted, so no orphaned credential ever survives the race.
     const apiKey = await mintEphemeralApiKey(userId, keyName, ttl);
 
-    await getKysely()
+    // Compare-and-set: exactly one concurrent approver can flip pending→approved.
+    // The expiresAt guard also rejects claims that expired between the read
+    // above and this update (ISO strings compare chronologically).
+    const result = await getKysely()
         .updateTable("setup_claim")
         .set({
             status: "approved",
@@ -210,7 +238,20 @@ export async function approveSetupClaim(
             approvedAt: new Date().toISOString(),
         })
         .where("id", "=", token)
+        .where("status", "=", "pending")
+        .where("expiresAt", ">", new Date().toISOString())
         .execute();
+
+    if ((result[0]?.numUpdatedRows ?? 0n) === 0n) {
+        // Lost the race — someone else approved first. Revoke the key we just
+        // minted so no orphaned credential remains.
+        try {
+            await deleteEphemeralApiKey(apiKey, userId);
+        } catch (err) {
+            log.error("failed to revoke orphaned setup-claim key", err);
+        }
+        return null;
+    }
 
     return { ok: true, apiKey };
 }
