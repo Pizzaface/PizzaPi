@@ -87,11 +87,13 @@ export async function checkPushNotifications(
     //    shouldn't buzz; if every tab is hidden/backgrounded, it should.
     //    Window focus is ignored on purpose so a second monitor counts as
     //    viewing.
-    const [viewerCount, visibleViewer] = await Promise.all([
+    const [viewerPresence, visibleViewer] = await Promise.all([
         getViewerCount(sessionId),
         hasVisibleViewer(sessionId),
     ]);
-    const suppress = { web: viewerCount > 0, native: visibleViewer };
+    // Unknown cluster presence is zero for suppression: over-notify rather
+    // than silently drop a push while Redis is degraded.
+    const suppress = { web: viewerPresence.kind === "count" && viewerPresence.count > 0, native: visibleViewer };
 
     const sName = session?.sessionName ?? null;
 

@@ -8,6 +8,7 @@ import {
     emitToRelaySessionAwaitingAck,
     emitToRunner,
     endSharedSession,
+    countSocketsInRoomCluster,
 } from "../../sio-registry.js";
 import {
     removeChildSession,
@@ -86,6 +87,55 @@ export async function waitForChildTermination(
     }
 }
 
+/** Deps for executeCleanupTeardown (injected for testing). */
+export interface CleanupTeardownDeps {
+    countPresence: () => Promise<{ kind: "count"; count: number } | { kind: "unknown" }>;
+    emitRunner: (runnerId: string, event: string, data: unknown) => void;
+    emitRelay: (sessionId: string, event: string, data: unknown) => void;
+    endSession: (sessionId: string, reason: string, opts: { confirmedTerminal: boolean }) => Promise<void>;
+}
+
+/**
+ * Cluster-aware, fail-open teardown gate for cleanup_child_session.
+ *
+ * Checks cluster presence FIRST. Tears down (kill_session + end_session +
+ * endSharedSession) ONLY when the cluster confirms count === 0. On unknown
+ * or count > 0, logs and skips — fail-open leaves the child alive so the
+ * disconnect handler on the hosting node can finish cleanup naturally.
+ *
+ * Returns "torn-down" when teardown was executed, "skipped" otherwise.
+ */
+export async function executeCleanupTeardown(
+    childSessionId: string,
+    runnerId: string | null | undefined,
+    deps: CleanupTeardownDeps,
+): Promise<"torn-down" | "skipped"> {
+    const presence = await deps.countPresence();
+
+    // ALWAYS send shutdown signals — sending to an absent child is benign.
+    if (runnerId) {
+        deps.emitRunner(runnerId, "kill_session", { sessionId: childSessionId });
+    }
+    deps.emitRelay(childSessionId, "exec", {
+        id: `cleanup-${childSessionId}-${Date.now()}`,
+        command: "end_session",
+    });
+
+    if (presence.kind === "count" && presence.count === 0) {
+        // Confirmed empty: no relay socket will fire a disconnect handler → complete teardown here.
+        await deps.endSession(childSessionId, "Parent acknowledged completion", { confirmedTerminal: true });
+        return "torn-down";
+    }
+    // count > 0 OR unknown: signals dispatched above; the disconnect handler on the hosting node
+    // will call endSharedSession. Do NOT call endSession here (that was the fail-open bug).
+    log.info(
+        `cleanup_child_session: deferring endSession child=${childSessionId}` +
+        ` presence=${presence.kind}` +
+        (presence.kind === "count" ? ` count=${presence.count}` : ""),
+    );
+    return "skipped";
+}
+
 export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIOServer): void {
     socket.on("get_linked_child_count", async (data, ack) => {
         const sessionId = socket.data.sessionId;
@@ -152,58 +202,39 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
         log.info(`cleanup_child_session: parent=${sessionId} child=${childSessionId}`);
 
         try {
-            // Terminate the child process via two complementary paths:
-            //
-            // 1. kill_session → runner (cluster-wide via emitToRunner):
-            //    sends SIGTERM to the OS process.  Reaches runners on any
-            //    cluster node through the Redis adapter.
-            if (childSession.runnerId) {
-                emitToRunner(childSession.runnerId, "kill_session", { sessionId: childSessionId });
-            }
+            // Check cluster presence FIRST — fail-open: only tear down when
+            // confirmed count === 0. Unknown or count > 0 → skip teardown.
+            const result = await executeCleanupTeardown(
+                childSessionId,
+                childSession.runnerId,
+                {
+                    countPresence: () => countSocketsInRoomCluster(io.of("/relay"), `session:${childSessionId}`),
+                    emitRunner: emitToRunner,
+                    emitRelay: emitToRelaySession,
+                    endSession: endSharedSession,
+                },
+            );
 
-            // 2. exec end_session → child relay socket (cluster-wide via Redis
-            //    adapter room broadcast).  Reaches the child on any node and
-            //    causes it to clear its follow-up grace timer and shut down
-            //    cleanly.  If the runner already sent SIGTERM in step 1 the
-            //    exec arrives to an already-exiting worker (benign no-op).
-            emitToRelaySession(childSessionId, "exec", {
-                id: `cleanup-${childSessionId}-${Date.now()}`,
-                command: "end_session",
-            });
-
-            // ⚡ Bolt: Fast socket presence check via adapter.sockets() avoids expensive cluster-wide network overhead of fetchSockets()
-            const relaySockets = await io.of("/relay").adapter.sockets(new Set([`session:${childSessionId}`]));
-            const hasRelayRecipient = relaySockets instanceof Set ? relaySockets.size > 0 : (relaySockets as any[]).length > 0;
-
-            // Clean up child-index entry
+            // Clean up child-index entry regardless of teardown result.
             void removeChildSession(sessionId, childSessionId);
 
-            if (!hasRelayRecipient) {
-                // No relay socket is currently joined for this child anywhere in
-                // the cluster, so there is no disconnect handler left to finish
-                // cleanup. Complete teardown now so acknowledged children don't
-                // linger in Redis/sidebar until the orphan sweeper runs.
-                await endSharedSession(childSessionId, "Parent acknowledged completion", { confirmedTerminal: true });
+            if (result === "torn-down") {
+                // endSharedSession already called inside executeCleanupTeardown
+                // (count === 0 path). No relay socket remained, so no disconnect
+                // handler will fire — teardown is complete.
                 if (typeof ack === "function") ack({ ok: true });
                 return;
             }
 
-            // Do NOT call endSharedSession here when a relay recipient exists.
-            // The child will disconnect momentarily (from the SIGTERM or exec
-            // above), and its disconnect handler on whichever node hosts the
-            // child's relay socket will call endSharedSession there — where the
-            // correct local runner socket is available for adopted-session
-            // cleanup. Calling it here first would delete the Redis record
-            // before that node can process the disconnect, turning its
-            // endSharedSession into a no-op and leaving adopted-session entries
-            // stranded in runningSessions on the remote runner.
+            // Skipped (unknown or count > 0): relay socket(s) still present
+            // somewhere in the cluster. The disconnect handler on the hosting
+            // node will call endSharedSession when the socket drops. Wait for
+            // that to be observed, then ack.
             //
-            // Ack ordering: only ack plain { ok: true } once the child's
-            // termination is actually OBSERVED (its Redis session record is
-            // gone). If it hasn't terminated within the bounded wait, ack
-            // { ok: true, pending: true } — teardown was initiated and the
-            // orphan sweeper backstops it, but the caller knows termination
-            // was not yet confirmed.
+            // Do NOT call endSharedSession here — that would delete the Redis
+            // record before the hosting node can process the disconnect, turning
+            // its endSharedSession into a no-op and stranding adopted-session
+            // entries in runningSessions on the remote runner.
             const terminated = await waitForChildTermination(childSessionId);
             if (typeof ack === "function") {
                 (ack as (r: { ok: boolean; pending?: boolean; error?: string }) => void)(

@@ -267,9 +267,17 @@ export class TunnelRelay {
   }
 
   sendWsClose(runnerId: string, wsId: string, code?: number, reason?: string): void {
-    const runner = this.runners.get(runnerId);
-    if (!runner) return;
-    this.send(runner.ws, { type: "ws-close", id: wsId, code, reason });
+    const pending = this.pendingWs.get(wsId);
+    if (!pending) return;
+
+    try {
+      const runner = this.runners.get(runnerId);
+      if (runner) this.send(runner.ws, { type: "ws-close", id: wsId, code, reason });
+    } finally {
+      clearTimeout(pending.timer);
+      this.pendingWs.delete(wsId);
+      pending.onClose(code, reason);
+    }
   }
 
   dispose(): void {
@@ -360,6 +368,13 @@ export class TunnelRelay {
     }
 
     const userId = typeof authResult === "string" ? authResult : "default";
+
+    // Guard: socket may have closed during the async auth await — abort to avoid a ghost runner.
+    // Must run BEFORE any mutation of existing-runner state so a healthy existing runner is preserved.
+    if (ws.readyState !== WebSocket.OPEN) {
+      this.log.warn("[tunnel-relay] Socket closed during auth, aborting registration:", msg.runnerId);
+      return;
+    }
 
     const existing = this.runners.get(msg.runnerId);
     if (existing && existing.userId !== userId) {

@@ -10,7 +10,7 @@
 //   - Touch-throttle state
 // ============================================================================
 
-import type { Server as SocketIOServer, Socket } from "socket.io";
+import type { Server as SocketIOServer, Socket, Namespace } from "socket.io";
 import type { ModelInfo } from "@pizzapi/protocol";
 import { getEphemeralTtlMs } from "../../sessions/store.js";
 import { createLogger } from "@pizzapi/tools";
@@ -254,25 +254,47 @@ export type RelayEmitCheckResult = "delivered" | "empty" | "unknown";
  */
 const RELAY_PRESENCE_LOOKUP_TIMEOUT_MS = 3_000;
 
-// One in-flight cluster presence lookup per room. See usage comment below.
+export type ClusterSocketCount = { kind: "count"; count: number } | { kind: "unknown" };
+
+// One in-flight cluster presence lookup per namespace room. Timed-out callers
+// reuse the pending Redis query instead of stacking offline-queue requests.
 const inFlightPresenceLookups = new Map<string, Promise<number>>();
 
-function clusterPresenceLookup(nsp: ReturnType<NonNullable<typeof io>["of"]>, room: string): Promise<number> {
-    const existing = inFlightPresenceLookups.get(room);
+function clusterPresenceLookup(nsp: Namespace, room: string): Promise<number> {
+    const key = `${nsp.name}:${room}`;
+    const existing = inFlightPresenceLookups.get(key);
     if (existing) return existing;
     const lookup = nsp.in(room).fetchSockets().then((sockets) => sockets.length);
-    inFlightPresenceLookups.set(room, lookup);
+    inFlightPresenceLookups.set(key, lookup);
     lookup
         .catch(() => { /* rejection surfaces to awaiting callers; nothing to do here */ })
         .finally(() => {
-            if (inFlightPresenceLookups.get(room) === lookup) {
-                inFlightPresenceLookups.delete(room);
+            if (inFlightPresenceLookups.get(key) === lookup) {
+                inFlightPresenceLookups.delete(key);
             }
         });
     return lookup;
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+/** Count room members across the Socket.IO cluster, or report an inconclusive lookup. */
+export async function countSocketsInRoomCluster(
+    nsp: Namespace,
+    room: string,
+    opts: { timeoutMs?: number } = {},
+): Promise<ClusterSocketCount> {
+    try {
+        const count = await withTimeout(
+            clusterPresenceLookup(nsp, room),
+            opts.timeoutMs ?? RELAY_PRESENCE_LOOKUP_TIMEOUT_MS,
+        );
+        return { kind: "count", count };
+    } catch (err) {
+        log.warn("cluster room presence lookup failed:", (err as Error)?.message);
+        return { kind: "unknown" };
+    }
+}
+
+export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
     return new Promise<T>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
         promise.then(
@@ -294,7 +316,7 @@ export async function emitToRelaySessionChecked(sessionId: string, eventName: st
     try {
         const localRoom = nsp.adapter.rooms.get(room);
         if (localRoom && localRoom.size > 0) {
-            nsp.to(room).emit(eventName, data);
+            nsp.local.to(room).emit(eventName, data);
             return "delivered";
         }
     } catch { /* fall through to cluster lookup */ }
@@ -310,17 +332,17 @@ export async function emitToRelaySessionChecked(sessionId: string, eventName: st
         // pending in the offline queue, and retries reuse it instead of
         // stacking a new queued command per attempt — otherwise reconnect
         // would replay a storm of accumulated fetchSockets requests.
-        const socketCount = await withTimeout(clusterPresenceLookup(nsp, room), RELAY_PRESENCE_LOOKUP_TIMEOUT_MS);
-        if (socketCount === 0) return "empty";
+        const presence = await countSocketsInRoomCluster(nsp, room);
+        if (presence.kind === "unknown") return "unknown";
+        if (presence.count === 0) return "empty";
         nsp.to(room).emit(eventName, data);
         // Presence ≠ delivery: the socket can drop between the check and the
         // emit. Callers needing hard delivery proof must use
         // emitToRelaySessionAwaitingAck instead.
         return "delivered";
     } catch (err) {
-        // Lookup failure (Redis degraded, timeout) is NOT proof of an empty
-        // room — a runner may be connected on another node.
-        log.warn("emitToRelaySessionChecked cluster lookup failed — runner state unknown:", (err as Error)?.message);
+        // Emitting after a successful lookup can still fail.
+        log.warn("emitToRelaySessionChecked emit failed:", (err as Error)?.message);
         return "unknown";
     }
 }
@@ -358,10 +380,11 @@ export async function emitToRelaySessionAwaitingAck(
     if (!io) return { hadListeners: false, acked: false };
     const room = relaySessionRoom(sessionId);
     try {
-        // ⚡ Bolt: Fast socket presence check via adapter.sockets() avoids expensive cluster-wide network overhead of fetchSockets()
-        const sockets = await io.of("/relay").adapter.sockets(new Set([room]));
-        if (sockets.size === 0) return { hadListeners: false, acked: false };
+        const presence = await countSocketsInRoomCluster(io.of("/relay"), room);
+        if (presence.kind === "count" && presence.count === 0) return { hadListeners: false, acked: false };
 
+        // Unknown presence must still attempt delivery: an adapter failure is
+        // not proof that a remote relay socket is absent.
         // Cast needed: Socket.IO typed namespace doesn't expose the .timeout().emit()
         // ack pattern in its TypeScript interface. This is a valid Socket.IO v4 API.
         const relayNs = io.of("/relay") as any;

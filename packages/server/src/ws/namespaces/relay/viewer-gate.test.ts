@@ -4,7 +4,7 @@ import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 // Local room membership (sync, via the io adapter) and the cluster-wide count.
 
 let localRoomSizes = new Map<string, number>();
-let clusterCount: number | Error = 0;
+let clusterCount: number | Error | "unknown" = 0;
 let clusterCalls = 0;
 let ioAvailable = true;
 
@@ -31,7 +31,8 @@ mock.module("../../sio-registry/sessions.js", () => ({
     getViewerCount: async (_sessionId: string) => {
         clusterCalls++;
         if (clusterCount instanceof Error) throw clusterCount;
-        return clusterCount;
+        if (clusterCount === "unknown") return { kind: "unknown" };
+        return { kind: "count", count: clusterCount };
     },
 }));
 
@@ -101,6 +102,13 @@ describe("shouldPublishDelta", () => {
 
     test("fails open when the cluster query throws", async () => {
         clusterCount = new Error("redis down");
+        shouldPublishDelta("s1");
+        await settle();
+        expect(shouldPublishDelta("s1")).toBe(true);
+    });
+
+    test("fails open when cluster presence is unknown", async () => {
+        clusterCount = "unknown";
         shouldPublishDelta("s1");
         await settle();
         expect(shouldPublishDelta("s1")).toBe(true);

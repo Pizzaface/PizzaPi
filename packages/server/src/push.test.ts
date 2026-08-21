@@ -530,7 +530,8 @@ describe("native push registration", () => {
         }
 
         expect(ntfyPublishes).toBe(1);
-        expect(await getSubscriptionsForUser("user-connected")).toHaveLength(1);
+        // Malformed keys are pruned even under suppressWebPush (fix for C-005).
+        expect(await getSubscriptionsForUser("user-connected")).toHaveLength(0);
     });
 
     authIt("sendPushToUser prunes ntfy registrations on 403/404", async () => {
@@ -620,17 +621,16 @@ describe("native push registration", () => {
     });
 });
 
-// ── Child-session push suppression (isChildSession) ────────────────────────────
+// ── Child-session push suppression (isChildSession / suppressWebPush) ─────────
 //
-// Docs: "Linked child sessions do not trigger push notifications. Only
-// top-level sessions ... send push notifications." Verified indirectly (no
-// mocking of webpush.sendNotification / real network calls): a subscription
-// row with malformed `keys` JSON is only pruned if the send path actually
-// attempted delivery (JSON.parse throws before any network call). If the
-// isChildSession guard returns early, the row is left untouched.
+// Suppression silences SENDS but must not block stale-row pruning — malformed
+// or expired subscription rows should be cleaned up regardless. The fix moves
+// JSON.parse + stale collection BEFORE the suppression gate so:
+//   • malformed-keys rows are pruned even when sends are suppressed
+//   • sends are still blocked under isChildSession / suppressWebPush
 
 describe("sendPushToUser — child-session suppression", () => {
-    authIt("web-push: suppresses by default for a child session (malformed-keys subscription untouched)", async () => {
+    authIt("web-push: suppresses SEND for child session but prunes malformed-keys row", async () => {
         await insertSub("sub-child-1", "user-child-1", "https://example.com/push/child-1");
         await getKysely()
             .updateTable("push_subscription" as any)
@@ -645,9 +645,9 @@ describe("sendPushToUser — child-session suppression", () => {
             sessionId: "sess-child-1",
         }, true);
 
-        // Not attempted (guard returned before JSON.parse) — subscription survives.
+        // Send suppressed (child session), but malformed keys → row pruned.
         const subs = await getSubscriptionsForUser("user-child-1");
-        expect(subs).toHaveLength(1);
+        expect(subs).toHaveLength(0);
     });
 
     authIt("web-push: delivers (attempts) for a non-child session", async () => {
@@ -670,7 +670,7 @@ describe("sendPushToUser — child-session suppression", () => {
         expect(subs).toHaveLength(0);
     });
 
-    authIt("web-push: suppresses a child session even when suppressChildNotifications is false (no per-subscription opt-out exists)", async () => {
+    authIt("web-push: suppressWebPush flag also prunes malformed-keys row (no send)", async () => {
         await insertSub("sub-child-3", "user-child-3", "https://example.com/push/child-3", false);
         await getKysely()
             .updateTable("push_subscription" as any)
@@ -678,15 +678,17 @@ describe("sendPushToUser — child-session suppression", () => {
             .where("id", "=", "sub-child-3")
             .execute();
 
+        // suppressWebPush=true (connected viewer), isChildSession=false
         await sendPushToUser("user-child-3", {
             type: "agent_finished",
             title: "Agent finished",
             body: "done",
             sessionId: "sess-child-3",
-        }, true);
+        }, false, true);
 
+        // Send suppressed (connected viewer), but malformed keys → row pruned.
         const subs = await getSubscriptionsForUser("user-child-3");
-        expect(subs).toHaveLength(1); // still untouched — suppressed regardless of the flag
+        expect(subs).toHaveLength(0);
     });
 
     authIt("ntfy: suppresses by default for a child session (no fetch attempted)", async () => {

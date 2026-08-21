@@ -593,10 +593,11 @@ function isEventEnabled(enabledEvents: string, eventType: PushEventType): boolea
  *   only ever offered an opt-IN to further suppression, never a guaranteed
  *   "receive despite being a child" opt-out, so there is nothing to preserve
  *   here — it remains stored/toggleable but is now redundant.
- * @param suppressWebPush - Skip browser subscriptions. Set when ANY viewer
- *   socket is connected to the session: a connected-but-hidden tab is already
- *   covered by client-side browser notifications (useBrowserNotifications), so
- *   sending Web Push too would double-notify.
+ * @param suppressWebPush - Skip browser subscription SENDS (stale/malformed
+ *   rows are still pruned). Set when ANY viewer socket is connected to the
+ *   session: a connected-but-hidden tab is already covered by client-side
+ *   browser notifications (useBrowserNotifications), so sending Web Push too
+ *   would double-notify.
  * @param suppressNative - Skip native Android (ntfy) push. Set only when a
  *   viewer of this session has its tab VISIBLE — the user can see the prompt,
  *   so their phone shouldn't buzz. Deliberately a separate flag from
@@ -629,8 +630,11 @@ export async function sendPushToUser(
         ntfyPromise,
         ...subscriptions.map(async (sub) => {
             if (!isEventEnabled(sub.enabledEvents, payload.type)) return;
-            if (isChildSession || suppressWebPush) return;
 
+            // Parse + mark malformed rows stale BEFORE the suppression gate:
+            // suppression (child session / connected viewer) silences SENDS,
+            // but stale rows must still be pruned — otherwise they accumulate
+            // for as long as a viewer stays connected.
             let keys: { p256dh: string; auth: string };
             try {
                 keys = JSON.parse(sub.keys);
@@ -638,6 +642,8 @@ export async function sendPushToUser(
                 staleIds.push(sub.id);
                 return;
             }
+
+            if (isChildSession || suppressWebPush) return;
 
             const pushSub: webpush.PushSubscription = {
                 endpoint: sub.endpoint,

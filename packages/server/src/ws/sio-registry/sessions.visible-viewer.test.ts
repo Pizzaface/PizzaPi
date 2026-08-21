@@ -10,6 +10,7 @@ import { describe, expect, it, mock } from "bun:test";
  */
 
 let fetchSocketsImpl: () => Promise<Array<{ data: unknown }>> = async () => [];
+let withTimeoutImpl = <T>(promise: Promise<T>) => promise;
 
 // Spread the real module and override only getIo — context.js has many other
 // exports (hubUserRoom, etc.) that sibling modules import, and stubbing it
@@ -17,6 +18,7 @@ let fetchSocketsImpl: () => Promise<Array<{ data: unknown }>> = async () => [];
 const actualContext = await import("./context.js");
 mock.module("./context.js", () => ({
     ...actualContext,
+    withTimeout: <T>(promise: Promise<T>) => withTimeoutImpl(promise),
     getIo: () => ({
         of: () => ({
             in: () => ({ fetchSockets: fetchSocketsImpl }),
@@ -61,5 +63,12 @@ describe("hasVisibleViewer (fail-open)", () => {
             throw new Error("adapter down");
         };
         expect(await hasVisibleViewer("s1")).toBe(false);
+    });
+
+    it("is false when the cluster lookup times out — over-notify rather than drop", async () => {
+        fetchSocketsImpl = () => new Promise(() => {});
+        withTimeoutImpl = async <T>(_promise: Promise<T>): Promise<T> => { throw new Error("timed out"); };
+        expect(await hasVisibleViewer("s1")).toBe(false);
+        withTimeoutImpl = <T>(promise: Promise<T>) => promise;
     });
 });

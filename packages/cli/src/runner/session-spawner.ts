@@ -38,7 +38,7 @@ export interface RunnerSession {
  * platform without process groups).
  */
 export function killSessionProcessGroup(pid: number | undefined, signal: NodeJS.Signals = "SIGTERM"): boolean {
-    if (!pid) return false;
+    if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false; // ponytail: strict guard — rejects undefined, negative, zero, NaN, Infinity, non-integer
     try {
         process.kill(-pid, signal);
         return true;

@@ -48,6 +48,20 @@ import { startOllamaModelsRefreshLoop, stopOllamaModelsRefreshLoop } from "./run
 import { getWorkspaceRoots } from "./workspace.js";
 import { type RunnerSession, spawnSession, killSessionProcessGroup, notifyWorkersOfRestart } from "./session-spawner.js";
 import { pruneSessionCloseMetadata, type SessionCloseMetadata } from "./session-close-metadata.js";
+import { removeSessionProcFile, readRecordedGroupPids, sessionProcFilePath } from "./session-procs.js";
+
+/**
+ * Reap background command process groups recorded for a session and remove the
+ * session's pid file.  Safe to call multiple times — removeSessionProcFile uses
+ * force:true.  Called from session_ended for adopted sessions (only cleanup
+ * path) and idempotently for spawned sessions (child.on("exit") already ran).
+ */
+export function reapSessionGroups(sessionId: string): void {
+    for (const groupPid of readRecordedGroupPids(sessionProcFilePath(sessionId))) {
+        killSessionProcessGroup(groupPid);
+    }
+    removeSessionProcFile(sessionId);
+}
 
 import { scanGlobalSkills } from "../skills.js";
 import { scanGlobalAgents, readAgentContent } from "../agents.js";
@@ -1948,6 +1962,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             // already ran cleanup, so this is a no-op (idempotent).  For adopted sessions
             // (child: null) this is the only cleanup path.
             void cleanupSessionAttachments(sessionId).catch(() => {});
+
+            // Reap background command process groups and remove the proc file.
+            // For spawned sessions, child.on("exit") already did this (idempotent).
+            // For adopted sessions there is no child handle — this is the only cleanup path.
+            reapSessionGroups(sessionId);
         });
 
         socket.on("list_sessions", () => {
