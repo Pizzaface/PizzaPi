@@ -282,6 +282,31 @@ describe("TunnelRelay HTTP proxy callbacks", () => {
     expect(JSON.parse(mockWs.sent.at(-1)!)).toMatchObject({ type: "request-end", id: "req-timeout" });
   });
 
+  test("evicts a reused request id without letting its timeout remove the replacement", async () => {
+    const relay = new TunnelRelay({ apiKeys: ["key1"] });
+    const mockWs = createMockWebSocket();
+    relay.handleConnection(mockWs.ws);
+    mockWs.emit("message", { data: JSON.stringify({ type: "register", runnerId: "r1", apiKey: "key1" }) });
+    await waitForMicrotask();
+
+    const events: string[] = [];
+    const callbacks = (label: string) => ({
+      onResponseStart() { events.push(`${label}:start`); },
+      onResponseData() {},
+      onResponseEnd() { events.push(`${label}:end`); },
+      onError(error: string) { events.push(`${label}:error:${error}`); },
+    });
+    const oldProxy = relay.proxyHttpRequest("r1", { id: "reused", port: 3000, method: "GET", url: "/", headers: {} }, callbacks("old"), 5);
+    relay.proxyHttpRequest("r1", { id: "reused", port: 3000, method: "GET", url: "/", headers: {} }, callbacks("new"), 100);
+    oldProxy.cancel();
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    mockWs.emit("message", { data: JSON.stringify({ type: "response-start", id: "reused", statusCode: 200, statusMessage: "OK", headers: {} }) });
+    mockWs.emit("message", { data: JSON.stringify({ type: "response-data-end", id: "reused" }) });
+
+    expect(events).toEqual(["old:error:Tunnel request replaced", "new:start", "new:end"]);
+  });
+
   test("does not time out long-lived streams after response headers arrive", async () => {
     const relay = new TunnelRelay({ apiKeys: ["key1"] });
     const mockWs = createMockWebSocket();
@@ -333,6 +358,28 @@ describe("TunnelRelay HTTP proxy callbacks", () => {
     await waitForMicrotask();
 
     expect(events).toEqual(["start", "data", "end"]);
+  });
+
+  test("ignores response frames from a different runner", async () => {
+    const relay = new TunnelRelay({ apiKeys: ["key1"] });
+    const runnerA = createMockWebSocket();
+    const runnerB = createMockWebSocket();
+    relay.handleConnection(runnerA.ws);
+    relay.handleConnection(runnerB.ws);
+    runnerA.emit("message", { data: JSON.stringify({ type: "register", runnerId: "runner-a", apiKey: "key1" }) });
+    runnerB.emit("message", { data: JSON.stringify({ type: "register", runnerId: "runner-b", apiKey: "key1" }) });
+    await waitForMicrotask();
+
+    const events: string[] = [];
+    relay.proxyHttpRequest("runner-a", { id: "shared", port: 3000, method: "GET", url: "/", headers: {} }, {
+      onResponseStart() { events.push("start"); }, onResponseData() {}, onResponseEnd() { events.push("end"); }, onError() {},
+    });
+    runnerB.emit("message", { data: JSON.stringify({ type: "response-start", id: "shared", statusCode: 200, statusMessage: "OK", headers: {} }) });
+    runnerB.emit("message", { data: JSON.stringify({ type: "response-data-end", id: "shared" }) });
+    runnerA.emit("message", { data: JSON.stringify({ type: "response-start", id: "shared", statusCode: 200, statusMessage: "OK", headers: {} }) });
+    runnerA.emit("message", { data: JSON.stringify({ type: "response-data-end", id: "shared" }) });
+
+    expect(events).toEqual(["start", "end"]);
   });
 
   test("disconnect only fails requests for the matching runner", async () => {
@@ -538,6 +585,30 @@ describe("TunnelRelay WebSocket proxy callbacks", () => {
     relay.sendWsClose("r1", "ws1", 1000, "viewer closed");
     expect(events).toEqual(["close:1000:viewer closed"]);
     expect(mockWs.sent).toHaveLength(sentBeforeSecondClose);
+  });
+
+  test("evicts a reused websocket id without letting its timeout remove the replacement", async () => {
+    const relay = new TunnelRelay({ apiKeys: ["key1"] });
+    const mockWs = createMockWebSocket();
+    relay.handleConnection(mockWs.ws);
+    mockWs.emit("message", { data: JSON.stringify({ type: "register", runnerId: "r1", apiKey: "key1" }) });
+    await waitForMicrotask();
+
+    const events: string[] = [];
+    const callbacks = (label: string) => ({
+      onOpened() { events.push(`${label}:opened`); },
+      onData() {},
+      onClose() {},
+      onError(error: string) { events.push(`${label}:error:${error}`); },
+    });
+    const oldProxy = relay.proxyWsOpen("r1", { id: "reused", port: 3000, path: "/", headers: {} }, callbacks("old"), 5);
+    relay.proxyWsOpen("r1", { id: "reused", port: 3000, path: "/", headers: {} }, callbacks("new"), 100);
+    oldProxy.cancel();
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    mockWs.emit("message", { data: JSON.stringify({ type: "ws-opened", id: "reused" }) });
+
+    expect(events).toEqual(["old:error:WebSocket connection replaced", "new:opened"]);
   });
 
   test("ws-opened, ws-data, and ws-close route to callbacks", async () => {

@@ -796,7 +796,7 @@ async function handleAuthTunnel(req: Request, url: URL, match: RegExpMatchArray)
         return tunnelErrorResponse(`Runner ${runnerId} not connected`);
     }
 
-    const requestId = `auth-${sessionId}-${port}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const requestId = crypto.randomUUID();
     return proxyTunnelRequestViaRelay(
         req,
         relay,
@@ -917,7 +917,7 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
     });
 
     // ── Build requestId and proxy the request ────────────────────────────────
-    const requestId = `${sessionId}-${port}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const requestId = crypto.randomUUID();
 
     const relay = getTunnelRelay();
     if (!relay?.hasRunner(runnerId)) {
@@ -1016,7 +1016,7 @@ async function handleRunnerTunnel(req: Request, url: URL, match: RegExpMatchArra
         return tunnelErrorResponse(`Runner ${runnerId} not connected`);
     }
 
-    const requestId = `runner-${runnerId}-${port}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const requestId = crypto.randomUUID();
 
     return proxyTunnelRequestViaRelay(
         req,
