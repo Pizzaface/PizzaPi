@@ -462,8 +462,21 @@ describe("TunnelRelay WebSocket proxy callbacks", () => {
     mockWs.emit("message", {
       data: JSON.stringify({ type: "ws-close", id: "ws1", code: 1011, reason: "failed" }),
     });
+    relay.proxyWsOpen(
+      "r1",
+      { id: "ws1", port: 8080, path: "/socket", protocols: ["chat"], headers: {} },
+      {
+        onOpened() {},
+        onData() {},
+        onClose(code, reason) { events.push(`close:${code}:${reason}`); },
+        onError() {},
+      },
+    );
+    mockWs.emit("message", {
+      data: JSON.stringify({ type: "ws-close", id: "ws1", code: 1006, reason: "abnormal" }),
+    });
     await waitForMicrotask();
 
-    expect(events).toEqual(["opened:chat", "data:hello:text", "close:1000:done", "close:1000:failed"]);
+    expect(events).toEqual(["opened:chat", "data:hello:text", "close:1000:done", "close:1000:failed", "close:1000:abnormal"]);
   });
 });
