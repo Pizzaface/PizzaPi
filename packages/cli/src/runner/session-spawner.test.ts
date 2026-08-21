@@ -370,6 +370,7 @@ describe("session-spawner child", () => {
         const tempCwd = mkdtempSync(join(tmpdir(), "session-spawner-sigkill-"));
 
         const signals: { pid: number; signal?: string | number }[] = [];
+        // spy succeeds for all calls (probe signal 0 does not throw → group alive)
         const killSpy = spyOn(process, "kill").mockImplementation((pid: number, signal?: string | number) => {
             signals.push({ pid, signal });
             return true;
@@ -405,11 +406,228 @@ describe("session-spawner child", () => {
             expect(termSignals).toContainEqual({ pid: -5678, signal: "SIGTERM" });
             expect(signals.some((s) => s.signal === "SIGKILL")).toBe(false);
 
-            // After the grace period, any surviving groups are SIGKILL'd.
+            // After the grace period, liveness probes (signal 0) confirm groups
+            // are alive (spy does not throw), so SIGKILL is sent to both.
             await new Promise((resolve) => setTimeout(resolve, 80));
+            expect(signals).toContainEqual({ pid: -4321, signal: 0 }); // probe
+            expect(signals).toContainEqual({ pid: -5678, signal: 0 }); // probe
             expect(signals.filter((s) => s.signal === "SIGKILL")).toContainEqual({ pid: -4321, signal: "SIGKILL" });
             expect(signals.filter((s) => s.signal === "SIGKILL")).toContainEqual({ pid: -5678, signal: "SIGKILL" });
             expect(logInfo).toHaveBeenCalledWith(expect.stringContaining("force-killed remaining groups after 30ms"));
+        } finally {
+            killSpy.mockRestore();
+            rmSync(tempCwd, { recursive: true, force: true });
+        }
+    });
+
+    test("natural exit skips SIGKILL when process group is already dead (ESRCH probe)", async () => {
+        const cleanupSessionAttachments = mock(async (_sessionId: string) => {});
+        const logInfo = mock((_message: string) => {});
+        const trackSessionCwd = mock((_sessionId: string, _cwd: string) => {});
+        const untrackSessionCwd = mock((_sessionId: string, _cwd: string) => {});
+        const runnerUsageCacheFilePath = mock(() => "/tmp/test-usage-cache.json");
+        const isCwdAllowed = mock((_cwd: string | undefined) => true);
+
+        let latestChild: FakeChild | null = null;
+        const spawnMock = mock((_execPath: string, _args: string[], _options: { stdio: string[]; env: Record<string, string> }) => {
+            latestChild = new FakeChild();
+            return latestChild;
+        });
+
+        mock.module("node:child_process", () => ({
+            spawn: spawnMock,
+            execFile: mock(() => {}),
+        }));
+        mock.module("../extensions/session-attachments.js", () => ({ cleanupSessionAttachments }));
+        mock.module("./logger.js", () => ({ logInfo }));
+        mock.module("./runner-usage-cache.js", () => ({ runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd }));
+        mock.module("./workspace.js", () => ({ isCwdAllowed }));
+        mock.module("./session-procs.js", () => ({
+            ensureSessionProcDir: () => {},
+            sessionProcFilePath: () => "/tmp/test-session.procs",
+            readRecordedGroupPids: () => recordedGroupPids,
+            removeSessionProcFile: () => {},
+        }));
+        mock.module("../config.js", () => ({ loadConfig: () => ({ envOverrides: {} }) }));
+
+        const { spawnSession } = await import("./session-spawner.js");
+        const tempCwd = mkdtempSync(join(tmpdir(), "session-spawner-esrch-"));
+
+        const signals: { pid: number; signal?: string | number }[] = [];
+        // Probe (signal 0) throws ESRCH → group already dead → SIGKILL must NOT be sent.
+        const killSpy = spyOn(process, "kill").mockImplementation((pid: number, signal?: string | number) => {
+            if (signal === 0) {
+                const err = Object.assign(new Error("No such process"), { code: "ESRCH" });
+                throw err;
+            }
+            signals.push({ pid, signal });
+            return true;
+        });
+
+        try {
+            const runningSessions = new Map();
+            recordedGroupPids.length = 0;
+            recordedGroupPids.push(5678);
+
+            spawnSession(
+                "sess-esrch",
+                "api-key",
+                "https://relay.example",
+                tempCwd,
+                runningSessions,
+                new Set(),
+                new Set(),
+                undefined,
+                { shutdownGraceMs: 30 },
+            );
+
+            latestChild!.exitCode = 0;
+            latestChild!.emit("exit", 0, null);
+            await Promise.resolve();
+
+            // After the grace period, probes throw ESRCH → no SIGKILL sent to any group.
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            expect(signals.some((s) => s.signal === "SIGKILL")).toBe(false);
+            // logInfo is still called (groups were probed; all were already gone)
+            expect(logInfo).toHaveBeenCalledWith(expect.stringContaining("force-killed remaining groups after 30ms"));
+        } finally {
+            killSpy.mockRestore();
+            rmSync(tempCwd, { recursive: true, force: true });
+        }
+    });
+
+    test("natural exit falls back to forceKillTree when killSessionProcessGroup returns false", async () => {
+        const cleanupSessionAttachments = mock(async (_sessionId: string) => {});
+        const logInfo = mock((_message: string) => {});
+        const trackSessionCwd = mock((_sessionId: string, _cwd: string) => {});
+        const untrackSessionCwd = mock((_sessionId: string, _cwd: string) => {});
+        const runnerUsageCacheFilePath = mock(() => "/tmp/test-usage-cache.json");
+        const isCwdAllowed = mock((_cwd: string | undefined) => true);
+        const forceKillTree = mock((_child: unknown) => {});
+
+        let latestChild: FakeChild | null = null;
+        const spawnMock = mock((_execPath: string, _args: string[], _options: { stdio: string[]; env: Record<string, string> }) => {
+            latestChild = new FakeChild();
+            return latestChild;
+        });
+
+        mock.module("node:child_process", () => ({ spawn: spawnMock, execFile: mock(() => {}) }));
+        mock.module("../extensions/session-attachments.js", () => ({ cleanupSessionAttachments }));
+        mock.module("./logger.js", () => ({ logInfo }));
+        mock.module("./runner-usage-cache.js", () => ({ runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd }));
+        mock.module("./workspace.js", () => ({ isCwdAllowed }));
+        mock.module("./session-procs.js", () => ({
+            ensureSessionProcDir: () => {},
+            sessionProcFilePath: () => "/tmp/test-session.procs",
+            readRecordedGroupPids: () => [],
+            removeSessionProcFile: () => {},
+        }));
+        mock.module("../config.js", () => ({ loadConfig: () => ({ envOverrides: {} }) }));
+        mock.module("./process-kill.js", () => ({ forceKillTree }));
+
+        const { spawnSession } = await import("./session-spawner.js");
+        const tempCwd = mkdtempSync(join(tmpdir(), "session-spawner-ftree-"));
+
+        const signals: { pid: number; signal?: string | number }[] = [];
+        // Probe succeeds (alive), but SIGKILL to child.pid throws → killSessionProcessGroup returns false.
+        const killSpy = spyOn(process, "kill").mockImplementation((pid: number, signal?: string | number) => {
+            if (signal === 0) return true; // probe: alive
+            if (signal === "SIGKILL") {
+                // Simulate group disappearing between probe and kill (or Windows path)
+                const err = Object.assign(new Error("No such process"), { code: "ESRCH" });
+                throw err;
+            }
+            signals.push({ pid, signal });
+            return true;
+        });
+
+        try {
+            const runningSessions = new Map();
+            recordedGroupPids.length = 0; // no extra groups
+
+            spawnSession(
+                "sess-ftree",
+                "api-key",
+                "https://relay.example",
+                tempCwd,
+                runningSessions,
+                new Set(),
+                new Set(),
+                undefined,
+                { shutdownGraceMs: 30 },
+            );
+
+            latestChild!.exitCode = 0;
+            latestChild!.emit("exit", 0, null);
+            await Promise.resolve();
+
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            // forceKillTree must be called as fallback when killSessionProcessGroup returns false
+            expect(forceKillTree).toHaveBeenCalledWith(latestChild);
+        } finally {
+            killSpy.mockRestore();
+            rmSync(tempCwd, { recursive: true, force: true });
+        }
+    });
+
+    test("natural exit deduplicates groupPid equal to child.pid — no double SIGKILL", async () => {
+        const cleanupSessionAttachments = mock(async (_sessionId: string) => {});
+        const logInfo = mock((_message: string) => {});
+        const trackSessionCwd = mock((_sessionId: string, _cwd: string) => {});
+        const untrackSessionCwd = mock((_sessionId: string, _cwd: string) => {});
+        const runnerUsageCacheFilePath = mock(() => "/tmp/test-usage-cache.json");
+        const isCwdAllowed = mock((_cwd: string | undefined) => true);
+
+        let latestChild: FakeChild | null = null;
+        const spawnMock = mock((_execPath: string, _args: string[], _options: { stdio: string[]; env: Record<string, string> }) => {
+            latestChild = new FakeChild();
+            return latestChild;
+        });
+
+        mock.module("node:child_process", () => ({ spawn: spawnMock, execFile: mock(() => {}) }));
+        mock.module("../extensions/session-attachments.js", () => ({ cleanupSessionAttachments }));
+        mock.module("./logger.js", () => ({ logInfo }));
+        mock.module("./runner-usage-cache.js", () => ({ runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd }));
+        mock.module("./workspace.js", () => ({ isCwdAllowed }));
+        mock.module("./session-procs.js", () => ({
+            ensureSessionProcDir: () => {},
+            sessionProcFilePath: () => "/tmp/test-session.procs",
+            // groupPids contains child.pid (4321) — should be deduplicated
+            readRecordedGroupPids: () => [4321],
+            removeSessionProcFile: () => {},
+        }));
+        mock.module("../config.js", () => ({ loadConfig: () => ({ envOverrides: {} }) }));
+
+        const { spawnSession } = await import("./session-spawner.js");
+        const tempCwd = mkdtempSync(join(tmpdir(), "session-spawner-dedup-"));
+
+        const signals: { pid: number; signal?: string | number }[] = [];
+        const killSpy = spyOn(process, "kill").mockImplementation((pid: number, signal?: string | number) => {
+            signals.push({ pid, signal });
+            return true;
+        });
+
+        try {
+            spawnSession(
+                "sess-dedup",
+                "api-key",
+                "https://relay.example",
+                tempCwd,
+                new Map(),
+                new Set(),
+                new Set(),
+                undefined,
+                { shutdownGraceMs: 30 },
+            );
+
+            latestChild!.exitCode = 0;
+            latestChild!.emit("exit", 0, null);
+            await Promise.resolve();
+            await new Promise((resolve) => setTimeout(resolve, 80));
+
+            // SIGKILL to -4321 must appear exactly once (dedup prevents double-kill)
+            const sigkills = signals.filter((s) => s.signal === "SIGKILL" && s.pid === -4321);
+            expect(sigkills).toHaveLength(1);
         } finally {
             killSpy.mockRestore();
             rmSync(tempCwd, { recursive: true, force: true });

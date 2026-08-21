@@ -56,10 +56,30 @@ export function killSessionProcessGroup(pid: number | undefined, signal: NodeJS.
 const SESSION_SHUTDOWN_GRACE_MS = 8_000;
 
 /**
+ * Returns true if the process group for pgid is still alive.
+ * Uses signal 0 (no actual signal delivered) as the liveness probe.
+ * ESRCH = no such process/group (dead); EPERM = exists but no permission (alive).
+ */
+function isProcessGroupAlive(pgid: number): boolean {
+    try {
+        process.kill(-pgid, 0);
+        return true;
+    } catch (err: unknown) {
+        return (err as NodeJS.ErrnoException)?.code === "EPERM";
+    }
+}
+
+/**
  * Send SIGKILL to the worker's process group and any recorded command groups
  * after `timeoutMs`. Mirrors the escalation used by the explicit kill paths
  * in daemon.ts; reused here so SIGTERM-ignoring descendants cannot outlive a
  * natural worker exit.
+ *
+ * Cross-ref: daemon.ts:escalateToSigkill gates on !child.killed && exitCode===null
+ * (child is still running). This path is for natural-exit cleanup (child already
+ * exited), so we use a signal-0 probe instead. Residual race: a pgid could be
+ * recycled in the ~microseconds between the probe and the kill — acceptable given
+ * the probe eliminates the common multi-second stale-pgid window.
  */
 function escalateCleanupToSigkill(
     child: ChildProcess,
@@ -69,11 +89,19 @@ function escalateCleanupToSigkill(
 ): void {
     const timer = setTimeout(() => {
         try {
-            // Kill the whole process group (worker + descendants); fall back
-            // to tree-kill (Windows) / plain kill if group signaling fails.
-            if (!killSessionProcessGroup(child.pid, "SIGKILL")) forceKillTree(child);
+            const childPid = child.pid;
+            // Probe each process group with signal 0 before sending SIGKILL.
+            // If the probe throws ESRCH the group is already gone — SIGTERM
+            // worked, or the process exited naturally. Skip SIGKILL to avoid
+            // hitting a recycled pgid that now belongs to a different process.
+            if (childPid && isProcessGroupAlive(childPid)) {
+                // Fall back to tree-kill (Windows) / plain kill if group signaling fails.
+                if (!killSessionProcessGroup(childPid, "SIGKILL")) forceKillTree(child);
+            }
             for (const groupPid of groupPids) {
-                if (groupPid !== child.pid) killSessionProcessGroup(groupPid, "SIGKILL");
+                if (groupPid !== childPid && isProcessGroupAlive(groupPid)) {
+                    killSessionProcessGroup(groupPid, "SIGKILL");
+                }
             }
             logInfo(`session ${label} force-killed remaining groups after ${timeoutMs}ms`);
         } catch {
