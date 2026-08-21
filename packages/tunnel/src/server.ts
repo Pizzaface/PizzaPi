@@ -322,6 +322,9 @@ export class TunnelRelay {
       case "response-data-end":
         this.handleResponseDataEnd(msg);
         break;
+      case "response-data-abort":
+        this.handleResponseDataAbort(msg);
+        break;
       case "request-end":
         this.handleRequestEnd(msg);
         break;
@@ -408,6 +411,14 @@ export class TunnelRelay {
     clearTimeout(pending.timer);
     this.pendingRequests.delete(msg.id);
     pending.onResponseEnd();
+  }
+
+  private handleResponseDataAbort(msg: { id: string; reason?: string }): void {
+    const pending = this.pendingRequests.get(msg.id);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingRequests.delete(msg.id);
+    pending.onError(msg.reason ?? "Remote stream aborted");
   }
 
   private handleRequestEnd(msg: TunnelRequestEndMessage): void {

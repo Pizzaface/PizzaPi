@@ -484,25 +484,30 @@ export class TunnelClient extends EventEmitter {
           this.send({ type: "response-data", id, data: chunk.toString("binary") });
         });
 
-        // Idempotent terminal: delete from map + send end frame exactly once.
+        // Idempotent terminal: delete from map + send exactly one terminal frame.
+        // Normal end  → response-data-end  (clean completion).
+        // error / aborted / premature close → response-data-abort (failure).
         let settled = false;
-        const terminate = () => {
+        const terminate = (isError: boolean, reason?: string) => {
           if (settled) return;
           settled = true;
           this.activeRequests.delete(id);
-          this.send({ type: "response-data-end", id });
+          if (isError) {
+            this.send({ type: "response-data-abort", id, reason });
+          } else {
+            this.send({ type: "response-data-end", id });
+          }
         };
 
-        response.on("end", terminate);
+        response.on("end", () => terminate(false));
 
         // Mid-stream failures (socket reset / service crash after headers sent).
-        // Each fires terminate() which is a no-op after the first call.
-        response.on("error", terminate);
+        response.on("error", (err: Error) => terminate(true, err.message));
         // "aborted" is a legacy Node.js event still fired by some runtimes.
-        response.on("aborted", terminate);
+        response.on("aborted", () => terminate(true, "request aborted"));
         // "close" fires on premature socket teardown AND after a clean end —
-        // the settled guard makes it a no-op in the happy path.
-        response.on("close", terminate);
+        // the settled guard makes it a no-op in the happy path (end fires first).
+        response.on("close", () => terminate(true, "connection closed prematurely"));
 
         controller.signal.addEventListener(
           "abort",
