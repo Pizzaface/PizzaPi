@@ -5434,6 +5434,7 @@ export function App() {
               onNewSession={handleNewSession}
               sessionModes={effectiveSessionModes}
               sessionModesRunnerId={modesSource.runnerId}
+              selectedModeId={selectedModeId}
               onSelectedModeChange={setSelectedModeId}
               onClearSelection={handleClearSelection}
               onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); lifecycleClearSelection(); }}

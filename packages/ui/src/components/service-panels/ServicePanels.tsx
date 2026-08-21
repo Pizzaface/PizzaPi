@@ -280,13 +280,14 @@ export function useServicePanelState(
     const [panelNavParams, setPanelNavParams] = useState<Map<string, PanelNavParams>>(new Map());
 
     const togglePanel = useCallback((serviceId: string, query?: string, fragment?: string) => {
+        let closing = false;
         setActivePanelIds(prev => {
             const next = new Set(prev);
             if (next.has(serviceId)) {
-                // When toggling OFF with no new nav params, just close.
-                // When toggling with new nav params, keep open and update params.
+                // Navigation params update an open panel; only a plain toggle closes it.
                 if (!query && !fragment) {
                     next.delete(serviceId);
+                    closing = true;
                 }
             } else {
                 next.add(serviceId);
@@ -306,10 +307,9 @@ export function useServicePanelState(
             next.delete(serviceId);
             return next;
         });
-        // Clear ephemeral override when closing so that the next open uses the
-        // stored preference (or a fresh auto-placement), not a stale transient.
+        // Deep-link updates must preserve a panel's transient position.
         setEphemeralPositions(prev => {
-            if (!prev.has(serviceId)) return prev;
+            if (!closing || !prev.has(serviceId)) return prev;
             const next = new Map(prev);
             next.delete(serviceId);
             return next;

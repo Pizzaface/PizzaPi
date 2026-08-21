@@ -101,15 +101,19 @@ export function ModeSchedule({
   onOpenSession: (sessionId: string) => void;
   onCancel: (instruction: ScheduledInstruction) => void;
 }) {
-  const [cancelling, setCancelling] = React.useState<string | null>(null);
+  const [cancelling, setCancelling] = React.useState<Set<string>>(new Set());
 
   const cancel = async (instruction: ScheduledInstruction, index: number) => {
     const key = instructionKey(instruction, index);
-    setCancelling(key);
+    setCancelling((prev) => new Set(prev).add(key));
     try {
       await onCancel(instruction);
     } finally {
-      setCancelling(null);
+      setCancelling((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
     }
   };
 
@@ -160,11 +164,11 @@ export function ModeSchedule({
                 size="icon"
                 variant="ghost"
                 className="size-7 shrink-0"
-                disabled={cancelling === key}
+                disabled={cancelling.has(key)}
                 onClick={() => void cancel(instruction, i)}
                 aria-label={`Cancel ${describeSchedule(instruction.triggerType, instruction.params)}`}
               >
-                {cancelling === key ? <Loader2Icon className="size-3.5 animate-spin" /> : <XIcon className="size-3.5" />}
+                {cancelling.has(key) ? <Loader2Icon className="size-3.5 animate-spin" /> : <XIcon className="size-3.5" />}
               </Button>
             </div>
           );

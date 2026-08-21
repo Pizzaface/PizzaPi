@@ -112,6 +112,8 @@ export interface SessionSidebarProps {
     sessionsCompacting?: Set<string>;
     sessionModes?: ServiceModeDef[];
     sessionModesRunnerId?: string | null;
+    /** Controlled mode filter (null = Code). */
+    selectedModeId?: string | null;
     /** Notified when the user switches session mode (null = no mode filter). */
     onSelectedModeChange?: (modeId: string | null) => void;
     /** Dynamic panels announced by the runner, so launcher buttons can be rendered beneath the session list. */
@@ -236,6 +238,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     sessionsCompacting,
     sessionModes = [],
     sessionModesRunnerId,
+    selectedModeId: selectedModeIdProp = null,
     onSelectedModeChange,
     dynamicPanels = [],
     onOpenLauncherPanel,
@@ -847,15 +850,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         projects: ProjectGroup[];
     }
 
-    const [selectedMode, setSelectedMode] = React.useState<string | null>(null);
+    const selectedMode = selectedModeIdProp ?? null;
+    const setSelectedMode = React.useCallback((modeId: string | null) => onSelectedModeChange?.(modeId), [onSelectedModeChange]);
     const activeMode = sessionModes.find((mode) => mode.id === selectedMode) ?? null;
     React.useEffect(() => {
-        if (selectedMode && !sessionModes.some((mode) => mode.id === selectedMode)) setSelectedMode(null);
-    }, [selectedMode, sessionModes]);
-    // Mirror the selection outward so the host can show that mode's home view.
-    React.useEffect(() => {
-        onSelectedModeChange?.(selectedMode);
-    }, [selectedMode, onSelectedModeChange]);
+        if (selectedMode && !sessionModes.some((mode) => mode.id === selectedMode)) onSelectedModeChange?.(null);
+    }, [selectedMode, sessionModes, onSelectedModeChange]);
     const visibleSessions = React.useMemo(
         () => filterSessionsByMode(liveSessions, selectedMode, sessionModes, sessionModesRunnerId),
         [liveSessions, selectedMode, sessionModes, sessionModesRunnerId],
