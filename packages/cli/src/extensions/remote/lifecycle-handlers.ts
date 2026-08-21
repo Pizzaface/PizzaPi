@@ -112,6 +112,126 @@ export interface LifecycleHandlerState {
     } | null;
 }
 
+/**
+ * Cleanup performed on every session transition (local-TUI non-startup
+ * session_start, or worker session_switch with reason "new"):
+ * clears stale child links, cancels pending triggers, and resets
+ * session-complete generation state.
+ *
+ * Exported so it can be called from the local-TUI session_start path and
+ * tested independently.
+ */
+export function performSessionTransitionCleanup({
+    state,
+    rctx,
+    triggerWaits,
+    delinkManager,
+    cancellationManager,
+    followUpGrace,
+}: Pick<LifecycleHandlersDeps, "state" | "rctx" | "triggerWaits" | "delinkManager" | "cancellationManager" | "followUpGrace">): void {
+    // ── Stale child / trigger cleanup ─────────────────────────────────────────
+    state.staleChildIds.clear();
+    for (const entry of receivedTriggers.values()) {
+        state.staleChildIds.add(entry.sourceSessionId);
+    }
+    for (const { childSessionId } of state.pendingCancellations) {
+        state.staleChildIds.add(childSessionId);
+    }
+
+    const { cancelled, sent, failed } = clearAndCancelPendingTriggers(
+        (confirmedTriggerId, confirmedChildSessionId) => {
+            const idx = state.pendingCancellations.findIndex(
+                (c) =>
+                    c.triggerId === confirmedTriggerId &&
+                    c.childSessionId === confirmedChildSessionId,
+            );
+            if (idx >= 0) {
+                state.pendingCancellations.splice(idx, 1);
+                log.info(
+                    `pizzapi: trigger cancellation confirmed for ${confirmedTriggerId} — removed from retry queue`,
+                );
+                if (state.pendingCancellations.length === 0) {
+                    cancellationManager.stopPendingCancellationRetryLoop();
+                }
+            }
+        },
+    );
+
+    if (cancelled > 0) {
+        log.info(
+            `pizzapi: cancelled ${cancelled} pending trigger(s) on session transition (${sent.length} sent-pending-ack, ${failed.length} deferred)`,
+        );
+    }
+
+    const allNeedingConfirmation = [...sent, ...failed];
+    if (allNeedingConfirmation.length > 0) {
+        state.pendingCancellations = [...state.pendingCancellations, ...allNeedingConfirmation];
+        for (const { childSessionId } of allNeedingConfirmation) {
+            state.staleChildIds.add(childSessionId);
+        }
+        if (rctx.relay && rctx.sioSocket?.connected) {
+            cancellationManager.startPendingCancellationRetryLoop();
+        }
+    }
+
+    // ── Unsubscribe from all active trigger subscriptions ─────────────────────
+    const sid = rctx.relaySessionId;
+    if (sid) {
+        listTriggerSubscriptions(sid)
+            .then(async (subs) => {
+                if (subs.length === 0) return;
+                log.info(`pizzapi: unsubscribing from ${subs.length} trigger subscription(s) on session transition`);
+                const results = await Promise.allSettled(
+                    subs.map((s) => unsubscribeTrigger(sid, { subscriptionId: s.subscriptionId, triggerType: s.triggerType })),
+                );
+                const failedSubs = results.filter(
+                    (r) => r.status === "rejected" || (r.status === "fulfilled" && !r.value.ok),
+                );
+                if (failedSubs.length > 0) {
+                    log.info(`pizzapi: ${failedSubs.length} trigger unsubscribe(s) failed on session transition`);
+                }
+            })
+            .catch((err) => {
+                log.info(
+                    `pizzapi: trigger subscription cleanup failed on session transition: ${err instanceof Error ? err.message : String(err)}`,
+                );
+            });
+    }
+
+    // ── Delink children ───────────────────────────────────────────────────────
+    const rawDelinkEpoch = Date.now();
+    state.pendingDelink = true;
+    state.pendingDelinkEpoch = rawDelinkEpoch;
+    delinkManager.clearPendingDelinkRetryTimer();
+    if (rctx.relay && rctx.sioSocket?.connected) {
+        delinkManager.emitDelinkChildren(rawDelinkEpoch);
+    }
+
+    if (rctx.isChildSession) {
+        const cancelledChild = triggerWaits.cancelAll("Session switched — parent link cleared.");
+        log.info(
+            `pizzapi: clearing own parent link on session transition${cancelledChild > 0 ? ` — cancelled ${cancelledChild} pending trigger wait(s)` : ""}`,
+        );
+        state.pendingDelinkOwnParent = true;
+        delinkManager.clearPendingDelinkOwnParentRetryTimer();
+        state.stalePrimaryParentId = rctx.parentSessionId;
+        if (rctx.relay && rctx.sioSocket?.connected) {
+            delinkManager.emitDelinkOwnParent();
+        }
+        rctx.parentSessionId = null;
+        rctx.isChildSession = false;
+        followUpGrace.clearFollowUpGrace();
+    }
+
+    // ── Session-complete generation state reset ───────────────────────────────
+    state.sessionCompleteFired = false;
+    state.sessionCompleteGeneration += 1;
+    state.pendingSessionCompleteDelivery = null;
+    state.pendingSessionCompleteSocket = null;
+    state.pendingSessionCompleteTransportGeneration = null;
+    state.lastSessionCompletePayload = null;
+}
+
 export interface LifecycleHandlersDeps {
     /** PiInstance (factory argument) — typed as any since the type is not publicly exported. */
     pi: any;
@@ -148,6 +268,14 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         doDisconnect,
         clearCtx,
     } = deps;
+
+    // Local TUI (index.ts) fires session_start for /new, /resume, /fork.
+    // Worker (worker.ts) sets PIZZAPI_WORKER_CWD and emits session_switch manually.
+    // Use the env var to distinguish the two paths.
+    const localTuiTransitionCleanup = !process.env.PIZZAPI_WORKER_CWD;
+
+    // Counts session_start invocations so we skip cleanup on the first (startup).
+    let sessionStartCount = 0;
 
     // Session-local error-fired flag (not shared — only used inside agent_end/turn_start).
     let sessionErrorFired = false;
@@ -189,6 +317,14 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
     // ── Session lifecycle ─────────────────────────────────────────────────────
 
     pi.on("session_start", (_event: any, ctx: any) => {
+        sessionStartCount += 1;
+        // Local-TUI: /new, /resume, /fork fire session_start (not session_switch).
+        // Run the same transition cleanup as session_switch, but only for
+        // non-startup starts (sessionStartCount > 1). The worker path sets
+        // localTuiTransitionCleanup=false and emits session_switch itself.
+        if (localTuiTransitionCleanup && sessionStartCount > 1) {
+            performSessionTransitionCleanup({ state, rctx, triggerWaits, delinkManager, cancellationManager, followUpGrace });
+        }
         rctx.latestCtx = ctx;
         rctx.sessionStartedAt = Date.now();
         rctx.isAgentActive = false;
@@ -214,105 +350,16 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
 
         // ── /new cleanup: cancel pending triggers and delink children ─────────
         if (event.reason === "new") {
-            state.staleChildIds.clear();
-            for (const entry of receivedTriggers.values()) {
-                state.staleChildIds.add(entry.sourceSessionId);
-            }
-            for (const { childSessionId } of state.pendingCancellations) {
-                state.staleChildIds.add(childSessionId);
-            }
-
-            const { cancelled, sent, failed } = clearAndCancelPendingTriggers(
-                (confirmedTriggerId, confirmedChildSessionId) => {
-                    const idx = state.pendingCancellations.findIndex(
-                        (c) =>
-                            c.triggerId === confirmedTriggerId &&
-                            c.childSessionId === confirmedChildSessionId,
-                    );
-                    if (idx >= 0) {
-                        state.pendingCancellations.splice(idx, 1);
-                        log.info(
-                            `pizzapi: trigger cancellation confirmed for ${confirmedTriggerId} — removed from retry queue`,
-                        );
-                        if (state.pendingCancellations.length === 0) {
-                            cancellationManager.stopPendingCancellationRetryLoop();
-                        }
-                    }
-                },
-            );
-
-            if (cancelled > 0) {
-                log.info(
-                    `pizzapi: cancelled ${cancelled} pending trigger(s) on session switch (${sent.length} sent-pending-ack, ${failed.length} deferred)`,
-                );
-            }
-
-            const allNeedingConfirmation = [...sent, ...failed];
-            if (allNeedingConfirmation.length > 0) {
-                state.pendingCancellations = [...state.pendingCancellations, ...allNeedingConfirmation];
-                for (const { childSessionId } of allNeedingConfirmation) {
-                    state.staleChildIds.add(childSessionId);
-                }
-                if (rctx.relay && rctx.sioSocket?.connected) {
-                    cancellationManager.startPendingCancellationRetryLoop();
-                }
-            }
-
-            // ── Unsubscribe from all active trigger subscriptions ─────────────
-            const sid = rctx.relaySessionId;
-            if (sid) {
-                listTriggerSubscriptions(sid)
-                    .then(async (subs) => {
-                        if (subs.length === 0) return;
-                        log.info(`pizzapi: unsubscribing from ${subs.length} trigger subscription(s) on /new`);
-                        const results = await Promise.allSettled(
-                            subs.map((s) => unsubscribeTrigger(sid, { subscriptionId: s.subscriptionId, triggerType: s.triggerType })),
-                        );
-                        const failedSubs = results.filter(
-                            (r) => r.status === "rejected" || (r.status === "fulfilled" && !r.value.ok),
-                        );
-                        if (failedSubs.length > 0) {
-                            log.info(`pizzapi: ${failedSubs.length} trigger unsubscribe(s) failed on /new`);
-                        }
-                    })
-                    .catch((err) => {
-                        log.info(
-                            `pizzapi: trigger subscription cleanup failed on /new: ${err instanceof Error ? err.message : String(err)}`,
-                        );
-                    });
-            }
-
-            const rawDelinkEpoch = Date.now();
-            state.pendingDelink = true;
-            state.pendingDelinkEpoch = rawDelinkEpoch;
-            delinkManager.clearPendingDelinkRetryTimer();
-            if (rctx.relay && rctx.sioSocket?.connected) {
-                delinkManager.emitDelinkChildren(rawDelinkEpoch);
-            }
-
-            if (rctx.isChildSession) {
-                const cancelledChild = triggerWaits.cancelAll("Session switched — parent link cleared.");
-                log.info(
-                    `pizzapi: clearing own parent link on /new${cancelledChild > 0 ? ` — cancelled ${cancelledChild} pending trigger wait(s)` : ""}`,
-                );
-                state.pendingDelinkOwnParent = true;
-                delinkManager.clearPendingDelinkOwnParentRetryTimer();
-                state.stalePrimaryParentId = rctx.parentSessionId;
-                if (rctx.relay && rctx.sioSocket?.connected) {
-                    delinkManager.emitDelinkOwnParent();
-                }
-                rctx.parentSessionId = null;
-                rctx.isChildSession = false;
-                followUpGrace.clearFollowUpGrace();
-            }
+            performSessionTransitionCleanup({ state, rctx, triggerWaits, delinkManager, cancellationManager, followUpGrace });
+        } else {
+            // For resume/fork: just reset session-complete state (no stale-child cleanup).
+            state.sessionCompleteFired = false;
+            state.sessionCompleteGeneration += 1;
+            state.pendingSessionCompleteDelivery = null;
+            state.pendingSessionCompleteSocket = null;
+            state.pendingSessionCompleteTransportGeneration = null;
+            state.lastSessionCompletePayload = null;
         }
-
-        state.sessionCompleteFired = false;
-        state.sessionCompleteGeneration += 1;
-        state.pendingSessionCompleteDelivery = null;
-        state.pendingSessionCompleteSocket = null;
-        state.pendingSessionCompleteTransportGeneration = null;
-        state.lastSessionCompletePayload = null;
 
         installFooter(rctx, ctx);
         startSessionNameSync();
