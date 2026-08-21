@@ -87,8 +87,10 @@ describe("executeCleanupTeardown — fail-open gating", () => {
         const deps = makeDeps({ kind: "unknown" });
         const result = await executeCleanupTeardown("child-1", "runner-1", deps);
         expect(result).toBe("skipped");
-        expect(deps.emitRunner).not.toHaveBeenCalled();
-        expect(deps.emitRelay).not.toHaveBeenCalled();
+        // Shutdown signals are ALWAYS emitted (benign if child is absent).
+        expect(deps.emitRunner).toHaveBeenCalledWith("runner-1", "kill_session", { sessionId: "child-1" });
+        expect(deps.emitRelay).toHaveBeenCalledWith("child-1", "exec", expect.objectContaining({ command: "end_session" }));
+        // endSession is deferred — disconnect handler will complete bookkeeping.
         expect(deps.endSession).not.toHaveBeenCalled();
     });
 
@@ -105,8 +107,10 @@ describe("executeCleanupTeardown — fail-open gating", () => {
         const deps = makeDeps({ kind: "count", count: 2 });
         const result = await executeCleanupTeardown("child-3", "runner-3", deps);
         expect(result).toBe("skipped");
-        expect(deps.emitRunner).not.toHaveBeenCalled();
-        expect(deps.emitRelay).not.toHaveBeenCalled();
+        // Shutdown signals are ALWAYS emitted — disconnect handler completes bookkeeping.
+        expect(deps.emitRunner).toHaveBeenCalledWith("runner-3", "kill_session", { sessionId: "child-3" });
+        expect(deps.emitRelay).toHaveBeenCalledWith("child-3", "exec", expect.objectContaining({ command: "end_session" }));
+        // endSession NOT called; the hosting node's disconnect handler calls endSharedSession.
         expect(deps.endSession).not.toHaveBeenCalled();
     });
 

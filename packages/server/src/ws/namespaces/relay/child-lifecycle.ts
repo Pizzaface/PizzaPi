@@ -111,19 +111,8 @@ export async function executeCleanupTeardown(
     deps: CleanupTeardownDeps,
 ): Promise<"torn-down" | "skipped"> {
     const presence = await deps.countPresence();
-    if (presence.kind !== "count" || presence.count !== 0) {
-        // Fail-open: unknown presence or relay socket still connected → do NOT
-        // tear down. The disconnect handler on the hosting node (or the orphan
-        // sweeper) will complete cleanup.
-        log.info(
-            `cleanup_child_session: skip teardown child=${childSessionId}` +
-            ` presence=${presence.kind}` +
-            (presence.kind === "count" ? ` count=${presence.count}` : ""),
-        );
-        return "skipped";
-    }
-    // Confirmed count === 0: no relay socket anywhere in the cluster.
-    // Safe to fire process teardown commands and finalize the session.
+
+    // ALWAYS send shutdown signals — sending to an absent child is benign.
     if (runnerId) {
         deps.emitRunner(runnerId, "kill_session", { sessionId: childSessionId });
     }
@@ -131,8 +120,20 @@ export async function executeCleanupTeardown(
         id: `cleanup-${childSessionId}-${Date.now()}`,
         command: "end_session",
     });
-    await deps.endSession(childSessionId, "Parent acknowledged completion", { confirmedTerminal: true });
-    return "torn-down";
+
+    if (presence.kind === "count" && presence.count === 0) {
+        // Confirmed empty: no relay socket will fire a disconnect handler → complete teardown here.
+        await deps.endSession(childSessionId, "Parent acknowledged completion", { confirmedTerminal: true });
+        return "torn-down";
+    }
+    // count > 0 OR unknown: signals dispatched above; the disconnect handler on the hosting node
+    // will call endSharedSession. Do NOT call endSession here (that was the fail-open bug).
+    log.info(
+        `cleanup_child_session: deferring endSession child=${childSessionId}` +
+        ` presence=${presence.kind}` +
+        (presence.kind === "count" ? ` count=${presence.count}` : ""),
+    );
+    return "skipped";
 }
 
 export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIOServer): void {
