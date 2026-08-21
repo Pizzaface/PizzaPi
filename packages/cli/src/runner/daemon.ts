@@ -1567,6 +1567,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         // used on initial startup and after relay re-registration, because the
         // server-side revision counter is process-local and restarts from 0/1.
         let lastAppliedRevision = -1;
+        const recentTriggerDeltas: Array<{ revision: number; action: "subscribe" | "update" | "unsubscribe"; subscription: TriggerSubscriptionEntry }> = [];
 
         (socket as any).on("trigger_subscriptions_snapshot", (data: any) => {
             if (isShuttingDown) return;
@@ -1592,8 +1593,12 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 // the snapshot to be accepted, while still allowing any subsequent
                 // delta (revision > snapshotRevision) to be applied on top of it.
                 if (isReconnect) {
-                    lastAppliedRevision = 0;
-                    logInfo(`[trigger-reconciliation] accepting reconnect snapshot revision=${revision} as authoritative baseline (resetting stale-drop counter)`);
+                    // Accept the baseline even if a delta arrived first, but keep
+                    // the cursor immediately before this snapshot's revision.
+                    // Resetting to 0 drops revision 0 snapshots and can make a
+                    // late reconnect baseline clobber a newer applied delta.
+                    lastAppliedRevision = revision - 1;
+                    logInfo(`[trigger-reconciliation] accepting reconnect snapshot revision=${revision} as authoritative baseline`);
                 }
 
                 // Ignore stale snapshots (e.g. from a retransmission).
@@ -1605,6 +1610,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
                 logInfo(`[trigger-reconciliation] received snapshot revision=${revision} with ${subscriptions.length} subscriptions`);
                 cachedTriggerSubscriptions = subscriptions as TriggerSubscriptionEntry[];
+                // A delta may have overtaken the async snapshot read. Replay the
+                // remembered newer deltas so the baseline cannot erase them.
+                for (const delta of recentTriggerDeltas) {
+                    if (delta.revision > revision) {
+                        cachedTriggerSubscriptions = applyTriggerSubscriptionDeltaToCache(cachedTriggerSubscriptions, delta.action, delta.subscription);
+                    }
+                }
 
                 const { applied: totalApplied, errors: allErrors } = reconcileSnapshotSubscriptions(registry, cachedTriggerSubscriptions);
 
@@ -1642,6 +1654,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 lastAppliedRevision = revision;
 
                 const typedSubscription = subscription as TriggerSubscriptionEntry;
+                recentTriggerDeltas.push({ revision, action, subscription: typedSubscription });
+                if (recentTriggerDeltas.length > 100) recentTriggerDeltas.shift();
                 cachedTriggerSubscriptions = applyTriggerSubscriptionDeltaToCache(cachedTriggerSubscriptions, action, typedSubscription);
 
                 const prefix = typedSubscription.triggerType.split(":")[0];
