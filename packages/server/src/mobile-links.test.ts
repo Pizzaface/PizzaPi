@@ -96,6 +96,25 @@ describe("mobile-links store", () => {
         });
     });
 
+    test("redemption is atomic: concurrent redeems yield exactly one winner", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const pending = await createMobileLink("http://localhost:7492", "user-race", "Race");
+            await scanMobileLink(pending.id, { verificationToken: "RACE42", deviceName: "Phone" });
+            const approved = await approveMobileLink(pending.id, "user-race", "RACE42");
+            expect(approved!.status).toBe("approved");
+
+            const [a, b] = await Promise.all([redeemMobileLink(pending.id), redeemMobileLink(pending.id)]);
+            const keys = [a, b].map((r) => r?.apiKey).filter(Boolean);
+            expect(keys).toHaveLength(1);
+            expect(keys[0]).toMatch(/^[a-f0-9]{64}$/);
+
+            // A subsequent redemption also returns nothing.
+            const third = await redeemMobileLink(pending.id);
+            expect(third!.status).toBe("approved");
+            expect(third!.apiKey).toBeUndefined();
+        });
+    });
+
     test("sweep deletes expired mobile links", async () => {
         await runWithAuthContext(authContext, async () => {
             const link = await createMobileLink("http://localhost:7492", "user-sweep", "Sweep");
