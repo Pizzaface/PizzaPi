@@ -379,13 +379,23 @@ export async function getRelaySessionUserId(sessionId: string): Promise<string |
  * delivered and will block AskUserQuestion / plan_review fallback.
  */
 export async function getActiveRelaySessionUserId(sessionId: string): Promise<string | null> {
+    const nowIso = new Date().toISOString();
     const row = await getKysely()
         .selectFrom("relay_session")
-        .select("userId")
+        .select(["userId", "expiresAt"])
         .where("id", "=", sessionId)
         .where("endedAt", "is", null)
         .executeTakeFirst();
-    return row?.userId ?? null;
+
+    if (!row) return null;
+
+    // Ephemeral sessions expire by wall-clock TTL even before a graceful
+    // session_end or prune. Treat them as inactive once expiresAt has passed,
+    // otherwise a tunnel token minted for the session remains valid until the
+    // row is pruned, even though the session is already dead.
+    if (row.expiresAt !== null && row.expiresAt <= nowIso) return null;
+
+    return row.userId ?? null;
 }
 
 export async function recordRelaySessionEnd(sessionId: string): Promise<void> {

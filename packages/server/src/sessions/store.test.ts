@@ -240,3 +240,57 @@ describe("listPersistedRelaySessionsForUser — cursor pagination", () => {
         expect(result.nextCursor).toBeNull();
     });
 });
+
+// ── Active-session ownership used by tunnel-token revocation ───────────────
+
+describe("getActiveRelaySessionUserId", () => {
+    let store: Awaited<typeof paginationStorePromise>;
+
+    beforeAll(async () => {
+        store = await paginationStorePromise;
+        await store.ensureRelaySessionTables();
+    });
+
+    afterEach(async () => {
+        await paginationDb.deleteFrom("relay_session_state").execute();
+        await paginationDb.deleteFrom("relay_session").execute();
+    });
+
+    it("returns null for an expired ephemeral session that has not yet been marked ended", async () => {
+        const sessionId = "expired-ephemeral";
+        const past = "2024-01-01T00:00:00.000Z";
+        await insertPaginationSession({
+            sessionId,
+            lastActiveAt: past,
+            isEphemeral: true,
+            expiresAt: past,
+        });
+        const userId = await store.getActiveRelaySessionUserId(sessionId);
+        expect(userId).toBeNull();
+    });
+
+    it("returns the owner for an active ephemeral session whose expiresAt is in the future", async () => {
+        const sessionId = "active-ephemeral";
+        const future = "2099-01-01T00:00:00.000Z";
+        await insertPaginationSession({
+            sessionId,
+            lastActiveAt: "2025-01-01T00:00:00.000Z",
+            isEphemeral: true,
+            expiresAt: future,
+        });
+        const userId = await store.getActiveRelaySessionUserId(sessionId);
+        expect(userId).toBe(TEST_USER);
+    });
+
+    it("returns the owner for a non-ephemeral session with no expiresAt", async () => {
+        const sessionId = "persisted-session";
+        await insertPaginationSession({
+            sessionId,
+            lastActiveAt: "2025-01-01T00:00:00.000Z",
+            isEphemeral: false,
+            expiresAt: null,
+        });
+        const userId = await store.getActiveRelaySessionUserId(sessionId);
+        expect(userId).toBe(TEST_USER);
+    });
+});
