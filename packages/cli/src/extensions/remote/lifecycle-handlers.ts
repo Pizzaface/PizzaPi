@@ -510,18 +510,30 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
                 // But skip if the session still has active trigger subscriptions
                 // or linked child sessions that may session_complete later.
                 void (async () => {
+                    // Capture generation before any await so we can detect a
+                    // new turn or /new that arrived while probes were in flight.
+                    const closeGeneration = state.sessionCompleteGeneration;
+
                     const sessionId = rctx.relaySessionId;
                     const activeSubscriptionCount = sessionId
                         ? await listTriggerSubscriptions(sessionId)
                             .then((subs) => subs.length)
                             .catch(() => null)
                         : null;
+                    if (state.sessionCompleteGeneration !== closeGeneration) {
+                        log.info("pizzapi: auto-close aborted — session generation changed during subscription probe");
+                        return;
+                    }
                     if (typeof activeSubscriptionCount === "number" && activeSubscriptionCount > 0) {
                         log.info(`pizzapi: auto-close skipped — session has ${activeSubscriptionCount} active trigger subscription(s)`);
                         return;
                     }
 
                     const linkedChildCount = await getLinkedChildCount(rctx);
+                    if (state.sessionCompleteGeneration !== closeGeneration) {
+                        log.info("pizzapi: auto-close aborted — session generation changed during child count probe");
+                        return;
+                    }
                     if (typeof linkedChildCount === "number" && linkedChildCount > 0) {
                         log.info(`pizzapi: auto-close skipped — session has ${linkedChildCount} linked child session(s)`);
                         return;
@@ -534,6 +546,10 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
                         log.info("pizzapi: auto-close skipped — new work arrived during async checks");
                         return;
                     }
+                    if (state.sessionCompleteGeneration !== closeGeneration) {
+                        log.info("pizzapi: auto-close aborted — session generation changed during idle re-check");
+                        return;
+                    }
 
                     if (!shouldAutoClose({
                         autoCloseEnv: process.env.PIZZAPI_WORKER_AUTO_CLOSE,
@@ -544,6 +560,12 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
                         linkedChildCount,
                     })) {
                         log.info("pizzapi: auto-close skipped — unable to prove session is fully idle");
+                        return;
+                    }
+
+                    // Final generation guard immediately before shutdown.
+                    if (state.sessionCompleteGeneration !== closeGeneration) {
+                        log.info("pizzapi: auto-close aborted — session generation changed before shutdown");
                         return;
                     }
 
