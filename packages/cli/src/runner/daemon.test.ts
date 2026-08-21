@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { initServiceHandlers } from "./daemon.js";
 import type { ServiceHandler, ServiceInitOptions } from "./service-handler.js";
 import type { Socket } from "socket.io-client";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 function makeSocket(): Socket {
     return {} as Socket;
@@ -86,5 +90,71 @@ describe("initServiceHandlers", () => {
         const result = initServiceHandlers(handlers, makeSocket(), makeOpts, initialized);
         expect(result.initialized).toEqual([]);
         expect(called).toBe(false);
+    });
+});
+
+describe("reapSessionGroups (adopted-session cleanup regression)", () => {
+    test("reaps recorded groups and removes proc file for the target session; leaves other sessions untouched", () => {
+        const tmpHome = mkdtempSync(join(tmpdir(), "reap-session-test-"));
+        const childTestPath = join(
+            import.meta.dir,
+            `.reap-session-child-${Date.now()}-${Math.random().toString(16).slice(2)}.test.ts`,
+        );
+        const cliDir = join(import.meta.dir, "../../..");
+
+        try {
+            writeFileSync(
+                childTestPath,
+                `
+import { describe, expect, mock, test } from "bun:test";
+import { mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+
+describe("reapSessionGroups", () => {
+    test("reaps target session proc groups and removes proc file; other session untouched", async () => {
+        const HOME = process.env.TEST_HOME!;
+        const procDir = join(HOME, ".pizzapi", "session-procs");
+        mkdirSync(procDir, { recursive: true });
+
+        // Target session proc file with two recorded group PIDs.
+        writeFileSync(join(procDir, "target-session.pids"), "11111\\n22222\\n");
+        // Another session whose proc file must NOT be removed.
+        writeFileSync(join(procDir, "other-session.pids"), "33333\\n");
+
+        const killCalls: number[] = [];
+        mock.module("./session-spawner.js", () => ({
+            killSessionProcessGroup: (pid: number) => { killCalls.push(pid); return true; },
+            spawnSession: () => {},
+            notifyWorkersOfRestart: async () => {},
+        }));
+
+        const { reapSessionGroups } = await import("./daemon.js");
+        reapSessionGroups("target-session");
+
+        // Both recorded group PIDs reaped for the target session.
+        expect(killCalls.sort((a, b) => a - b)).toEqual([11111, 22222]);
+
+        // Target proc file removed.
+        expect(existsSync(join(procDir, "target-session.pids"))).toBe(false);
+
+        // Other session's proc file untouched.
+        expect(existsSync(join(procDir, "other-session.pids"))).toBe(true);
+    });
+});
+`,
+            );
+
+            execFileSync(process.execPath, ["test", childTestPath], {
+                cwd: cliDir,
+                encoding: "utf-8",
+                env: { ...process.env, HOME: tmpHome, TEST_HOME: tmpHome },
+                stdio: ["ignore", "pipe", "pipe"],
+            });
+
+            expect(true).toBe(true); // child exited 0
+        } finally {
+            rmSync(childTestPath, { force: true });
+            rmSync(tmpHome, { recursive: true, force: true });
+        }
     });
 });
