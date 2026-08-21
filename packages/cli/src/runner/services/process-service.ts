@@ -27,6 +27,11 @@ export interface ShellInfo extends PersistedShellJob {
 }
 
 /** Parse one `ps -o pid=,etime=,rss=,command=` output line (legacy helper). */
+/** Only the relay-stamped top-level sessionId is trusted for response routing. */
+function trustedSessionId(envelope: ServiceEnvelope): string | undefined {
+    return typeof envelope.sessionId === "string" && envelope.sessionId ? envelope.sessionId : undefined;
+}
+
 export function parsePsLine(line: string): SessionProcess | null {
     const m = line.match(/^\s*(\d+)\s+(\S+)\s+(\d+)\s+(.*)$/);
     if (!m) return null;
@@ -139,12 +144,15 @@ export class ProcessService implements ServiceHandler {
         return members;
     }
 
-    private emit(type: string, payload: unknown, requestId?: string): void {
+    private emit(type: string, payload: unknown, requestId?: string, sessionId?: string): void {
         if (!this.socket) return;
+        // sessionId scopes the response to the requesting session — without it
+        // the relay broadcasts to every session on this runner.
         (this.socket as any).emit("service_message", {
             serviceId: "process",
             type,
             ...(requestId ? { requestId } : {}),
+            ...(sessionId ? { sessionId } : {}),
             payload,
         } satisfies ServiceEnvelope);
     }
@@ -176,7 +184,7 @@ export class ProcessService implements ServiceHandler {
         const workerPid = sessionId ? this.getWorkerPid(sessionId) : null;
         const processes = sessionId ? await this.listProcesses(sessionId, workerPid) : [];
         const shells = sessionId ? this.listShells(sessionId) : [];
-        this.emit("process_list_result", { workerPid, processes, shells }, envelope.requestId);
+        this.emit("process_list_result", { workerPid, processes, shells }, envelope.requestId, trustedSessionId(envelope));
     }
 
     /** Tail of a background shell's log file. Only paths from the worker-written registry are readable. */
@@ -188,10 +196,10 @@ export class ProcessService implements ServiceHandler {
             ? readSessionJobs(sessionJobsFilePath(this.getProcFilePath(sessionId))).find((j) => j.pid === pid)
             : undefined;
         if (!job) {
-            this.emit("process_error", { error: `No background shell with pid ${payload?.pid}` }, envelope.requestId);
+            this.emit("process_error", { error: `No background shell with pid ${payload?.pid}` }, envelope.requestId, trustedSessionId(envelope));
             return;
         }
-        this.emit("process_tail_result", { pid: job.pid, text: tailFile(job.logPath, 8192) }, envelope.requestId);
+        this.emit("process_tail_result", { pid: job.pid, text: tailFile(job.logPath, 8192) }, envelope.requestId, trustedSessionId(envelope));
     }
 
     private async handleKill(envelope: ServiceEnvelope): Promise<void> {
@@ -201,7 +209,7 @@ export class ProcessService implements ServiceHandler {
         const workerPid = sessionId ? this.getWorkerPid(sessionId) : null;
 
         if (!sessionId || !Number.isInteger(pid) || pid <= 0) {
-            this.emit("process_error", { error: `Invalid kill request (pid=${payload?.pid})` }, envelope.requestId);
+            this.emit("process_error", { error: `Invalid kill request (pid=${payload?.pid})` }, envelope.requestId, trustedSessionId(envelope));
             return;
         }
 
@@ -209,11 +217,11 @@ export class ProcessService implements ServiceHandler {
         // one of this session's process groups — never arbitrary system PIDs.
         const members = await this.sessionMemberPids(sessionId, workerPid);
         if (!members.has(pid)) {
-            this.emit("process_error", { error: `PID ${pid} is not part of session ${sessionId}` }, envelope.requestId);
+            this.emit("process_error", { error: `PID ${pid} is not part of session ${sessionId}` }, envelope.requestId, trustedSessionId(envelope));
             return;
         }
         if (pid === workerPid) {
-            this.emit("process_error", { error: "Refusing to kill the session worker — use Kill Session instead" }, envelope.requestId);
+            this.emit("process_error", { error: "Refusing to kill the session worker — use Kill Session instead" }, envelope.requestId, trustedSessionId(envelope));
             return;
         }
 
@@ -236,6 +244,6 @@ export class ProcessService implements ServiceHandler {
         }
         // Respond with a fresh list so the panel updates immediately.
         const processes = await this.listProcesses(sessionId, workerPid);
-        this.emit("process_list_result", { workerPid, processes }, envelope.requestId);
+        this.emit("process_list_result", { workerPid, processes }, envelope.requestId, trustedSessionId(envelope));
     }
 }

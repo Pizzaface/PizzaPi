@@ -1376,7 +1376,12 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Service reconfiguration ───────────────────────────────────────
         // Update the disabled services list at runtime and reinitialize services.
-        socket.on("reconfigure_services", async (data: any) => {
+        // Serialized via a promise chain: overlapping reconfigures interleave
+        // async package discovery with registry/panel/port mutation and corrupt
+        // state. A queued run re-reads config fresh when it starts, so queueing
+        // (rather than coalescing) is correct.
+        let reconfigureChain: Promise<void> = Promise.resolve();
+        const runReconfigureServices = async (data: any): Promise<void> => {
             if (isShuttingDown) return;
             try {
                 const newDisabledServices = resolveReconfiguredDisabledRunnerServices(disabledServices, data);
@@ -1570,6 +1575,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             } catch (err) {
                 logError(`[services] reconfigure_services handler failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
             }
+        };
+        socket.on("reconfigure_services", (data: any) => {
+            reconfigureChain = reconfigureChain.then(() => runReconfigureServices(data));
         });
 
         // ── Trigger subscription reconciliation ──────────────────────────
@@ -1800,8 +1808,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     // On restart (exit code 43), the session already has
                     // the prompt in its history — re-sending would duplicate it.
                     const spawnOpts = isFirstSpawn
-                        ? { prompt: requestedPrompt, imageUrls: Array.isArray(requestedImageUrls) ? requestedImageUrls : undefined, model: requestedModel, hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, resumePath: resolvedResumePath, autoClose: requestedAutoClose === true }
-                        : { hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, autoClose: requestedAutoClose === true }; // Always pass agent + hidden models + parent + autoClose on restart
+                        ? { prompt: requestedPrompt, imageUrls: Array.isArray(requestedImageUrls) ? requestedImageUrls : undefined, model: requestedModel, hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, resumePath: resolvedResumePath, autoClose: requestedAutoClose === true, onSessionExit: cleanupSessionServices }
+                        : { hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, autoClose: requestedAutoClose === true, onSessionExit: cleanupSessionServices }; // Always pass agent + hidden models + parent + autoClose on restart
                     isFirstSpawn = false;
                     spawnSession(sessionId, apiKey!, relayRaw, requestedCwd, runningSessions, restartingSessions, killedSessions, doSpawn, spawnOpts);
                     setSessionCloseMetadata(sessionId, {

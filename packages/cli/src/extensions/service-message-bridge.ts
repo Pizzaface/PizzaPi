@@ -51,13 +51,19 @@ export function createServiceMessageBridgeExtension(
             const sessionId = deps.getRelaySessionId();
             if (!conn || !sessionId) return;
             try {
-                // Fire-and-forget: `id` lets services dedupe at-least-once relay
-                // delivery; `sessionId` is stamped by the host so a package can
-                // never spoof another session's traffic.
+                // Fire-and-forget: top-level `id` lets services dedupe
+                // at-least-once relay delivery (SDK guidance: dedupe on
+                // `env.id`). The relay is the sole owner of the top-level
+                // `sessionId` — it stamps it from the authenticated socket, so
+                // a package can never spoof another session's traffic. The
+                // payload copies are kept for services written against the old
+                // payload-stamped shape.
+                const id = deps.newId();
                 conn.socket.emit("service_message" as any, {
                     serviceId,
                     type,
-                    payload: { ...payload, id: deps.newId(), sessionId },
+                    id,
+                    payload: { ...payload, id, sessionId },
                 });
             } catch {
                 // Relay socket mid-reconnect — a dropped message is cosmetic,
