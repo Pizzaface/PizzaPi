@@ -464,6 +464,6 @@ describe("TunnelRelay WebSocket proxy callbacks", () => {
     });
     await waitForMicrotask();
 
-    expect(events).toEqual(["opened:chat", "data:hello:text", "close:1001:done", "close:1011:failed"]);
+    expect(events).toEqual(["opened:chat", "data:hello:text", "close:1000:done", "close:1000:failed"]);
   });
 });

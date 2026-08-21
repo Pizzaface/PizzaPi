@@ -96,6 +96,10 @@ function isOptionalCloseCode(value: unknown): boolean {
   return value === undefined || (typeof value === "number" && Number.isInteger(value) && ((value >= 1000 && value <= 1015) || (value >= 3000 && value <= 4999)));
 }
 
+function browserCloseCode(code: number | undefined): number {
+  return code === 1000 || (code !== undefined && code >= 3000) ? code : 1000;
+}
+
 function isOptionalCloseReason(value: unknown): boolean {
   return value === undefined || (typeof value === "string" && Buffer.byteLength(value, "utf8") <= 123);
 }
@@ -491,7 +495,7 @@ export class TunnelRelay {
     if (!pending) return;
     clearTimeout(pending.timer);
     this.pendingWs.delete(msg.id);
-    pending.onClose(msg.code, msg.reason);
+    pending.onClose(browserCloseCode(msg.code), msg.reason);
   }
 
   private handleWsError(msg: TunnelWsErrorMessage): void {
