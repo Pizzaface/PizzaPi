@@ -550,44 +550,47 @@ export function SessionViewer({
 
   // ── handleSubmit ──────────────────────────────────────────────────────────
   const handleSubmit = React.useCallback(
-    (message: PromptInputMessage) => {
+    async (message: PromptInputMessage): Promise<boolean> => {
       if (!composerReady) {
         if (isSessionHydrating(viewerStatus)) {
           setComposerError("Session is still connecting — your draft is preserved, try again shortly.");
         }
-        return;
+        return false;
       }
       const text = message.text.trim();
       const hasAttachments = Array.isArray(message.files) && message.files.length > 0;
-      if (!text && !hasAttachments) return;
+      if (!text && !hasAttachments) return false;
 
       setComposerError(null);
-      if (text && executeSlashCommand(text)) return;
-      if (!onSendInput) return;
+      if (text && executeSlashCommand(text)) return true;
+      if (!onSendInput) return false;
 
       const payload = agentActive ? { ...message, deliverAs: deliveryMode } : message;
       const originSessionId = sessionId;
       const sentText = text;
 
-      Promise.resolve(onSendInput(payload))
-        .then((result) => {
-          if (result !== false) {
-            if (sessionIdRef.current === originSessionId) {
+      try {
+        const result = await onSendInput(payload);
+        if (result !== false) {
+          if (sessionIdRef.current === originSessionId) {
+            setInput("");
+            setCommandOpen(false);
+            setCommandQuery("");
+          } else if (originSessionId) {
+            // User switched away — only clear draft if it still matches sent text
+            const saved = inputRef.current.trim();
+            if (saved === sentText || saved === "") {
               setInput("");
-              setCommandOpen(false);
-              setCommandQuery("");
-            } else if (originSessionId) {
-              // User switched away — only clear draft if it still matches sent text
-              const saved = inputRef.current.trim();
-              if (saved === sentText || saved === "") {
-                setInput("");
-              }
             }
-          } else {
-            setComposerError("Failed to send message.");
           }
-        })
-        .catch(() => { setComposerError("Failed to send message."); });
+          return true;
+        }
+      } catch {
+        // Fall through to preserve the prompt and attachments for retry.
+      }
+
+      setComposerError("Failed to send message.");
+      return false;
     },
     [composerReady, viewerStatus, executeSlashCommand, onSendInput, agentActive, deliveryMode, setInput, setCommandOpen, setCommandQuery, sessionIdRef, inputRef],
   );
