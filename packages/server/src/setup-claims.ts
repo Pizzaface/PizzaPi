@@ -9,8 +9,8 @@
  * Security notes:
  * - Tokens are 32-byte random hex strings, single-use, and expire after 10 min.
  * - The plain API key is stored only while the claim is in `approved` status.
- *   Once the CLI redeems it, the claim moves to `redeemed` and no longer
- *   exposes the key.
+ *   Redemption clears the `apiKey` column atomically in the same UPDATE that
+ *   marks the claim `redeemed`, so the key never persists after one-shot use.
  * - Approval requires a valid better-auth session.
  */
 
@@ -135,11 +135,26 @@ export async function pollSetupClaim(token: string): Promise<SetupClaimStatus | 
     }
 
     if (row.status === "approved" && row.apiKey) {
-        await getKysely()
+        // One-shot redeem: flip status AND clear the stored key in the same
+        // atomic UPDATE, guarded on the still-approved status so a concurrent
+        // second poll loses the race instead of re-serving the key.
+        const result = await getKysely()
             .updateTable("setup_claim")
-            .set({ status: "redeemed", redeemedAt: new Date().toISOString() })
+            .set({ status: "redeemed", redeemedAt: new Date().toISOString(), apiKey: null })
             .where("id", "=", token)
+            .where("status", "=", "approved")
             .execute();
+        if (Number(result[0]?.numUpdatedRows ?? 0) === 0) {
+            // Lost the race (or claim expired mid-flight): re-read and report
+            // the current status — never serve the key twice.
+            const current = await getKysely()
+                .selectFrom("setup_claim")
+                .select(["status", "relayUrl", "label"])
+                .where("id", "=", token)
+                .executeTakeFirst();
+            if (!current) return null;
+            return { status: current.status, relayUrl: current.relayUrl, label: current.label ?? undefined };
+        }
         return { status: "approved", relayUrl: row.relayUrl, apiKey: row.apiKey, label: row.label ?? undefined };
     }
 
