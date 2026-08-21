@@ -53,6 +53,8 @@ export interface PersistedRelaySessionSnapshot {
     isEphemeral: boolean;
     expiresAt: string | null;
     state: unknown;
+    /** JSON-stringified metadata overlay (patches since the last full snapshot). */
+    snapshotOverlay: string | null;
 }
 
 export interface PersistedRelaySessionSummary {
@@ -157,8 +159,22 @@ export async function ensureRelaySessionTables(): Promise<void> {
         .ifNotExists()
         .addColumn("sessionId", "text", (col) => col.primaryKey().references("relay_session.id").onDelete("cascade"))
         .addColumn("state", "text", (col) => col.notNull())
+        .addColumn("snapshotOverlay", "text")
         .addColumn("updatedAt", "text", (col) => col.notNull())
         .execute();
+
+    // Migration: add snapshotOverlay column to existing tables
+    try {
+        await getKysely().schema
+            .alterTable("relay_session_state")
+            .addColumn("snapshotOverlay", "text")
+            .execute();
+    } catch (error) {
+        if (!isDuplicateColumnError(error, "snapshotOverlay")) {
+            log.error("Failed to migrate relay_session_state.snapshotOverlay:", error);
+            throw error;
+        }
+    }
 
     await getKysely().schema
         .createIndex("relay_session_user_last_active_idx")
@@ -296,13 +312,50 @@ export async function recordRelaySessionStateSerialized(
 
     const nowIso = new Date().toISOString();
 
+    // A full state write carries fresh metadata, so the accumulated overlay of
+    // "patches since the last snapshot" is stale — clear it alongside the state.
     await getKysely()
         .insertInto("relay_session_state")
-        .values({ sessionId, state: serialized, updatedAt: nowIso })
-        .onConflict((oc) => oc.column("sessionId").doUpdateSet({ state: serialized, updatedAt: nowIso }))
+        .values({ sessionId, state: serialized, snapshotOverlay: null, updatedAt: nowIso })
+        .onConflict((oc) =>
+            oc.column("sessionId").doUpdateSet({ state: serialized, snapshotOverlay: null, updatedAt: nowIso }),
+        )
         .execute();
 
     await touchRelaySession(sessionId);
+}
+
+/**
+ * Persist the metadata overlay (patches since the last full snapshot) for a
+ * session, without touching the multi-MB `state` blob. The overlay is small
+ * (KB) and changes frequently, so it is written separately from the throttled
+ * state writes. No-op when no state row exists yet — an overlay with no base
+ * state has nothing to apply to.
+ */
+export async function recordRelaySessionOverlay(
+    sessionId: string,
+    userId: string | null,
+    overlay: string | null,
+): Promise<void> {
+    const ownerRow = await getKysely()
+        .selectFrom("relay_session")
+        .select("userId")
+        .where("id", "=", sessionId)
+        .executeTakeFirst();
+
+    if (ownerRow && ownerRow.userId !== null && ownerRow.userId !== userId) {
+        log.warn(
+            `recordRelaySessionOverlay: userId mismatch for session ${sessionId} — skipping overlay write to prevent cross-user corruption`,
+        );
+        return;
+    }
+
+    const nowIso = new Date().toISOString();
+    await getKysely()
+        .updateTable("relay_session_state")
+        .set({ snapshotOverlay: overlay, updatedAt: nowIso })
+        .where("sessionId", "=", sessionId)
+        .execute();
 }
 
 /**
@@ -480,6 +533,7 @@ export async function getPersistedRelaySessionSnapshot(
             "s.expiresAt",
             "s.isPinned",
             "st.state as state",
+            "st.snapshotOverlay as snapshotOverlay",
         ])
         .where("s.id", "=", sessionId)
         .where("s.userId", "=", userId)
@@ -509,6 +563,7 @@ export async function getPersistedRelaySessionSnapshot(
         isEphemeral: row.isEphemeral === 1,
         expiresAt: row.expiresAt,
         state: parsed,
+        snapshotOverlay: row.snapshotOverlay ?? null,
     };
 }
 
