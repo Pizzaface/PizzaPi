@@ -701,7 +701,7 @@ pi.on("message_end", (event, ctx) => {
 });
 ```
 
-The host stamps `sessionId` and a unique `id` onto the payload for dedupe. The message is fire-and-forget — no response expected.
+The host stamps a unique top-level `id` for dedupe (`env.id`), and the relay stamps the top-level `sessionId` from the authenticated socket. The message is fire-and-forget — no response expected.
 
 Use case: Discord bridge, Slack connector, email notifications, webhook integrations.
 

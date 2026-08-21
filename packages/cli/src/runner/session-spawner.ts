@@ -121,6 +121,14 @@ export function spawnSession(
         parentSessionId?: string;
         resumePath?: string;
         autoClose?: boolean;
+        /**
+         * Daemon-owned cleanup hook invoked when the worker process truly exits
+         * (not a restart-in-place). Lets the daemon run session-scoped service
+         * cleanup (tunnels, git watchers, …) even when the relay is down and
+         * its `session_ended` event never arrives. Must be idempotent — the
+         * relay event may still fire later and re-run the same cleanup.
+         */
+        onSessionExit?: (sessionId: string) => void;
     },
 ): void {
     logInfo(`spawning headless worker for session ${sessionId}…`);
@@ -311,6 +319,11 @@ export function spawnSession(
             }
             removeSessionProcFile(sessionId);
             void cleanupSessionAttachments(sessionId).catch(() => {});
+            try {
+                options?.onSessionExit?.(sessionId);
+            } catch (err) {
+                logInfo(`session ${sessionId} onSessionExit cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+            }
         }
     });
 

@@ -75,24 +75,28 @@ export class MemoryService implements ServiceHandler {
   }
 
   private handle(envelope: ServiceEnvelope, fn: (cwd: string) => unknown): void {
+    // Trusted session id from the relay-stamped envelope — responses must be
+    // session-scoped or the relay broadcasts them to every session on the runner.
+    const sessionId = typeof envelope.sessionId === "string" ? envelope.sessionId : undefined;
     const cwd = this.resolveCwd(envelope);
     if (!cwd || !isCwdAllowed(cwd)) {
-      this.emit("memory_error", { error: "No accessible project for this session" }, envelope.requestId);
+      this.emit("memory_error", { error: "No accessible project for this session" }, envelope.requestId, sessionId);
       return;
     }
     try {
-      this.emit(`${envelope.type}_result`, fn(cwd), envelope.requestId);
+      this.emit(`${envelope.type}_result`, fn(cwd), envelope.requestId, sessionId);
     } catch (err) {
-      this.emit("memory_error", { error: err instanceof Error ? err.message : String(err) }, envelope.requestId);
+      this.emit("memory_error", { error: err instanceof Error ? err.message : String(err) }, envelope.requestId, sessionId);
     }
   }
 
-  private emit(type: string, payload: unknown, requestId?: string): void {
+  private emit(type: string, payload: unknown, requestId?: string, sessionId?: string): void {
     if (!this.socket) return;
     (this.socket as any).emit("service_message", {
       serviceId: "memory",
       type,
       ...(requestId ? { requestId } : {}),
+      ...(sessionId ? { sessionId } : {}),
       payload,
     } satisfies ServiceEnvelope);
   }

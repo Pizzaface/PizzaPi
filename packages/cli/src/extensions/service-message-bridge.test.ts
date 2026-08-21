@@ -66,8 +66,13 @@ describe("serviceMessageBridgeExtension", () => {
         expect(pi.emitted[0].payload).toEqual({
             serviceId: "connector",
             type: "session_post",
+            // Top-level id is the dedupe handle (`env.id` per SDK guidance);
+            // payload copies remain for older services. Top-level sessionId is
+            // relay-owned and must NOT be stamped here.
+            id: "id-1",
             payload: { content: "hello", id: "id-1", sessionId: "sess-1" },
         });
+        expect(pi.emitted[0].payload.sessionId).toBeUndefined();
     });
 
     test("a package cannot spoof another session by supplying its own sessionId", () => {

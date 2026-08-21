@@ -458,6 +458,11 @@ describe("TunnelService", () => {
         expect(tunnelClient.unexposePort).toHaveBeenCalledWith(8080);
         expect(tunnelClient.unexposePort).not.toHaveBeenCalledWith(9090);
 
+        // Idempotent: the daemon's worker-exit hook and the relay's later
+        // session_ended both invoke cleanup — the second call is a no-op.
+        service.handleSessionEnded("sess-a");
+        expect(tunnelClient.unexposePort).toHaveBeenCalledTimes(1);
+
         // sess-b's tunnel is still listable by sess-b.
         socket.emitted.length = 0;
         getServiceMessageHandler(socket)({

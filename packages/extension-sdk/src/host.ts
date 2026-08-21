@@ -43,8 +43,9 @@ export function detectPizzaPiHost(pi: PizzaPiHostAPI): PizzaPiHostInfo | undefin
  * in-process events, so the package ships an extension that observes them and
  * forwards what it needs over this channel.
  *
- * The host stamps `sessionId` and a unique `id` (for at-least-once dedupe)
- * onto the payload. No-op when there is no PizzaPi host, or when the relay
+ * The host stamps a unique top-level `id` (for at-least-once dedupe, `env.id`)
+ * and the relay stamps the top-level `sessionId` from the authenticated
+ * socket. No-op when there is no PizzaPi host, or when the relay
  * socket is mid-reconnect — a dropped message must never block a turn.
  */
 export function sendServiceMessage(

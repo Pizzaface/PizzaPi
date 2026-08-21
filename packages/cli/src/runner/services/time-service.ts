@@ -17,7 +17,7 @@
  *
  * No panel — the service runs a minimal HTTP server for sigil resolve endpoints only.
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Socket } from "socket.io-client";
@@ -70,6 +70,8 @@ function buildReplacementPrompt(schedule: string, label: string | undefined, mes
 interface CronState {
     nextFireAt: number;
     iteration: number;
+    /** Timer entries only: the duration param the fireAt was computed from. */
+    duration?: string;
 }
 
 // ── Relay helpers ────────────────────────────────────────────────────────────
@@ -341,11 +343,25 @@ export class TimeService implements ServiceHandler {
     #getCronState(): Record<string, CronState> {
         if (this.#cronState === null) {
             let state: Record<string, CronState> = {};
+            const path = this.#stateFilePath();
             try {
-                const parsed = JSON.parse(readFileSync(this.#stateFilePath(), "utf-8"));
-                if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) state = parsed as Record<string, CronState>;
+                const raw = readFileSync(path, "utf-8");
+                try {
+                    const parsed = JSON.parse(raw);
+                    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) state = parsed as Record<string, CronState>;
+                } catch (err) {
+                    // Corrupt JSON — quarantine instead of silently resetting so
+                    // schedule state is recoverable by hand.
+                    const quarantine = `${path}.corrupt-${Date.now()}`;
+                    try {
+                        renameSync(path, quarantine);
+                        logWarn(`[time] corrupt state file quarantined to ${quarantine}: ${err}`);
+                    } catch {
+                        logWarn(`[time] corrupt state file (quarantine failed): ${err}`);
+                    }
+                }
             } catch {
-                // missing or corrupt file — start empty
+                // missing file — start empty
             }
             this.#cronState = state;
         }
@@ -355,10 +371,43 @@ export class TimeService implements ServiceHandler {
     #saveCronState(): void {
         try {
             mkdirSync(join(process.env.HOME || homedir(), ".pizzapi"), { recursive: true });
-            writeFileSync(this.#stateFilePath(), JSON.stringify(this.#cronState ?? {}), "utf-8");
+            // Atomic temp-file + rename so a crash mid-write never leaves a
+            // truncated/corrupt state file.
+            const path = this.#stateFilePath();
+            const tmp = `${path}.tmp-${process.pid}`;
+            writeFileSync(tmp, JSON.stringify(this.#cronState ?? {}), "utf-8");
+            renameSync(tmp, path);
         } catch (err) {
             logWarn(`[time] failed to persist cron state: ${err}`);
         }
+    }
+
+    // ── Durable one-shot timer state (absolute deadlines) ─────────────────
+
+    #timerStateKey(subscriptionId: string): string {
+        return `timer:${subscriptionId}`;
+    }
+
+    #persistTimer(subscriptionId: string, fireAt: number, duration: string): void {
+        const state = this.#getCronState();
+        state[this.#timerStateKey(subscriptionId)] = { nextFireAt: fireAt, iteration: 0, duration };
+        this.#saveCronState();
+    }
+
+    #dropTimerState(subscriptionId: string): void {
+        const state = this.#getCronState();
+        const key = this.#timerStateKey(subscriptionId);
+        if (key in state) {
+            delete state[key];
+            this.#saveCronState();
+        }
+    }
+
+    /** Persisted absolute deadline for a timer, if the duration param is unchanged. */
+    #persistedTimerFireAt(subscriptionId: string, duration: string): number | null {
+        const entry = this.#getCronState()[this.#timerStateKey(subscriptionId)];
+        if (!entry || entry.duration !== duration) return null;
+        return typeof entry.nextFireAt === "number" ? entry.nextFireAt : null;
     }
 
     #persistCron(subscriptionId: string, nextFireAt: number, iteration: number): void {
@@ -461,6 +510,7 @@ export class TimeService implements ServiceHandler {
                 if (!snapshotKeys.has(key)) {
                     clearTimeout(timer.handle);
                     this.#timers.delete(key);
+                    if (timer.triggerType === "time:timer_fired") this.#dropTimerState(timer.subscriptionId);
                     logInfo(`[time] reconcile: removed stale timer ${key}`);
                 }
             }
@@ -473,6 +523,21 @@ export class TimeService implements ServiceHandler {
                     logInfo(`[time] reconcile: removed stale cron ${key}`);
                 }
             }
+
+            // Prune persisted state for subscriptions that vanished while the
+            // daemon was down (they were never in memory, so the loops above
+            // can't see them).
+            const snapshotSubIds = new Set(timeSubs.map((s) => s.subscriptionId ?? `${s.sessionId}\0${s.triggerType}`));
+            const persisted = this.#getCronState();
+            let pruned = false;
+            for (const key of Object.keys(persisted)) {
+                const subId = key.startsWith("timer:") ? key.slice("timer:".length) : key;
+                if (!snapshotSubIds.has(subId)) {
+                    delete persisted[key];
+                    pruned = true;
+                }
+            }
+            if (pruned) this.#saveCronState();
         }
 
         // Create/update/remove timers for the relevant subscriptions.
@@ -609,7 +674,10 @@ export class TimeService implements ServiceHandler {
             this.#timers.delete(key);
         }
 
-        if (action === "unsubscribe") return;
+        if (action === "unsubscribe") {
+            this.#dropTimerState(subscriptionId);
+            return;
+        }
 
         const durationStr = typeof params?.duration === "string" ? params.duration : null;
         if (!durationStr) {
@@ -627,7 +695,12 @@ export class TimeService implements ServiceHandler {
         const message = typeof params?.message === "string" ? params.message : undefined;
         const cwd = cwdFromParams(params);
         const resumePath = resumePathFromParams(params);
-        const fireAt = Date.now() + durationMs;
+        // Reuse the persisted absolute deadline (daemon restarts must not
+        // rebuild the timer as now+duration — the deadline would drift forever).
+        // A changed duration param invalidates the persisted entry.
+        const persistedFireAt = this.#persistedTimerFireAt(subscriptionId, durationStr);
+        const fireAt = persistedFireAt ?? Date.now() + durationMs;
+        if (persistedFireAt === null) this.#persistTimer(subscriptionId, fireAt, durationStr);
 
         logInfo(`[time] starting timer for session ${sessionId}: ${durationStr} (${formatDuration(durationMs)})${label ? ` [${label}]` : ""}`);
 
@@ -636,6 +709,7 @@ export class TimeService implements ServiceHandler {
         const replacementPrompt = buildReplacementPrompt(`timer "${durationStr}"`, label, message);
         const fire = () => {
             this.#timers.delete(key);
+            this.#dropTimerState(subscriptionId);
             this.#fireOneShotWithRetry(key, sessionId, subscriptionId, "time:timer_fired", buildPayload, summary, label, 0, replacementPrompt, cwd, resumePath);
         };
 

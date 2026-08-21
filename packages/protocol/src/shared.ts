@@ -122,6 +122,8 @@ export interface Attachment {
 export interface ServiceEnvelope {
   serviceId: string;
   type: string;
+  /** Host-stamped unique id for at-least-once delivery dedupe (`env.id`). */
+  id?: string;
   requestId?: string;
   /** Attached by the relay when forwarding viewer→runner, so services can route responses back. */
   sessionId?: string;

@@ -63,12 +63,16 @@ describe("ProcessService", () => {
 
         await (service as any).handleList({ serviceId: "process", type: "process_list", sessionId: "s1", payload: {} });
         expect(sent[0].type).toBe("process_list_result");
+        // Regression: responses must be session-scoped or the relay broadcasts
+        // them to every session on the runner.
+        expect((sent[0] as any).sessionId).toBe("s1");
         expect(sent[0].payload.workerPid).toBe(pid);
         expect(sent[0].payload.processes.some((p: any) => p.pid === pid)).toBe(true);
 
         // Kill request for a pid outside the group is rejected
         await (service as any).handleKill({ serviceId: "process", type: "process_kill", sessionId: "s1", payload: { pid: process.pid } });
         expect(sent[1].type).toBe("process_error");
+        expect((sent[1] as any).sessionId).toBe("s1");
 
         // Killing the worker pid itself is refused
         await (service as any).handleKill({ serviceId: "process", type: "process_kill", sessionId: "s1", payload: { pid } });

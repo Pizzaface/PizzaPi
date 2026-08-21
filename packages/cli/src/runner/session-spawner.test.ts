@@ -175,6 +175,7 @@ describe("session-spawner child", () => {
             const restartRestartingSessions = new Set<string>();
             const restartKilledSessions = new Set<string>();
             const onRestartRequested = mock(() => {});
+            const onSessionExitRestart = mock((_sessionId: string) => {});
             spawnSession(
                 "sess-restart",
                 "api-key",
@@ -184,6 +185,7 @@ describe("session-spawner child", () => {
                 restartRestartingSessions,
                 restartKilledSessions,
                 onRestartRequested,
+                { onSessionExit: onSessionExitRestart },
             );
             latestChild!.exitCode = 43;
             latestChild!.emit("exit", 43, null);
@@ -193,16 +195,26 @@ describe("session-spawner child", () => {
             expect(restartRunningSessions.has("sess-restart")).toBe(false);
             expect(untrackSessionCwd).toHaveBeenCalledWith("sess-restart", tempCwd);
             expect(cleanupSessionAttachments).not.toHaveBeenCalled();
+            // Restart-in-place is NOT a session end — service cleanup must not run.
+            expect(onSessionExitRestart).not.toHaveBeenCalled();
 
             const normalRunningSessions = new Map();
             const normalRestartingSessions = new Set<string>();
             const normalKilledSessions = new Set<string>();
-            spawnSession("sess-exit", "api-key", "https://relay.example", tempCwd, normalRunningSessions, normalRestartingSessions, normalKilledSessions);
+            // Daemon-owned worker-exit cleanup: fires on true termination even
+            // with no relay session_ended, and a throwing hook never crashes the
+            // exit handler.
+            const onSessionExit = mock((_sessionId: string) => {
+                throw new Error("cleanup boom");
+            });
+            spawnSession("sess-exit", "api-key", "https://relay.example", tempCwd, normalRunningSessions, normalRestartingSessions, normalKilledSessions, undefined, { onSessionExit });
             latestChild!.exitCode = 0;
             latestChild!.emit("exit", 0, null);
             await Promise.resolve();
             expect(normalRunningSessions.has("sess-exit")).toBe(false);
             expect(cleanupSessionAttachments).toHaveBeenCalledWith("sess-exit");
+            expect(onSessionExit).toHaveBeenCalledWith("sess-exit");
+            expect(onSessionExit).toHaveBeenCalledTimes(1);
 
             allowCwd = false;
             expect(() =>
