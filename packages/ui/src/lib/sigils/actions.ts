@@ -39,10 +39,23 @@ export function parseActionOptions(raw?: string): string[] {
   // sigils like options="a|b|c" render correctly alongside the documented
   // comma form.
   const separator = raw.includes("|") ? "|" : ",";
-  return raw
-    .split(separator)
-    .map((option) => option.trim())
-    .filter(Boolean);
+  // ponytail: comma splitting ignores commas nested in (), [] or {} so labels
+  // like "Security lane only (B-, 17 dishes)" survive. Pipes need no nesting.
+  const parts: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of raw) {
+    if (separator === "," && (ch === "(" || ch === "[" || ch === "{")) depth++;
+    else if (separator === "," && (ch === ")" || ch === "]" || ch === "}")) depth = Math.max(0, depth - 1);
+    if (ch === separator && depth === 0) {
+      parts.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  parts.push(current);
+  return parts.map((option) => option.trim()).filter(Boolean);
 }
 
 export function buildActionResponse(action: ParsedActionSigil, value: string): string {

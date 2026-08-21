@@ -36,48 +36,36 @@ function isElement(node: HastNode): node is HastElement {
   return node.type === "element";
 }
 
-function hasCodeAncestor(ancestors: HastNode[]): boolean {
-  return ancestors.some((n) => isElement(n) && CODE_TAGS.has(n.tagName));
+function isSigilSpan(node: HastNode): boolean {
+  return isElement(node) && Boolean(node.properties?.["data-sigil-type"]);
 }
 
-// ── Tree walker ──────────────────────────────────────────────────────────────
+// ── Source reconstruction ────────────────────────────────────────────────────
 
 /**
- * Walk a hast tree depth-first, calling `fn` on every text node
- * with its list of ancestors. `fn` can return replacement nodes.
+ * Markdown delimiters for inline elements. Sigil params routinely contain
+ * characters markdown treats as emphasis (`~60`, `*`, `_`), which splits one
+ * `[[...]]` token across several inline nodes. We rebuild the original source
+ * text so the parser sees the whole token again.
  */
-function walkText(
-  node: HastNode,
-  ancestors: HastNode[],
-  fn: (text: HastText, ancestors: HastNode[]) => HastNode[] | null,
-): void {
-  if (!("children" in node) || !Array.isArray(node.children)) return;
+const INLINE_DELIM: Record<string, string> = {
+  em: "*",
+  strong: "**",
+  del: "~",
+  s: "~",
+  sub: "~",
+};
 
-  const parent = node as HastElement | HastRoot;
-  const newChildren: HastNode[] = [];
-  let changed = false;
+/** Opaque placeholder for children we cannot reconstruct (images, links, …). */
+const OPAQUE = "\u0000";
 
-  for (const child of parent.children) {
-    if (child.type === "text") {
-      const replacement = fn(child as HastText, ancestors);
-      if (replacement) {
-        newChildren.push(...replacement);
-        changed = true;
-      } else {
-        newChildren.push(child);
-      }
-    } else {
-      newChildren.push(child);
-      walkText(child, [...ancestors, parent], fn);
-    }
-  }
-
-  if (changed) {
-    parent.children = newChildren;
-  }
+function sourceText(node: HastNode): string {
+  if (node.type === "text") return (node as HastText).value;
+  if (!isElement(node)) return OPAQUE;
+  const delim = INLINE_DELIM[node.tagName];
+  if (delim === undefined) return OPAQUE;
+  return delim + node.children.map(sourceText).join("") + delim;
 }
-
-// ── Plugin ───────────────────────────────────────────────────────────────────
 
 // ── Sigil span builder ───────────────────────────────────────────────────────
 
@@ -119,9 +107,7 @@ function coalesceNodes(nodes: HastNode[]): HastNode[] {
   }
 
   for (const node of nodes) {
-    const isSigil =
-      node.type === "element" &&
-      (node as HastElement).properties?.["data-sigil-type"];
+    const isSigil = isSigilSpan(node);
 
     const isWhitespaceOnly =
       node.type === "text" && /^\s+$/.test((node as HastText).value);
@@ -141,40 +127,89 @@ function coalesceNodes(nodes: HastNode[]): HastNode[] {
   return result;
 }
 
+// ── Per-parent transform ─────────────────────────────────────────────────────
+
+/**
+ * Replace sigil tokens found across this parent's children (a token may span
+ * several inline nodes once markdown has split it) with sigil spans.
+ */
+function transformChildren(parent: HastElement | HastRoot): void {
+  const children = parent.children;
+  const segments = children.map(sourceText);
+  const joined = segments.join("");
+  if (!joined.includes("[[")) return;
+
+  const matches = parseSigils(joined);
+  if (matches.length === 0) return;
+
+  // Offset of each child within `joined`.
+  const starts: number[] = [];
+  let offset = 0;
+  for (const seg of segments) {
+    starts.push(offset);
+    offset += seg.length;
+  }
+  const childAt = (pos: number): number => {
+    let index = 0;
+    for (let i = 0; i < starts.length; i++) {
+      if (starts[i] <= pos) index = i;
+      else break;
+    }
+    return index;
+  };
+
+  const out: HastNode[] = [];
+  let cursor = 0; // index into `joined` of the next unconsumed character
+  let childIndex = 0; // next child not yet emitted
+
+  for (const match of matches) {
+    if (match.start < cursor) continue;
+    const first = childAt(match.start);
+    const last = childAt(match.end - 1);
+    // Both edges must land in text nodes so we can slice cleanly.
+    if (children[first].type !== "text" || children[last].type !== "text") continue;
+
+    // Emit untouched children before the match.
+    for (; childIndex < first; childIndex++) out.push(children[childIndex]);
+
+    const head = (children[first] as HastText).value.slice(0, match.start - starts[first]);
+    if (head) out.push({ type: "text", value: head });
+    out.push(buildSigilSpan(match));
+
+    const tailStart = match.end - starts[last];
+    const tail = (children[last] as HastText).value.slice(tailStart);
+    children[last] = { type: "text", value: tail };
+    starts[last] = match.end;
+    childIndex = last;
+    cursor = match.end;
+  }
+
+  for (; childIndex < children.length; childIndex++) {
+    const child = children[childIndex];
+    if (child.type === "text" && (child as HastText).value === "") continue;
+    out.push(child);
+  }
+
+  parent.children = coalesceNodes(out);
+}
+
 // ── Plugin ───────────────────────────────────────────────────────────────────
+
+function transform(node: HastNode): void {
+  if (!("children" in node) || !Array.isArray(node.children)) return;
+  if (isElement(node) && CODE_TAGS.has(node.tagName)) return;
+
+  transformChildren(node as HastElement | HastRoot);
+
+  for (const child of (node as HastElement).children) {
+    if (isElement(child) && !isSigilSpan(child)) transform(child);
+  }
+}
 
 /**
  * Rehype plugin factory. Returns a transformer that replaces sigil tokens
- * in text nodes with <span> elements, coalescing adjacent sigils into groups.
+ * with <span> elements, coalescing adjacent sigils into groups.
  */
 export function rehypeSigils() {
-  return (tree: HastRoot) => {
-    walkText(tree, [], (textNode, ancestors) => {
-      if (hasCodeAncestor(ancestors)) return null;
-
-      const text = textNode.value;
-      const matches = parseSigils(text);
-      if (matches.length === 0) return null;
-
-      // Build replacement nodes: interleave text segments and sigil elements
-      const nodes: HastNode[] = [];
-      let cursor = 0;
-
-      for (const match of matches) {
-        // Text before this sigil
-        if (match.start > cursor) {
-          nodes.push({ type: "text", value: text.slice(cursor, match.start) });
-        }
-        nodes.push(buildSigilSpan(match));
-        cursor = match.end;
-      }
-
-      // Remaining text after last sigil
-      if (cursor < text.length) {
-        nodes.push({ type: "text", value: text.slice(cursor) });
-      }
-
-      return coalesceNodes(nodes);
-    });
-  };
+  return (tree: HastRoot) => transform(tree);
 }
