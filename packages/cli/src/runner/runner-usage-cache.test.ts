@@ -154,3 +154,43 @@ describe("runner-usage-cache child", () => {
         }
     });
 });
+
+import { singleFlight } from "./runner-usage-cache.js";
+
+describe("singleFlight", () => {
+  test("concurrent calls coalesce into one in-flight execution", async () => {
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const fn = singleFlight(async () => {
+      calls++;
+      await gate;
+    });
+
+    const p1 = fn();
+    const p2 = fn();
+    const p3 = fn();
+    expect(p2).toBe(p1);
+    expect(p3).toBe(p1);
+    expect(calls).toBe(1);
+
+    release();
+    await p1;
+
+    // After completion a new call runs again
+    await fn();
+    expect(calls).toBe(2);
+  });
+
+  test("a rejected in-flight run clears the guard", async () => {
+    let calls = 0;
+    const fn = singleFlight(async () => {
+      calls++;
+      if (calls === 1) throw new Error("boom");
+    });
+
+    await expect(fn()).rejects.toThrow("boom");
+    await fn(); // must not stay stuck on the failed promise
+    expect(calls).toBe(2);
+  });
+});

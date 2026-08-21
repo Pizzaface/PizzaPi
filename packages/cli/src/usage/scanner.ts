@@ -72,43 +72,31 @@ export function processFile(
   sessionHeader: SessionHeader,
   fullContent?: string,
   lastOffset?: number,
+  opts?: { rebuild?: boolean },
 ): void {
   const sessionId = sessionHeader.id;
   const project = sessionHeader.cwd;
   const startedAtMs = new Date(sessionHeader.timestamp).getTime();
+  const rebuild = opts?.rebuild === true;
 
   // Read the full file if content wasn't provided
   if (!fullContent) {
     fullContent = readFileSync(filePath, "utf-8");
   }
 
-  // Handle incremental processing: if we have a lastOffset, process only new lines
-  let linesToProcess: string[];
-  if (lastOffset !== undefined && lastOffset > 0) {
-    // lastOffset is a UTF-8 byte count. We must use Buffer-based slicing so
-    // that multi-byte Unicode characters in cwd/session names don't cause
-    // offset drift (JS string .slice() counts UTF-16 code units, not bytes).
-    const fullBuf = Buffer.from(fullContent, "utf-8");
-    if (lastOffset >= fullBuf.length) {
-      linesToProcess = [];
-    } else {
-      // Start from lastOffset (byte position)
-      // If there's a newline byte at lastOffset (shouldn't happen), skip it
-      let startPos = lastOffset;
-      if (startPos < fullBuf.length && fullBuf[startPos] === 0x0a /* '\n' */) {
-        startPos++;
-      }
-      // Slice by bytes then decode — correctly handles multi-byte characters
-      const newContent = fullBuf.slice(startPos).toString("utf-8");
-      linesToProcess = newContent.split("\n");
-    }
-  } else {
-    // First scan: process all lines (skip the header in the processing loop)
-    linesToProcess = fullContent.split("\n");
+  // All offsets are UTF-8 byte offsets; operate on a Buffer so multi-byte
+  // characters can never cause offset drift.
+  const fullBuf = Buffer.from(fullContent, "utf-8");
+  let pos = lastOffset !== undefined && lastOffset > 0 && !rebuild ? lastOffset : 0;
+  if (pos > fullBuf.length) pos = fullBuf.length;
+  // If there's a newline byte at pos (shouldn't happen), skip it
+  if (pos > 0 && pos < fullBuf.length && fullBuf[pos] === 0x0a /* '\n' */) {
+    pos++;
   }
 
   // Track usage data
   interface UsageEvent {
+    event_uid: string;
     timestamp: number;
     provider: string;
     model: string;
@@ -125,173 +113,127 @@ export function processFile(
 
   const events: UsageEvent[] = [];
   let sessionName: string | null = null;
-  let lastMessageTimestamp = startedAtMs;
-  let messageCount = 0;
 
-  // Model usage tracking (by count)
-  const modelUsage = new Map<string, number>();
+  // Byte offset just past the last successfully processed, newline-terminated
+  // line. A trailing line with no newline (still being written) or the first
+  // malformed line stops processing — the offset records its exact byte start
+  // so the next scan retries from there instead of desyncing.
+  let lastCompleteLineOffset = pos;
 
-  // For incremental scans, we need to get existing session data to merge with
-  let existingSession: any = null;
-  if (lastOffset !== undefined && lastOffset > 0) {
-    existingSession = db
-      .query<any, [string]>("SELECT * FROM sessions WHERE id = ?")
-      .get(sessionId);
-  }
+  while (pos < fullBuf.length) {
+    const nl = fullBuf.indexOf(0x0a, pos);
+    if (nl === -1) break; // incomplete final line — don't consume it
+    const lineStart = pos;
+    const line = fullBuf.slice(pos, nl).toString("utf-8");
+    pos = nl + 1;
 
-  // Track the byte position of the last complete line we process
-  let lastCompleteLineOffset = lastOffset ?? 0;
+    if (!line.trim()) {
+      lastCompleteLineOffset = pos;
+      continue;
+    }
 
-  // Process each line
-  for (let i = 0; i < linesToProcess.length; i++) {
-    const line = linesToProcess[i];
-    if (!line.trim()) continue;
-
+    let obj: any;
     try {
-      const obj = JSON.parse(line);
-
-      // Skip the session header (already have it)
-      if (obj.type === "session") {
-        // Mark this line as successfully processed
-        lastCompleteLineOffset += Buffer.byteLength(line, "utf-8") + 1; // +1 for newline
-        continue;
-      }
-
-      // Check for session name
-      if (obj.type === "message" && !sessionName) {
-        const name = extractSessionName(line);
-        if (name) sessionName = name;
-      }
-
-      // Extract usage from assistant messages
-      if (
-        obj.type === "message" &&
-        obj.message &&
-        obj.message.role === "assistant" &&
-        obj.message.usage
-      ) {
-        const msg = obj.message as any;
-        const usage = msg.usage;
-        const timestamp = new Date(obj.timestamp).getTime();
-
-        lastMessageTimestamp = Math.max(lastMessageTimestamp, timestamp);
-        messageCount++;
-
-        const provider = msg.provider || "unknown";
-        const model = msg.model || "unknown";
-
-        // Track model usage
-        modelUsage.set(model, (modelUsage.get(model) || 0) + 1);
-
-        const event: UsageEvent = {
-          timestamp,
-          provider,
-          model,
-          input_tokens: usage.input || 0,
-          output_tokens: usage.output || 0,
-          cache_read_tokens: usage.cacheRead || 0,
-          cache_write_tokens: usage.cacheWrite || 0,
-          cost_usd: usage.cost?.total ?? null,
-          cost_input: usage.cost?.input ?? null,
-          cost_output: usage.cost?.output ?? null,
-          cost_cache_read: usage.cost?.cacheRead ?? null,
-          cost_cache_write: usage.cost?.cacheWrite ?? null,
-        };
-
-        events.push(event);
-
-        // Mark this line as successfully processed
-        lastCompleteLineOffset += Buffer.byteLength(line, "utf-8") + 1; // +1 for newline
-      } else if (obj.type === "custom" && obj.customType === GOAL_EVALUATOR_USAGE_CUSTOM_TYPE) {
-        // /goal LLM evaluator calls are separate API requests outside the
-        // normal turn — surface their spend here so it isn't invisible to
-        // the Usage dashboard. Written as a per-call delta (see state.ts),
-        // so it's safe to add directly without cumulative double-counting.
-        const data = obj.data as { provider?: string; model?: string; tokens?: number; cost?: number; timestamp?: number };
-        const timestamp = data.timestamp ?? new Date(obj.timestamp).getTime();
-
-        modelUsage.set(data.model || "unknown", (modelUsage.get(data.model || "unknown") || 0) + 1);
-
-        events.push({
-          timestamp,
-          provider: data.provider || "unknown",
-          model: data.model || "unknown",
-          input_tokens: 0,
-          output_tokens: data.tokens || 0,
-          cache_read_tokens: 0,
-          cache_write_tokens: 0,
-          cost_usd: data.cost ?? null,
-          cost_input: null,
-          cost_output: data.cost ?? null,
-          cost_cache_read: null,
-          cost_cache_write: null,
-        });
-
-        lastCompleteLineOffset += Buffer.byteLength(line, "utf-8") + 1; // +1 for newline
-      } else {
-        // For other valid JSON types (like message without usage), still mark as processed
-        lastCompleteLineOffset += Buffer.byteLength(line, "utf-8") + 1; // +1 for newline
-      }
+      obj = JSON.parse(line);
     } catch {
-      // Skip malformed lines — don't update lastCompleteLineOffset for malformed lines
+      // Malformed complete line: stop here and record its byte start so the
+      // offset stays in sync with what was actually accounted.
+      lastCompleteLineOffset = lineStart;
+      break;
     }
-  }
 
-  // Determine primary model (most used by count)
-  let primaryModel = "unknown";
-  let primaryProvider = "unknown";
-  if (modelUsage.size > 0) {
-    primaryModel = [...modelUsage.entries()].sort((a, b) => b[1] - a[1])[0][0];
-    // Extract provider from first matching event
-    const firstEvent = events.find((e) => e.model === primaryModel);
-    if (firstEvent) {
-      primaryProvider = firstEvent.provider;
+    // Skip the session header (already have it)
+    if (obj.type === "session") {
+      lastCompleteLineOffset = pos;
+      continue;
     }
-  }
 
-  // Aggregate totals
-  let totalInput = 0;
-  let totalOutput = 0;
-  let totalCacheRead = 0;
-  let totalCacheWrite = 0;
-  let totalCost: number | null = null;
-
-  for (const event of events) {
-    totalInput += event.input_tokens;
-    totalOutput += event.output_tokens;
-    totalCacheRead += event.cache_read_tokens;
-    totalCacheWrite += event.cache_write_tokens;
-
-    // Sum cost (skip null values)
-    if (event.cost_usd !== null) {
-      totalCost = (totalCost ?? 0) + event.cost_usd;
+    // Check for session name
+    if (obj.type === "message" && !sessionName) {
+      const name = extractSessionName(line);
+      if (name) sessionName = name;
     }
-  }
 
-  // For incremental scans, merge with existing data. Guard on events.length
-  // (not messageCount) — goal_evaluator_usage entries add events without
-  // being an assistant message, and would otherwise be dropped from history.
-  if (existingSession && events.length > 0) {
-    totalInput += existingSession.total_input || 0;
-    totalOutput += existingSession.total_output || 0;
-    totalCacheRead += existingSession.total_cache_read || 0;
-    totalCacheWrite += existingSession.total_cache_write || 0;
-    if (existingSession.total_cost !== null) {
-      totalCost = (totalCost ?? 0) + existingSession.total_cost;
+    // Stable per-line event ID: file identity + absolute byte start of the
+    // line. Deterministic across replays, unique across distinct API calls.
+    const eventUid = `${relativePath}:${lineStart}`;
+
+    // Extract usage from assistant messages
+    if (
+      obj.type === "message" &&
+      obj.message &&
+      obj.message.role === "assistant" &&
+      obj.message.usage
+    ) {
+      const msg = obj.message as any;
+      const usage = msg.usage;
+      const timestamp = new Date(obj.timestamp).getTime();
+
+      events.push({
+        event_uid: eventUid,
+        timestamp,
+        provider: msg.provider || "unknown",
+        model: msg.model || "unknown",
+        input_tokens: usage.input || 0,
+        output_tokens: usage.output || 0,
+        cache_read_tokens: usage.cacheRead || 0,
+        cache_write_tokens: usage.cacheWrite || 0,
+        cost_usd: usage.cost?.total ?? null,
+        cost_input: usage.cost?.input ?? null,
+        cost_output: usage.cost?.output ?? null,
+        cost_cache_read: usage.cost?.cacheRead ?? null,
+        cost_cache_write: usage.cost?.cacheWrite ?? null,
+      });
+    } else if (obj.type === "custom" && obj.customType === GOAL_EVALUATOR_USAGE_CUSTOM_TYPE) {
+      // /goal LLM evaluator calls are separate API requests outside the
+      // normal turn — surface their spend here so it isn't invisible to
+      // the Usage dashboard. Written as a per-call delta (see state.ts),
+      // so it's safe to add directly without cumulative double-counting.
+      const data = obj.data as { provider?: string; model?: string; tokens?: number; cost?: number; timestamp?: number };
+      const timestamp = data.timestamp ?? new Date(obj.timestamp).getTime();
+
+      events.push({
+        event_uid: eventUid,
+        timestamp,
+        provider: data.provider || "unknown",
+        model: data.model || "unknown",
+        input_tokens: 0,
+        output_tokens: data.tokens || 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        cost_usd: data.cost ?? null,
+        cost_input: null,
+        cost_output: data.cost ?? null,
+        cost_cache_read: null,
+        cost_cache_write: null,
+      });
     }
-    messageCount += existingSession.message_count || 0;
+    lastCompleteLineOffset = pos;
   }
 
   // Use transaction for atomicity
   db.transaction(() => {
-    // Insert usage events
+    if (rebuild) {
+      // File was truncated or replaced — drop this file's previous accounting
+      // before re-inserting. Also drops legacy (pre-event_uid) rows for this
+      // session so they can't double-count against the replay.
+      // ponytail: legacy NULL-uid delete is session-wide; fine because a
+      // session's usage lives in one jsonl file in practice.
+      const likePrefix = `${relativePath.replace(/([%_\\])/g, "\\$1")}:%`;
+      db.run(
+        "DELETE FROM usage_events WHERE event_uid LIKE ? ESCAPE '\\' OR (session_id = ? AND event_uid IS NULL)",
+        [likePrefix, sessionId],
+      );
+    }
+
+    // Insert usage events — OR IGNORE on event_uid makes replays no-ops.
     for (const event of events) {
       db.run(
         `INSERT OR IGNORE INTO usage_events 
          (session_id, project, timestamp, provider, model, 
           input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-          cost_usd, cost_input, cost_output, cost_cache_read, cost_cache_write)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          cost_usd, cost_input, cost_output, cost_cache_read, cost_cache_write, event_uid)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           sessionId,
           project,
@@ -307,15 +249,34 @@ export function processFile(
           event.cost_output,
           event.cost_cache_read,
           event.cost_cache_write,
+          event.event_uid,
         ],
       );
     }
 
-    // Only upsert session summary when we have new usage events to write.
-    // Skipping when events.length === 0 prevents an incremental rescan from
-    // zeroing out existing aggregates (message_count, totals, primary_model)
-    // on files that contain no new assistant-usage entries.
-    if (events.length > 0) {
+    // Derive the session summary from persisted events — the single source of
+    // truth. Replayed (ignored) inserts therefore can never inflate summaries,
+    // and rebuilds are automatically consistent.
+    if (events.length > 0 || rebuild) {
+      const agg = db
+        .query<any, [string]>(
+          `SELECT COUNT(*) AS n,
+                  COALESCE(SUM(input_tokens), 0) AS total_input,
+                  COALESCE(SUM(output_tokens), 0) AS total_output,
+                  COALESCE(SUM(cache_read_tokens), 0) AS total_cache_read,
+                  COALESCE(SUM(cache_write_tokens), 0) AS total_cache_write,
+                  SUM(cost_usd) AS total_cost,
+                  MAX(timestamp) AS last_ts
+           FROM usage_events WHERE session_id = ?`,
+        )
+        .get(sessionId);
+      const primary = db
+        .query<{ model: string; provider: string }, [string]>(
+          `SELECT model, provider FROM usage_events WHERE session_id = ?
+           GROUP BY model, provider ORDER BY COUNT(*) DESC LIMIT 1`,
+        )
+        .get(sessionId);
+
       db.run(
         `INSERT INTO sessions 
          (id, project, session_name, started_at, ended_at, message_count,
@@ -324,7 +285,7 @@ export function processFile(
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
          session_name = COALESCE(excluded.session_name, session_name),
-         ended_at = CASE WHEN excluded.ended_at IS NULL THEN ended_at ELSE MAX(ended_at, excluded.ended_at) END,
+         ended_at = excluded.ended_at,
          message_count = excluded.message_count,
          total_input = excluded.total_input,
          total_output = excluded.total_output,
@@ -338,15 +299,15 @@ export function processFile(
           project,
           sessionName,
           startedAtMs,
-          messageCount > 0 ? lastMessageTimestamp : null,
-          messageCount,
-          totalInput,
-          totalOutput,
-          totalCacheRead,
-          totalCacheWrite,
-          totalCost,
-          primaryModel,
-          primaryProvider,
+          agg?.last_ts ?? null,
+          agg?.n ?? 0,
+          agg?.total_input ?? 0,
+          agg?.total_output ?? 0,
+          agg?.total_cache_read ?? 0,
+          agg?.total_cache_write ?? 0,
+          agg?.total_cost ?? null,
+          primary?.model ?? "unknown",
+          primary?.provider ?? "unknown",
         ],
       );
     }
@@ -354,12 +315,13 @@ export function processFile(
     // Update processing state with byte offset (only for the lines we actually processed)
     const fileStats = statSync(filePath);
     db.run(
-      `INSERT INTO processing_state (file_path, last_offset, last_modified)
-       VALUES (?, ?, ?)
+      `INSERT INTO processing_state (file_path, last_offset, last_modified, ino)
+       VALUES (?, ?, ?, ?)
        ON CONFLICT(file_path) DO UPDATE SET
        last_offset = excluded.last_offset,
-       last_modified = excluded.last_modified`,
-      [relativePath, lastCompleteLineOffset, fileStats.mtimeMs],
+       last_modified = excluded.last_modified,
+       ino = excluded.ino`,
+      [relativePath, lastCompleteLineOffset, fileStats.mtimeMs, fileStats.ino ?? null],
     );
   })();
 }
@@ -414,8 +376,8 @@ export async function scanSessions(db: Database): Promise<void> {
 
         // Check if we need to process this file
         const state = db
-          .query<{ last_offset: number; last_modified: number }, [string]>(
-            "SELECT last_offset, last_modified FROM processing_state WHERE file_path = ?",
+          .query<{ last_offset: number; last_modified: number; ino: number | null }, [string]>(
+            "SELECT last_offset, last_modified, ino FROM processing_state WHERE file_path = ?",
           )
           .get(relativePath);
 
@@ -442,10 +404,19 @@ export async function scanSessions(db: Database): Promise<void> {
           continue;
         }
 
+        // Truncated (size < recorded offset) or replaced (inode changed) file:
+        // the recorded accounting no longer matches the bytes on disk — rebuild
+        // this file's accounting from scratch instead of silently keeping it.
+        const rebuild =
+          state !== null &&
+          state !== undefined &&
+          (fileStats.size < state.last_offset ||
+            (state.ino !== null && state.ino !== undefined && Number(state.ino) !== Number(fileStats.ino)));
+
         // Process the file, passing content to avoid double read
         // and passing lastOffset for incremental processing
         try {
-          processFile(db, filePath, relativePath, sessionHeader, content, state?.last_offset);
+          processFile(db, filePath, relativePath, sessionHeader, content, rebuild ? undefined : state?.last_offset, { rebuild });
         } catch (e) {
           log.error(`Error processing ${filePath}:`, e);
         }

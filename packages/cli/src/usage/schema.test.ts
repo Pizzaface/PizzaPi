@@ -55,9 +55,9 @@ test("openUsageDb initializes a new database with correct schema", () => {
   expect(indexNames).toContain("idx_sessions_started");
   expect(indexNames).toContain("idx_sessions_project");
 
-  // Check schema version is 1
+  // Check schema version is 2
   const versionInfo = db.query("PRAGMA user_version").get() as any;
-  expect(versionInfo.user_version).toBe(1);
+  expect(versionInfo.user_version).toBe(2);
 
   // Check journal mode is WAL
   const journalModeInfo = db.query("PRAGMA journal_mode").get() as any;
@@ -79,9 +79,9 @@ test("openUsageDb opens an existing database successfully without recreation", (
   expect(record).toBeDefined();
   expect(record.last_offset).toBe(100);
 
-  // Schema version should still be 1
+  // Schema version should still be 2
   const versionInfo = db2.query("PRAGMA user_version").get() as any;
-  expect(versionInfo.user_version).toBe(1);
+  expect(versionInfo.user_version).toBe(2);
 
   db2.close();
 });

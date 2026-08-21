@@ -5,19 +5,30 @@
 import type { RelayContext } from "./remote-types.js";
 import { emitSessionMetadataUpdate, readQueuedFollowUps } from "./remote/chunked-delivery.js";
 
-let tokenUsageCache: { key: string; value: ReturnType<typeof buildTokenUsage> } | null = null;
+interface TokenTotals { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number }
+
+// Per-relay-context cache of cumulative totals, additionally pinned to the
+// session manager instance so a session switch (or two sessions sharing the
+// process) with an identical entry count/leafId can never serve another
+// session's totals. contextTokens is deliberately NOT cached: compaction can
+// change context size without changing the entry-count/leaf cache key.
+const tokenUsageCaches = new WeakMap<object, { manager: unknown; key: string; value: TokenTotals }>();
 
 export function buildTokenUsage(rctx: RelayContext): { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; contextTokens: number | null } {
     if (!rctx.latestCtx) {
-        tokenUsageCache = null;
+        tokenUsageCaches.delete(rctx);
         return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: null };
     }
-    const entries = rctx.latestCtx.sessionManager.getEntries();
-    const leafId = rctx.latestCtx.sessionManager.getLeafId?.() ?? null;
+    const manager = rctx.latestCtx.sessionManager;
+    const entries = manager.getEntries();
+    const leafId = manager.getLeafId?.() ?? null;
     const cacheKey = `${entries.length}:${leafId ?? "null"}`;
 
-    if (tokenUsageCache?.key === cacheKey) {
-        return tokenUsageCache.value;
+    const contextTokens = rctx.latestCtx.getContextUsage?.()?.tokens ?? null;
+
+    const cached = tokenUsageCaches.get(rctx);
+    if (cached && cached.manager === manager && cached.key === cacheKey) {
+        return { ...cached.value, contextTokens };
     }
 
     let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, cost = 0;
@@ -30,10 +41,9 @@ export function buildTokenUsage(rctx: RelayContext): { input: number; output: nu
             cost += Math.max(0, entry.message.usage.cost.total);
         }
     }
-    const contextUsage = rctx.latestCtx.getContextUsage?.();
-    const result = { input, output, cacheRead, cacheWrite, cost, contextTokens: contextUsage?.tokens ?? null };
-    tokenUsageCache = { key: cacheKey, value: result };
-    return result;
+    const totals: TokenTotals = { input, output, cacheRead, cacheWrite, cost };
+    tokenUsageCaches.set(rctx, { manager, key: cacheKey, value: totals });
+    return { ...totals, contextTokens };
 }
 
 export function buildHeartbeat(rctx: RelayContext) {
