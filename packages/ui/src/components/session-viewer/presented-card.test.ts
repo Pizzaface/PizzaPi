@@ -1,7 +1,36 @@
 import { describe, test, expect } from "bun:test";
-import { detectPresentedCard, detectPresentedCards, isSafeActionHref, schemaKind, formatAddress } from "./presented-card";
+import { detectPresentedCard, detectPresentedCards, isSafeActionHref, schemaKind, formatAddress, isExternalImage } from "./presented-card";
 
 const present = (entity: unknown) => detectPresentedCard("present_card", { entity });
+
+describe("isExternalImage", () => {
+  test("returns true for http and https URLs", () => {
+    expect(isExternalImage("https://example.com/img.jpg")).toBe(true);
+    expect(isExternalImage("http://attacker.com/track.gif")).toBe(true);
+  });
+  test("returns false for non-http schemes and invalid input", () => {
+    expect(isExternalImage("data:image/png;base64,abc")).toBe(false);
+    expect(isExternalImage("/relative/path.jpg")).toBe(false);
+    expect(isExternalImage("")).toBe(false);
+    expect(isExternalImage("javascript:alert(1)")).toBe(false);
+  });
+  test("treats browser-normalized network paths as external (C-006 bypass fix)", () => {
+    expect(isExternalImage("//attacker.example/track.gif")).toBe(true);
+    expect(isExternalImage("//host/x")).toBe(true);
+    expect(isExternalImage("\\\\attacker.example/track.gif")).toBe(true);
+  });
+  test("treats uppercase schemes as external", () => {
+    expect(isExternalImage("HTTP://host/img.jpg")).toBe(true);
+    expect(isExternalImage("HTTPS://host/img.jpg")).toBe(true);
+  });
+  test("same-origin relative paths are not external", () => {
+    expect(isExternalImage("/assets/img.png")).toBe(false);
+    expect(isExternalImage("./img.png")).toBe(false);
+  });
+  test("data: URLs (with any case) are not external", () => {
+    expect(isExternalImage("DATA:image/png;base64,abc")).toBe(false);
+  });
+});
 
 describe("isSafeActionHref", () => {
   test("allows tel/mailto/sms/geo/http(s)", () => {
@@ -136,6 +165,13 @@ describe("detectPresentedCard — schema.org entities", () => {
     expect(card.image).toBeUndefined();
     expect(card.actions.map((a) => a.label)).toContain("Site");
     expect(card.actions.map((a) => a.label)).not.toContain("Bad");
+  });
+
+  test("preserves browser-normalized backslash image URLs for privacy gating", () => {
+    const image = "\\\\attacker.example/track.gif";
+    const card = present({ "@type": "Organization", name: "Evil Co", image })!;
+    expect(card.image).toBe(image);
+    expect(isExternalImage(card.image!)).toBe(true);
   });
 
   test("legacy flat shape (no entity wrapper, no @type) still renders", () => {

@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
 import type { PresentedCard as PresentedCardData, CardRating } from "@/components/session-viewer/presented-card";
+import { isExternalImage } from "@/components/session-viewer/presented-card";
 
 /**
  * A read-only entity the model presented — a person, business, place, event,
@@ -43,16 +44,30 @@ export function PresentedCardGroup({ cards }: { cards: PresentedCardData[] }) {
 }
 
 function PresentedCardBody({ card }: { card: PresentedCardData }) {
+  // Bind approval to the exact URL so a card update cannot load a new image.
+  const [approvedImageUrl, setApprovedImageUrl] = React.useState<string>();
+  const isExternal = !!card.image && isExternalImage(card.image);
+  const showImg = !!card.image && (!isExternal || approvedImageUrl === card.image);
   return (
     <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
       <div className="flex items-start gap-3 border-b border-border bg-muted/40 px-3 py-2.5">
-        {card.image ? (
+        {showImg ? (
           <img
             src={card.image}
             alt=""
             referrerPolicy="no-referrer"
             className={cn("size-10 shrink-0 object-cover", card.kind === "person" ? "rounded-full" : "rounded-md")}
           />
+        ) : isExternal ? (
+          // External image: show kind icon + click affordance (no auto-fetch)
+          <button
+            type="button"
+            title="Load image"
+            onClick={() => setApprovedImageUrl(card.image)}
+            className="flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-md bg-muted hover:bg-muted/70"
+          >
+            <DynamicLucideIcon name={card.icon} className="size-5 text-muted-foreground" />
+          </button>
         ) : (
           <div className="flex size-10 shrink-0 items-center justify-center rounded-md bg-muted">
             <DynamicLucideIcon name={card.icon} className="size-5 text-muted-foreground" />
