@@ -361,6 +361,13 @@ export class TunnelRelay {
 
     const userId = typeof authResult === "string" ? authResult : "default";
 
+    // Guard: socket may have closed during the async auth await — abort to avoid a ghost runner.
+    // Must run BEFORE any mutation of existing-runner state so a healthy existing runner is preserved.
+    if (ws.readyState !== WebSocket.OPEN) {
+      this.log.warn("[tunnel-relay] Socket closed during auth, aborting registration:", msg.runnerId);
+      return;
+    }
+
     const existing = this.runners.get(msg.runnerId);
     if (existing && existing.userId !== userId) {
       this.log.error("[tunnel-relay] Runner ownership mismatch, rejecting:", msg.runnerId);
