@@ -99,6 +99,9 @@ import {
     modelFromHeartbeat,
     emitToRunner,
     broadcastToSessionViewers,
+    countSocketsInRoomCluster,
+    type ClusterSocketCount,
+    withTimeout,
 } from "./context.js";
 import { broadcastToHub } from "./hub.js";
 import { createLogger } from "@pizzapi/tools";
@@ -1066,29 +1069,18 @@ export async function sweepOrphanedSessions(nowMs: number): Promise<void> {
 
     if (candidates.length === 0) return;
 
-    // Session appears stale locally, verify if a relay socket exists on ANY server
-    // ⚡ Bolt: Using Promise.allSettled avoids sequential N+1 adapter queries when checking multiple candidates
-    const checks = candidates.map(c => {
-        const roomName = relaySessionRoom(c.sessionId);
-        return io.of("/relay").adapter.sockets(new Set([roomName]));
-    });
-
-    const results = await Promise.allSettled(checks);
+    // Session appears stale locally, verify if a relay socket exists on ANY server.
+    // Only a confirmed zero is proof that teardown is safe.
+    const relayNs = io.of("/relay");
+    const results = await Promise.all(candidates.map((candidate) =>
+        countSocketsInRoomCluster(relayNs, relaySessionRoom(candidate.sessionId)),
+    ));
 
     for (let i = 0; i < candidates.length; i++) {
         const candidate = candidates[i];
-        const result = results[i];
+        const presence = results[i];
 
-        if (result.status === "rejected") {
-            // If the query failed, err on the side of caution and keep the session alive
-            continue;
-        }
-
-        // @jules Add a secondary guard immediately before teardown to avoid false positives
-        // caused by race conditions during the deletion loop
-        if (result.status === "fulfilled" && result.value.size > 0) {
-            continue; // Socket exists remotely
-        }
+        if (presence.kind !== "count" || presence.count !== 0) continue;
 
         // Verify locally right before teardown to catch fresh reconnections
         if (localTuiSockets.has(candidate.sessionId)) continue;
@@ -1180,11 +1172,9 @@ export function broadcastToViewers(sessionId: string, eventName: string, data: u
  * Get the number of viewer sockets in a session room.
  * Works across all servers via the Redis adapter.
  */
-export async function getViewerCount(sessionId: string): Promise<number> {
+export async function getViewerCount(sessionId: string): Promise<ClusterSocketCount> {
     const io = getIo();
-    // ⚡ Bolt: Fast size query on adapter prevents fetching full RemoteSocket objects across cluster
-    const sockets = await io.of("/viewer").adapter.sockets(new Set([viewerSessionRoom(sessionId)]));
-    return sockets.size;
+    return countSocketsInRoomCluster(io.of("/viewer"), viewerSessionRoom(sessionId));
 }
 
 /**
@@ -1212,7 +1202,10 @@ export async function getViewerCount(sessionId: string): Promise<number> {
 export async function hasVisibleViewer(sessionId: string): Promise<boolean> {
     const io = getIo();
     try {
-        const sockets = await io.of("/viewer").in(viewerSessionRoom(sessionId)).fetchSockets();
+        const sockets = await withTimeout(
+            io.of("/viewer").in(viewerSessionRoom(sessionId)).fetchSockets(),
+            3_000,
+        );
         return sockets.some((s) => (s.data as { viewerVisible?: boolean } | undefined)?.viewerVisible === true);
     } catch (err) {
         // Adapter hiccup — fall back to "no visible viewer" so a notification is

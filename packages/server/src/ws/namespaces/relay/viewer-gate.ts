@@ -75,9 +75,9 @@ function refreshClusterCount(sessionId: string, entry: ClusterEntry | undefined)
     next.refreshing = true;
     clusterViewers.set(sessionId, next);
     void getViewerCount(sessionId)
-        .then((count) => {
-            next.count = count;
-            next.at = Date.now();
+        .then((presence) => {
+            next.count = presence.kind === "count" ? presence.count : -1;
+            next.at = presence.kind === "count" ? Date.now() : 0;
         })
         .catch((err) => {
             // Fail open: leave the count unknown so deltas keep flowing.
