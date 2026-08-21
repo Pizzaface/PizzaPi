@@ -78,6 +78,7 @@ function emitSnapshotWithTrailingDeltas(
     cached: LatestCachedSnapshot,
     generation: number | undefined,
     snapshotOverlay?: string | null,
+    sessionId?: string,
 ): void {
     // The cached session_active predates any later metadata-only updates (queue,
     // model, todo list), which are carried by the overlay rather than re-cached.
@@ -86,10 +87,10 @@ function emitSnapshotWithTrailingDeltas(
     if (snapshotOverlay && event.type === "session_active") {
         event = { ...event, state: applySnapshotOverlayToState(event.state, snapshotOverlay) };
     }
-    socket.emit("event", { event, replay: true, generation });
+    socket.emit("event", { event, replay: true, generation, ...(sessionId !== undefined ? { sessionId } : {}) });
     // Replay deltas cached after the snapshot so the viewer isn't left stale
     // between the snapshot and the seq advertised in "connected".
-    sendCachedDeltaReplayEvents(socket, cached.eventsAfter, generation);
+    sendCachedDeltaReplayEvents(socket, cached.eventsAfter, generation, sessionId);
 }
 
 export async function sendLatestSnapshotFromCache(
@@ -102,7 +103,7 @@ export async function sendLatestSnapshotFromCache(
     const cached = await deps.getLatestCachedSnapshotEvent(sessionId);
     if (!cached) return false;
 
-    emitSnapshotWithTrailingDeltas(socket, cached, generation, snapshotOverlay);
+    emitSnapshotWithTrailingDeltas(socket, cached, generation, snapshotOverlay, sessionId);
     return true;
 }
 
@@ -110,6 +111,7 @@ export function sendCachedDeltaReplayEvents(
     socket: ViewerEventEmitter,
     cachedEvents: CachedRelayEvent[],
     generation?: number,
+    sessionId?: string,
 ): boolean {
     let sentAny = false;
 
@@ -124,6 +126,7 @@ export function sendCachedDeltaReplayEvents(
             replay: true,
             deltaReplay: true,
             generation,
+            ...(sessionId !== undefined ? { sessionId } : {}),
         });
     }
 
@@ -138,7 +141,7 @@ async function sendDeltaReplayFromCache(
     deps: ViewerCacheDeps,
 ): Promise<boolean> {
     const cachedEvents = await deps.getCachedRelayEventsAfterSeq(sessionId, afterSeq);
-    return sendCachedDeltaReplayEvents(socket, cachedEvents, generation);
+    return sendCachedDeltaReplayEvents(socket, cachedEvents, generation, sessionId);
 }
 
 /**
@@ -180,7 +183,7 @@ export async function hydrateViewerFromCache(
             // reach is decidable. Refusing outright left resyncing viewers blank.
             const cached = await deps.getLatestCachedSnapshotEvent(sessionId);
             if (cached && snapshotCoversCursor(cached, opts.lastSeq)) {
-                emitSnapshotWithTrailingDeltas(socket, cached, opts.generation, opts.snapshotOverlay);
+                emitSnapshotWithTrailingDeltas(socket, cached, opts.generation, opts.snapshotOverlay, sessionId);
                 return true;
             }
 

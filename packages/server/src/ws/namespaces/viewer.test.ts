@@ -371,6 +371,34 @@ describe("checkServiceMessageRateLimit", () => {
     });
 });
 
+// ── sendCachedDeltaReplayEvents — sessionId stamp (A2-016) ──────────────────
+
+describe("sendCachedDeltaReplayEvents — sessionId stamp", () => {
+    test("stamps replay envelopes with sessionId when provided", () => {
+        const calls: unknown[][] = [];
+        const socket = { emit: (...args: unknown[]) => { calls.push(args); return true; } } as any;
+
+        sendCachedDeltaReplayEvents(socket, [
+            { seq: 1, event: { type: "text_delta" } },
+        ], 3, "session-A");
+
+        expect(calls.length).toBe(1);
+        expect((calls[0][1] as Record<string, unknown>).sessionId).toBe("session-A");
+    });
+
+    test("omits sessionId when not provided (backward-compat)", () => {
+        const calls: unknown[][] = [];
+        const socket = { emit: (...args: unknown[]) => { calls.push(args); return true; } } as any;
+
+        sendCachedDeltaReplayEvents(socket, [
+            { seq: 1, event: { type: "text_delta" } },
+        ], 3);
+
+        expect(calls.length).toBe(1);
+        expect((calls[0][1] as Record<string, unknown>).sessionId).toBeUndefined();
+    });
+});
+
 describe("runnerLooksLive", () => {
     test("live: isActive with a fresh heartbeat", () => {
         expect(runnerLooksLive({ isActive: true, lastHeartbeatAt: new Date().toISOString() })).toBe(true);
