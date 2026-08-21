@@ -49,6 +49,10 @@ mock.module("../sessions/runner-trigger-listener-store.js", () => ({
 }));
 
 const mockGetSession = mock(() => Promise.resolve(null));
+const mockGetPersistedRelaySessionOwner = mock(() => Promise.resolve(null));
+mock.module("../sessions/store.js", () => ({
+    getPersistedRelaySessionOwner: mockGetPersistedRelaySessionOwner,
+}));
 const mockEmitTriggerSubscriptionDelta = mock((_runnerId: string, _delta: any) => Promise.resolve());
 const mockSendRunnerCommand = mock(() => Promise.resolve({ ok: true }));
 mock.module("../ws/namespaces/runner.js", () => ({
@@ -147,6 +151,63 @@ describe("runner read-file route", () => {
             rejectTruncated: true,
         }, 30_000, req.signal);
         expect(await res!.json()).toEqual({ ok: true, size: 11 * 1024 * 1024, truncated: true });
+    });
+});
+
+describe("runner analysis route", () => {
+    beforeEach(() => {
+        mockRequireSession.mockReset();
+        mockRequireSession.mockReturnValue(Promise.resolve({ userId: "user-1", userName: "TestUser" } as any));
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+        mockSendRunnerCommand.mockReset();
+        mockSendRunnerCommand.mockReturnValue(Promise.resolve({ ok: true }));
+        mockGetSession.mockReset();
+        mockGetSession.mockReturnValue(Promise.resolve(null));
+        mockGetPersistedRelaySessionOwner.mockReset();
+        mockGetPersistedRelaySessionOwner.mockReturnValue(Promise.resolve(null));
+    });
+
+    test("forwards analyze_session when the session is owned by the caller", async () => {
+        mockGetSession.mockReturnValue(Promise.resolve({ userId: "user-1", sessionId: "sess-1" } as any));
+
+        const [req, url] = makeReq("GET", "/api/runners/runner-A/analysis/sess-1");
+        const res = await handleRunnersRoute(req, url);
+
+        expect(res!.status).toBe(200);
+        expect(mockSendRunnerCommand).toHaveBeenCalledWith("runner-A", { type: "analyze_session", sessionId: "sess-1" }, 30_000);
+    });
+
+    test("resolves ownership from the persisted store when the session is not live", async () => {
+        mockGetSession.mockReturnValue(Promise.resolve(null));
+        mockGetPersistedRelaySessionOwner.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A", cwd: "/repo" } as any));
+
+        const [req, url] = makeReq("GET", "/api/runners/runner-A/analysis/sess-1");
+        const res = await handleRunnersRoute(req, url);
+
+        expect(res!.status).toBe(200);
+        expect(mockSendRunnerCommand).toHaveBeenCalledWith("runner-A", { type: "analyze_session", sessionId: "sess-1" }, 30_000);
+    });
+
+    test("returns 403 and does not forward when the session is owned by another user", async () => {
+        mockGetSession.mockReturnValue(Promise.resolve({ userId: "user-2", sessionId: "sess-1" } as any));
+
+        const [req, url] = makeReq("GET", "/api/runners/runner-A/analysis/sess-1");
+        const res = await handleRunnersRoute(req, url);
+
+        expect(res!.status).toBe(403);
+        expect(mockSendRunnerCommand).not.toHaveBeenCalled();
+    });
+
+    test("returns 404 and does not forward when the session is not found", async () => {
+        mockGetSession.mockReturnValue(Promise.resolve(null));
+        mockGetPersistedRelaySessionOwner.mockReturnValue(Promise.resolve(null));
+
+        const [req, url] = makeReq("GET", "/api/runners/runner-A/analysis/sess-missing");
+        const res = await handleRunnersRoute(req, url);
+
+        expect(res!.status).toBe(404);
+        expect(mockSendRunnerCommand).not.toHaveBeenCalled();
     });
 });
 
