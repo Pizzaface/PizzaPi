@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
     applyChunkToPendingState,
     applySnapshotPatchToPendingState,
@@ -7,10 +7,19 @@ import {
     finalizeChunkedSnapshot,
     getPendingChunkedSnapshot,
     pendingChunkedStates,
+    resetPerSessionRelayState,
     CHUNK_STREAM_STALE_MS,
     sessionEventQueues,
     type ChunkedSessionState,
 } from "./event-pipeline.js";
+import {
+    thinkingStartTimes,
+    thinkingDurations,
+} from "./thinking-tracker.js";
+import {
+    _injectRedisForTesting,
+    _resetRedisForTesting,
+} from "../../../sessions/redis.js";
 import {
     consumePendingRecovery,
     markPendingRecovery,
@@ -311,5 +320,100 @@ describe("getPendingChunkedSnapshot — stale stream expiry", () => {
             isFinalChunk: false,
         });
         expect(getPendingChunkedSnapshot("s-refresh")?.stale).toBe(false);
+    });
+});
+
+describe("resetPerSessionRelayState — reconnect state reset", () => {
+    beforeEach(() => {
+        // Inject a mock Redis client so the reset helper's cache deletion is
+        // deterministic and never depends on a live Redis instance.
+        _injectRedisForTesting({ del: async (_key: string) => 1 } as unknown);
+    });
+
+    afterEach(() => {
+        pendingChunkedStates.clear();
+        sessionEventQueues.clear();
+        thinkingStartTimes.clear();
+        thinkingDurations.clear();
+        _resetRedisForTesting();
+    });
+
+    test("drains the event queue before clearing half-assembled chunk state", async () => {
+        const order: string[] = [];
+        let release!: () => void;
+        const blocked = new Promise<void>((resolve) => { release = resolve; });
+
+        // A chunk handler from the OLD generation is still in flight.
+        enqueueSessionEvent("sess-reconnect", async () => {
+            await blocked;
+            order.push("old-chunk-handler");
+        });
+        pendingChunkedStates.set("sess-reconnect", {
+            snapshotId: "old-snap",
+            metadata: {},
+            chunks: [[{ id: "old-m1" }]],
+            totalChunks: 2,
+            receivedChunkIndexes: new Set<number>([0]),
+            finalChunkSeen: false,
+            lastActivityAt: Date.now(),
+        });
+
+        const resetPromise = resetPerSessionRelayState("sess-reconnect");
+        // The reset must NOT complete until the in-flight handler drains.
+        await Promise.resolve();
+        expect(order).toEqual([]);
+        release();
+        await resetPromise;
+
+        expect(order).toEqual(["old-chunk-handler"]);
+        expect(pendingChunkedStates.has("sess-reconnect")).toBe(false);
+        expect(sessionEventQueues.has("sess-reconnect")).toBe(false);
+    });
+
+    test("clears thinking maps and pending chunk state for the session", async () => {
+        thinkingStartTimes.set("sess-reconnect", new Map([[0, Date.now()]]));
+        thinkingDurations.set("sess-reconnect", new Map([[0, 1234]]));
+        pendingChunkedStates.set("sess-reconnect", {
+            snapshotId: "old-snap",
+            metadata: {},
+            chunks: [[{ id: "old-m1" }]],
+            totalChunks: 1,
+            receivedChunkIndexes: new Set<number>([0]),
+            finalChunkSeen: true,
+            lastActivityAt: Date.now(),
+        });
+
+        await resetPerSessionRelayState("sess-reconnect");
+
+        expect(thinkingStartTimes.has("sess-reconnect")).toBe(false);
+        expect(thinkingDurations.has("sess-reconnect")).toBe(false);
+        expect(pendingChunkedStates.has("sess-reconnect")).toBe(false);
+    });
+
+    test("deletes the relay event cache for the session", async () => {
+        const del = spyOn({
+            del: async (_key: string) => 1,
+        }, "del");
+        _injectRedisForTesting({ del } as unknown);
+
+        await resetPerSessionRelayState("sess-reconnect");
+
+        expect(del).toHaveBeenCalledWith("pizzapi:relay:session:sess-reconnect:events");
+    });
+
+    test("does not clear state for other sessions", async () => {
+        pendingChunkedStates.set("sess-other", {
+            snapshotId: "other-snap",
+            metadata: {},
+            chunks: [[{ id: "other-m1" }]],
+            totalChunks: 1,
+            receivedChunkIndexes: new Set<number>([0]),
+            finalChunkSeen: false,
+            lastActivityAt: Date.now(),
+        });
+
+        await resetPerSessionRelayState("sess-reconnect");
+
+        expect(pendingChunkedStates.has("sess-other")).toBe(true);
     });
 });
