@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, spyOn, mock } from "bun:test";
 import type { ChildProcess } from "node:child_process";
-import { notifyWorkersOfRestart, type RunnerSession } from "./session-spawner.js";
+import { notifyWorkersOfRestart, killSessionProcessGroup, type RunnerSession } from "./session-spawner.js";
 
 function session(id: string, child: { connected: boolean; send: (...args: any[]) => boolean } | null): RunnerSession {
     return { sessionId: id, child: child as unknown as ChildProcess | null, startedAt: 0 };
@@ -39,5 +39,31 @@ describe("notifyWorkersOfRestart", () => {
             ["a", session("a", { connected: true, send: () => { throw new Error("EPIPE"); } })],
         ]);
         await notifyWorkersOfRestart(map, 50);
+    });
+});
+
+describe("killSessionProcessGroup — pid validation", () => {
+    test("rejects invalid pids without calling process.kill", () => {
+        const spy = spyOn(process, "kill").mockImplementation(() => true);
+        try {
+            for (const bad of [0, -1, -999, NaN, Infinity, -Infinity, 1.5, undefined]) {
+                const result = killSessionProcessGroup(bad as unknown as number);
+                expect(result).toBe(false);
+            }
+            expect(spy).not.toHaveBeenCalled();
+        } finally {
+            spy.mockRestore();
+        }
+    });
+
+    test("calls process.kill(-pid) for a valid positive integer pid", () => {
+        const spy = spyOn(process, "kill").mockImplementation(() => true);
+        try {
+            const result = killSessionProcessGroup(12345, "SIGTERM");
+            expect(result).toBe(true);
+            expect(spy).toHaveBeenCalledWith(-12345, "SIGTERM");
+        } finally {
+            spy.mockRestore();
+        }
     });
 });
