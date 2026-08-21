@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { countLinkedChildrenForParent } from "./child-lifecycle.js";
+import { countLinkedChildrenForParent, executeCleanupTeardown } from "./child-lifecycle.js";
 
 describe("countLinkedChildrenForParent", () => {
     test("returns count of live, linked children", async () => {
@@ -70,5 +70,52 @@ describe("countLinkedChildrenForParent", () => {
 
         const count = await countLinkedChildrenForParent("parent-1", { getChildSessions, getSession });
         expect(count).toBe(0);
+    });
+});
+
+describe("executeCleanupTeardown — fail-open gating", () => {
+    function makeDeps(presenceResult: { kind: "count"; count: number } | { kind: "unknown" }) {
+        return {
+            countPresence: mock(async () => presenceResult),
+            emitRunner: mock((_runnerId: string, _event: string, _data: unknown) => {}),
+            emitRelay: mock((_sessionId: string, _event: string, _data: unknown) => {}),
+            endSession: mock(async (_sessionId: string, _reason: string, _opts: unknown) => {}),
+        };
+    }
+
+    test("unknown presence → skips teardown (fail-open)", async () => {
+        const deps = makeDeps({ kind: "unknown" });
+        const result = await executeCleanupTeardown("child-1", "runner-1", deps);
+        expect(result).toBe("skipped");
+        expect(deps.emitRunner).not.toHaveBeenCalled();
+        expect(deps.emitRelay).not.toHaveBeenCalled();
+        expect(deps.endSession).not.toHaveBeenCalled();
+    });
+
+    test("count === 0 → executes teardown (kill + end_session + endSharedSession)", async () => {
+        const deps = makeDeps({ kind: "count", count: 0 });
+        const result = await executeCleanupTeardown("child-2", "runner-2", deps);
+        expect(result).toBe("torn-down");
+        expect(deps.emitRunner).toHaveBeenCalledWith("runner-2", "kill_session", { sessionId: "child-2" });
+        expect(deps.emitRelay).toHaveBeenCalledWith("child-2", "exec", expect.objectContaining({ command: "end_session" }));
+        expect(deps.endSession).toHaveBeenCalledWith("child-2", "Parent acknowledged completion", { confirmedTerminal: true });
+    });
+
+    test("count > 0 → skips teardown (relay socket still present)", async () => {
+        const deps = makeDeps({ kind: "count", count: 2 });
+        const result = await executeCleanupTeardown("child-3", "runner-3", deps);
+        expect(result).toBe("skipped");
+        expect(deps.emitRunner).not.toHaveBeenCalled();
+        expect(deps.emitRelay).not.toHaveBeenCalled();
+        expect(deps.endSession).not.toHaveBeenCalled();
+    });
+
+    test("count === 0 with no runnerId → skips kill_session but still ends session", async () => {
+        const deps = makeDeps({ kind: "count", count: 0 });
+        const result = await executeCleanupTeardown("child-4", undefined, deps);
+        expect(result).toBe("torn-down");
+        expect(deps.emitRunner).not.toHaveBeenCalled();
+        expect(deps.emitRelay).toHaveBeenCalled();
+        expect(deps.endSession).toHaveBeenCalled();
     });
 });
