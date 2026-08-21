@@ -48,6 +48,9 @@ export async function setModelFromWeb(
             return;
         }
 
+        // Serialize against any active turn: wait for idle so dynamic-tool
+        // computation for the old model finishes before we switch.
+        await rctx.sessionHost?.waitForIdle();
         const ok = await (pi as any).setModel(model);
         rctx.forwardEvent({
             type: "model_set_result",

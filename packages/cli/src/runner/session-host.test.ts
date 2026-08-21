@@ -168,14 +168,59 @@ describe("SessionHost live-session reads", () => {
 });
 
 describe("SessionHost passthroughs", () => {
-    test("pendingMessageCount, abort, waitForIdle, setModel", async () => {
+    test("pendingMessageCount, abort, waitForIdle", async () => {
         const { host, session } = makeHost();
         expect(host.pendingMessageCount).toBe(3);
         await host.abort();
         await host.waitForIdle();
-        await host.setModel({ id: "m" } as any);
         const methods = (session().calls as Call[]).map((c) => c.method);
-        expect(methods).toEqual(["abort", "waitForIdle", "setModel"]);
+        expect(methods).toEqual(["abort", "waitForIdle"]);
+    });
+});
+
+describe("SessionHost.setModel serialization", () => {
+    test("waits for idle before applying the model change (active-turn boundary)", async () => {
+        const order: string[] = [];
+        const { host } = makeHost({
+            sessionOverrides: {
+                waitForIdle: async () => { order.push("waitForIdle"); },
+                setModel: async () => { order.push("setModel"); },
+            },
+        });
+        await host.setModel({ id: "new-model" } as any);
+        expect(order).toEqual(["waitForIdle", "setModel"]);
+    });
+
+    test("applies model immediately when already idle (waitForIdle resolves instantly)", async () => {
+        const { host, session } = makeHost();
+        await host.setModel({ id: "m" } as any);
+        const calls = session().calls as Call[];
+        const wiIdx = calls.findIndex((c) => c.method === "waitForIdle");
+        const smIdx = calls.findIndex((c) => c.method === "setModel");
+        expect(wiIdx).toBeGreaterThanOrEqual(0);
+        expect(smIdx).toBeGreaterThanOrEqual(0);
+        expect(wiIdx).toBeLessThan(smIdx);
+    });
+
+    test("model change is NOT applied until active turn idles", async () => {
+        let idleResolve!: () => void;
+        const idlePromise = new Promise<void>((res) => { idleResolve = res; });
+        const applied: string[] = [];
+        const { host } = makeHost({
+            sessionOverrides: {
+                waitForIdle: () => idlePromise,
+                setModel: async (...args: unknown[]) => { applied.push((args[0] as any).id); },
+            },
+        });
+
+        // Start setModel — it will block waiting for idle.
+        const pending = host.setModel({ id: "queued-model" } as any);
+        // The model has NOT been applied yet.
+        expect(applied).toEqual([]);
+        // Now simulate the active turn finishing.
+        idleResolve();
+        await pending;
+        expect(applied).toEqual(["queued-model"]);
     });
 });
 

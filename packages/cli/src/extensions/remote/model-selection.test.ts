@@ -44,11 +44,12 @@ function writeOllamaCloudCache(modelId: string, fetchedAt = Date.now()) {
     );
 }
 
-function createRctx(modelFromRegistry?: any) {
+function createRctx(modelFromRegistry?: any, sessionHost?: any) {
     const events: any[] = [];
     const rctx: any = {
         relaySessionId: "session-1",
         goalState: null,
+        sessionHost: sessionHost ?? null,
         latestCtx: {
             cwd: process.cwd(),
             model: null,
@@ -257,5 +258,37 @@ describe("setModelFromWeb", () => {
             modelId: "glm-5.1",
             message: "boom",
         });
+    });
+
+    test("active-turn boundary: waits for idle before calling pi.setModel when a turn is active", async () => {
+        const order: string[] = [];
+        let idleResolve!: () => void;
+        const idlePromise = new Promise<void>((res) => { idleResolve = res; });
+        const sessionHost = { waitForIdle: () => { order.push("waitForIdle"); return idlePromise; } };
+        const { rctx } = createRctx(ollamaCloudModel("glm-5.1"), sessionHost);
+        const pi = {
+            setModel: async () => { order.push("setModel"); return true; },
+        };
+
+        // Start the model change — it blocks waiting for idle.
+        const pending = setModelFromWeb(rctx, pi, "ollama-cloud", "glm-5.1");
+        // setModel has NOT been called yet.
+        expect(order).toEqual(["waitForIdle"]);
+        // Simulate active turn finishing.
+        idleResolve();
+        await pending;
+        expect(order).toEqual(["waitForIdle", "setModel"]);
+    });
+
+    test("idle model_set applies immediately (no active turn)", async () => {
+        const order: string[] = [];
+        const sessionHost = { waitForIdle: async () => { order.push("waitForIdle"); } };
+        const { rctx } = createRctx(ollamaCloudModel("glm-5.1"), sessionHost);
+        const pi = {
+            setModel: async () => { order.push("setModel"); return true; },
+        };
+
+        await setModelFromWeb(rctx, pi, "ollama-cloud", "glm-5.1");
+        expect(order).toEqual(["waitForIdle", "setModel"]);
     });
 });
