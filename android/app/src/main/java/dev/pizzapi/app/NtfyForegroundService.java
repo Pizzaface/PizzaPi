@@ -30,6 +30,7 @@ import java.net.HttpURLConnection;
 import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.net.URL;
+import java.net.URLDecoder;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.Locale;
@@ -72,8 +73,10 @@ public class NtfyForegroundService extends Service {
     private static final String GROUP_SESSIONS = "dev.pizzapi.SESSIONS";
     /** Matches the session id in the ntfy Click deep link.
      *  Canonical form: …/session/<id>  (no trailing 's').
-     *  Legacy forms also accepted: …/sessions/<id> and …/#/sessions/<id>. */
-    private static final Pattern SESSION_ID_PATTERN = Pattern.compile("(?:/#)?/sessions?/([A-Za-z0-9_-]+)");
+     *  Legacy forms also accepted: …/sessions/<id> and …/#/sessions/<id>.
+     *  Raw capture uses [^/?#]+ so percent-encoded ids pass through intact;
+     *  sessionIdFromClickUrl() URL-decodes and validates afterwards. */
+    private static final Pattern SESSION_ID_PATTERN = Pattern.compile("(?:/#)?/sessions?/([^/?#]+)");
 
     static final String EXTRA_NTFY_URL = "ntfyUrl";
     static final String EXTRA_TOPIC = "topic";
@@ -369,11 +372,19 @@ public class NtfyForegroundService extends Service {
         }
     }
 
-    /** Pull the session id out of the click deep link, or null if absent. */
+    /** Pull the session id out of the click deep link, or null if absent.
+     *  URL-decodes the raw path segment; returns null on malformed percent-encoding. */
     static String sessionIdFromClickUrl(String clickUrl) {
         if (clickUrl == null || clickUrl.isEmpty()) return null;
         Matcher m = SESSION_ID_PATTERN.matcher(clickUrl);
-        return m.find() ? m.group(1) : null;
+        if (!m.find()) return null;
+        String raw = m.group(1);
+        try {
+            return URLDecoder.decode(raw, "UTF-8");
+        } catch (Exception e) {
+            // ponytail: malformed percent-encoding (e.g. %ZZ) → null rather than truncating
+            return null;
+        }
     }
 
     /**
