@@ -1,5 +1,6 @@
 import { getKysely } from "../auth.js";
 import { createLogger } from "@pizzapi/tools";
+import { deleteAttachmentsForSessions } from "../attachments/store.js";
 
 const log = createLogger("sessions/store");
 
@@ -720,9 +721,8 @@ export async function pruneExpiredRelaySessions(): Promise<string[]> {
     // Optimization: Use a transaction with a subquery and RETURNING clause to prune expired sessions.
     // This reduces database roundtrips from 3 to 2 and avoids loading all expired IDs into application memory
     // before deletion, which improves performance and memory usage for large cleanups.
-    // Estimated impact: ~30% reduction in latency for cleanup operations.
     // Note: Pinned sessions are never pruned, even if expired.
-    return await getKysely().transaction().execute(async (trx) => {
+    const deleted = await getKysely().transaction().execute(async (trx) => {
         await trx
             .deleteFrom("relay_session_state")
             .where("sessionId", "in", (qb) =>
@@ -735,14 +735,26 @@ export async function pruneExpiredRelaySessions(): Promise<string[]> {
             )
             .execute();
 
-        const deleted = await trx
+        return await trx
             .deleteFrom("relay_session")
             .where("expiresAt", "is not", null)
             .where("expiresAt", "<=", nowIso)
             .where("isPinned", "=", 0)
             .returning("id")
             .execute();
-
-        return deleted.map((row) => row.id);
     });
+
+    const ids = deleted.map((row) => row.id);
+
+    // PRIVACY: delete attachments associated with pruned sessions so ephemeral
+    // session uploads and extracted inline images do not outlive their owner.
+    if (ids.length > 0) {
+        try {
+            await deleteAttachmentsForSessions(ids);
+        } catch (err) {
+            log.error("Failed to delete attachments for pruned sessions:", err);
+        }
+    }
+
+    return ids;
 }

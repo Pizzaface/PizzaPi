@@ -153,6 +153,63 @@ export async function deleteStoredAttachment(attachmentId: string): Promise<void
     ]).catch(() => {});
 }
 
+/** Remove persisted session references for pruned sessions across all attachments. */
+async function removePersistedSessionRefsForSessions(sessionIds: string[]): Promise<void> {
+    if (sessionIds.length === 0) return;
+    await getKysely()
+        .deleteFrom("extracted_attachment_session" as any)
+        .where("sessionId", "in", sessionIds)
+        .execute();
+}
+
+/**
+ * Delete attachments whose owning sessions are being pruned.
+ *
+ * Regular uploads are tied to a single session and are removed immediately.
+ * Extracted inline images may be shared across sessions via content-hash
+ * deduplication; their session refs are removed and they are only deleted
+ * when no durable session still references them.
+ */
+export async function deleteAttachmentsForSessions(sessionIds: string[]): Promise<void> {
+    if (sessionIds.length === 0) return;
+    const expiredSet = new Set(sessionIds);
+    const durableSessionIds = await getDurableSessionIds();
+
+    // Remove extracted-image session refs for pruned sessions from SQLite.
+    await removePersistedSessionRefsForSessions(sessionIds).catch(() => {});
+
+    // Iterate a copy because deleteStoredAttachment mutates the attachments map.
+    for (const [attachmentId, record] of Array.from(attachments.entries())) {
+        if (!expiredSet.has(record.sessionId)) continue;
+
+        if (record.uploaderUserId !== "system") {
+            await deleteStoredAttachment(attachmentId);
+            continue;
+        }
+
+        // Extracted image: drop pruned sessions from in-memory refs.
+        const refs = extractedImageSessionRefs.get(attachmentId);
+        if (refs) {
+            for (const sid of sessionIds) refs.delete(sid);
+            if (refs.size === 0) extractedImageSessionRefs.delete(attachmentId);
+        }
+
+        // If no durable session still references the image, delete it now.
+        if (!hasAnyDurableSessionRef(attachmentId, record.sessionId, durableSessionIds)) {
+            await deleteStoredAttachment(attachmentId);
+        } else if (expiredSet.has(record.sessionId)) {
+            // Repoint record.sessionId to a surviving ref so future sweeps
+            // don't use a pruned session as the fallback.
+            const remaining = extractedImageSessionRefs.get(attachmentId);
+            const fallback = remaining?.values().next().value as string | undefined;
+            if (fallback && fallback !== record.sessionId) {
+                record.sessionId = fallback;
+                void persistExtractedAttachment(record).catch(() => {});
+            }
+        }
+    }
+}
+
 // ── Extracted image storage ──────────────────────────────────────────────────
 // Used by strip-images.ts to offload inline base64 images from session state
 // payloads. Uses the same storage mechanism as uploads but with a longer TTL
