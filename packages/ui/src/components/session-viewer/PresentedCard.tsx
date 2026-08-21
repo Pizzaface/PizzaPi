@@ -44,10 +44,10 @@ export function PresentedCardGroup({ cards }: { cards: PresentedCardData[] }) {
 }
 
 function PresentedCardBody({ card }: { card: PresentedCardData }) {
-  // ponytail: only gate http/https images; data:/relative would render directly
-  const [imageApproved, setImageApproved] = React.useState(false);
+  // Bind approval to the exact URL so a card update cannot load a new image.
+  const [approvedImageUrl, setApprovedImageUrl] = React.useState<string>();
   const isExternal = !!card.image && isExternalImage(card.image);
-  const showImg = !!card.image && (!isExternal || imageApproved);
+  const showImg = !!card.image && (!isExternal || approvedImageUrl === card.image);
   return (
     <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
       <div className="flex items-start gap-3 border-b border-border bg-muted/40 px-3 py-2.5">
@@ -63,7 +63,7 @@ function PresentedCardBody({ card }: { card: PresentedCardData }) {
           <button
             type="button"
             title="Load image"
-            onClick={() => setImageApproved(true)}
+            onClick={() => setApprovedImageUrl(card.image)}
             className="flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-md bg-muted hover:bg-muted/70"
           >
             <DynamicLucideIcon name={card.icon} className="size-5 text-muted-foreground" />

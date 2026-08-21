@@ -14,9 +14,10 @@ describe("isExternalImage", () => {
     expect(isExternalImage("")).toBe(false);
     expect(isExternalImage("javascript:alert(1)")).toBe(false);
   });
-  test("treats protocol-relative URLs as external (C-006 bypass fix)", () => {
+  test("treats browser-normalized network paths as external (C-006 bypass fix)", () => {
     expect(isExternalImage("//attacker.example/track.gif")).toBe(true);
     expect(isExternalImage("//host/x")).toBe(true);
+    expect(isExternalImage("\\\\attacker.example/track.gif")).toBe(true);
   });
   test("treats uppercase schemes as external", () => {
     expect(isExternalImage("HTTP://host/img.jpg")).toBe(true);
@@ -164,6 +165,13 @@ describe("detectPresentedCard — schema.org entities", () => {
     expect(card.image).toBeUndefined();
     expect(card.actions.map((a) => a.label)).toContain("Site");
     expect(card.actions.map((a) => a.label)).not.toContain("Bad");
+  });
+
+  test("preserves browser-normalized backslash image URLs for privacy gating", () => {
+    const image = "\\\\attacker.example/track.gif";
+    const card = present({ "@type": "Organization", name: "Evil Co", image })!;
+    expect(card.image).toBe(image);
+    expect(isExternalImage(card.image!)).toBe(true);
   });
 
   test("legacy flat shape (no entity wrapper, no @type) still renders", () => {

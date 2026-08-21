@@ -100,6 +100,18 @@ describe("PresentedCard — external image privacy gating", () => {
     expect(img?.getAttribute("src")).toBe("https://attacker.example/track.gif");
   });
 
+  test("requires re-approval when the image URL changes", () => {
+    const { getByTitle, container, rerender } = render(<PresentedCard card={externalImageCard} />);
+    fireEvent.click(getByTitle("Load image"));
+    expect(container.querySelector("img")?.getAttribute("src")).toBe(externalImageCard.image);
+
+    const updatedCard = { ...externalImageCard, image: "https://other.example/track.gif" };
+    rerender(<PresentedCard card={updatedCard} />);
+    expect(container.querySelector("img")).toBeNull();
+    fireEvent.click(getByTitle("Load image"));
+    expect(container.querySelector("img")?.getAttribute("src")).toBe(updatedCard.image);
+  });
+
   test("card without image renders kind icon, no Load image button", () => {
     const noImageCard: PresentedCardData = { ...externalImageCard, image: undefined };
     const { container, queryByTitle } = render(<PresentedCard card={noImageCard} />);
@@ -107,16 +119,14 @@ describe("PresentedCard — external image privacy gating", () => {
     expect(queryByTitle("Load image")).toBeNull();
   });
 
-  test("protocol-relative image (//host/…) is gated: no <img> on initial render", () => {
-    const protoRelCard: PresentedCardData = {
-      ...externalImageCard,
-      image: "//attacker.example/track.gif",
-    };
-    const { container, getByTitle } = render(<PresentedCard card={protoRelCard} />);
-    // Must not emit an <img> that the browser would auto-fetch.
-    expect(container.querySelectorAll("img").length).toBe(0);
-    // Must show the click-to-load affordance.
-    expect(getByTitle("Load image")).toBeDefined();
+  test("browser-normalized network-path images are gated on initial render", () => {
+    for (const image of ["//attacker.example/track.gif", "\\\\attacker.example/track.gif"]) {
+      const networkPathCard: PresentedCardData = { ...externalImageCard, image };
+      const { container, getByTitle, unmount } = render(<PresentedCard card={networkPathCard} />);
+      expect(container.querySelectorAll("img").length).toBe(0);
+      expect(getByTitle("Load image")).toBeDefined();
+      unmount();
+    }
   });
 
   test("protocol-relative image renders after clicking Load image", () => {

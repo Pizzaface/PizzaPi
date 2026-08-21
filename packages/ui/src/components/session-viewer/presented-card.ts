@@ -21,6 +21,10 @@ const PRESENT_CARD_TOOLS: ReadonlySet<string> = new Set([
 /** URL schemes safe to turn into a clickable action. */
 const SAFE_ACTION_SCHEMES = ["https:", "http:", "mailto:", "tel:", "sms:", "geo:"];
 
+/** Fixed origin used to distinguish same-origin paths from outbound image URLs. */
+const IMAGE_BASE_URL = new URL("https://pizzapi.invalid/");
+const TRUSTED_IMAGE_ORIGINS = new Set([IMAGE_BASE_URL.origin]);
+
 /** The unified card kinds the taxonomy collapses schema.org types into. */
 export type CardKind = "person" | "business" | "place" | "event" | "product" | "generic";
 
@@ -123,22 +127,19 @@ export function isSafeActionHref(href: string): boolean {
  * Fail-closed: when in doubt, classify as external. A false-positive is a
  * click-to-load prompt (harmless); a false-negative is a privacy leak.
  *
- * Safe (non-external): data: URLs and relative paths that don't start with //.
- * External: http:, https:, protocol-relative (//host/…), any absolute URL
- *   with a remote host, and uppercase variants thereof.
+ * Safe (non-external): data: URLs and paths that resolve against the trusted
+ * base origin. External: http(s) URLs whose browser-resolved origin differs.
  */
 export function isExternalImage(url: string): boolean {
   const trimmed = url.trim();
   if (!trimmed) return false;
-  // Protocol-relative: browser resolves to https://host/… — always external.
-  if (trimmed.startsWith("//")) return true;
   // data: URLs are self-contained — not external.
   if (/^data:/i.test(trimmed)) return false;
   try {
-    const { protocol } = new URL(trimmed);
-    return protocol === "http:" || protocol === "https:";
+    const resolved = new URL(trimmed, IMAGE_BASE_URL);
+    return (resolved.protocol === "http:" || resolved.protocol === "https:")
+      && !TRUSTED_IMAGE_ORIGINS.has(resolved.origin);
   } catch {
-    // Relative paths (/foo, ./foo) — not external.
     return false;
   }
 }
@@ -148,8 +149,8 @@ function httpImage(value: unknown): string | undefined {
   const url = typeof raw === "string" ? raw.trim() : str(raw);
   if (!url) return undefined;
   try {
-    const u = new URL(url, "https://pizzapi.invalid/");
-    return u.protocol === "https:" || u.protocol === "http:" ? url : undefined;
+    const resolved = new URL(url, IMAGE_BASE_URL);
+    return resolved.protocol === "https:" || resolved.protocol === "http:" ? url : undefined;
   } catch {
     return undefined;
   }
