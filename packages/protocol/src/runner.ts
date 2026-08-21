@@ -271,6 +271,8 @@ export interface RunnerServerToClientEvents {
     sessionId: string;
     cwd?: string;
     prompt?: string;
+    /** Public image URLs to seed the initial prompt. */
+    imageUrls?: string[];
     model?: { provider: string; id: string };
     skills?: string[];
     /** Model keys hidden by the user, format: "provider/modelId". The worker should
@@ -285,6 +287,12 @@ export interface RunnerServerToClientEvents {
     };
     /** ID of the parent session that spawned this one. */
     parentSessionId?: string;
+    /** Absolute path to a transcript file to resume. */
+    resumePath?: string;
+    /** Session/transcript ID used by the runner to resolve a local transcript path. */
+    resumeId?: string;
+    /** When true, the session should shut down automatically on successful completion. */
+    autoClose?: boolean;
   }) => void;
 
   /** Instructs runner to kill a session */
