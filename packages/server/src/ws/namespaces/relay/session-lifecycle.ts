@@ -8,6 +8,7 @@ import {
     getLocalTuiSocket,
     broadcastToViewers,
     endSharedSession,
+    getSessionOwnerToken,
 } from "../../sio-registry.js";
 import {
     clearPushPendingQuestion,
@@ -84,25 +85,37 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             socket.emit("error", { message: "Invalid token" });
             return;
         }
+        let sharedOwnerToken: string | null;
+        try {
+            sharedOwnerToken = await getSessionOwnerToken(sessionId);
+        } catch {
+            log.warn(`session_end for ${socket.id} — Redis ownership lookup failed; skipping teardown`);
+            return;
+        }
+        if (sharedOwnerToken !== socket.data.token) {
+            log.info(`session_end for ${socket.id} — stale or unknown owner, skipping teardown`);
+            return;
+        }
 
-        clearThinkingMaps(sessionId);
-        forgetViewerGate(sessionId);
-        // Defer chunked-state cleanup until all previously-queued
-        // session_messages_chunk handlers have finished.  If we deleted
-        // pendingChunkedStates immediately, any chunks still queued in
-        // enqueueSessionEvent() would wake up, find no pending state, and
-        // skip final assembly — leaving the session with a stale snapshot.
+        // Drain older events first, then perform every cleanup step only after
+        // endSharedSession has revalidated ownership under its distributed lock.
+        let ended = false;
         await enqueueSessionEvent(sessionId, async () => {
-            pendingChunkedStates.delete(sessionId);
+            ended = await endSharedSession(sessionId, "Session ended", {
+                confirmedTerminal: true,
+                expectedOwnerToken: socket.data.token,
+                onOwnerConfirmed: async () => {
+                    clearThinkingMaps(sessionId);
+                    forgetViewerGate(sessionId);
+                    pendingChunkedStates.delete(sessionId);
+                    await clearPushPendingQuestion(sessionId);
+                    // Graceful end — delete the durable runner association so it
+                    // isn't restored if a new session reuses this ID later.
+                    await deleteRunnerAssociation(sessionId);
+                },
+            });
         });
-        void clearPushPendingQuestion(sessionId);
-        // Graceful end — delete the durable runner association so it
-        // isn't restored if a new session reuses this ID later.
-        await deleteRunnerAssociation(sessionId);
-        // Graceful session_end is a confirmed terminal end — remove this child
-        // from its parent's membership set (fixes subagent-mirror leak).
-        await endSharedSession(sessionId, "Session ended", { confirmedTerminal: true });
-        socket.data.sessionId = undefined;
+        if (ended) socket.data.sessionId = undefined;
         socketAckedSeqs.delete(socket.id);
     });
 
@@ -118,13 +131,36 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
         log.info(`disconnected: ${socket.id} (${reason})`);
         const sessionId = socket.data.sessionId;
         if (sessionId) {
-            // If a newer socket already re-registered this session (reconnect),
-            // don't tear down the new session.  registerTuiSession clears our
-            // sessionId as a primary guard, but this check is defense-in-depth
-            // for any remaining race windows.
+            // Guard 1 (single-node): if a newer socket already re-registered
+            // this session on THIS node, don't tear down the new session.
+            // registerTuiSession clears our sessionId as a primary guard, but
+            // this check is defense-in-depth for any remaining race windows.
             const currentSocket = getLocalTuiSocket(sessionId);
             if (currentSocket && currentSocket !== socket) {
                 log.info(`disconnect for ${socket.id} — session ${sessionId} already owned by ${currentSocket.id}, skipping teardown`);
+                socketAckedSeqs.delete(socket.id);
+                return;
+            }
+
+            // Guard 2 (cross-node): a replacement session may have registered
+            // on a DIFFERENT node (multi-node relay).  The local socket map
+            // cannot see cross-node sockets, so guard 1 is blind to them.
+            // Fetch the current connection-owner token from shared (Redis)
+            // state: if it differs from this socket's captured token, this
+            // socket is stale/superseded — the replacement session owns the
+            // session ID now.  Only the matching token may end the session.
+            let sharedOwnerToken: string | null;
+            try {
+                sharedOwnerToken = await getSessionOwnerToken(sessionId);
+            } catch {
+                log.warn(`disconnect for ${socket.id} — Redis ownership lookup failed; skipping teardown`);
+                socketAckedSeqs.delete(socket.id);
+                return;
+            }
+            if (sharedOwnerToken !== socket.data.token) {
+                log.info(
+                    `disconnect for ${socket.id} — stale or unknown owner for session ${sessionId}, skipping teardown`,
+                );
                 socketAckedSeqs.delete(socket.id);
                 return;
             }
@@ -139,24 +175,23 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
                 return;
             }
 
-            clearThinkingMaps(sessionId);
-            forgetViewerGate(sessionId);
-            // Drain chunk handlers before deleting their assembly state or the
-            // last queued chunk can lose the durable checkpoint on disconnect.
+            // Drain chunk handlers before teardown. The cleanup callback runs
+            // only after ownership is revalidated under the same lock that
+            // serializes replacement registration.
             await enqueueSessionEvent(sessionId, async () => {
-                pendingChunkedStates.delete(sessionId);
+                await endSharedSession(sessionId, "Session ended", {
+                    expectedOwnerToken: socket.data.token,
+                    onOwnerConfirmed: async () => {
+                        clearThinkingMaps(sessionId);
+                        forgetViewerGate(sessionId);
+                        pendingChunkedStates.delete(sessionId);
+                        await clearPushPendingQuestion(sessionId);
+                    },
+                });
             });
-            void clearPushPendingQuestion(sessionId);
             // NOTE: We intentionally do NOT remove the child from the
-            // parent's children set here.  Doing so races with
-            // delink_children: if the child disconnects before the parent
-            // fires /new, delink_children's getChildSessions() snapshot
-            // won't include it and no delink marker will be written.  When
-            // the child reconnects, registerTuiSession() would re-link it
-            // to the parent's new conversation.  Leaving the membership in
-            // place is harmless — delink_children will clean it up, and
-            // stale entries are pruned when the session key expires.
-            await endSharedSession(sessionId);
+            // parent's children set here. Doing so races with delink_children;
+            // leaving membership in place lets that path write its delink marker.
         }
         socketAckedSeqs.delete(socket.id);
     });

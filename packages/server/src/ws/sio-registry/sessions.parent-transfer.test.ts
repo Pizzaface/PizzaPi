@@ -35,6 +35,9 @@ const pendingDelinkKey = (p: string) => `pending-delink:${p}`;
 const sessionHashKey = (s: string) => `session:${s}`;
 
 mock.module("../sio-state/index.js", () => ({
+    acquireSessionOwnershipLock: async () => {},
+    releaseSessionOwnershipLock: async () => {},
+    deleteSessionIfOwner: async () => true,
     initStateRedis: async () => {},
     setSession: async (sessionId: string, data: Record<string, unknown>) => {
         store.set(sessionHashKey(sessionId), JSON.stringify(data));

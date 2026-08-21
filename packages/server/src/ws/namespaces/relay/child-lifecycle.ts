@@ -92,7 +92,7 @@ export interface CleanupTeardownDeps {
     countPresence: () => Promise<{ kind: "count"; count: number } | { kind: "unknown" }>;
     emitRunner: (runnerId: string, event: string, data: unknown) => void;
     emitRelay: (sessionId: string, event: string, data: unknown) => void;
-    endSession: (sessionId: string, reason: string, opts: { confirmedTerminal: boolean }) => Promise<void>;
+    endSession: (sessionId: string, reason: string, opts: { confirmedTerminal?: boolean; expectedOwnerToken?: string; onOwnerConfirmed?: () => void | Promise<void> }) => Promise<boolean | void>;
 }
 
 /**

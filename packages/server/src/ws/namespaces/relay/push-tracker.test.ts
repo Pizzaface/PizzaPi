@@ -12,6 +12,8 @@ mock.module("../../../push.js", () => ({
     notifyAgentError: () => {},
 }));
 mock.module("../../sio-state/index.js", () => ({
+    acquireSessionOwnershipLock: async () => {},
+    releaseSessionOwnershipLock: async () => {},
     setPushPendingQuestion: async () => {},
     clearPushPendingQuestion: async () => {},
     isLinkedChildForSuppression: async () => false,
