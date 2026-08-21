@@ -42,3 +42,21 @@ export function isActiveViewerSessionPayload(
 ): boolean {
   return activeSessionId === payloadSessionId && matchesViewerGeneration(currentGeneration, payloadGeneration);
 }
+
+/**
+ * Guard for the `disconnected` event. A late `disconnected` from a session the
+ * viewer has already switched away from must not tear down the current session.
+ * Unstamped payloads (older relays) are accepted — generation/seq guards still
+ * apply — but a stamped sessionId that differs from the active session is
+ * dropped, closing the switch race.
+ */
+export function shouldAcceptDisconnected(
+  activeSessionId: string | null,
+  currentGeneration: number | undefined,
+  payload: { sessionId?: string; generation?: number },
+): boolean {
+  return (
+    matchesViewerGeneration(currentGeneration, payload.generation) &&
+    matchesViewerSession(activeSessionId, payload.sessionId)
+  );
+}

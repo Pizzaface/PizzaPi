@@ -150,7 +150,7 @@ import {
   shouldRequestChunkRecovery,
 } from "@/lib/session-seq";
 import { createLogger } from "@pizzapi/tools";
-import { isActiveViewerSessionPayload, matchesHydrationGeneration, matchesViewerGeneration, matchesViewerSession } from "@/lib/viewer-switch";
+import { isActiveViewerSessionPayload, matchesHydrationGeneration, matchesViewerGeneration, matchesViewerSession, shouldAcceptDisconnected } from "@/lib/viewer-switch";
 
 // Lazy-loaded low-frequency surfaces. Auth, session sidebar/viewer, banners,
 // and loading/error UI remain eager so critical paths stay fast.
@@ -3636,7 +3636,7 @@ export function App() {
       });
 
       nextSocket.on("disconnected", (data) => {
-        if (!matchesViewerGeneration(lifecycleRefs.generation.current, data.generation)) {
+        if (!shouldAcceptDisconnected(lifecycleRefs.activeSessionId.current, lifecycleRefs.generation.current, data)) {
           return;
         }
         const currentSessionId = lifecycleRefs.activeSessionId.current;

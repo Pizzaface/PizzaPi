@@ -43,6 +43,8 @@ export interface ViewerServerToClientEvents {
     code?: ViewerDisconnectCode;
     /** Optional switch generation echoed back during logical session switches. */
     generation?: number;
+    /** Session the disconnect belongs to — lets the client drop cross-session bleed. */
+    sessionId?: string;
   }) => void;
 
   /** Forwards an exec result back to the viewer */

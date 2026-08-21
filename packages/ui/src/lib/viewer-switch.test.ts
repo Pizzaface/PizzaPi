@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isActiveViewerSessionPayload, matchesHydrationGeneration, matchesViewerGeneration, matchesViewerSession } from "./viewer-switch";
+import { isActiveViewerSessionPayload, matchesHydrationGeneration, matchesViewerGeneration, matchesViewerSession, shouldAcceptDisconnected } from "./viewer-switch";
 
 describe("matchesViewerGeneration", () => {
   test("accepts payloads without a generation", () => {
@@ -64,5 +64,31 @@ describe("isActiveViewerSessionPayload", () => {
 
   test("rejects stale generation payloads even if the session matches", () => {
     expect(isActiveViewerSessionPayload("sess-a", "sess-a", 4, 3)).toBe(false);
+  });
+});
+
+describe("shouldAcceptDisconnected (switch-race regression)", () => {
+  test("drops a late disconnected from the previous session after switching A→B", () => {
+    // Viewer switched from sess-a to sess-b; a stale disconnected from sess-a
+    // arrives late. It must NOT tear down the current (sess-b) session.
+    expect(shouldAcceptDisconnected("sess-b", 2, { sessionId: "sess-a", generation: 1 })).toBe(false);
+  });
+
+  test("drops a late disconnected from the previous session even without a generation", () => {
+    // Old relay: no generation, but the sessionId stamp alone is enough to
+    // reject cross-session bleed.
+    expect(shouldAcceptDisconnected("sess-b", 2, { sessionId: "sess-a" })).toBe(false);
+  });
+
+  test("accepts a disconnected for the active session", () => {
+    expect(shouldAcceptDisconnected("sess-b", 2, { sessionId: "sess-b", generation: 2 })).toBe(true);
+  });
+
+  test("accepts an unstamped disconnected (older relay compat)", () => {
+    expect(shouldAcceptDisconnected("sess-b", 2, {})).toBe(true);
+  });
+
+  test("rejects a stale generation even when unstamped", () => {
+    expect(shouldAcceptDisconnected("sess-b", 2, { generation: 1 })).toBe(false);
   });
 });
