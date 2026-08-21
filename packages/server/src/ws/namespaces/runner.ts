@@ -403,6 +403,25 @@ export async function seedServiceAnnounceCache(runnerId: string): Promise<void> 
 
 // ── Namespace registration ───────────────────────────────────────────────────
 
+/**
+ * Reject and delete the pending session ownership check for `sessionId` if it
+ * belongs to `runnerId`.  Returns true when an entry was found and rejected.
+ * Exported for unit testing the session_killed race-condition path.
+ */
+export function rejectPendingSessionCheck(
+    checks: Map<string, { promise: Promise<void>; reject: () => void; runnerId: string }>,
+    sessionId: string,
+    runnerId: string,
+): boolean {
+    const pending = checks.get(sessionId);
+    if (pending && pending.runnerId === runnerId) {
+        pending.reject();
+        checks.delete(sessionId);
+        return true;
+    }
+    return false;
+}
+
 export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext): void {
     const runner: Namespace<
         RunnerClientToServerEvents,
@@ -913,6 +932,12 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
                 rejectCheck();
                 return;
             }
+            // session_killed may have fired while getSharedSession() was in-flight:
+            // it already called rejectCheck() and deleted our entry.  Bail out to
+            // prevent stale re-add to runnerSessionIds and double-settlement.
+            if (!pendingSessionChecks.has(data.sessionId)) {
+                return;
+            }
             pendingSessionChecks.delete(data.sessionId);
             if (!runnerSessionIds.has(runnerId)) {
                 runnerSessionIds.set(runnerId, new Set());
@@ -936,6 +961,10 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
         socket.on("session_killed", async (data) => {
             const runnerId = socket.data.runnerId;
             if (runnerId && data.sessionId) {
+                // Reject and delete any pending ownership check scoped to this
+                // runner so the session_ready continuation cannot re-add the
+                // killed session to runnerSessionIds after it resolves.
+                rejectPendingSessionCheck(pendingSessionChecks, data.sessionId, runnerId);
                 await removeRunnerSession(runnerId, data.sessionId);
                 // Remove from local tracking
                 runnerSessionIds.get(runnerId)?.delete(data.sessionId);
