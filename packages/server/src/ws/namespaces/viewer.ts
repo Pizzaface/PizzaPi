@@ -777,14 +777,22 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
         });
 
         // ── input — collab mode: forward user input to TUI ──────────────────
-        socket.on("input", async (data) => {
-            const currentSessionId = getCurrentSessionId();
-            if (!currentSessionId) return;
-            const currentSession = await getSharedSessionSummary(currentSessionId);
-            if (!currentSession?.collabMode) return;
+        socket.on("input", async (data, ack?: (delivered: boolean) => void) => {
+            let settled = false;
+            const settle = (delivered: boolean) => {
+                if (settled) return;
+                settled = true;
+                ack?.(delivered === true);
+            };
+            const timeout = setTimeout(() => settle(false), 10_000);
+            try {
+                const currentSessionId = getCurrentSessionId();
+                if (!currentSessionId) return;
+                const currentSession = await getSharedSessionSummary(currentSessionId);
+                if (!currentSession?.collabMode) return;
 
-            const tuiSocket = getLocalTuiSocket(currentSessionId);
-            if (!tuiSocket) return;
+                const tuiSocket = getLocalTuiSocket(currentSessionId);
+                if (!tuiSocket || !tuiSocket.connected) return;
 
             // Parse and validate attachments
             const attachments = Array.isArray(data.attachments)
@@ -816,7 +824,29 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 payload.deliverAs = data.deliverAs;
             }
 
-            tuiSocket.emit("input" as string, payload);
+                await new Promise<boolean>((resolve) => {
+                    let done = false;
+                    const finish = (value: boolean) => {
+                        if (done) return;
+                        done = true;
+                        resolve(value === true);
+                    };
+                    try {
+                        tuiSocket.emit("input" as string, payload, (delivered: boolean) => finish(delivered));
+                    } catch {
+                        finish(false);
+                    }
+                    setTimeout(() => finish(false), 9_500);
+                }).then((delivered) => {
+                    if (delivered === true && tuiSocket.connected) settle(true);
+                    else settle(false);
+                });
+            } catch {
+                settle(false);
+            } finally {
+                clearTimeout(timeout);
+                settle(false);
+            }
         });
 
         // ── model_set — collab mode: forward model switch to TUI ─────────────
