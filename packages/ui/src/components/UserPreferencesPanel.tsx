@@ -69,7 +69,7 @@ function NotificationsPreferencesSection() {
         </div>
       )}
 
-      {supported && subscribed && !native && (
+      {supported && subscribed && (
         <div className="flex items-center justify-between gap-4">
           <div className="min-w-0">
             <p className="text-sm font-medium">Suppress child session notifications</p>

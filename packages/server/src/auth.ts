@@ -238,6 +238,12 @@ export interface NativePushRegistrationTable {
     /** Per-device ntfy password (Phase 3; null in Phase 1). */
     ntfyPass: string | null;
     createdAt: string;
+    /**
+     * When 1, notifications triggered by linked child sessions are suppressed
+     * for this registration (feature parity with Web Push per-subscription flag).
+     * Defaults to 0 (deliver child notifications).
+     */
+    suppressChildNotifications: number;
 }
 
 export interface DB {

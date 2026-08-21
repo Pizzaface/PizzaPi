@@ -15,6 +15,7 @@ import {
     getNtfyPublicUrl,
     registerNativePush,
     unregisterNativePush,
+    updateNativeSuppressChildNotifications,
 } from "../push.js";
 import { getSharedSession, getLocalTuiSocket } from "../ws/sio-registry.js";
 import { getPushPendingQuestion, consumePushPendingQuestionIfMatches } from "../ws/sio-state/index.js";
@@ -229,6 +230,7 @@ export const handlePushRoute: RouteHandler = async (req, url) => {
             // per-device ntfy users are provisioned.
             ntfyUser: reg.ntfyUser,
             ntfyPass: reg.ntfyPass,
+            suppressChildNotifications: !!reg.suppressChildNotifications,
         });
     }
 
@@ -239,6 +241,23 @@ export const handlePushRoute: RouteHandler = async (req, url) => {
         const platform = "android";
         const removed = await unregisterNativePush(identity.userId, platform);
         return Response.json({ ok: true, removed });
+    }
+
+    if (url.pathname === "/api/push/child-notifications-native" && req.method === "PUT") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const body = (await req.json()) as { suppress?: boolean };
+        if (typeof body.suppress !== "boolean") {
+            return Response.json({ error: "Missing suppress (boolean)" }, { status: 400 });
+        }
+
+        const platform = "android";
+        const updated = await updateNativeSuppressChildNotifications(identity.userId, platform, body.suppress);
+        if (updated === 0) {
+            return Response.json({ error: "No native push registration found" }, { status: 404 });
+        }
+        return Response.json({ ok: true });
     }
 
     return undefined;

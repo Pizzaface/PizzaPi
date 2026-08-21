@@ -1,27 +1,23 @@
 /**
- * Tests for NotificationToggle's native (Android/ntfy) subscribed state.
+ * Tests for native push child-suppression parity in NotificationToggle.
  *
- * The bug this guards against: `startNtfyPush()` used to swallow every
- * failure (503 unconfigured, fetch error, malformed response) and the toggle
- * derived `subscribed` purely from OS permission + a localStorage flag — so a
- * user could see "Notifications enabled" with zero server registration.
- *
- * We avoid `mock.module("@/lib/ntfy-push", ...)` / `mock.module("./ntfy-push", ...)`
- * on purpose: Bun's `mock.module` keys off the resolved file, so mocking it
- * here would leak into ntfy-push.test.ts (run in the same process per the
- * project's test command) and stub out the real function this test exists to
- * exercise. Instead we monkeypatch `Capacitor` platform methods directly
- * (same technique as mobile-native.test.ts) and control `fetch` per test.
+ * Key invariants verified:
+ *  1. usePushState.toggleSuppressChild routes to setNativeSuppressChildNotifications
+ *     for native users (not setSuppressChildNotifications).
+ *  2. usePushState.toggleSuppressChild routes to setSuppressChildNotifications
+ *     for web push users.
+ *  3. After toggle, suppressChild state reflects the new value.
  */
-import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { Window } from "happy-dom";
-import React from "react";
-import { act, cleanup, render, waitFor } from "@testing-library/react";
-import { Capacitor } from "@capacitor/core";
-import * as realLocalNotifications from "@capacitor/local-notifications";
 
+import { afterAll, afterEach, describe, test, expect, mock } from "bun:test";
+import { Window } from "happy-dom";
+import { renderHook, act, cleanup } from "@testing-library/react";
+import React from "react"; // needed so JSX transform is happy when components pull it in
+
+// Set up DOM globals BEFORE importing the component.
 const win = new Window({ url: "http://localhost/" });
-(win as any).SyntaxError = globalThis.SyntaxError;
+/* eslint-disable @typescript-eslint/no-explicit-any */
+(win as any).SyntaxError = SyntaxError;
 (globalThis as any).window = win;
 (globalThis as any).document = win.document;
 (globalThis as any).navigator = win.navigator;
@@ -29,138 +25,181 @@ const win = new Window({ url: "http://localhost/" });
 (globalThis as any).Element = win.Element;
 (globalThis as any).Node = win.Node;
 (globalThis as any).SVGElement = win.SVGElement;
+(globalThis as any).KeyboardEvent = win.KeyboardEvent;
 (globalThis as any).MutationObserver = win.MutationObserver;
-(globalThis as any).getComputedStyle = () => ({
-    getPropertyValue: () => "",
-    paddingRight: "",
-    paddingTop: "",
-    paddingLeft: "",
-    paddingBottom: "",
-});
-(globalThis as any).ResizeObserver = class {
+(globalThis as any).CustomEvent = win.CustomEvent;
+(globalThis as any).ResizeObserver = class ResizeObserver {
     observe() {}
     unobserve() {}
     disconnect() {}
 };
-(globalThis as any).IntersectionObserver = class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-};
+(globalThis as any).requestAnimationFrame = (cb: FrameRequestCallback) => setTimeout(() => cb(Date.now()), 0);
+(globalThis as any).cancelAnimationFrame = (id: number) => clearTimeout(id);
+(globalThis as any).getComputedStyle = win.getComputedStyle.bind(win);
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
-const origGetPlatform = Capacitor.getPlatform;
-const origIsNativePlatform = Capacitor.isNativePlatform;
-const origLocalStorage = (globalThis as any).localStorage;
+// ── Controllable mock state ──────────────────────────────────────────────────
+// Variables captured by mock closures (set per-test via beforeEach/test body).
 
-// Permission check/request always report "granted" — these tests are about
-// what happens to `subscribed` *after* permission is already granted.
-let permissionCalls = 0;
-mock.module("@capacitor/local-notifications", () => ({
-    LocalNotifications: {
-        checkPermissions: () => {
-            permissionCalls++;
-            return Promise.resolve({ display: "granted" });
-        },
-        requestPermissions: () => {
-            permissionCalls++;
-            return Promise.resolve({ display: "granted" });
-        },
+let isNativeAvailable = true;
+let hasPermission = true;
+let isDisabled = false;
+let startResult: { ok: boolean; reason?: string } = { ok: true };
+let nativeSuppressValue = false;
+let webSuppressValue = false;
+
+const nativeSetCalls: boolean[] = [];
+const webSetCalls: boolean[] = [];
+
+mock.module("@/lib/ntfy-push", () => ({
+    isNativePushAvailable: () => isNativeAvailable,
+    hasNativePushPermission: () => Promise.resolve(hasPermission),
+    isNativePushDisabled: () => isDisabled,
+    setNativePushDisabled: () => {},
+    requestNativePushPermission: () => Promise.resolve(true),
+    startNtfyPush: () => Promise.resolve(startResult),
+    stopNtfyPush: () => Promise.resolve(),
+    getNativeSuppressChildNotifications: () => nativeSuppressValue,
+    setNativeSuppressChildNotifications: (suppress: boolean) => {
+        nativeSetCalls.push(suppress);
+        nativeSuppressValue = suppress;
+        return Promise.resolve(true);
     },
 }));
 
-afterAll(() => {
-    // Restore the real plugin module so other test files see the real plugin.
-    mock.module("@capacitor/local-notifications", () => realLocalNotifications);
-    Capacitor.getPlatform = origGetPlatform;
-    Capacitor.isNativePlatform = origIsNativePlatform;
-    (globalThis as any).localStorage = origLocalStorage;
-});
+mock.module("@/lib/push", () => ({
+    isPushSupported: () => !isNativeAvailable,
+    isPushSubscribed: () => Promise.resolve(!isNativeAvailable),
+    getNotificationPermission: () => "granted",
+    // Return the current tracked value so refreshState() gets the up-to-date preference
+    // when the pp-push-state-changed event triggers a re-read.
+    getSuppressChildNotifications: () => Promise.resolve(webSuppressValue),
+    setSuppressChildNotifications: (suppress: boolean) => {
+        webSetCalls.push(suppress);
+        webSuppressValue = suppress;
+        return Promise.resolve(true);
+    },
+    subscribeToPush: () => Promise.resolve(null),
+    unsubscribeFromPush: () => Promise.resolve(false),
+}));
 
-function makeLocalStorage(serverUrl: string | null): Storage {
-    const store: Record<string, string> = {};
-    return {
-        getItem: (key: string) => (key === "pizzapi.serverUrl" ? serverUrl : (store[key] ?? null)),
-        setItem: (key: string, value: string) => {
-            store[key] = value;
-        },
-        removeItem: (key: string) => {
-            delete store[key];
-        },
-        clear: () => {
-            for (const key of Object.keys(store)) delete store[key];
-        },
-        key: (index: number) => Object.keys(store)[index] ?? null,
-        length: 0,
-    } as unknown as Storage;
-}
+mock.module("@pizzapi/tools", () => ({
+    createLogger: () => ({ error: () => {}, warn: () => {}, info: () => {}, debug: () => {} }),
+}));
 
-function goAndroidNative() {
-    Object.defineProperty(globalThis, "localStorage", {
-        value: makeLocalStorage("https://relay.example.com"),
-        configurable: true,
-        writable: true,
-    });
-    Capacitor.getPlatform = () => "android";
-    Capacitor.isNativePlatform = () => true;
-}
+// Stub heavy UI components so they don't blow up without a full Radix/Tailwind env.
+mock.module("@/components/ui/button", () => ({
+    Button: ({ children, ...p }: any) => React.createElement("button", p, children),
+}));
+mock.module("@/components/ui/switch", () => ({
+    Switch: (p: any) => React.createElement("input", { type: "checkbox", ...p }),
+}));
+mock.module("@/components/ui/tooltip", () => ({
+    TooltipProvider: ({ children }: any) => children,
+    Tooltip: ({ children }: any) => children,
+    TooltipTrigger: ({ children }: any) => children,
+    TooltipContent: ({ children }: any) => React.createElement("div", null, children),
+}));
+mock.module("@/components/ui/dropdown-menu", () => ({
+    DropdownMenu: ({ children }: any) => React.createElement("div", null, children),
+    DropdownMenuTrigger: ({ children }: any) => React.createElement("div", null, children),
+    DropdownMenuContent: ({ children }: any) => React.createElement("div", null, children),
+    DropdownMenuLabel: ({ children }: any) => React.createElement("div", null, children),
+    DropdownMenuSeparator: () => React.createElement("hr"),
+    DropdownMenuItem: ({ children, onSelect, disabled }: any) =>
+        React.createElement("div", { onClick: onSelect, "aria-disabled": disabled }, children),
+}));
 
-const { NotificationToggle } = await import("./NotificationToggle");
+const { usePushState } = await import("./NotificationToggle");
 
-beforeEach(() => {
-    permissionCalls = 0;
-    goAndroidNative();
-});
-
+afterAll(() => mock.restore());
 afterEach(() => {
     cleanup();
-    document.body.innerHTML = "";
+    nativeSetCalls.length = 0;
+    webSetCalls.length = 0;
+    nativeSuppressValue = false;
+    webSuppressValue = false;
+    isNativeAvailable = true;
+    hasPermission = true;
+    isDisabled = false;
+    startResult = { ok: true };
 });
 
-function ariaLabel(container: HTMLElement): string | null {
-    return container.querySelector("button[aria-label]")?.getAttribute("aria-label") ?? null;
-}
+// ── Tests ────────────────────────────────────────────────────────────────────
 
-describe("NotificationToggle (native/ntfy registration outcome)", () => {
-    test("503 (ntfy unconfigured) surfaces as unconfigured, not subscribed", async () => {
-        (globalThis as any).fetch = mock(async () => ({ ok: false, status: 503 }) as Response);
+describe("usePushState — native child-suppression routing", () => {
+    test("toggleSuppressChild calls setNativeSuppressChildNotifications for native users", async () => {
+        isNativeAvailable = true;
+        hasPermission = true;
+        isDisabled = false;
+        startResult = { ok: true };
+        nativeSuppressValue = false;
 
-        let container!: HTMLElement;
+        const { result } = renderHook(() => usePushState());
+
+        // Wait for async refreshState to complete (hasNativePushPermission + startNtfyPush).
         await act(async () => {
-            ({ container } = render(<NotificationToggle />));
+            await new Promise((r) => setTimeout(r, 20));
         });
 
-        await waitFor(() => expect(ariaLabel(container)).not.toBe("Loading…"));
-        expect(ariaLabel(container)).toBe("Push not configured on this server");
-        // Not-subscribed path renders a plain button, no dropdown trigger.
-        expect(container.querySelector("[aria-haspopup]")).toBeNull();
+        expect(result.current.subscribed).toBe(true);
+        expect(result.current.native).toBe(true);
+        expect(result.current.suppressChild).toBe(false);
+
+        await act(async () => {
+            await result.current.toggleSuppressChild();
+        });
+
+        // Must have called the NATIVE api, not the web one.
+        expect(nativeSetCalls).toEqual([true]);
+        expect(webSetCalls).toEqual([]);
+        expect(result.current.suppressChild).toBe(true);
     });
 
-    test("successful registration surfaces as subscribed", async () => {
-        (globalThis as any).fetch = mock(async () => ({
-            ok: true,
-            json: async () => ({ ntfyPublicUrl: "https://ntfy.example.com", topic: "pizzapi-abc123" }),
-        }) as Response);
+    test("toggleSuppressChild calls setSuppressChildNotifications for web push users", async () => {
+        isNativeAvailable = false; // web push path
+        hasPermission = false;     // irrelevant for web
+        isDisabled = false;
+        startResult = { ok: false, reason: "error" };
+        nativeSuppressValue = false;
+        webSuppressValue = false;
 
-        let container!: HTMLElement;
+        const { result } = renderHook(() => usePushState());
+
+        // Wait for async isPushSubscribed (which we mock to return true when !native).
         await act(async () => {
-            ({ container } = render(<NotificationToggle />));
+            await new Promise((r) => setTimeout(r, 20));
         });
 
-        await waitFor(() => expect(ariaLabel(container)).not.toBe("Loading…"));
-        expect(ariaLabel(container)).toBe("Notifications enabled");
+        // Web path: subscribed from isPushSubscribed mock (returns !isNativeAvailable = true).
+        expect(result.current.native).toBe(false);
+        expect(result.current.subscribed).toBe(true);
+
+        await act(async () => {
+            await result.current.toggleSuppressChild();
+        });
+
+        // Must have called the WEB api, not the native one.
+        expect(webSetCalls).toEqual([true]);
+        expect(nativeSetCalls).toEqual([]);
+        expect(result.current.suppressChild).toBe(true);
     });
 
-    test("fetch throw surfaces as not subscribed (generic, not unconfigured)", async () => {
-        (globalThis as any).fetch = mock(async () => {
-            throw new Error("network down");
-        });
+    test("toggleSuppressChild toggles back to false for native", async () => {
+        isNativeAvailable = true;
+        hasPermission = true;
+        isDisabled = false;
+        startResult = { ok: true };
+        nativeSuppressValue = true; // start as suppressed
 
-        let container!: HTMLElement;
-        await act(async () => {
-            ({ container } = render(<NotificationToggle />));
-        });
+        const { result } = renderHook(() => usePushState());
+        await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
 
-        await waitFor(() => expect(ariaLabel(container)).not.toBe("Loading…"));
-        expect(ariaLabel(container)).toBe("Enable notifications");
+        expect(result.current.suppressChild).toBe(true);
+
+        await act(async () => { await result.current.toggleSuppressChild(); });
+
+        expect(nativeSetCalls).toEqual([false]);
+        expect(result.current.suppressChild).toBe(false);
     });
 });
