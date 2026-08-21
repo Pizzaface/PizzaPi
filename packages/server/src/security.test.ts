@@ -838,9 +838,18 @@ describe("verifyCsrfOrigin", () => {
         expect(verifyCsrfOrigin(makeReq("POST", { origin: "https://evil.example" }), TRUSTED)).toBeNull();
     });
 
-    test("allows API-key requests even with cookies and foreign origin", () => {
-        expect(verifyCsrfOrigin(
+    test("rejects cookie-authed POST with bogus x-api-key header from foreign origin", () => {
+        const res = verifyCsrfOrigin(
             makeReq("POST", { cookie: "s=1", "x-api-key": "key", origin: "https://evil.example" }),
+            TRUSTED,
+        );
+        expect(res).not.toBeNull();
+        expect(res!.status).toBe(403);
+    });
+
+    test("allows cookieless API-key requests from foreign origin", () => {
+        expect(verifyCsrfOrigin(
+            makeReq("POST", { "x-api-key": "key", origin: "https://evil.example" }),
             TRUSTED,
         )).toBeNull();
     });
