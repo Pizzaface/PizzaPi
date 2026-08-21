@@ -283,6 +283,32 @@ export function spawnSession(
     // agentDir override (if any).  Cleaned up on exit below.
     trackSessionCwd(sessionId, effectiveCwd);
 
+    // True-termination cleanup: reap stragglers, drop the pid file, delete
+    // persisted attachments, and run the daemon's onSessionExit hook. Shared by
+    // the normal-exit path and the failed-respawn fallback so a session that is
+    // neither cleanly restarted nor cleanly terminated cannot leak state.
+    const terminateCleanup = () => {
+        // Remove from killedSessions if this was an explicit kill to prevent leaks.
+        killedSessions.delete(sessionId);
+        // Reap any stragglers the session left behind (background dev
+        // servers etc.) — the worker is gone, so signal its whole group
+        // plus every recorded bash-command group (which is where detached
+        // background processes actually live), then drop the pid file.
+        if (killSessionProcessGroup(child.pid)) {
+            logInfo(`session ${sessionId} process group ${child.pid} signaled for cleanup`);
+        }
+        for (const groupPid of readRecordedGroupPids(sessionProcFilePath(sessionId))) {
+            if (groupPid !== child.pid) killSessionProcessGroup(groupPid);
+        }
+        removeSessionProcFile(sessionId);
+        void cleanupSessionAttachments(sessionId).catch(() => {});
+        try {
+            options?.onSessionExit?.(sessionId);
+        } catch (err) {
+            logInfo(`session ${sessionId} onSessionExit cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    };
+
     child.on("exit", (code, signal) => {
         runningSessions.delete(sessionId);
         untrackSessionCwd(sessionId, effectiveCwd);
@@ -300,30 +326,28 @@ export function spawnSession(
             // different pgid than the new worker. Track historical pgids per
             // session if orphans from restarted workers become a problem.
             logInfo(`re-spawning session ${sessionId} (worker restart requested)`);
-            onRestartRequested();
+            try {
+                onRestartRequested();
+            } catch (err) {
+                logInfo(`session ${sessionId} respawn threw: ${err instanceof Error ? err.message : String(err)}`);
+            }
+            // Verify the respawn actually produced a live replacement. doSpawn
+            // catches spawn errors internally and emits session_error WITHOUT
+            // creating a runningSessions entry, so a failed respawn returns here
+            // with no live entry. In that case the session is neither cleanly
+            // restarted nor cleanly terminated — fall back to full termination
+            // cleanup so attachments, process state, restarting-set membership,
+            // and onSessionExit handling do not leak.
+            if (!runningSessions.has(sessionId)) {
+                logInfo(`session ${sessionId} respawn failed — running termination cleanup`);
+                restartingSessions.delete(sessionId);
+                terminateCleanup();
+            }
         } else {
             // True termination — clean up persisted attachments now.
             // session_ended will also arrive later but runningSessions will be empty
             // by then, so this is the reliable cleanup point for spawned sessions.
-            // Also remove from killedSessions if this was an explicit kill to prevent leaks.
-            killedSessions.delete(sessionId);
-            // Reap any stragglers the session left behind (background dev
-            // servers etc.) — the worker is gone, so signal its whole group
-            // plus every recorded bash-command group (which is where detached
-            // background processes actually live), then drop the pid file.
-            if (killSessionProcessGroup(child.pid)) {
-                logInfo(`session ${sessionId} process group ${child.pid} signaled for cleanup`);
-            }
-            for (const groupPid of readRecordedGroupPids(sessionProcFilePath(sessionId))) {
-                if (groupPid !== child.pid) killSessionProcessGroup(groupPid);
-            }
-            removeSessionProcFile(sessionId);
-            void cleanupSessionAttachments(sessionId).catch(() => {});
-            try {
-                options?.onSessionExit?.(sessionId);
-            } catch (err) {
-                logInfo(`session ${sessionId} onSessionExit cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
-            }
+            terminateCleanup();
         }
     });
 
