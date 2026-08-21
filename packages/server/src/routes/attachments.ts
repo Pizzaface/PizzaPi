@@ -222,6 +222,11 @@ export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
                 "x-content-type-options": "nosniff",
                 "content-length": String(attachment.size),
                 "content-disposition": buildContentDisposition(attachment.filename, dispositionMode),
+                // Attachments are authenticated per-user and may contain sensitive
+                // session data. Forbid all caching — both browser disk cache and
+                // shared upstream proxies — so the payload cannot be replayed after
+                // logout, session expiry, or on a shared device.
+                "cache-control": "private, no-store",
                 "x-attachment-id": attachment.attachmentId,
                 "x-attachment-filename": encodeHeaderFilename(attachment.filename),
             },
