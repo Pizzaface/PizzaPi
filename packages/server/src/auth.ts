@@ -1,4 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { chmodSync, existsSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { Database } from "bun:sqlite";
 import { betterAuth } from "better-auth";
 import { apiKey } from "better-auth/plugins";
@@ -410,8 +412,20 @@ export function createAuthContext(config: AuthConfig = {}): AuthContext {
     }
     const trustedOrigins = [...baseOrigins, ...extraOrigins, ...mobileOrigins];
 
+    const dir = dirname(dbPath);
+    let createdDir = false;
+    try {
+        if (!existsSync(dir)) {
+            mkdirSync(dir, { recursive: true, mode: 0o700 });
+            createdDir = true;
+        }
+    } catch (err) {
+        log.warn(`[auth-db] Could not create parent directory ${dir}:`, err);
+    }
+
     const sqliteDb = new Database(dbPath);
     applySqlitePerfPragmas(sqliteDb);
+    hardenAuthDbPermissions(dbPath, createdDir);
     const dialect = new BunSqliteDialect({ database: sqliteDb });
     const db = new Kysely<DB>({ dialect });
     const auth = createBetterAuth({
@@ -518,6 +532,34 @@ function applySqlitePerfPragmas(db: Database): void {
         db.run("PRAGMA busy_timeout = 5000");
     } catch (err) {
         console.warn("[auth-db] Could not apply SQLite perf pragmas (keeping defaults):", err);
+    }
+}
+
+/** Best-effort tighten auth DB file/directory permissions. Never fails startup. */
+function hardenAuthDbPermissions(dbPath: string, createdDir: boolean): void {
+    try {
+        chmodSync(dbPath, 0o600);
+    } catch (err) {
+        log.warn(`[auth-db] Could not set permissions on ${dbPath}:`, err);
+    }
+
+    for (const sidecar of [`${dbPath}-wal`, `${dbPath}-shm`]) {
+        try {
+            if (existsSync(sidecar)) {
+                chmodSync(sidecar, 0o600);
+            }
+        } catch (err) {
+            log.warn(`[auth-db] Could not set permissions on ${sidecar}:`, err);
+        }
+    }
+
+    if (createdDir) {
+        const dir = dirname(dbPath);
+        try {
+            chmodSync(dir, 0o700);
+        } catch (err) {
+            log.warn(`[auth-db] Could not set permissions on ${dir}:`, err);
+        }
     }
 }
 
