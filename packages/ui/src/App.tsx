@@ -15,6 +15,7 @@ import { io, type Socket } from "socket.io-client";
 import { getMobileRuntimeConfig } from "@/lib/mobile-runtime";
 import { FrontendLogOverlay } from "@/components/FrontendLogOverlay";
 import { subscribeToast, installGlobalErrorCapture, logFrontendEvent } from "@/lib/frontend-log";
+import { cancelRestoreIntent, createRestoreIntent, takeRestoreTarget, type RestoreIntent } from "@/lib/deep-link-restore";
 import { useMobileNativeActivity } from "@/lib/mobile-native";
 import type {
   ViewerServerToClientEvents,
@@ -959,18 +960,11 @@ export function App() {
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = React.useState(false);
 
   // Auto-reopen the last viewed session once live sessions arrive.
-  // (restoredRef is declared here; the effect is placed after openSession is defined below)
-  const restoredRef = React.useRef(false);
-
-  // Deep-link: if the page was loaded with a /session/<id> URL, capture the
-  // session ID on mount so we can open it once auth + liveSessions are ready.
+  // (restoreIntentRef is declared here; the effect is placed after openSession is defined below)
+  // If the page was loaded with a /session/<id> URL, that deep-link session ID
+  // is captured on mount so it can win over the stored lastSessionId.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const deepLinkSessionIdRef = React.useRef<string | null>(
-    (() => {
-      const m = window.location.pathname.match(/^\/session\/([^/]+)(?:\/|$)/);
-      return m ? decodeURIComponent(m[1]) : null;
-    })(),
-  );
+  const restoreIntentRef = React.useRef<RestoreIntent>(createRestoreIntent(window.location.pathname));
 
   // Tracks a session that was restarted via the remote exec "restart" command.
   // When the session comes back live (hub sends session_added), we auto-reconnect.
@@ -3297,6 +3291,12 @@ export function App() {
   }, [hubSocket, liveSessions, activeSessionId, metaInventoryVersion]);
 
   const openSession = React.useCallback((relaySessionId: string) => {
+    // Any manual open cancels the pending one-shot deep-link restore intent,
+    // so a stale deep-link target going live later can't hijack the session the
+    // user opened by hand. The restore effect consumes the intent before
+    // calling openSession, so this is a no-op on the legitimate restore path.
+    cancelRestoreIntent(restoreIntentRef.current);
+
     // Already viewing this session AND hydration finished — nothing to do.
     // If hydration never completed, re-clicking the (still highlighted) session
     // is the user's instinctive retry, so it must actually retry rather than
@@ -3724,24 +3724,16 @@ export function App() {
   // Auto-reopen the last viewed session once live sessions arrive.
   // Deep-links (/session/<id>) take priority over the stored lastSessionId.
   React.useEffect(() => {
-    if (restoredRef.current) return;
-    if (liveSessions.length === 0) return;
-
-    // Prefer the deep-link session ID from the URL over the stored last session.
-    const deepLinkId = deepLinkSessionIdRef.current;
-    const targetId = deepLinkId ?? localStorage.getItem("pp.lastSessionId");
-    if (!targetId) return;
-    const still_live = liveSessions.some((s) => s.sessionId === targetId);
-    if (!still_live) return;
-
-    restoredRef.current = true;
-    // Clear the deep-link ref so it doesn't interfere with future navigation,
-    // and replace the URL so a reload doesn't re-trigger the deep-link.
-    if (deepLinkId) {
-      deepLinkSessionIdRef.current = null;
-      history.replaceState(null, "", "/");
-    }
-    openSession(targetId);
+    const hit = takeRestoreTarget(
+      restoreIntentRef.current,
+      liveSessions.map((s) => s.sessionId),
+      localStorage.getItem("pp.lastSessionId"),
+    );
+    if (!hit) return;
+    // A deep-link URL was consumed — replace it so a reload doesn't
+    // re-trigger the deep-link.
+    if (hit.wasDeepLink) history.replaceState(null, "", "/");
+    openSession(hit.targetId);
   }, [liveSessions, openSession]);
 
   // When a restarted session comes back live, automatically reconnect to it.
