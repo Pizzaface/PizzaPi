@@ -70,8 +70,10 @@ public class NtfyForegroundService extends Service {
     private static final int FIRST_MESSAGE_NOTIF_ID = 0x9_0001;
     private static final int SUMMARY_NOTIF_ID = 0x8_FFFF;
     private static final String GROUP_SESSIONS = "dev.pizzapi.SESSIONS";
-    /** Matches the session id in the ntfy Click deep link (…/#/sessions/<id>). */
-    private static final Pattern SESSION_ID_PATTERN = Pattern.compile("/sessions/([A-Za-z0-9_-]+)");
+    /** Matches the session id in the ntfy Click deep link.
+     *  Canonical form: …/session/<id>  (no trailing 's').
+     *  Legacy forms also accepted: …/sessions/<id> and …/#/sessions/<id>. */
+    private static final Pattern SESSION_ID_PATTERN = Pattern.compile("(?:/#)?/sessions?/([A-Za-z0-9_-]+)");
 
     static final String EXTRA_NTFY_URL = "ntfyUrl";
     static final String EXTRA_TOPIC = "topic";
@@ -463,10 +465,11 @@ public class NtfyForegroundService extends Service {
     }
 
     /**
-     * Build the tap intent. Our own session click links (…/#/sessions/<id>)
-     * ALWAYS open the app directly via an explicit intent to MainActivity —
-     * never ACTION_VIEW, which would resolve to a browser instead of us. Only
-     * non-session click URLs (or none) fall back to the previous behavior.
+     * Build the tap intent. Our own session click links (canonical …/session/<id>;
+     * also legacy …/sessions/<id> and …/#/sessions/<id>) ALWAYS open the app
+     * directly via an explicit intent to MainActivity — never ACTION_VIEW, which
+     * would resolve to a browser instead of us. Only non-session click URLs (or
+     * none) fall back to the previous behavior.
      */
     private PendingIntent buildTapIntent(String clickUrl, int notifId) {
         String sessionId = sessionIdFromClickUrl(clickUrl);

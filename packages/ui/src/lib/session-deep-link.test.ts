@@ -18,6 +18,11 @@ describe("parseSessionDeepLink", () => {
     expect(parseSessionDeepLink("/#/sessions/abc-123")).toBeNull();
   });
 
+  test("returns null for malformed percent-encoding", () => {
+    expect(parseSessionDeepLink("/session/%ZZ")).toBeNull();
+    expect(parseSessionDeepLink("/session/abc%GH")).toBeNull();
+  });
+
   test("rejects unrelated paths", () => {
     expect(parseSessionDeepLink("/")).toBeNull();
     expect(parseSessionDeepLink("/sessions/abc-123")).toBeNull();
