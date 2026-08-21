@@ -314,28 +314,28 @@ export class TunnelRelay {
         await this.handleRegister(ws, msg);
         break;
       case "response-start":
-        this.handleResponseStart(msg);
+        this.handleResponseStart(ws, msg);
         break;
       case "response-data":
-        this.handleResponseData(msg);
+        this.handleResponseData(ws, msg);
         break;
       case "response-data-end":
-        this.handleResponseDataEnd(msg);
+        this.handleResponseDataEnd(ws, msg);
         break;
       case "request-end":
-        this.handleRequestEnd(msg);
+        this.handleRequestEnd(ws, msg);
         break;
       case "ws-opened":
-        this.handleWsOpened(msg);
+        this.handleWsOpened(ws, msg);
         break;
       case "ws-data":
-        this.handleWsData(msg);
+        this.handleWsData(ws, msg);
         break;
       case "ws-close":
-        this.handleWsClose(msg);
+        this.handleWsClose(ws, msg);
         break;
       case "ws-error":
-        this.handleWsError(msg);
+        this.handleWsError(ws, msg);
         break;
       case "pong": {
         const runnerId = this.wsToRunner.get(ws);
@@ -360,6 +360,7 @@ export class TunnelRelay {
     }
 
     const userId = typeof authResult === "string" ? authResult : "default";
+    if (ws.readyState !== WebSocket.OPEN) return;
 
     const existing = this.runners.get(msg.runnerId);
     if (existing && existing.userId !== userId) {
@@ -369,6 +370,7 @@ export class TunnelRelay {
       return;
     }
 
+    const pendingErrors = existing ? this.takeRunnerPending(msg.runnerId, "Runner re-registered") : [];
     if (existing) {
       this.log.warn("[tunnel-relay] Runner re-registering, closing old connection:", msg.runnerId);
       this.wsToRunner.delete(existing.ws);
@@ -384,11 +386,18 @@ export class TunnelRelay {
     this.wsToRunner.set(ws, msg.runnerId);
     this.log.info("[tunnel-relay] Runner registered:", msg.runnerId);
     this.send(ws, { type: "registered", runnerId: msg.runnerId });
+    for (const onError of pendingErrors) {
+      try {
+        onError();
+      } catch (error) {
+        this.log.error("[tunnel-relay] Pending callback failed during re-registration:", error);
+      }
+    }
   }
 
-  private handleResponseStart(msg: TunnelResponseStartMessage): void {
+  private handleResponseStart(ws: WebSocket, msg: TunnelResponseStartMessage): void {
     const pending = this.pendingRequests.get(msg.id);
-    if (!pending) return;
+    if (!pending || !this.isCurrentRunnerSocket(ws, pending.runnerId)) return;
     // The timeout only protects the initial response handshake. Once headers
     // have arrived, the response may legitimately be long-lived (SSE, logs,
     // streaming dev servers), so do not abort it solely because it stays open.
@@ -396,55 +405,59 @@ export class TunnelRelay {
     pending.onResponseStart(msg.statusCode, msg.statusMessage, msg.headers);
   }
 
-  private handleResponseData(msg: TunnelResponseDataMessage): void {
+  private handleResponseData(ws: WebSocket, msg: TunnelResponseDataMessage): void {
     const pending = this.pendingRequests.get(msg.id);
-    if (!pending) return;
+    if (!pending || !this.isCurrentRunnerSocket(ws, pending.runnerId)) return;
     pending.onResponseData(Buffer.from(msg.data, "binary"));
   }
 
-  private handleResponseDataEnd(msg: TunnelResponseDataEndMessage): void {
+  private handleResponseDataEnd(ws: WebSocket, msg: TunnelResponseDataEndMessage): void {
     const pending = this.pendingRequests.get(msg.id);
-    if (!pending) return;
+    if (!pending || !this.isCurrentRunnerSocket(ws, pending.runnerId)) return;
     clearTimeout(pending.timer);
     this.pendingRequests.delete(msg.id);
     pending.onResponseEnd();
   }
 
-  private handleRequestEnd(msg: TunnelRequestEndMessage): void {
+  private handleRequestEnd(ws: WebSocket, msg: TunnelRequestEndMessage): void {
     const pending = this.pendingRequests.get(msg.id);
-    if (!pending) return;
+    if (!pending || !this.isCurrentRunnerSocket(ws, pending.runnerId)) return;
     clearTimeout(pending.timer);
     this.pendingRequests.delete(msg.id);
     pending.onError("Runner aborted request");
   }
 
-  private handleWsOpened(msg: TunnelWsOpenedMessage): void {
+  private handleWsOpened(ws: WebSocket, msg: TunnelWsOpenedMessage): void {
     const pending = this.pendingWs.get(msg.id);
-    if (!pending) return;
+    if (!pending || !this.isCurrentRunnerSocket(ws, pending.runnerId)) return;
     clearTimeout(pending.timer);
     pending.onOpened(msg.protocol);
   }
 
-  private handleWsData(msg: TunnelWsDataMessage): void {
+  private handleWsData(ws: WebSocket, msg: TunnelWsDataMessage): void {
     const pending = this.pendingWs.get(msg.id);
-    if (!pending) return;
+    if (!pending || !this.isCurrentRunnerSocket(ws, pending.runnerId)) return;
     pending.onData(msg.data, msg.binary);
   }
 
-  private handleWsClose(msg: TunnelWsCloseMessage): void {
+  private handleWsClose(ws: WebSocket, msg: TunnelWsCloseMessage): void {
     const pending = this.pendingWs.get(msg.id);
-    if (!pending) return;
+    if (!pending || !this.isCurrentRunnerSocket(ws, pending.runnerId)) return;
     clearTimeout(pending.timer);
     this.pendingWs.delete(msg.id);
     pending.onClose(msg.code, msg.reason);
   }
 
-  private handleWsError(msg: TunnelWsErrorMessage): void {
+  private handleWsError(ws: WebSocket, msg: TunnelWsErrorMessage): void {
     const pending = this.pendingWs.get(msg.id);
-    if (!pending) return;
+    if (!pending || !this.isCurrentRunnerSocket(ws, pending.runnerId)) return;
     clearTimeout(pending.timer);
     this.pendingWs.delete(msg.id);
     pending.onError(msg.message);
+  }
+
+  private isCurrentRunnerSocket(ws: WebSocket, runnerId: string): boolean {
+    return this.runners.get(runnerId)?.ws === ws;
   }
 
   private sendHeartbeats(): void {
@@ -473,19 +486,25 @@ export class TunnelRelay {
       // ignore close errors
     }
 
+    for (const onError of this.takeRunnerPending(runnerId, reason)) onError();
+  }
+
+  private takeRunnerPending(runnerId: string, reason: string): Array<() => void> {
+    const onErrors: Array<() => void> = [];
     for (const [id, pending] of this.pendingRequests) {
-      if (!this.isRequestForRunner(id, runnerId)) continue;
+      if (pending.runnerId !== runnerId) continue;
       clearTimeout(pending.timer);
       this.pendingRequests.delete(id);
-      pending.onError(reason);
+      onErrors.push(() => pending.onError(reason));
     }
 
     for (const [id, pending] of this.pendingWs) {
       if (pending.runnerId !== runnerId) continue;
       clearTimeout(pending.timer);
       this.pendingWs.delete(id);
-      pending.onError(reason);
+      onErrors.push(() => pending.onError(reason));
     }
+    return onErrors;
   }
 
   private handleDisconnect(ws: WebSocket): void {
@@ -494,8 +513,4 @@ export class TunnelRelay {
     this.removeRunner(runnerId, "Runner disconnected");
   }
 
-  private isRequestForRunner(requestId: string, runnerId: string): boolean {
-    const pending = this.pendingRequests.get(requestId);
-    return pending?.runnerId === runnerId;
-  }
 }
