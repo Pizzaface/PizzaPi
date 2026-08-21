@@ -25,6 +25,8 @@ const {
     deleteStoredAttachment,
     ensureExtractedAttachmentTable,
     pruneSessionAttachments,
+    _testGetExtractedImageSessionRefs,
+    _testGetAttachments,
 } = store;
 const { createTestAuthContext, runWithAuthContext, getKysely } = await import("../auth.js");
 const { ensureRelaySessionTables } = await import("../sessions/store.js");
@@ -215,6 +217,72 @@ describe("pruneSessionAttachments", () => {
         await withAuth(async () => {
             // Should not throw.
             await expect(pruneSessionAttachments([])).resolves.toBeUndefined();
+        });
+    });
+});
+
+describe("pruneSessionAttachments — DB-delete failure / retry invariant", () => {
+    test("extracted image: both map entry AND refs survive a DB-delete failure; retry after recovery deletes it", async () => {
+        await withAuth(async () => {
+            const sessionId = "prune-fail-retry-session";
+            const attachmentId = crypto.randomUUID();
+
+            const img = await storeExtractedImage({
+                attachmentId,
+                sessionId,
+                ownerUserId: "user-fail",
+                mimeType: "image/png",
+                base64Data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+            });
+
+            expect(existsSync(img.filePath)).toBe(true);
+
+            // Verify refs are tracked in-memory before the failure.
+            const refs = _testGetExtractedImageSessionRefs();
+            expect(refs.get(attachmentId)?.has(sessionId)).toBe(true);
+
+            // Simulate DB failure: drop the extracted_attachment table.
+            await getKysely().schema.dropTable("extracted_attachment").execute();
+
+            try {
+                // (a) pruneSessionAttachments must reject / surface the DB error.
+                await expect(pruneSessionAttachments([sessionId])).rejects.toThrow();
+
+                // (b) BOTH the attachments map entry AND the extractedImageSessionRefs must
+                //     still be present so the next call can rediscover and retry.
+                const refsAfter = _testGetExtractedImageSessionRefs();
+                expect(refsAfter.get(attachmentId)?.has(sessionId)).toBe(true);
+                // Attachment was just created with a 24h TTL — not expired, still in map.
+                const stillPresent = _testGetAttachments().get(attachmentId);
+                expect(stillPresent).not.toBeUndefined();
+                expect(existsSync(img.filePath)).toBe(true);
+            } finally {
+                // Restore the table so subsequent tests and the retry can succeed.
+                await ensureExtractedAttachmentTable();
+                // Re-insert the extracted_attachment row that was lost when the table was dropped,
+                // so deleteStoredAttachment's DB deletes have something to delete on retry.
+                await getKysely()
+                    .insertInto("extracted_attachment")
+                    .values({
+                        attachmentId: img.attachmentId,
+                        sessionId: img.sessionId,
+                        ownerUserId: img.ownerUserId,
+                        filename: img.filename,
+                        mimeType: img.mimeType,
+                        size: img.size,
+                        createdAt: img.createdAt,
+                        expiresAt: img.expiresAt,
+                        filePath: img.filePath,
+                    })
+                    .execute();
+            }
+
+            // (c) Retry after DB is healthy → actually deletes the attachment.
+            await expect(pruneSessionAttachments([sessionId])).resolves.toBeUndefined();
+            expect(_testGetAttachments().get(attachmentId)).toBeUndefined();
+            const refsAfterRetry = _testGetExtractedImageSessionRefs();
+            expect(refsAfterRetry.has(attachmentId)).toBe(false);
+            expect(existsSync(img.filePath)).toBe(false);
         });
     });
 });
