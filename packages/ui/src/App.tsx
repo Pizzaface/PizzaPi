@@ -3783,6 +3783,8 @@ export function App() {
   const sendSessionInput = React.useCallback(async (message: SessionInputMessage) => {
     const socket = viewerWsRef.current;
     const sessionId = lifecycleRefs.activeSessionId.current;
+    // Capture generation so we can detect switch-away during async upload.
+    const capturedGeneration = lifecycleRefs.generation.current;
     if (!sessionId) {
       setLifecycleStatus("Not connected to a live session");
       return false;
@@ -3907,6 +3909,16 @@ export function App() {
 
     const deliverAs = typeof message === "object" ? message.deliverAs : undefined;
     const suppressOptimistic = typeof message === "object" && message.suppressOptimistic;
+
+    // Guard: if the viewer switched sessions during the async upload, cancel.
+    // Re-emitting to the wrong session would send A's attachment to B.
+    if (
+      !matchesViewerSession(lifecycleRefs.activeSessionId.current, sessionId) ||
+      !matchesViewerGeneration(lifecycleRefs.generation.current, capturedGeneration)
+    ) {
+      failCurrentAttempt();
+      return false;
+    }
 
     try {
       socket.emit("input", {
