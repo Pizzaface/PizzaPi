@@ -117,14 +117,28 @@ export function isSafeActionHref(href: string): boolean {
 }
 
 /**
- * Returns true for http/https URLs that will cause an outbound network request.
- * These must be gated behind an explicit user action before being loaded.
+ * Returns true for any image URL that will (or could) cause an outbound
+ * network request. These must be gated behind an explicit user action.
+ *
+ * Fail-closed: when in doubt, classify as external. A false-positive is a
+ * click-to-load prompt (harmless); a false-negative is a privacy leak.
+ *
+ * Safe (non-external): data: URLs and relative paths that don't start with //.
+ * External: http:, https:, protocol-relative (//host/…), any absolute URL
+ *   with a remote host, and uppercase variants thereof.
  */
 export function isExternalImage(url: string): boolean {
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  // Protocol-relative: browser resolves to https://host/… — always external.
+  if (trimmed.startsWith("//")) return true;
+  // data: URLs are self-contained — not external.
+  if (/^data:/i.test(trimmed)) return false;
   try {
-    const { protocol } = new URL(url);
+    const { protocol } = new URL(trimmed);
     return protocol === "http:" || protocol === "https:";
   } catch {
+    // Relative paths (/foo, ./foo) — not external.
     return false;
   }
 }

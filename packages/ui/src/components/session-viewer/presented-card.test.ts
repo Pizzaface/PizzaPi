@@ -14,6 +14,21 @@ describe("isExternalImage", () => {
     expect(isExternalImage("")).toBe(false);
     expect(isExternalImage("javascript:alert(1)")).toBe(false);
   });
+  test("treats protocol-relative URLs as external (C-006 bypass fix)", () => {
+    expect(isExternalImage("//attacker.example/track.gif")).toBe(true);
+    expect(isExternalImage("//host/x")).toBe(true);
+  });
+  test("treats uppercase schemes as external", () => {
+    expect(isExternalImage("HTTP://host/img.jpg")).toBe(true);
+    expect(isExternalImage("HTTPS://host/img.jpg")).toBe(true);
+  });
+  test("same-origin relative paths are not external", () => {
+    expect(isExternalImage("/assets/img.png")).toBe(false);
+    expect(isExternalImage("./img.png")).toBe(false);
+  });
+  test("data: URLs (with any case) are not external", () => {
+    expect(isExternalImage("DATA:image/png;base64,abc")).toBe(false);
+  });
 });
 
 describe("isSafeActionHref", () => {

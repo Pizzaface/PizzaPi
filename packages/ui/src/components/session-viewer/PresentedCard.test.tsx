@@ -106,4 +106,28 @@ describe("PresentedCard — external image privacy gating", () => {
     expect(container.querySelectorAll("img").length).toBe(0);
     expect(queryByTitle("Load image")).toBeNull();
   });
+
+  test("protocol-relative image (//host/…) is gated: no <img> on initial render", () => {
+    const protoRelCard: PresentedCardData = {
+      ...externalImageCard,
+      image: "//attacker.example/track.gif",
+    };
+    const { container, getByTitle } = render(<PresentedCard card={protoRelCard} />);
+    // Must not emit an <img> that the browser would auto-fetch.
+    expect(container.querySelectorAll("img").length).toBe(0);
+    // Must show the click-to-load affordance.
+    expect(getByTitle("Load image")).toBeDefined();
+  });
+
+  test("protocol-relative image renders after clicking Load image", () => {
+    const protoRelCard: PresentedCardData = {
+      ...externalImageCard,
+      image: "//attacker.example/track.gif",
+    };
+    const { getByTitle, container } = render(<PresentedCard card={protoRelCard} />);
+    fireEvent.click(getByTitle("Load image"));
+    const img = container.querySelector("img") as HTMLImageElement | null;
+    expect(img).not.toBeNull();
+    expect(img?.getAttribute("src")).toBe("//attacker.example/track.gif");
+  });
 });
