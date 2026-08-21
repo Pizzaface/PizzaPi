@@ -647,7 +647,7 @@ import bar from "../lib/bar.js";`;
 });
 
 describe("tunnel route streaming proxy", () => {
-    test("closes an already-started streaming response cleanly when relay reports a late error", async () => {
+    test("errors an already-started streaming response when relay reports a late error", async () => {
         let callbacks: {
             onResponseStart: (statusCode: number, statusMessage: string, headers: Record<string, string>) => void;
             onResponseData: (data: Buffer) => void;
@@ -687,7 +687,8 @@ describe("tunnel route streaming proxy", () => {
         expect(Buffer.from(first.value!).toString("utf8")).toBe("hello");
 
         callbacks!.onError("Tunnel request timed out");
-        await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+        // Stream must be errored (not cleanly closed) so the client sees a broken response.
+        await expect(reader.read()).rejects.toThrow("Tunnel request timed out");
         reader.releaseLock();
     });
 });
