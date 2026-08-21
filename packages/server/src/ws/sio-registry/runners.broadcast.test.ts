@@ -140,14 +140,12 @@ function createFakeIo() {
 }
 
 const { initSioRegistry, runnersUserRoom, runnerSecrets } = await import("./context.js");
-const { initStateRedis } = await import("../sio-state/index.js");
+const { initStateRedis } = await import("../sio-state.js");
 const { registerRunner, removeRunner, updateRunnerSkills, updateRunnerAgents, updateRunnerPlugins, updateRunnerServices, getRunnerServices } =
     await import("./runners.js");
 
-// Skip in CI for now: Bun's cross-file mock.module cache can leak earlier
-// ../sio-state/index.js mocks into this file, causing nondeterministic failures
-// in the broadcast-only assertions despite the underlying source tests passing
-// locally and under isolated execution.
+// Import from the concrete sio-state module so Bun's process-global mock.module
+// cache on the barrel (../sio-state/index.js) cannot leak a fake into this file.
 describe("runners broadcast", () => {
     beforeEach(async () => {
         store.clear();

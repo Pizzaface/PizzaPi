@@ -126,7 +126,7 @@ function createFakeIo() {
 mock.restore();
 
 const { initSioRegistry, runnerSecrets, runnerRoom, getRunnerSecret, _resetRunnerSecretsForTesting } = await import("./context.js");
-const { initStateRedis } = await import("../sio-state/index.js");
+const { initStateRedis } = await import("../sio-state.js");
 const { _injectRedisForTesting, _resetRedisKvStoreForTesting } = await import("../../redis-kv-store.js");
 const { registerRunner, sweepOrphanedRunners, getRunnerData } = await import("./runners.js");
 
