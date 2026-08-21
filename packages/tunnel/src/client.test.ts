@@ -246,6 +246,77 @@ describe("TunnelClient", () => {
     }
   });
 
+  test("does not forward response data after cancellation", async () => {
+    let sendLateData!: () => void;
+    const { server, port } = await startHttpServer((_req, res) => {
+      res.writeHead(200);
+      res.write("before-cancel");
+      sendLateData = () => {
+        res.write("after-cancel");
+        res.end();
+      };
+    });
+
+    try {
+      const client = new TunnelClient({ runnerId: "r1", apiKey: "key1", relayUrl: "ws://localhost:9999/_tunnel", autoReconnect: false });
+      client.exposePort(port);
+      const sent = attachMockRelay(client);
+      (client as any).handleMessage(JSON.stringify({ type: "request-start", id: "req-cancel", port, method: "GET", url: "/", headers: {} }));
+      (client as any).handleMessage(JSON.stringify({ type: "request-data-end", id: "req-cancel" }));
+      await waitUntil(() => decodeSent(sent).some((message) => message.type === "response-data"));
+
+      (client as any).handleMessage(JSON.stringify({ type: "request-end", id: "req-cancel" }));
+      sendLateData();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(decodeSent(sent).filter((message) => message.type === "response-data").map((message) => message.data)).toEqual(["before-cancel"]);
+    } finally {
+      await stopHttpServer(server);
+    }
+  });
+
+  test("finalizes a response when the local stream closes prematurely", async () => {
+    const { server, port } = await startHttpServer((_req, res) => {
+      res.writeHead(200);
+      res.write("partial");
+      setTimeout(() => res.socket?.destroy(), 5);
+    });
+
+    try {
+      const client = new TunnelClient({ runnerId: "r1", apiKey: "key1", relayUrl: "ws://localhost:9999/_tunnel", autoReconnect: false });
+      client.exposePort(port);
+      const sent = attachMockRelay(client);
+      (client as any).handleMessage(JSON.stringify({ type: "request-start", id: "req-close", port, method: "GET", url: "/", headers: {} }));
+      (client as any).handleMessage(JSON.stringify({ type: "request-data-end", id: "req-close" }));
+
+      await waitUntil(() => decodeSent(sent).some((message) => message.type === "response-data-end"));
+      expect(decodeSent(sent).filter((message) => message.type === "response-data").map((message) => message.data)).toEqual(["partial"]);
+    } finally {
+      await stopHttpServer(server);
+    }
+  });
+
+  test("ignores a request error emitted after the response completed", async () => {
+    const { server, port } = await startHttpServer((_req, res) => res.end("ok"));
+
+    try {
+      const client = new TunnelClient({ runnerId: "r1", apiKey: "key1", relayUrl: "ws://localhost:9999/_tunnel", autoReconnect: false });
+      client.exposePort(port);
+      const sent = attachMockRelay(client);
+      (client as any).handleMessage(JSON.stringify({ type: "request-start", id: "req-late-error", port, method: "GET", url: "/", headers: {} }));
+      const request = (client as any).activeRequests.get("req-late-error").req;
+      (client as any).handleMessage(JSON.stringify({ type: "request-data-end", id: "req-late-error" }));
+      await waitUntil(() => decodeSent(sent).some((message) => message.type === "response-data-end"));
+
+      request.emit("error", new Error("late body failure"));
+      await Promise.resolve();
+      expect(decodeSent(sent).filter((message) => message.type === "response-start")).toHaveLength(1);
+      expect(decodeSent(sent).filter((message) => message.statusCode === 502)).toHaveLength(0);
+    } finally {
+      await stopHttpServer(server);
+    }
+  });
+
   test("preserves multiple Set-Cookie headers as an array instead of joining them", async () => {
     const { server, port } = await startHttpServer((_req, res) => {
       res.setHeader("set-cookie", [
