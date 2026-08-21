@@ -371,6 +371,46 @@ describe("TunnelRelay close-during-auth race", () => {
     expect(relay.hasRunner("ghost-runner")).toBe(false);
   });
 
+  test("existing runner preserved when NEW socket closes during auth (D-006 P1 regression)", async () => {
+    // Auth call 1: resolves immediately (for stable first-registration).
+    // Auth call 2: suspends until we decide (for the re-registration attempt).
+    let resolveSecondAuth!: (v: string) => void;
+    const secondAuthPromise = new Promise<string>((res) => (resolveSecondAuth = res));
+    let callCount = 0;
+    const relay = new TunnelRelay({
+      apiKeys: async () => {
+        callCount++;
+        return callCount === 1 ? "user-1" : secondAuthPromise;
+      },
+    });
+
+    // Register the stable existing runner.
+    const existingWs = createMockWebSocket();
+    relay.handleConnection(existingWs.ws);
+    existingWs.emit("message", {
+      data: JSON.stringify({ type: "register", runnerId: "shared-runner", apiKey: "valid" }),
+    });
+    for (let i = 0; i < 5; i++) await waitForMicrotask();
+    expect(relay.hasRunner("shared-runner")).toBe(true);
+
+    // New socket tries to re-register the same runner — auth suspends.
+    const newWs = createMockWebSocket();
+    relay.handleConnection(newWs.ws);
+    newWs.emit("message", {
+      data: JSON.stringify({ type: "register", runnerId: "shared-runner", apiKey: "valid" }),
+    });
+
+    // Close the new socket before auth resolves.
+    (newWs.ws as unknown as { readyState: number }).readyState = WebSocket.CLOSING;
+
+    // Resolve auth — guard must abort WITHOUT tearing down the existing runner.
+    resolveSecondAuth("user-1");
+    for (let i = 0; i < 5; i++) await waitForMicrotask();
+
+    expect(relay.hasRunner("shared-runner")).toBe(true); // existing runner intact
+    relay.dispose();
+  });
+
   test("socket stays open during auth → registers normally", async () => {
     let resolveAuth!: (v: string) => void;
     const authPromise = new Promise<string>((res) => (resolveAuth = res));
