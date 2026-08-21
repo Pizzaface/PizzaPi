@@ -752,6 +752,32 @@ describe("sendPushToUser — child-session suppression", () => {
         expect(fetchCalled).toBe(true);
     });
 
+    authIt("ntfy: non-child notification is delivered even when suppressChildNotifications is true", async () => {
+        // Regression: the suppressChildNotifications flag must ONLY gate child
+        // sessions (isChildSession=true). A top-level session notification must
+        // still be published regardless of how the flag is set.
+        await registerNativePush({ userId: "user-suppress-nochild", platform: "android", suppressChildNotifications: true });
+        process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
+
+        let fetchCalled = false;
+        const origFetch = globalThis.fetch;
+        (globalThis as any).fetch = () => { fetchCalled = true; return Promise.resolve(new Response("ok", { status: 200 })); };
+        try {
+            await sendPushToUser("user-suppress-nochild", {
+                type: "agent_needs_input",
+                title: "Input needed",
+                body: "Agent asks a question",
+                sessionId: "sess-suppress-nochild",
+            }, false /* isChildSession=false → must deliver despite suppressChildNotifications=true */);
+        } finally {
+            (globalThis as any).fetch = origFetch;
+            delete process.env.PIZZAPI_NTFY_URL;
+        }
+        // suppressChildNotifications only suppresses child-session notifications —
+        // a top-level session must always be delivered.
+        expect(fetchCalled).toBe(true);
+    });
+
     authIt("ntfy: per-registration: suppressed reg skipped, unsuppressed reg delivered", async () => {
         // Two registrations for different users: one suppress=true, one suppress=false.
         // Only the unsuppressed one should receive the child-session notification.
