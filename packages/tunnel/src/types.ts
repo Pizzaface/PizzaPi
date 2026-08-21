@@ -37,6 +37,14 @@ export interface TunnelRequestStartMessage {
    * to the app, not the relay). Old runners ignore this and keep stripping.
    */
   preserveAuth?: boolean;
+  /**
+   * Host-based tunnels: the tunnel origin host (e.g. "abc123.t.example.com")
+   * that the local service should see as its Host header. When present the
+   * client uses this instead of the default "127.0.0.1:<port>", so apps that
+   * construct absolute URLs from `Host` produce correct tunnel-origin URLs.
+   * Absent for path-based tunnels — those keep "127.0.0.1:<port>".
+   */
+  host?: string;
 }
 
 export interface TunnelRequestDataMessage {
@@ -89,6 +97,8 @@ export interface TunnelWsOpenMessage {
   headers: Record<string, string>;
   /** See TunnelRequestStartMessage.preserveAuth. */
   preserveAuth?: boolean;
+  /** See TunnelRequestStartMessage.host. */
+  host?: string;
 }
 
 export interface TunnelWsOpenedMessage {

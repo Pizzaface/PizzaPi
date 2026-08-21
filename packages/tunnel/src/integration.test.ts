@@ -131,6 +131,7 @@ async function proxyHttpRequestThroughTunnel(
     headers?: Record<string, string>;
     requestBody?: Buffer;
     preserveAuth?: boolean;
+    host?: string;
   },
 ): Promise<{
   statusCode: number;
@@ -158,6 +159,7 @@ async function proxyHttpRequestThroughTunnel(
         url: options.url ?? "/",
         headers: options.headers ?? {},
         preserveAuth: options.preserveAuth,
+        host: options.host,
       },
       {
         onResponseStart(code, message, responseHeaders) {
@@ -450,5 +452,41 @@ describe("Streaming tunnel integration", () => {
     expect(seenMethod).toBe("GET");
     expect(response.statusCode).toBe(200);
     expect(response.body.toString("utf-8")).toBe("secure-ok");
+  });
+
+  test("host-based tunnel: local service receives tunnel-origin as Host header", async () => {
+    let seenHost = "";
+    localHttpServer = http.createServer((req, res) => {
+      seenHost = req.headers.host ?? "";
+      res.writeHead(200);
+      res.end("ok");
+    });
+    const localPort = await listen(localHttpServer);
+    await startRelayAndClient([localPort]);
+
+    await proxyHttpRequestThroughTunnel(localPort, {
+      id: "req-host-based",
+      host: `abc123.t.localhost:7492`,
+      preserveAuth: true,
+    });
+
+    // The local service must see the tunnel origin, not the loopback address.
+    expect(seenHost).toBe("abc123.t.localhost:7492");
+  });
+
+  test("path-based tunnel: local service receives 127.0.0.1:<port> as Host header (unchanged)", async () => {
+    let seenHost = "";
+    localHttpServer = http.createServer((req, res) => {
+      seenHost = req.headers.host ?? "";
+      res.writeHead(200);
+      res.end("ok");
+    });
+    const localPort = await listen(localHttpServer);
+    await startRelayAndClient([localPort]);
+
+    // No `host` field — path-based tunnel behavior, must not change.
+    await proxyHttpRequestThroughTunnel(localPort, { id: "req-path-based" });
+
+    expect(seenHost).toBe(`127.0.0.1:${localPort}`);
   });
 });

@@ -257,3 +257,66 @@ describe("passthrough proxy mode (basePath \"\")", () => {
         expect(res.headers.get("x-pizzapi-tunnel-frame")).toBe("cross-origin");
     });
 });
+
+describe("host header forwarding", () => {
+    type CapturedRequest = { host?: string; preserveAuth?: boolean; port: number };
+
+    function captureRelayRequest(tunnelHost?: string): Promise<CapturedRequest> {
+        return new Promise((resolve) => {
+            const relay = {
+                proxyHttpRequest: (_runnerId: string, request: CapturedRequest, cb: { onError: (e: string) => void }) => {
+                    resolve(request);
+                    // Immediately error so the response promise doesn’t hang.
+                    cb.onError("test-done");
+                    return { cancel() {} };
+                },
+                sendRequestDataEnd() {},
+            };
+
+            proxyTunnelRequestViaRelay(
+                new Request("http://abc.t.localhost/path"),
+                relay as never,
+                "runner-1",
+                "req-capture",
+                "", // basePath "" → host-based passthrough
+                3000,
+                "/path",
+                "/path",
+                {},
+                true,
+                tunnelHost,
+            ).catch(() => { /* expected */ });
+        });
+    }
+
+    test("host-based tunnel: relay receives tunnel-origin host field", async () => {
+        const req = await captureRelayRequest("abc123.t.example.com");
+        expect(req.host).toBe("abc123.t.example.com");
+    });
+
+    test("path-based tunnel: relay receives no host field (undefined)", async () => {
+        const relay = {
+            proxyHttpRequest: (_runnerId: string, request: CapturedRequest, cb: { onError: (e: string) => void }) => {
+                cb.onError("test-done");
+                // Capture happens synchronously.
+                expect(request.host).toBeUndefined();
+                return { cancel() {} };
+            },
+            sendRequestDataEnd() {},
+        };
+
+        await proxyTunnelRequestViaRelay(
+            new Request("http://example.com/path"),
+            relay as never,
+            "runner-1",
+            "req-path",
+            "/tunnel/session/3000", // non-empty basePath → path-based
+            3000,
+            "/path",
+            "/path",
+            {},
+            false,
+            // no tunnelHost → path-based
+        ).catch(() => { /* expected */ });
+    });
+});

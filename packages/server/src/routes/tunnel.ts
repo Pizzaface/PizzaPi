@@ -463,6 +463,7 @@ function proxyTunnelRequestViaRelay(
     pathWithQuery: string,
     forwardHeaders: Record<string, string>,
     allowCrossOriginFrame = false,
+    tunnelHost?: string,
 ): Promise<Response> {
     return new Promise<Response>((resolve) => {
         let responseStarted = false;
@@ -502,6 +503,7 @@ function proxyTunnelRequestViaRelay(
                 headers: forwardHeaders,
                 // Host-based tunnels forward the app's own credentials end-to-end.
                 preserveAuth: basePath === "" || undefined,
+                host: tunnelHost,
             },
             {
                 onResponseStart: (code, _statusMessage, headers) => {
