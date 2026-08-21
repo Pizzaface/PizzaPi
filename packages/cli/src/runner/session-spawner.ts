@@ -3,6 +3,7 @@ import { existsSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { cleanupSessionAttachments } from "../extensions/session-attachments.js";
 import { logInfo } from "./logger.js";
+import { forceKillTree } from "./process-kill.js";
 import {
     sessionProcFilePath,
     ensureSessionProcDir,
@@ -45,6 +46,44 @@ export function killSessionProcessGroup(pid: number | undefined, signal: NodeJS.
     } catch {
         return false;
     }
+}
+
+/**
+ * Grace window for a worker's process group and recorded command groups to
+ * shut down cleanly before SIGKILL on the natural-exit cleanup path. Must stay
+ * in sync with SESSION_SHUTDOWN_GRACE_MS in daemon.ts (currently 8_000ms).
+ */
+const SESSION_SHUTDOWN_GRACE_MS = 8_000;
+
+/**
+ * Send SIGKILL to the worker's process group and any recorded command groups
+ * after `timeoutMs`. Mirrors the escalation used by the explicit kill paths
+ * in daemon.ts; reused here so SIGTERM-ignoring descendants cannot outlive a
+ * natural worker exit.
+ */
+function escalateCleanupToSigkill(
+    child: ChildProcess,
+    groupPids: number[],
+    label: string,
+    timeoutMs = SESSION_SHUTDOWN_GRACE_MS,
+): void {
+    const timer = setTimeout(() => {
+        try {
+            // Kill the whole process group (worker + descendants); fall back
+            // to tree-kill (Windows) / plain kill if group signaling fails.
+            if (!killSessionProcessGroup(child.pid, "SIGKILL")) forceKillTree(child);
+            for (const groupPid of groupPids) {
+                if (groupPid !== child.pid) killSessionProcessGroup(groupPid, "SIGKILL");
+            }
+            logInfo(`session ${label} force-killed remaining groups after ${timeoutMs}ms`);
+        } catch {
+            // Process already exited; ignore.
+        }
+    }, timeoutMs);
+    // Don't let the escalation timer keep the daemon alive if it's otherwise
+    // exiting; the explicit kill paths in daemon.ts are active shutdowns and
+    // don't unref, but this is a background cleanup timeout.
+    timer.unref();
 }
 
 /**
@@ -121,6 +160,11 @@ export function spawnSession(
         parentSessionId?: string;
         resumePath?: string;
         autoClose?: boolean;
+        /**
+         * Override the SIGTERM→SIGKILL escalation delay for tests.
+         * @internal
+         */
+        shutdownGraceMs?: number;
         /**
          * Daemon-owned cleanup hook invoked when the worker process truly exits
          * (not a restart-in-place). Lets the daemon run session-scoped service
@@ -311,12 +355,21 @@ export function spawnSession(
             // servers etc.) — the worker is gone, so signal its whole group
             // plus every recorded bash-command group (which is where detached
             // background processes actually live), then drop the pid file.
+            const groupPids = readRecordedGroupPids(sessionProcFilePath(sessionId));
             if (killSessionProcessGroup(child.pid)) {
                 logInfo(`session ${sessionId} process group ${child.pid} signaled for cleanup`);
             }
-            for (const groupPid of readRecordedGroupPids(sessionProcFilePath(sessionId))) {
+            for (const groupPid of groupPids) {
                 if (groupPid !== child.pid) killSessionProcessGroup(groupPid);
             }
+            // Escalate to SIGKILL after the grace window, matching the
+            // explicit-kill paths in daemon.ts.
+            escalateCleanupToSigkill(
+                child,
+                groupPids,
+                sessionId,
+                options?.shutdownGraceMs ?? SESSION_SHUTDOWN_GRACE_MS,
+            );
             removeSessionProcFile(sessionId);
             void cleanupSessionAttachments(sessionId).catch(() => {});
             try {
