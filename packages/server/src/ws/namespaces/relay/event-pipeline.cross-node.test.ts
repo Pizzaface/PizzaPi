@@ -12,9 +12,15 @@ import { afterAll, describe, it, expect, beforeEach, mock } from "bun:test";
 const stateUpdates: string[] = [];
 const broadcasts: string[] = [];
 let redisOwnerToken: string | null = "token-node-a";
+let tokenReadShouldThrow = false;
 
 mock.module("../../sio-registry.js", () => ({
-    getSessionOwnerToken: async (_sessionId: string) => redisOwnerToken,
+    // After the A2-017 expo fix, getSessionOwnerToken catches Redis errors and
+    // returns null (fail-open).  Simulate that: return null when shouldThrow.
+    getSessionOwnerToken: async (_sessionId: string) => {
+        if (tokenReadShouldThrow) return null;
+        return redisOwnerToken;
+    },
     updateSessionState: async (sessionId: string) => { stateUpdates.push(sessionId); },
     patchSessionSnapshotState: async () => {},
     touchSessionActivity: async () => {},
@@ -114,6 +120,7 @@ describe("A2-017: event pipeline stale cross-node socket rejection", () => {
         stateUpdates.length = 0;
         broadcasts.length = 0;
         redisOwnerToken = "token-node-a";
+        tokenReadShouldThrow = false;
     });
 
     it("rejects a stale event (token mismatch) — no state update or broadcast", async () => {
@@ -151,6 +158,21 @@ describe("A2-017: event pipeline stale cross-node socket rejection", () => {
         // we just confirm no errors thrown and token guard didn't block it.
         // The absence of any throw is the assertion here.
         expect(true).toBe(true);
+    });
+
+    it("Redis read throws → fail-open: event is accepted (not dropped)", async () => {
+        // When the Redis hGet call throws, getSessionOwnerToken returns null.
+        // null → fail-open: the guard must NOT drop the event.
+        const { socket: socketA, fire: fireA } = makeSocket("sess-1", "token-node-a");
+        registerEventHandler(socketA);
+
+        tokenReadShouldThrow = true; // Redis throws on next read
+
+        // Must not reject — event proceeds through the pipeline.
+        await expect(
+            fireA("event", { token: "token-node-a", seq: 1, event: { type: "heartbeat", active: true } }),
+        ).resolves.toBeUndefined();
+        // No unhandled throw means the event was not dropped via a rejection.
     });
 
     it("accepts events when Redis has no session yet (sharedOwnerToken === null)", async () => {

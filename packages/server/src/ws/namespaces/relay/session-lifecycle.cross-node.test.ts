@@ -16,6 +16,8 @@ const endedSessions: Array<{ sessionId: string; reason?: string; opts?: unknown 
 
 // Current Redis owner token — bumped when the replacement registers.
 let redisOwnerToken: string | null = "token-node-a";
+// Set to true to simulate a Redis read error (fix returns null, not throws).
+let tokenReadShouldThrow = false;
 
 mock.module("../../sio-registry.js", () => ({
     registerTuiSession: async (_socket: unknown, _cwd: string, opts: { sessionId?: string }) => ({
@@ -36,7 +38,12 @@ mock.module("../../sio-registry.js", () => ({
         endedSessions.push({ sessionId, reason, opts });
     },
     // Returns the CURRENT shared (Redis) owner token — bumped by node-B's register.
-    getSessionOwnerToken: async (_sessionId: string) => redisOwnerToken,
+    // After the A2-017 expo fix, getSessionOwnerToken catches Redis errors and
+    // returns null (fail-open).  Simulate that: return null when shouldThrow.
+    getSessionOwnerToken: async (_sessionId: string) => {
+        if (tokenReadShouldThrow) return null;
+        return redisOwnerToken;
+    },
 }));
 
 mock.module("../../sio-state/index.js", () => ({
@@ -89,6 +96,7 @@ describe("A2-017: cross-node stale socket protection", () => {
     beforeEach(() => {
         endedSessions.length = 0;
         redisOwnerToken = "token-node-a";
+        tokenReadShouldThrow = false;
         localSocketMap.clear();
     });
 
@@ -149,6 +157,22 @@ describe("A2-017: cross-node stale socket protection", () => {
 
         await fireB("disconnect", "transport close");
 
+        expect(endedSessions).toHaveLength(1);
+        expect(endedSessions[0].sessionId).toBe("sess-1");
+    });
+
+    it("Redis read throws on disconnect → fail-open: teardown proceeds as current owner", async () => {
+        // Simulate a Redis error during the owner-token read in the disconnect guard.
+        // The guard must treat unknown-owner (null) as fail-open → endSharedSession IS called.
+        const { socket: socketA, fire: fireA } = makeSocket("sess-1", "token-node-a");
+        localSocketMap.set("sess-1", socketA);
+        registerSessionLifecycleHandlers(socketA);
+
+        tokenReadShouldThrow = true; // Redis will throw on next hGet
+
+        await fireA("disconnect", "transport close");
+
+        // Fail-open: teardown must NOT be blocked — treat as matching (unknown) owner.
         expect(endedSessions).toHaveLength(1);
         expect(endedSessions[0].sessionId).toBe("sess-1");
     });

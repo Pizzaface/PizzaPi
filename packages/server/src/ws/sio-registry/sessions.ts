@@ -861,7 +861,13 @@ export async function updateSessionHeartbeat(
  * the session or emit accepted events.  All others are stale/superseded.
  */
 export async function getSessionOwnerToken(sessionId: string): Promise<string | null> {
-    return getSessionField(sessionId, "token");
+    try {
+        return await getSessionField(sessionId, "token");
+    } catch (err) {
+        // ponytail: fail-open on Redis read error — treat as unknown owner (same as null)
+        log.warn("getSessionOwnerToken: Redis read error, treating as unknown owner (fail-open)", err);
+        return null;
+    }
 }
 
 /** Get the current seq counter for a session. */
