@@ -52,6 +52,8 @@ export interface ViewerServerToClientEvents {
     command: string;
     result?: unknown;
     error?: string;
+    /** Session that produced this result — stamped by the relay for stale-drop guards. */
+    sessionId?: string;
   }) => void;
 
   /** Generic service message from runner → relay → viewer.

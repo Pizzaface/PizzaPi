@@ -3623,13 +3623,12 @@ export function App() {
       });
 
       nextSocket.on("exec_result", (data) => {
-        // Important: check generation to prevent exec_result events from old sessions
-        // being processed after a session switch. Unlike other events, exec_result doesn't
-        // always include generation data, so we also guard with a recent-switch check.
+        // Drop stale results from a previous session. The relay stamps every
+        // forwarded exec_result with the originating sessionId; if it doesn't
+        // match the active session, the event arrived late and must be ignored.
         if (!lifecycleRefs.activeSessionId.current) return;
-        // If we're in the initial phase of a session switch (awaiting snapshot), reject
-        // any exec_results that might be from the old session. We'll start accepting them
-        // once the "connected" event confirms we're synchronized with the new session.
+        if (data.sessionId && data.sessionId !== lifecycleRefs.activeSessionId.current) return;
+        // Also reject during snapshot acquisition — viewer isn't yet in sync.
         if (lifecycleRefs.awaitingSnapshot.current) return;
         lastViewerEventAtRef.current = Date.now();
         handleRelayEvent({ type: "exec_result", ...data });
