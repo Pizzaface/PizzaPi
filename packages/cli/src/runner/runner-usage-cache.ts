@@ -220,7 +220,25 @@ async function fetchCodexUsageData(): Promise<ProviderUsageData | null> {
  * cache file so every worker on this runner node can read it without making
  * their own API calls.
  */
-async function refreshAndWriteRunnerUsageCache(opts: { forceAnthropic?: boolean } = {}): Promise<void> {
+/**
+ * Coalesce concurrent invocations of an async fn into one in-flight promise.
+ * Prevents an interval tick from overlapping a slow previous fetch and
+ * publishing results out of order (older data overwriting newer).
+ */
+export function singleFlight<A extends unknown[]>(fn: (...args: A) => Promise<void>): (...args: A) => Promise<void> {
+    let inflight: Promise<void> | null = null;
+    return (...args: A) => {
+        if (inflight) return inflight;
+        inflight = fn(...args).finally(() => {
+            inflight = null;
+        });
+        return inflight;
+    };
+}
+
+const refreshAndWriteRunnerUsageCache = singleFlight(doRefreshAndWriteRunnerUsageCache);
+
+async function doRefreshAndWriteRunnerUsageCache(opts: { forceAnthropic?: boolean } = {}): Promise<void> {
     const [anthropicResult, codexResult] = await Promise.allSettled([
         getRunnerAnthropicUsageData({ force: opts.forceAnthropic === true }),
         fetchCodexUsageData(),

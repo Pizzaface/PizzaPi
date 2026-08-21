@@ -1,35 +1,55 @@
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { writeFileSync, statSync } from "node:fs";
+import { mkdtempSync, writeFileSync, statSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { openUsageDb } from "./schema.js";
 import { processFile, parseSessionHeader, extractSessionName } from "./scanner.js";
 
+function makeDb(tmpDir: string): Database {
+  return openUsageDb(join(tmpDir, "test.db"));
+}
+
+function usageMsg(id: string, timestamp: string, input: number, output: number, cost = 0.001) {
+  return {
+    type: "message",
+    id,
+    timestamp,
+    message: {
+      role: "assistant",
+      provider: "anthropic",
+      model: "claude-opus",
+      usage: {
+        input,
+        output,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: input + output,
+        cost: { total: cost, input: cost / 2, output: cost / 2, cacheRead: 0, cacheWrite: 0 },
+      },
+    },
+  };
+}
+
+const header = (id: string) =>
+  ({
+    type: "session",
+    version: 1,
+    id,
+    timestamp: "2026-03-23T12:00:00Z",
+    cwd: "/project/test",
+  }) as const;
+
 describe("Scanner", () => {
   test("parseSessionHeader parses valid session header", () => {
-    const line = JSON.stringify({
-      type: "session",
-      version: 1,
-      id: "session-123",
-      timestamp: "2026-03-23T12:00:00Z",
-      cwd: "/home/user/projects/pizzapi",
-    });
-
+    const line = JSON.stringify(header("session-123"));
     const result = parseSessionHeader(line);
     expect(result).toBeTruthy();
     expect(result?.id).toBe("session-123");
-    expect(result?.cwd).toBe("/home/user/projects/pizzapi");
+    expect(result?.cwd).toBe("/project/test");
   });
 
   test("parseSessionHeader returns null for non-session lines", () => {
-    const line = JSON.stringify({
-      type: "message",
-      id: "msg-123",
-    });
-
-    const result = parseSessionHeader(line);
-    expect(result).toBeNull();
+    expect(parseSessionHeader(JSON.stringify({ type: "message", id: "msg-123" }))).toBeNull();
   });
 
   test("extractSessionName finds set_session_name in tool calls", () => {
@@ -41,130 +61,32 @@ describe("Scanner", () => {
         provider: "anthropic",
         model: "claude-opus",
         tool_calls: [
-          {
-            tool_call_id: "call-123",
-            name: "set_session_name",
-            arguments: JSON.stringify({
-              name: "My Test Session",
-            }),
-          },
+          { tool_call_id: "call-123", name: "set_session_name", arguments: JSON.stringify({ name: "My Test Session" }) },
         ],
       },
     });
-
-    const result = extractSessionName(line);
-    expect(result).toBe("My Test Session");
+    expect(extractSessionName(line)).toBe("My Test Session");
   });
 
   test("extractSessionName returns null when no session name found", () => {
     const line = JSON.stringify({
       type: "message",
       timestamp: "2026-03-23T12:00:00Z",
-      message: {
-        role: "assistant",
-        provider: "anthropic",
-        model: "claude-opus",
-      },
+      message: { role: "assistant", provider: "anthropic", model: "claude-opus" },
     });
-
-    const result = extractSessionName(line);
-    expect(result).toBeNull();
+    expect(extractSessionName(line)).toBeNull();
   });
 
   test("processFile correctly parses JSONL with usage data", () => {
-    // Create temp directory
     const tmpDir = mkdtempSync("/tmp/usage-scanner-test-");
-    const dbPath = join(tmpDir, "test.db");
     const filePath = join(tmpDir, "session.jsonl");
+    const h = header("session-001");
+    const msg = usageMsg("msg-001", "2026-03-23T12:05:00Z", 100, 50);
+    writeFileSync(filePath, `${JSON.stringify(h)}\n${JSON.stringify(msg)}\n`);
 
-    // Create JSONL file
-    const sessionHeader = {
-      type: "session",
-      version: 1,
-      id: "session-001",
-      timestamp: "2026-03-23T12:00:00Z",
-      cwd: "/project/test",
-    } as const;
+    const db = makeDb(tmpDir);
+    processFile(db, filePath, "session.jsonl", h);
 
-    const usageMessage = {
-      type: "message",
-      id: "msg-001",
-      timestamp: "2026-03-23T12:05:00Z",
-      message: {
-        role: "assistant",
-        provider: "anthropic",
-        model: "claude-opus",
-        usage: {
-          input: 100,
-          output: 50,
-          cacheRead: 10,
-          cacheWrite: 5,
-          totalTokens: 165,
-          cost: {
-            total: 0.001,
-            input: 0.0005,
-            output: 0.0004,
-            cacheRead: 0.00005,
-            cacheWrite: 0.000001,
-          },
-        },
-      },
-    };
-
-    const content = `${JSON.stringify(sessionHeader)}\n${JSON.stringify(usageMessage)}\n`;
-    writeFileSync(filePath, content);
-
-    // Process the file
-    const db = new Database(dbPath);
-    db.run("PRAGMA journal_mode=WAL");
-    db.run(`
-      CREATE TABLE usage_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id TEXT NOT NULL,
-        project TEXT NOT NULL,
-        timestamp INTEGER NOT NULL,
-        provider TEXT NOT NULL,
-        model TEXT NOT NULL,
-        input_tokens INTEGER DEFAULT 0,
-        output_tokens INTEGER DEFAULT 0,
-        cache_read_tokens INTEGER DEFAULT 0,
-        cache_write_tokens INTEGER DEFAULT 0,
-        cost_usd REAL,
-        cost_input REAL,
-        cost_output REAL,
-        cost_cache_read REAL,
-        cost_cache_write REAL,
-        UNIQUE(session_id, timestamp, model)
-      )
-    `);
-    db.run(`
-      CREATE TABLE sessions (
-        id TEXT PRIMARY KEY,
-        project TEXT NOT NULL,
-        session_name TEXT,
-        started_at INTEGER NOT NULL,
-        ended_at INTEGER,
-        message_count INTEGER DEFAULT 0,
-        total_input INTEGER DEFAULT 0,
-        total_output INTEGER DEFAULT 0,
-        total_cache_read INTEGER DEFAULT 0,
-        total_cache_write INTEGER DEFAULT 0,
-        total_cost REAL,
-        primary_model TEXT,
-        primary_provider TEXT
-      )
-    `);
-    db.run(`
-      CREATE TABLE processing_state (
-        file_path TEXT PRIMARY KEY,
-        last_offset INTEGER DEFAULT 0,
-        last_modified INTEGER
-      )
-    `);
-
-    processFile(db, filePath, "session.jsonl", sessionHeader);
-
-    // Verify usage_events was inserted
     const events = db.query<any, []>("SELECT * FROM usage_events").all();
     expect(events.length).toBe(1);
     expect(events[0].session_id).toBe("session-001");
@@ -173,52 +95,22 @@ describe("Scanner", () => {
     expect(events[0].input_tokens).toBe(100);
     expect(events[0].output_tokens).toBe(50);
     expect(events[0].cost_usd).toBeCloseTo(0.001, 6);
+    expect(events[0].event_uid).toBeTruthy();
 
-    // Verify sessions was upserted
     const sessions = db.query<any, []>("SELECT * FROM sessions").all();
     expect(sessions.length).toBe(1);
     expect(sessions[0].id).toBe("session-001");
     expect(sessions[0].message_count).toBe(1);
     expect(sessions[0].total_input).toBe(100);
-
+    expect(sessions[0].primary_model).toBe("claude-opus");
     db.close();
   });
 
   test("processFile includes /goal evaluator spend (goal_evaluator_usage custom entries) in usage totals", () => {
     const tmpDir = mkdtempSync("/tmp/usage-scanner-test-");
-    const dbPath = join(tmpDir, "test.db");
     const filePath = join(tmpDir, "session.jsonl");
-
-    const sessionHeader = {
-      type: "session",
-      version: 1,
-      id: "session-goal",
-      timestamp: "2026-03-23T12:00:00Z",
-      cwd: "/project/test",
-    } as const;
-
-    const usageMessage = {
-      type: "message",
-      id: "msg-001",
-      timestamp: "2026-03-23T12:05:00Z",
-      message: {
-        role: "assistant",
-        provider: "anthropic",
-        model: "claude-opus",
-        usage: {
-          input: 100,
-          output: 50,
-          cacheRead: 0,
-          cacheWrite: 0,
-          totalTokens: 150,
-          cost: { total: 0.01, input: 0.006, output: 0.004, cacheRead: 0, cacheWrite: 0 },
-        },
-      },
-    };
-
-    // The /goal LLM evaluator makes a separate API call outside the normal
-    // turn pipeline; its spend is persisted as a goal_evaluator_usage custom
-    // entry (see extensions/goal/state.ts) rather than an assistant message.
+    const h = header("session-goal");
+    const msg = usageMsg("msg-001", "2026-03-23T12:05:00Z", 100, 50, 0.01);
     const evaluatorUsage = {
       type: "custom",
       id: "entry-001",
@@ -232,58 +124,11 @@ describe("Scanner", () => {
         timestamp: new Date("2026-03-23T12:06:00Z").getTime(),
       },
     };
-
-    const content = `${JSON.stringify(sessionHeader)}\n${JSON.stringify(usageMessage)}\n${JSON.stringify(evaluatorUsage)}\n`;
+    const content = `${JSON.stringify(h)}\n${JSON.stringify(msg)}\n${JSON.stringify(evaluatorUsage)}\n`;
     writeFileSync(filePath, content);
 
-    const db = new Database(dbPath);
-    db.run("PRAGMA journal_mode=WAL");
-    db.run(`
-      CREATE TABLE usage_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id TEXT NOT NULL,
-        project TEXT NOT NULL,
-        timestamp INTEGER NOT NULL,
-        provider TEXT NOT NULL,
-        model TEXT NOT NULL,
-        input_tokens INTEGER DEFAULT 0,
-        output_tokens INTEGER DEFAULT 0,
-        cache_read_tokens INTEGER DEFAULT 0,
-        cache_write_tokens INTEGER DEFAULT 0,
-        cost_usd REAL,
-        cost_input REAL,
-        cost_output REAL,
-        cost_cache_read REAL,
-        cost_cache_write REAL,
-        UNIQUE(session_id, timestamp, model)
-      )
-    `);
-    db.run(`
-      CREATE TABLE sessions (
-        id TEXT PRIMARY KEY,
-        project TEXT NOT NULL,
-        session_name TEXT,
-        started_at INTEGER NOT NULL,
-        ended_at INTEGER,
-        message_count INTEGER DEFAULT 0,
-        total_input INTEGER DEFAULT 0,
-        total_output INTEGER DEFAULT 0,
-        total_cache_read INTEGER DEFAULT 0,
-        total_cache_write INTEGER DEFAULT 0,
-        total_cost REAL,
-        primary_model TEXT,
-        primary_provider TEXT
-      )
-    `);
-    db.run(`
-      CREATE TABLE processing_state (
-        file_path TEXT PRIMARY KEY,
-        last_offset INTEGER DEFAULT 0,
-        last_modified INTEGER
-      )
-    `);
-
-    processFile(db, filePath, "session.jsonl", sessionHeader, content);
+    const db = makeDb(tmpDir);
+    processFile(db, filePath, "session.jsonl", h, content);
 
     const events = db.query<any, []>("SELECT * FROM usage_events ORDER BY timestamp").all();
     expect(events.length).toBe(2);
@@ -293,102 +138,28 @@ describe("Scanner", () => {
 
     const sessions = db.query<any, []>("SELECT * FROM sessions").all();
     expect(sessions.length).toBe(1);
-    // Evaluator spend must be folded into the session total, not silently
-    // dropped — this is the whole point of the fix.
     expect(sessions[0].total_cost).toBeCloseTo(0.01 + 0.0002, 6);
     expect(sessions[0].total_output).toBe(50 + 60);
-
     db.close();
   });
 
   test("processFile skips malformed JSON lines without crashing", () => {
     const tmpDir = mkdtempSync("/tmp/usage-scanner-test-");
-    const dbPath = join(tmpDir, "test.db");
     const filePath = join(tmpDir, "session.jsonl");
+    const h = header("session-002");
+    writeFileSync(filePath, `${JSON.stringify(h)}\nmalformed json line\n`);
 
-    const sessionHeader = {
-      type: "session",
-      version: 1,
-      id: "session-002",
-      timestamp: "2026-03-23T12:00:00Z",
-      cwd: "/project/test",
-    } as const;
-
-    // Content with a malformed JSON line
-    const content = `${JSON.stringify(sessionHeader)}\nmalformed json line\n`;
-    writeFileSync(filePath, content);
-
-    const db = new Database(dbPath);
-    db.run("PRAGMA journal_mode=WAL");
-    db.run(`
-      CREATE TABLE usage_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id TEXT NOT NULL,
-        project TEXT NOT NULL,
-        timestamp INTEGER NOT NULL,
-        provider TEXT NOT NULL,
-        model TEXT NOT NULL,
-        input_tokens INTEGER DEFAULT 0,
-        output_tokens INTEGER DEFAULT 0,
-        cache_read_tokens INTEGER DEFAULT 0,
-        cache_write_tokens INTEGER DEFAULT 0,
-        cost_usd REAL,
-        cost_input REAL,
-        cost_output REAL,
-        cost_cache_read REAL,
-        cost_cache_write REAL,
-        UNIQUE(session_id, timestamp, model)
-      )
-    `);
-    db.run(`
-      CREATE TABLE sessions (
-        id TEXT PRIMARY KEY,
-        project TEXT NOT NULL,
-        session_name TEXT,
-        started_at INTEGER NOT NULL,
-        ended_at INTEGER,
-        message_count INTEGER DEFAULT 0,
-        total_input INTEGER DEFAULT 0,
-        total_output INTEGER DEFAULT 0,
-        total_cache_read INTEGER DEFAULT 0,
-        total_cache_write INTEGER DEFAULT 0,
-        total_cost REAL,
-        primary_model TEXT,
-        primary_provider TEXT
-      )
-    `);
-    db.run(`
-      CREATE TABLE processing_state (
-        file_path TEXT PRIMARY KEY,
-        last_offset INTEGER DEFAULT 0,
-        last_modified INTEGER
-      )
-    `);
-
-    // Should not throw
-    processFile(db, filePath, "session.jsonl", sessionHeader);
-
-    // Should have no events (malformed line was skipped)
-    const events = db.query<any, []>("SELECT * FROM usage_events").all();
-    expect(events.length).toBe(0);
-
+    const db = makeDb(tmpDir);
+    processFile(db, filePath, "session.jsonl", h);
+    expect(db.query<any, []>("SELECT * FROM usage_events").all().length).toBe(0);
     db.close();
   });
 
   test("processFile handles sessions with no cost data", () => {
     const tmpDir = mkdtempSync("/tmp/usage-scanner-test-");
-    const dbPath = join(tmpDir, "test.db");
     const filePath = join(tmpDir, "session.jsonl");
-
-    const sessionHeader = {
-      type: "session",
-      version: 1,
-      id: "session-003",
-      timestamp: "2026-03-23T12:00:00Z",
-      cwd: "/project/test",
-    } as const;
-
-    const usageMessage = {
+    const h = header("session-003");
+    const msg = {
       type: "message",
       id: "msg-001",
       timestamp: "2026-03-23T12:05:00Z",
@@ -396,375 +167,209 @@ describe("Scanner", () => {
         role: "assistant",
         provider: "anthropic",
         model: "claude-opus",
-        usage: {
-          input: 100,
-          output: 50,
-          cacheRead: 0,
-          cacheWrite: 0,
-          totalTokens: 150,
-          // No cost field
-        },
+        usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, totalTokens: 150 },
       },
     };
+    writeFileSync(filePath, `${JSON.stringify(h)}\n${JSON.stringify(msg)}\n`);
 
-    const content = `${JSON.stringify(sessionHeader)}\n${JSON.stringify(usageMessage)}\n`;
-    writeFileSync(filePath, content);
-
-    const db = new Database(dbPath);
-    db.run("PRAGMA journal_mode=WAL");
-    db.run(`
-      CREATE TABLE usage_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id TEXT NOT NULL,
-        project TEXT NOT NULL,
-        timestamp INTEGER NOT NULL,
-        provider TEXT NOT NULL,
-        model TEXT NOT NULL,
-        input_tokens INTEGER DEFAULT 0,
-        output_tokens INTEGER DEFAULT 0,
-        cache_read_tokens INTEGER DEFAULT 0,
-        cache_write_tokens INTEGER DEFAULT 0,
-        cost_usd REAL,
-        cost_input REAL,
-        cost_output REAL,
-        cost_cache_read REAL,
-        cost_cache_write REAL,
-        UNIQUE(session_id, timestamp, model)
-      )
-    `);
-    db.run(`
-      CREATE TABLE sessions (
-        id TEXT PRIMARY KEY,
-        project TEXT NOT NULL,
-        session_name TEXT,
-        started_at INTEGER NOT NULL,
-        ended_at INTEGER,
-        message_count INTEGER DEFAULT 0,
-        total_input INTEGER DEFAULT 0,
-        total_output INTEGER DEFAULT 0,
-        total_cache_read INTEGER DEFAULT 0,
-        total_cache_write INTEGER DEFAULT 0,
-        total_cost REAL,
-        primary_model TEXT,
-        primary_provider TEXT
-      )
-    `);
-    db.run(`
-      CREATE TABLE processing_state (
-        file_path TEXT PRIMARY KEY,
-        last_offset INTEGER DEFAULT 0,
-        last_modified INTEGER
-      )
-    `);
-
-    processFile(db, filePath, "session.jsonl", sessionHeader);
-
-    // Verify event was inserted with NULL cost
+    const db = makeDb(tmpDir);
+    processFile(db, filePath, "session.jsonl", h);
     const events = db.query<any, []>("SELECT * FROM usage_events").all();
     expect(events.length).toBe(1);
     expect(events[0].cost_usd).toBeNull();
-
     db.close();
   });
 
   test("processFile handles incremental processing correctly", () => {
     const tmpDir = mkdtempSync("/tmp/usage-scanner-test-");
-    const dbPath = join(tmpDir, "test.db");
     const filePath = join(tmpDir, "session.jsonl");
-
-    const sessionHeader = {
-      type: "session",
-      version: 1,
-      id: "session-004",
-      timestamp: "2026-03-23T12:00:00Z",
-      cwd: "/project/test",
-    } as const;
-
-    const usageMessage1 = {
-      type: "message",
-      id: "msg-001",
-      timestamp: "2026-03-23T12:05:00Z",
-      message: {
-        role: "assistant",
-        provider: "anthropic",
-        model: "claude-opus",
-        usage: {
-          input: 100,
-          output: 50,
-          cacheRead: 0,
-          cacheWrite: 0,
-          totalTokens: 150,
-          cost: {
-            total: 0.001,
-            input: 0.0005,
-            output: 0.0004,
-            cacheRead: 0.00005,
-            cacheWrite: 0.000001,
-          },
-        },
-      },
-    };
-
-    // Write initial file with header + one message
-    let content = `${JSON.stringify(sessionHeader)}\n${JSON.stringify(usageMessage1)}\n`;
+    const h = header("session-004");
+    const msg1 = usageMsg("msg-001", "2026-03-23T12:05:00Z", 100, 50, 0.001);
+    let content = `${JSON.stringify(h)}\n${JSON.stringify(msg1)}\n`;
     writeFileSync(filePath, content);
 
-    // Set up database
-    const db = new Database(dbPath);
-    db.run("PRAGMA journal_mode=WAL");
-    db.run(`
-      CREATE TABLE usage_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id TEXT NOT NULL,
-        project TEXT NOT NULL,
-        timestamp INTEGER NOT NULL,
-        provider TEXT NOT NULL,
-        model TEXT NOT NULL,
-        input_tokens INTEGER DEFAULT 0,
-        output_tokens INTEGER DEFAULT 0,
-        cache_read_tokens INTEGER DEFAULT 0,
-        cache_write_tokens INTEGER DEFAULT 0,
-        cost_usd REAL,
-        cost_input REAL,
-        cost_output REAL,
-        cost_cache_read REAL,
-        cost_cache_write REAL,
-        UNIQUE(session_id, timestamp, model)
-      )
-    `);
-    db.run(`
-      CREATE TABLE sessions (
-        id TEXT PRIMARY KEY,
-        project TEXT NOT NULL,
-        session_name TEXT,
-        started_at INTEGER NOT NULL,
-        ended_at INTEGER,
-        message_count INTEGER DEFAULT 0,
-        total_input INTEGER DEFAULT 0,
-        total_output INTEGER DEFAULT 0,
-        total_cache_read INTEGER DEFAULT 0,
-        total_cache_write INTEGER DEFAULT 0,
-        total_cost REAL,
-        primary_model TEXT,
-        primary_provider TEXT
-      )
-    `);
-    db.run(`
-      CREATE TABLE processing_state (
-        file_path TEXT PRIMARY KEY,
-        last_offset INTEGER DEFAULT 0,
-        last_modified INTEGER
-      )
-    `);
+    const db = makeDb(tmpDir);
+    processFile(db, filePath, "session.jsonl", h, content);
 
-    // First scan: process initial file
-    processFile(db, filePath, "session.jsonl", sessionHeader, content);
-
-    // Verify first message was processed
-    let events = db.query<any, []>("SELECT * FROM usage_events").all();
-    expect(events.length).toBe(1);
     let sessions = db.query<any, []>("SELECT * FROM sessions").all();
-    expect(sessions.length).toBe(1);
     expect(sessions[0].message_count).toBe(1);
     expect(sessions[0].total_input).toBe(100);
 
-    // Get the stored offset
-    const state = db
+    const firstScanOffset = db
       .query<{ last_offset: number }, []>("SELECT last_offset FROM processing_state")
-      .get();
-    expect(state).toBeTruthy();
-    const firstScanOffset = state!.last_offset;
+      .get()!.last_offset;
 
-    // Append a second message
-    const usageMessage2 = {
-      type: "message",
-      id: "msg-002",
-      timestamp: "2026-03-23T12:10:00Z",
-      message: {
-        role: "assistant",
-        provider: "anthropic",
-        model: "claude-opus",
-        usage: {
-          input: 200,
-          output: 100,
-          cacheRead: 0,
-          cacheWrite: 0,
-          totalTokens: 300,
-          cost: {
-            total: 0.002,
-            input: 0.001,
-            output: 0.0008,
-            cacheRead: 0.0001,
-            cacheWrite: 0.000002,
-          },
-        },
-      },
-    };
-
-    content = `${JSON.stringify(sessionHeader)}\n${JSON.stringify(usageMessage1)}\n${JSON.stringify(usageMessage2)}\n`;
+    const msg2 = usageMsg("msg-002", "2026-03-23T12:10:00Z", 200, 100, 0.002);
+    content = `${JSON.stringify(h)}\n${JSON.stringify(msg1)}\n${JSON.stringify(msg2)}\n`;
     writeFileSync(filePath, content);
+    processFile(db, filePath, "session.jsonl", h, content, firstScanOffset);
 
-    // Second scan: incremental processing with lastOffset
-    processFile(db, filePath, "session.jsonl", sessionHeader, content, firstScanOffset);
-
-    // Verify both messages are now in the database
-    events = db.query<any, []>("SELECT * FROM usage_events").all();
-    expect(events.length).toBe(2);
-
+    expect(db.query<any, []>("SELECT * FROM usage_events").all().length).toBe(2);
     sessions = db.query<any, []>("SELECT * FROM sessions").all();
-    expect(sessions.length).toBe(1);
     expect(sessions[0].message_count).toBe(2);
-    expect(sessions[0].total_input).toBe(300); // 100 + 200
-    expect(sessions[0].total_output).toBe(150); // 50 + 100
-
+    expect(sessions[0].total_input).toBe(300);
+    expect(sessions[0].total_output).toBe(150);
     db.close();
   });
 
   test("processFile handles partial lines correctly", () => {
     const tmpDir = mkdtempSync("/tmp/usage-scanner-test-");
-    const dbPath = join(tmpDir, "test.db");
     const filePath = join(tmpDir, "session.jsonl");
+    const h = header("session-005");
+    const msg1 = usageMsg("msg-001", "2026-03-23T12:05:00Z", 100, 50, 0.001);
+    const msg2 = usageMsg("msg-002", "2026-03-23T12:10:00Z", 200, 100, 0.002);
 
-    const sessionHeader = {
-      type: "session",
-      version: 1,
-      id: "session-005",
-      timestamp: "2026-03-23T12:00:00Z",
-      cwd: "/project/test",
-    } as const;
-
-    const usageMessage1 = {
-      type: "message",
-      id: "msg-001",
-      timestamp: "2026-03-23T12:05:00Z",
-      message: {
-        role: "assistant",
-        provider: "anthropic",
-        model: "claude-opus",
-        usage: {
-          input: 100,
-          output: 50,
-          cacheRead: 0,
-          cacheWrite: 0,
-          totalTokens: 150,
-          cost: {
-            total: 0.001,
-            input: 0.0005,
-            output: 0.0004,
-            cacheRead: 0.00005,
-            cacheWrite: 0.000001,
-          },
-        },
-      },
-    };
-
-    const usageMessage2 = {
-      type: "message",
-      id: "msg-002",
-      timestamp: "2026-03-23T12:10:00Z",
-      message: {
-        role: "assistant",
-        provider: "anthropic",
-        model: "claude-opus",
-        usage: {
-          input: 200,
-          output: 100,
-          cacheRead: 0,
-          cacheWrite: 0,
-          totalTokens: 300,
-          cost: {
-            total: 0.002,
-            input: 0.001,
-            output: 0.0008,
-            cacheRead: 0.0001,
-            cacheWrite: 0.000002,
-          },
-        },
-      },
-    };
-
-    // Write file with one complete message and a partial line (cut mid-JSON)
-    const completeMsg = JSON.stringify(usageMessage2);
-    const partialLine = completeMsg.slice(0, 50); // Cut the message mid-way, no newline
-    let content = `${JSON.stringify(sessionHeader)}\n${JSON.stringify(usageMessage1)}\n${partialLine}`;
+    // File with one complete message and a partial line (cut mid-JSON, no newline)
+    const partialLine = JSON.stringify(msg2).slice(0, 50);
+    let content = `${JSON.stringify(h)}\n${JSON.stringify(msg1)}\n${partialLine}`;
     writeFileSync(filePath, content);
 
-    // Set up database
-    const db = new Database(dbPath);
-    db.run("PRAGMA journal_mode=WAL");
-    db.run(`
-      CREATE TABLE usage_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id TEXT NOT NULL,
-        project TEXT NOT NULL,
-        timestamp INTEGER NOT NULL,
-        provider TEXT NOT NULL,
-        model TEXT NOT NULL,
-        input_tokens INTEGER DEFAULT 0,
-        output_tokens INTEGER DEFAULT 0,
-        cache_read_tokens INTEGER DEFAULT 0,
-        cache_write_tokens INTEGER DEFAULT 0,
-        cost_usd REAL,
-        cost_input REAL,
-        cost_output REAL,
-        cost_cache_read REAL,
-        cost_cache_write REAL,
-        UNIQUE(session_id, timestamp, model)
-      )
-    `);
-    db.run(`
-      CREATE TABLE sessions (
-        id TEXT PRIMARY KEY,
-        project TEXT NOT NULL,
-        session_name TEXT,
-        started_at INTEGER NOT NULL,
-        ended_at INTEGER,
-        message_count INTEGER DEFAULT 0,
-        total_input INTEGER DEFAULT 0,
-        total_output INTEGER DEFAULT 0,
-        total_cache_read INTEGER DEFAULT 0,
-        total_cache_write INTEGER DEFAULT 0,
-        total_cost REAL,
-        primary_model TEXT,
-        primary_provider TEXT
-      )
-    `);
-    db.run(`
-      CREATE TABLE processing_state (
-        file_path TEXT PRIMARY KEY,
-        last_offset INTEGER DEFAULT 0,
-        last_modified INTEGER
-      )
-    `);
+    const db = makeDb(tmpDir);
+    processFile(db, filePath, "session.jsonl", h, content);
 
-    // First scan: should process complete message but skip partial line (no trailing newline)
-    processFile(db, filePath, "session.jsonl", sessionHeader, content);
+    expect(db.query<any, []>("SELECT * FROM usage_events").all().length).toBe(1);
+    expect(db.query<any, []>("SELECT * FROM sessions").all()[0].message_count).toBe(1);
 
-    // Verify only the complete message was processed (not the partial line)
-    let events = db.query<any, []>("SELECT * FROM usage_events").all();
-    expect(events.length).toBe(1); // Only message1 should be processed
-    let sessions = db.query<any, []>("SELECT * FROM sessions").all();
-    expect(sessions[0].message_count).toBe(1);
-
-    // Get the stored offset (should be after the first complete message's newline)
-    const state = db
+    const firstScanOffset = db
       .query<{ last_offset: number }, []>("SELECT last_offset FROM processing_state")
-      .get();
-    const firstScanOffset = state!.last_offset;
+      .get()!.last_offset;
+    // Offset must point exactly at the start of the partial line — i.e. the
+    // partial bytes were NOT consumed.
+    expect(firstScanOffset).toBe(
+      Buffer.byteLength(`${JSON.stringify(h)}\n${JSON.stringify(msg1)}\n`, "utf-8"),
+    );
 
-    // Now complete the partial line and add a new complete line
-    content = `${JSON.stringify(sessionHeader)}\n${JSON.stringify(usageMessage1)}\n${JSON.stringify(usageMessage2)}\n`;
+    // Complete the partial line
+    content = `${JSON.stringify(h)}\n${JSON.stringify(msg1)}\n${JSON.stringify(msg2)}\n`;
+    writeFileSync(filePath, content);
+    processFile(db, filePath, "session.jsonl", h, content, firstScanOffset);
+
+    expect(db.query<any, []>("SELECT * FROM usage_events").all().length).toBe(2);
+    expect(db.query<any, []>("SELECT * FROM sessions").all()[0].message_count).toBe(2);
+    db.close();
+  });
+
+  test("replaying the same file does not double-count summaries", () => {
+    const tmpDir = mkdtempSync("/tmp/usage-scanner-test-");
+    const filePath = join(tmpDir, "session.jsonl");
+    const h = header("session-replay");
+    const msg1 = usageMsg("msg-001", "2026-03-23T12:05:00Z", 100, 50, 0.001);
+    const msg2 = usageMsg("msg-002", "2026-03-23T12:10:00Z", 200, 100, 0.002);
+    const content = `${JSON.stringify(h)}\n${JSON.stringify(msg1)}\n${JSON.stringify(msg2)}\n`;
     writeFileSync(filePath, content);
 
-    // Second scan: should process message2 (which completes the partial line)
-    processFile(db, filePath, "session.jsonl", sessionHeader, content, firstScanOffset);
+    const db = makeDb(tmpDir);
+    processFile(db, filePath, "session.jsonl", h, content);
+    // Replay from offset 0 (e.g. lost processing_state row) — events are
+    // deduped by event_uid, and summaries must not inflate.
+    processFile(db, filePath, "session.jsonl", h, content);
+    processFile(db, filePath, "session.jsonl", h, content);
 
-    // Verify message2 was processed
-    events = db.query<any, []>("SELECT * FROM usage_events").all();
-    expect(events.length).toBe(2); // message1 from first scan + message2 from second scan
-    sessions = db.query<any, []>("SELECT * FROM sessions").all();
-    expect(sessions[0].message_count).toBe(2);
+    expect(db.query<any, []>("SELECT * FROM usage_events").all().length).toBe(2);
+    const s = db.query<any, []>("SELECT * FROM sessions").all()[0];
+    expect(s.message_count).toBe(2);
+    expect(s.total_input).toBe(300);
+    expect(s.total_output).toBe(150);
+    expect(s.total_cost).toBeCloseTo(0.003, 6);
+    db.close();
+  });
 
+  test("distinct events with identical (session, timestamp, model) are both recorded", () => {
+    const tmpDir = mkdtempSync("/tmp/usage-scanner-test-");
+    const filePath = join(tmpDir, "session.jsonl");
+    const h = header("session-samets");
+    // Two distinct API calls in the same millisecond with the same model —
+    // the old UNIQUE(session_id, timestamp, model) key silently dropped one.
+    const msg1 = usageMsg("msg-001", "2026-03-23T12:05:00Z", 100, 50, 0.001);
+    const msg2 = usageMsg("msg-002", "2026-03-23T12:05:00Z", 200, 100, 0.002);
+    const content = `${JSON.stringify(h)}\n${JSON.stringify(msg1)}\n${JSON.stringify(msg2)}\n`;
+    writeFileSync(filePath, content);
+
+    const db = makeDb(tmpDir);
+    processFile(db, filePath, "session.jsonl", h, content);
+
+    expect(db.query<any, []>("SELECT * FROM usage_events").all().length).toBe(2);
+    const s = db.query<any, []>("SELECT * FROM sessions").all()[0];
+    expect(s.total_input).toBe(300);
+    db.close();
+  });
+
+  test("malformed complete line stops processing and records its exact byte start", () => {
+    const tmpDir = mkdtempSync("/tmp/usage-scanner-test-");
+    const filePath = join(tmpDir, "session.jsonl");
+    const h = header("session-badline");
+    const msg1 = usageMsg("msg-001", "2026-03-23T12:05:00Z", 100, 50, 0.001);
+    const msg2 = usageMsg("msg-002", "2026-03-23T12:10:00Z", 200, 100, 0.002);
+    const prefix = `${JSON.stringify(h)}\n${JSON.stringify(msg1)}\n`;
+    const content = `${prefix}{not json}\n${JSON.stringify(msg2)}\n`;
+    writeFileSync(filePath, content);
+
+    const db = makeDb(tmpDir);
+    processFile(db, filePath, "session.jsonl", h, content);
+
+    // Only the message before the malformed line was processed; the offset
+    // points at the malformed line's byte start, not past msg2.
+    expect(db.query<any, []>("SELECT * FROM usage_events").all().length).toBe(1);
+    const offset = db
+      .query<{ last_offset: number }, []>("SELECT last_offset FROM processing_state")
+      .get()!.last_offset;
+    expect(offset).toBe(Buffer.byteLength(prefix, "utf-8"));
+    db.close();
+  });
+
+  test("rebuild replaces obsolete accounting for a truncated/rewritten file", () => {
+    const tmpDir = mkdtempSync("/tmp/usage-scanner-test-");
+    const filePath = join(tmpDir, "session.jsonl");
+    const h = header("session-truncate");
+    const msg1 = usageMsg("msg-001", "2026-03-23T12:05:00Z", 100, 50, 0.001);
+    const msg2 = usageMsg("msg-002", "2026-03-23T12:10:00Z", 200, 100, 0.002);
+    let content = `${JSON.stringify(h)}\n${JSON.stringify(msg1)}\n${JSON.stringify(msg2)}\n`;
+    writeFileSync(filePath, content);
+
+    const db = makeDb(tmpDir);
+    processFile(db, filePath, "session.jsonl", h, content);
+    expect(db.query<any, []>("SELECT * FROM sessions").all()[0].total_input).toBe(300);
+
+    // File rewritten shorter (e.g. trimmed history): only msg1 remains.
+    content = `${JSON.stringify(h)}\n${JSON.stringify(msg1)}\n`;
+    writeFileSync(filePath, content);
+    processFile(db, filePath, "session.jsonl", h, content, undefined, { rebuild: true });
+
+    expect(db.query<any, []>("SELECT * FROM usage_events").all().length).toBe(1);
+    const s = db.query<any, []>("SELECT * FROM sessions").all()[0];
+    expect(s.total_input).toBe(100);
+    expect(s.total_output).toBe(50);
+    expect(s.message_count).toBe(1);
+    // Offset state reflects the rebuilt (shorter) file
+    const offset = db
+      .query<{ last_offset: number }, []>("SELECT last_offset FROM processing_state")
+      .get()!.last_offset;
+    expect(offset).toBe(Buffer.byteLength(content, "utf-8"));
+    db.close();
+  });
+
+  test("rebuild also purges legacy NULL-uid rows for the session", () => {
+    const tmpDir = mkdtempSync("/tmp/usage-scanner-test-");
+    const filePath = join(tmpDir, "session.jsonl");
+    const h = header("session-legacy");
+    const msg1 = usageMsg("msg-001", "2026-03-23T12:05:00Z", 100, 50, 0.001);
+    const content = `${JSON.stringify(h)}\n${JSON.stringify(msg1)}\n`;
+    writeFileSync(filePath, content);
+
+    const db = makeDb(tmpDir);
+    // Simulate a pre-migration row (event_uid NULL) for the same session
+    db.run(
+      `INSERT INTO usage_events (session_id, project, timestamp, provider, model, input_tokens, output_tokens)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ["session-legacy", "/project/test", 111, "anthropic", "claude-opus", 999, 999],
+    );
+
+    processFile(db, filePath, "session.jsonl", h, content, undefined, { rebuild: true });
+
+    const events = db.query<any, []>("SELECT * FROM usage_events").all();
+    expect(events.length).toBe(1);
+    expect(events[0].input_tokens).toBe(100);
+    expect(db.query<any, []>("SELECT * FROM sessions").all()[0].total_input).toBe(100);
     db.close();
   });
 });
