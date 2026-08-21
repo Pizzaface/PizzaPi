@@ -555,6 +555,10 @@ export async function sweepOrphanedRunners(): Promise<void> {
         }
 
         log.info(`Pruning orphaned runner ${runner.runnerId} (${runner.name ?? "unnamed"}) — not reconnected after restart`);
+        // Revoke the persistent secret too (mirrors removeRunner) — otherwise a
+        // stale daemon or attacker holding the old runnerId/secret could reclaim
+        // an identity the relay already considers dead.
+        await deleteRunnerSecret(runner.runnerId);
         await deleteRunnerState(runner.runnerId);
         void broadcastToRunnersNs(
             "runner_removed",
