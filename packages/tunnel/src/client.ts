@@ -304,7 +304,8 @@ export class TunnelClient extends EventEmitter {
       );
       req.on("timeout", () => {
         req.destroy();
-        done(null);
+        if (canRetry) tryFamily(otherLoopback(bracketHost), false);
+        else done(null);
       });
       req.on("error", () => {
         // TLS failed — is anything listening at all? (Bun reports bogus
@@ -312,7 +313,8 @@ export class TunnelClient extends EventEmitter {
         const sock = net.connect({ host, port });
         sock.setTimeout(1500, () => {
           sock.destroy();
-          done(null);
+          if (canRetry) tryFamily(otherLoopback(bracketHost), false);
+          else done(null);
         });
         sock.once("connect", () => {
           sock.destroy();
