@@ -157,7 +157,9 @@ export interface RelayServerToClientEvents {
     attachments?: Attachment[];
     client?: string;
     deliverAs?: "steer" | "followUp";
-  }) => void;
+    /** Viewer delivery attempt ID, preserved for mixed-version idempotency. */
+    requestId?: string;
+  }, ack?: (delivered: boolean) => void) => void;
 
   /** Instructs TUI to switch model */
   model_set: (data: {

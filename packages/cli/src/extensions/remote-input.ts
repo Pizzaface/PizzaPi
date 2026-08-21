@@ -154,17 +154,21 @@ export async function buildUserMessageFromRemoteInput(
 
         if (attachment.attachmentId) {
             const loaded = await loadAttachmentFromRelay(attachment.attachmentId, httpBaseUrl, apiKey);
-            if (loaded) {
-                mediaType = loaded.mediaType;
-                filename = loaded.filename ?? filename;
-                dataBase64 = loaded.dataBase64;
+            if (!loaded) {
+                throw new Error(`Attachment ${attachment.attachmentId} could not be retrieved or has expired`);
             }
+            mediaType = loaded.mediaType;
+            filename = loaded.filename ?? filename;
+            dataBase64 = loaded.dataBase64;
         } else if (attachment.url) {
             const parsed = parseDataUrl(attachment.url);
-            if (parsed) {
-                mediaType = parsed.mediaType;
-                dataBase64 = parsed.data;
+            if (!parsed || !parsed.data) {
+                throw new Error(`Attachment ${filename || "file"} contains invalid data`);
             }
+            mediaType = parsed.mediaType;
+            dataBase64 = parsed.data;
+        } else {
+            throw new Error(`Attachment ${filename || "file"} has no usable data`);
         }
 
         // Persist attachment to session-scoped storage.
@@ -181,6 +185,7 @@ export async function buildUserMessageFromRemoteInput(
                 savedPath = saved.filePath;
             } catch (err) {
                 log.error(`pizzapi: failed to persist attachment: ${err instanceof Error ? err.message : String(err)}`);
+                throw new Error(`Attachment ${attachFilename} could not be persisted`);
             }
         }
 
@@ -215,9 +220,8 @@ export async function buildUserMessageFromRemoteInput(
             continue;
         }
 
-        // Attachment bytes unavailable (relay fetch failed or data URL invalid) — keep a
-        // visible placeholder so the agent/user knows the file was sent but not decoded.
-        parts.push({ type: "text", text: `[Attached file: ${label} — content unavailable]` });
+        // Explicit attachments must never degrade into successful placeholder text.
+        throw new Error(`Attachment ${label} has no readable content`);
     }
 
     return parts.length > 0 ? parts : text;

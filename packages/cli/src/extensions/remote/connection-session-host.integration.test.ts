@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { SessionHost } from "../../runner/session-host.js";
 
 class FakeSocket {
-    handlers = new Map<string, Array<(data: any) => void>>();
+    handlers = new Map<string, Array<(...args: any[]) => void>>();
     connected = true;
     emit = mock((_event: string, _data?: any) => {});
     removeAllListeners = mock(() => this.handlers.clear());
@@ -24,13 +24,14 @@ class FakeSocket {
         return this;
     }
     off() { return this; }
-    trigger(event: string, data?: any) {
-        for (const handler of this.handlers.get(event) ?? []) handler(data);
+    trigger(event: string, ...args: any[]) {
+        for (const handler of this.handlers.get(event) ?? []) handler(...args);
     }
     io = { on: () => this.io };
 }
 
 let lastSocket: FakeSocket | null = null;
+let consumeApproval = false;
 
 mock.module("socket.io-client", () => ({
     io: mock(() => { lastSocket = new FakeSocket(); return lastSocket; }),
@@ -65,6 +66,15 @@ mock.module("../remote-meta-events.js", () => ({
     emitApprovalPending: mock(() => {}), emitApprovalCleared: mock(() => {}),
 }));
 mock.module("../remote-auth-source.js", () => ({ getAuthSource: mock(() => null), authSourceLabel: mock(() => "") }));
+mock.module("../remote-approval.js", () => ({
+    consumePendingApprovalFromWeb: mock(() => consumeApproval),
+    cancelPendingApproval: mock(() => {}),
+    registerApprovalBridge: mock(() => () => {}),
+    setApprovalHandler: mock(() => {}),
+    clearApprovalHandler: mock(() => {}),
+    getApprovalHandler: mock(() => null),
+    requestApprovalViaWeb: mock(async () => false),
+}));
 mock.module("../remote-ask-user.js", () => ({
     cancelPendingAskUserQuestion: mock(() => {}),
     consumePendingAskUserQuestionFromWeb: mock(() => false),
@@ -146,6 +156,7 @@ function makeState() {
 describe("connection handler -> SessionHost -> AgentSession.prompt integration", () => {
     beforeEach(() => {
         lastSocket = null;
+        consumeApproval = false;
         _resetWorkerStartupGateForTesting();
     });
     afterEach(() => {
@@ -187,6 +198,33 @@ describe("connection handler -> SessionHost -> AgentSession.prompt integration",
             images: undefined,
             source: "extension",
         });
+    });
+
+    test("acknowledges an interactive response consumed by the runner", async () => {
+        const fakeSession = { prompt: mock(async () => {}) } as any;
+        const host = new SessionHost(() => fakeSession, {
+            newSession: async () => ({ cancelled: false }),
+            switchSession: async () => ({ cancelled: false }),
+            fork: async () => ({ cancelled: false }),
+        });
+        const { rctx } = makeRctx(host);
+        const { connectionHandlers } = createConnectionHandlers({
+            rctx,
+            state: makeState() as any,
+            triggerWaits: { cancelAll: () => 0 } as any,
+            delinkManager: {} as any,
+            cancellationManager: {} as any,
+            followUpGrace: { clearFollowUpGrace: () => {} } as any,
+            setModelFromWeb: async () => {},
+        });
+        consumeApproval = true;
+        const ack = mock((_delivered: boolean) => {});
+
+        connect(rctx, connectionHandlers);
+        lastSocket!.trigger("input", { text: "approve" }, ack);
+
+        expect(ack).toHaveBeenCalledWith(true);
+        expect(fakeSession.prompt).not.toHaveBeenCalled();
     });
 
     test("trigger batch does NOT opt into prompt-template expansion and uses steer streaming", async () => {

@@ -276,10 +276,18 @@ describe("relay — RelayServerToClientEvents payloads", () => {
       attachments: [attachment],
       client: "mobile-web",
       deliverAs: "steer",
+      requestId: "req-1",
     };
     expect(full.attachments).toHaveLength(1);
     expect(full.client).toBe("mobile-web");
     expect(full.deliverAs).toBe("steer");
+    expect(full.requestId).toBe("req-1");
+  });
+
+  test("input supports an optional delivery acknowledgement", () => {
+    type Ack = Parameters<RelayServerToClientEvents["input"]>[1];
+    const ack: Ack = (delivered) => expect(delivered).toBe(true);
+    ack?.(true);
   });
 
   test("model_set carries provider and modelId", () => {

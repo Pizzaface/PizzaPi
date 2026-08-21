@@ -139,7 +139,9 @@ export interface ViewerClientToServerEvents {
     attachments?: Attachment[];
     client?: string;
     deliverAs?: "steer" | "followUp";
-  }) => void;
+    /** Identifies this delivery attempt across acknowledgement-capable versions. */
+    requestId?: string;
+  }, ack?: (delivered: boolean) => void) => void;
 
   /** Instruct TUI to switch model (collab mode) */
   model_set: (data: {

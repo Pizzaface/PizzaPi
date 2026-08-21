@@ -166,10 +166,12 @@ describe("viewer — ViewerClientToServerEvents payloads", () => {
       attachments: [attachment],
       client: "web",
       deliverAs: "followUp",
+      requestId: "req-1",
     };
     expect(full.attachments).toHaveLength(1);
     expect(full.client).toBe("web");
     expect(full.deliverAs).toBe("followUp");
+    expect(full.requestId).toBe("req-1");
   });
 
   test("input deliverAs can be 'steer' or 'followUp'", () => {
@@ -178,6 +180,12 @@ describe("viewer — ViewerClientToServerEvents payloads", () => {
     const followUp: Payload = { text: "follow up", deliverAs: "followUp" };
     expect(steer.deliverAs).toBe("steer");
     expect(followUp.deliverAs).toBe("followUp");
+  });
+
+  test("input supports an optional delivery acknowledgement", () => {
+    type Ack = Parameters<ViewerClientToServerEvents["input"]>[1];
+    const ack: Ack = (delivered) => expect(delivered).toBe(true);
+    ack?.(true);
   });
 
   test("model_set carries provider and modelId", () => {

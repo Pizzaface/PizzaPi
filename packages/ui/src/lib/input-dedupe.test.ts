@@ -49,4 +49,10 @@ describe("input dedupe state", () => {
 
     expect(shouldDeduplicateInput(state, "world", 1100, 500)).toBe(false);
   });
+
+  test("does not deduplicate the same caption with different file identity", () => {
+    const state = beginInputAttempt("hello\u0000file:1", 1000, 1);
+
+    expect(shouldDeduplicateInput(state, "hello\u0000file:2", 1100, 500)).toBe(false);
+  });
 });
