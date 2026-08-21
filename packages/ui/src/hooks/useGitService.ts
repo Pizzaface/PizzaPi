@@ -160,7 +160,7 @@ export interface UseGitServiceReturn {
     rebaseAbort: () => void;
     rebaseContinue: () => void;
     addWorktree: (branch: string, path: string, opts?: { base?: string; create?: boolean; isRemote?: boolean }) => void;
-    removeWorktree: (path: string, force?: boolean) => void;
+    removeWorktree: (path: string, force?: boolean, overrideInUse?: boolean) => void;
     pruneWorktrees: () => void;
     clearOperationResult: () => void;
 }
@@ -203,6 +203,8 @@ export function useGitService(cwd: string): UseGitServiceReturn {
     const requestGenerationRef = useRef(new Map<string, number>());
     const lastBranchFetchRef = useRef(0);
     const conflictActiveRef = useRef(false);
+    // Highest git_repo_changed version seen — stale/duplicate broadcasts are dropped.
+    const lastRepoVersionRef = useRef(0);
 
     // Generation counter — incremented on cwd change. Responses from stale
     // generations are discarded so a slow response from the old cwd doesn't
@@ -618,6 +620,18 @@ export function useGitService(cwd: string): UseGitServiceReturn {
                     if (payload.ok || payload.conflict === true) {
                         postMutationRefreshSchedulerRef.current.schedule();
                     }
+                    break;
+                }
+                case "git_repo_changed": {
+                    // Versioned repo-wide invalidation push — the runner broadcasts
+                    // this to every subscriber after metadata changes and mutations
+                    // so non-initiating viewers refresh branches/worktrees/commits.
+                    const payloadCwd = typeof payload.cwd === "string" ? payload.cwd : null;
+                    if (!payloadCwd || payloadCwd !== cwdRef.current) break;
+                    const version = typeof payload.version === "number" ? payload.version : 0;
+                    if (version <= lastRepoVersionRef.current) break;
+                    lastRepoVersionRef.current = version;
+                    postMutationRefreshSchedulerRef.current.schedule();
                     break;
                 }
                 case "git_stage_result":
@@ -1044,13 +1058,13 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         }, requestId);
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
-    const removeWorktree = useCallback((path: string, force = false) => {
+    const removeWorktree = useCallback((path: string, force = false, overrideInUse = false) => {
         if (!available || !path) return;
         const requestId = makeRequestId();
         registerRequestGeneration(requestId);
         setOperationInProgress("worktree-remove");
         setLastOperationResult(null);
-        send("git_worktree_remove", { cwd, path, force }, requestId);
+        send("git_worktree_remove", { cwd, path, force, ...(overrideInUse ? { overrideInUse: true } : {}) }, requestId);
     }, [available, send, cwd, makeRequestId, registerRequestGeneration]);
 
     const pruneWorktrees = useCallback(() => {
@@ -1087,6 +1101,7 @@ export function useGitService(cwd: string): UseGitServiceReturn {
         setLastOperationResult(null);
         setLastConflictType(null);
         conflictActiveRef.current = false;
+        lastRepoVersionRef.current = 0;
         clearPendingRequests("(request cancelled)");
         requestGenerationRef.current.clear();
         pendingFullStatusRequestRef.current = null;

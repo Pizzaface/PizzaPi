@@ -372,3 +372,63 @@ describe("stash actions", () => {
         expect(result.current.stashes).toEqual([]);
     });
 });
+
+describe("git_repo_changed broadcast", () => {
+    /** Settle the initial mount-time full-status request so the refresh scheduler isn't blocked by it. */
+    function settleInitialFullStatus() {
+        const initial = findSendCall("git_full_status");
+        if (initial?.requestId) {
+            emitMessage("git_full_status_result", { ok: true, status: { ok: true, branch: "main", changes: [] }, branches: [], currentBranch: "main", worktrees: [] }, initial.requestId);
+        }
+    }
+
+    test("triggers a debounced full-status refresh for the current cwd", async () => {
+        renderGitHook("/repo");
+        settleInitialFullStatus();
+        sendSpy.mockClear();
+
+        emitMessage("git_repo_changed", { cwd: "/repo", version: 1 });
+
+        await waitFor(() => {
+            expect(findSendCall("git_full_status")).toBeDefined();
+        });
+        expect(findSendCall("git_full_status")!.payload.cwd).toBe("/repo");
+    });
+
+    test("ignores broadcasts for another cwd and stale/duplicate versions", async () => {
+        renderGitHook("/repo");
+        settleInitialFullStatus();
+        sendSpy.mockClear();
+        emitMessage("git_repo_changed", { cwd: "/repo", version: 3 });
+        await waitFor(() => {
+            expect(findSendCall("git_full_status")).toBeDefined();
+        });
+        // Settle the triggered refresh so an in-flight request can't mask the
+        // version/cwd filtering being tested below.
+        settleInitialFullStatus();
+        sendSpy.mockClear();
+
+        // Other repo's broadcast — not ours.
+        emitMessage("git_repo_changed", { cwd: "/elsewhere", version: 9 });
+        // Stale/duplicate version — already handled.
+        emitMessage("git_repo_changed", { cwd: "/repo", version: 3 });
+        emitMessage("git_repo_changed", { cwd: "/repo", version: 2 });
+
+        await new Promise((r) => setTimeout(r, 250));
+        expect(findSendCall("git_full_status")).toBeUndefined();
+    });
+});
+
+describe("removeWorktree overrideInUse", () => {
+    test("passes overrideInUse only when explicitly requested", () => {
+        const { result } = renderGitHook("/repo");
+        sendSpy.mockClear();
+
+        act(() => result.current.removeWorktree("/repo/wt", true));
+        expect(lastSendCall().type).toBe("git_worktree_remove");
+        expect(lastSendCall().payload.overrideInUse).toBeUndefined();
+
+        act(() => result.current.removeWorktree("/repo/wt", true, true));
+        expect(lastSendCall().payload.overrideInUse).toBe(true);
+    });
+});
