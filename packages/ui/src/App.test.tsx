@@ -24,3 +24,19 @@ describe("Tunnel service-message viewer switch guard", () => {
     expect(handler).not.toMatch(/typeof envelope\.sessionId !== "string"/);
   });
 });
+
+describe("App.tsx wiring — matchesViewerSession applied to resync replay path", () => {
+  const src = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+
+  test("imports matchesViewerSession from viewer-switch", () => {
+    expect(src).toMatch(/matchesViewerSession/);
+  });
+
+  test("reads sessionId from the viewer event envelope", () => {
+    expect(src).toMatch(/sessionId.*envelopeSessionId|envelopeSessionId.*sessionId/);
+  });
+
+  test("calls matchesViewerSession before processing envelope events", () => {
+    expect(src).toMatch(/matchesViewerSession\(.*activeSessionId.*envelopeSessionId/s);
+  });
+});
