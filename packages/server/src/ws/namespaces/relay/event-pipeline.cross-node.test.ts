@@ -95,7 +95,11 @@ mock.module("@pizzapi/protocol", () => ({
 
 afterAll(() => mock.restore());
 
-const { registerEventHandler } = await import("./event-pipeline.js");
+const { registerEventHandler, sessionEventQueues } = await import("./event-pipeline.js");
+
+async function drainPipeline(sessionId: string): Promise<void> {
+    await sessionEventQueues.get(sessionId);
+}
 
 function makeSocket(sessionId: string, token: string) {
     const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -134,8 +138,9 @@ describe("A2-017: event pipeline stale cross-node socket rejection", () => {
         await fireA("event", {
             token: "token-node-a",
             seq: 1,
-            event: { type: "heartbeat", active: true },
+            event: { type: "session_active", state: { sessionFile: "stale.json" } },
         });
+        await drainPipeline("sess-1");
 
         expect(stateUpdates).toHaveLength(0);
         expect(broadcasts).toHaveLength(0);
@@ -149,15 +154,12 @@ describe("A2-017: event pipeline stale cross-node socket rejection", () => {
         await fireB("event", {
             token: "token-node-b",
             seq: 2,
-            event: { type: "heartbeat", active: true },
+            event: { type: "session_active", state: { sessionFile: "current.json" } },
         });
+        await drainPipeline("sess-1");
 
-        // heartbeat calls updateSessionHeartbeat (not stateUpdates/broadcasts)
-        // but the key assertion is the event was NOT rejected early.
-        // Since heartbeat doesn't call updateSessionState/broadcastSessionEventToViewers,
-        // we just confirm no errors thrown and token guard didn't block it.
-        // The absence of any throw is the assertion here.
-        expect(true).toBe(true);
+        expect(stateUpdates).toEqual(["sess-1"]);
+        expect(broadcasts).toEqual(["sess-1"]);
     });
 
     it("Redis read throws → fail-open: event is accepted (not dropped)", async () => {
@@ -169,10 +171,15 @@ describe("A2-017: event pipeline stale cross-node socket rejection", () => {
         tokenReadShouldThrow = true; // Redis throws on next read
 
         // Must not reject — event proceeds through the pipeline.
-        await expect(
-            fireA("event", { token: "token-node-a", seq: 1, event: { type: "heartbeat", active: true } }),
-        ).resolves.toBeUndefined();
-        // No unhandled throw means the event was not dropped via a rejection.
+        await fireA("event", {
+            token: "token-node-a",
+            seq: 1,
+            event: { type: "session_active", state: { sessionFile: "redis-error.json" } },
+        });
+        await drainPipeline("sess-1");
+
+        expect(stateUpdates).toEqual(["sess-1"]);
+        expect(broadcasts).toEqual(["sess-1"]);
     });
 
     it("accepts events when Redis has no session yet (sharedOwnerToken === null)", async () => {
@@ -186,6 +193,7 @@ describe("A2-017: event pipeline stale cross-node socket rejection", () => {
             seq: 1,
             event: { type: "heartbeat", active: false },
         });
+        await drainPipeline("sess-1");
 
         expect(stateUpdates).toHaveLength(0); // heartbeat doesn't write state
     });
