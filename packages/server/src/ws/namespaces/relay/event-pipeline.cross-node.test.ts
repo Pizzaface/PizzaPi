@@ -13,6 +13,10 @@ const stateUpdates: string[] = [];
 const broadcasts: string[] = [];
 let redisOwnerToken: string | null = "token-node-a";
 let tokenReadShouldThrow = false;
+let lockHeld = false;
+let rotateOwnershipDuringUpdate = false;
+let replacementWaiting = false;
+const mutationOwnerTokens: Array<string | null> = [];
 
 mock.module("../../sio-registry.js", () => ({
     // After the A2-017 expo fix, getSessionOwnerToken catches Redis errors and
@@ -21,7 +25,16 @@ mock.module("../../sio-registry.js", () => ({
         if (tokenReadShouldThrow) return null;
         return redisOwnerToken;
     },
-    updateSessionState: async (sessionId: string) => { stateUpdates.push(sessionId); },
+    updateSessionState: async (sessionId: string) => {
+        stateUpdates.push(sessionId);
+        mutationOwnerTokens.push(redisOwnerToken);
+        if (rotateOwnershipDuringUpdate) {
+            // Model replacement registration attempting to take the same lock
+            // after the event's initial owner check.
+            replacementWaiting = true;
+            expect(lockHeld).toBe(true);
+        }
+    },
     patchSessionSnapshotState: async () => {},
     touchSessionActivity: async () => {},
     updateSessionHeartbeat: async () => {},
@@ -85,8 +98,14 @@ mock.module("../../../sessions/store.js", () => ({
 }));
 
 mock.module("../../sio-state/index.js", () => ({
-    acquireSessionOwnershipLock: async () => {},
-    releaseSessionOwnershipLock: async () => {},
+    acquireSessionOwnershipLock: async () => { lockHeld = true; },
+    releaseSessionOwnershipLock: async () => {
+        lockHeld = false;
+        if (replacementWaiting) {
+            redisOwnerToken = "token-node-b";
+            replacementWaiting = false;
+        }
+    },
     updateSessionFields: async () => {},
 }));
 
@@ -127,6 +146,10 @@ describe("A2-017: event pipeline stale cross-node socket rejection", () => {
         broadcasts.length = 0;
         redisOwnerToken = "token-node-a";
         tokenReadShouldThrow = false;
+        lockHeld = false;
+        rotateOwnershipDuringUpdate = false;
+        replacementWaiting = false;
+        mutationOwnerTokens.length = 0;
     });
 
     it("rejects a stale event (token mismatch) — no state update or broadcast", async () => {
@@ -162,6 +185,25 @@ describe("A2-017: event pipeline stale cross-node socket rejection", () => {
 
         expect(stateUpdates).toEqual(["sess-1"]);
         expect(broadcasts).toEqual(["sess-1"]);
+    });
+
+    it("serializes replacement registration that starts after the initial ownership check", async () => {
+        const { socket, fire } = makeSocket("sess-1", "token-node-a");
+        registerEventHandler(socket);
+        rotateOwnershipDuringUpdate = true;
+
+        await fire("event", {
+            token: "token-node-a",
+            seq: 3,
+            event: { type: "session_active", state: { sessionFile: "old-owner.json" } },
+        });
+        await drainPipeline("sess-1");
+
+        // Every mutation completed under the old owner's lock; only then could
+        // replacement registration rotate the shared token.
+        expect(mutationOwnerTokens).toEqual(["token-node-a"]);
+        expect(redisOwnerToken).toBe("token-node-b");
+        expect(lockHeld).toBe(false);
     });
 
     it("Redis read throws → fail-closed: event is dropped", async () => {

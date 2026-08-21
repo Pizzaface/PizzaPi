@@ -97,27 +97,25 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             return;
         }
 
-        clearThinkingMaps(sessionId);
-        forgetViewerGate(sessionId);
-        // Defer chunked-state cleanup until all previously-queued
-        // session_messages_chunk handlers have finished.  If we deleted
-        // pendingChunkedStates immediately, any chunks still queued in
-        // enqueueSessionEvent() would wake up, find no pending state, and
-        // skip final assembly — leaving the session with a stale snapshot.
+        // Drain older events first, then perform every cleanup step only after
+        // endSharedSession has revalidated ownership under its distributed lock.
+        let ended = false;
         await enqueueSessionEvent(sessionId, async () => {
-            pendingChunkedStates.delete(sessionId);
+            ended = await endSharedSession(sessionId, "Session ended", {
+                confirmedTerminal: true,
+                expectedOwnerToken: socket.data.token,
+                onOwnerConfirmed: async () => {
+                    clearThinkingMaps(sessionId);
+                    forgetViewerGate(sessionId);
+                    pendingChunkedStates.delete(sessionId);
+                    await clearPushPendingQuestion(sessionId);
+                    // Graceful end — delete the durable runner association so it
+                    // isn't restored if a new session reuses this ID later.
+                    await deleteRunnerAssociation(sessionId);
+                },
+            });
         });
-        void clearPushPendingQuestion(sessionId);
-        // Graceful end — delete the durable runner association so it
-        // isn't restored if a new session reuses this ID later.
-        await deleteRunnerAssociation(sessionId);
-        // Graceful session_end is a confirmed terminal end — remove this child
-        // from its parent's membership set (fixes subagent-mirror leak).
-        await endSharedSession(sessionId, "Session ended", {
-            confirmedTerminal: true,
-            expectedOwnerToken: socket.data.token,
-        });
-        socket.data.sessionId = undefined;
+        if (ended) socket.data.sessionId = undefined;
         socketAckedSeqs.delete(socket.id);
     });
 
@@ -177,24 +175,23 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
                 return;
             }
 
-            clearThinkingMaps(sessionId);
-            forgetViewerGate(sessionId);
-            // Drain chunk handlers before deleting their assembly state or the
-            // last queued chunk can lose the durable checkpoint on disconnect.
+            // Drain chunk handlers before teardown. The cleanup callback runs
+            // only after ownership is revalidated under the same lock that
+            // serializes replacement registration.
             await enqueueSessionEvent(sessionId, async () => {
-                pendingChunkedStates.delete(sessionId);
+                await endSharedSession(sessionId, "Session ended", {
+                    expectedOwnerToken: socket.data.token,
+                    onOwnerConfirmed: async () => {
+                        clearThinkingMaps(sessionId);
+                        forgetViewerGate(sessionId);
+                        pendingChunkedStates.delete(sessionId);
+                        await clearPushPendingQuestion(sessionId);
+                    },
+                });
             });
-            void clearPushPendingQuestion(sessionId);
             // NOTE: We intentionally do NOT remove the child from the
-            // parent's children set here.  Doing so races with
-            // delink_children: if the child disconnects before the parent
-            // fires /new, delink_children's getChildSessions() snapshot
-            // won't include it and no delink marker will be written.  When
-            // the child reconnects, registerTuiSession() would re-link it
-            // to the parent's new conversation.  Leaving the membership in
-            // place is harmless — delink_children will clean it up, and
-            // stale entries are pruned when the session key expires.
-            await endSharedSession(sessionId, "Session ended", { expectedOwnerToken: socket.data.token });
+            // parent's children set here. Doing so races with delink_children;
+            // leaving membership in place lets that path write its delink marker.
         }
         socketAckedSeqs.delete(socket.id);
     });

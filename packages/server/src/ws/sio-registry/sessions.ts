@@ -942,12 +942,16 @@ function viewerDisconnectPayload(reason: string): { reason: string; code?: "sess
 export async function endSharedSession(
     sessionId: string,
     reason: string = "Session ended",
-    opts: { confirmedTerminal?: boolean; expectedOwnerToken?: string } = {},
-): Promise<void> {
+    opts: {
+        confirmedTerminal?: boolean;
+        expectedOwnerToken?: string;
+        onOwnerConfirmed?: () => void | Promise<void>;
+    } = {},
+): Promise<boolean> {
     const lockOwner = randomUUID();
     await acquireSessionOwnershipLock(sessionId, lockOwner);
     try {
-        await endSharedSessionUnlocked(sessionId, reason, opts);
+        return await endSharedSessionUnlocked(sessionId, reason, opts);
     } finally {
         await releaseSessionOwnershipLock(sessionId, lockOwner);
     }
@@ -956,20 +960,25 @@ export async function endSharedSession(
 async function endSharedSessionUnlocked(
     sessionId: string,
     reason: string = "Session ended",
-    opts: { confirmedTerminal?: boolean; expectedOwnerToken?: string } = {},
-): Promise<void> {
+    opts: {
+        confirmedTerminal?: boolean;
+        expectedOwnerToken?: string;
+        onOwnerConfirmed?: () => void | Promise<void>;
+    } = {},
+): Promise<boolean> {
     const io = getIo();
     if (opts.expectedOwnerToken !== undefined) {
         const currentOwnerToken = await getSessionOwnerToken(sessionId);
         if (currentOwnerToken !== opts.expectedOwnerToken) {
             log.info(`endSharedSession: owner changed for ${sessionId}; skipping teardown`);
-            return;
+            return false;
         }
     }
+    await opts.onOwnerConfirmed?.();
     await deletePendingRunnerLink(sessionId);
 
     const session = await getSession(sessionId);
-    if (!session) return;
+    if (!session) return true;
 
     // On a CONFIRMED terminal end (graceful session_end, expiry, orphan sweep,
     // parent-acknowledged cleanup) remove this child from its parent's
@@ -1069,7 +1078,7 @@ async function endSharedSessionUnlocked(
     // The lock and this atomic delete are defense in depth: ownership was
     // checked before teardown, and the delete still requires an exact token.
     if (opts.expectedOwnerToken !== undefined) {
-        if (!(await deleteSessionIfOwner(sessionId, opts.expectedOwnerToken))) return;
+        if (!(await deleteSessionIfOwner(sessionId, opts.expectedOwnerToken))) return false;
     } else {
         await deleteSession(sessionId);
     }
@@ -1082,6 +1091,7 @@ async function endSharedSessionUnlocked(
 
     // Broadcast removal to hub
     await broadcastToHub("session_removed", { sessionId }, session.userId ?? undefined);
+    return true;
 }
 
 /** Sweep expired ephemeral sessions (Redis + Socket.IO rooms). */

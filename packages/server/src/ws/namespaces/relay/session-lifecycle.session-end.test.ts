@@ -14,8 +14,14 @@ mock.module("../../sio-registry.js", () => ({
     registerTuiSession: async () => ({ sessionId: "s", token: "t", shareUrl: "", parentSessionId: null, wasDelinked: false }),
     getLocalTuiSocket: () => undefined,
     broadcastToViewers: () => {},
-    endSharedSession: async (sessionId: string, reason?: string, opts?: unknown) => {
+    endSharedSession: async (
+        sessionId: string,
+        reason?: string,
+        opts?: { onOwnerConfirmed?: () => void | Promise<void> },
+    ) => {
+        await opts?.onOwnerConfirmed?.();
         endedSessions.push({ sessionId, reason, opts });
+        return true;
     },
     // A2-017: cross-node owner token guard — return matching token so
     // the existing disconnect tests are not blocked by the stale-socket guard.
@@ -74,9 +80,12 @@ describe("session_end handler", () => {
 
         await fire("session_end", { token: "tok" });
 
-        expect(endedSessions).toEqual([
-            { sessionId: "child-mirror", reason: "Session ended", opts: { confirmedTerminal: true, expectedOwnerToken: "tok" } },
-        ]);
+        expect(endedSessions).toHaveLength(1);
+        expect(endedSessions[0]).toEqual({
+            sessionId: "child-mirror",
+            reason: "Session ended",
+            opts: expect.objectContaining({ confirmedTerminal: true, expectedOwnerToken: "tok" }),
+        });
     });
 
     it("stale cross-node session_end cannot end the replacement", async () => {
@@ -97,6 +106,6 @@ describe("session_end handler", () => {
 
         expect(endedSessions.length).toBe(1);
         expect(endedSessions[0].sessionId).toBe("child-mirror");
-        expect(endedSessions[0].opts).toEqual({ expectedOwnerToken: "tok" });
+        expect(endedSessions[0].opts).toEqual(expect.objectContaining({ expectedOwnerToken: "tok" }));
     });
 });

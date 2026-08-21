@@ -13,6 +13,7 @@ import { afterAll, describe, it, expect, beforeEach, mock } from "bun:test";
 
 // ── Shared test state ────────────────────────────────────────────────────────
 const endedSessions: Array<{ sessionId: string; reason?: string; opts?: unknown }> = [];
+const cleanupEffects: string[] = [];
 
 // Current Redis owner token — bumped when the replacement registers.
 let redisOwnerToken: string | null = "token-node-a";
@@ -38,11 +39,17 @@ mock.module("../../sio-registry.js", () => ({
         return localSocketMap.get(sessionId);
     },
     broadcastToViewers: () => {},
-    endSharedSession: async (sessionId: string, reason?: string, opts?: { expectedOwnerToken?: string }) => {
-        // Model the atomic delete guard: a replacement that rotates the token
-        // after the lifecycle check must still prevent deletion.
-        if (opts?.expectedOwnerToken && redisOwnerToken !== opts.expectedOwnerToken) return;
+    endSharedSession: async (
+        sessionId: string,
+        reason?: string,
+        opts?: { expectedOwnerToken?: string; onOwnerConfirmed?: () => void | Promise<void> },
+    ) => {
+        // Model the atomic lock guard: cleanup and deletion only run while the
+        // expected owner is still current.
+        if (opts?.expectedOwnerToken && redisOwnerToken !== opts.expectedOwnerToken) return false;
+        await opts?.onOwnerConfirmed?.();
         endedSessions.push({ sessionId, reason, opts });
+        return true;
     },
     // Returns the CURRENT shared (Redis) owner token — bumped by node-B's register.
     // After the A2-017 expo fix, getSessionOwnerToken catches Redis errors and
@@ -53,8 +60,8 @@ mock.module("../../sio-registry.js", () => ({
 mock.module("../../sio-state/index.js", () => ({
     acquireSessionOwnershipLock: async () => {},
     releaseSessionOwnershipLock: async () => {},
-    clearPushPendingQuestion: async () => {},
-    deleteRunnerAssociation: async () => {},
+    clearPushPendingQuestion: async () => { cleanupEffects.push("push"); },
+    deleteRunnerAssociation: async () => { cleanupEffects.push("runner"); },
 }));
 
 mock.module("./event-pipeline.js", () => ({
@@ -63,8 +70,8 @@ mock.module("./event-pipeline.js", () => ({
 }));
 
 mock.module("./ack-tracker.js", () => ({ socketAckedSeqs: new Map() }));
-mock.module("./thinking-tracker.js", () => ({ clearThinkingMaps: () => {} }));
-mock.module("./viewer-gate.js", () => ({ forgetViewerGate: () => {} }));
+mock.module("./thinking-tracker.js", () => ({ clearThinkingMaps: () => { cleanupEffects.push("thinking"); } }));
+mock.module("./viewer-gate.js", () => ({ forgetViewerGate: () => { cleanupEffects.push("viewer"); } }));
 mock.module("../../../health.js", () => ({ shouldPreserveOnSocketDisconnect: () => false }));
 mock.module("../../../user-preferences.js", () => ({
     getUserPreference: async () => null,
@@ -101,6 +108,7 @@ function makeSocket(sessionId: string, token: string, socketId = "sock-a") {
 describe("A2-017: cross-node stale socket protection", () => {
     beforeEach(() => {
         endedSessions.length = 0;
+        cleanupEffects.length = 0;
         redisOwnerToken = "token-node-a";
         tokenReadShouldThrow = false;
         getSessionOwnerTokenForTest = async (_sessionId: string) => {
@@ -172,6 +180,7 @@ describe("A2-017: cross-node stale socket protection", () => {
         };
         await fire("disconnect", "transport close");
         expect(endedSessions).toHaveLength(0);
+        expect(cleanupEffects).toHaveLength(0);
     });
 
     it("replacement (current-token) socket disconnect DOES end the session", async () => {

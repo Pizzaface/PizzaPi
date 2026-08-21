@@ -114,23 +114,58 @@ function userSessionsKey(userId: string): string {
 }
 
 const SESSION_OWNERSHIP_LOCK_TTL_MS = 30_000;
+const SESSION_OWNERSHIP_LOCK_ACQUIRE_TIMEOUT_MS = 5_000;
+const sessionOwnershipLockRenewals = new Map<string, ReturnType<typeof setInterval>>();
 function sessionOwnershipLockKey(sessionId: string): string {
     return `${KEY_PREFIX}:session-lock:${sessionId}`;
 }
 
 /** Serialize registration and destructive teardown for one session ID. */
-export async function acquireSessionOwnershipLock(sessionId: string, owner: string): Promise<void> {
+export async function acquireSessionOwnershipLock(
+    sessionId: string,
+    owner: string,
+    acquireTimeoutMs = SESSION_OWNERSHIP_LOCK_ACQUIRE_TIMEOUT_MS,
+    leaseMs = SESSION_OWNERSHIP_LOCK_TTL_MS,
+): Promise<void> {
     const r = requireRedis();
     const key = sessionOwnershipLockKey(sessionId);
+    const deadline = Date.now() + acquireTimeoutMs;
     for (;;) {
-        const acquired = await r.set(key, owner, { NX: true, PX: SESSION_OWNERSHIP_LOCK_TTL_MS });
-        if (acquired === "OK") return;
-        await new Promise((resolve) => setTimeout(resolve, 10));
+        const acquired = await r.set(key, owner, { NX: true, PX: leaseMs });
+        if (acquired === "OK") {
+            const renewalKey = `${sessionId}:${owner}`;
+            const timer = setInterval(() => {
+                void r.eval(`
+                    if redis.call('GET', KEYS[1]) == ARGV[1] then
+                        return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+                    end
+                    return 0
+                `, {
+                    keys: [key],
+                    arguments: [owner, String(leaseMs)],
+                }).catch((err: unknown) => {
+                    console.error(`Failed to renew session ownership lock for ${sessionId}:`, err);
+                });
+            }, Math.max(1, Math.floor(leaseMs / 3)));
+            timer.unref?.();
+            sessionOwnershipLockRenewals.set(renewalKey, timer);
+            return;
+        }
+        if (Date.now() >= deadline) {
+            throw new Error(`Timed out acquiring session ownership lock for ${sessionId}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, Math.min(10, Math.max(0, deadline - Date.now()))));
     }
 }
 
 /** Release only the lock still owned by this caller. */
 export async function releaseSessionOwnershipLock(sessionId: string, owner: string): Promise<void> {
+    const renewalKey = `${sessionId}:${owner}`;
+    const timer = sessionOwnershipLockRenewals.get(renewalKey);
+    if (timer) {
+        clearInterval(timer);
+        sessionOwnershipLockRenewals.delete(renewalKey);
+    }
     const r = requireRedis();
     await r.eval(`
         if redis.call('GET', KEYS[1]) == ARGV[1] then
