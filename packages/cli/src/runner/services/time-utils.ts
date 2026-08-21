@@ -247,8 +247,10 @@ export interface CronExpression {
     minutes: Set<number>;
     hours: Set<number>;
     daysOfMonth: Set<number>;
+    daysOfMonthRestricted: boolean;
     months: Set<number>;
     daysOfWeek: Set<number>;
+    daysOfWeekRestricted: boolean;
 }
 
 /**
@@ -309,7 +311,15 @@ export function parseCron(expression: string): CronExpression | null {
 
     if (!minutes || !hours || !daysOfMonth || !months || !daysOfWeek) return null;
 
-    return { minutes, hours, daysOfMonth, months, daysOfWeek };
+    return {
+        minutes,
+        hours,
+        daysOfMonth,
+        daysOfMonthRestricted: !parts[2].includes("*"),
+        months,
+        daysOfWeek,
+        daysOfWeekRestricted: !parts[4].includes("*"),
+    };
 }
 
 /**
@@ -333,8 +343,9 @@ export function nextCronTime(cron: CronExpression, afterMs?: number): number | n
 
         if (
             cron.months.has(month) &&
-            // POSIX cron uses OR when both DOM and DOW are restricted.
-            (cron.daysOfMonth.has(dayOfMonth) || cron.daysOfWeek.has(dayOfWeek)) &&
+            (cron.daysOfMonthRestricted && cron.daysOfWeekRestricted
+                ? cron.daysOfMonth.has(dayOfMonth) || cron.daysOfWeek.has(dayOfWeek)
+                : cron.daysOfMonth.has(dayOfMonth) && cron.daysOfWeek.has(dayOfWeek)) &&
             cron.hours.has(hour) &&
             cron.minutes.has(minute)
         ) {

@@ -279,9 +279,18 @@ describe("parseCron", () => {
         expect(parseCron("0 9 1x * *")).toBeNull();
     });
 
-    test("uses POSIX OR semantics for restricted DOM and DOW", () => {
-        const cron = parseCron("0 9 1 * 1")!;
-        expect(new Date(nextCronTime(cron, new Date("2026-06-02T10:00:00Z").getTime())!).toISOString()).toBe("2026-06-08T09:00:00.000Z");
+    test("uses POSIX day matching semantics", () => {
+        const bothRestricted = parseCron("0 9 1 * 1")!;
+        expect(new Date(nextCronTime(bothRestricted, new Date("2026-06-02T10:00:00Z").getTime())!).toISOString()).toBe("2026-06-08T09:00:00.000Z");
+
+        const dayOfMonthOnly = parseCron("0 9 1 * *")!;
+        expect(new Date(nextCronTime(dayOfMonthOnly, new Date("2026-06-02T10:00:00Z").getTime())!).toISOString()).toBe("2026-07-01T09:00:00.000Z");
+
+        const dayOfWeekOnly = parseCron("0 9 * * 1")!;
+        expect(new Date(nextCronTime(dayOfWeekOnly, new Date("2026-06-08T10:00:00Z").getTime())!).toISOString()).toBe("2026-06-15T09:00:00.000Z");
+
+        const wildcardStep = parseCron("0 9 */2 * 1")!;
+        expect(new Date(nextCronTime(wildcardStep, new Date("2026-06-08T10:00:00Z").getTime())!).toISOString()).toBe("2026-06-15T09:00:00.000Z");
     });
 });
 
