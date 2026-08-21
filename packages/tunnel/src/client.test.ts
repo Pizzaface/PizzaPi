@@ -113,6 +113,68 @@ describe("TunnelClient", () => {
     expect(ended).toBe(true);
   });
 
+  test("evicts a reused HTTP id by aborting and destroying the old request", () => {
+    const client = new TunnelClient({ runnerId: "r1", apiKey: "key1", relayUrl: "ws://localhost:9999/_tunnel" });
+    const controller = new AbortController();
+    let destroyed = false;
+    const old = { controller, req: { destroy() { destroyed = true; } } };
+    const replacement = { controller: new AbortController(), req: { destroy() {} } };
+
+    (client as any).activeRequests.set("reused", old);
+    (client as any).replaceActiveRequest("reused", replacement);
+
+    expect(controller.signal.aborted).toBe(true);
+    expect(destroyed).toBe(true);
+    expect((client as any).activeRequests.get("reused")).toBe(replacement);
+  });
+
+  test("evicts a reused WebSocket id by closing the old connection", () => {
+    const client = new TunnelClient({ runnerId: "r1", apiKey: "key1", relayUrl: "ws://localhost:9999/_tunnel" });
+    let closed = false;
+    const old = { close() { closed = true; } } as unknown as WebSocket;
+    const replacement = { close() {} } as unknown as WebSocket;
+
+    (client as any).activeWs.set("reused", old);
+    (client as any).replaceActiveWs("reused", replacement);
+
+    expect(closed).toBe(true);
+    expect((client as any).activeWs.get("reused")).toBe(replacement);
+  });
+
+  test("ignores stale WebSocket open and data events after an id collision", () => {
+    const OriginalWebSocket = globalThis.WebSocket;
+    class FakeWebSocket {
+      static OPEN = 1;
+      readyState = FakeWebSocket.OPEN;
+      protocol = "";
+      binaryType = "";
+      private listeners = new Map<string, Array<(event: any) => void>>();
+      static instances: FakeWebSocket[] = [];
+      constructor() { FakeWebSocket.instances.push(this); }
+      addEventListener(type: string, listener: (event: any) => void) {
+        this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+      }
+      close() { this.readyState = 3; }
+      emit(type: string, event: any = {}) { for (const listener of this.listeners.get(type) ?? []) listener(event); }
+    }
+
+    try {
+      (globalThis as any).WebSocket = FakeWebSocket;
+      const client = new TunnelClient({ runnerId: "r1", apiKey: "key1", relayUrl: "ws://localhost:9999/_tunnel" });
+      const sent = attachMockRelay(client);
+      (client as any).exposedPorts.add(3000);
+      (client as any).handleWsOpen({ id: "reused", port: 3000, path: "/", headers: {} });
+      (client as any).handleWsOpen({ id: "reused", port: 3000, path: "/", headers: {} });
+
+      FakeWebSocket.instances[0].emit("open");
+      FakeWebSocket.instances[0].emit("message", { data: "stale" });
+
+      expect(decodeSent(sent)).toEqual([]);
+    } finally {
+      (globalThis as any).WebSocket = OriginalWebSocket;
+    }
+  });
+
   test("returns 404 for requests to unexposed ports", () => {
     const client = new TunnelClient({
       runnerId: "r1",

@@ -274,7 +274,7 @@ async function handleUpgradeAsync(
         forwardHeaders[key] = Array.isArray(value) ? value.join(", ") : value;
     }
 
-    const tunnelWsId = `tws-${sessionId}-${port}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const tunnelWsId = crypto.randomUUID();
     let viewerWs: NodeWebSocket | null = null;
     let closingFromRelay = false;
     let handshakeComplete = false;
@@ -452,7 +452,7 @@ async function handleRunnerUpgradeAsync(
         forwardHeaders[key] = Array.isArray(value) ? value.join(", ") : value;
     }
 
-    const tunnelWsId = `tws-runner-${runnerId}-${port}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const tunnelWsId = crypto.randomUUID();
     let viewerWs: NodeWebSocket | null = null;
     let closingFromRelay = false;
     let handshakeComplete = false;

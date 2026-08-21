@@ -67,6 +67,14 @@ const HOP_BY_HOP = new Set([
 const STRIP_AUTH = new Set(["cookie", "authorization", "x-api-key"]);
 
 type LoopbackHost = "127.0.0.1" | "[::1]";
+type ActiveRequest = {
+  controller: AbortController;
+  req: http.ClientRequest;
+  /** Body chunks buffered for loopback retry replay; null once connected or over limit. */
+  bodyChunks: Buffer[] | null;
+  bodyBytes: number;
+  bodyEnded: boolean;
+};
 
 function otherLoopback(host: LoopbackHost): LoopbackHost {
   return host === "127.0.0.1" ? "[::1]" : "127.0.0.1";
@@ -108,17 +116,7 @@ export class TunnelClient extends EventEmitter {
   private connectionStartedAt = 0;
 
   /** Active HTTP requests: requestId → { controller, req } */
-  private activeRequests = new Map<
-    string,
-    {
-      controller: AbortController;
-      req: http.ClientRequest;
-      /** Body chunks buffered for loopback retry replay; null once connected or over limit. */
-      bodyChunks: Buffer[] | null;
-      bodyBytes: number;
-      bodyEnded: boolean;
-    }
-  >();
+  private activeRequests = new Map<string, ActiveRequest>();
   /**
    * ponytail: on Windows `localhost` often resolves to ::1 first, so local dev
    * servers can be IPv6-only and 127.0.0.1 gets ECONNREFUSED. We retry the
@@ -445,6 +443,7 @@ export class TunnelClient extends EventEmitter {
     forwardHeaders.host = `127.0.0.1:${port}`;
 
     const controller = new AbortController();
+    let active!: ActiveRequest;
     const attempt = (hostname: LoopbackHost, canRetry: boolean): http.ClientRequest => {
     const target = new URL(parsed.toString());
     target.hostname = hostname;
@@ -459,9 +458,12 @@ export class TunnelClient extends EventEmitter {
         ...(useTls ? { rejectUnauthorized: false } : {}),
       },
       (response) => {
+        if (this.activeRequests.get(id) !== active) {
+          response.destroy();
+          return;
+        }
         this.loopbackHost.set(port, hostname);
-        const active = this.activeRequests.get(id);
-        if (active) active.bodyChunks = null; // connected — replay buffer no longer needed
+        active.bodyChunks = null; // connected — replay buffer no longer needed
         const responseHeaders: Record<string, string | string[]> = {};
         for (const [key, value] of Object.entries(response.headers)) {
           if (value === undefined) continue;
@@ -481,10 +483,12 @@ export class TunnelClient extends EventEmitter {
         });
 
         response.on("data", (chunk: Buffer) => {
+          if (this.activeRequests.get(id) !== active) return;
           this.send({ type: "response-data", id, data: chunk.toString("binary") });
         });
 
         response.on("end", () => {
+          if (this.activeRequests.get(id) !== active) return;
           this.activeRequests.delete(id);
           this.send({ type: "response-data-end", id });
         });
@@ -500,13 +504,13 @@ export class TunnelClient extends EventEmitter {
     );
 
     req.on("error", (error) => {
+      if (this.activeRequests.get(id) !== active) return;
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ABORT_ERR" || controller.signal.aborted) {
         this.activeRequests.delete(id);
         return;
       }
-      const active = this.activeRequests.get(id);
-      if (code === "ECONNREFUSED" && canRetry && active?.bodyChunks) {
+      if (code === "ECONNREFUSED" && canRetry && active.bodyChunks) {
         // Local service may be listening on the other loopback family
         // (IPv6-only binds are common on Windows). Retry once, replaying
         // any buffered request body.
@@ -542,7 +546,8 @@ export class TunnelClient extends EventEmitter {
     };
 
     const req = attempt(this.loopbackHost.get(port) ?? "127.0.0.1", true);
-    this.activeRequests.set(id, { controller, req, bodyChunks: [], bodyBytes: 0, bodyEnded: false });
+    active = { controller, req, bodyChunks: [], bodyBytes: 0, bodyEnded: false };
+    this.replaceActiveRequest(id, active);
   }
 
   private handleRequestData(msg: TunnelRequestDataMessage): void {
@@ -632,16 +637,18 @@ export class TunnelClient extends EventEmitter {
         ...(wsUseTls ? { tls: { rejectUnauthorized: false } } : {}),
       });
 
-      this.activeWs.set(id, ws);
+      this.replaceActiveWs(id, ws);
       ws.binaryType = "arraybuffer";
 
       ws.addEventListener("open", () => {
+        if (this.activeWs.get(id) !== ws) return;
         opened = true;
         this.loopbackHost.set(port, hostname);
         this.send({ type: "ws-opened", id, protocol: ws.protocol || undefined });
       });
 
       ws.addEventListener("message", (event: MessageEvent) => {
+        if (this.activeWs.get(id) !== ws) return;
         const data = event.data;
         const isBinary = data instanceof ArrayBuffer || ArrayBuffer.isView(data);
         this.send({
@@ -708,6 +715,29 @@ export class TunnelClient extends EventEmitter {
     } catch {
       // ignore close errors
     }
+  }
+
+  private replaceActiveRequest(id: string, active: ActiveRequest): void {
+    const old = this.activeRequests.get(id);
+    if (old) {
+      this.activeRequests.delete(id);
+      old.controller.abort();
+      old.req.destroy();
+    }
+    this.activeRequests.set(id, active);
+  }
+
+  private replaceActiveWs(id: string, ws: WebSocket): void {
+    const old = this.activeWs.get(id);
+    if (old) {
+      this.activeWs.delete(id);
+      try {
+        old.close(1001, "tunnel request replaced");
+      } catch {
+        // ignore close errors
+      }
+    }
+    this.activeWs.set(id, ws);
   }
 
   private cleanup(): void {
