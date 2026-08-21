@@ -48,7 +48,7 @@ export interface SessionViewerProps {
   forkMessages?: ForkMessageOption[];
   forkMessagesLoading?: boolean;
   onRequestForkMessages?: () => boolean | void;
-  onSendInput?: (message: PromptInputMessage & { deliverAs?: "steer" | "followUp"; suppressOptimistic?: boolean } | string) => boolean | void | Promise<boolean | void>;
+  onSendInput?: (message: PromptInputMessage & { deliverAs?: "steer" | "followUp"; suppressOptimistic?: boolean } | string) => boolean | Promise<boolean>;
   onExec?: (payload: unknown) => boolean | void;
   onShowModelSelector?: () => void;
   /** Opens the new-session wizard (renders a CTA in the empty state). */

@@ -72,7 +72,7 @@ describe("slash command delivery", () => {
         const { view } = setup({
             input: "/goal finish the task",
             isAgentActive: true,
-            onSendInput: (message) => { sent.push(message); },
+            onSendInput: (message) => { sent.push(message); return true; },
         });
 
         act(() => { view.result.current.executeSlashCommand("/goal finish the task"); });

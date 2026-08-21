@@ -39,7 +39,7 @@ export interface SlashCommandDeps {
   onExec?: (payload: unknown) => boolean | void;
   onSendInput?: (
     message: (PromptInputMessage & { deliverAs?: "steer" | "followUp"; suppressOptimistic?: boolean }) | string,
-  ) => boolean | void | Promise<boolean | void>;
+  ) => boolean | Promise<boolean>;
   isAgentActive?: boolean;
   resumeSessions?: ResumeSessionOption[];
   onRequestResumeSessions?: () => boolean | void;

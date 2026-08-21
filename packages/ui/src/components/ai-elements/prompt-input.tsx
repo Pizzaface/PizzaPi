@@ -365,7 +365,7 @@ export interface PromptInputMessage {
   files: PromptInputAttachment[];
 }
 
-export const shouldClearPromptInputAfterSubmit = (succeeded: boolean) => succeeded;
+export const shouldClearPromptInputAfterSubmit = (succeeded: unknown) => succeeded === true;
 
 export type PromptInputProps = Omit<
   HTMLAttributes<HTMLFormElement>,
