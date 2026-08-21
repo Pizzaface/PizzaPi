@@ -3760,6 +3760,8 @@ export function App() {
   // Dedup guard: prevent sending the exact same message text within a short window.
   const inputDedupeRef = React.useRef<InputDedupeState | null>(null);
   const inputAttemptIdRef = React.useRef(0);
+  const fileIdentityRef = React.useRef(new WeakMap<File, number>());
+  const nextFileIdentityRef = React.useRef(0);
 
   type SessionInputMessage = { text: string; files?: Array<{ file?: File; mediaType?: string; filename?: string; url?: string }>; deliverAs?: "steer" | "followUp"; suppressOptimistic?: boolean } | string;
 
@@ -3797,7 +3799,10 @@ export function App() {
       // runner). Queue the message and flush it once the snapshot completes
       // instead of rejecting and forcing the user to retry.
       pendingHydrationInputsRef.current.push({ sessionId, message });
-      return true;
+      // PromptInput clears/revokes files only for a strict true result. The
+      // queued send has not been delivered yet, so retain the files until the
+      // flush can report actual delivery.
+      return false;
     }
     if (gate === "reject") return false;
     if (!socket || !socket.connected) {
@@ -3808,16 +3813,32 @@ export function App() {
     const payload = typeof message === "string" ? { text: message, files: [] } : message;
     const trimmed = payload.text.trim();
 
-    // Dedup guard: skip if the same text was sent/started in the last 500ms.
+    // Dedup only an identical text + file selection. File object identity is
+    // enough to distinguish two same-caption submissions without reading the
+    // files before upload; URL/name metadata covers non-File inputs.
+    const fileKey = (payload.files ?? []).map((file) => {
+      const identity = file.file
+        ? (() => {
+            let id = fileIdentityRef.current.get(file.file);
+            if (id === undefined) {
+              id = ++nextFileIdentityRef.current;
+              fileIdentityRef.current.set(file.file, id);
+            }
+            return `file:${id}`;
+          })()
+        : `url:${file.url ?? ""}`;
+      return `${identity}:${file.filename ?? ""}:${file.mediaType ?? ""}`;
+    }).join("|");
+    const dedupeKey = `${trimmed}\u0000${fileKey}`;
     const now = Date.now();
-    if (shouldDeduplicateInput(inputDedupeRef.current, trimmed, now, 500)) {
+    if (shouldDeduplicateInput(inputDedupeRef.current, dedupeKey, now, 500)) {
       return true; // silently deduplicate
     }
 
     let attemptId: number | null = null;
     if (trimmed) {
       attemptId = ++inputAttemptIdRef.current;
-      inputDedupeRef.current = beginInputAttempt(trimmed, now, attemptId);
+      inputDedupeRef.current = beginInputAttempt(dedupeKey, now, attemptId);
     }
 
     const failCurrentAttempt = () => {
