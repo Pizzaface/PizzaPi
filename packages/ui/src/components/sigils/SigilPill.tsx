@@ -113,7 +113,7 @@ export function SigilPill({ type, id, params, raw }: SigilPillProps) {
   const pillInner = (
     <>
       <SigilIcon name={config.icon ?? "hash"} className="size-3 shrink-0 opacity-80" />
-      <span className="truncate max-w-[24ch]">{displayText}</span>
+      <span className="truncate max-w-[40ch]">{displayText}</span>
       {statusParam && (
         <span className={cn(
           "rounded-full px-1 py-px text-[9px] font-bold uppercase tracking-wider",

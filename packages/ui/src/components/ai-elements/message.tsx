@@ -330,7 +330,7 @@ function SpanOrSigil(props: any) {
   if (props["data-sigil-type"]) return <SigilInline {...props} />;
   if (props["data-sigil-group"]) {
     return (
-      <span className="inline-flex items-center gap-0.5 align-baseline">
+      <span className="flex flex-wrap items-center gap-1 align-baseline">
         {props.children}
       </span>
     );

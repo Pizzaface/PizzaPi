@@ -2,20 +2,40 @@ import { describe, expect, test } from "bun:test";
 import { buildActionResponse, parseActionOptions, parseActionSigil } from "./actions";
 
 describe("parseActionSigil", () => {
-  test("parses confirm with required question", () => {
+  test("parses confirm with question", () => {
     expect(parseActionSigil("confirm", { question: "Deploy to production?" })).toEqual({
       ok: true,
       action: { kind: "confirm", question: "Deploy to production?" },
     });
   });
 
-  test("parses choose options", () => {
+  test("parses confirm without question, using label for button text", () => {
+    expect(parseActionSigil("confirm", { id: "x", label: "Yes" })).toEqual({
+      ok: true,
+      action: { kind: "confirm" },
+    });
+  });
+
+  test("parses comma-separated choose options", () => {
     expect(parseActionSigil("choose", {
       question: "Merge strategy?",
       options: "merge,rebase,squash",
     })).toEqual({
       ok: true,
       action: { kind: "choose", question: "Merge strategy?", options: ["merge", "rebase", "squash"] },
+    });
+  });
+
+  test("parses pipe-separated choose options and allows missing question", () => {
+    expect(parseActionSigil("choose", {
+      id: "badwhat",
+      options: "UI rendering bug — capture it|Just your formatting, fixed now|Something else",
+    })).toEqual({
+      ok: true,
+      action: {
+        kind: "choose",
+        options: ["UI rendering bug — capture it", "Just your formatting, fixed now", "Something else"],
+      },
     });
   });
 
@@ -41,8 +61,11 @@ describe("parseActionSigil", () => {
     expect(parseActionSigil("wat", { question: "Hi?" })).toEqual({ ok: false, error: "unknown_variant" });
   });
 
-  test("rejects missing question", () => {
-    expect(parseActionSigil("confirm", {})).toEqual({ ok: false, error: "missing_question" });
+  test("rejects choose without options", () => {
+    expect(parseActionSigil("choose", { question: "Merge strategy?" })).toEqual({
+      ok: false,
+      error: "missing_options",
+    });
   });
 
   test("formats confirm and cancel responses", () => {

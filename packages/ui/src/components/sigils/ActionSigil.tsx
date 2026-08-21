@@ -24,6 +24,8 @@ export function ActionSigil({ variant, params, raw }: ActionSigilProps) {
   }
 
   const action = parsed.action;
+  const confirmLabel = params.label?.trim() || "Confirm";
+  const cancelLabel = params.cancelLabel?.trim() || "Cancel";
 
   if (!runtime.canInteract && runtime.isMessageComplete) {
     return <RawActionSigil raw={raw} />;
@@ -54,14 +56,16 @@ export function ActionSigil({ variant, params, raw }: ActionSigilProps) {
         )}
         data-sigil={raw}
       >
-        <span className="font-medium text-muted-foreground">{action.question}</span>
+        {action.question && (
+          <span className="font-medium text-muted-foreground">{action.question}</span>
+        )}
         {action.kind === "confirm" && (
           <>
             <Button size="sm" type="button" disabled={disabled} onClick={() => void submit("confirm")}>
-              Confirm
+              {confirmLabel}
             </Button>
             <Button size="sm" type="button" variant="outline" disabled={disabled} onClick={() => void submit("cancel")}>
-              Cancel
+              {cancelLabel}
             </Button>
           </>
         )}
@@ -85,7 +89,7 @@ export function ActionSigil({ variant, params, raw }: ActionSigilProps) {
               placeholder={action.placeholder}
               disabled={disabled}
               className="h-8 w-40"
-              aria-label={action.question}
+              aria-label={action.question || action.placeholder || "Input"}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();

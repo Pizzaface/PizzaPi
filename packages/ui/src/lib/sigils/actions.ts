@@ -1,7 +1,7 @@
 export type ParsedActionSigil =
-  | { kind: "confirm"; question: string }
-  | { kind: "choose"; question: string; options: string[] }
-  | { kind: "input"; question: string; placeholder?: string };
+  | { kind: "confirm"; question?: string }
+  | { kind: "choose"; question?: string; options: string[] }
+  | { kind: "input"; question?: string; placeholder?: string };
 
 export type ActionParseResult =
   | { ok: true; action: ParsedActionSigil }
@@ -11,8 +11,7 @@ export function parseActionSigil(
   variant: string,
   params: Record<string, string>,
 ): ActionParseResult {
-  const question = params.question?.trim();
-  if (!question) return { ok: false, error: "missing_question" };
+  const question = params.question?.trim() || undefined;
 
   switch (variant) {
     case "confirm":
@@ -36,8 +35,12 @@ export function parseActionSigil(
 
 export function parseActionOptions(raw?: string): string[] {
   if (!raw) return [];
+  // Support both comma-separated and pipe-separated option lists so LLM-generated
+  // sigils like options="a|b|c" render correctly alongside the documented
+  // comma form.
+  const separator = raw.includes("|") ? "|" : ",";
   return raw
-    .split(",")
+    .split(separator)
     .map((option) => option.trim())
     .filter(Boolean);
 }
@@ -46,7 +49,7 @@ export function buildActionResponse(action: ParsedActionSigil, value: string): s
   return [
     "Action sigil response",
     `variant=${action.kind}`,
-    `question=${action.question}`,
+    `question=${action.question ?? ""}`,
     `value=${value}`,
   ].join("\n");
 }
