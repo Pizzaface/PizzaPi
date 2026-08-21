@@ -3,7 +3,7 @@
  */
 import { afterEach, describe, test, expect } from "bun:test";
 import { Window } from "happy-dom";
-import { render, cleanup } from "@testing-library/react";
+import { render, cleanup, fireEvent } from "@testing-library/react";
 import React from "react";
 import type { PresentedCard as PresentedCardData } from "./presented-card";
 
@@ -67,5 +67,43 @@ describe("PresentedCard", () => {
     const { queryByText, getByText } = render(<PresentedCardGroup cards={[card]} />);
     expect(getByText("Bob's Handyman")).toBeDefined();
     expect(queryByText(/results$/)).toBeNull();
+  });
+});
+
+describe("PresentedCard — external image privacy gating", () => {
+  const externalImageCard: PresentedCardData = {
+    kind: "business",
+    title: "Evil Corp",
+    icon: "store",
+    image: "https://attacker.example/track.gif",
+    badges: [],
+    fields: [],
+    actions: [],
+  };
+
+  test("does NOT render <img> for external image on initial render", () => {
+    const { container } = render(<PresentedCard card={externalImageCard} />);
+    const imgs = container.querySelectorAll("img");
+    expect(imgs.length).toBe(0);
+  });
+
+  test("shows a 'Load image' button for external image", () => {
+    const { getByTitle } = render(<PresentedCard card={externalImageCard} />);
+    expect(getByTitle("Load image")).toBeDefined();
+  });
+
+  test("renders <img> with correct src after clicking Load image", () => {
+    const { getByTitle, container } = render(<PresentedCard card={externalImageCard} />);
+    fireEvent.click(getByTitle("Load image"));
+    const img = container.querySelector("img") as HTMLImageElement | null;
+    expect(img).not.toBeNull();
+    expect(img?.getAttribute("src")).toBe("https://attacker.example/track.gif");
+  });
+
+  test("card without image renders kind icon, no Load image button", () => {
+    const noImageCard: PresentedCardData = { ...externalImageCard, image: undefined };
+    const { container, queryByTitle } = render(<PresentedCard card={noImageCard} />);
+    expect(container.querySelectorAll("img").length).toBe(0);
+    expect(queryByTitle("Load image")).toBeNull();
   });
 });

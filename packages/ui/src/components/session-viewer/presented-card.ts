@@ -116,6 +116,19 @@ export function isSafeActionHref(href: string): boolean {
   }
 }
 
+/**
+ * Returns true for http/https URLs that will cause an outbound network request.
+ * These must be gated behind an explicit user action before being loaded.
+ */
+export function isExternalImage(url: string): boolean {
+  try {
+    const { protocol } = new URL(url);
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 function httpImage(value: unknown): string | undefined {
   const raw = Array.isArray(value) ? value[0] : value;
   const url = typeof raw === "string" ? raw.trim() : str(raw);

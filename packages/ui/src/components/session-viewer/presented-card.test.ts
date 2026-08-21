@@ -1,7 +1,20 @@
 import { describe, test, expect } from "bun:test";
-import { detectPresentedCard, detectPresentedCards, isSafeActionHref, schemaKind, formatAddress } from "./presented-card";
+import { detectPresentedCard, detectPresentedCards, isSafeActionHref, schemaKind, formatAddress, isExternalImage } from "./presented-card";
 
 const present = (entity: unknown) => detectPresentedCard("present_card", { entity });
+
+describe("isExternalImage", () => {
+  test("returns true for http and https URLs", () => {
+    expect(isExternalImage("https://example.com/img.jpg")).toBe(true);
+    expect(isExternalImage("http://attacker.com/track.gif")).toBe(true);
+  });
+  test("returns false for non-http schemes and invalid input", () => {
+    expect(isExternalImage("data:image/png;base64,abc")).toBe(false);
+    expect(isExternalImage("/relative/path.jpg")).toBe(false);
+    expect(isExternalImage("")).toBe(false);
+    expect(isExternalImage("javascript:alert(1)")).toBe(false);
+  });
+});
 
 describe("isSafeActionHref", () => {
   test("allows tel/mailto/sms/geo/http(s)", () => {
