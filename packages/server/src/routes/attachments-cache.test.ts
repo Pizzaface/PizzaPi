@@ -41,6 +41,21 @@ let tempFilePath: string;
 mock.module("../attachments/store.js", () => ({
     attachmentMaxFileSizeBytes: () => 50 * 1024 * 1024,
     getStoredAttachment: async (id: string) => {
+        if (id === "att-other-owner") {
+            return {
+                attachmentId: "att-other-owner",
+                sessionId: "session-cache-test",
+                ownerUserId: "user-other",
+                uploaderUserId: "user-other",
+                filename: "other.png",
+                mimeType: "image/png",
+                size: 12,
+                createdAt: new Date().toISOString(),
+                expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+                expiresAtMs: Date.now() + 60 * 60 * 1000,
+                filePath: tempFilePath,
+            };
+        }
         if (id !== testAttachmentId) return null;
         return {
             attachmentId: testAttachmentId,
@@ -117,6 +132,22 @@ describe("GET /api/attachments/:id — cache-control", () => {
         const res = await handleAttachmentsRoute(req, new URL(req.url));
         expect(res).not.toBeUndefined();
         expect(res!.status).toBe(200);
+        expect(res!.headers.get("cache-control")).toBe("private, no-store");
+    });
+
+    test("404 response sets private, no-store cache-control", async () => {
+        const req = new Request("http://localhost/api/attachments/att-missing", { method: "GET" });
+        const res = await handleAttachmentsRoute(req, new URL(req.url));
+        expect(res).not.toBeUndefined();
+        expect(res!.status).toBe(404);
+        expect(res!.headers.get("cache-control")).toBe("private, no-store");
+    });
+
+    test("403 response sets private, no-store cache-control", async () => {
+        const req = new Request("http://localhost/api/attachments/att-other-owner", { method: "GET" });
+        const res = await handleAttachmentsRoute(req, new URL(req.url));
+        expect(res).not.toBeUndefined();
+        expect(res!.status).toBe(403);
         expect(res!.headers.get("cache-control")).toBe("private, no-store");
     });
 });
