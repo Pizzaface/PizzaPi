@@ -588,6 +588,27 @@ describe("recordRelaySessionEnd — lifecycle generation guard", () => {
         expect(row?.endedAt).not.toBeNull();
     });
 
+    authIt("applies a generation end when the row's generation is still NULL (start not yet landed)", async () => {
+        // Simulate the fire-and-forget start upsert not having landed yet:
+        // a row exists but generation is NULL.
+        const oldLastActive = new Date(Date.now() - 1000).toISOString();
+        await insertSession({ sessionId: "s-gen-null-start", userId: TEST_USER, isEphemeral: false });
+        await getKysely()
+            .updateTable("relay_session")
+            .set({ lastActiveAt: oldLastActive })
+            .where("id", "=", "s-gen-null-start")
+            .execute();
+
+        await recordRelaySessionEnd("s-gen-null-start", "gen-N");
+
+        const row = await getKysely()
+            .selectFrom("relay_session")
+            .select("endedAt")
+            .where("id", "=", "s-gen-null-start")
+            .executeTakeFirst();
+        expect(row?.endedAt).not.toBeNull();
+    });
+
     authIt("falls back to the time guard when no generation is provided (legacy)", async () => {
         await recordRelaySessionStart({
             sessionId: "s-gen-legacy",

@@ -437,7 +437,16 @@ export async function recordRelaySessionEnd(sessionId: string, generation?: stri
         .where("id", "=", sessionId)
         .where((eb) =>
             generation != null
-                ? eb("generation", "=", generation)
+                ? eb.or([
+                    eb("generation", "=", generation),
+                    eb.and([
+                        eb("generation", "is", null),
+                        eb.or([
+                            eb("endedAt", "is not", null),
+                            eb("lastActiveAt", "<=", nowIso),
+                        ]),
+                    ]),
+                ])
                 : eb.or([
                     eb("endedAt", "is not", null),  // already ended — safe to update timestamp
                     eb("lastActiveAt", "<=", nowIso), // not re-started with a newer timestamp
