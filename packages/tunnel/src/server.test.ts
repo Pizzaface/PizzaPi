@@ -344,6 +344,57 @@ describe("TunnelRelay HTTP proxy callbacks", () => {
   });
 });
 
+describe("TunnelRelay close-during-auth race", () => {
+  test("socket closes during auth await → runner NOT registered (no ghost)", async () => {
+    // Auth resolves after a microtask so we can close the socket in between.
+    let resolveAuth!: (v: string) => void;
+    const authPromise = new Promise<string>((res) => (resolveAuth = res));
+
+    const relay = new TunnelRelay({
+      apiKeys: async (_key: string, _runnerId: string) => authPromise,
+    });
+    const mockWs = createMockWebSocket();
+    relay.handleConnection(mockWs.ws);
+
+    // Trigger registration — auth will suspend.
+    mockWs.emit("message", {
+      data: JSON.stringify({ type: "register", runnerId: "ghost-runner", apiKey: "valid" }),
+    });
+
+    // Simulate socket close before auth resolves.
+    (mockWs.ws as unknown as { readyState: number }).readyState = WebSocket.CLOSING;
+
+    // Now resolve auth — registration should be aborted.
+    resolveAuth("user-1");
+    for (let i = 0; i < 5; i++) await waitForMicrotask();
+
+    expect(relay.hasRunner("ghost-runner")).toBe(false);
+  });
+
+  test("socket stays open during auth → registers normally", async () => {
+    let resolveAuth!: (v: string) => void;
+    const authPromise = new Promise<string>((res) => (resolveAuth = res));
+
+    const relay = new TunnelRelay({
+      apiKeys: async (_key: string, _runnerId: string) => authPromise,
+    });
+    const mockWs = createMockWebSocket();
+    relay.handleConnection(mockWs.ws);
+
+    mockWs.emit("message", {
+      data: JSON.stringify({ type: "register", runnerId: "good-runner", apiKey: "valid" }),
+    });
+
+    // Socket stays OPEN — normal path. Need several microtask flushes:
+    // authPromise resolves → async-fn wrapper tick → handleRegister resumes → handleMessage resumes.
+    resolveAuth("user-1");
+    for (let i = 0; i < 5; i++) await waitForMicrotask();
+
+    expect(relay.hasRunner("good-runner")).toBe(true);
+    relay.dispose();
+  });
+});
+
 describe("TunnelRelay WebSocket proxy callbacks", () => {
   test("ws-opened, ws-data, and ws-close route to callbacks", async () => {
     const relay = new TunnelRelay({ apiKeys: ["key1"] });

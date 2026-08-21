@@ -379,6 +379,12 @@ export class TunnelRelay {
       }
     }
 
+    // Guard: socket may have closed during the async auth await — abort to avoid a ghost runner.
+    if (ws.readyState !== WebSocket.OPEN) {
+      this.log.warn("[tunnel-relay] Socket closed during auth, aborting registration:", msg.runnerId);
+      return;
+    }
+
     const now = Date.now();
     this.runners.set(msg.runnerId, { runnerId: msg.runnerId, userId, ws, lastPongAt: now });
     this.wsToRunner.set(ws, msg.runnerId);
