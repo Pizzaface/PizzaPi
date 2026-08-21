@@ -131,7 +131,9 @@ export async function getStoredAttachment(attachmentId: string): Promise<StoredA
                 return record;
             }
         }
-        void deleteStoredAttachment(attachmentId);
+        void deleteStoredAttachment(attachmentId).catch((err) => {
+            log.error("Background delete failed for attachment:", attachmentId, err);
+        });
         return null;
     }
 
@@ -141,16 +143,20 @@ export async function getStoredAttachment(attachmentId: string): Promise<StoredA
 export async function deleteStoredAttachment(attachmentId: string): Promise<void> {
     const record = attachments.get(attachmentId);
     if (!record) return;
-    attachments.delete(attachmentId);
-    extractedImageSessionRefs.delete(attachmentId);
+    // P1 fix: DB deletes FIRST — if any reject, we leave the in-memory entry intact
+    // so subsequent prune/sweep calls can retry. File removal is best-effort after.
     await Promise.all([
-        rm(record.filePath, { force: true }).catch((err) => {
-            log.error("Failed to delete attachment file:", err);
-        }),
         removePersistedAttachment(attachmentId),
         removePersistedUploadedAttachment(attachmentId),
         removePersistedSessionRefs(attachmentId),
     ]);
+    // Only remove from memory after persistence deletes succeed.
+    attachments.delete(attachmentId);
+    extractedImageSessionRefs.delete(attachmentId);
+    // ponytail: best-effort file rm — a leaked file is recoverable; a stale DB row is not.
+    rm(record.filePath, { force: true }).catch((err) => {
+        log.error("Failed to delete attachment file:", err);
+    });
 }
 
 // ── Extracted image storage ──────────────────────────────────────────────────

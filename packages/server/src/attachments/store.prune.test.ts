@@ -22,6 +22,7 @@ const {
     storeSessionAttachment,
     storeExtractedImage,
     getStoredAttachment,
+    deleteStoredAttachment,
     ensureExtractedAttachmentTable,
     pruneSessionAttachments,
 } = store;
@@ -214,6 +215,74 @@ describe("pruneSessionAttachments", () => {
         await withAuth(async () => {
             // Should not throw.
             await expect(pruneSessionAttachments([])).resolves.toBeUndefined();
+        });
+    });
+});
+
+describe("deleteStoredAttachment P1 ordering fixes", () => {
+    test("rejects AND preserves in-memory entry when DB delete fails (retryable)", async () => {
+        await withAuth(async () => {
+            const attachment = await storeSessionAttachment({
+                sessionId: "p1-retry-session",
+                ownerUserId: "user-p1",
+                uploaderUserId: "user-p1",
+                file: new File(["data"], "p1.txt", { type: "text/plain" }),
+            });
+
+            // Force DB delete failure by dropping the attachment table.
+            await getKysely().schema.dropTable("attachment" as any).execute();
+
+            try {
+                // deleteStoredAttachment must reject (propagating the DB error).
+                await expect(deleteStoredAttachment(attachment.attachmentId)).rejects.toThrow();
+
+                // In-memory entry must still be present — so the next prune can retry.
+                const stillPresent = await getStoredAttachment(attachment.attachmentId);
+                expect(stillPresent).not.toBeNull();
+            } finally {
+                // Restore the table for subsequent tests.
+                await ensureExtractedAttachmentTable();
+            }
+        });
+    });
+
+    test("background void delete (getStoredAttachment path) catches rejection — no unhandled rejection", async () => {
+        await withAuth(async () => {
+            let hadUnhandledRejection = false;
+            const rejectionHandler = () => { hadUnhandledRejection = true; };
+            process.on("unhandledRejection", rejectionHandler);
+
+            try {
+                // Use a 1 ms TTL so the stored attachment expires immediately.
+                process.env.PIZZAPI_ATTACHMENT_TTL_MS = "1";
+                const attachment = await storeSessionAttachment({
+                    sessionId: "p1-bg-session",
+                    ownerUserId: "user-p1b",
+                    uploaderUserId: "user-p1b",
+                    file: new File(["data"], "p1b.txt", { type: "text/plain" }),
+                });
+                // Wait a tick so the attachment is definitely expired.
+                await new Promise((r) => setTimeout(r, 10));
+
+                // Drop the table to make the background delete fail.
+                await getKysely().schema.dropTable("attachment" as any).execute();
+
+                // getStoredAttachment internally fires `void deleteStoredAttachment().catch(...)` for expired records.
+                // It must return null without throwing, and the rejection must be caught internally.
+                const result = await getStoredAttachment(attachment.attachmentId);
+                expect(result).toBeNull();
+
+                // Give the background promise time to settle; an unhandled rejection fires on
+                // the next microtask/macrotask boundary, so a short pause is sufficient.
+                await new Promise((r) => setTimeout(r, 50));
+
+                expect(hadUnhandledRejection).toBe(false);
+            } finally {
+                process.off("unhandledRejection", rejectionHandler);
+                delete process.env.PIZZAPI_ATTACHMENT_TTL_MS;
+                // Restore the table.
+                await ensureExtractedAttachmentTable();
+            }
         });
     });
 });
