@@ -5,6 +5,7 @@
 // ============================================================================
 
 import { afterAll, describe, it, expect, mock, beforeEach } from "bun:test";
+import type { RelaySocket } from "./types.js";
 
 // ── Captures ──────────────────────────────────────────────────────────────────
 
@@ -54,16 +55,16 @@ afterAll(() => mock.restore());
 
 const { registerSessionLifecycleHandlers } = await import("./session-lifecycle.js");
 
-function makeSocket(sessionId: string, token = "tok") {
+function makeSocket(sessionId: string | undefined, token = "tok") {
     const handlers = new Map<string, (...args: unknown[]) => unknown>();
     const socket = {
         id: "sock-1",
-        data: { sessionId, token } as Record<string, unknown>,
+        data: { sessionId, token },
         on(event: string, cb: (...args: unknown[]) => unknown) {
             handlers.set(event, cb);
         },
         emit: () => {},
-    } as never;
+    } as unknown as RelaySocket;
     const fire = (event: string, data?: unknown) => handlers.get(event)!(data);
     return { socket, fire };
 }
@@ -78,7 +79,7 @@ describe("exec_result forwarding", () => {
 
     it("stamps sessionId onto the broadcast payload", async () => {
         const { socket, fire } = makeSocket("sess-A");
-        registerSessionLifecycleHandlers(socket, {} as never);
+        registerSessionLifecycleHandlers(socket);
 
         // Register the session so socket.data.sessionId is populated
         await fire("register", { sessionId: "sess-A", token: "tok", cwd: "/", shareUrl: "" });
@@ -98,9 +99,8 @@ describe("exec_result forwarding", () => {
     });
 
     it("does not forward if socket has no sessionId", () => {
-        const { socket, fire } = makeSocket("sess-B");
-        socket.data.sessionId = undefined; // simulate unregistered
-        registerSessionLifecycleHandlers(socket, {} as never);
+        const { socket, fire } = makeSocket(undefined);
+        registerSessionLifecycleHandlers(socket);
 
         fire("exec_result", { id: "req-2", ok: false, command: "get_fork_messages", error: "no" });
 
