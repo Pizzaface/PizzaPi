@@ -84,6 +84,47 @@ function parseMessageText(raw: string | Buffer | ArrayBuffer | ArrayBufferView):
   return Buffer.from(raw).toString("utf-8");
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
+}
+
+function isOptionalCloseCode(value: unknown): boolean {
+  return value === undefined || (typeof value === "number" && Number.isInteger(value) && (value === 1000 || (value >= 3000 && value <= 4999)));
+}
+
+function isOptionalCloseReason(value: unknown): boolean {
+  return value === undefined || (typeof value === "string" && Buffer.byteLength(value, "utf8") <= 123);
+}
+
+function isOptionalBoolean(value: unknown): boolean {
+  return value === undefined || typeof value === "boolean";
+}
+
+function isTunnelServerMessage(value: unknown): value is TunnelServerMessage {
+  if (!isRecord(value) || typeof value.type !== "string") return false;
+  switch (value.type) {
+    case "registered": return typeof value.runnerId === "string";
+    case "error": return typeof value.message === "string";
+    case "request-start": return typeof value.id === "string" && typeof value.port === "number" && Number.isFinite(value.port)
+      && typeof value.method === "string" && typeof value.url === "string" && isStringRecord(value.headers)
+      && isOptionalBoolean(value.preserveAuth);
+    case "request-data": return typeof value.id === "string" && typeof value.data === "string";
+    case "request-data-end":
+    case "request-end": return typeof value.id === "string";
+    case "ws-open": return typeof value.id === "string" && typeof value.port === "number" && Number.isFinite(value.port)
+      && typeof value.path === "string" && isStringRecord(value.headers) && isOptionalBoolean(value.preserveAuth)
+      && (value.protocols === undefined || (Array.isArray(value.protocols) && value.protocols.every((protocol) => typeof protocol === "string")));
+    case "ws-data": return typeof value.id === "string" && typeof value.data === "string" && isOptionalBoolean(value.binary);
+    case "ws-close": return typeof value.id === "string" && isOptionalCloseCode(value.code) && isOptionalCloseReason(value.reason);
+    case "ping": return true;
+    default: return false;
+  }
+}
+
 export class TunnelClient extends EventEmitter {
   private runnerId: string;
   private apiKey: string;
@@ -169,7 +210,11 @@ export class TunnelClient extends EventEmitter {
     });
 
     this.ws.addEventListener("message", (event: MessageEvent) => {
-      this.handleMessage(event.data as string | Buffer | ArrayBuffer | ArrayBufferView);
+      try {
+        this.handleMessage(event.data as string | Buffer | ArrayBuffer | ArrayBufferView);
+      } catch (error) {
+        this.log.error("[tunnel-client] Failed to handle relay message:", error);
+      }
     });
 
     const generation = this.connectionGeneration;
@@ -352,7 +397,12 @@ export class TunnelClient extends EventEmitter {
     try {
       msg = JSON.parse(parseMessageText(raw)) as TunnelServerMessage;
     } catch {
-      this.log.error("[tunnel-client] Invalid JSON from relay");
+      this.log.warn("[tunnel-client] Invalid JSON from relay");
+      return;
+    }
+
+    if (!isTunnelServerMessage(msg)) {
+      this.log.warn("[tunnel-client] Invalid message from relay");
       return;
     }
 

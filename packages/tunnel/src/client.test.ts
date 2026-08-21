@@ -336,6 +336,28 @@ describe("TunnelClient", () => {
     }
   });
 
+  test("drops malformed relay frames and still handles valid frames", () => {
+    const warnings: unknown[][] = [];
+    const client = new TunnelClient({
+      runnerId: "r1",
+      apiKey: "key1",
+      relayUrl: "ws://localhost:9999/_tunnel",
+      autoReconnect: false,
+      log: { info() {}, debug() {}, error() {}, warn(...args) { warnings.push(args); } },
+    });
+    const sent = attachMockRelay(client);
+
+    (client as any).handleMessage(JSON.stringify({ type: "request-data", id: "req1" }));
+    (client as any).handleMessage(JSON.stringify({ type: "unknown", id: "req1" }));
+    (client as any).handleMessage(JSON.stringify({ type: "ws-open", id: 1, port: "3000", path: "/", headers: {} }));
+    (client as any).handleMessage(JSON.stringify({ type: "ws-close", id: "ws1", code: 1001 }));
+    (client as any).handleMessage(JSON.stringify({ type: "ws-close", id: "ws1", reason: "x".repeat(124) }));
+    (client as any).handleMessage(JSON.stringify({ type: "ping" }));
+
+    expect(warnings).toHaveLength(5);
+    expect(decodeSent(sent)).toEqual([{ type: "pong" }]);
+  });
+
   test("responds to ping with pong", () => {
     const client = new TunnelClient({
       runnerId: "r1",
