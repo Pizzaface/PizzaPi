@@ -81,11 +81,48 @@ export function resolveMobileUrl(path: string): string {
 }
 
 /**
- * Resolve a relative media path (e.g. /api/attachments/…) for use as an
- * <img>/<video> src in the bundled mobile app. Unlike resolveMobileUrl, this
- * also appends the API key as a query param: element loads can't carry the
- * x-api-key header the fetch patch injects, and the download endpoint accepts
- * ?apiKey= for exactly this case. No-op on web (relative src stays same-origin).
+ * Resolve a relative attachment path for use as an <img>/<video> src in the
+ * bundled mobile app by minting a short-lived HMAC token via
+ * POST /api/attachments/:id/token. Falls back to the raw path on web.
+ *
+ * Callers should use this inside a useEffect / async context and update state.
+ */
+export async function resolveMobileMediaUrlAsync(path: string): Promise<string> {
+    if (!path.startsWith("/")) return path;
+    const { serverUrl, isMobileBundled } = getMobileRuntimeConfig();
+    if (!isMobileBundled || !serverUrl) return path;
+
+    // Extract attachment ID from /api/attachments/:id paths.
+    const match = path.match(/^\/api\/attachments\/([^/?#]+)/);
+    if (match) {
+        const attachmentId = match[1];
+        try {
+            const base = serverUrl.replace(/\/+$/, "");
+            const res = await fetch(`${base}/api/attachments/${encodeURIComponent(attachmentId)}/token`, {
+                method: "POST",
+                // mobile fetch patch injects x-api-key header automatically
+            });
+            if (res.ok) {
+                const { token } = (await res.json()) as { token: string };
+                const url = new URL(`${base}${path}`);
+                url.searchParams.set("token", token);
+                return url.toString();
+            }
+        } catch {
+            // fall through to deprecated path
+        }
+    }
+
+    // ponytail: deprecated fallback; remove after mobile clients fully migrate
+    return resolveMobileMediaUrl(path);
+}
+
+/**
+ * @deprecated Use resolveMobileMediaUrlAsync. This leaks the durable API key
+ * into URLs, logs, and proxies. Kept for one transition cycle.
+ *
+ * Resolve a relative media path for use as an <img>/<video> src in the bundled
+ * mobile app by appending ?apiKey= to the URL. No-op on web.
  */
 export function resolveMobileMediaUrl(path: string): string {
     if (!path.startsWith("/")) return path;

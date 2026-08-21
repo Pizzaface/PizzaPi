@@ -12,6 +12,7 @@ import {
     clearMobileApiKey,
     initMobileRuntime,
     resolveMobileMediaUrl,
+    resolveMobileMediaUrlAsync,
     _resetMobileRuntimeCache,
     _setMobileRuntimeCache,
 } from "./mobile-runtime";
@@ -116,5 +117,86 @@ describe("resolveMobileMediaUrl (mobile-bundled path)", () => {
         expect(resolveMobileMediaUrl("https://cdn.example.com/x.png")).toBe(
             "https://cdn.example.com/x.png",
         );
+    });
+});
+
+describe("resolveMobileMediaUrlAsync (web no-op path)", () => {
+    beforeEach(() => {
+        _resetMobileRuntimeCache();
+        Object.defineProperty(globalThis, "localStorage", {
+            value: makeLocalStorage(null),
+            configurable: true,
+            writable: true,
+        });
+    });
+
+    afterEach(() => {
+        _resetMobileRuntimeCache();
+        (globalThis as any).localStorage = origLocalStorage;
+    });
+
+    test("returns path unchanged on web", async () => {
+        expect(await resolveMobileMediaUrlAsync("/api/attachments/abc")).toBe("/api/attachments/abc");
+    });
+
+    test("returns absolute URL unchanged on web", async () => {
+        expect(await resolveMobileMediaUrlAsync("https://cdn.example.com/x.png")).toBe(
+            "https://cdn.example.com/x.png",
+        );
+    });
+});
+
+describe("resolveMobileMediaUrlAsync (mobile-bundled path)", () => {
+    const origFetch = globalThis.fetch;
+
+    beforeEach(() => {
+        _resetMobileRuntimeCache();
+        _setMobileRuntimeCache("secret-key");
+        Object.defineProperty(globalThis, "localStorage", {
+            value: makeLocalStorage("https://relay.example.com"),
+            configurable: true,
+            writable: true,
+        });
+    });
+
+    afterEach(() => {
+        _resetMobileRuntimeCache();
+        (globalThis as any).localStorage = origLocalStorage;
+        globalThis.fetch = origFetch;
+    });
+
+    test("mints a token and appends ?token= for attachment URLs", async () => {
+        (globalThis as any).fetch = async (_url: string, _opts?: RequestInit) =>
+            new Response(JSON.stringify({ token: "tok-123" }), { status: 200 });
+
+        const result = await resolveMobileMediaUrlAsync("/api/attachments/abc");
+        expect(result).toContain("?token=tok-123");
+        expect(result).toContain("https://relay.example.com");
+    });
+
+    test("falls back to deprecated ?apiKey= URL when token fetch fails", async () => {
+        (globalThis as any).fetch = async () => { throw new Error("network error"); };
+
+        const result = await resolveMobileMediaUrlAsync("/api/attachments/abc");
+        // Fallback to resolveMobileMediaUrl which uses ?apiKey=
+        expect(result).toContain("?apiKey=secret-key");
+    });
+
+    test("falls back when fetch returns non-OK status", async () => {
+        (globalThis as any).fetch = async () => new Response("Unauthorized", { status: 401 });
+
+        const result = await resolveMobileMediaUrlAsync("/api/attachments/abc");
+        expect(result).toContain("?apiKey=secret-key");
+    });
+
+    test("returns non-attachment relative paths via deprecated path", async () => {
+        // Non-attachment paths don't hit the token endpoint
+        const fetchCalls: string[] = [];
+        (globalThis as any).fetch = async (url: string) => { fetchCalls.push(url); throw new Error("should not be called"); };
+
+        const result = await resolveMobileMediaUrlAsync("/api/sessions/x");
+        // No attachment match → falls through to resolveMobileMediaUrl
+        expect(result).toContain("https://relay.example.com/api/sessions/x");
+        expect(fetchCalls.length).toBe(0);
     });
 });

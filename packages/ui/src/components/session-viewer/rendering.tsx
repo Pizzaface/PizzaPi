@@ -67,7 +67,14 @@ export { tryRenderServerToolBlock } from "@/components/session-viewer/server-too
 
 import { CommandResultCard, type CommandResultData } from "@/components/session-viewer/cards/CommandResultCard";
 import { TriggerCard } from "@/components/session-viewer/cards/TriggerCard";
-import { resolveMobileMediaUrl } from "@/lib/mobile-runtime";
+import { resolveMobileMediaUrlAsync } from "@/lib/mobile-runtime";
+
+/** Resolves a mobile attachment URL asynchronously (mints a short-lived token). */
+function MobileMediaImg({ url, alt, className, loading }: { url: string; alt: string; className?: string; loading?: "lazy" | "eager" }) {
+  const [src, setSrc] = React.useState(url);
+  React.useEffect(() => { resolveMobileMediaUrlAsync(url).then(setSrc); }, [url]);
+  return <img src={src} alt={alt} className={className} loading={loading} />;
+}
 import { tryRenderServerToolBlock } from "@/components/session-viewer/server-tools";
 
 /** Type guard: is the content a structured command result? */
@@ -341,9 +348,9 @@ export function renderContent(
               }
               if (isSafeUrl) {
                 return (
-                  <img
+                  <MobileMediaImg
                     key={i}
-                    src={resolveMobileMediaUrl(url)}
+                    url={url}
                     alt="Message attachment"
                     className="max-h-80 max-w-full rounded border border-border object-contain"
                     loading="lazy"
