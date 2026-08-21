@@ -7,7 +7,7 @@ import {
 } from "./sessions/store.js";
 import { deleteRelayEventCaches, initializeRelayRedisCache } from "./sessions/redis.js";
 import { sweepExpiredSessions, sweepOrphanedRunners } from "./ws/sio-registry.js";
-import { sweepExpiredAttachments, rehydrateAttachments, rehydrateExtractedAttachments } from "./attachments/store.js";
+import { sweepExpiredAttachments, rehydrateAttachments, rehydrateExtractedAttachments, pruneSessionAttachments } from "./attachments/store.js";
 import { sweepExpiredSetupClaims } from "./setup-claims.js";
 import { sweepExpiredMobileLinks } from "./mobile-links.js";
 import { runAllMigrations } from "./migrations.js";
@@ -386,9 +386,10 @@ setInterval(() => {
         void sweepExpiredSessions();
         void sweepExpiredAttachments();
         void pruneExpiredRelaySessions()
-            .then((expiredIds) => {
+            .then(async (expiredIds) => {
                 if (expiredIds.length === 0) return;
-                return deleteRelayEventCaches(expiredIds);
+                await deleteRelayEventCaches(expiredIds);
+                await pruneSessionAttachments(expiredIds);
             })
             .catch((error) => {
                 log.error("Failed to prune expired relay sessions", error);

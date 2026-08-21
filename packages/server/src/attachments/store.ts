@@ -283,6 +283,56 @@ export async function sweepExpiredAttachments(nowMs: number = Date.now()): Promi
 }
 
 /**
+ * Delete attachments owned exclusively by the given pruned (expired/ephemeral) sessions.
+ *
+ * - Single-session uploads (`uploaderUserId !== "system"`): deleted outright.
+ * - Extracted/shared images: the pruned session IDs are removed from the ref set;
+ *   the file is deleted only when no durable session still references it.
+ */
+export async function pruneSessionAttachments(prunedSessionIds: string[]): Promise<void> {
+    if (prunedSessionIds.length === 0) return;
+
+    const prunedSet = new Set(prunedSessionIds);
+    const durableSessionIds = await getDurableSessionIds();
+
+    // 1. Delete single-session uploads owned by pruned sessions.
+    const uploadsToDelete: string[] = [];
+    for (const [attachmentId, record] of attachments) {
+        if (prunedSet.has(record.sessionId) && record.uploaderUserId !== "system") {
+            uploadsToDelete.push(attachmentId);
+        }
+    }
+    for (const id of uploadsToDelete) {
+        await deleteStoredAttachment(id);
+    }
+
+    // 2. Drop pruned session refs from extracted images; delete when no durable refs remain.
+    const extractedToDelete: string[] = [];
+    for (const [attachmentId, refs] of extractedImageSessionRefs) {
+        let changed = false;
+        for (const sid of prunedSet) {
+            if (refs.delete(sid)) changed = true;
+        }
+        if (!changed) continue;
+
+        const hasDurableRef = [...refs].some((sid) => durableSessionIds.has(sid));
+        if (!hasDurableRef) {
+            extractedToDelete.push(attachmentId);
+        }
+    }
+    for (const id of extractedToDelete) {
+        await deleteStoredAttachment(id);
+    }
+
+    // Remove pruned session entries from the junction table for attachments we kept.
+    // (deleteStoredAttachment already cleans the full junction table for deleted attachments.)
+    await getKysely()
+        .deleteFrom("extracted_attachment_session" as any)
+        .where("sessionId", "in", prunedSessionIds)
+        .execute();
+}
+
+/**
  * Return the set of session IDs that are pinned or non-ephemeral (and not yet expired).
  * Used by the sweep to avoid deleting extracted images that are still reachable.
  */
