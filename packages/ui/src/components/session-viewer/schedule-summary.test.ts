@@ -12,14 +12,14 @@ describe("isScheduledTrigger", () => {
 
 describe("describeCron", () => {
     test("daily", () => {
-        expect(describeCron("0 8 * * *")).toBe("Every day at 08:00");
-        expect(describeCron("30 17 * * *")).toBe("Every day at 17:30");
+        expect(describeCron("0 8 * * *")).toBe("Every day at 08:00 UTC");
+        expect(describeCron("30 17 * * *")).toBe("Every day at 17:30 UTC");
     });
 
     test("weekly and weekday patterns", () => {
-        expect(describeCron("0 9 * * 1")).toBe("Every Monday at 09:00");
-        expect(describeCron("0 9 * * 1-5")).toBe("Weekdays at 09:00");
-        expect(describeCron("0 9 * * 1,3,5")).toBe("Mon, Wed, Fri at 09:00");
+        expect(describeCron("0 9 * * 1")).toBe("Every Monday at 09:00 UTC");
+        expect(describeCron("0 9 * * 1-5")).toBe("Weekdays at 09:00 UTC");
+        expect(describeCron("0 9 * * 1,3,5")).toBe("Mon, Wed, Fri at 09:00 UTC");
     });
 
     test("intervals", () => {
@@ -29,7 +29,7 @@ describe("describeCron", () => {
     });
 
     test("monthly", () => {
-        expect(describeCron("0 8 1 * *")).toBe("Monthly on day 1 at 08:00");
+        expect(describeCron("0 8 1 * *")).toBe("Monthly on day 1 at 08:00 UTC");
     });
 
     test("falls back to the raw expression when it isn't a shape we phrase", () => {
@@ -45,7 +45,7 @@ describe("describeCron", () => {
 
 describe("describeAt", () => {
     test("HH:MM shorthand, with and without UTC", () => {
-        expect(describeAt("8:00")).toBe("At 08:00");
+        expect(describeAt("8:00")).toBe("8:00");
         expect(describeAt("14:30UTC")).toBe("At 14:30 UTC");
     });
 
@@ -62,8 +62,8 @@ describe("describeAt", () => {
 
 describe("describeSchedule", () => {
     test("uses the right param per trigger type", () => {
-        expect(describeSchedule("time:cron", { cron: "0 8 * * *" })).toBe("Every day at 08:00");
-        expect(describeSchedule("time:at", { at: "9:00" })).toBe("At 09:00");
+        expect(describeSchedule("time:cron", { cron: "0 8 * * *" })).toBe("Every day at 08:00 UTC");
+        expect(describeSchedule("time:at", { at: "9:00" })).toBe("9:00");
         expect(describeSchedule("time:timer_fired", { duration: "30m" })).toBe("Once, after 30m");
     });
 

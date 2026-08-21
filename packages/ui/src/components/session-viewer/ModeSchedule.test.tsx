@@ -89,7 +89,7 @@ describe("ModeSchedule", () => {
             <ModeSchedule instructions={[instruction]} sessionNoun="task" onOpenSession={noop} onCancel={noop} />,
         );
         expect(getByText("Write my daily report")).toBeDefined();
-        expect(getByText("Every day at 08:00")).toBeDefined();
+        expect(getByText("Every day at 08:00 UTC")).toBeDefined();
     });
 
     test("renders nothing when there is no scheduled work", () => {
@@ -133,7 +133,7 @@ describe("ModeSchedule", () => {
         );
         fireEvent.click(getByText("Daily report"));
         expect(opened).toEqual(["s1"]);
-        fireEvent.click(getByLabelText(/Cancel Every day at 08:00/i));
+        fireEvent.click(getByLabelText(/Cancel Every day at 08:00 UTC/i));
         expect(cancelled).toEqual([instruction]);
     });
 

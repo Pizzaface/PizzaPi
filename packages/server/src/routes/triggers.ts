@@ -66,6 +66,17 @@ import { emitTriggerSubscriptionDelta } from "../ws/namespaces/runner.js";
 import type { RouteHandler } from "./types.js";
 import { randomUUID } from "crypto";
 import { createLogger } from "@pizzapi/tools";
+
+function validateScheduleParams(triggerType: string, params: Record<string, unknown> | undefined): string | null {
+    if (!params) return null;
+    if (triggerType === "time:cron") {
+        const cron = params.cron;
+        if (typeof cron !== "string" || cron.trim().split(/\s+/).length !== 5 || cron.trim().split(/\s+/).some((f) => !/^[0-9*/?,\-]+$/.test(f))) return "Invalid cron expression";
+    }
+    if (triggerType === "time:at" && typeof params.at === "string" && !/^\d{1,2}:\d{2}\s*UTC$/i.test(params.at) && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/.test(params.at)) return "Invalid time; use ISO 8601 with timezone or HH:MMUTC";
+    if (triggerType === "time:timer_fired" && typeof params.duration !== "string") return "Invalid duration";
+    return null;
+}
 import {
     pushTriggerHistory,
     getTriggerHistory,
@@ -1003,6 +1014,9 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             );
         }
 
+        const scheduleError = validateScheduleParams(triggerType, body.params);
+        if (scheduleError) return Response.json({ error: scheduleError }, { status: 400 });
+
         // Validate and coerce subscription params against the trigger def's param definitions.
         let subParams: SubscriptionParams | undefined;
         if (body.params && typeof body.params === "object" && !Array.isArray(body.params)) {
@@ -1328,6 +1342,9 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         } catch {
             return Response.json({ error: "Invalid JSON body" }, { status: 400 });
         }
+
+        const scheduleError = validateScheduleParams(target, body.params);
+        if (scheduleError) return Response.json({ error: scheduleError }, { status: 400 });
 
         // Validate params against the runner's trigger def (if available)
         let subParams: SubscriptionParams | undefined;

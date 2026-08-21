@@ -215,6 +215,12 @@ describe("parseTimeString", () => {
         expect(result).toBe(now + 600_000);
     });
 
+    test("rejects rollover and non-UTC ISO strings", () => {
+        expect(parseTimeString("2023-02-30T22:13:20.000Z", now)).toBeNull();
+        expect(parseTimeString("2023-11-14T22:13:20", now)).toBeNull();
+        expect(parseTimeString("14:30", now)).toBeNull();
+    });
+
     test("returns null for invalid input", () => {
         expect(parseTimeString("", now)).toBeNull();
         expect(parseTimeString("not-a-time", now)).toBeNull();
@@ -270,6 +276,21 @@ describe("parseCron", () => {
         expect(parseCron("* * *")).toBeNull();
         expect(parseCron("60 * * * *")).toBeNull();
         expect(parseCron("* 25 * * *")).toBeNull();
+        expect(parseCron("0 9 1x * *")).toBeNull();
+    });
+
+    test("uses POSIX day matching semantics", () => {
+        const bothRestricted = parseCron("0 9 1 * 1")!;
+        expect(new Date(nextCronTime(bothRestricted, new Date("2026-06-02T10:00:00Z").getTime())!).toISOString()).toBe("2026-06-08T09:00:00.000Z");
+
+        const dayOfMonthOnly = parseCron("0 9 1 * *")!;
+        expect(new Date(nextCronTime(dayOfMonthOnly, new Date("2026-06-02T10:00:00Z").getTime())!).toISOString()).toBe("2026-07-01T09:00:00.000Z");
+
+        const dayOfWeekOnly = parseCron("0 9 * * 1")!;
+        expect(new Date(nextCronTime(dayOfWeekOnly, new Date("2026-06-08T10:00:00Z").getTime())!).toISOString()).toBe("2026-06-15T09:00:00.000Z");
+
+        const wildcardStep = parseCron("0 9 */2 * 1")!;
+        expect(new Date(nextCronTime(wildcardStep, new Date("2026-06-08T10:00:00Z").getTime())!).toISOString()).toBe("2026-06-15T09:00:00.000Z");
     });
 });
 
