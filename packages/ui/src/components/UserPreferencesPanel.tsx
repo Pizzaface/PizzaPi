@@ -21,7 +21,15 @@ interface UserPreferencesPanelProps {
   hiddenModelCount: number;
 }
 
-function NotificationsPreferencesSection() {
+interface NotificationsPreferencesSectionProps {
+  usePushStateHook?: typeof usePushState;
+  useHapticsStateHook?: typeof useHapticsState;
+}
+
+export function NotificationsPreferencesSection({
+  usePushStateHook = usePushState,
+  useHapticsStateHook = useHapticsState,
+}: NotificationsPreferencesSectionProps = {}) {
   const {
     subscribed,
     loading,
@@ -32,8 +40,8 @@ function NotificationsPreferencesSection() {
     suppressChild,
     suppressChildLoading,
     toggleSuppressChild,
-  } = usePushState();
-  const { enabled, supported: hapticsSupported, toggle: toggleHaptics } = useHapticsState();
+  } = usePushStateHook();
+  const { enabled, supported: hapticsSupported, toggle: toggleHaptics } = useHapticsStateHook();
 
   if (!supported && !hapticsSupported) {
     return (

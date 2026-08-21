@@ -307,6 +307,50 @@ describe("isValidPushEndpoint", () => {
 // on PIZZAPI_NTFY_URL — tests set it via env to exercise the publish path.
 
 describe("native push registration", () => {
+    it("migration preserves suppression for existing native registrations", async () => {
+        const migrationDir = mkdtempSync(join(tmpdir(), "push-migration-test-"));
+        const migrationContext = createTestAuthContext({ dbPath: join(migrationDir, "test.db") });
+        try {
+            await runWithAuthContext(migrationContext, async () => {
+                const db = getKysely();
+                await db.schema
+                    .createTable("native_push_registration")
+                    .addColumn("id", "text", (col) => col.primaryKey())
+                    .addColumn("userId", "text", (col) => col.notNull())
+                    .addColumn("platform", "text", (col) => col.notNull())
+                    .addColumn("topic", "text", (col) => col.notNull())
+                    .addColumn("ntfyUser", "text")
+                    .addColumn("ntfyPass", "text")
+                    .addColumn("createdAt", "text", (col) => col.notNull())
+                    .execute();
+                await db
+                    .insertInto("native_push_registration" as any)
+                    .values({
+                        id: "legacy-registration",
+                        userId: "legacy-user",
+                        platform: "android",
+                        topic: "pizzapi-legacy",
+                        ntfyUser: null,
+                        ntfyPass: null,
+                        createdAt: new Date().toISOString(),
+                    })
+                    .execute();
+
+                await ensureNativePushRegistrationTable();
+
+                const row = await db
+                    .selectFrom("native_push_registration" as any)
+                    .selectAll()
+                    .where("id", "=", "legacy-registration")
+                    .executeTakeFirstOrThrow();
+                expect((row as any).suppressChildNotifications).toBe(1);
+                await db.destroy();
+            });
+        } finally {
+            rmSync(migrationDir, { recursive: true, force: true });
+        }
+    });
+
     authIt("registerNativePush assigns an unguessable topic and persists it", async () => {
         const reg = await registerNativePush({ userId: "user-A", platform: "android" });
         expect(reg.userId).toBe("user-A");
@@ -314,6 +358,7 @@ describe("native push registration", () => {
         expect(reg.topic).toMatch(/^pizzapi-[0-9a-f]{48}$/);
         expect(reg.ntfyUser).toBeNull();
         expect(reg.ntfyPass).toBeNull();
+        expect(reg.suppressChildNotifications).toBe(1);
 
         // Round-trips through the store.
         const rows = await getNativeRegistrationsForUser("user-A");
@@ -691,8 +736,8 @@ describe("sendPushToUser — child-session suppression", () => {
         expect(subs).toHaveLength(0);
     });
 
-    authIt("ntfy: suppresses child session when suppressChildNotifications is true", async () => {
-        await registerNativePush({ userId: "user-child-ntfy-1", platform: "android", suppressChildNotifications: true });
+    authIt("ntfy: suppresses child sessions by default", async () => {
+        await registerNativePush({ userId: "user-child-ntfy-1", platform: "android" });
         process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
 
         let fetchCalled = false;

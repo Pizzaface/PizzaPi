@@ -253,7 +253,7 @@ export interface NativePushRegistrationTable {
     ntfyUser: string | null;
     ntfyPass: string | null;
     createdAt: string;
-    /** 0 = deliver child-session notifications; 1 = suppress them. Defaults to 0. */
+    /** 0 = deliver child-session notifications; 1 = suppress them. Defaults to 1. */
     suppressChildNotifications: number;
 }
 
@@ -275,7 +275,7 @@ export async function ensureNativePushRegistrationTable(): Promise<void> {
     try {
         await getKysely().schema
             .alterTable("native_push_registration")
-            .addColumn("suppressChildNotifications", "integer", (col) => col.notNull().defaultTo(0))
+            .addColumn("suppressChildNotifications", "integer", (col) => col.notNull().defaultTo(1))
             .execute();
     } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -341,7 +341,7 @@ export async function registerNativePush(input: RegisterNativeInput): Promise<Na
         topic: generateNtfyTopic(),
         ntfyUser: null,
         ntfyPass: null,
-        suppressChildNotifications: input.suppressChildNotifications ? 1 : 0,
+        suppressChildNotifications: input.suppressChildNotifications === false ? 0 : 1,
         createdAt: new Date().toISOString(),
     };
     await getKysely()

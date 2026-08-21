@@ -1,23 +1,16 @@
-/**
- * Tests for native push child-suppression parity in NotificationToggle.
- *
- * Key invariants verified:
- *  1. usePushState.toggleSuppressChild routes to setNativeSuppressChildNotifications
- *     for native users (not setSuppressChildNotifications).
- *  2. usePushState.toggleSuppressChild routes to setSuppressChildNotifications
- *     for web push users.
- *  3. After toggle, suppressChild state reflects the new value.
- */
-
-import { afterAll, afterEach, describe, test, expect, mock } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
-import { renderHook, act, cleanup } from "@testing-library/react";
-import React from "react"; // needed so JSX transform is happy when components pull it in
+import React from "react";
+import { act, cleanup, render, renderHook, waitFor } from "@testing-library/react";
+import {
+    NotificationToggle,
+    usePushState,
+    type PushDependencies,
+} from "./NotificationToggle";
 
-// Set up DOM globals BEFORE importing the component.
+const originalCustomEvent = globalThis.CustomEvent;
 const win = new Window({ url: "http://localhost/" });
-/* eslint-disable @typescript-eslint/no-explicit-any */
-(win as any).SyntaxError = SyntaxError;
+(win as any).SyntaxError = globalThis.SyntaxError;
 (globalThis as any).window = win;
 (globalThis as any).document = win.document;
 (globalThis as any).navigator = win.navigator;
@@ -25,181 +18,135 @@ const win = new Window({ url: "http://localhost/" });
 (globalThis as any).Element = win.Element;
 (globalThis as any).Node = win.Node;
 (globalThis as any).SVGElement = win.SVGElement;
-(globalThis as any).KeyboardEvent = win.KeyboardEvent;
 (globalThis as any).MutationObserver = win.MutationObserver;
 (globalThis as any).CustomEvent = win.CustomEvent;
-(globalThis as any).ResizeObserver = class ResizeObserver {
+(globalThis as any).getComputedStyle = win.getComputedStyle.bind(win);
+(globalThis as any).ResizeObserver = class {
     observe() {}
     unobserve() {}
     disconnect() {}
 };
-(globalThis as any).requestAnimationFrame = (cb: FrameRequestCallback) => setTimeout(() => cb(Date.now()), 0);
-(globalThis as any).cancelAnimationFrame = (id: number) => clearTimeout(id);
-(globalThis as any).getComputedStyle = win.getComputedStyle.bind(win);
-/* eslint-enable @typescript-eslint/no-explicit-any */
+(globalThis as any).IntersectionObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+};
 
-// ── Controllable mock state ──────────────────────────────────────────────────
-// Variables captured by mock closures (set per-test via beforeEach/test body).
-
-let isNativeAvailable = true;
-let hasPermission = true;
-let isDisabled = false;
-let startResult: { ok: boolean; reason?: string } = { ok: true };
-let nativeSuppressValue = false;
-let webSuppressValue = false;
-
+let native = true;
+let nativeSuppress = true;
+let webSuppress = false;
+let startResult: Awaited<ReturnType<PushDependencies["startNtfyPush"]>> = { ok: true };
 const nativeSetCalls: boolean[] = [];
 const webSetCalls: boolean[] = [];
 
-mock.module("@/lib/ntfy-push", () => ({
-    isNativePushAvailable: () => isNativeAvailable,
-    hasNativePushPermission: () => Promise.resolve(hasPermission),
-    isNativePushDisabled: () => isDisabled,
-    setNativePushDisabled: () => {},
-    requestNativePushPermission: () => Promise.resolve(true),
-    startNtfyPush: () => Promise.resolve(startResult),
-    stopNtfyPush: () => Promise.resolve(),
-    getNativeSuppressChildNotifications: () => nativeSuppressValue,
-    setNativeSuppressChildNotifications: (suppress: boolean) => {
-        nativeSetCalls.push(suppress);
-        nativeSuppressValue = suppress;
-        return Promise.resolve(true);
-    },
-}));
-
-mock.module("@/lib/push", () => ({
-    isPushSupported: () => !isNativeAvailable,
-    isPushSubscribed: () => Promise.resolve(!isNativeAvailable),
+const dependencies: PushDependencies = {
+    isPushSupported: () => !native,
+    isPushSubscribed: async () => !native,
+    subscribeToPush: async () => null,
+    unsubscribeFromPush: async () => false,
     getNotificationPermission: () => "granted",
-    // Return the current tracked value so refreshState() gets the up-to-date preference
-    // when the pp-push-state-changed event triggers a re-read.
-    getSuppressChildNotifications: () => Promise.resolve(webSuppressValue),
-    setSuppressChildNotifications: (suppress: boolean) => {
+    getSuppressChildNotifications: async () => webSuppress,
+    setSuppressChildNotifications: async (suppress) => {
         webSetCalls.push(suppress);
-        webSuppressValue = suppress;
-        return Promise.resolve(true);
+        webSuppress = suppress;
+        return true;
     },
-    subscribeToPush: () => Promise.resolve(null),
-    unsubscribeFromPush: () => Promise.resolve(false),
-}));
+    isNativePushAvailable: () => native,
+    isNativePushDisabled: () => false,
+    setNativePushDisabled: () => {},
+    hasNativePushPermission: async () => true,
+    requestNativePushPermission: async () => true,
+    startNtfyPush: async () => startResult,
+    stopNtfyPush: async () => {},
+    getNativeSuppressChildNotifications: () => nativeSuppress,
+    setNativeSuppressChildNotifications: async (suppress) => {
+        nativeSetCalls.push(suppress);
+        nativeSuppress = suppress;
+        return true;
+    },
+};
 
-mock.module("@pizzapi/tools", () => ({
-    createLogger: () => ({ error: () => {}, warn: () => {}, info: () => {}, debug: () => {} }),
-}));
-
-// Stub heavy UI components so they don't blow up without a full Radix/Tailwind env.
-mock.module("@/components/ui/button", () => ({
-    Button: ({ children, ...p }: any) => React.createElement("button", p, children),
-}));
-mock.module("@/components/ui/switch", () => ({
-    Switch: (p: any) => React.createElement("input", { type: "checkbox", ...p }),
-}));
-mock.module("@/components/ui/tooltip", () => ({
-    TooltipProvider: ({ children }: any) => children,
-    Tooltip: ({ children }: any) => children,
-    TooltipTrigger: ({ children }: any) => children,
-    TooltipContent: ({ children }: any) => React.createElement("div", null, children),
-}));
-mock.module("@/components/ui/dropdown-menu", () => ({
-    DropdownMenu: ({ children }: any) => React.createElement("div", null, children),
-    DropdownMenuTrigger: ({ children }: any) => React.createElement("div", null, children),
-    DropdownMenuContent: ({ children }: any) => React.createElement("div", null, children),
-    DropdownMenuLabel: ({ children }: any) => React.createElement("div", null, children),
-    DropdownMenuSeparator: () => React.createElement("hr"),
-    DropdownMenuItem: ({ children, onSelect, disabled }: any) =>
-        React.createElement("div", { onClick: onSelect, "aria-disabled": disabled }, children),
-}));
-
-const { usePushState } = await import("./NotificationToggle");
-
-afterAll(() => mock.restore());
-afterEach(() => {
-    cleanup();
+beforeEach(() => {
+    native = true;
+    nativeSuppress = true;
+    webSuppress = false;
+    startResult = { ok: true };
     nativeSetCalls.length = 0;
     webSetCalls.length = 0;
-    nativeSuppressValue = false;
-    webSuppressValue = false;
-    isNativeAvailable = true;
-    hasPermission = true;
-    isDisabled = false;
-    startResult = { ok: true };
 });
 
-// ── Tests ────────────────────────────────────────────────────────────────────
+afterEach(() => {
+    cleanup();
+    document.body.innerHTML = "";
+});
 
-describe("usePushState — native child-suppression routing", () => {
-    test("toggleSuppressChild calls setNativeSuppressChildNotifications for native users", async () => {
-        isNativeAvailable = true;
-        hasPermission = true;
-        isDisabled = false;
-        startResult = { ok: true };
-        nativeSuppressValue = false;
+afterAll(() => {
+    (globalThis as any).CustomEvent = originalCustomEvent;
+});
 
-        const { result } = renderHook(() => usePushState());
+async function waitForHook() {
+    const hook = renderHook(() => usePushState(dependencies));
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+    return hook;
+}
 
-        // Wait for async refreshState to complete (hasNativePushPermission + startNtfyPush).
-        await act(async () => {
-            await new Promise((r) => setTimeout(r, 20));
-        });
+function ariaLabel(container: HTMLElement): string | null {
+    return container.querySelector("button[aria-label]")?.getAttribute("aria-label") ?? null;
+}
 
-        expect(result.current.subscribed).toBe(true);
-        expect(result.current.native).toBe(true);
-        expect(result.current.suppressChild).toBe(false);
+describe("usePushState child-suppression routing", () => {
+    test("routes native preferences to the native API", async () => {
+        nativeSuppress = false;
+        const { result } = await waitForHook();
 
-        await act(async () => {
-            await result.current.toggleSuppressChild();
-        });
+        await act(async () => result.current.toggleSuppressChild());
 
-        // Must have called the NATIVE api, not the web one.
         expect(nativeSetCalls).toEqual([true]);
         expect(webSetCalls).toEqual([]);
         expect(result.current.suppressChild).toBe(true);
     });
 
-    test("toggleSuppressChild calls setSuppressChildNotifications for web push users", async () => {
-        isNativeAvailable = false; // web push path
-        hasPermission = false;     // irrelevant for web
-        isDisabled = false;
-        startResult = { ok: false, reason: "error" };
-        nativeSuppressValue = false;
-        webSuppressValue = false;
+    test("routes web preferences to the Web Push API", async () => {
+        native = false;
+        const { result } = await waitForHook();
 
-        const { result } = renderHook(() => usePushState());
+        await act(async () => result.current.toggleSuppressChild());
 
-        // Wait for async isPushSubscribed (which we mock to return true when !native).
-        await act(async () => {
-            await new Promise((r) => setTimeout(r, 20));
-        });
-
-        // Web path: subscribed from isPushSubscribed mock (returns !isNativeAvailable = true).
-        expect(result.current.native).toBe(false);
-        expect(result.current.subscribed).toBe(true);
-
-        await act(async () => {
-            await result.current.toggleSuppressChild();
-        });
-
-        // Must have called the WEB api, not the native one.
         expect(webSetCalls).toEqual([true]);
         expect(nativeSetCalls).toEqual([]);
         expect(result.current.suppressChild).toBe(true);
     });
 
-    test("toggleSuppressChild toggles back to false for native", async () => {
-        isNativeAvailable = true;
-        hasPermission = true;
-        isDisabled = false;
-        startResult = { ok: true };
-        nativeSuppressValue = true; // start as suppressed
-
-        const { result } = renderHook(() => usePushState());
-        await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
-
+    test("can opt in to child notifications for native push", async () => {
+        const { result } = await waitForHook();
         expect(result.current.suppressChild).toBe(true);
 
-        await act(async () => { await result.current.toggleSuppressChild(); });
+        await act(async () => result.current.toggleSuppressChild());
 
         expect(nativeSetCalls).toEqual([false]);
         expect(result.current.suppressChild).toBe(false);
+    });
+});
+
+describe("NotificationToggle native registration outcome", () => {
+    test("shows ntfy configuration failures instead of subscribed", async () => {
+        startResult = { ok: false, reason: "unconfigured" };
+        const { container } = render(<NotificationToggle dependencies={dependencies} />);
+
+        await waitFor(() => expect(ariaLabel(container)).toBe("Push not configured on this server"));
+        expect(container.querySelector("[aria-haspopup]")).toBeNull();
+    });
+
+    test("shows generic registration failures as not subscribed", async () => {
+        startResult = { ok: false, reason: "error" };
+        const { container } = render(<NotificationToggle dependencies={dependencies} />);
+
+        await waitFor(() => expect(ariaLabel(container)).toBe("Enable notifications"));
+    });
+
+    test("shows a successful registration as subscribed", async () => {
+        const { container } = render(<NotificationToggle dependencies={dependencies} />);
+
+        await waitFor(() => expect(ariaLabel(container)).toBe("Notifications enabled"));
     });
 });

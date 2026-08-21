@@ -184,9 +184,10 @@ export async function startNtfyPush(): Promise<NtfyStartResult> {
             ntfyPass?: string | null;
             suppressChildNotifications?: boolean;
         };
-        // Cache the current server-side preference locally.
+        // Cache the server preference. Older servers omit this field, so retain
+        // the historical safe default of suppressing child-session pushes.
         try {
-            if (body.suppressChildNotifications) localStorage.setItem(NTFY_SUPPRESS_CHILD_KEY, "1");
+            if (body.suppressChildNotifications !== false) localStorage.setItem(NTFY_SUPPRESS_CHILD_KEY, "1");
             else localStorage.removeItem(NTFY_SUPPRESS_CHILD_KEY);
         } catch { /* ignore */ }
         if (!body.ntfyPublicUrl || !body.topic) {

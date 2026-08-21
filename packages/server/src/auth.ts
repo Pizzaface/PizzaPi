@@ -241,7 +241,7 @@ export interface NativePushRegistrationTable {
     /**
      * When 1, notifications triggered by linked child sessions are suppressed
      * for this registration (feature parity with Web Push per-subscription flag).
-     * Defaults to 0 (deliver child notifications).
+     * Defaults to 1, preserving native push's historical child suppression.
      */
     suppressChildNotifications: number;
 }

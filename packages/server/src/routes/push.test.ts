@@ -25,7 +25,7 @@ const mockRegisterNativePush = mock(async (_input: any) => ({
     topic: "pizzapi-abc123",
     ntfyUser: null,
     ntfyPass: null,
-    suppressChildNotifications: 0,
+    suppressChildNotifications: 1,
     createdAt: new Date().toISOString(),
 }));
 const mockUpdateNativeSuppressChildNotifications = mock(async (_userId: string, _platform: string, _suppress: boolean): Promise<number> => 1);
@@ -140,14 +140,14 @@ describe("POST /api/push/register-native", () => {
         mockRequireSession.mockImplementation(async () => ({ userId: "user-route-1", userName: "Test User" }));
     });
 
-    it("response includes suppressChildNotifications boolean (false by default)", async () => {
+    it("response includes suppressChildNotifications boolean (true by default)", async () => {
         mockRegisterNativePush.mockImplementation(async () => ({
             userId: "user-route-1",
             platform: "android",
             topic: "pizzapi-abc123",
             ntfyUser: null,
             ntfyPass: null,
-            suppressChildNotifications: 0, // stored as integer
+            suppressChildNotifications: 1, // stored as integer
             createdAt: new Date().toISOString(),
         }));
 
@@ -157,7 +157,7 @@ describe("POST /api/push/register-native", () => {
         const json = await res!.json();
         expect(json.ok).toBe(true);
         expect(typeof json.suppressChildNotifications).toBe("boolean");
-        expect(json.suppressChildNotifications).toBe(false);
+        expect(json.suppressChildNotifications).toBe(true);
     });
 
     it("response includes suppressChildNotifications=true when previously set", async () => {

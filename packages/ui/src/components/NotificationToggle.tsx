@@ -40,7 +40,63 @@ import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("push");
 
-export function usePushState() {
+export interface PushDependencies {
+    isPushSupported: typeof isPushSupported;
+    isPushSubscribed: typeof isPushSubscribed;
+    subscribeToPush: typeof subscribeToPush;
+    unsubscribeFromPush: typeof unsubscribeFromPush;
+    getNotificationPermission: typeof getNotificationPermission;
+    getSuppressChildNotifications: typeof getSuppressChildNotifications;
+    setSuppressChildNotifications: typeof setSuppressChildNotifications;
+    isNativePushAvailable: typeof isNativePushAvailable;
+    isNativePushDisabled: typeof isNativePushDisabled;
+    setNativePushDisabled: typeof setNativePushDisabled;
+    hasNativePushPermission: typeof hasNativePushPermission;
+    requestNativePushPermission: typeof requestNativePushPermission;
+    startNtfyPush: typeof startNtfyPush;
+    stopNtfyPush: typeof stopNtfyPush;
+    getNativeSuppressChildNotifications: typeof getNativeSuppressChildNotifications;
+    setNativeSuppressChildNotifications: typeof setNativeSuppressChildNotifications;
+}
+
+const defaultPushDependencies: PushDependencies = {
+    isPushSupported,
+    isPushSubscribed,
+    subscribeToPush,
+    unsubscribeFromPush,
+    getNotificationPermission,
+    getSuppressChildNotifications,
+    setSuppressChildNotifications,
+    isNativePushAvailable,
+    isNativePushDisabled,
+    setNativePushDisabled,
+    hasNativePushPermission,
+    requestNativePushPermission,
+    startNtfyPush,
+    stopNtfyPush,
+    getNativeSuppressChildNotifications,
+    setNativeSuppressChildNotifications,
+};
+
+export function usePushState(dependencies: PushDependencies = defaultPushDependencies) {
+    const {
+        isPushSupported,
+        isPushSubscribed,
+        subscribeToPush,
+        unsubscribeFromPush,
+        getNotificationPermission,
+        getSuppressChildNotifications,
+        setSuppressChildNotifications,
+        isNativePushAvailable,
+        isNativePushDisabled,
+        setNativePushDisabled,
+        hasNativePushPermission,
+        requestNativePushPermission,
+        startNtfyPush,
+        stopNtfyPush,
+        getNativeSuppressChildNotifications,
+        setNativeSuppressChildNotifications,
+    } = dependencies;
     // Android native app: no service worker / Web Push in the WebView — use the
     // ntfy foreground-service path gated on the OS notification permission.
     const native = isNativePushAvailable();
@@ -179,8 +235,8 @@ export function usePushState() {
     return { subscribed, loading, supported, native, permissionDenied, nativeUnconfigured, toggle, suppressChild, suppressChildLoading, toggleSuppressChild };
 }
 
-export function NotificationToggle() {
-    const { subscribed, loading, supported, native, permissionDenied, nativeUnconfigured, toggle, suppressChild, suppressChildLoading, toggleSuppressChild } = usePushState();
+export function NotificationToggle({ dependencies }: { dependencies?: PushDependencies } = {}) {
+    const { subscribed, loading, supported, native, permissionDenied, nativeUnconfigured, toggle, suppressChild, suppressChildLoading, toggleSuppressChild } = usePushState(dependencies);
 
     if (!supported) return null;
 
