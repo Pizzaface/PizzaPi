@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { isPackageCommand, runPackageCommand } from "./package-commands.js";
+import { isPackageCommand, runPackageCommand, rewriteUpdateArgs } from "./package-commands.js";
 import { _setGlobalConfigDir } from "./config/io.js";
 import { getGrantedServiceIds } from "./overlay/grants.js";
 import { handlePostUpdateOverlay, snapshotOverlayServiceIds } from "./overlay/cli-support.js";
@@ -17,6 +17,92 @@ describe("package command dispatch", () => {
         expect(isPackageCommand("config")).toBe(true);
         expect(isPackageCommand("web")).toBe(false);
         expect(isPackageCommand(undefined)).toBe(false);
+    });
+});
+
+describe("rewriteUpdateArgs self-update guard", () => {
+    test("passes non-update commands through unchanged", () => {
+        expect(rewriteUpdateArgs(["install", "foo"])).toEqual({
+            includeSelf: false,
+            argsForUpstream: ["install", "foo"],
+        });
+    });
+
+    test("bare update rewrites to extensions-only", () => {
+        expect(rewriteUpdateArgs(["update"])).toEqual({
+            includeSelf: false,
+            argsForUpstream: ["update", "--extensions"],
+        });
+    });
+
+    test("update --extensions passes through unchanged", () => {
+        expect(rewriteUpdateArgs(["update", "--extensions"])).toEqual({
+            includeSelf: false,
+            argsForUpstream: ["update", "--extensions"],
+        });
+    });
+
+    test("update --extension <source> passes through unchanged", () => {
+        expect(rewriteUpdateArgs(["update", "--extension", "npm:@foo/bar"])).toEqual({
+            includeSelf: false,
+            argsForUpstream: ["update", "--extension", "npm:@foo/bar"],
+        });
+    });
+
+    test("update <source> passes through unchanged", () => {
+        expect(rewriteUpdateArgs(["update", "npm:@foo/bar"])).toEqual({
+            includeSelf: false,
+            argsForUpstream: ["update", "npm:@foo/bar"],
+        });
+    });
+
+    test("update --self is treated as self-update", () => {
+        expect(rewriteUpdateArgs(["update", "--self"])).toEqual({
+            includeSelf: true,
+            argsForUpstream: ["update", "--self"],
+        });
+    });
+
+    test("update --self --extensions is treated as self-update", () => {
+        expect(rewriteUpdateArgs(["update", "--self", "--extensions"])).toEqual({
+            includeSelf: true,
+            argsForUpstream: ["update", "--self", "--extensions"],
+        });
+    });
+
+    test("update self --extensions is treated as self-update", () => {
+        expect(rewriteUpdateArgs(["update", "self", "--extensions"])).toEqual({
+            includeSelf: true,
+            argsForUpstream: ["update", "self", "--extensions"],
+        });
+    });
+
+    test("update pi --extensions is treated as self-update", () => {
+        expect(rewriteUpdateArgs(["update", "pi", "--extensions"])).toEqual({
+            includeSelf: true,
+            argsForUpstream: ["update", "pi", "--extensions"],
+        });
+    });
+
+    test("update --all is treated as self-update and is not rewritten to --extensions", () => {
+        expect(rewriteUpdateArgs(["update", "--all"])).toEqual({
+            includeSelf: true,
+            argsForUpstream: ["update", "--all"],
+        });
+    });
+
+    test("update --all --extensions is treated as self-update", () => {
+        expect(rewriteUpdateArgs(["update", "--all", "--extensions"])).toEqual({
+            includeSelf: true,
+            argsForUpstream: ["update", "--all", "--extensions"],
+        });
+    });
+
+    test("mixed self forms are treated as self-update", () => {
+        expect(rewriteUpdateArgs(["update", "--self", "pi", "--extensions"])).toEqual({
+            includeSelf: true,
+            argsForUpstream: ["update", "--self", "pi", "--extensions"],
+        });
     });
 });
 
@@ -106,6 +192,32 @@ describe("runPackageCommand", () => {
         const code = await runPackageCommand(["update", "--extensions"], cwd, agentDir);
         expect(code).toBe(0);
     });
+
+    const selfUpdateCases: string[][] = [
+        ["update", "--self"],
+        ["update", "--self", "--extensions"],
+        ["update", "self", "--extensions"],
+        ["update", "pi", "--extensions"],
+        ["update", "--all"],
+        ["update", "--all", "--extensions"],
+        ["update", "--self", "pi", "--extensions"],
+    ];
+    for (const args of selfUpdateCases) {
+        test(`${args.join(" ")} is disabled as self-update`, async () => {
+            const agentDir = join(tmpDir, "agent");
+            const cwd = join(tmpDir, "project");
+            const originalError = console.error;
+            const errors: unknown[][] = [];
+            console.error = ((...a: unknown[]) => { errors.push(a); }) as typeof console.error;
+            try {
+                const code = await runPackageCommand(args, cwd, agentDir);
+                expect(code).not.toBe(0);
+                expect(errors.join(" ")).toContain("self-update disabled");
+            } finally {
+                console.error = originalError;
+            }
+        });
+    }
 
     test("list on an empty agent dir reports no packages", async () => {
         const agentDir = join(tmpDir, "agent");
