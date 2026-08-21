@@ -68,4 +68,22 @@ describe("PresentedCard", () => {
     expect(getByText("Bob's Handyman")).toBeDefined();
     expect(queryByText(/results$/)).toBeNull();
   });
+
+  test("does not render raw external image URLs that leak viewer metadata", () => {
+    // Regression / health inspection (privacy): an external image src causes
+    // the browser to request the URL automatically, leaking the viewer's IP,
+    // User-Agent, and potentially cookies to the image host. The component must
+    // not emit a raw external URL; a safe fallback is the generic icon.
+    const external = "https://tracker.example/pixel.png";
+    const { container } = render(
+      <PresentedCard
+        card={{
+          ...card,
+          image: external,
+        }}
+      />,
+    );
+    const img = container.querySelector("img");
+    expect(img?.getAttribute("src")).not.toBe(external);
+  });
 });
