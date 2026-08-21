@@ -5,6 +5,7 @@ import {
     cancelRunnerFileRead,
     isPendingRequestCapReached,
     pendingSocketMatches,
+    stampServiceMessageSession,
 } from "./runner.js";
 
 // NOTE: These tests deliberately import ONLY the pure helpers and do NOT use
@@ -13,6 +14,23 @@ import {
 // those modules for every other test file in the same run (see TODO(ltl2EKmU)),
 // breaking runners.broadcast/terminals suites. Testing the extracted predicates
 // covers the same security-relevant behaviour with zero cross-file bleed.
+
+describe("runner service-message fanout", () => {
+    test("stamps unscoped envelopes for each target viewer session", () => {
+        const envelope = { serviceId: "tunnel", type: "tunnel_registered", payload: {} };
+
+        expect(stampServiceMessageSession(envelope, "session-y")).toEqual({
+            ...envelope,
+            sessionId: "session-y",
+        });
+    });
+
+    test("preserves a runner-provided target session", () => {
+        const envelope = { serviceId: "tunnel", type: "tunnel_registered", sessionId: "session-x", payload: {} };
+
+        expect(stampServiceMessageSession(envelope, "session-y")).toBe(envelope);
+    });
+});
 
 describe("runner namespace pending-request hardening", () => {
     test("request IDs are crypto-random UUID v4", () => {
