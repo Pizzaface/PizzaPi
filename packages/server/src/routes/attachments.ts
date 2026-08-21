@@ -2,6 +2,7 @@
  * Attachments router — file upload and download for sessions.
  */
 
+import { createLogger } from "@pizzapi/tools";
 import { requireSession, validateApiKey } from "../middleware.js";
 import { getSharedSession } from "../ws/sio-registry.js";
 import {
@@ -9,7 +10,10 @@ import {
     getStoredAttachment,
     storeSessionAttachment,
 } from "../attachments/store.js";
+import { createAttachmentToken, verifyAttachmentToken } from "./attachment-token.js";
 import type { RouteHandler } from "./types.js";
+
+const log = createLogger("attachments");
 
 /**
  * MIME types safe to serve inline — rendered by the browser without any
@@ -181,6 +185,35 @@ export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
         });
     }
 
+    // ── Mint token: POST /api/attachments/:id/token ─────────────────────
+    if (
+        url.pathname.startsWith("/api/attachments/") &&
+        url.pathname.endsWith("/token") &&
+        req.method === "POST"
+    ) {
+        const attachmentId = decodeURIComponent(
+            url.pathname.slice("/api/attachments/".length, -"/token".length),
+        );
+        if (!attachmentId) {
+            return Response.json({ error: "Missing attachment ID" }, { status: 400 });
+        }
+
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const attachment = await getStoredAttachment(attachmentId);
+        if (!attachment) {
+            return Response.json({ error: "Attachment not found" }, { status: 404 });
+        }
+
+        if (attachment.ownerUserId !== identity.userId) {
+            return Response.json({ error: "Forbidden" }, { status: 403 });
+        }
+
+        const { token, expiresAt } = createAttachmentToken({ userId: identity.userId, attachmentId });
+        return Response.json({ token, expiresAt });
+    }
+
     // ── Download: GET /api/attachments/:id ──────────────────────────────
     if (url.pathname.startsWith("/api/attachments/") && req.method === "GET") {
         const attachmentId = decodeURIComponent(url.pathname.slice("/api/attachments/".length));
@@ -188,13 +221,48 @@ export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Missing attachment ID" }, { status: 400 });
         }
 
-        // Support both header-based and query-parameter API key auth for
-        // backward compatibility.  Clients that embed the key in the URL
-        // (e.g. direct download links, documented ?apiKey= pattern) must
-        // continue to work alongside the preferred x-api-key header form.
+        // ── Token auth (preferred) ──
+        const queryToken = url.searchParams.get("token") || undefined;
+        if (queryToken) {
+            const payload = verifyAttachmentToken(queryToken);
+            if (!payload) {
+                return Response.json({ error: "Invalid or expired token" }, { status: 401 });
+            }
+            if (payload.attachmentId !== attachmentId) {
+                return Response.json({ error: "Token/attachment mismatch" }, { status: 403 });
+            }
+
+            const attachment = await getStoredAttachment(attachmentId);
+            if (!attachment) {
+                return Response.json({ error: "Attachment not found" }, { status: 404 });
+            }
+            // Re-check ownership against DB — never trust token fields alone.
+            if (attachment.ownerUserId !== payload.userId) {
+                return Response.json({ error: "Forbidden" }, { status: 403 });
+            }
+
+            const { contentType: servedMimeType, disposition: dispositionMode } =
+                resolveServedContentType(attachment.mimeType);
+            return new Response(Bun.file(attachment.filePath), {
+                headers: {
+                    "content-type": servedMimeType,
+                    "x-content-type-options": "nosniff",
+                    "content-length": String(attachment.size),
+                    "content-disposition": buildContentDisposition(attachment.filename, dispositionMode),
+                    "x-attachment-id": attachment.attachmentId,
+                    "x-attachment-filename": encodeHeaderFilename(attachment.filename),
+                },
+            });
+        }
+
+        // ── Legacy API-key auth (deprecated — logs warning) ──
         const headerApiKey = req.headers.get("x-api-key") || undefined;
         const queryApiKey = url.searchParams.get("apiKey") || undefined;
         const providedApiKey = headerApiKey ?? queryApiKey;
+        if (queryApiKey) {
+            // ponytail: one-cycle deprecation shim; remove after mobile clients migrate
+            log.warn("[deprecated] ?apiKey= on attachment download; use POST /api/attachments/:id/token instead");
+        }
         const identity = providedApiKey
             ? await validateApiKey(req, providedApiKey)
             : await requireSession(req);
