@@ -4856,7 +4856,6 @@ export function App() {
     const handler = (envelope: { serviceId: string; type: string; sessionId?: string; generation?: number; payload: unknown }) => {
       if (envelope.serviceId !== "tunnel" || envelope.type !== "tunnel_registered") return;
       if (
-        typeof envelope.sessionId !== "string" ||
         !matchesViewerSession(lifecycleRefs.activeSessionId.current, envelope.sessionId) ||
         !matchesViewerGeneration(lifecycleRefs.generation.current, envelope.generation)
       ) return;

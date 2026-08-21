@@ -9,5 +9,6 @@ describe("Tunnel service-message viewer switch guard", () => {
 
     expect(handler).toMatch(/matchesViewerSession\(lifecycleRefs\.activeSessionId\.current, envelope\.sessionId\)/);
     expect(handler).toMatch(/matchesViewerGeneration\(lifecycleRefs\.generation\.current, envelope\.generation\)/);
+    expect(handler).not.toMatch(/typeof envelope\.sessionId !== "string"/);
   });
 });
