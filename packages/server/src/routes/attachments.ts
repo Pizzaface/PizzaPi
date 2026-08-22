@@ -111,6 +111,8 @@ export function encodeHeaderFilename(value: string): string {
     return rfc5987Encode(sanitizeControlChars(value));
 }
 
+const NO_STORE_HEADERS = { "cache-control": "private, no-store" } as const;
+
 export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
     // ── Upload: POST /api/sessions/:id/attachments ─────────────────────
     if (
@@ -185,7 +187,7 @@ export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
     if (url.pathname.startsWith("/api/attachments/") && req.method === "GET") {
         const attachmentId = decodeURIComponent(url.pathname.slice("/api/attachments/".length));
         if (!attachmentId) {
-            return Response.json({ error: "Missing attachment ID" }, { status: 400 });
+            return Response.json({ error: "Missing attachment ID" }, { status: 400, headers: NO_STORE_HEADERS });
         }
 
         // Support both header-based and query-parameter API key auth for
@@ -198,15 +200,18 @@ export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
         const identity = providedApiKey
             ? await validateApiKey(req, providedApiKey)
             : await requireSession(req);
-        if (identity instanceof Response) return identity;
+        if (identity instanceof Response) {
+            identity.headers.set("cache-control", "private, no-store");
+            return identity;
+        }
 
         const attachment = await getStoredAttachment(attachmentId);
         if (!attachment) {
-            return Response.json({ error: "Attachment not found" }, { status: 404 });
+            return Response.json({ error: "Attachment not found" }, { status: 404, headers: NO_STORE_HEADERS });
         }
 
         if (attachment.ownerUserId !== identity.userId) {
-            return Response.json({ error: "Forbidden" }, { status: 403 });
+            return Response.json({ error: "Forbidden" }, { status: 403, headers: NO_STORE_HEADERS });
         }
 
         // Only a fixed allowlist of non-scriptable MIME types is served inline.
@@ -224,6 +229,7 @@ export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
                 "content-disposition": buildContentDisposition(attachment.filename, dispositionMode),
                 "x-attachment-id": attachment.attachmentId,
                 "x-attachment-filename": encodeHeaderFilename(attachment.filename),
+                "cache-control": "private, no-store",
             },
         });
     }
