@@ -131,7 +131,9 @@ export async function getStoredAttachment(attachmentId: string): Promise<StoredA
                 return record;
             }
         }
-        void deleteStoredAttachment(attachmentId);
+        void deleteStoredAttachment(attachmentId).catch((err) => {
+            log.error("Background delete failed for attachment:", attachmentId, err);
+        });
         return null;
     }
 
@@ -141,16 +143,24 @@ export async function getStoredAttachment(attachmentId: string): Promise<StoredA
 export async function deleteStoredAttachment(attachmentId: string): Promise<void> {
     const record = attachments.get(attachmentId);
     if (!record) return;
-    attachments.delete(attachmentId);
-    extractedImageSessionRefs.delete(attachmentId);
-    try {
-        await rm(record.filePath, { force: true });
-    } catch {}
-    void Promise.all([
+    // P1 fix: DB deletes FIRST — if any reject, we leave the in-memory entry intact
+    // so subsequent prune/sweep calls can retry. File removal is best-effort after.
+    await Promise.all([
         removePersistedAttachment(attachmentId),
         removePersistedUploadedAttachment(attachmentId),
         removePersistedSessionRefs(attachmentId),
-    ]).catch(() => {});
+    ]);
+    // Only remove from memory after persistence deletes succeed.
+    attachments.delete(attachmentId);
+    extractedImageSessionRefs.delete(attachmentId);
+    // Best-effort file rm: awaited so callers (and tests) see a consistent final state,
+    // but errors are caught so a missing file never breaks the deletion contract.
+    // ponytail: try/catch over fire-and-forget — same best-effort semantics, deterministic.
+    try {
+        await rm(record.filePath, { force: true });
+    } catch (err) {
+        log.error("Failed to delete attachment file:", err);
+    }
 }
 
 // ── Extracted image storage ──────────────────────────────────────────────────
@@ -283,6 +293,79 @@ export async function sweepExpiredAttachments(nowMs: number = Date.now()): Promi
 }
 
 /**
+ * Delete attachments owned exclusively by the given pruned (expired/ephemeral) sessions.
+ *
+ * Ordering invariant: in-memory state (attachments map, extractedImageSessionRefs) is
+ * ONLY mutated AFTER all awaited DB deletes resolve. On rejection, all in-memory state
+ * is left intact so a subsequent pruneSessionAttachments call can retry.
+ *
+ * - Single-session uploads (`uploaderUserId !== "system"`): deleted outright via
+ *   deleteStoredAttachment (DB-first, memory-after).
+ * - Extracted/shared images: if no durable session still references them, deleted via
+ *   deleteStoredAttachment (same DB-first ordering). If a durable ref exists, only the
+ *   pruned session ref is removed — DB junction row first, then in-memory ref.
+ */
+export async function pruneSessionAttachments(prunedSessionIds: string[]): Promise<void> {
+    if (prunedSessionIds.length === 0) return;
+
+    const prunedSet = new Set(prunedSessionIds);
+    const durableSessionIds = await getDurableSessionIds();
+
+    // 1. Delete single-session uploads owned by pruned sessions.
+    //    deleteStoredAttachment is DB-first: if it rejects, in-memory entry is preserved.
+    const uploadsToDelete: string[] = [];
+    for (const [attachmentId, record] of attachments) {
+        if (prunedSet.has(record.sessionId) && record.uploaderUserId !== "system") {
+            uploadsToDelete.push(attachmentId);
+        }
+    }
+    for (const id of uploadsToDelete) {
+        await deleteStoredAttachment(id);
+    }
+
+    // 2. Classify extracted images WITHOUT touching in-memory state yet.
+    //    We must not mutate extractedImageSessionRefs until DB deletes succeed.
+    const extractedToDelete: string[] = []; // no durable refs → full delete
+    const extractedToKeep: string[] = [];   // has durable refs → prune only the pruned-session refs
+    for (const [attachmentId, refs] of extractedImageSessionRefs) {
+        const hasPrunedRef = [...prunedSet].some((sid) => refs.has(sid));
+        if (!hasPrunedRef) continue;
+        const hasDurableRef = [...refs].some((sid) => durableSessionIds.has(sid));
+        if (hasDurableRef) {
+            extractedToKeep.push(attachmentId);
+        } else {
+            extractedToDelete.push(attachmentId);
+        }
+    }
+
+    // 3. Full-delete for extracted images with no durable refs.
+    //    deleteStoredAttachment is the single chokepoint: it awaits all DB deletes
+    //    before removing the attachments map entry AND extractedImageSessionRefs entry.
+    //    On rejection it leaves both intact → retry rediscovers them.
+    for (const id of extractedToDelete) {
+        await deleteStoredAttachment(id);
+    }
+
+    // 4. Partial-delete for kept images: remove only the pruned session refs.
+    //    DB junction rows first, in-memory mutation only after they resolve.
+    //    On rejection, in-memory refs are left intact for the same retry guarantee.
+    if (extractedToKeep.length > 0) {
+        await getKysely()
+            .deleteFrom("extracted_attachment_session" as any)
+            .where("attachmentId", "in", extractedToKeep)
+            .where("sessionId", "in", prunedSessionIds)
+            .execute();
+        // DB deletes resolved — now safe to mutate in-memory refs.
+        for (const attachmentId of extractedToKeep) {
+            const refs = extractedImageSessionRefs.get(attachmentId);
+            if (refs) {
+                for (const sid of prunedSet) refs.delete(sid);
+            }
+        }
+    }
+}
+
+/**
  * Return the set of session IDs that are pinned or non-ephemeral (and not yet expired).
  * Used by the sweep to avoid deleting extracted images that are still reachable.
  */
@@ -308,6 +391,20 @@ async function getDurableSessionIds(): Promise<Set<string>> {
 }
 
 // ── Session-ref helpers (in-memory) ──────────────────────────────────────────
+
+/**
+ * @internal Exposed for tests only — do not call from production code.
+ * Returns read-only views of both in-memory maps so tests can assert
+ * that state survives a DB-delete failure.
+ */
+export function _testGetExtractedImageSessionRefs(): ReadonlyMap<string, ReadonlySet<string>> {
+    return extractedImageSessionRefs;
+}
+
+/** @internal for tests only */
+export function _testGetAttachments(): ReadonlyMap<string, StoredAttachment> {
+    return attachments;
+}
 
 function addSessionRef(attachmentId: string, sessionId: string): void {
     let refs = extractedImageSessionRefs.get(attachmentId);
