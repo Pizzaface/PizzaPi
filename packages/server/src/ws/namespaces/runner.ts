@@ -100,6 +100,7 @@ export async function emitTriggerSubscriptionDelta(
 
 // Forward declaration — filled in during registerRunnerNamespace() below.
 let emitToRunnerRoom: (runnerId: string, event: string, data: unknown) => void = () => {};
+import { runnerRoom } from "../sio-registry/context.js";
 import {
     registerRunner,
     updateRunnerSkills,
@@ -148,6 +149,33 @@ export function pendingSocketMatches<T extends { socketId: string }>(
     socketId: string,
 ): pending is T {
     return !!pending && pending.socketId === socketId;
+}
+
+/**
+ * Ownership guard for session_ready: should a runner's claim on a session be
+ * REJECTED because the session already belongs to a DIFFERENT LIVE runner?
+ *
+ * session_ready otherwise accepts any runner owned by the same user, so a
+ * second same-user runner could claim an already-active session — overwriting
+ * its runner association, injecting runner_session_event events, receiving its
+ * service_message traffic, or disconnecting it. Returns true only when ALL of:
+ *   - the session already has an owning runnerId (first association → allow)
+ *   - the owner differs from the claimant (same-runner reclaim/reconnect → allow)
+ *   - the session is active (stale/inactive association → existing semantics)
+ *   - the owning runner is live (`ownerLive` — a connected socket in its
+ *     runner room on some node; dead/crashed runner → allow re-adoption)
+ * Exported for direct unit testing (the shared-process suite cannot mock.module
+ * the namespace machinery reliably — see TODO(ltl2EKmU)).
+ */
+export function shouldRejectSessionAdoption(
+    session: { runnerId: string | null; isActive: boolean } | null,
+    claimingRunnerId: string,
+    ownerLive: boolean,
+): boolean {
+    if (!session?.runnerId) return false;
+    if (session.runnerId === claimingRunnerId) return false;
+    if (!session.isActive) return false;
+    return ownerLive;
 }
 
 // ── Skill request/response registry ──────────────────────────────────────────
@@ -903,6 +931,33 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             const session = await getSharedSession(data.sessionId);
             if (session?.userId && runnerUserId && session.userId !== runnerUserId) {
                 log.warn(`session_ready rejected: session ${data.sessionId} belongs to user ${session.userId}, runner belongs to user ${runnerUserId}`);
+                pendingSessionChecks.delete(data.sessionId);
+                rejectCheck();
+                return;
+            }
+            // Security: bind adoption to the OWNING runner. When the session is
+            // already associated with a DIFFERENT runner and is ACTIVE, the claim
+            // is only legitimate if that runner is gone — a live different runner
+            // (even owned by the same user) must not take over the session.
+            const ownerRunnerId = session?.runnerId ?? null;
+            let ownerLive = false;
+            if (ownerRunnerId && ownerRunnerId !== runnerId && session?.isActive) {
+                // Cluster-wide liveness (same semantics as sweepOrphanedRunners):
+                // any socket in the owner's /runner room on ANY node counts.
+                try {
+                    const ownerSockets = await runner.in(runnerRoom(ownerRunnerId)).fetchSockets();
+                    ownerLive = ownerSockets.length > 0;
+                } catch {
+                    // Fail closed: if liveness can't be determined, don't hand
+                    // an active session to a different runner.
+                    ownerLive = true;
+                }
+            }
+            if (shouldRejectSessionAdoption(session, runnerId, ownerLive)) {
+                log.warn(
+                    `session_ready rejected: session ${data.sessionId} is active on live runner ${ownerRunnerId}; ` +
+                    `runner ${runnerId} cannot adopt it`,
+                );
                 pendingSessionChecks.delete(data.sessionId);
                 rejectCheck();
                 return;
