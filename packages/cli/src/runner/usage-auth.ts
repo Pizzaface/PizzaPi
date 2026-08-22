@@ -1,9 +1,46 @@
 import { readBestExternalCredential } from "./keychain-auth.js";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 export type RunnerAuthRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null;
+}
+
+/** Read a Claude Code OAuth credential file, handling both the nested
+ *  `{ claudeAiOauth: {...} }` shape and the flat `{ accessToken, ... }` shape. */
+function readClaudeCodeCredentialsFile(path: string): { accessToken: string; expiresAt: number } | null {
+    try {
+        if (!existsSync(path)) return null;
+        const raw = readFileSync(path, "utf-8").trim();
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        const oauth = isRecord(parsed.claudeAiOauth) ? (parsed.claudeAiOauth as Record<string, unknown>) : parsed;
+        const accessToken = oauth.accessToken;
+        const expiresAt = oauth.expiresAt;
+        if (typeof accessToken !== "string" || accessToken.trim().length === 0) return null;
+        if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt)) return null;
+        return { accessToken, expiresAt };
+    } catch {
+        return null;
+    }
+}
+
+/** Path to minimalcc-pi's imported Claude Code OAuth credentials.
+ *  When the user has run `/claude-subscription-import`, the credentials are
+ *  copied here and kept refreshed by the extension. */
+function minimalccPiImportedCredentialPath(): string {
+    return join(homedir(), ".pizzapi", "agent", "pi-claude-subscription", "imported-credentials.json");
+}
+
+function readMinimalccPiImportedCredential(opts: { now?: number; path?: string } = {}): { accessToken: string; expiresAt: number } | null {
+    const now = opts.now ?? Date.now();
+    const path = opts.path ?? minimalccPiImportedCredentialPath();
+    const cred = readClaudeCodeCredentialsFile(path);
+    if (!cred || cred.expiresAt <= now) return null;
+    return cred;
 }
 
 /**
@@ -24,15 +61,21 @@ export function getOAuthAccessToken(raw: unknown): string | null {
 
 /**
  * Fallback Anthropic usage-check token: reads Claude Code's own OAuth token
- * straight from the macOS Keychain / `~/.claude/.credentials.json` (same
- * read-only lookup `readBestExternalCredential` already does) for users who
- * only ever logged into Claude Code directly and have no `anthropic` entry
- * in auth.json.
+ * from the macOS Keychain / `~/.claude/.credentials.json`, and also from
+ * minimalcc-pi's imported credential store if the user uses the
+ * claude-subscription extension. This covers users who never ran /login inside
+ * pizzapi and rely on Claude Code OAuth.
  *
- * Never refreshes or persists anything — an expired token is simply treated
- * as absent so we can't accidentally rotate Claude Code's own credentials.
+ * Read-only — never refreshes or persists anything. An expired token is
+ * treated as absent so we can't accidentally rotate credentials owned by
+ * another process. (The minimalcc-pi extension keeps its imported credentials
+ * refreshed independently.)
  */
-export function getAnthropicKeychainToken(now = Date.now()): string | null {
+export function getAnthropicKeychainToken(opts?: { now?: number; importedCredentialPath?: string }): string | null {
+    const now = opts?.now ?? Date.now();
+    const imported = readMinimalccPiImportedCredential({ now, path: opts?.importedCredentialPath });
+    if (imported) return imported.accessToken;
+
     const oauth = readBestExternalCredential()?.credentials.claudeAiOauth;
     if (!oauth || oauth.expiresAt <= now) return null;
     return oauth.accessToken;
