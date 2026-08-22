@@ -569,24 +569,28 @@ export function SessionViewer({
       const originSessionId = sessionId;
       const sentText = text;
 
+      // Clear the draft immediately for responsive UI. If the send fails, we
+      // restore it below (provided the user hasn't already typed something new).
+      setInput("");
+      setCommandOpen(false);
+      setCommandQuery("");
+
       try {
         const result = await onSendInput(payload);
         if (result === true) {
-          if (sessionIdRef.current === originSessionId) {
-            setInput("");
-            setCommandOpen(false);
-            setCommandQuery("");
-          } else if (originSessionId) {
-            // User switched away — only clear draft if it still matches sent text
-            const saved = inputRef.current.trim();
-            if (saved === sentText || saved === "") {
-              setInput("");
-            }
-          }
           return true;
         }
       } catch {
-        // Fall through to preserve the prompt and attachments for retry.
+        // Fall through to restore the prompt and let attachments persist for retry.
+      }
+
+      // Send failed. Restore the draft only if we're still on the same session
+      // and the composer hasn't been edited since submission.
+      if (sessionIdRef.current === originSessionId) {
+        const current = inputRef.current.trim();
+        if (current === "" || current === sentText) {
+          setInput(sentText);
+        }
       }
 
       setComposerError("Failed to send message.");
