@@ -142,6 +142,20 @@ export async function registerRunner(
         if (auth === "mismatch") {
             return new Error(`Runner authentication failed: secret mismatch for runner ${requestedId}`);
         }
+        // Ownership guard: a correct secret presented by a DIFFERENT
+        // authenticated user must not take over the runner (and its sessions,
+        // tunnels, skills, provider credentials). Reject before any hash write.
+        // Explicit ownership transfer, if ever needed, is a separate audited
+        // flow — out of scope here.
+        const existing = await getRunnerState(requestedId);
+        if (existing && (existing.userId ?? null) !== (opts.userId ?? null)) {
+            log.warn(
+                `Rejected runner registration for ${requestedId}: authenticated user ${opts.userId ?? "anonymous"} does not match existing owner`,
+            );
+            return new Error(
+                `Runner authentication failed: runner ${requestedId} is owned by a different user`,
+            );
+        }
         // Re-registration (existing secret matched) or first claim: clean up any
         // stale local socket association for this runnerId.
         localRunnerSockets.delete(requestedId);
