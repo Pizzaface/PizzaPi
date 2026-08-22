@@ -97,6 +97,7 @@ export interface RelaySessionTable {
     runnerId: string | null;
     runnerName: string | null;
     sessionName: string | null;
+    generation: string | null;
 }
 
 export interface RelaySessionStateTable {

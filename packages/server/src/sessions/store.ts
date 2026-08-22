@@ -40,6 +40,10 @@ export interface RelaySessionStartInput {
     isEphemeral: boolean;
     runnerId?: string | null;
     runnerName?: string | null;
+    /** Lifecycle generation (epoch) captured at registration. Bumped on every
+     *  (re)registration so a delayed session-end from a prior socket can be
+     *  matched against the current generation and ignored if stale. */
+    generation?: string | null;
 }
 
 export interface PersistedRelaySessionSnapshot {
@@ -100,6 +104,7 @@ export async function ensureRelaySessionTables(): Promise<void> {
         .addColumn("runnerId", "text")
         .addColumn("runnerName", "text")
         .addColumn("sessionName", "text")
+        .addColumn("generation", "text")
         .execute();
 
     // Migration: add isPinned column to existing tables
@@ -150,6 +155,19 @@ export async function ensureRelaySessionTables(): Promise<void> {
     } catch (error) {
         if (!isDuplicateColumnError(error, "sessionName")) {
             log.error("Failed to migrate relay_session.sessionName:", error);
+            throw error;
+        }
+    }
+
+    // Migration: add generation column to existing tables
+    try {
+        await getKysely().schema
+            .alterTable("relay_session")
+            .addColumn("generation", "text")
+            .execute();
+    } catch (error) {
+        if (!isDuplicateColumnError(error, "generation")) {
+            log.error("Failed to migrate relay_session.generation:", error);
             throw error;
         }
     }
@@ -231,6 +249,7 @@ export async function recordRelaySessionStart(input: RelaySessionStartInput): Pr
             isPinned: 0,
             runnerId: input.runnerId ?? null,
             runnerName: input.runnerName ?? null,
+            generation: input.generation ?? null,
         })
         .onConflict((oc) =>
             oc.column("id").doUpdateSet((eb) => ({
@@ -244,6 +263,10 @@ export async function recordRelaySessionStart(input: RelaySessionStartInput): Pr
                 // Clear endedAt on reconnect so the session is considered
                 // active again (e.g. for getActiveRelaySessionUserId).
                 endedAt: null,
+                // Bump the lifecycle generation on every (re)registration so a
+                // delayed session-end from a prior socket carries a stale
+                // generation and is ignored by recordRelaySessionEnd.
+                generation: input.generation ?? null,
             })),
         )
         .execute();
@@ -441,14 +464,17 @@ export async function getActiveRelaySessionUserId(sessionId: string): Promise<st
     return row?.userId ?? null;
 }
 
-export async function recordRelaySessionEnd(sessionId: string): Promise<void> {
+export async function recordRelaySessionEnd(sessionId: string, generation?: string | null): Promise<void> {
     const nowIso = new Date().toISOString();
     const newExpiry = ephemeralExpiryIso();
-    // Guard against stale end writes: only mark ended if the session has not
-    // been re-started since this end was triggered.  A concurrent
-    // recordRelaySessionStart upsert sets endedAt back to NULL, so if endedAt
-    // is already NULL when this runs, a newer start has landed first and we
-    // must not overwrite it.
+    // Guard against stale end writes: only mark ended if the end's lifecycle
+    // generation matches the CURRENT session's generation.  A reconnect bumps
+    // the generation (recordRelaySessionStart upsert), so a delayed end from a
+    // prior socket carries the old generation and is ignored.  The old
+    // lastActiveAt time guard is insufficient because a reconnect preserves the
+    // original startedAt (and thus lastActiveAt), so a delayed end's timestamp
+    // still satisfies `lastActiveAt <= now`.  When no generation is available
+    // (legacy sessions predating this field), fall back to the time guard.
     await getKysely()
         .updateTable("relay_session")
         .set((eb) => ({
@@ -462,13 +488,22 @@ export async function recordRelaySessionEnd(sessionId: string): Promise<void> {
                 .end(),
         }))
         .where("id", "=", sessionId)
-        // Only end the session if it hasn't already been re-started
-        // (a reconnect upsert sets endedAt = NULL and updates lastActiveAt).
         .where((eb) =>
-            eb.or([
-                eb("endedAt", "is not", null),  // already ended — safe to update timestamp
-                eb("lastActiveAt", "<=", nowIso), // not re-started with a newer timestamp
-            ]),
+            generation != null
+                ? eb.or([
+                    eb("generation", "=", generation),
+                    eb.and([
+                        eb("generation", "is", null),
+                        eb.or([
+                            eb("endedAt", "is not", null),
+                            eb("lastActiveAt", "<=", nowIso),
+                        ]),
+                    ]),
+                ])
+                : eb.or([
+                    eb("endedAt", "is not", null),  // already ended — safe to update timestamp
+                    eb("lastActiveAt", "<=", nowIso), // not re-started with a newer timestamp
+                ]),
         )
         .execute();
 }

@@ -12,6 +12,7 @@ import {
     pruneExpiredRelaySessions,
     getPersistedRelaySessionSnapshot,
     recordRelaySessionStart,
+    recordRelaySessionEnd,
     updateRelaySessionRunner,
     getRelaySessionUserId,
 } from "./store.js";
@@ -526,5 +527,106 @@ describe("runner association persistence", () => {
     authIt("getRelaySessionUserId returns null for nonexistent session", async () => {
         const uid = await getRelaySessionUserId("nonexistent-uid-session");
         expect(uid).toBeNull();
+    });
+});
+
+describe("recordRelaySessionEnd — lifecycle generation guard", () => {
+    authIt("ignores a stale end from a prior generation after reconnect", async () => {
+        // Start (generation 1).
+        await recordRelaySessionStart({
+            sessionId: "s-gen-race",
+            userId: TEST_USER,
+            cwd: "/project",
+            shareUrl: "http://test/s-gen-race",
+            startedAt: currentIso(),
+            isEphemeral: false,
+            generation: "gen-1",
+        });
+
+        // Reconnect (generation 2) — the session is live again.
+        await recordRelaySessionStart({
+            sessionId: "s-gen-race",
+            userId: TEST_USER,
+            cwd: "/project",
+            shareUrl: "http://test/s-gen-race",
+            startedAt: currentIso(),
+            isEphemeral: false,
+            generation: "gen-2",
+        });
+
+        // A delayed session-end from the PRIOR socket (generation 1) must NOT
+        // mark the reconnected (generation 2) session as ended.
+        await recordRelaySessionEnd("s-gen-race", "gen-1");
+
+        const stillLive = await getKysely()
+            .selectFrom("relay_session")
+            .select(["endedAt", "generation"])
+            .where("id", "=", "s-gen-race")
+            .executeTakeFirst();
+        expect(stillLive?.generation).toBe("gen-2");
+        expect(stillLive?.endedAt).toBeNull();
+    });
+
+    authIt("applies a matching-generation end", async () => {
+        await recordRelaySessionStart({
+            sessionId: "s-gen-match",
+            userId: TEST_USER,
+            cwd: "/project",
+            shareUrl: "http://test/s-gen-match",
+            startedAt: currentIso(),
+            isEphemeral: false,
+            generation: "gen-1",
+        });
+
+        await recordRelaySessionEnd("s-gen-match", "gen-1");
+
+        const row = await getKysely()
+            .selectFrom("relay_session")
+            .select("endedAt")
+            .where("id", "=", "s-gen-match")
+            .executeTakeFirst();
+        expect(row?.endedAt).not.toBeNull();
+    });
+
+    authIt("applies a generation end when the row's generation is still NULL (start not yet landed)", async () => {
+        // Simulate the fire-and-forget start upsert not having landed yet:
+        // a row exists but generation is NULL.
+        const oldLastActive = new Date(Date.now() - 1000).toISOString();
+        await insertSession({ sessionId: "s-gen-null-start", userId: TEST_USER, isEphemeral: false });
+        await getKysely()
+            .updateTable("relay_session")
+            .set({ lastActiveAt: oldLastActive })
+            .where("id", "=", "s-gen-null-start")
+            .execute();
+
+        await recordRelaySessionEnd("s-gen-null-start", "gen-N");
+
+        const row = await getKysely()
+            .selectFrom("relay_session")
+            .select("endedAt")
+            .where("id", "=", "s-gen-null-start")
+            .executeTakeFirst();
+        expect(row?.endedAt).not.toBeNull();
+    });
+
+    authIt("falls back to the time guard when no generation is provided (legacy)", async () => {
+        await recordRelaySessionStart({
+            sessionId: "s-gen-legacy",
+            userId: TEST_USER,
+            cwd: "/project",
+            shareUrl: "http://test/s-gen-legacy",
+            startedAt: currentIso(),
+            isEphemeral: false,
+        });
+
+        // No generation passed → legacy time-guard path still ends the session.
+        await recordRelaySessionEnd("s-gen-legacy");
+
+        const row = await getKysely()
+            .selectFrom("relay_session")
+            .select("endedAt")
+            .where("id", "=", "s-gen-legacy")
+            .executeTakeFirst();
+        expect(row?.endedAt).not.toBeNull();
     });
 });
