@@ -17,7 +17,7 @@ const store = new Map<string, string>();
 const setStore = new Map<string, Set<string>>();
 
 const mockMulti = () => {
-    const ops: Array<>() => void> = [];
+    const ops: Array<() => void> = [];
     const readKeys: string[] = [];
     return {
         hSet: mock((key: string, fields: Record<string, string>) => {
