@@ -1,7 +1,7 @@
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket as NodeWebSocket } from "ws";
-import { getAuth } from "../auth.js";
+import { getAuth, getTrustedOrigins } from "../auth.js";
 import { getTunnelRelay } from "../tunnel-relay.js";
 import { getSession } from "../ws/sio-state/index.js";
 import { getRunnerData } from "../ws/sio-registry.js";
@@ -223,7 +223,18 @@ async function handleUpgradeAsync(
         return;
     }
 
-    const identity = preauthenticatedUserId ? { userId: preauthenticatedUserId } : await authenticateUpgrade(req);
+    let identity: { userId: string } | null;
+    if (preauthenticatedUserId) {
+        identity = { userId: preauthenticatedUserId };
+    } else {
+        // CSWSH gate: cookie-authenticated upgrades must come from a trusted
+        // origin. Mirrors REST's 403 for a rejected origin.
+        if (isUntrustedUpgradeOrigin(req)) {
+            rejectUpgrade(rawSocket, 403, "Forbidden");
+            return;
+        }
+        identity = await authenticateUpgrade(req);
+    }
     if (!identity) {
         rejectUpgrade(rawSocket, 401, "Unauthorized");
         return;
@@ -414,6 +425,13 @@ async function handleRunnerUpgradeAsync(
         return;
     }
 
+    // CSWSH gate: cookie-authenticated upgrades must come from a trusted
+    // origin. Mirrors REST's 403 for a rejected origin.
+    if (isUntrustedUpgradeOrigin(req)) {
+        rejectUpgrade(rawSocket, 403, "Forbidden");
+        return;
+    }
+
     const identity = await authenticateUpgrade(req);
     if (!identity) {
         rejectUpgrade(rawSocket, 401, "Unauthorized");
@@ -551,6 +569,26 @@ async function authenticateUpgrade(req: IncomingMessage): Promise<{ userId: stri
     }
 
     return null;
+}
+
+/**
+ * Cross-Site WebSocket Hijacking (CSWSH) gate for cookie-authenticated tunnel
+ * upgrades. WS handshakes are GET requests, so they slip past the REST CSRF
+ * gate's method filter — this mirrors the Origin semantics of verifyCsrfOrigin
+ * in security.ts for upgrade requests, using the same trustedOrigins allowlist
+ * from the auth context. No Cookie header → nothing to ride; x-api-key header
+ * → non-browser client (browsers cannot set custom headers on WebSocket);
+ * Origin, when present, must be trusted; Sec-Fetch-Site: cross-site (when
+ * Origin is absent) is rejected. A query-string apiKey does NOT exempt the
+ * gate: browsers control the URL, so it can't prove a non-browser client.
+ */
+function isUntrustedUpgradeOrigin(req: IncomingMessage): boolean {
+    if (!req.headers.cookie) return false;
+    if (req.headers["x-api-key"]) return false;
+    const rawOrigin = req.headers.origin;
+    const origin = Array.isArray(rawOrigin) ? rawOrigin[0] : rawOrigin;
+    if (origin !== undefined) return !getTrustedOrigins().includes(origin);
+    return req.headers["sec-fetch-site"] === "cross-site";
 }
 
 function rejectUpgrade(socket: Duplex, status: number, message: string): void {
