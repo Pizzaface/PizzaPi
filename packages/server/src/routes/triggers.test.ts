@@ -2177,11 +2177,12 @@ describe("POST /api/sessions/:id/trigger — wakeSession", () => {
         expect(mockEmitToRunnerCalls).toHaveLength(0);
     });
 
-    test("wakeSession with a runner that is gone entirely 503s for retry and does not claim to be waking", async () => {
+    // SECURITY: fail-closed — when getRunnerData returns null (runner gone/unknown)
+    // the wake must be REFUSED (404, zero emits) regardless of local socket state.
+    test("NULL RUNNER: refuses wake with 404 and zero emits when runner data is null", async () => {
         mockGetSharedSession.mockReturnValue(Promise.resolve(offlineSession()));
-        mockGetLocalRunnerSocket.mockReturnValue(null);
-        // Absent locally AND absent from Redis — genuinely gone, not merely
-        // attached to another relay node.
+        // Local socket present so runnerReachable would be true without the fix.
+        mockGetLocalRunnerSocket.mockReturnValue({ emit: mock(() => {}) });
         mockGetRunnerData.mockReturnValue(Promise.resolve(null as any));
 
         const [req, url] = makeReq("POST", "/api/sessions/sess-wake/trigger", {
@@ -2190,12 +2191,35 @@ describe("POST /api/sessions/:id/trigger — wakeSession", () => {
             wakeSession: true,
         });
         const res = await handleTriggersRoute(req, url);
-        expect(res!.status).toBe(503);
+        // Fail-closed: 404, not 503/waking
+        expect(res!.status).toBe(404);
         const body = await res!.json() as { waking?: boolean };
-        // Not "waking" — the runner is down, not the session. The caller retries
-        // rather than spawning a replacement on a runner that is coming back.
         expect(body.waking).toBeUndefined();
         await new Promise((r) => setTimeout(r, 20));
+        // Zero emissions — the guard fired before wakeOfflineSession was called
+        expect(mockEmitToRunnerCalls).toHaveLength(0);
+    });
+
+    test("wakeSession with a runner that is gone entirely 503s for retry and does not claim to be waking", async () => {
+        mockGetSharedSession.mockReturnValue(Promise.resolve(offlineSession()));
+        mockGetLocalRunnerSocket.mockReturnValue(null);
+        // Absent locally AND absent from Redis — genuinely gone, not merely
+        // attached to another relay node. With fail-closed guard, null runner
+        // data now returns 404 immediately (before reachability check).
+        mockGetRunnerData.mockReturnValue(Promise.resolve(null as any));
+
+        const [req, url] = makeReq("POST", "/api/sessions/sess-wake/trigger", {
+            type: "time:timer_fired",
+            payload: {},
+            wakeSession: true,
+        });
+        const res = await handleTriggersRoute(req, url);
+        // Fail-closed: returns 404 (unknown runner — refuse)
+        expect(res!.status).toBe(404);
+        const body = await res!.json() as { waking?: boolean };
+        expect(body.waking).toBeUndefined();
+        await new Promise((r) => setTimeout(r, 20));
+        expect(mockEmitToRunnerCalls).toHaveLength(0);
     });
 
     test("wakes a runner attached to another relay node (no local socket)", async () => {
@@ -2220,6 +2244,32 @@ describe("POST /api/sessions/:id/trigger — wakeSession", () => {
         expect(mockEmitToRunnerCalls).toHaveLength(1);
         expect(mockEmitToRunnerCalls[0][0]).toBe("runner-A");
         expect(mockEmitToRunnerCalls[0][2].resumeId).toBe("sess-wake");
+    });
+
+    // SECURITY regression: cross-user runner ownership check on the wake path.
+    // A session points to runner-A, but runner-A was reclaimed by user-2 after
+    // the session ended. The wake must be REFUSED — user-1's resume must never
+    // be sent to user-2's runner (cross-user command injection).
+    test("CROSS-USER: refuses wake when the session's runner was reclaimed by another user", async () => {
+        mockGetSharedSession.mockReturnValue(Promise.resolve(offlineSession()));
+        mockGetLocalRunnerSocket.mockReturnValue(null);
+        // runner-A now belongs to user-2, not user-1
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-2", runnerId: "runner-A" } as any));
+
+        const [req, url] = makeReq("POST", "/api/sessions/sess-wake/trigger", {
+            type: "time:cron",
+            payload: {},
+            wakeSession: true,
+        });
+        const res = await handleTriggersRoute(req, url);
+        // Fail-closed: refuse with 404, not 503/waking
+        expect(res!.status).toBe(404);
+        const body = await res!.json() as { waking?: boolean };
+        expect(body.waking).toBeUndefined();
+
+        await new Promise((r) => setTimeout(r, 20));
+        // Zero emissions to user-2's runner
+        expect(mockEmitToRunnerCalls).toHaveLength(0);
     });
 
     // The orphan sweep deletes the live record ~2 min after a worker dies, so
@@ -2300,6 +2350,34 @@ describe("POST /api/sessions/:id/trigger — wakeSession", () => {
             await new Promise((r) => setTimeout(r, 20));
             expect(mockEmitToRunnerCalls).toHaveLength(0);
         });
+
+        // SECURITY regression: cross-user runner ownership check when the session
+        // record was swept. The persisted row says runnerId=runner-A (user-1's old
+        // runner), but runner-A has since been reclaimed and now belongs to user-2.
+        // The wake must be REFUSED — never emit a resume command to user-2's runner.
+        test("CROSS-USER: refuses wake when persisted runnerId was reclaimed by another user", async () => {
+            // Persisted record: user-1's session, stored runnerId = runner-A
+            mockGetPersistedRelaySessionOwner.mockReturnValue(
+                Promise.resolve({ userId: "user-1", runnerId: "runner-A", cwd: "/tmp/proj" }),
+            );
+            mockGetLocalRunnerSocket.mockReturnValue(null);
+            // runner-A was reclaimed — now belongs to user-2
+            mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-2", runnerId: "runner-A" } as any));
+
+            const [req, url] = makeReq("POST", "/api/sessions/sess-swept/trigger", {
+                type: "time:cron",
+                payload: {},
+                wakeSession: true,
+            });
+            const res = await handleTriggersRoute(req, url);
+            // Fail-closed: refuse, never emit to user-2's runner
+            expect(res!.status).toBe(404);
+            const body = await res!.json() as { waking?: boolean };
+            expect(body.waking).toBeUndefined();
+
+            await new Promise((r) => setTimeout(r, 20));
+            expect(mockEmitToRunnerCalls).toHaveLength(0);
+        });
     });
 });
 
@@ -2368,6 +2446,80 @@ describe("subscription routes — schedule whose owning session has ended", () =
         mockGetPersistedRelaySessionOwner.mockReturnValue(Promise.resolve({ userId: "someone-else", runnerId: "runner-A", cwd: null }));
         const [req, url] = makeReq("DELETE", "/api/sessions/sess-ended/trigger-subscriptions/time:cron");
         expect((await handleTriggersRoute(req, url))!.status).toBe(404);
+        expect(mockEmitDeltaCalls).toHaveLength(0);
+    });
+
+    // SECURITY regression: cross-user runner ownership check on subscription
+    // mutation paths. The persisted runnerId (runner-A) was reclaimed by user-2.
+    // DELETE must succeed (removes from Redis) but must NOT emit a delta to
+    // user-2's runner.
+    test("CROSS-USER: DELETE completes but skips delta when runner was reclaimed by another user", async () => {
+        // runner-A now belongs to user-2
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-2", runnerId: "runner-A" } as any));
+        mockUnsubscribeSessionSubscription.mockReturnValue(Promise.resolve(true));
+
+        const [req, url] = makeReq(
+            "DELETE",
+            "/api/sessions/sess-ended/trigger-subscriptions/time:cron?subscriptionId=sub-cron",
+        );
+        const res = await handleTriggersRoute(req, url);
+        // Unsubscribe from Redis succeeds
+        expect(res!.status).toBe(200);
+        // But no delta is emitted to user-2's runner
+        expect(mockEmitDeltaCalls).toHaveLength(0);
+    });
+
+    // SECURITY: fail-closed — NULL runner data must SKIP the delta (same as
+    // reclaimed). The Redis unsubscribe still completes (200).
+    test("NULL RUNNER: DELETE completes but skips delta when getRunnerData returns null", async () => {
+        mockGetRunnerData.mockReturnValue(Promise.resolve(null as any));
+        mockUnsubscribeSessionSubscription.mockReturnValue(Promise.resolve(true));
+
+        const [req, url] = makeReq(
+            "DELETE",
+            "/api/sessions/sess-ended/trigger-subscriptions/time:cron?subscriptionId=sub-cron",
+        );
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        // Zero emits — guard fired before emitTriggerSubscriptionDelta
+        expect(mockEmitDeltaCalls).toHaveLength(0);
+    });
+
+    // SECURITY: fail-closed — NULL runner data must SKIP the PUT delta.
+    // The Redis update still completes (200).
+    test("NULL RUNNER: PUT completes but skips delta when getRunnerData returns null", async () => {
+        mockGetRunnerData.mockReturnValue(Promise.resolve(null as any));
+        mockGetRunnerServices.mockReturnValue(Promise.resolve({ serviceIds: [], triggerDefs: [] }));
+        mockUpdateSessionSubscription.mockReturnValue(Promise.resolve({ updated: true, runnerId: "runner-A" }));
+
+        const [req, url] = makeReq(
+            "PUT",
+            "/api/sessions/sess-ended/trigger-subscriptions/time:cron?subscriptionId=sub-cron",
+            { params: { cron: "0 10 * * *" } },
+        );
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        // Zero emits — guard fired before emitTriggerSubscriptionDelta
+        expect(mockEmitDeltaCalls).toHaveLength(0);
+    });
+
+    // SECURITY regression: cross-user runner ownership check on PUT subscription
+    // path. The persisted runnerId (runner-A) was reclaimed by user-2.
+    // PUT must succeed (updates Redis) but must NOT emit a delta to user-2's runner.
+    test("CROSS-USER: PUT completes but skips delta when runner was reclaimed by another user", async () => {
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-2", runnerId: "runner-A" } as any));
+        mockGetRunnerServices.mockReturnValue(Promise.resolve({ serviceIds: [], triggerDefs: [] }));
+        mockUpdateSessionSubscription.mockReturnValue(Promise.resolve({ updated: true, runnerId: "runner-A" }));
+
+        const [req, url] = makeReq(
+            "PUT",
+            "/api/sessions/sess-ended/trigger-subscriptions/time:cron?subscriptionId=sub-cron",
+            { params: { cron: "0 10 * * *" } },
+        );
+        const res = await handleTriggersRoute(req, url);
+        // Update to Redis succeeds
+        expect(res!.status).toBe(200);
+        // But no delta is emitted to user-2's runner
         expect(mockEmitDeltaCalls).toHaveLength(0);
     });
 });
