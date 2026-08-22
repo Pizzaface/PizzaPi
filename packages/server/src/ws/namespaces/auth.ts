@@ -67,15 +67,33 @@ export function apiKeyAuthMiddleware(context: AuthContext) {
     });
 }
 
+function checkTrustedOrigin(socket: Socket, next: (err?: Error) => void): boolean {
+    const origin = socket.handshake.headers.origin;
+    if (origin && !getTrustedOrigins().includes(origin)) {
+        next(new Error("forbidden: untrusted origin"));
+        return false;
+    }
+    return true;
+}
+
 /**
- * Browser/mobile UI auth: tries API key first (no origin check), then falls back
- * to cookie session with trusted-origin validation. Lets the bundled Capacitor
- * app authenticate without relying on WebView cookies.
+ * Browser/mobile UI auth: tries API key first, then falls back to cookie
+ * session with trusted-origin validation. Lets the bundled Capacitor app
+ * authenticate without relying on WebView cookies.
+ *
+ * Security: a browser always sends an Origin header on WebSocket handshakes,
+ * so any handshake presenting an Origin is treated as a browser and MUST pass
+ * the trusted-origin gate even when it supplies a valid API key. Non-browser
+ * clients (CLI, runners, server-to-server) typically omit Origin and continue
+ * to authenticate via API key without origin gating.
  */
 export function browserAuthMiddleware(context: AuthContext) {
     return bindAuthContext(context, async (socket: Socket, next: (err?: Error) => void): Promise<void> => {
         try {
             applyHandshakeClientMetadata(socket);
+
+            // Browsers always send Origin; gate them before API-key short-circuit.
+            if (!checkTrustedOrigin(socket, next)) return;
 
             const apiKey = socket.handshake.auth?.apiKey;
             if (typeof apiKey === "string" && apiKey) {
@@ -93,10 +111,9 @@ export function browserAuthMiddleware(context: AuthContext) {
                 }
             }
 
-            const origin = socket.handshake.headers.origin;
-            if (origin && !getTrustedOrigins().includes(origin)) {
-                return next(new Error("forbidden: untrusted origin"));
-            }
+            // Re-check origin on the cookie-auth branch so cookie sessions keep
+            // the same enforcement even if the API-key branch above was skipped.
+            if (!checkTrustedOrigin(socket, next)) return;
 
             const cookieHeader = socket.handshake.headers.cookie;
             if (!cookieHeader) {
