@@ -285,6 +285,7 @@ export async function handleTunnelHostRequest(req: Request, url: URL): Promise<R
     const requestId = `host-${label}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     // basePath "" → passthrough mode: no buffering, no rewriting, no injection.
+    // Pass url.host so the local service receives the tunnel origin as Host header.
     return proxyTunnelRequestViaRelay(
         req,
         relay,
@@ -296,5 +297,6 @@ export async function handleTunnelHostRequest(req: Request, url: URL): Promise<R
         pathWithQuery,
         forwardHeaders,
         true,
+        url.host,
     );
 }

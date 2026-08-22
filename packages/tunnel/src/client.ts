@@ -468,7 +468,16 @@ export class TunnelClient extends EventEmitter {
   }
 
   private handleRequestStart(msg: TunnelRequestStartMessage): void {
-    const { id, port, method, url: requestUrl, headers, preserveAuth } = msg;
+    const { id, port, method, url: requestUrl, headers, preserveAuth, host: tunnelHost } = msg;
+
+    // Guard against request-id reuse: abort and destroy any in-flight request
+    // sharing the same id before registering the new one.
+    const stale = this.activeRequests.get(id);
+    if (stale) {
+      stale.controller.abort();
+      stale.req.destroy();
+      this.activeRequests.delete(id);
+    }
 
     if (!this.exposedPorts.has(port)) {
       this.log.warn("[tunnel-client] Request for unexposed port", port);
@@ -511,7 +520,9 @@ export class TunnelClient extends EventEmitter {
       if (!preserveAuth && STRIP_AUTH.has(lowerKey)) continue;
       forwardHeaders[key] = value;
     }
-    forwardHeaders.host = `127.0.0.1:${port}`;
+    // Host-based tunnels: use the tunnel origin so local services that build
+    // absolute URLs from `Host` produce correct tunnel-origin URLs.
+    forwardHeaders.host = tunnelHost ?? `127.0.0.1:${port}`;
 
     const controller = new AbortController();
     const attempt = (hostname: LoopbackHost, canRetry: boolean): http.ClientRequest => {
@@ -677,7 +688,7 @@ export class TunnelClient extends EventEmitter {
   }
 
   private handleWsOpen(msg: TunnelWsOpenMessage): void {
-    const { id, port, path, protocols, headers, preserveAuth } = msg;
+    const { id, port, path, protocols, headers, preserveAuth, host: tunnelHost } = msg;
 
     if (!this.exposedPorts.has(port)) {
       this.send({ type: "ws-error", id, message: `Port ${port} is not exposed` });
@@ -707,7 +718,9 @@ export class TunnelClient extends EventEmitter {
       if (!preserveAuth && STRIP_AUTH.has(lowerKey)) continue;
       forwardHeaders[key] = value;
     }
-    forwardHeaders.host = `127.0.0.1:${port}`;
+    // Host-based tunnels: use the tunnel origin so local services that build
+    // absolute URLs from `Host` produce correct tunnel-origin URLs.
+    forwardHeaders.host = tunnelHost ?? `127.0.0.1:${port}`;
 
     const connect = (hostname: LoopbackHost, canRetry: boolean): void => {
     try {

@@ -108,6 +108,7 @@ async function handleHostUpgradeAsync(
     // [full, scope, port, path]. scope + runnerId are preauthenticated.
     // fullUrl is forwarded verbatim — host tunnels must not strip the app's
     // own apiKey/tunnelToken query params.
+    // req.headers.host is the tunnel origin (e.g. abc123.t.example.com).
     await handleUpgradeAsync(
         req,
         rawSocket,
@@ -117,6 +118,7 @@ async function handleHostUpgradeAsync(
         auth.record.userId,
         auth.runnerId,
         fullUrl,
+        req.headers.host,
     );
 }
 
@@ -189,6 +191,7 @@ async function handleUpgradeAsync(
     preauthenticatedUserId?: string,
     preauthenticatedRunnerId?: string,
     rawPathWithQuery?: string,
+    tunnelHost?: string,
 ): Promise<void> {
     let sessionId: string;
     try {
@@ -343,6 +346,7 @@ async function handleUpgradeAsync(
             protocols,
             headers: forwardHeaders,
             preserveAuth: isHostTunnel || undefined,
+            host: tunnelHost,
         },
         {
             onOpened: (protocol) => {
