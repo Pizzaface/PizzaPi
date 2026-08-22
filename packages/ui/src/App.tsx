@@ -143,6 +143,7 @@ import { createWizardSpawnHandler } from "@/lib/wizard-spawn-handler";
 import { sessionLifecycleActions as lifecycleActions } from "@/lib/session-lifecycle";
 import {
   analyzeIncomingSeq,
+  analyzeReplaySeq,
   canFinalizeChunkHydration,
   mergeConnectedSeq,
   registerChunkIndex,
@@ -3588,7 +3589,14 @@ export function App() {
         const seq = envelopeSeq ?? null;
         if (seq !== null) {
           if (deltaReplay === true) {
-            lastSeqRef.current = seq;
+            // Only advance the cursor when the replayed seq is strictly newer.
+            // Stale cached deltas emitted by the resync endpoint (seq <= cursor)
+            // are dropped so they cannot rewind the cursor or reapply old state.
+            const replayDecision = analyzeReplaySeq(lastSeqRef.current, seq);
+            if (!replayDecision.accept) {
+              return;
+            }
+            lastSeqRef.current = replayDecision.nextSeq;
           } else {
             const allowOutOfOrderHydrationSnapshot = shouldAllowOutOfOrderSnapshotDuringHydration(
               eventType,

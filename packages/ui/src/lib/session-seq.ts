@@ -91,6 +91,31 @@ export function canFinalizeChunkHydration(
   return true;
 }
 
+/**
+ * Decide whether a replayed delta may advance the cursor.
+ *
+ * Unlike the live path, replay events must be strictly monotonic — they must
+ * never rewind the cursor. A stale replayed delta (seq <= current) is dropped
+ * so cached deltas emitted by the resync endpoint after a live gap cannot
+ * reapply stale state or move the cursor backward.
+ */
+export function analyzeReplaySeq(
+  currentSeq: number | null,
+  incomingSeq: number,
+): { accept: boolean; nextSeq: number | null } {
+  if (!Number.isFinite(incomingSeq)) {
+    return { accept: false, nextSeq: currentSeq };
+  }
+  if (currentSeq === null) {
+    return { accept: true, nextSeq: incomingSeq };
+  }
+  // ponytail: strict monotonic — only advance, never rewind
+  if (incomingSeq <= currentSeq) {
+    return { accept: false, nextSeq: currentSeq };
+  }
+  return { accept: true, nextSeq: incomingSeq };
+}
+
 export function analyzeIncomingSeq(
   currentSeq: number | null,
   incomingSeq: number,
