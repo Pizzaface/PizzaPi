@@ -169,7 +169,13 @@ export class SessionHost {
         return this.session.waitForIdle();
     }
 
-    setModel(model: Model<any>): Promise<void> {
+    /**
+     * Change the active model. Waits for any in-flight turn to finish before
+     * applying the switch so dynamic-tool computation for the OLD model is
+     * never mixed with the NEW model's first response.
+     */
+    async setModel(model: Model<any>): Promise<void> {
+        await this.session.waitForIdle();
         return this.session.setModel(model);
     }
 }
