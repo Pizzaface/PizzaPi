@@ -86,6 +86,16 @@ export interface TunnelResponseDataEndMessage {
   id: string;
 }
 
+/**
+ * Client → server: mid-stream failure (error / aborted / premature close).
+ * Server should destroy/error the downstream response instead of ending it cleanly.
+ */
+export interface TunnelResponseDataAbortMessage {
+  type: "response-data-abort";
+  id: string;
+  reason?: string;
+}
+
 // ── WebSocket proxying ──────────────────────────────────────────────────────
 
 export interface TunnelWsOpenMessage {
@@ -144,6 +154,7 @@ export type TunnelClientMessage =
   | TunnelResponseStartMessage
   | TunnelResponseDataMessage
   | TunnelResponseDataEndMessage
+  | TunnelResponseDataAbortMessage
   | TunnelRequestEndMessage
   | TunnelWsOpenedMessage
   | TunnelWsDataMessage

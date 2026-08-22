@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import type {
   TunnelClientMessage,
   TunnelRequestEndMessage,
+  TunnelResponseDataAbortMessage,
   TunnelResponseDataEndMessage,
   TunnelResponseDataMessage,
   TunnelResponseStartMessage,
@@ -115,7 +116,8 @@ function isTunnelClientMessage(value: unknown): value is TunnelClientMessage {
     case "response-start": return typeof value.id === "string" && isHttpStatus(value.statusCode)
       && typeof value.statusMessage === "string" && isResponseHeaders(value.headers);
     case "response-data": return typeof value.id === "string" && typeof value.data === "string";
-    case "response-data-end":
+    case "response-data-end": return typeof value.id === "string";
+    case "response-data-abort": return typeof value.id === "string" && isOptionalString(value.reason);
     case "request-end": return typeof value.id === "string";
     case "ws-opened": return typeof value.id === "string" && isOptionalString(value.protocol);
     case "ws-data": return typeof value.id === "string" && typeof value.data === "string" && isOptionalBoolean(value.binary);
@@ -415,6 +417,9 @@ export class TunnelRelay {
       case "response-data-end":
         this.handleResponseDataEnd(ws, msg);
         break;
+      case "response-data-abort":
+        this.handleResponseDataAbort(ws, msg);
+        break;
       case "request-end":
         this.handleRequestEnd(ws, msg);
         break;
@@ -517,6 +522,14 @@ export class TunnelRelay {
     clearTimeout(pending.timer);
     this.pendingRequests.delete(msg.id);
     pending.onResponseEnd();
+  }
+
+  private handleResponseDataAbort(ws: WebSocket, msg: TunnelResponseDataAbortMessage): void {
+    const pending = this.pendingRequests.get(msg.id);
+    if (!this.isMessageForPending(ws, pending)) return;
+    clearTimeout(pending.timer);
+    this.pendingRequests.delete(msg.id);
+    pending.onError(msg.reason ?? "Remote stream aborted");
   }
 
   private handleRequestEnd(ws: WebSocket, msg: TunnelRequestEndMessage): void {

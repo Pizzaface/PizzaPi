@@ -540,7 +540,11 @@ export class TunnelClient extends EventEmitter {
             this.send({ type: "response-start", id, statusCode: 502, statusMessage: "Bad Gateway", headers: {} });
             this.send({ type: "response-data", id, data: error.message });
           }
-          this.send({ type: "response-data-end", id });
+          if (error) {
+            this.send({ type: "response-data-abort", id, reason: error.message });
+          } else {
+            this.send({ type: "response-data-end", id });
+          }
         };
 
         if (this.activeRequests.get(id) !== active) {
@@ -574,12 +578,10 @@ export class TunnelClient extends EventEmitter {
           this.send({ type: "response-data", id, data: chunk.toString("binary") });
         });
 
-        response.on("end", () => {
-          if (this.activeRequests.get(id) !== active) return;
-          finalizeResponse();
-        });
+        response.on("end", () => finalizeResponse());
         response.on("error", (error) => finalizeResponse(error instanceof Error ? error : new Error(String(error))));
-        response.on("close", () => finalizeResponse(new Error("Local response closed prematurely")));
+        response.on("aborted", () => finalizeResponse(new Error("request aborted")));
+        response.on("close", () => finalizeResponse(new Error("connection closed prematurely")));
 
         controller.signal.addEventListener(
           "abort",

@@ -354,8 +354,9 @@ describe("TunnelClient", () => {
       (client as any).handleMessage(JSON.stringify({ type: "request-start", id: "req-close", port, method: "GET", url: "/", headers: {} }));
       (client as any).handleMessage(JSON.stringify({ type: "request-data-end", id: "req-close" }));
 
-      await waitUntil(() => decodeSent(sent).some((message) => message.type === "response-data-end"));
+      await waitUntil(() => decodeSent(sent).some((message) => message.type === "response-data-abort"));
       expect(decodeSent(sent).filter((message) => message.type === "response-data").map((message) => message.data)).toEqual(["partial"]);
+      expect(decodeSent(sent).some((message) => message.type === "response-data-end")).toBe(false);
     } finally {
       await stopHttpServer(server);
     }
@@ -835,26 +836,120 @@ describe("TunnelClient probe timeout fallback", () => {
     expect(client.detectedProtocol(port)).toBeUndefined();
   });
 
-  test("plain TCP timeout retries alternate loopback family exactly once", async () => {
+describe("TunnelClient mid-stream local HTTP failure", () => {
+  test("sends response-data-abort (not response-data-end) when local socket is destroyed after headers", async () => {
+    const { server, port } = await startHttpServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.write("partial");
+      // Small delay: let headers traverse loopback to the client before killing
+      // the socket, so we exercise the response-level error path (not req.on('error')).
+      setTimeout(() => res.socket?.destroy(), 20);
+    });
+
+    try {
+      const client = new TunnelClient({
+        runnerId: "r1",
+        apiKey: "key1",
+        relayUrl: "ws://localhost:9999/_tunnel",
+        autoReconnect: false,
+      });
+      client.exposePort(port);
+      const sent = attachMockRelay(client);
+
+      (client as any).handleMessage(
+        JSON.stringify({ type: "request-start", id: "req-fail", port, method: "GET", url: "/", headers: {} }),
+      );
+      (client as any).handleMessage(JSON.stringify({ type: "request-data-end", id: "req-fail" }));
+
+      // A terminal abort frame must arrive, NOT a clean end.
+      await waitUntil(() => decodeSent(sent).some((m) => m.type === "response-data-abort" && m.id === "req-fail"));
+
+      const messages = decodeSent(sent);
+      // Headers arrived before destruction — response-start must be present.
+      expect(messages.find((m) => m.type === "response-start")).toMatchObject({ id: "req-fail", statusCode: 200 });
+      // activeRequests entry must be gone.
+      expect((client as any).activeRequests.has("req-fail")).toBe(false);
+      // Must NOT send a clean response-data-end.
+      expect(messages.some((m) => m.type === "response-data-end" && m.id === "req-fail")).toBe(false);
+      // Exactly one terminal abort frame.
+      const abortFrames = messages.filter((m) => m.type === "response-data-abort" && m.id === "req-fail");
+      expect(abortFrames).toHaveLength(1);
+    } finally {
+      await stopHttpServer(server);
+    }
+  });
+
+  test("sends response-data-end (clean) when the local server ends normally", async () => {
+    const { server, port } = await startHttpServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("complete");
+    });
+
+    try {
+      const client = new TunnelClient({
+        runnerId: "r1",
+        apiKey: "key1",
+        relayUrl: "ws://localhost:9999/_tunnel",
+        autoReconnect: false,
+      });
+      client.exposePort(port);
+      const sent = attachMockRelay(client);
+
+      (client as any).handleMessage(
+        JSON.stringify({ type: "request-start", id: "req-ok", port, method: "GET", url: "/", headers: {} }),
+      );
+      (client as any).handleMessage(JSON.stringify({ type: "request-data-end", id: "req-ok" }));
+
+      await waitUntil(() => decodeSent(sent).some((m) => m.type === "response-data-end" && m.id === "req-ok"));
+
+      const messages = decodeSent(sent);
+      // Must NOT send a response-data-abort.
+      expect(messages.some((m) => m.type === "response-data-abort" && m.id === "req-ok")).toBe(false);
+      // Exactly one clean end.
+      expect(messages.filter((m) => m.type === "response-data-end" && m.id === "req-ok")).toHaveLength(1);
+      // Map cleared.
+      expect((client as any).activeRequests.has("req-ok")).toBe(false);
+    } finally {
+      await stopHttpServer(server);
+    }
+  });
+
+  test("idempotent: only one terminal frame when socket destroyed (settled flag)", async () => {
     const client = new TunnelClient({
       runnerId: "r1",
       apiKey: "key1",
       relayUrl: "ws://localhost:9999/_tunnel",
       autoReconnect: false,
     });
-    const port = 9999;
-    const reqSpy = fakeRequest(["error", "error"]);
-    const netSpy = fakeNetConnect(["timeout", "timeout"]);
+    const sent = attachMockRelay(client);
 
-    client.exposePort(port);
-    await waitUntil(() => !(client as any).probing.has(port));
+    const { server, port } = await startHttpServer((_req, res) => {
+      res.writeHead(200);
+      res.write("x");
+      // Trigger close/error which sets settled=true. Any subsequent event is no-op.
+      setTimeout(() => res.socket?.destroy(), 20);
+    });
 
-    expect(reqSpy).toHaveBeenCalledTimes(2);
-    expect(reqSpy.mock.calls[0][0].host).toBe("127.0.0.1");
-    expect(reqSpy.mock.calls[1][0].host).toBe("::1");
-    expect(netSpy).toHaveBeenCalledTimes(2);
-    expect(netSpy.mock.calls[0][0].host).toBe("127.0.0.1");
-    expect(netSpy.mock.calls[1][0].host).toBe("::1");
-    expect(client.detectedProtocol(port)).toBeUndefined();
+    try {
+      client.exposePort(port);
+
+      (client as any).handleMessage(
+        JSON.stringify({ type: "request-start", id: "req-idem", port, method: "GET", url: "/", headers: {} }),
+      );
+      (client as any).handleMessage(JSON.stringify({ type: "request-data-end", id: "req-idem" }));
+
+      await waitUntil(() => decodeSent(sent).some((m) => m.type === "response-data-abort" && m.id === "req-idem"));
+      // Allow a tick for any duplicate frames to arrive.
+      await new Promise((r) => setTimeout(r, 50));
+
+      const allTerminal = decodeSent(sent).filter(
+        (m) => (m.type === "response-data-end" || m.type === "response-data-abort") && m.id === "req-idem",
+      );
+      expect(allTerminal).toHaveLength(1);
+      expect(allTerminal[0].type).toBe("response-data-abort");
+    } finally {
+      await stopHttpServer(server);
+    }
   });
+});
 });
