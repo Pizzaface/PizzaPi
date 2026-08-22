@@ -9,6 +9,20 @@
  * reordering fails the test.
  */
 import { describe, test, expect, mock } from "bun:test";
+
+// Mutable override for the trigger-client mock so individual tests can inject
+// a deferred/controlled promise without resetting the entire mock.
+const _triggerClientMock: { subscriptionsOverride: null | (() => Promise<any[]>) } = {
+    subscriptionsOverride: null,
+};
+
+mock.module("../trigger-client.js", () => ({
+    listTriggerSubscriptions: (_sessionId: string) =>
+        _triggerClientMock.subscriptionsOverride
+            ? _triggerClientMock.subscriptionsOverride()
+            : Promise.resolve([]),
+    unsubscribeTrigger: () => Promise.resolve({ ok: true }),
+}));
 import { registerLifecycleHandlers, type LifecycleHandlerState } from "./lifecycle-handlers.js";
 import { createFollowUpGrace } from "./followup-grace.js";
 import type { RelayContext } from "../remote-types.js";
@@ -221,5 +235,105 @@ describe("agent_end — forwarded event must not carry run-scoped messages", () 
         // Summary reporting still sees the run messages via agent_settled.
         agentSettled({}, agentEndCtx);
         expect(emitted).toEqual(["session_complete"]);
+    });
+});
+
+describe("auto-close — generation safety", () => {
+    test("does not call shutdown when generation increments during subscription probe", async () => {
+        // Deferred subscriptions promise — we control when it resolves.
+        let resolveSubscriptions!: (val: any[]) => void;
+        _triggerClientMock.subscriptionsOverride = () =>
+            new Promise<any[]>((resolve) => {
+                resolveSubscriptions = resolve;
+            });
+
+        const envBefore = process.env.PIZZAPI_WORKER_AUTO_CLOSE;
+        process.env.PIZZAPI_WORKER_AUTO_CLOSE = "true";
+
+        try {
+            const handlers = new Map<string, (event: any, ctx: any) => void>();
+            const pi: any = {
+                on: (name: string, fn: any) => handlers.set(name, fn),
+                events: { on: () => {} },
+                registerTool: () => {},
+                registerCommand: () => {},
+            };
+
+            const socket: any = {
+                connected: true,
+                emit: mock((_ev: string, _payload: any, cb?: (r: any) => void) => {
+                    // For get_linked_child_count, return null so it doesn't time out.
+                    if (_ev === "get_linked_child_count" && typeof cb === "function") {
+                        cb({ ok: false });
+                    }
+                }),
+                on: () => {},
+                off: () => {},
+            };
+
+            const rctx = {
+                pi,
+                isChildSession: false,
+                parentSessionId: null,
+                relay: { sessionId: "ac-session-1", token: "relay-token" },
+                relaySessionId: "ac-session-1",
+                sioSocket: socket,
+                lastRetryableError: null,
+                wasAborted: false,
+                shuttingDown: false,
+                supportsSessionTriggerAck: true,
+                isAgentActive: false,
+                isAgentSettling: false,
+                pendingSteeringSlashCommands: 0,
+                forwardEvent: mock(() => {}),
+                buildHeartbeat: () => ({ type: "heartbeat", ts: Date.now() }),
+            } as unknown as RelayContext;
+
+            const state = makeState();
+            const followUpGrace = createFollowUpGrace(rctx, state as any);
+
+            registerLifecycleHandlers({
+                pi,
+                rctx,
+                state,
+                triggerWaits: { cancelAll: () => 0 } as any,
+                delinkManager: {} as any,
+                cancellationManager: {} as any,
+                followUpGrace,
+                startSessionNameSync: () => {},
+                stopSessionNameSync: () => {},
+                doConnect: () => {},
+                doDisconnect: () => {},
+                clearCtx: () => {},
+            });
+
+            const agentEnd = handlers.get("agent_end")!;
+            const agentSettled = handlers.get("agent_settled")!;
+
+            const shutdown = mock(() => {});
+            const ctx = { hasPendingMessages: () => false, shutdown };
+
+            // Kick off auto-close — the subscription probe is now in-flight.
+            agentEnd({ messages: [] }, ctx);
+            agentSettled({}, ctx);
+
+            // Simulate a new turn arriving while probe is pending (e.g. /new).
+            state.sessionCompleteGeneration += 1;
+
+            // Resolve probe with empty list — would normally allow close.
+            resolveSubscriptions([]);
+
+            // Drain microtasks so the IIFE can continue past the await.
+            await new Promise<void>((r) => setTimeout(r, 0));
+
+            expect(shutdown).not.toHaveBeenCalled();
+        } finally {
+            _triggerClientMock.subscriptionsOverride = null;
+            if (envBefore === undefined) {
+                delete process.env.PIZZAPI_WORKER_AUTO_CLOSE;
+            } else {
+                process.env.PIZZAPI_WORKER_AUTO_CLOSE = envBefore;
+            }
+        }
     });
 });
