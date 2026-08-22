@@ -145,31 +145,31 @@ function printSelfUpdateDisabled(): void {
  * Returns { includeSelf, argsForUpstream } where argsForUpstream is the
  * rewritten args with self-update stripped out.
  */
-function rewriteUpdateArgs(args: string[]): { includeSelf: boolean; argsForUpstream: string[] } {
+export function rewriteUpdateArgs(args: string[]): { includeSelf: boolean; argsForUpstream: string[] } {
     if (args[0] !== "update") {
         return { includeSelf: false, argsForUpstream: args };
     }
 
     const rest = args.slice(1);
     const hasSelf = rest.includes("--self");
-    const hasExtensions = rest.includes("--extensions");
-    const hasExtensionFlag = rest.some((a, i) => a === "--extension" && i + 1 < rest.length);
+    const hasAll = rest.includes("--all");
     const firstPositional = rest.find((a) => !a.startsWith("-"));
     const positionalIsSelf = firstPositional === "self" || firstPositional === "pi";
 
-    // Explicit self-only
-    if (hasSelf && !hasExtensions && !positionalIsSelf && !firstPositional) {
+    // Any explicit self-target flag or positional blocks self-update.
+    // `--all` also implies self because upstream `update --all` updates pi too.
+    if (hasSelf || hasAll || positionalIsSelf) {
         return { includeSelf: true, argsForUpstream: args };
     }
-    if (positionalIsSelf && !hasExtensions) {
-        return { includeSelf: true, argsForUpstream: args };
-    }
+
+    const hasExtensions = rest.includes("--extensions");
+    const hasExtensionFlag = rest.some((a, i) => a === "--extension" && i + 1 < rest.length);
 
     // Explicit extensions-only or specific source — no self
     if (hasExtensions || hasExtensionFlag) {
         return { includeSelf: false, argsForUpstream: args };
     }
-    if (firstPositional && !positionalIsSelf) {
+    if (firstPositional) {
         return { includeSelf: false, argsForUpstream: args };
     }
 
