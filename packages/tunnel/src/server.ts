@@ -184,6 +184,7 @@ export class TunnelRelay {
       url: string;
       headers: Record<string, string>;
       preserveAuth?: boolean;
+      host?: string;
     },
     callbacks: {
       onResponseStart: (statusCode: number, statusMessage: string, headers: Record<string, string | string[]>) => void;
@@ -197,6 +198,15 @@ export class TunnelRelay {
     if (!runner) {
       callbacks.onError(`Runner ${runnerId} not connected`);
       return { cancel() {} };
+    }
+
+    // Evict any stale pending request sharing this id so its timer cannot
+    // fire and delete the new entry.
+    const staleRequest = this.pendingRequests.get(request.id);
+    if (staleRequest) {
+      clearTimeout(staleRequest.timer);
+      this.pendingRequests.delete(request.id);
+      staleRequest.onError("Tunnel request timed out");
     }
 
     const timer = setTimeout(() => {
@@ -224,6 +234,7 @@ export class TunnelRelay {
       url: request.url,
       headers: request.headers,
       preserveAuth: request.preserveAuth,
+      host: request.host,
     });
 
     return {
@@ -262,6 +273,7 @@ export class TunnelRelay {
       protocols?: string[];
       headers: Record<string, string>;
       preserveAuth?: boolean;
+      host?: string;
     },
     callbacks: {
       onOpened: (protocol?: string) => void;
@@ -301,6 +313,7 @@ export class TunnelRelay {
       protocols: request.protocols,
       headers: request.headers,
       preserveAuth: request.preserveAuth,
+      host: request.host,
     });
 
     return {
