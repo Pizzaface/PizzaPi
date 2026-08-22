@@ -208,11 +208,16 @@ describe("runner — RunnerServerToClientEvents payloads", () => {
     expect(typeof minimal.sessionId).toBe("string");
     expect(minimal.cwd).toBeUndefined();
     expect(minimal.prompt).toBeUndefined();
+    expect(minimal.imageUrls).toBeUndefined();
+    expect(minimal.resumePath).toBeUndefined();
+    expect(minimal.resumeId).toBeUndefined();
+    expect(minimal.autoClose).toBeUndefined();
 
     const full: Payload = {
       sessionId: "sess-new-2",
       cwd: "/home/user/project",
       prompt: "Implement feature X",
+      imageUrls: ["https://example.com/a.png", "https://example.com/b.png"],
       model: { provider: "anthropic", id: "claude-opus-4" },
       skills: ["tdd", "review"],
       hiddenModels: ["openai/gpt-4o"],
@@ -223,6 +228,9 @@ describe("runner — RunnerServerToClientEvents payloads", () => {
         disallowedTools: "write",
       },
       parentSessionId: "parent-sess",
+      resumePath: "/tmp/resume.jsonl",
+      resumeId: "resume-sess",
+      autoClose: true,
     };
     expect(full.cwd).toBe("/home/user/project");
     expect(full.model?.provider).toBe("anthropic");
@@ -230,6 +238,10 @@ describe("runner — RunnerServerToClientEvents payloads", () => {
     expect(full.hiddenModels).toHaveLength(1);
     expect(full.agent?.name).toBe("reviewer");
     expect(full.parentSessionId).toBe("parent-sess");
+    expect(full.imageUrls).toHaveLength(2);
+    expect(full.resumePath).toBe("/tmp/resume.jsonl");
+    expect(full.resumeId).toBe("resume-sess");
+    expect(full.autoClose).toBe(true);
   });
 
   test("kill_session carries sessionId", () => {
