@@ -56,6 +56,7 @@ import { storeAndReplaceImages, storeAndReplaceImagesInEvent } from "../strip-im
 import { extractMetaFromHeartbeat } from "./meta.js";
 import { truncateSnapshotMessages } from "../namespaces/snapshot-provider.js";
 import { applySnapshotOverlayToState, mergeSnapshotOverlay } from "./snapshot-state.js";
+import { resetPerSessionRelayState } from "../namespaces/relay/relay-state.js";
 
 /**
  * Prepare an event for broadcast to viewers.
@@ -228,6 +229,11 @@ async function registerTuiSessionUnlocked(
                 oldSocket.data.sessionId = undefined;
             }
             await endSharedSessionUnlocked(sessionId, "Session reconnected");
+            // Reset per-session relay state so stale queued work and
+            // half-assembled chunk state from the old generation cannot leak
+            // into the new one.  Lives in relay-state.ts (barrel-free) so this
+            // static import does not create a cycle back through sio-registry.
+            await resetPerSessionRelayState(sessionId);
         }
     }
 
