@@ -479,7 +479,7 @@ describe("native push registration", () => {
         expect(body.priority).toBe(4); // high for agent_needs_input
         expect(body.message).toBe("Agent asks: ship it?");
         // Click deep link points at the relay web UI (PIZZAPI_BASE_URL), not ntfy.
-        expect(body.click).toBe("https://relay.example.com/#/sessions/sess-2");
+        expect(body.click).toBe("https://relay.example.com/session/sess-2");
     });
 
     authIt("ntfy Title prefers sessionName so Android can group by conversation", async () => {

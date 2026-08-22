@@ -411,12 +411,12 @@ function buildNtfyPublish(payload: PushPayload): Record<string, unknown> {
         tags: ["pizza"],
     };
     // Click-through deep link to the relay WEB UI — NOT the ntfy server. The
-    // device opens this on tap and the web UI routes `/#/sessions/<id>` to the
-    // session viewer. Built from the relay's public base URL (PIZZAPI_BASE_URL);
-    // omitted when that is unset rather than pointing at the wrong host.
+    // device opens this on tap and the web UI parses the canonical `/session/<id>`
+    // pathname on cold start. Built from the relay's public base URL
+    // (PIZZAPI_BASE_URL); omitted when that is unset rather than pointing at the wrong host.
     const baseUrl = (process.env.PIZZAPI_BASE_URL ?? "").replace(/\/+$/, "");
     if (payload.sessionId && baseUrl) {
-        fields.click = `${baseUrl}/#/sessions/${payload.sessionId}`;
+        fields.click = `${baseUrl}/session/${encodeURIComponent(payload.sessionId)}`;
     }
     return fields;
 }
