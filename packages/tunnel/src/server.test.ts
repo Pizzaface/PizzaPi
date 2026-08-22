@@ -75,6 +75,64 @@ describe("TunnelRelay", () => {
 });
 
 describe("TunnelRelay message handling", () => {
+  test("drops malformed frames and continues handling valid frames", async () => {
+    const warnings: unknown[][] = [];
+    const relay = new TunnelRelay({
+      apiKeys: ["key1"],
+      log: { info() {}, debug() {}, error() {}, warn(...args) { warnings.push(args); } },
+    });
+    const mockWs = createMockWebSocket();
+
+    relay.handleConnection(mockWs.ws);
+    mockWs.emit("message", { data: JSON.stringify({ type: "response-data", id: "req1" }) });
+    mockWs.emit("message", { data: JSON.stringify({ type: "unknown", id: "req1" }) });
+    mockWs.emit("message", { data: JSON.stringify({ type: "ws-close", id: 1, code: "1000" }) });
+    mockWs.emit("message", { data: JSON.stringify({ type: "response-start", id: "req1", statusCode: 0, statusMessage: "", headers: {} }) });
+    mockWs.emit("message", { data: JSON.stringify({ type: "ws-close", id: "ws1", code: 1001 }) });
+    mockWs.emit("message", { data: JSON.stringify({ type: "ws-close", id: "ws1", code: 999 }) });
+    mockWs.emit("message", { data: JSON.stringify({ type: "ws-close", id: "ws1", code: 5000 }) });
+    mockWs.emit("message", { data: JSON.stringify({ type: "ws-close", id: "ws1", code: 1000.5 }) });
+    mockWs.emit("message", { data: JSON.stringify({ type: "ws-close", id: "ws1", reason: "x".repeat(124) }) });
+    mockWs.emit("message", {
+      data: JSON.stringify({ type: "register", runnerId: "r1", apiKey: "key1" }),
+    });
+    await waitForMicrotask();
+
+    expect(warnings).toHaveLength(8);
+    expect(relay.hasRunner("r1")).toBe(true);
+  });
+
+  test("catches handler failures without an unhandled rejection", async () => {
+    const errors: unknown[][] = [];
+    const relay = new TunnelRelay({
+      apiKeys: ["key1"],
+      log: { info() {}, debug() {}, warn() {}, error(...args) { errors.push(args); } },
+    });
+    const mockWs = createMockWebSocket();
+
+    relay.handleConnection(mockWs.ws);
+    mockWs.emit("message", {
+      data: JSON.stringify({ type: "register", runnerId: "r1", apiKey: "key1" }),
+    });
+    await waitForMicrotask();
+    relay.proxyHttpRequest(
+      "r1",
+      { id: "req1", port: 3000, method: "GET", url: "/", headers: {} },
+      {
+        onResponseStart() {},
+        onResponseData() { throw new Error("callback failed"); },
+        onResponseEnd() {},
+        onError() {},
+      },
+    );
+    mockWs.emit("message", { data: JSON.stringify({ type: "response-data", id: "req1", data: "body" }) });
+    await waitForMicrotask();
+    await waitForMicrotask();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0][0]).toBe("[tunnel-relay] Failed to handle client message:");
+  });
+
   test("handleConnection registers a runner", async () => {
     const relay = new TunnelRelay({ apiKeys: ["key1"] });
     const mockWs = createMockWebSocket();
@@ -526,10 +584,36 @@ describe("TunnelRelay WebSocket proxy callbacks", () => {
       data: JSON.stringify({ type: "ws-data", id: "ws1", data: "hello", binary: false }),
     });
     mockWs.emit("message", {
-      data: JSON.stringify({ type: "ws-close", id: "ws1", code: 1000, reason: "done" }),
+      data: JSON.stringify({ type: "ws-close", id: "ws1", code: 1001, reason: "done" }),
+    });
+    relay.proxyWsOpen(
+      "r1",
+      { id: "ws1", port: 8080, path: "/socket", protocols: ["chat"], headers: {} },
+      {
+        onOpened() {},
+        onData() {},
+        onClose(code, reason) { events.push(`close:${code}:${reason}`); },
+        onError() {},
+      },
+    );
+    mockWs.emit("message", {
+      data: JSON.stringify({ type: "ws-close", id: "ws1", code: 1011, reason: "failed" }),
+    });
+    relay.proxyWsOpen(
+      "r1",
+      { id: "ws1", port: 8080, path: "/socket", protocols: ["chat"], headers: {} },
+      {
+        onOpened() {},
+        onData() {},
+        onClose(code, reason) { events.push(`close:${code}:${reason}`); },
+        onError() {},
+      },
+    );
+    mockWs.emit("message", {
+      data: JSON.stringify({ type: "ws-close", id: "ws1", code: 1006, reason: "abnormal" }),
     });
     await waitForMicrotask();
 
-    expect(events).toEqual(["opened:chat", "data:hello:text", "close:1000:done"]);
+    expect(events).toEqual(["opened:chat", "data:hello:text", "close:1000:done", "close:1000:failed", "close:1000:abnormal"]);
   });
 });

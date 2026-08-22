@@ -74,6 +74,58 @@ function parseMessageText(raw: string | Buffer | ArrayBuffer | ArrayBufferView):
   return Buffer.from(raw).toString("utf-8");
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isResponseHeaders(value: unknown): value is Record<string, string | string[]> {
+  return isRecord(value) && Object.values(value).every(
+    (entry) => typeof entry === "string" || (Array.isArray(entry) && entry.every((item) => typeof item === "string")),
+  );
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
+}
+
+function isHttpStatus(value: unknown): boolean {
+  return typeof value === "number" && Number.isInteger(value) && value >= 200 && value <= 599;
+}
+
+function isOptionalCloseCode(value: unknown): boolean {
+  return value === undefined || (typeof value === "number" && Number.isInteger(value) && ((value >= 1000 && value <= 1015) || (value >= 3000 && value <= 4999)));
+}
+
+function browserCloseCode(code: number | undefined): number {
+  return code === 1000 || (code !== undefined && code >= 3000) ? code : 1000;
+}
+
+function isOptionalCloseReason(value: unknown): boolean {
+  return value === undefined || (typeof value === "string" && Buffer.byteLength(value, "utf8") <= 123);
+}
+
+function isOptionalBoolean(value: unknown): boolean {
+  return value === undefined || typeof value === "boolean";
+}
+
+function isTunnelClientMessage(value: unknown): value is TunnelClientMessage {
+  if (!isRecord(value) || typeof value.type !== "string") return false;
+  switch (value.type) {
+    case "register": return typeof value.runnerId === "string" && typeof value.apiKey === "string";
+    case "response-start": return typeof value.id === "string" && isHttpStatus(value.statusCode)
+      && typeof value.statusMessage === "string" && isResponseHeaders(value.headers);
+    case "response-data": return typeof value.id === "string" && typeof value.data === "string";
+    case "response-data-end":
+    case "request-end": return typeof value.id === "string";
+    case "ws-opened": return typeof value.id === "string" && isOptionalString(value.protocol);
+    case "ws-data": return typeof value.id === "string" && typeof value.data === "string" && isOptionalBoolean(value.binary);
+    case "ws-close": return typeof value.id === "string" && isOptionalCloseCode(value.code) && isOptionalCloseReason(value.reason);
+    case "ws-error": return typeof value.id === "string" && typeof value.message === "string";
+    case "pong": return true;
+    default: return false;
+  }
+}
+
 export class TunnelRelay {
   private authorizeApiKey: (apiKey: string, runnerId: string) => Promise<string | null | boolean>;
   private log: TunnelLogger;
@@ -111,7 +163,9 @@ export class TunnelRelay {
 
   handleConnection(ws: WebSocket): void {
     ws.addEventListener("message", (event: MessageEvent) => {
-      void this.handleMessage(ws, event.data as string | Buffer | ArrayBuffer | ArrayBufferView);
+      void this.handleMessage(ws, event.data as string | Buffer | ArrayBuffer | ArrayBufferView).catch((error: unknown) => {
+        this.log.error("[tunnel-relay] Failed to handle client message:", error);
+      });
     });
     ws.addEventListener("close", () => {
       this.handleDisconnect(ws);
@@ -313,7 +367,12 @@ export class TunnelRelay {
     try {
       msg = JSON.parse(parseMessageText(raw)) as TunnelClientMessage;
     } catch {
-      this.log.error("[tunnel-relay] Invalid JSON from client");
+      this.log.warn("[tunnel-relay] Invalid JSON from client");
+      return;
+    }
+
+    if (!isTunnelClientMessage(msg)) {
+      this.log.warn("[tunnel-relay] Invalid message from client");
       return;
     }
 
@@ -460,7 +519,7 @@ export class TunnelRelay {
     if (!pending || !this.isCurrentRunnerSocket(ws, pending.runnerId)) return;
     clearTimeout(pending.timer);
     this.pendingWs.delete(msg.id);
-    pending.onClose(msg.code, msg.reason);
+    pending.onClose(browserCloseCode(msg.code), msg.reason);
   }
 
   private handleWsError(ws: WebSocket, msg: TunnelWsErrorMessage): void {
