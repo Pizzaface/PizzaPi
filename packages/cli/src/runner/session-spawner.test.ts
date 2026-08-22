@@ -174,7 +174,11 @@ describe("session-spawner child", () => {
             const restartRunningSessions = new Map();
             const restartRestartingSessions = new Set<string>();
             const restartKilledSessions = new Set<string>();
-            const onRestartRequested = mock(() => {});
+            // Successful respawn: onRestartRequested produces a live replacement
+            // entry, so the restart branch must NOT run termination cleanup.
+            const onRestartRequested = mock(() => {
+                restartRunningSessions.set("sess-restart", { sessionId: "sess-restart", child: new FakeChild(), startedAt: Date.now() });
+            });
             const onSessionExitRestart = mock((_sessionId: string) => {});
             spawnSession(
                 "sess-restart",
@@ -192,7 +196,7 @@ describe("session-spawner child", () => {
             await Promise.resolve();
             expect(onRestartRequested).toHaveBeenCalledTimes(1);
             expect(restartRestartingSessions.has("sess-restart")).toBe(true);
-            expect(restartRunningSessions.has("sess-restart")).toBe(false);
+            expect(restartRunningSessions.has("sess-restart")).toBe(true);
             expect(untrackSessionCwd).toHaveBeenCalledWith("sess-restart", tempCwd);
             expect(cleanupSessionAttachments).not.toHaveBeenCalled();
             // Restart-in-place is NOT a session end — service cleanup must not run.
@@ -302,6 +306,128 @@ describe("session-spawner child", () => {
             expect(killedSessions.has("sess-killed-race")).toBe(false);
             // Session must be removed from runningSessions
             expect(runningSessions.has("sess-killed-race")).toBe(false);
+        } finally {
+            rmSync(tempCwd, { recursive: true, force: true });
+        }
+    });
+
+    test("failed respawn (no live entry) runs termination cleanup and clears restarting-set", async () => {
+        const cleanupSessionAttachments = mock(async (_sessionId: string) => {});
+        const logInfo = mock((_message: string) => {});
+        const trackSessionCwd = mock((_sessionId: string, _cwd: string) => {});
+        const untrackSessionCwd = mock((_sessionId: string, _cwd: string) => {});
+        const runnerUsageCacheFilePath = mock(() => "/tmp/test-usage-cache.json");
+        const isCwdAllowed = mock((_cwd: string | undefined) => true);
+
+        let latestChild: FakeChild | null = null;
+        const spawnMock = mock((_execPath: string, _args: string[], _options: { stdio: string[]; env: Record<string, string> }) => {
+            latestChild = new FakeChild();
+            return latestChild;
+        });
+
+        mock.module("node:child_process", () => ({ spawn: spawnMock }));
+        mock.module("../extensions/session-attachments.js", () => ({ cleanupSessionAttachments }));
+        mock.module("./logger.js", () => ({ logInfo }));
+        mock.module("./runner-usage-cache.js", () => ({ runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd }));
+        mock.module("./workspace.js", () => ({ isCwdAllowed }));
+
+        const { spawnSession } = await import("./session-spawner.js");
+        const tempCwd = mkdtempSync(join(tmpdir(), "session-spawner-failed-respawn-"));
+        try {
+            const runningSessions = new Map();
+            const restartingSessions = new Set<string>();
+            const killedSessions = new Set<string>();
+            const onSessionExit = mock((_sessionId: string) => {});
+
+            // ponytail: onRestartRequested throws — simulates spawn failure
+            const onRestartRequested = mock(() => { throw new Error("spawn failed"); });
+
+            spawnSession(
+                "sess-fail-respawn",
+                "api-key",
+                "https://relay.example",
+                tempCwd,
+                runningSessions,
+                restartingSessions,
+                killedSessions,
+                onRestartRequested,
+                { onSessionExit },
+            );
+
+            // Mark pre-restart (as the worker IPC would) so restartingSessions is populated
+            latestChild!.emit("message", { type: "pre_restart" });
+            expect(restartingSessions.has("sess-fail-respawn")).toBe(true);
+
+            latestChild!.exitCode = 43;
+            latestChild!.emit("exit", 43, null);
+            await Promise.resolve();
+
+            expect(onRestartRequested).toHaveBeenCalledTimes(1);
+            // Failed respawn: restarting-set must be cleared (not leaked)
+            expect(restartingSessions.has("sess-fail-respawn")).toBe(false);
+            // runningSessions must not contain a ghost entry
+            expect(runningSessions.has("sess-fail-respawn")).toBe(false);
+            // Termination cleanup must run: attachments deleted, onSessionExit called
+            expect(cleanupSessionAttachments).toHaveBeenCalledWith("sess-fail-respawn");
+            expect(onSessionExit).toHaveBeenCalledWith("sess-fail-respawn");
+        } finally {
+            rmSync(tempCwd, { recursive: true, force: true });
+        }
+    });
+
+    test("failed respawn (no live entry added) runs termination cleanup", async () => {
+        const cleanupSessionAttachments = mock(async (_sessionId: string) => {});
+        const logInfo = mock((_message: string) => {});
+        const trackSessionCwd = mock((_sessionId: string, _cwd: string) => {});
+        const untrackSessionCwd = mock((_sessionId: string, _cwd: string) => {});
+        const runnerUsageCacheFilePath = mock(() => "/tmp/test-usage-cache.json");
+        const isCwdAllowed = mock((_cwd: string | undefined) => true);
+
+        let latestChild: FakeChild | null = null;
+        const spawnMock = mock((_execPath: string, _args: string[], _options: { stdio: string[]; env: Record<string, string> }) => {
+            latestChild = new FakeChild();
+            return latestChild;
+        });
+
+        mock.module("node:child_process", () => ({ spawn: spawnMock }));
+        mock.module("../extensions/session-attachments.js", () => ({ cleanupSessionAttachments }));
+        mock.module("./logger.js", () => ({ logInfo }));
+        mock.module("./runner-usage-cache.js", () => ({ runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd }));
+        mock.module("./workspace.js", () => ({ isCwdAllowed }));
+
+        const { spawnSession } = await import("./session-spawner.js");
+        const tempCwd = mkdtempSync(join(tmpdir(), "session-spawner-no-entry-"));
+        try {
+            const runningSessions = new Map();
+            const restartingSessions = new Set<string>();
+            const killedSessions = new Set<string>();
+            const onSessionExit = mock((_sessionId: string) => {});
+
+            // ponytail: onRestartRequested returns normally but adds nothing to runningSessions
+            const onRestartRequested = mock(() => {});
+
+            spawnSession(
+                "sess-no-entry",
+                "api-key",
+                "https://relay.example",
+                tempCwd,
+                runningSessions,
+                restartingSessions,
+                killedSessions,
+                onRestartRequested,
+                { onSessionExit },
+            );
+
+            latestChild!.exitCode = 43;
+            latestChild!.emit("exit", 43, null);
+            await Promise.resolve();
+
+            expect(onRestartRequested).toHaveBeenCalledTimes(1);
+            // No live entry added → failed respawn: cleanup must run
+            expect(restartingSessions.has("sess-no-entry")).toBe(false);
+            expect(runningSessions.has("sess-no-entry")).toBe(false);
+            expect(cleanupSessionAttachments).toHaveBeenCalledWith("sess-no-entry");
+            expect(onSessionExit).toHaveBeenCalledWith("sess-no-entry");
         } finally {
             rmSync(tempCwd, { recursive: true, force: true });
         }
