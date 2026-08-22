@@ -30,6 +30,7 @@ import { pizzapiHeaderExtension } from "./pizzapi-header.js";
 import { toolSearchExtension } from "./tool-search.js";
 import { ollamaWebToolsExtension } from "./ollama-web-tools.js";
 import { ollamaCloudProviderExtension } from "./ollama-cloud-provider.js";
+import { openrouterProviderExtension } from "./openrouter-provider.js";
 import { sessionAnalysisExtension } from "./session-analysis.js";
 import { fallbackModelsExtension } from "./fallback-models.js";
 import { providerRequestLogExtension } from "./provider-request-log.js";
@@ -86,6 +87,10 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
     // run before other factories so --provider ollama-cloud and model listing
     // see the provider immediately (see ollama-cloud-provider.ts).
     factories.push(named(ollamaCloudProviderExtension, "ollama-cloud-provider"));
+
+    // Live OpenRouter catalog (openrouter.ai/api/v1/models) replacing pi-ai's
+    // static snapshot — same reason: register before model resolution.
+    factories.push(named(openrouterProviderExtension, "openrouter-provider"));
 
     // Diagnostic (off unless PIZZAPI_LOG_PROVIDER_REQUEST is set): log the
     // resolved provider/api and request shape for each outbound turn.
