@@ -123,7 +123,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
     socket.on("exec_result", (data) => {
         const sessionId = socket.data.sessionId;
         if (!sessionId) return;
-        broadcastToViewers(sessionId, "exec_result", data);
+        broadcastToViewers(sessionId, "exec_result", { ...data, sessionId });
     });
 
     // ── disconnect ───────────────────────────────────────────────────────
