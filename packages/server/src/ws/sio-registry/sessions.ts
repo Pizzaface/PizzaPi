@@ -228,7 +228,6 @@ async function registerTuiSessionUnlocked(
             if (oldSocket && oldSocket !== socket) {
                 oldSocket.data.sessionId = undefined;
             }
-<<<<<<< HEAD
             await endSharedSessionUnlocked(sessionId, "Session reconnected");
             // Reset per-session relay state so stale queued work and
             // half-assembled chunk state from the old generation cannot leak
