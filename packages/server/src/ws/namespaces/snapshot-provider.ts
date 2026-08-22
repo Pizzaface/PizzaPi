@@ -86,7 +86,7 @@ export interface SnapshotProviderDeps {
     getPersistedRelaySessionSnapshot: (
         sessionId: string,
         userId: string,
-    ) => Promise<{ state: unknown } | null>;
+    ) => Promise<{ state: unknown; snapshotOverlay?: string | null } | null>;
 }
 
 const defaultDeps: SnapshotProviderDeps = {
@@ -224,7 +224,10 @@ export async function tryPersistedSnapshot(
     const snapshot = await deps.getPersistedRelaySessionSnapshot(sessionId, userId);
     if (!snapshot || snapshot.state === null || snapshot.state === undefined) return null;
 
-    const state = applySnapshotOverlayToState(maybeTruncateSnapshotState(snapshot.state), snapshotOverlay);
+    // Prefer the live Redis overlay (freshest); fall back to the persisted
+    // overlay so metadata survives a relay restart / Redis loss.
+    const overlay = snapshotOverlay ?? snapshot.snapshotOverlay;
+    const state = applySnapshotOverlayToState(maybeTruncateSnapshotState(snapshot.state), overlay);
 
     return {
         snapshot: { type: "persisted", source: "SQLite persisted relay session state" },

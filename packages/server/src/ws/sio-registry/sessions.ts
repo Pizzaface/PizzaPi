@@ -48,6 +48,7 @@ import {
     recordRelaySessionEnd,
     recordRelaySessionState,
     recordRelaySessionStateSerialized,
+    recordRelaySessionOverlay,
     touchRelaySession,
 } from "../../sessions/store.js";
 import { appendRelayEventToCache } from "../../sessions/redis.js";
@@ -117,6 +118,10 @@ import { waitForTuiSocket, notifyTuiSocketConnected } from "./tui-socket-waiters
 const log = createLogger("sio-registry");
 const lastRelaySessionStateWriteTimes = new Map<string, number>();
 const SQLITE_STATE_WRITE_THROTTLE_MS = 30_000;
+// Overlay writes are small (KB) but frequent (every metadata patch), so they
+// get their own shorter throttle than the multi-MB state writes.
+const lastRelaySessionOverlayWriteTimes = new Map<string, number>();
+const SQLITE_OVERLAY_WRITE_THROTTLE_MS = 5_000;
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -661,6 +666,21 @@ export async function patchSessionSnapshotState(
     }
 
     await updateSessionFields(sessionId, fields);
+
+    // Persist the overlay to SQLite so metadata (model, name, goal, todo,
+    // queued messages) survives a relay restart / Redis loss. Throttled — the
+    // overlay is small but patches arrive frequently, and bun:sqlite writes
+    // are synchronous. endSharedSession() folds the final overlay into state.
+    const now = Date.now();
+    if (now - (lastRelaySessionOverlayWriteTimes.get(sessionId) ?? 0) >= SQLITE_OVERLAY_WRITE_THROTTLE_MS) {
+        lastRelaySessionOverlayWriteTimes.set(sessionId, now);
+        void recordRelaySessionOverlay(sessionId, session.userId ?? null, JSON.stringify(mergedOverlay)).catch(
+            (error) => {
+                log.error("Failed to persist relay session overlay:", error);
+            },
+        );
+    }
+
     return true;
 }
 
@@ -1086,6 +1106,7 @@ async function endSharedSessionUnlocked(
         await deleteSession(sessionId);
     }
     lastRelaySessionStateWriteTimes.delete(sessionId);
+    lastRelaySessionOverlayWriteTimes.delete(sessionId);
 
     // Persist end in SQLite
     void recordRelaySessionEnd(sessionId).catch((error) => {

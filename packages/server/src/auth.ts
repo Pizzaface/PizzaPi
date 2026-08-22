@@ -102,6 +102,7 @@ export interface RelaySessionTable {
 export interface RelaySessionStateTable {
     sessionId: string;
     state: string;
+    snapshotOverlay: string | null;
     updatedAt: string;
 }
 

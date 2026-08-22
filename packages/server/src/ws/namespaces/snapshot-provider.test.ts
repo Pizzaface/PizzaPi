@@ -413,6 +413,47 @@ describe("tryPersistedSnapshot", () => {
         const result = await tryPersistedSnapshot("sess-24", "user-1", deps);
         expect(result).toBeNull();
     });
+
+    test("applies the persisted overlay when the live Redis overlay is absent (restart)", async () => {
+        const state = { messages: [], model: { id: "old" } };
+        const overlay = JSON.stringify({
+            model: { id: "sonnet", provider: "anthropic" },
+            sessionName: "Restored",
+            goal: { text: "ship it" },
+            todoList: [{ id: 1, text: "x" }],
+            queuedMessages: [{ role: "user", content: "hi" }],
+        });
+        const deps = createDeps({
+            getPersistedRelaySessionSnapshot: mock(async () => ({ state, snapshotOverlay: overlay })),
+        });
+
+        const result = await tryPersistedSnapshot("sess-25", "user-1", deps);
+        const socket = createMockSocket();
+        result!.send(socket, 1);
+
+        const payload = socket.calls[0].payload as any;
+        expect(payload.event.state.model).toEqual({ id: "sonnet", provider: "anthropic" });
+        expect(payload.event.state.sessionName).toBe("Restored");
+        expect(payload.event.state.goal).toEqual({ text: "ship it" });
+        expect(payload.event.state.todoList).toEqual([{ id: 1, text: "x" }]);
+        expect(payload.event.state.queuedMessages).toEqual([{ role: "user", content: "hi" }]);
+    });
+
+    test("prefers the live Redis overlay over the persisted overlay", async () => {
+        const state = { messages: [] };
+        const persistedOverlay = JSON.stringify({ sessionName: "Persisted" });
+        const liveOverlay = JSON.stringify({ sessionName: "Live" });
+        const deps = createDeps({
+            getPersistedRelaySessionSnapshot: mock(async () => ({ state, snapshotOverlay: persistedOverlay })),
+        });
+
+        const result = await tryPersistedSnapshot("sess-26", "user-1", deps, liveOverlay);
+        const socket = createMockSocket();
+        result!.send(socket, 1);
+
+        const payload = socket.calls[0].payload as any;
+        expect(payload.event.state.sessionName).toBe("Live");
+    });
 });
 
 // ── getBestSnapshot — priority ordering ──────────────────────────────────────
