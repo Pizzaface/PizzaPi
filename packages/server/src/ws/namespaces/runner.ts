@@ -55,11 +55,24 @@ import { listRunnerTriggerListeners } from "../../sessions/runner-trigger-listen
 // Using local aliases avoids a cross-worktree symlink resolution issue where
 // node_modules/@pizzapi/protocol points to the main branch's dist, not this
 // worktree's updated dist.
-type ServiceEnvelope = { serviceId: string; type: string; requestId?: string; sessionId?: string; payload: unknown };
+type ServiceEnvelope = { serviceId: string; type: string; requestId?: string; payload: unknown };
+type ServiceMessageEnvelope = ServiceEnvelope & { sessionId?: string };
 
-/** Stamp runner-wide messages separately for each session fanout. */
-export function stampServiceMessageSession(envelope: ServiceEnvelope, sessionId: string): ServiceEnvelope {
-    return envelope.sessionId ? envelope : { ...envelope, sessionId };
+/**
+ * Clone a runner-originated service_message envelope and stamp it with the
+ * destination session ID before forwarding. The original envelope is never
+ * mutated, and each recipient receives its own distinct object so cross-session
+ * stamping cannot leak between viewers or relay workers.
+ */
+export function forwardServiceMessageToSession(
+    envelope: ServiceMessageEnvelope,
+    sessionId: string,
+    broadcast: (sessionId: string, event: string, data: unknown) => void,
+    relay: (sessionId: string, event: string, data: unknown) => void,
+): void {
+    const stamped = { ...envelope, sessionId };
+    broadcast(sessionId, "service_message", stamped);
+    relay(sessionId, "service_message", stamped);
 }
 
 // ── Trigger subscription reconciliation ──────────────────────────────────────
@@ -1233,7 +1246,7 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
         // ── Generic service message relay: runner → viewers ──────────────────
         // Forward service envelopes verbatim to all viewers watching sessions
         // on this runner. The relay does not inspect serviceId — it just routes.
-        socket.on("service_message", async (envelope: ServiceEnvelope) => {
+        socket.on("service_message", async (envelope: ServiceMessageEnvelope) => {
             const runnerId = socket.data.runnerId;
             if (!runnerId) return;
             // If envelope carries a sessionId, route only to that session's viewers.
@@ -1257,18 +1270,12 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
                     log.warn(`service_message rejected: session ${targetSessionId} not owned by runner ${runnerId}`);
                     return;
                 }
-                const scopedEnvelope = stampServiceMessageSession(envelope, targetSessionId);
-                broadcastToSessionViewers(targetSessionId, "service_message", scopedEnvelope);
-                // Also route to the session's relay socket (TUI worker) so
-                // agent-initiated service_message requests get their responses.
-                emitToRelaySession(targetSessionId, "service_message", scopedEnvelope);
+                forwardServiceMessageToSession(envelope, targetSessionId, broadcastToSessionViewers, emitToRelaySession);
             } else {
                 const sessionIds = runnerSessionIds.get(runnerId);
                 if (!sessionIds || sessionIds.size === 0) return;
                 for (const sid of sessionIds) {
-                    const scopedEnvelope = stampServiceMessageSession(envelope, sid);
-                    broadcastToSessionViewers(sid, "service_message", scopedEnvelope);
-                    emitToRelaySession(sid, "service_message", scopedEnvelope);
+                    forwardServiceMessageToSession(envelope, sid, broadcastToSessionViewers, emitToRelaySession);
                 }
             }
         });
