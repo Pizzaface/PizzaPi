@@ -53,3 +53,16 @@ describe("ProviderIcon", () => {
     expect(icon?.getAttribute("aria-label")).toBe("Ollama Cloud");
   });
 });
+
+describe("ProviderIcon — OpenRouter", () => {
+  test("renders the OpenRouter mark, not the generic fallback", () => {
+    const { container: openrouter } = render(<ProviderIcon provider="openrouter" title="OpenRouter" />);
+    const { container: unknown } = render(<ProviderIcon provider="unknown-provider" />);
+
+    const icon = openrouter.getElementsByTagName("svg").item(0);
+    expect(icon?.getAttribute("viewBox")).toBe("0 0 24 24");
+    expect(icon?.getAttribute("role")).toBe("img");
+    expect(icon?.getElementsByTagName("title").item(0)?.textContent).toBe("OpenRouter");
+    expect(icon?.outerHTML).not.toBe(unknown.getElementsByTagName("svg").item(0)?.outerHTML);
+  });
+});
