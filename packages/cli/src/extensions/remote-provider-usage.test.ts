@@ -1,5 +1,5 @@
-import { describe, test, expect } from "bun:test";
-import { activeUsageWindows } from "./remote-provider-usage.js";
+import { describe, expect, test } from "bun:test";
+import { activeUsageWindows, preserveUsageWindowsOnError } from "./remote-provider-usage.js";
 
 const NOW = Date.parse("2026-03-10T12:00:00Z");
 
@@ -34,5 +34,42 @@ describe("activeUsageWindows", () => {
             NOW,
         );
         expect(result).toEqual([]);
+    });
+});
+
+describe("preserveUsageWindowsOnError", () => {
+    test("preserves existing windows and marks unknown with error code", () => {
+        const existing = {
+            windows: [{ label: "5-hour", utilization: 42, resets_at: "2026-12-31T23:59:59Z" }],
+            status: "ok" as const,
+        };
+        expect(preserveUsageWindowsOnError(existing, 403)).toEqual({
+            windows: existing.windows,
+            status: "unknown",
+            errorCode: 403,
+        });
+    });
+
+    test("uses empty windows when no cached data exists", () => {
+        expect(preserveUsageWindowsOnError(undefined, 429)).toEqual({
+            windows: [],
+            status: "unknown",
+            errorCode: 429,
+        });
+    });
+
+    test("does not drop existing windows on 401", () => {
+        const existing = {
+            windows: [
+                { label: "5-hour", utilization: 88, resets_at: "2026-12-31T23:59:59Z" },
+                { label: "7-day", utilization: 15, resets_at: "2026-12-31T23:59:59Z" },
+            ],
+            status: "ok" as const,
+        };
+        expect(preserveUsageWindowsOnError(existing, 401)).toEqual({
+            windows: existing.windows,
+            status: "unknown",
+            errorCode: 401,
+        });
     });
 });

@@ -20,6 +20,49 @@ const usageCache = new Map<string, { data: ProviderUsageData; fetchedAt: number 
 // fetching provider quota data and writing it to a shared cache file.
 const runnerUsageCachePath: string | null = process.env.PIZZAPI_RUNNER_USAGE_CACHE_PATH ?? null;
 
+// ── Runner-daemon IPC for forced usage refreshes ─────────────────────────────
+//
+// The daemon is the single source of truth for provider quota on a runner
+// node. When the web UI asks for a forced refresh, ask the daemon to update
+// its shared cache file rather than every worker hammering the provider APIs
+// independently.
+
+const pendingRefreshRequests = new Map<string, () => void>();
+
+function isRefreshCompleteMessage(msg: unknown): msg is { type: "refresh_usage_complete"; requestId: string } {
+    return (
+        typeof msg === "object" && msg !== null &&
+        (msg as Record<string, unknown>).type === "refresh_usage_complete" &&
+        typeof (msg as Record<string, unknown>).requestId === "string"
+    );
+}
+
+if (typeof process !== "undefined" && typeof process.send === "function") {
+    process.on("message", (msg: unknown) => {
+        if (!isRefreshCompleteMessage(msg)) return;
+        const resolve = pendingRefreshRequests.get(msg.requestId);
+        if (!resolve) return;
+        resolve();
+        pendingRefreshRequests.delete(msg.requestId);
+    });
+}
+
+function requestRunnerUsageRefresh(timeoutMs = 5000): Promise<boolean> {
+    if (typeof process.send !== "function") return Promise.resolve(false);
+    const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+            pendingRefreshRequests.delete(requestId);
+            resolve(false);
+        }, timeoutMs);
+        pendingRefreshRequests.set(requestId, () => {
+            clearTimeout(timer);
+            resolve(true);
+        });
+        process.send!({ type: "refresh_usage_request", requestId });
+    });
+}
+
 export function getOAuthToken(providerId: string): string | null {
     try {
         const config = loadConfig(process.cwd());
@@ -92,6 +135,18 @@ async function refreshFromRunnerCache(): Promise<void> {
     }
 }
 
+/** Preserve existing usage windows when a provider auth/rate-limit error occurs. */
+export function preserveUsageWindowsOnError(
+    existing: ProviderUsageData | undefined,
+    status: number,
+): ProviderUsageData {
+    return {
+        windows: existing?.windows ?? [],
+        status: "unknown",
+        errorCode: status,
+    };
+}
+
 async function refreshAnthropicUsage(opts: { force?: boolean } = {}): Promise<void> {
     if (isCached("anthropic", opts)) return;
     // auth.json first, then Claude Code's own OAuth token (Keychain /
@@ -108,9 +163,12 @@ async function refreshAnthropicUsage(opts: { force?: boolean } = {}): Promise<vo
             },
         });
         if (!res.ok) {
-            if (res.status === 403) {
+            if (res.status === 401 || res.status === 403 || res.status === 429) {
+                // Auth/rate-limit errors should not erase known-good cached quota
+                // data. Preserve existing windows and surface the error code so
+                // the UI can show "UNKNOWN" without dropping the percentage.
                 usageCache.set("anthropic", {
-                    data: { windows: [], status: "unknown", errorCode: 403 },
+                    data: preserveUsageWindowsOnError(usageCache.get("anthropic")?.data, res.status),
                     fetchedAt: Date.now(),
                 });
             }
@@ -152,9 +210,9 @@ async function refreshCodexUsage(opts: { force?: boolean } = {}): Promise<void> 
             },
         });
         if (!res.ok) {
-            if (res.status === 403) {
+            if (res.status === 401 || res.status === 403 || res.status === 429) {
                 usageCache.set("openai-codex", {
-                    data: { windows: [], status: "unknown", errorCode: 403 },
+                    data: preserveUsageWindowsOnError(usageCache.get("openai-codex")?.data, res.status),
                     fetchedAt: Date.now(),
                 });
             }
@@ -249,6 +307,18 @@ export async function refreshAllUsage(opts: { force?: boolean } = {}): Promise<v
     if (runnerUsageCachePath && !force) {
         await refreshFromRunnerCache();
         return;
+    }
+
+    // When running under a runner daemon, ask it to force-refresh the shared
+    // cache rather than every worker hitting the provider APIs. This preserves
+    // the daemon's rate-limiting and credential discovery, and updates the file
+    // for all sessions. Fall back to a direct fetch if IPC is unavailable.
+    if (runnerUsageCachePath && force) {
+        const refreshed = await requestRunnerUsageRefresh();
+        if (refreshed) {
+            await refreshFromRunnerCache();
+            return;
+        }
     }
 
     await Promise.allSettled([
