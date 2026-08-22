@@ -756,6 +756,13 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
         socket.on("resync", async (data) => {
             const currentSessionId = getCurrentSessionId();
             if (!currentSessionId) return;
+            // Capture generation BEFORE any await so we can detect a viewer
+            // switch that happens while Redis reads are in flight. If the
+            // viewer switches from A→B during the await, getCurrentGeneration()
+            // returns B's generation — replaying A's cache with B's generation
+            // passes the client's matchesHydrationGeneration check and corrupts
+            // B's state. Capturing here lets us abort the continuation.
+            const resyncGeneration = getCurrentGeneration();
             // Never answer an in-flight chunk resync with lastState: it is the
             // previous completed checkpoint until server assembly finishes.
             // The client keeps the last good transcript visible and retries on
@@ -775,15 +782,21 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                     getSharedSession(currentSessionId),
                     getSessionSeq(currentSessionId),
                 ]);
+                // Viewer switched sessions while we were awaiting Redis — abort.
+                // Emitting A's cache replay under B's (post-switch) generation
+                // would pass the client's generation guard and corrupt B's state.
+                // The client-side matchesViewerSession guard provides a second
+                // layer of defence via the sessionId stamp on replay envelopes.
+                if (getCurrentGeneration() !== resyncGeneration) return;
                 const cacheHydrated = await hydrateViewerFromCache(socket, currentSessionId, {
                     lastSeq: requestedLastSeq,
-                    generation: getCurrentGeneration(),
+                    generation: resyncGeneration,
                     snapshotOverlay: resyncSession?.snapshotOverlay,
                     latestSessionSeq: resyncSeq,
                 });
                 if (cacheHydrated) {
                     if (resyncStaleStream) {
-                        forwardRecoverySignalOrNotify(currentSessionId, socket, getCurrentGeneration());
+                        forwardRecoverySignalOrNotify(currentSessionId, socket, resyncGeneration);
                     }
                     return;
                 }
@@ -794,7 +807,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 // Reaching here means only unsequenced state is left, which
                 // cannot safely fill the gap — ask the runner for a fresh one.
                 if (requestedLastSeq !== undefined && !resyncChunkedPending) {
-                    forwardRecoverySignalOrNotify(currentSessionId, socket, getCurrentGeneration());
+                    forwardRecoverySignalOrNotify(currentSessionId, socket, resyncGeneration);
                 }
                 return;
             }

@@ -28,6 +28,7 @@ mock.module("../../sio-registry.js", () => ({
         wasDelinked: false,
     }),
     getLocalTuiSocket: () => undefined,
+    getSessionOwnerToken: async () => "tok",
     broadcastToViewers: mockBroadcastToViewers,
     endSharedSession: async () => {},
 }));
