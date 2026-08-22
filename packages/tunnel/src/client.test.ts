@@ -1,6 +1,9 @@
 import { Buffer } from "node:buffer";
+import { EventEmitter } from "node:events";
 import { createServer, type Server } from "node:http";
-import { describe, expect, test, jest } from "bun:test";
+import https from "node:https";
+import net from "node:net";
+import { describe, expect, test, jest, afterEach } from "bun:test";
 import { TunnelClient } from "./client.js";
 
 function attachMockRelay(client: TunnelClient) {
@@ -661,5 +664,93 @@ describe("TunnelClient backoff and failure handling", () => {
       relayUrl: "ws://localhost:9999/_tunnel",
     });
     expect((client as any).maxReconnectDelayMs).toBe(60000);
+  });
+});
+
+describe("TunnelClient probe timeout fallback", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  function fakeRequest(behaviors: Array<"timeout" | "error">) {
+    let index = 0;
+    return jest.spyOn(https, "request").mockImplementation((options: any) => {
+      const req = new EventEmitter() as any;
+      // Simulate the real node behaviour: req.destroy() emits an async 'error'
+      // ("socket hang up" / ERR_HTTP_SOCKET_CLOSED). The timedOut guard in
+      // tryFamily must block the error handler from firing a second retry.
+      req.destroy = () => {
+        queueMicrotask(() => req.emit("error", new Error("socket hang up")));
+      };
+      req.end = () => {
+        const behavior = behaviors[index++] ?? "timeout";
+        queueMicrotask(() => req.emit(behavior, new Error(behavior)));
+      };
+      return req;
+    });
+  }
+
+  function fakeNetConnect(behaviors: Array<"timeout" | "connect" | "error">) {
+    let index = 0;
+    return jest.spyOn(net, "connect").mockImplementation(() => {
+      const sock = new EventEmitter() as any;
+      // Simulate sock.destroy() emitting 'error' to exercise the sockTimedOut
+      // symmetry guard (in production this rarely happens, but the guard must
+      // hold when it does).
+      sock.destroy = () => {
+        queueMicrotask(() => sock.emit("error", new Error("socket destroyed")));
+      };
+      sock.setTimeout = (_ms: number, cb: () => void) => {
+        sock._timeoutCb = cb;
+      };
+      queueMicrotask(() => {
+        const behavior = behaviors[index++] ?? "timeout";
+        if (behavior === "timeout") sock._timeoutCb?.();
+        else sock.emit(behavior, new Error(behavior));
+      });
+      return sock;
+    });
+  }
+
+  test("TLS request timeout retries alternate loopback family exactly once", async () => {
+    const client = new TunnelClient({
+      runnerId: "r1",
+      apiKey: "key1",
+      relayUrl: "ws://localhost:9999/_tunnel",
+      autoReconnect: false,
+    });
+    const port = 9999;
+    const reqSpy = fakeRequest(["timeout", "timeout"]);
+
+    client.exposePort(port);
+    await waitUntil(() => !(client as any).probing.has(port));
+
+    expect(reqSpy).toHaveBeenCalledTimes(2);
+    expect(reqSpy.mock.calls[0][0].host).toBe("127.0.0.1");
+    expect(reqSpy.mock.calls[1][0].host).toBe("::1");
+    expect(client.detectedProtocol(port)).toBeUndefined();
+  });
+
+  test("plain TCP timeout retries alternate loopback family exactly once", async () => {
+    const client = new TunnelClient({
+      runnerId: "r1",
+      apiKey: "key1",
+      relayUrl: "ws://localhost:9999/_tunnel",
+      autoReconnect: false,
+    });
+    const port = 9999;
+    const reqSpy = fakeRequest(["error", "error"]);
+    const netSpy = fakeNetConnect(["timeout", "timeout"]);
+
+    client.exposePort(port);
+    await waitUntil(() => !(client as any).probing.has(port));
+
+    expect(reqSpy).toHaveBeenCalledTimes(2);
+    expect(reqSpy.mock.calls[0][0].host).toBe("127.0.0.1");
+    expect(reqSpy.mock.calls[1][0].host).toBe("::1");
+    expect(netSpy).toHaveBeenCalledTimes(2);
+    expect(netSpy.mock.calls[0][0].host).toBe("127.0.0.1");
+    expect(netSpy.mock.calls[1][0].host).toBe("::1");
+    expect(client.detectedProtocol(port)).toBeUndefined();
   });
 });

@@ -296,6 +296,10 @@ export class TunnelClient extends EventEmitter {
     const tryFamily = (bracketHost: LoopbackHost, canRetry: boolean): void => {
       if (settled) return;
       const host = bracketHost.replace(/^\[|\]$/g, "");
+      // ponytail: timedOut guards against req.destroy() emitting an async
+      // 'error' event after the timeout handler already launched the retry —
+      // without it the error handler would call tryFamily a second time.
+      let timedOut = false;
       const req = https.request(
         { host, port, path: "/", method: "HEAD", rejectUnauthorized: false, timeout: 1500 },
         (res) => {
@@ -304,22 +308,32 @@ export class TunnelClient extends EventEmitter {
         },
       );
       req.on("timeout", () => {
+        timedOut = true;
         req.destroy();
-        done(null);
+        if (canRetry) tryFamily(otherLoopback(bracketHost), false);
+        else done(null);
       });
       req.on("error", () => {
+        if (timedOut) return; // destroy() in timeout handler emits async 'error' — ignore it
         // TLS failed — is anything listening at all? (Bun reports bogus
         // ECONNREFUSED for TLS-to-plain-HTTP, so error codes can't be trusted.)
         const sock = net.connect({ host, port });
+        // ponytail: sockTimedOut guards the same destroy→error cascade for the
+        // TCP socket path (P3: sock.destroy() without an error arg rarely emits
+        // 'error', but the guard makes both paths provably exactly-once).
+        let sockTimedOut = false;
         sock.setTimeout(1500, () => {
+          sockTimedOut = true;
           sock.destroy();
-          done(null);
+          if (canRetry) tryFamily(otherLoopback(bracketHost), false);
+          else done(null);
         });
         sock.once("connect", () => {
           sock.destroy();
           done("http", bracketHost);
         });
         sock.once("error", () => {
+          if (sockTimedOut) return; // symmetry guard — exactly-once on the TCP path too
           // Nothing on this family — an IPv6-only HTTPS service would
           // otherwise never be detected (the http path's family retry only
           // converges for plaintext services).
