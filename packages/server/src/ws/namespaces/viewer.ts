@@ -357,6 +357,7 @@ async function replayPersistedSnapshot(
             reason: "Session is no longer live (snapshot replay).",
             code: "snapshot_replay",
             generation,
+            sessionId,
         });
         // Use disconnect() without `true` so the client can still auto-reconnect
         // when the session comes back online. disconnect(true) sets reason to
@@ -483,7 +484,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
 
             if (!sessionSummary) {
                 socket.data.sessionId = undefined;
-                socket.emit("disconnected", { reason: "Session ended", code: "session_ended", generation });
+                socket.emit("disconnected", { reason: "Session ended", code: "session_ended", generation, sessionId: nextSessionId });
                 return;
             }
 
@@ -514,7 +515,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             }
             if (!ok) {
                 socket.data.sessionId = undefined;
-                socket.emit("disconnected", { reason: "Session ended", code: "session_ended", generation });
+                socket.emit("disconnected", { reason: "Session ended", code: "session_ended", generation, sessionId: nextSessionId });
                 return;
             }
 
@@ -541,7 +542,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
 
             if (!freshSession) {
                 socket.data.sessionId = undefined;
-                socket.emit("disconnected", { reason: "Session ended", code: "session_ended", generation });
+                socket.emit("disconnected", { reason: "Session ended", code: "session_ended", generation, sessionId: nextSessionId });
                 return;
             }
 

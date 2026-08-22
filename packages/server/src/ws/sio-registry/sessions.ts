@@ -931,14 +931,14 @@ export async function sendSnapshotToViewer(sessionId: string, socket: Socket): P
     }
 }
 
-function viewerDisconnectPayload(reason: string): { reason: string; code?: "session_ended" | "session_reconnected" } {
+function viewerDisconnectPayload(reason: string, sessionId?: string): { reason: string; code?: "session_ended" | "session_reconnected"; sessionId?: string } {
     if (reason === "Session reconnected") {
-        return { reason, code: "session_reconnected" };
+        return { reason, code: "session_reconnected", sessionId };
     }
     if (reason === "Session ended") {
-        return { reason, code: "session_ended" };
+        return { reason, code: "session_ended", sessionId };
     }
-    return { reason };
+    return { reason, sessionId };
 }
 
 /** End a shared session: notify viewers, clean up Redis, broadcast to hub. */
@@ -997,7 +997,7 @@ async function endSharedSessionUnlocked(
         }
     }
 
-    const disconnectPayload = viewerDisconnectPayload(reason);
+    const disconnectPayload = viewerDisconnectPayload(reason, sessionId);
 
     // Notify all viewers in the room and disconnect them
     try {

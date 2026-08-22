@@ -101,9 +101,18 @@ const { registerTuiSession, endSharedSession } = await import("./sessions.js");
 const { initSioRegistry } = await import("./context.js");
 
 // Minimal fake Socket.IO server — enough for endSharedSession's viewer teardown.
+// Captures the last `disconnected` emit payload so tests can assert the
+// sessionId stamp.
+const emittedDisconnects: Array<{ room: string; payload: unknown }> = [];
 const fakeNamespace = {
-    to: () => ({ emit: () => {} }),
-    local: { to: () => ({ emit: () => {} }) },
+    to: (room: string) => ({
+        emit: (event: string, payload: unknown) => {
+            if (event === "disconnected") emittedDisconnects.push({ room, payload });
+        },
+    }),
+    local: { to: (room: string) => ({ emit: (event: string, payload: unknown) => {
+        if (event === "disconnected") emittedDisconnects.push({ room, payload });
+    } }) },
     in: () => ({ disconnectSockets: () => {} }),
     emit: () => {},
 };
@@ -215,5 +224,32 @@ describe("endSharedSession confirmedTerminal membership removal", () => {
 
         // Membership must survive so delink_children can still find the child.
         expect(setStore.get(childrenKey("parent-1"))?.has("child-z")).toBe(true);
+    });
+});
+
+describe("endSharedSession stamps disconnected with sessionId", () => {
+    beforeEach(() => {
+        store.clear();
+        setStore.clear();
+        emittedDisconnects.length = 0;
+    });
+
+    it("stamps the originating sessionId on the disconnected payload", async () => {
+        await seedSession("child-a");
+
+        await endSharedSession("child-a", "Session ended");
+
+        expect(emittedDisconnects.length).toBeGreaterThan(0);
+        const { payload } = emittedDisconnects[0];
+        expect(payload).toMatchObject({ reason: "Session ended", code: "session_ended", sessionId: "child-a" });
+    });
+
+    it("stamps sessionId on transient/reconnect disconnects too", async () => {
+        await seedSession("child-b");
+
+        await endSharedSession("child-b", "Session reconnected");
+
+        expect(emittedDisconnects.length).toBeGreaterThan(0);
+        expect(emittedDisconnects[0].payload).toMatchObject({ code: "session_reconnected", sessionId: "child-b" });
     });
 });

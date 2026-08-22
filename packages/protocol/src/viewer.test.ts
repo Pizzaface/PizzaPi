@@ -69,10 +69,12 @@ describe("viewer — ViewerServerToClientEvents payloads", () => {
     expect(typeof p.reason).toBe("string");
     expect(p.code).toBeUndefined();
     expect(p.generation).toBeUndefined();
+    expect(p.sessionId).toBeUndefined();
 
-    const structured: Payload = { reason: "Session is no longer live (snapshot replay).", code: "snapshot_replay", generation: 8 };
+    const structured: Payload = { reason: "Session is no longer live (snapshot replay).", code: "snapshot_replay", generation: 8, sessionId: "sess-1" };
     expect(structured.code).toBe("snapshot_replay");
     expect(structured.generation).toBe(8);
+    expect(structured.sessionId).toBe("sess-1");
   });
 
   test("exec_result carries id, ok, and command", () => {
