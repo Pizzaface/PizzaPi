@@ -9,7 +9,7 @@ import {
     runWithAuthContext,
 } from "./auth";
 import { sql } from "kysely";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync, rmSync, statSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
@@ -177,5 +177,30 @@ describe("signup gating", () => {
         expect(allowed).toBe(false);
 
         await withTestAuth(() => getKysely().deleteFrom("user").execute());
+    });
+});
+
+describe("database file permissions", () => {
+    test("hardens auth DB and parent directory to 0600/0700", () => {
+        if (process.platform === "win32") {
+            // chmod is a no-op on Windows; permission checks are not meaningful.
+            return;
+        }
+
+        const tmpD = mkdtempSync(join(tmpdir(), "auth-perm-test-"));
+        const dbDir = join(tmpD, "auth");
+        const dbPath = join(dbDir, "test.db");
+        try {
+            createAuthContext({
+                dbPath,
+                baseURL: "http://localhost",
+                secret: "a".repeat(32),
+            });
+
+            expect(statSync(dbPath).mode & 0o777).toBe(0o600);
+            expect(statSync(dbDir).mode & 0o777).toBe(0o700);
+        } finally {
+            rmSync(tmpD, { recursive: true, force: true });
+        }
     });
 });
