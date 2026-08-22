@@ -360,6 +360,93 @@ describe("TunnelRelay HTTP proxy callbacks", () => {
     expect(events).toEqual(["start", "data", "end"]);
   });
 
+  test("response-data-abort triggers onError (not onResponseEnd) and clears pendingRequests", async () => {
+    const relay = new TunnelRelay({ apiKeys: ["key1"] });
+    const mockWs = createMockWebSocket();
+
+    relay.handleConnection(mockWs.ws);
+    mockWs.emit("message", {
+      data: JSON.stringify({ type: "register", runnerId: "r1", apiKey: "key1" }),
+    });
+    await waitForMicrotask();
+
+    const events: string[] = [];
+    relay.proxyHttpRequest(
+      "r1",
+      { id: "req-abort", port: 3000, method: "GET", url: "/stream", headers: {} },
+      {
+        onResponseStart() {
+          events.push("start");
+        },
+        onResponseData() {
+          events.push("data");
+        },
+        onResponseEnd() {
+          events.push("end");
+        },
+        onError(error) {
+          events.push(`error:${error}`);
+        },
+      },
+    );
+
+    // Send headers + a partial data chunk, then abort mid-stream.
+    mockWs.emit("message", {
+      data: JSON.stringify({
+        type: "response-start",
+        id: "req-abort",
+        statusCode: 200,
+        statusMessage: "OK",
+        headers: { "content-type": "text/plain" },
+      }),
+    });
+    mockWs.emit("message", {
+      data: JSON.stringify({ type: "response-data", id: "req-abort", data: "partial" }),
+    });
+    mockWs.emit("message", {
+      data: JSON.stringify({ type: "response-data-abort", id: "req-abort", reason: "connection closed prematurely" }),
+    });
+    await waitForMicrotask();
+
+    // onError must fire, NOT onResponseEnd.
+    expect(events).toEqual(["start", "data", "error:connection closed prematurely"]);
+    // pendingRequests must be cleared.
+    expect((relay as any).pendingRequests.has("req-abort")).toBe(false);
+  });
+
+  test("response-data-abort with no reason falls back to default error message", async () => {
+    const relay = new TunnelRelay({ apiKeys: ["key1"] });
+    const mockWs = createMockWebSocket();
+
+    relay.handleConnection(mockWs.ws);
+    mockWs.emit("message", {
+      data: JSON.stringify({ type: "register", runnerId: "r1", apiKey: "key1" }),
+    });
+    await waitForMicrotask();
+
+    const errors: string[] = [];
+    relay.proxyHttpRequest(
+      "r1",
+      { id: "req-abort2", port: 3000, method: "GET", url: "/", headers: {} },
+      {
+        onResponseStart() {},
+        onResponseData() {},
+        onResponseEnd() {},
+        onError(e) {
+          errors.push(e);
+        },
+      },
+    );
+
+    mockWs.emit("message", {
+      data: JSON.stringify({ type: "response-data-abort", id: "req-abort2" }),
+    });
+    await waitForMicrotask();
+
+    expect(errors).toEqual(["Remote stream aborted"]);
+    expect((relay as any).pendingRequests.has("req-abort2")).toBe(false);
+  });
+
   test("ignores response frames from a different runner", async () => {
     const relay = new TunnelRelay({ apiKeys: ["key1"] });
     const runnerA = createMockWebSocket();
