@@ -200,22 +200,14 @@ export class TunnelRelay {
       return { cancel() {} };
     }
 
-    // Evict any stale pending request sharing this id so its timer cannot
-    // fire and delete the new entry.
-    const staleRequest = this.pendingRequests.get(request.id);
-    if (staleRequest) {
-      clearTimeout(staleRequest.timer);
-      this.pendingRequests.delete(request.id);
-      staleRequest.onError("Tunnel request timed out");
-    }
-
+    let pending!: PendingProxyRequest;
     const timer = setTimeout(() => {
+      if (this.pendingRequests.get(request.id) !== pending) return;
       this.send(runner.ws, { type: "request-end", id: request.id });
       this.pendingRequests.delete(request.id);
       callbacks.onError("Tunnel request timed out");
     }, timeoutMs);
-
-    this.pendingRequests.set(request.id, {
+    pending = {
       id: request.id,
       runnerId,
       port: request.port,
@@ -224,7 +216,8 @@ export class TunnelRelay {
       onResponseEnd: callbacks.onResponseEnd,
       onError: callbacks.onError,
       timer,
-    });
+    };
+    this.replacePendingRequest(request.id, pending);
 
     this.send(runner.ws, {
       type: "request-start",
@@ -239,8 +232,7 @@ export class TunnelRelay {
 
     return {
       cancel: () => {
-        const pending = this.pendingRequests.get(request.id);
-        if (!pending) return;
+        if (this.pendingRequests.get(request.id) !== pending) return;
         clearTimeout(pending.timer);
         this.pendingRequests.delete(request.id);
         this.send(runner.ws, { type: "request-end", id: request.id });
@@ -289,13 +281,14 @@ export class TunnelRelay {
       return { cancel() {} };
     }
 
+    let pending!: PendingWsProxy;
     const timer = setTimeout(() => {
+      if (this.pendingWs.get(request.id) !== pending) return;
       this.send(runner.ws, { type: "ws-close", id: request.id, code: 1001, reason: "open timeout" });
       this.pendingWs.delete(request.id);
       callbacks.onError("WebSocket open timed out");
     }, timeoutMs);
-
-    this.pendingWs.set(request.id, {
+    pending = {
       id: request.id,
       runnerId,
       onOpened: callbacks.onOpened,
@@ -303,7 +296,8 @@ export class TunnelRelay {
       onClose: callbacks.onClose,
       onError: callbacks.onError,
       timer,
-    });
+    };
+    this.replacePendingWs(request.id, pending);
 
     this.send(runner.ws, {
       type: "ws-open",
@@ -318,8 +312,7 @@ export class TunnelRelay {
 
     return {
       cancel: () => {
-        const pending = this.pendingWs.get(request.id);
-        if (!pending) return;
+        if (this.pendingWs.get(request.id) !== pending) return;
         clearTimeout(pending.timer);
         this.pendingWs.delete(request.id);
         this.send(runner.ws, { type: "ws-close", id: request.id, code: 1001, reason: "cancelled" });
@@ -367,6 +360,26 @@ export class TunnelRelay {
 
     this.runners.clear();
     this.wsToRunner.clear();
+  }
+
+  private replacePendingRequest(id: string, pending: PendingProxyRequest): void {
+    const old = this.pendingRequests.get(id);
+    if (old) {
+      clearTimeout(old.timer);
+      this.pendingRequests.delete(id);
+      old.onError("Tunnel request replaced");
+    }
+    this.pendingRequests.set(id, pending);
+  }
+
+  private replacePendingWs(id: string, pending: PendingWsProxy): void {
+    const old = this.pendingWs.get(id);
+    if (old) {
+      clearTimeout(old.timer);
+      this.pendingWs.delete(id);
+      old.onError("WebSocket connection replaced");
+    }
+    this.pendingWs.set(id, pending);
   }
 
   private send(ws: WebSocket, msg: TunnelServerMessage): void {
@@ -484,7 +497,7 @@ export class TunnelRelay {
 
   private handleResponseStart(ws: WebSocket, msg: TunnelResponseStartMessage): void {
     const pending = this.pendingRequests.get(msg.id);
-    if (!pending || !this.isCurrentRunnerSocket(ws, pending.runnerId)) return;
+    if (!this.isMessageForPending(ws, pending)) return;
     // The timeout only protects the initial response handshake. Once headers
     // have arrived, the response may legitimately be long-lived (SSE, logs,
     // streaming dev servers), so do not abort it solely because it stays open.
@@ -494,13 +507,13 @@ export class TunnelRelay {
 
   private handleResponseData(ws: WebSocket, msg: TunnelResponseDataMessage): void {
     const pending = this.pendingRequests.get(msg.id);
-    if (!pending || !this.isCurrentRunnerSocket(ws, pending.runnerId)) return;
+    if (!this.isMessageForPending(ws, pending)) return;
     pending.onResponseData(Buffer.from(msg.data, "binary"));
   }
 
   private handleResponseDataEnd(ws: WebSocket, msg: TunnelResponseDataEndMessage): void {
     const pending = this.pendingRequests.get(msg.id);
-    if (!pending || !this.isCurrentRunnerSocket(ws, pending.runnerId)) return;
+    if (!this.isMessageForPending(ws, pending)) return;
     clearTimeout(pending.timer);
     this.pendingRequests.delete(msg.id);
     pending.onResponseEnd();
@@ -508,7 +521,7 @@ export class TunnelRelay {
 
   private handleRequestEnd(ws: WebSocket, msg: TunnelRequestEndMessage): void {
     const pending = this.pendingRequests.get(msg.id);
-    if (!pending || !this.isCurrentRunnerSocket(ws, pending.runnerId)) return;
+    if (!this.isMessageForPending(ws, pending)) return;
     clearTimeout(pending.timer);
     this.pendingRequests.delete(msg.id);
     pending.onError("Runner aborted request");
@@ -516,20 +529,20 @@ export class TunnelRelay {
 
   private handleWsOpened(ws: WebSocket, msg: TunnelWsOpenedMessage): void {
     const pending = this.pendingWs.get(msg.id);
-    if (!pending || !this.isCurrentRunnerSocket(ws, pending.runnerId)) return;
+    if (!this.isMessageForPending(ws, pending)) return;
     clearTimeout(pending.timer);
     pending.onOpened(msg.protocol);
   }
 
   private handleWsData(ws: WebSocket, msg: TunnelWsDataMessage): void {
     const pending = this.pendingWs.get(msg.id);
-    if (!pending || !this.isCurrentRunnerSocket(ws, pending.runnerId)) return;
+    if (!this.isMessageForPending(ws, pending)) return;
     pending.onData(msg.data, msg.binary);
   }
 
   private handleWsClose(ws: WebSocket, msg: TunnelWsCloseMessage): void {
     const pending = this.pendingWs.get(msg.id);
-    if (!pending || !this.isCurrentRunnerSocket(ws, pending.runnerId)) return;
+    if (!this.isMessageForPending(ws, pending)) return;
     clearTimeout(pending.timer);
     this.pendingWs.delete(msg.id);
     pending.onClose(browserCloseCode(msg.code), msg.reason);
@@ -537,14 +550,14 @@ export class TunnelRelay {
 
   private handleWsError(ws: WebSocket, msg: TunnelWsErrorMessage): void {
     const pending = this.pendingWs.get(msg.id);
-    if (!pending || !this.isCurrentRunnerSocket(ws, pending.runnerId)) return;
+    if (!this.isMessageForPending(ws, pending)) return;
     clearTimeout(pending.timer);
     this.pendingWs.delete(msg.id);
     pending.onError(msg.message);
   }
 
-  private isCurrentRunnerSocket(ws: WebSocket, runnerId: string): boolean {
-    return this.runners.get(runnerId)?.ws === ws;
+  private isMessageForPending<T extends PendingProxyRequest | PendingWsProxy>(ws: WebSocket, pending: T | undefined): pending is T {
+    return pending !== undefined && this.runners.get(pending.runnerId)?.ws === ws;
   }
 
   private sendHeartbeats(): void {

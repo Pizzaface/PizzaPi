@@ -67,6 +67,15 @@ const HOP_BY_HOP = new Set([
 const STRIP_AUTH = new Set(["cookie", "authorization", "x-api-key"]);
 
 type LoopbackHost = "127.0.0.1" | "[::1]";
+type ActiveRequest = {
+  controller: AbortController;
+  req: http.ClientRequest;
+  /** Body chunks buffered for loopback retry replay; null once connected or over limit. */
+  bodyChunks: Buffer[] | null;
+  bodyBytes: number;
+  bodyEnded: boolean;
+  responseStarted: boolean;
+};
 
 function otherLoopback(host: LoopbackHost): LoopbackHost {
   return host === "127.0.0.1" ? "[::1]" : "127.0.0.1";
@@ -153,18 +162,7 @@ export class TunnelClient extends EventEmitter {
   private connectionStartedAt = 0;
 
   /** Active HTTP requests: requestId → { controller, req } */
-  private activeRequests = new Map<
-    string,
-    {
-      controller: AbortController;
-      req: http.ClientRequest;
-      /** Body chunks buffered for loopback retry replay; null once connected or over limit. */
-      bodyChunks: Buffer[] | null;
-      bodyBytes: number;
-      bodyEnded: boolean;
-      responseStarted: boolean;
-    }
-  >();
+  private activeRequests = new Map<string, ActiveRequest>();
   /**
    * ponytail: on Windows `localhost` often resolves to ::1 first, so local dev
    * servers can be IPv6-only and 127.0.0.1 gets ECONNREFUSED. We retry the
@@ -470,15 +468,6 @@ export class TunnelClient extends EventEmitter {
   private handleRequestStart(msg: TunnelRequestStartMessage): void {
     const { id, port, method, url: requestUrl, headers, preserveAuth, host: tunnelHost } = msg;
 
-    // Guard against request-id reuse: abort and destroy any in-flight request
-    // sharing the same id before registering the new one.
-    const stale = this.activeRequests.get(id);
-    if (stale) {
-      stale.controller.abort();
-      stale.req.destroy();
-      this.activeRequests.delete(id);
-    }
-
     if (!this.exposedPorts.has(port)) {
       this.log.warn("[tunnel-client] Request for unexposed port", port);
       this.send({ type: "response-start", id, statusCode: 404, statusMessage: "Not Found", headers: {} });
@@ -525,6 +514,7 @@ export class TunnelClient extends EventEmitter {
     forwardHeaders.host = tunnelHost ?? `127.0.0.1:${port}`;
 
     const controller = new AbortController();
+    let active!: ActiveRequest;
     const attempt = (hostname: LoopbackHost, canRetry: boolean): http.ClientRequest => {
     const target = new URL(parsed.toString());
     target.hostname = hostname;
@@ -539,17 +529,12 @@ export class TunnelClient extends EventEmitter {
         ...(useTls ? { rejectUnauthorized: false } : {}),
       },
       (response) => {
-        const requestIsActive = (): boolean => {
-          const active = this.activeRequests.get(id);
-          return active?.req === req && !controller.signal.aborted;
-        };
         let responseStarted = false;
         let responseSettled = false;
         const finalizeResponse = (error?: Error): void => {
           if (responseSettled) return;
           responseSettled = true;
-          const active = this.activeRequests.get(id);
-          if (!active || active.req !== req || controller.signal.aborted) return;
+          if (this.activeRequests.get(id) !== active || controller.signal.aborted) return;
           this.activeRequests.delete(id);
           if (!responseStarted && error) {
             this.send({ type: "response-start", id, statusCode: 502, statusMessage: "Bad Gateway", headers: {} });
@@ -558,16 +543,13 @@ export class TunnelClient extends EventEmitter {
           this.send({ type: "response-data-end", id });
         };
 
-        if (!requestIsActive()) {
+        if (this.activeRequests.get(id) !== active) {
           response.destroy();
           return;
         }
         this.loopbackHost.set(port, hostname);
-        const active = this.activeRequests.get(id);
-        if (active) {
-          active.bodyChunks = null; // connected — replay buffer no longer needed
-          active.responseStarted = true;
-        }
+        active.bodyChunks = null; // connected — replay buffer no longer needed
+        active.responseStarted = true;
         const responseHeaders: Record<string, string | string[]> = {};
         for (const [key, value] of Object.entries(response.headers)) {
           if (value === undefined) continue;
@@ -588,12 +570,12 @@ export class TunnelClient extends EventEmitter {
         });
 
         response.on("data", (chunk: Buffer) => {
-          if (!requestIsActive() || responseSettled) return;
+          if (this.activeRequests.get(id) !== active || responseSettled) return;
           this.send({ type: "response-data", id, data: chunk.toString("binary") });
         });
 
         response.on("end", () => {
-          if (!requestIsActive()) return;
+          if (this.activeRequests.get(id) !== active) return;
           finalizeResponse();
         });
         response.on("error", (error) => finalizeResponse(error instanceof Error ? error : new Error(String(error))));
@@ -610,8 +592,7 @@ export class TunnelClient extends EventEmitter {
     );
 
     req.on("error", (error) => {
-      const active = this.activeRequests.get(id);
-      if (!active || active.req !== req || controller.signal.aborted) return;
+      if (this.activeRequests.get(id) !== active || controller.signal.aborted) return;
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ABORT_ERR") {
         this.activeRequests.delete(id);
@@ -654,7 +635,8 @@ export class TunnelClient extends EventEmitter {
     };
 
     const req = attempt(this.loopbackHost.get(port) ?? "127.0.0.1", true);
-    this.activeRequests.set(id, { controller, req, bodyChunks: [], bodyBytes: 0, bodyEnded: false, responseStarted: false });
+    active = { controller, req, bodyChunks: [], bodyBytes: 0, bodyEnded: false, responseStarted: false };
+    this.replaceActiveRequest(id, active);
   }
 
   private handleRequestData(msg: TunnelRequestDataMessage): void {
@@ -746,16 +728,18 @@ export class TunnelClient extends EventEmitter {
         ...(wsUseTls ? { tls: { rejectUnauthorized: false } } : {}),
       });
 
-      this.activeWs.set(id, ws);
+      this.replaceActiveWs(id, ws);
       ws.binaryType = "arraybuffer";
 
       ws.addEventListener("open", () => {
+        if (this.activeWs.get(id) !== ws) return;
         opened = true;
         this.loopbackHost.set(port, hostname);
         this.send({ type: "ws-opened", id, protocol: ws.protocol || undefined });
       });
 
       ws.addEventListener("message", (event: MessageEvent) => {
+        if (this.activeWs.get(id) !== ws) return;
         const data = event.data;
         const isBinary = data instanceof ArrayBuffer || ArrayBuffer.isView(data);
         this.send({
@@ -822,6 +806,29 @@ export class TunnelClient extends EventEmitter {
     } catch {
       // ignore close errors
     }
+  }
+
+  private replaceActiveRequest(id: string, active: ActiveRequest): void {
+    const old = this.activeRequests.get(id);
+    if (old) {
+      this.activeRequests.delete(id);
+      old.controller.abort();
+      old.req.destroy();
+    }
+    this.activeRequests.set(id, active);
+  }
+
+  private replaceActiveWs(id: string, ws: WebSocket): void {
+    const old = this.activeWs.get(id);
+    if (old) {
+      this.activeWs.delete(id);
+      try {
+        old.close(1001, "tunnel request replaced");
+      } catch {
+        // ignore close errors
+      }
+    }
+    this.activeWs.set(id, ws);
   }
 
   private cleanup(): void {
