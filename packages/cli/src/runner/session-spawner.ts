@@ -3,6 +3,7 @@ import { existsSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { cleanupSessionAttachments } from "../extensions/session-attachments.js";
 import { logInfo } from "./logger.js";
+import { forceKillTree } from "./process-kill.js";
 import {
     sessionProcFilePath,
     ensureSessionProcDir,
@@ -38,13 +39,79 @@ export interface RunnerSession {
  * platform without process groups).
  */
 export function killSessionProcessGroup(pid: number | undefined, signal: NodeJS.Signals = "SIGTERM"): boolean {
-    if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false; // ponytail: strict guard — rejects undefined, negative, zero, NaN, Infinity, non-integer
+    if (!Number.isFinite(pid) || pid! <= 0 || !Number.isInteger(pid)) return false;
     try {
-        process.kill(-pid, signal);
+        process.kill(-pid!, signal);
         return true;
     } catch {
         return false;
     }
+}
+
+/**
+ * Grace window for a worker's process group and recorded command groups to
+ * shut down cleanly before SIGKILL on the natural-exit cleanup path. Must stay
+ * in sync with SESSION_SHUTDOWN_GRACE_MS in daemon.ts (currently 8_000ms).
+ */
+const SESSION_SHUTDOWN_GRACE_MS = 8_000;
+
+/**
+ * Returns true if the process group for pgid is still alive.
+ * Uses signal 0 (no actual signal delivered) as the liveness probe.
+ * ESRCH = no such process/group (dead); EPERM = exists but no permission (alive).
+ */
+function isProcessGroupAlive(pgid: number): boolean {
+    try {
+        process.kill(-pgid, 0);
+        return true;
+    } catch (err: unknown) {
+        return (err as NodeJS.ErrnoException)?.code === "EPERM";
+    }
+}
+
+/**
+ * Send SIGKILL to the worker's process group and any recorded command groups
+ * after `timeoutMs`. Mirrors the escalation used by the explicit kill paths
+ * in daemon.ts; reused here so SIGTERM-ignoring descendants cannot outlive a
+ * natural worker exit.
+ *
+ * Cross-ref: daemon.ts:escalateToSigkill gates on !child.killed && exitCode===null
+ * (child is still running). This path is for natural-exit cleanup (child already
+ * exited), so we use a signal-0 probe instead. Residual race: a pgid could be
+ * recycled in the ~microseconds between the probe and the kill — acceptable given
+ * the probe eliminates the common multi-second stale-pgid window.
+ */
+function escalateCleanupToSigkill(
+    child: ChildProcess,
+    groupPids: number[],
+    label: string,
+    timeoutMs = SESSION_SHUTDOWN_GRACE_MS,
+): void {
+    const timer = setTimeout(() => {
+        try {
+            const childPid = child.pid;
+            // Probe each process group with signal 0 before sending SIGKILL.
+            // If the probe throws ESRCH the group is already gone — SIGTERM
+            // worked, or the process exited naturally. Skip SIGKILL to avoid
+            // hitting a recycled pgid that now belongs to a different process.
+            if (childPid && isProcessGroupAlive(childPid)) {
+                // Fall back to tree-kill (Windows) / plain kill if group signaling fails.
+                if (!killSessionProcessGroup(childPid, "SIGKILL")) forceKillTree(child);
+            }
+            for (const groupPid of groupPids) {
+                if (groupPid !== childPid && isProcessGroupAlive(groupPid)) {
+                    killSessionProcessGroup(groupPid, "SIGKILL");
+                }
+            }
+            logInfo(`session ${label} force-killed remaining groups after ${timeoutMs}ms`);
+        } catch {
+            // Process already exited; ignore.
+        }
+    }, timeoutMs);
+    // Don't let the escalation timer keep the daemon alive if it's otherwise
+    // exiting; the explicit kill paths in daemon.ts are active shutdowns and
+    // don't unref, but this is a background cleanup timeout.
+    timer.unref();
 }
 
 /**
@@ -121,6 +188,11 @@ export function spawnSession(
         parentSessionId?: string;
         resumePath?: string;
         autoClose?: boolean;
+        /**
+         * Override the SIGTERM→SIGKILL escalation delay for tests.
+         * @internal
+         */
+        shutdownGraceMs?: number;
         /**
          * Daemon-owned cleanup hook invoked when the worker process truly exits
          * (not a restart-in-place). Lets the daemon run session-scoped service
@@ -218,8 +290,7 @@ export function spawnSession(
         // command's detached group-leader PID, so the daemon can enumerate and
         // kill background processes that escaped the worker's own process group.
         PIZZAPI_SESSION_PROC_FILE: sessionProcFilePath(sessionId),
-        // ponytail: always set so any worker is distinguishable from local-TUI
-        PIZZAPI_WORKER_CWD: requestedCwd || process.cwd(),
+        ...(requestedCwd ? { PIZZAPI_WORKER_CWD: requestedCwd } : {}),
         // Initial prompt and model for the new session (set by spawn_session tool).
         ...(options?.prompt ? { PIZZAPI_WORKER_INITIAL_PROMPT: options.prompt } : {}),
         ...(options?.imageUrls && options.imageUrls.length > 0
@@ -284,32 +355,6 @@ export function spawnSession(
     // agentDir override (if any).  Cleaned up on exit below.
     trackSessionCwd(sessionId, effectiveCwd);
 
-    // True-termination cleanup: reap stragglers, drop the pid file, delete
-    // persisted attachments, and run the daemon's onSessionExit hook. Shared by
-    // the normal-exit path and the failed-respawn fallback so a session that is
-    // neither cleanly restarted nor cleanly terminated cannot leak state.
-    const terminateCleanup = () => {
-        // Remove from killedSessions if this was an explicit kill to prevent leaks.
-        killedSessions.delete(sessionId);
-        // Reap any stragglers the session left behind (background dev
-        // servers etc.) — the worker is gone, so signal its whole group
-        // plus every recorded bash-command group (which is where detached
-        // background processes actually live), then drop the pid file.
-        if (killSessionProcessGroup(child.pid)) {
-            logInfo(`session ${sessionId} process group ${child.pid} signaled for cleanup`);
-        }
-        for (const groupPid of readRecordedGroupPids(sessionProcFilePath(sessionId))) {
-            if (groupPid !== child.pid) killSessionProcessGroup(groupPid);
-        }
-        removeSessionProcFile(sessionId);
-        void cleanupSessionAttachments(sessionId).catch(() => {});
-        try {
-            options?.onSessionExit?.(sessionId);
-        } catch (err) {
-            logInfo(`session ${sessionId} onSessionExit cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
-        }
-    };
-
     child.on("exit", (code, signal) => {
         runningSessions.delete(sessionId);
         untrackSessionCwd(sessionId, effectiveCwd);
@@ -327,28 +372,39 @@ export function spawnSession(
             // different pgid than the new worker. Track historical pgids per
             // session if orphans from restarted workers become a problem.
             logInfo(`re-spawning session ${sessionId} (worker restart requested)`);
-            try {
-                onRestartRequested();
-            } catch (err) {
-                logInfo(`session ${sessionId} respawn threw: ${err instanceof Error ? err.message : String(err)}`);
-            }
-            // Verify the respawn actually produced a live replacement. doSpawn
-            // catches spawn errors internally and emits session_error WITHOUT
-            // creating a runningSessions entry, so a failed respawn returns here
-            // with no live entry. In that case the session is neither cleanly
-            // restarted nor cleanly terminated — fall back to full termination
-            // cleanup so attachments, process state, restarting-set membership,
-            // and onSessionExit handling do not leak.
-            if (!runningSessions.has(sessionId)) {
-                logInfo(`session ${sessionId} respawn failed — running termination cleanup`);
-                restartingSessions.delete(sessionId);
-                terminateCleanup();
-            }
+            onRestartRequested();
         } else {
             // True termination — clean up persisted attachments now.
             // session_ended will also arrive later but runningSessions will be empty
             // by then, so this is the reliable cleanup point for spawned sessions.
-            terminateCleanup();
+            // Also remove from killedSessions if this was an explicit kill to prevent leaks.
+            killedSessions.delete(sessionId);
+            // Reap any stragglers the session left behind (background dev
+            // servers etc.) — the worker is gone, so signal its whole group
+            // plus every recorded bash-command group (which is where detached
+            // background processes actually live), then drop the pid file.
+            const groupPids = readRecordedGroupPids(sessionProcFilePath(sessionId));
+            if (killSessionProcessGroup(child.pid)) {
+                logInfo(`session ${sessionId} process group ${child.pid} signaled for cleanup`);
+            }
+            for (const groupPid of groupPids) {
+                if (groupPid !== child.pid) killSessionProcessGroup(groupPid);
+            }
+            // Escalate to SIGKILL after the grace window, matching the
+            // explicit-kill paths in daemon.ts.
+            escalateCleanupToSigkill(
+                child,
+                groupPids,
+                sessionId,
+                options?.shutdownGraceMs ?? SESSION_SHUTDOWN_GRACE_MS,
+            );
+            removeSessionProcFile(sessionId);
+            void cleanupSessionAttachments(sessionId).catch(() => {});
+            try {
+                options?.onSessionExit?.(sessionId);
+            } catch (err) {
+                logInfo(`session ${sessionId} onSessionExit cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+            }
         }
     });
 
