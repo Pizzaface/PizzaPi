@@ -50,6 +50,7 @@ mock.module("../../sio-registry.js", () => ({
 
 mock.module("../../../sessions/redis.js", () => ({
     appendRelayEventToCache: async () => {},
+    deleteRelayEventCache: async () => {},
 }));
 
 mock.module("./viewer-gate.js", () => ({
