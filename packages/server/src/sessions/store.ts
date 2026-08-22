@@ -253,6 +253,19 @@ export async function recordRelaySessionStart(input: RelaySessionStartInput): Pr
         })
         .onConflict((oc) =>
             oc.column("id").doUpdateSet((eb) => ({
+                // Reconcile ownership on anonymous adoption: if the persisted row
+                // has no owner (userId IS NULL) and the incoming registration
+                // carries a real user, adopt the session by writing that user.
+                // Never overwrite an existing non-null owner — the pre-check above
+                // already skips cross-user takeovers, and this CASE keeps a real
+                // owner intact even when the incoming userId is null (anonymous
+                // reconnect of an already-adopted session).
+                userId: eb
+                    .case()
+                    .when(eb.ref("relay_session.userId"), "is", null)
+                    .then(incomingUserId)
+                    .else(eb.ref("relay_session.userId"))
+                    .end(),
                 // On reconnect, preserve existing runner info if the incoming data
                 // doesn't carry a runner association (e.g. session predates the
                 // association key or the Redis key has already expired).  Only

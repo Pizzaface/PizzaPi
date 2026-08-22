@@ -1,4 +1,15 @@
-import { afterAll, describe, it, expect, mock, beforeEach } from "bun:test";
+/**
+ * Regression tests for runner/session ownership reconciliation.
+ *
+ * Covers both:
+ *   - registerRunner rejecting cross-user claims and anonymous-adoption edge cases.
+ *   - getConnectedSessionsForRunner not re-adopting sessions owned by a different user
+ *     (cross-user session/event leak on Redis-loss fallback).
+ *
+ * Uses a mock Redis backend injected via initStateRedis() so the real code paths run
+ * against controllable state.
+ */
+import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
 
 // ── In-memory Redis mock (same harness as runners.broadcast.test.ts) ─────────
 
@@ -7,6 +18,7 @@ const setStore = new Map<string, Set<string>>();
 
 const mockMulti = () => {
     const ops: Array<() => void> = [];
+    const readKeys: string[] = [];
     return {
         hSet: mock((key: string, fields: Record<string, string>) => {
             ops.push(() => {
@@ -39,9 +51,16 @@ const mockMulti = () => {
             });
             return mockMulti();
         }),
+        hGetAll: mock((key: string) => {
+            readKeys.push(key);
+            return mockMulti();
+        }),
         exec: mock(async () => {
             for (const op of ops) op();
-            return [];
+            return readKeys.map((key) => {
+                const raw = store.get(`__hash__:${key}`);
+                return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+            });
         }),
     };
 };
@@ -85,6 +104,7 @@ const mockRedis = {
 };
 
 mock.module("./hub.js", () => ({ broadcastToHub: mock(async () => {}) }));
+mock.module("./runners-broadcast.js", () => ({ broadcastToRunnersNs: mock(async () => {}) }));
 
 // Restore all module mocks after this file so they don't bleed into other
 // test files running in the same worker process.
@@ -92,9 +112,9 @@ afterAll(() => mock.restore());
 
 mock.restore();
 
-const { initSioRegistry, runnerSecrets, localRunnerSockets } = await import("./context.js");
-const { initStateRedis } = await import("../sio-state/index.js");
-const { registerRunner, getRunnerData, getLocalRunnerSocket } = await import("./runners.js");
+const { initStateRedis, setSession, setRunner } = await import("../sio-state/index.js");
+const { initSioRegistry, runnerSecrets, localRunnerSockets, localTuiSockets } = await import("./context.js");
+const { registerRunner, getRunnerData, getLocalRunnerSocket, getConnectedSessionsForRunner } = await import("./runners.js");
 
 function fakeSocket() {
     return { join: mock(async () => {}), data: {} } as any;
@@ -113,6 +133,54 @@ const baseOpts = {
     version: null,
     platform: null,
 };
+
+const USER_A = "user-alpha";
+const USER_B = "user-bravo";
+
+function seedRunner(runnerId: string, userId: string | null): void {
+    void setRunner(runnerId, {
+        runnerId,
+        userId,
+        userName: null,
+        name: "runner",
+        roots: "[]",
+        skills: "[]",
+        agents: "[]",
+        plugins: "[]",
+        hooks: "[]",
+        version: null,
+        platform: null,
+    });
+}
+
+function seedSession(sessionId: string, userId: string | null, runnerId: string | null): void {
+    void setSession(sessionId, {
+        sessionId,
+        token: "tok",
+        collabMode: false,
+        shareUrl: `http://test/${sessionId}`,
+        cwd: "/repo",
+        startedAt: new Date().toISOString(),
+        userId,
+        userName: null,
+        sessionName: null,
+        isEphemeral: false,
+        expiresAt: null,
+        isActive: true,
+        lastHeartbeatAt: null,
+        lastHeartbeat: null,
+        lastState: null,
+        runnerId,
+        runnerName: null,
+        seq: 0,
+        parentSessionId: null,
+        linkedParentId: null,
+    });
+}
+
+function connectTui(sessionId: string): void {
+    localTuiSockets.set(sessionId, { connected: true, data: {} } as never);
+}
 
 describe("runner ownership guard", () => {
     beforeEach(async () => {
@@ -243,5 +311,50 @@ describe("runner ownership guard", () => {
         expect(result).toBeInstanceOf(Error);
         const runner = await getRunnerData("runner-anon");
         expect(runner!.userId).toBeNull();
+    });
+});
+
+describe("getConnectedSessionsForRunner — ownership guard", () => {
+    beforeEach(async () => {
+        store.clear();
+        setStore.clear();
+        localTuiSockets.clear();
+        await initStateRedis(mockRedis as never);
+    });
+
+    it("does not re-adopt a session owned by a different user", async () => {
+        seedRunner("runner-b", USER_B);
+        seedSession("s-foreign", USER_A, "runner-b");
+        connectTui("s-foreign");
+
+        const sessions = await getConnectedSessionsForRunner("runner-b");
+        expect(sessions.map((s) => s.sessionId)).not.toContain("s-foreign");
+    });
+
+    it("re-adopts a session owned by the same user", async () => {
+        seedRunner("runner-b", USER_B);
+        seedSession("s-own", USER_B, "runner-b");
+        connectTui("s-own");
+
+        const sessions = await getConnectedSessionsForRunner("runner-b");
+        expect(sessions.map((s) => s.sessionId)).toContain("s-own");
+    });
+
+    it("re-adopts an anonymous session (no owner)", async () => {
+        seedRunner("runner-b", USER_B);
+        seedSession("s-anon", null, "runner-b");
+        connectTui("s-anon");
+
+        const sessions = await getConnectedSessionsForRunner("runner-b");
+        expect(sessions.map((s) => s.sessionId)).toContain("s-anon");
+    });
+
+    it("does not re-adopt a user-owned session when the runner is anonymous", async () => {
+        seedRunner("runner-anon", null);
+        seedSession("s-user", USER_A, "runner-anon");
+        connectTui("s-user");
+
+        const sessions = await getConnectedSessionsForRunner("runner-anon");
+        expect(sessions.map((s) => s.sessionId)).not.toContain("s-user");
     });
 });
