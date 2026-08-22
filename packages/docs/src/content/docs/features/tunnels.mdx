@@ -253,6 +253,9 @@ Close an active tunnel and stop proxying traffic to the local port.
 The relay enforces several security measures:
 
 - **Auth-only access** — every tunnel request requires a valid session cookie or API key, or a short-lived signed path token minted by the runner/session owner for mobile/cross-origin iframe access.
+- **Dedicated signing secret** — tunnel tokens are signed with `PIZZAPI_TUNNEL_TOKEN_SECRET` (distinct from the Better Auth session secret). When unset, the relay falls back to `BETTER_AUTH_SECRET` so unconfigured deployments keep working. Set it to allow independent rotation: rotating the tunnel secret does not invalidate existing auth sessions.
+  - **Key rotation** — set `PIZZAPI_TUNNEL_TOKEN_SECRET_PREVIOUS` to the old secret; tokens signed by it are still accepted until their natural 1-hour TTL expires, then the env var can be removed.
+- **Token claims** — every token carries `aud` (`pizzapi:tunnel`), `iat` (issued-at), `kid` (key identifier derived from the active secret), and `exp`. On verify: `aud`, `kid`, and `exp` are all enforced. A token whose `kid` does not match the active key (or the previous key, if configured) is rejected outright.
 - **Owner verification** — the caller's user ID must match the session/runner owner.
 - **Header stripping** — `Cookie`, `Authorization`, `X-API-Key`, and `Referer` headers are never forwarded to the local service, preventing auth-leakage to tunneled apps.
 - **Query param sanitization** — `apiKey` and `tunnelToken` query parameters are stripped before forwarding.
