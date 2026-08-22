@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import { execFileSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -88,6 +89,7 @@ describe("session-spawner child", () => {
             runnerUsageCacheFilePath,
             trackSessionCwd,
             untrackSessionCwd,
+            refreshAndWriteRunnerUsageCache: mock(async () => {}),
         }));
 
         mock.module("./workspace.js", () => ({
@@ -270,6 +272,7 @@ describe("session-spawner child", () => {
             runnerUsageCacheFilePath,
             trackSessionCwd,
             untrackSessionCwd,
+            refreshAndWriteRunnerUsageCache: mock(async () => {}),
         }));
 
         mock.module("./workspace.js", () => ({
@@ -349,6 +352,7 @@ describe("session-spawner child", () => {
             runnerUsageCacheFilePath,
             trackSessionCwd,
             untrackSessionCwd,
+            refreshAndWriteRunnerUsageCache: mock(async () => {}),
         }));
 
         mock.module("./workspace.js", () => ({
@@ -440,7 +444,7 @@ describe("session-spawner child", () => {
         }));
         mock.module("../extensions/session-attachments.js", () => ({ cleanupSessionAttachments }));
         mock.module("./logger.js", () => ({ logInfo }));
-        mock.module("./runner-usage-cache.js", () => ({ runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd }));
+        mock.module("./runner-usage-cache.js", () => ({ runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd, refreshAndWriteRunnerUsageCache: mock(async () => {}) }));
         mock.module("./workspace.js", () => ({ isCwdAllowed }));
         mock.module("./session-procs.js", () => ({
             ensureSessionProcDir: () => {},
@@ -514,7 +518,7 @@ describe("session-spawner child", () => {
         mock.module("node:child_process", () => ({ spawn: spawnMock, execFile: mock(() => {}) }));
         mock.module("../extensions/session-attachments.js", () => ({ cleanupSessionAttachments }));
         mock.module("./logger.js", () => ({ logInfo }));
-        mock.module("./runner-usage-cache.js", () => ({ runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd }));
+        mock.module("./runner-usage-cache.js", () => ({ runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd, refreshAndWriteRunnerUsageCache: mock(async () => {}) }));
         mock.module("./workspace.js", () => ({ isCwdAllowed }));
         mock.module("./session-procs.js", () => ({
             ensureSessionProcDir: () => {},
@@ -587,7 +591,7 @@ describe("session-spawner child", () => {
         mock.module("node:child_process", () => ({ spawn: spawnMock, execFile: mock(() => {}) }));
         mock.module("../extensions/session-attachments.js", () => ({ cleanupSessionAttachments }));
         mock.module("./logger.js", () => ({ logInfo }));
-        mock.module("./runner-usage-cache.js", () => ({ runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd }));
+        mock.module("./runner-usage-cache.js", () => ({ runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd, refreshAndWriteRunnerUsageCache: mock(async () => {}) }));
         mock.module("./workspace.js", () => ({ isCwdAllowed }));
         mock.module("./session-procs.js", () => ({
             ensureSessionProcDir: () => {},
@@ -651,6 +655,69 @@ describe("session-spawner child", () => {
         } finally {
             rmSync(childTestPath, { force: true });
             rmSync(tmpHome, { recursive: true, force: true });
+        }
+    });
+
+    test("handles refresh_usage_request IPC by forcing usage cache refresh and replying", async () => {
+        const cleanupSessionAttachments = mock(async (_sessionId: string) => {});
+        const logInfo = mock((_message: string) => {});
+        const trackSessionCwd = mock((_sessionId: string, _cwd: string) => {});
+        const untrackSessionCwd = mock((_sessionId: string, _cwd: string) => {});
+        const runnerUsageCacheFilePath = mock(() => "/tmp/test-usage-cache.json");
+        const refreshCalls: { forceAnthropic?: boolean }[] = [];
+        const refreshAndWriteRunnerUsageCache = mock(async (opts: { forceAnthropic?: boolean } = {}) => {
+            refreshCalls.push(opts);
+        });
+        const isCwdAllowed = mock((_cwd: string | undefined) => true);
+
+        class FakeChild extends EventEmitter {
+            pid = 4321;
+            killed = false;
+            exitCode: number | null = null;
+            send = mock((msg: unknown) => {});
+        }
+
+        const spawnMock = mock((_execPath: string, _args: string[], _options: any) => new FakeChild());
+
+        mock.module("node:child_process", () => ({
+            spawn: spawnMock,
+            execFile: mock(() => {}),
+        }));
+        mock.module("../extensions/session-attachments.js", () => ({ cleanupSessionAttachments }));
+        mock.module("./logger.js", () => ({ logInfo }));
+        mock.module("./runner-usage-cache.js", () => ({
+            runnerUsageCacheFilePath,
+            trackSessionCwd,
+            untrackSessionCwd,
+            refreshAndWriteRunnerUsageCache,
+        }));
+        mock.module("./workspace.js", () => ({ isCwdAllowed }));
+
+        const { spawnSession } = await import("./session-spawner.js");
+        const tempCwd = mkdtempSync(join(tmpdir(), "session-spawner-refresh-test-"));
+        try {
+            const runningSessions = new Map();
+            spawnSession(
+                "sess-refresh",
+                "api-key",
+                "https://relay.example",
+                tempCwd,
+                runningSessions,
+                new Set(),
+                new Set(),
+            );
+            const child = runningSessions.get("sess-refresh")?.child as FakeChild;
+            expect(child).toBeDefined();
+
+            child.emit("message", { type: "refresh_usage_request", requestId: "req-1" });
+            await Promise.resolve();
+            await Promise.resolve();
+
+            expect(refreshAndWriteRunnerUsageCache).toHaveBeenCalledTimes(1);
+            expect(refreshCalls[0]).toEqual({ forceAnthropic: true });
+            expect(child.send).toHaveBeenCalledWith({ type: "refresh_usage_complete", requestId: "req-1" });
+        } finally {
+            rmSync(tempCwd, { recursive: true, force: true });
         }
     });
 });

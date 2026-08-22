@@ -10,7 +10,7 @@ import {
     readRecordedGroupPids,
     removeSessionProcFile,
 } from "./session-procs.js";
-import { runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd } from "./runner-usage-cache.js";
+import { runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd, refreshAndWriteRunnerUsageCache } from "./runner-usage-cache.js";
 import { recordTranscriptLink } from "./session-transcript-links.js";
 import { isCwdAllowed } from "./workspace.js";
 import { loadConfig } from "../config.js";
@@ -340,6 +340,15 @@ export function spawnSession(
         if (message.type === "pre_restart") {
             restartingSessions.add(sessionId);
             logInfo(`session ${sessionId} signaled pre-restart via IPC`);
+            return;
+        }
+        if (message.type === "refresh_usage_request" && typeof message.requestId === "string") {
+            // Worker asked for an immediate usage refresh (e.g. user clicked
+            // Refresh in the web UI). Force Anthropic so the UI sees current
+            // quota, but still refresh Codex on the normal path.
+            void refreshAndWriteRunnerUsageCache({ forceAnthropic: true }).finally(() => {
+                child.send?.({ type: "refresh_usage_complete", requestId: message.requestId });
+            });
             return;
         }
         if (message.type === "session_metadata" && typeof message.sessionFile === "string") {

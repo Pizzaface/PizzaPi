@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { getOAuthAccessToken, parseGeminiQuotaCredential } from "./usage-auth.js";
+
+function writeImportedCredential(path: string, token: string, expiresAt: number, nested = true): void {
+    mkdirSync(join(path, ".."), { recursive: true });
+    const oauth = { accessToken: token, refreshToken: "r", expiresAt };
+    writeFileSync(path, JSON.stringify(nested ? { claudeAiOauth: oauth } : oauth));
+}
 
 describe("getOAuthAccessToken", () => {
     test("returns OAuth access token", () => {
@@ -51,6 +60,59 @@ describe("getAnthropicKeychainToken", () => {
         }));
         const { getAnthropicKeychainToken } = await import("./usage-auth.js");
         expect(getAnthropicKeychainToken()).toBeNull();
+    });
+
+    test("prefers minimalcc-pi imported credentials when unexpired", async () => {
+        const tmpHome = mkdtempSync(join(tmpdir(), "usage-auth-test-"));
+        const importedPath = join(tmpHome, "imported-credentials.json");
+        writeImportedCredential(importedPath, "mcc-imported-token", Date.now() + 60_000);
+
+        mock.module("./keychain-auth.js", () => ({
+            readBestExternalCredential: () => ({
+                credentials: { claudeAiOauth: { accessToken: "kc-token", refreshToken: "r", expiresAt: Date.now() + 60_000 } },
+                source: "keychain",
+                sourceLabel: "Claude Code-credentials",
+            }),
+        }));
+
+        const { getAnthropicKeychainToken } = await import("./usage-auth.js");
+        expect(getAnthropicKeychainToken({ importedCredentialPath: importedPath })).toBe("mcc-imported-token");
+
+        rmSync(tmpHome, { recursive: true, force: true });
+    });
+
+    test("falls back to keychain when minimalcc-pi imported credential is expired", async () => {
+        const tmpHome = mkdtempSync(join(tmpdir(), "usage-auth-test-"));
+        const importedPath = join(tmpHome, "imported-credentials.json");
+        writeImportedCredential(importedPath, "mcc-imported-token", Date.now() - 1_000);
+
+        mock.module("./keychain-auth.js", () => ({
+            readBestExternalCredential: () => ({
+                credentials: { claudeAiOauth: { accessToken: "kc-token", refreshToken: "r", expiresAt: Date.now() + 60_000 } },
+                source: "keychain",
+                sourceLabel: "Claude Code-credentials",
+            }),
+        }));
+
+        const { getAnthropicKeychainToken } = await import("./usage-auth.js");
+        expect(getAnthropicKeychainToken({ importedCredentialPath: importedPath })).toBe("kc-token");
+
+        rmSync(tmpHome, { recursive: true, force: true });
+    });
+
+    test("reads flat minimalcc-pi credential shape", async () => {
+        const tmpHome = mkdtempSync(join(tmpdir(), "usage-auth-test-"));
+        const importedPath = join(tmpHome, "imported-credentials.json");
+        writeImportedCredential(importedPath, "flat-token", Date.now() + 60_000, false);
+
+        mock.module("./keychain-auth.js", () => ({
+            readBestExternalCredential: () => null,
+        }));
+
+        const { getAnthropicKeychainToken } = await import("./usage-auth.js");
+        expect(getAnthropicKeychainToken({ importedCredentialPath: importedPath })).toBe("flat-token");
+
+        rmSync(tmpHome, { recursive: true, force: true });
     });
 });
 

@@ -236,7 +236,7 @@ export function singleFlight<A extends unknown[]>(fn: (...args: A) => Promise<vo
     };
 }
 
-const refreshAndWriteRunnerUsageCache = singleFlight(doRefreshAndWriteRunnerUsageCache);
+export const refreshAndWriteRunnerUsageCache = singleFlight(doRefreshAndWriteRunnerUsageCache);
 
 async function doRefreshAndWriteRunnerUsageCache(opts: { forceAnthropic?: boolean } = {}): Promise<void> {
     const [anthropicResult, codexResult] = await Promise.allSettled([
