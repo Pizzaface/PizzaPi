@@ -57,7 +57,18 @@ import { CopyableCodeBlock } from "@/components/session-viewer/cards/InterAgentC
 import { WriteFileCard } from "@/components/session-viewer/cards/WriteFileCard";
 import { TodoCard } from "@/components/session-viewer/cards/TodoCard";
 import type { TodoItem } from "@/lib/types";
-import { resolveMobileMediaUrl } from "@/lib/mobile-runtime";
+import { getMobileRuntimeConfig, resolveMobileMediaUrlAsync } from "@/lib/mobile-runtime";
+
+/** Resolves a mobile attachment URL asynchronously (mints a short-lived token). */
+function MobileMediaImg({ url, alt, className, loading }: { url: string; alt: string; className?: string; loading?: "lazy" | "eager" }) {
+  const { isMobileBundled } = getMobileRuntimeConfig();
+  const [src, setSrc] = React.useState(url);
+  React.useEffect(() => {
+    if (!isMobileBundled) return;
+    resolveMobileMediaUrlAsync(url).then(setSrc);
+  }, [url, isMobileBundled]);
+  return <img src={src} alt={alt} className={className} loading={loading} />;
+}
 import { SessionNameCard } from "@/components/session-viewer/cards/SessionNameCard";
 import {
   truncateSessionId,
@@ -285,12 +296,11 @@ export function renderReadToolResult(
               : null}
             {mtime ? metadataBadge("mtime", mtime) : null}
           </div>
-          <img
-            src={data ? `data:${imgMime};base64,${data}` : resolveMobileMediaUrl(url!)}
-            alt={title}
-            className="max-w-full rounded border border-border/70 bg-background object-contain"
-            loading="lazy"
-          />
+          {data
+            ? <img src={`data:${imgMime};base64,${data}`} alt={title} className="max-w-full rounded border border-border/70 bg-background object-contain" loading="lazy" />
+            : getMobileRuntimeConfig().isMobileBundled
+              ? <MobileMediaImg url={url!} alt={title} className="max-w-full rounded border border-border/70 bg-background object-contain" loading="lazy" />
+              : <img src={url!} alt={title} className="max-w-full rounded border border-border/70 bg-background object-contain" loading="lazy" />}
         </div>
       </FileTypeCard>
     );
