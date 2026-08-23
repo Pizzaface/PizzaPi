@@ -223,6 +223,27 @@ export function extToMime(path: string): string {
  *   "/resume my-session"               → open, query="resume my-session"
  *   "/unknown-thing args"              → open, query="unknown-thing args"
  */
+export interface SlashTokenScan {
+  /** Offset of the triggering "/" character. */
+  offset: number;
+  /** Token text after the "/" up to the cursor (no whitespace). */
+  token: string;
+}
+
+/**
+ * Find a "/"-prefixed token ending at the cursor (start of text or preceded by
+ * whitespace, no whitespace inside). Returns null when no such token sits at
+ * the cursor. Used to surface mid-message skill suggestions, mirroring how
+ * @-mentions work anywhere in the message.
+ */
+export function scanSlashCommandToken(text: string, cursorPos: number): SlashTokenScan | null {
+  const end = Math.min(cursorPos, text.length);
+  let start = end;
+  while (start > 0 && !/\s/.test(text[start - 1])) start--;
+  if (start === end || text[start] !== "/") return null;
+  return { offset: start, token: text.slice(start + 1, end) };
+}
+
 export function resolveCommandPopoverState(
   afterSlash: string,
   knownNames: Set<string>,

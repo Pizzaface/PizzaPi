@@ -12,6 +12,7 @@ import {
     parseToolInputArgs,
     extToMime,
     resolveCommandPopoverState,
+    scanSlashCommandToken,
 } from "./utils";
 import type { RelayMessage } from "./types";
 
@@ -464,6 +465,37 @@ describe("extToMime", () => {
 });
 
 // ── resolveCommandPopoverState ──────────────────────────────────────────────
+
+describe("scanSlashCommandToken", () => {
+    const scan = (text: string) => scanSlashCommandToken(text, text.length);
+
+    test("finds a mid-message /skill token after the first skill", () => {
+        const text = "/skill:alpha do it /skill:be";
+        expect(scan(text)).toEqual({ offset: text.lastIndexOf("/"), token: "skill:be" });
+    });
+
+    test("finds bare slash after whitespace", () => {
+        const text = "/skill:a stuff /";
+        expect(scan(text)).toEqual({ offset: text.length - 1, token: "" });
+    });
+
+    test("finds leading slash", () => {
+        expect(scan("/sk")).toEqual({ offset: 0, token: "sk" });
+    });
+
+    test("finds partial leading token at cursor", () => {
+        expect(scanSlashCommandToken("/skill:a rest", 5)).toEqual({ offset: 0, token: "skil" });
+    });
+
+    test("no trigger without a slash token at the cursor", () => {
+        expect(scan("plain text")).toBeNull();
+        expect(scanSlashCommandToken("no slash here", 13)).toBeNull();
+    });
+
+    test("no trigger mid-word", () => {
+        expect(scan("see foo/bar")).toBeNull();
+    });
+});
 
 describe("resolveCommandPopoverState", () => {
     const known = new Set(["compact", "new", "resume", "skill:beads-ccpm", "skill:double-check"]);

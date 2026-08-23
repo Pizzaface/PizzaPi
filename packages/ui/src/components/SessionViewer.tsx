@@ -78,7 +78,7 @@ import { SessionActionsProvider } from "@/components/session-viewer/session-acti
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { type IncompleteTriggerItem } from "@/components/TriggersPanel";
 import { useDocumentPopoverKeyboardNavigation } from "@/components/session-viewer/popover-keyboard";
-import { resolveCommandPopoverState } from "@/components/session-viewer/utils";
+import { resolveCommandPopoverState, scanSlashCommandToken } from "@/components/session-viewer/utils";
 
 import { ContextDonut } from "@/components/session-viewer/rendering";
 
@@ -391,6 +391,9 @@ export function SessionViewer({
   // ── @-mention handlers ────────────────────────────────────────────────────
   const atMention = useAtMentionHandlers(sessionId, inputRef, promptRef, setInput, runnerId, runnerInfo);
 
+  /** When non-null: a mid-message "/skill:" token triggered skill-only suggestions; value = offset of the "/". */
+  const [skillTriggerOffset, setSkillTriggerOffset] = React.useState<number | null>(null);
+
   const {
     atMentionOpen,
     setAtMentionOpen,
@@ -469,8 +472,10 @@ export function SessionViewer({
   }, [pendingQuestion, sessionId]);
 
   // ── Highlighted command value (for cmdk data-selected) ───────────────────
+  const skillOnlyMode = commandOpen && skillTriggerOffset !== null;
   const commandHighlightedValue = React.useMemo(() => {
     if (!commandOpen) return "";
+    if (skillOnlyMode) return skillSuggestions[commandHighlightedIndex]?.name ?? "";
     if (isResumeMode) return resumeCandidates[commandHighlightedIndex]?.path ?? "";
     if (isRewindMode) return rewindCandidates[commandHighlightedIndex]?.entryId ?? "";
     if (isAgentMode) return agentCandidates[commandHighlightedIndex]?.name ?? "";
@@ -485,6 +490,7 @@ export function SessionViewer({
     return combined[commandHighlightedIndex]?.name ?? "";
   }, [
     commandOpen,
+    skillOnlyMode,
     isResumeMode,
     isRewindMode,
     isAgentMode,
@@ -501,6 +507,7 @@ export function SessionViewer({
 
   const commandOptionCount = React.useMemo(() => {
     if (!commandOpen) return 0;
+    if (skillOnlyMode) return skillSuggestions.length;
     if (isResumeMode) return resumeCandidates.length;
     if (isRewindMode) return rewindCandidates.length;
     if (isAgentMode) return agentCandidates.length;
@@ -508,6 +515,7 @@ export function SessionViewer({
     return commandSuggestions.length + extensionSuggestions.length + promptSuggestions.length + skillSuggestions.length;
   }, [
     commandOpen,
+    skillOnlyMode,
     isResumeMode,
     resumeCandidates.length,
     isRewindMode,
@@ -549,6 +557,34 @@ export function SessionViewer({
   }, [sessionId, viewerStatus]);
 
   // ── handleSubmit ──────────────────────────────────────────────────────────
+  /** Accept a skill suggestion, inserting it at the trigger (mid-message) or replacing the draft (leading "/"). */
+  const pickSkillSuggestion = React.useCallback(
+    (skillName: string) => {
+      if (skillTriggerOffset !== null) {
+        const textarea = promptRef.current;
+        const cursorPos = textarea?.selectionStart ?? inputRef.current.length;
+        const value = inputRef.current;
+        const newValue =
+          value.slice(0, skillTriggerOffset) + "/" + skillName + " " + value.slice(cursorPos);
+        setInput(newValue);
+        const newCursorPosition = skillTriggerOffset + 1 + skillName.length + 1;
+        requestAnimationFrame(() => {
+          if (!textarea) return;
+          textarea.setSelectionRange(newCursorPosition, newCursorPosition);
+          textarea.focus();
+        });
+      } else {
+        setInput(`/${skillName} `);
+      }
+      setCommandQuery("");
+      setCommandOpen(false);
+      setSkillTriggerOffset(null);
+      setCommandHighlightedIndex(0);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [skillTriggerOffset, setInput, inputRef, promptRef],
+  );
+
   const handleSubmit = React.useCallback(
     async (message: PromptInputMessage): Promise<boolean> => {
       if (!composerReady) {
@@ -1183,7 +1219,10 @@ export function SessionViewer({
                   className="w-full"
                   value={commandHighlightedValue}
                   onValueChange={(v) => {
-                    if (isResumeMode) {
+                    if (skillOnlyMode) {
+                      const idx = skillSuggestions.findIndex((c) => c.name.toLowerCase() === v.toLowerCase());
+                      if (idx !== -1) setCommandHighlightedIndex(idx);
+                    } else if (isResumeMode) {
                       const idx = resumeCandidates.findIndex((s) => s.path.toLowerCase() === v.toLowerCase());
                       if (idx !== -1) setCommandHighlightedIndex(idx);
                     } else if (isRewindMode) {
@@ -1204,9 +1243,9 @@ export function SessionViewer({
                 >
                   <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/50">
                     <span className="text-xs text-muted-foreground font-medium">
-                      {isResumeMode ? "Resume session" : isRewindMode ? "Rewind conversation" : isAgentMode ? "Start as agent" : subCommandMode.active ? `/${subCommandMode.parentCommand}` : "Commands"}
+                      {isResumeMode ? "Resume session" : isRewindMode ? "Rewind conversation" : isAgentMode ? "Start as agent" : skillOnlyMode ? "Skills" : subCommandMode.active ? `/${subCommandMode.parentCommand}` : "Commands"}
                     </span>
-                    <button type="button" onClick={() => { setCommandOpen(false); setCommandQuery(""); }} className="inline-flex items-center justify-center rounded-sm p-0.5 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors" aria-label="Close command menu">
+                    <button type="button" onClick={() => { setCommandOpen(false); setCommandQuery(""); setSkillTriggerOffset(null); }} className="inline-flex items-center justify-center rounded-sm p-0.5 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors" aria-label="Close command menu">
                       <X className="size-3.5" />
                     </button>
                   </div>
@@ -1249,6 +1288,25 @@ export function SessionViewer({
                               <div className="flex min-w-0 items-start gap-2">
                                 <span className="text-[11px] text-muted-foreground shrink-0 tabular-nums pt-0.5">#{rewindCandidates.length - idx}</span>
                                 <span className="text-sm line-clamp-2 break-words">{message.text}</span>
+                              </div>
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </>
+                    ) : skillOnlyMode ? (
+                      <>
+                        <CommandEmpty>No matching skills</CommandEmpty>
+                        <CommandGroup heading="Skills">
+                          {skillSuggestions.map((skill) => (
+                            <CommandItem key={skill.name} value={skill.name} onSelect={() => {
+                              pickSkillSuggestion(skill.name);
+                            }}>
+                              <div className="flex w-full items-center justify-between gap-2">
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <BookOpen className="size-3.5 shrink-0 text-primary/60" />
+                                  <span className="font-mono text-sm truncate">/{skill.name}</span>
+                                </div>
+                                {skill.description && <span className="text-xs text-muted-foreground truncate max-w-[50%]">{skill.description}</span>}
                               </div>
                             </CommandItem>
                           ))}
@@ -1370,10 +1428,7 @@ export function SessionViewer({
                           <CommandGroup heading="Skills">
                             {skillSuggestions.map((skill) => (
                               <CommandItem key={skill.name} value={skill.name} onSelect={() => {
-                                setInput(`/${skill.name} `);
-                                setCommandQuery("");
-                                setCommandOpen(false);
-                                requestAnimationFrame(() => promptRef.current?.focus());
+                                pickSkillSuggestion(skill.name);
                               }}>
                                 <div className="flex w-full items-center justify-between gap-2">
                                   <div className="flex items-center gap-1.5 min-w-0">
@@ -1488,11 +1543,31 @@ export function SessionViewer({
                       const scan = scanAtMentionTrigger(next, cursorPosForAt);
 
                       if (scan.triggerOffset === null) {
+                        // Mid-message "/skill:…" token → skill-only suggestions,
+                        // so a second (or third) skill can be picked after the first.
+                        const slash = scanSlashCommandToken(next, cursorPosForAt);
+                        if (slash && slash.offset > 0) {
+                          const t = slash.token.toLowerCase();
+                          if (t === "" || "skill:".startsWith(t) || t.startsWith("skill:")) {
+                            setCommandOpen(true);
+                            setCommandQuery(slash.token);
+                            setSkillTriggerOffset(slash.offset);
+                            if (atMentionOpen) {
+                              setAtMentionOpen(false);
+                              setAtMentionQuery("");
+                              setAtMentionPath("");
+                              setAtMentionTriggerOffset(0);
+                            }
+                            return;
+                          }
+                        }
+
                         const trimmed = next.trimStart();
                         if (trimmed.startsWith("/")) {
                           const { open, query } = resolveCommandPopoverState(trimmed.slice(1), knownCommandNames, keepPopoverOpenNames);
                           setCommandOpen(open);
                           setCommandQuery(query);
+                          setSkillTriggerOffset(null);
                           if (atMentionOpen) {
                             setAtMentionOpen(false);
                             setAtMentionQuery("");
@@ -1505,6 +1580,7 @@ export function SessionViewer({
 
                       setCommandOpen(false);
                       setCommandQuery("");
+                      setSkillTriggerOffset(null);
 
                       if (!runnerId) {
                         if (atMentionOpen) {
@@ -1608,8 +1684,31 @@ export function SessionViewer({
                           event.stopPropagation();
                           setCommandOpen(false);
                           setCommandQuery("");
+                          setSkillTriggerOffset(null);
                           setCommandHighlightedIndex(0);
                           return;
+                        }
+
+                        // Mid-message skill picker: navigate + insert at the token.
+                        if (skillOnlyMode && !isTouchDevice) {
+                          const skills = skillSuggestions;
+                          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                            event.preventDefault();
+                            if (skills.length === 0) return;
+                            setCommandHighlightedIndex((prev) => {
+                              if (event.key === "ArrowDown") return prev < skills.length - 1 ? prev + 1 : 0;
+                              return prev > 0 ? prev - 1 : skills.length - 1;
+                            });
+                            return;
+                          }
+                          if ((event.key === "Enter" || event.key === "Tab") && !event.shiftKey) {
+                            const highlighted = skills[commandHighlightedIndex] ?? (event.key === "Tab" ? skills[0] : undefined);
+                            if (highlighted) {
+                              event.preventDefault();
+                              pickSkillSuggestion(highlighted.name);
+                            }
+                            return;
+                          }
                         }
 
                         if (!isTouchDevice && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
