@@ -89,7 +89,7 @@ import { useMessageProcessor } from "@/components/session-viewer/message-process
 import { useDraftManagement } from "@/components/session-viewer/draft-management";
 import { queueRecallTarget } from "@/lib/message-queue";
 import { useSessionActionsSetup } from "@/components/session-viewer/session-actions";
-import { useAtMentionHandlers } from "@/components/session-viewer/at-mention-handlers";
+import { scanAtMentionTrigger, useAtMentionHandlers } from "@/components/session-viewer/at-mention-handlers";
 import { useSlashCommands } from "@/components/session-viewer/slash-commands";
 import { useAgentLoading } from "@/components/session-viewer/agent-loading";
 import {
@@ -1481,18 +1481,26 @@ export function SessionViewer({
                       setComposerError(null);
                       setInput(next);
 
-                      const trimmed = next.trimStart();
-                      if (trimmed.startsWith("/")) {
-                        const { open, query } = resolveCommandPopoverState(trimmed.slice(1), knownCommandNames, keepPopoverOpenNames);
-                        setCommandOpen(open);
-                        setCommandQuery(query);
-                        if (atMentionOpen) {
-                          setAtMentionOpen(false);
-                          setAtMentionQuery("");
-                          setAtMentionPath("");
-                          setAtMentionTriggerOffset(0);
+                      // Detect an active @-mention query at the cursor first:
+                      // it takes precedence over the slash-command popover so a
+                      // message can combine skills (/skill:x) with @mentions.
+                      const cursorPosForAt = event.currentTarget.selectionStart ?? next.length;
+                      const scan = scanAtMentionTrigger(next, cursorPosForAt);
+
+                      if (scan.triggerOffset === null) {
+                        const trimmed = next.trimStart();
+                        if (trimmed.startsWith("/")) {
+                          const { open, query } = resolveCommandPopoverState(trimmed.slice(1), knownCommandNames, keepPopoverOpenNames);
+                          setCommandOpen(open);
+                          setCommandQuery(query);
+                          if (atMentionOpen) {
+                            setAtMentionOpen(false);
+                            setAtMentionQuery("");
+                            setAtMentionPath("");
+                            setAtMentionTriggerOffset(0);
+                          }
+                          return;
                         }
-                        return;
                       }
 
                       setCommandOpen(false);
@@ -1508,30 +1516,7 @@ export function SessionViewer({
                         return;
                       }
 
-                      const cursorPos = event.currentTarget.selectionStart ?? next.length;
-                      let lastAtIndex = -1;
-                      for (let i = cursorPos - 1; i >= 0; i--) {
-                        if (next[i] === "@") {
-                          if (i === 0 || next[i - 1] === " " || next[i - 1] === "\n" || next[i - 1] === "\t") {
-                            lastAtIndex = i;
-                            break;
-                          }
-                        }
-                      }
-
-                      if (lastAtIndex === -1) {
-                        if (atMentionOpen) {
-                          setAtMentionOpen(false);
-                          setAtMentionQuery("");
-                          setAtMentionPath("");
-                          setAtMentionTriggerOffset(0);
-                        }
-                        return;
-                      }
-
-                      const query = next.slice(lastAtIndex + 1, cursorPos);
-                      const spaceInQuery = query.search(/\s/);
-                      if (spaceInQuery !== -1) {
+                      if (scan.triggerOffset === null) {
                         if (atMentionOpen) {
                           setAtMentionOpen(false);
                           setAtMentionQuery("");
@@ -1542,11 +1527,11 @@ export function SessionViewer({
                       }
 
                       setAtMentionOpen(true);
-                      setAtMentionTriggerOffset(lastAtIndex);
-                      setAtMentionQuery(query);
-                      const lastSlash = query.lastIndexOf("/");
+                      setAtMentionTriggerOffset(scan.triggerOffset);
+                      setAtMentionQuery(scan.query);
+                      const lastSlash = scan.query.lastIndexOf("/");
                       if (lastSlash !== -1) {
-                        setAtMentionPath(query.slice(0, lastSlash + 1));
+                        setAtMentionPath(scan.query.slice(0, lastSlash + 1));
                       } else {
                         setAtMentionPath("");
                       }

@@ -42,11 +42,12 @@ const { act, cleanup, fireEvent, render, waitFor } = await import(
 );
 const React = (await import("react")).default;
 const { TooltipProvider } = await import("@/components/ui/tooltip");
+const atMention = await import("../session-viewer/at-mention-handlers");
 const { SessionViewer } = await import("../SessionViewer");
 
 afterEach(cleanup);
 
-function setup(options: { onSendInput?: any }) {
+function setup(options: { onSendInput?: any; runnerId?: string; runnerInfo?: any }) {
   const view = render(
     React.createElement(
       TooltipProvider,
@@ -56,6 +57,8 @@ function setup(options: { onSendInput?: any }) {
         messages: [],
         viewerStatus: "Connected",
         onSendInput: options.onSendInput,
+        runnerId: options.runnerId,
+        runnerInfo: options.runnerInfo,
       } as any),
     ),
   );
@@ -134,5 +137,33 @@ describe("SessionViewer composer clear-on-send", () => {
     });
 
     await waitFor(() => expect(textarea.value).toBe("world"));
+  });
+});
+
+describe("scanAtMentionTrigger (composer @-mention alongside slash commands)", () => {
+  const scan = (text: string) => atMention.scanAtMentionTrigger(text, text.length);
+
+  test("detects @ after a skill command", () => {
+    expect(scan("/skill:demo @")).toEqual({ triggerOffset: 12, query: "" });
+  });
+
+  test("detects @ query mid-message after a skill command", () => {
+    expect(scan("/skill:demo @src")).toEqual({ triggerOffset: 12, query: "src" });
+  });
+
+  test("inactive when mention already completed with a space", () => {
+    expect(scan("/skill:demo @src/ foo")).toEqual({ triggerOffset: null, query: "" });
+  });
+
+  test("plain slash command without @ is inactive", () => {
+    expect(scan("/skill:demo some args")).toEqual({ triggerOffset: null, query: "" });
+  });
+
+  test("@ mid-word does not trigger", () => {
+    expect(scan("email me@test.com")).toEqual({ triggerOffset: null, query: "" });
+  });
+
+  test("@ at start of message triggers", () => {
+    expect(scan("@")).toEqual({ triggerOffset: 0, query: "" });
   });
 });

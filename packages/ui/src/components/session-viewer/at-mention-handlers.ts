@@ -33,6 +33,31 @@ export interface AtMentionHandlers {
 
 export interface AtMentionResult extends AtMentionState, AtMentionHandlers {}
 
+export interface AtMentionScan {
+  /** Offset of the triggering "@" character, or null when no active mention query sits at the cursor. */
+  triggerOffset: number | null;
+  /** Text between the "@" and the cursor ("" immediately after typing "@"). */
+  query: string;
+}
+
+/**
+ * Scan composer text backwards from the cursor for an active @-mention trigger:
+ * an "@" at the start of the text or preceded by whitespace, with no whitespace
+ * between it and the cursor. Runs regardless of whether the text starts with
+ * "/" so skills and @-mentions can be combined in one message.
+ */
+export function scanAtMentionTrigger(text: string, cursorPos: number): AtMentionScan {
+  const end = Math.min(cursorPos, text.length);
+  for (let i = end - 1; i >= 0; i--) {
+    if (text[i] !== "@") continue;
+    if (i !== 0 && text[i - 1] !== " " && text[i - 1] !== "\n" && text[i - 1] !== "\t") continue;
+    const query = text.slice(i + 1, end);
+    if (/\s/.test(query)) return { triggerOffset: null, query: "" };
+    return { triggerOffset: i, query };
+  }
+  return { triggerOffset: null, query: "" };
+}
+
 /**
  * Owns all @-mention popover state and the action handlers for file/agent selection,
  * directory drill-in, back navigation, and popover close.
