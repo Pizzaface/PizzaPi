@@ -49,6 +49,7 @@ Spawn a new independent agent session on the runner. The new session runs in par
 | `model` | `{ provider, id }` | | Runner default | Model to use. Call `list_models` to discover available values. |
 | `cwd` | `string` | | Parent's cwd | Working directory for the new session. |
 | `runnerId` | `string` | | Current runner | Target runner ID. Usually not needed. |
+| `autoClose` | `boolean` | | `true` | Shut the child down when it completes its work (guarded — it stays up if new messages or subscriptions arrive). Set `false` to keep it alive for interactive follow-ups after completion. |
 
 ### Return value
 

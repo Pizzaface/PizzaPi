@@ -55,6 +55,7 @@ const CORE_EXTENSIONS_HEAD: ExtensionFactory[] = [
     providerRequestLogExtension,
     fallbackModelsExtension,
     triggersExtension,  // Must be before remoteExtension (shutdown ordering)
+    subagentExtension,  // Must be before remoteExtension (shutdown ordering: aborts mirrors first)
     remoteExtension,
     tunnelToolsExtension,
     serviceMessageBridgeExtension,
@@ -75,7 +76,6 @@ const CORE_EXTENSIONS_TAIL: ExtensionFactory[] = [
     updateTodoExtension,
     memoryExtension,
     spawnSessionExtension,
-    subagentExtension,
     workflowExtension,
     planModeToggleExtension,
     sandboxEventsExtension,
