@@ -101,3 +101,51 @@ describe("list_models tool — Ollama Cloud merge", () => {
         expect(ids).toContain("anthropic/claude-x");
     });
 });
+
+// ── spawn_session tool — autoClose plumbing ────────────────────────────────
+// Completed children must self-terminate (auto-close) instead of idling on
+// the runner forever. Default is true; explicit false opts out.
+
+describe("spawn_session tool — autoClose", () => {
+    const saved = {
+        RELAY: process.env.PIZZAPI_RELAY_URL,
+        KEY: process.env.PIZZAPI_API_KEY,
+        SESSION: process.env.PIZZAPI_SESSION_ID,
+        fetch: globalThis.fetch,
+    };
+
+    afterEach(() => {
+        if (saved.RELAY !== undefined) process.env.PIZZAPI_RELAY_URL = saved.RELAY; else delete process.env.PIZZAPI_RELAY_URL;
+        if (saved.KEY !== undefined) process.env.PIZZAPI_API_KEY = saved.KEY; else delete process.env.PIZZAPI_API_KEY;
+        if (saved.SESSION !== undefined) process.env.PIZZAPI_SESSION_ID = saved.SESSION; else delete process.env.PIZZAPI_SESSION_ID;
+        globalThis.fetch = saved.fetch;
+    });
+
+    function setup() {
+        process.env.PIZZAPI_RELAY_URL = "http://relay.test";
+        process.env.PIZZAPI_API_KEY = "test-key";
+        process.env.PIZZAPI_SESSION_ID = "parent-session";
+
+        const bodies: any[] = [];
+        globalThis.fetch = (async (_url: any, init: any) => {
+            bodies.push(JSON.parse(init.body));
+            return new Response(JSON.stringify({ ok: true, sessionId: "child-1" }), { status: 200 });
+        }) as any;
+
+        const pi = createMockPi();
+        spawnSessionExtension(pi as any);
+        return { tool: pi.tools.get("spawn_session"), bodies };
+    }
+
+    test("defaults autoClose to true in the spawn request body", async () => {
+        const { tool, bodies } = setup();
+        await tool.execute("call-1", { prompt: "do things", runnerId: "r1" });
+        expect(bodies[0].autoClose).toBe(true);
+    });
+
+    test("passes autoClose: false through when explicitly disabled", async () => {
+        const { tool, bodies } = setup();
+        await tool.execute("call-1", { prompt: "stay up", runnerId: "r1", autoClose: false });
+        expect(bodies[0].autoClose).toBe(false);
+    });
+});

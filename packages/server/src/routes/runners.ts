@@ -125,6 +125,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 : undefined;
 
         const requestedParentSessionId = typeof body.parentSessionId === "string" ? body.parentSessionId : undefined;
+        const requestedAutoClose = body.autoClose === true;
 
         if (!requestedRunnerId) {
             return Response.json({ error: "Missing runnerId" }, { status: 400 });
@@ -195,6 +196,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 ...(hiddenModels.length > 0 ? { hiddenModels } : {}),
                 ...(requestedAgent ? { agent: requestedAgent } : {}),
                 ...(validatedParentSessionId ? { parentSessionId: validatedParentSessionId } : {}),
+                ...(requestedAutoClose ? { autoClose: true } : {}),
                 ...(requestedResumePath ? { resumePath: requestedResumePath } : {}),
                 ...(requestedResumeId && !requestedResumePath ? { resumeId: requestedResumeId } : {}),
             });

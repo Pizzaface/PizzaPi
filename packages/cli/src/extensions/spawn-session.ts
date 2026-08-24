@@ -105,6 +105,13 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                     description:
                         "Runner ID to spawn on. Usually not needed — defaults to the current runner.",
                 },
+                autoClose: {
+                    type: "boolean",
+                    description:
+                        "Shut the child session down when it completes its work (default true). " +
+                        "Set false to keep it alive for interactive follow-ups after completion.",
+                    default: true,
+                },
             },
             required: ["prompt"],
         } as any,
@@ -115,6 +122,7 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                 model?: { provider: string; id: string };
                 cwd?: string;
                 runnerId?: string;
+                autoClose?: boolean;
             };
 
             const ok = (text: string, details?: Record<string, unknown>) => ({
@@ -164,6 +172,11 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                 );
             }
             body.parentSessionId = ownSessionId;
+
+            // Default to auto-close so completed children don't idle forever on the
+            // runner. Auto-close itself is guarded: it won't fire if new messages,
+            // subscriptions, or linked children arrive during the idle re-check.
+            body.autoClose = params.autoClose !== false;
 
             if (params.model) {
                 // Note: hidden-model enforcement is done server-side (runners.ts).
