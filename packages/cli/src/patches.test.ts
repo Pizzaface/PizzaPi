@@ -8,7 +8,7 @@
  * See patches/README.md for details.
  */
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -339,6 +339,45 @@ describe("pi-coding-agent patched runtime behavior", () => {
         expect(api.fork).toBeUndefined();
         expect(api.getQueuedMessages).toBeUndefined();
         expect(api.replaceQueuedMessages).toBeUndefined();
+    });
+
+    test("_expandSkillCommand expands every /skill: token in the message", async () => {
+        const { AgentSession } = await import(
+            piCodingAgentPath("dist/core/agent-session.js")
+        );
+        const skillDir = mkdtempSync(resolve(tmpdir(), "pizzapi-skills-"));
+        try {
+            const makeSkill = (name: string) => {
+                const filePath = resolve(skillDir, `${name}.md`);
+                writeFileSync(filePath, `# ${name}\n\nBody of ${name}\n`);
+                return { name, filePath, baseDir: skillDir };
+            };
+            const alpha = makeSkill("alpha");
+            const beta = makeSkill("beta");
+            const ctx = {
+                resourceLoader: { getSkills: () => ({ skills: [alpha, beta] }) },
+                _extensionRunner: { emitError() {} },
+            };
+            const expand = (text: string) =>
+                (AgentSession as any).prototype._expandSkillCommand.call(ctx, text);
+
+            // Leading skill keeps upstream semantics: trailing text becomes args.
+            const leading = expand("/skill:alpha do the thing @file.txt");
+            expect(leading).toContain('<skill name="alpha"');
+            expect(leading.endsWith("do the thing @file.txt")).toBe(true);
+
+            // Multiple inline skills all expand; @mentions pass through untouched.
+            const multi = expand("Use /skill:alpha then /skill:beta and read @src/x.ts");
+            expect(multi).toContain('<skill name="alpha"');
+            expect(multi).toContain('<skill name="beta"');
+            expect(multi).toContain("@src/x.ts");
+            expect(multi.includes("/skill:")).toBe(false);
+
+            // Unknown skills pass through untouched.
+            expect(expand("try /skill:missing now")).toBe("try /skill:missing now");
+        } finally {
+            rmSync(skillDir, { recursive: true, force: true });
+        }
     });
 
 });

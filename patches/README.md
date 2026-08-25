@@ -105,6 +105,7 @@ Source: https://developers.openai.com/api/docs/models/compare
 | File | Change |
 |------|--------|
 | `dist/config.js` | Same `.pizzapi` config-dir / flat-directory / `PIZZAPI_CHANGELOG_PATH` overrides as 0.80.6 |
+| `dist/core/agent-session.js` | `_expandSkillCommand` expands **every** `/skill:<name>` token in a message, not just a leading one (leading token keeps trailing-text-as-args semantics; inline tokens expand in place) so multiple skills and `@`-mentions can coexist in one web/TUI message |
 | `dist/core/model-runtime.js` | Wraps the built-in OpenAI API provider so GPT-5.4+ defaults match OpenAI's published context capacities |
 | `dist/core/model-resolver.js` | Same `ollama-cloud` default model (`glm-5.1`) as 0.80.6 |
 | `dist/modes/interactive/interactive-mode.js` | Same version-notification-UI removal as 0.80.6 (upstream shifted a few lines; hunk re-applied manually) |
