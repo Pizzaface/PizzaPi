@@ -1,6 +1,8 @@
 diff --git a/dist/api/anthropic-messages.js b/dist/api/anthropic-messages.js
-index 0000000..0000000 100644
-@@ -450,6 +450,29 @@
+index d04d7a9f59f3700a7e3bacb02aa68256215bee27..9805b75e36389df83bfd43aa133282b1fed5b5af 100644
+--- a/dist/api/anthropic-messages.js
++++ b/dist/api/anthropic-messages.js
+@@ -452,6 +452,29 @@ export const stream = (model, context, options) => {
                          output.content.push(block);
                          stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
                      }
@@ -30,7 +32,7 @@ index 0000000..0000000 100644
                  }
                  else if (event.type === "content_block_delta") {
                      if (event.delta.type === "text_delta") {
-@@ -491,6 +514,10 @@
+@@ -493,6 +516,10 @@ export const stream = (model, context, options) => {
                                  partial: output,
                              });
                          }
@@ -41,7 +43,7 @@ index 0000000..0000000 100644
                      }
                      else if (event.delta.type === "signature_delta") {
                          const index = blocks.findIndex((b) => b.index === event.index);
-@@ -507,6 +534,16 @@
+@@ -509,6 +536,16 @@ export const stream = (model, context, options) => {
                      if (block) {
                          delete block.index;
                          if (block.type === "text") {
@@ -58,7 +60,7 @@ index 0000000..0000000 100644
                              stream.push({
                                  type: "text_end",
                                  contentIndex: index,
-@@ -769,6 +806,22 @@
+@@ -780,6 +817,22 @@ function buildParams(model, context, isOAuthToken, options) {
              ...convertTools(deferredTools, isOAuthToken, compat.supportsEagerToolInputStreaming, compat.supportsStrictTools, undefined, true),
          ];
      }
@@ -81,7 +83,7 @@ index 0000000..0000000 100644
      // Configure thinking mode: adaptive, budget-based, or explicitly disabled.
      if (model.reasoning) {
          if (options?.thinkingEnabled) {
-@@ -897,7 +950,23 @@
+@@ -912,7 +965,23 @@ function convertMessages(transformedMessages, isOAuthToken, cacheControl, allowE
          else if (msg.role === "assistant") {
              const blocks = [];
              for (const block of msg.content) {
@@ -106,7 +108,7 @@ index 0000000..0000000 100644
                      if (block.text.trim().length === 0)
                          continue;
                      blocks.push({
-@@ -1008,6 +1077,10 @@
+@@ -1023,6 +1092,10 @@ function convertTools(tools, isOAuthToken, supportsEagerToolInputStreaming, supp
      if (!tools)
          return [];
      return tools.map((tool, index) => {
@@ -118,8 +120,10 @@ index 0000000..0000000 100644
          const parameters = getJsonSchemaToolParameters(tool, strict);
          const schema = parameters;
 diff --git a/dist/auth/oauth/anthropic.js b/dist/auth/oauth/anthropic.js
-index 0000000..0000000 100644
-@@ -296,11 +296,49 @@
+index 8692e906caa2609396bdccae98d4d593e024ecf6..815bf6fcfd39cec32e7943a931d1e02dc1c6b269 100644
+--- a/dist/auth/oauth/anthropic.js
++++ b/dist/auth/oauth/anthropic.js
+@@ -296,11 +296,49 @@ async function refreshAnthropicToken(refreshToken, signal) {
          expires: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
      };
  }
@@ -171,8 +175,10 @@ index 0000000..0000000 100644
          return { apiKey: credential.access };
      },
 diff --git a/dist/utils/retry.js b/dist/utils/retry.js
-index 0000000..0000000 100644
-@@ -64,6 +64,9 @@
+index 65c7c9efd7667445b711fcd43549062ee3eb5ecf..a20dab36b194559c5a40f42fa13a8ecf69a92940 100644
+--- a/dist/utils/retry.js
++++ b/dist/utils/retry.js
+@@ -64,6 +64,9 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
      "stream ended before message_stop",
      "stream ended before a terminal response event",
      "http2 request did not get a response",

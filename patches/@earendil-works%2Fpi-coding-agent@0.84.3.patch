@@ -1,11 +1,19 @@
-diff --git a/node_modules/.bun/@earendil-works+pi-coding-agent@0.84.2+36935d20367572cb/node_modules/@earendil-works/pi-coding-agent/.bun-tag-7c795784f70518c1 b/.bun-tag-7c795784f70518c1
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/config.js b/dist/config.js
-index 4600b23493be21d2316303d056ef135313dcef43..85bd9b0d26c0de32a7aabfd0e254fed05659f958 100644
+index f04269f78b199c72277de9debb6948b654e7ee6f..e6d8366e3dcc976aead52d62170eebe6f9f62d54 100644
 --- a/dist/config.js
 +++ b/dist/config.js
-@@ -358,6 +358,10 @@ export function getExamplesPath() {
+@@ -358,6 +358,10 @@ export function getReadmePath() {
+ }
+ /** Get path to docs directory */
+ export function getDocsPath() {
++    // PATCH(pizzapi): allow PizzaPi to display its wrapper changelog.
++    if (process.env.PIZZAPI_CHANGELOG_PATH) {
++        return resolve(process.env.PIZZAPI_CHANGELOG_PATH);
++    }
+     return resolve(join(getPackageDir(), "docs"));
+ }
+ /** Get path to examples directory */
+@@ -366,6 +370,10 @@ export function getExamplesPath() {
  }
  /** Get path to CHANGELOG.md */
  export function getChangelogPath() {
@@ -16,7 +24,7 @@ index 4600b23493be21d2316303d056ef135313dcef43..85bd9b0d26c0de32a7aabfd0e254fed0
      return resolve(join(getPackageDir(), "CHANGELOG.md"));
  }
  /**
-@@ -391,7 +395,7 @@ const piConfigName = pkg.piConfig?.name;
+@@ -399,7 +407,7 @@ const piConfigName = pkg.piConfig?.name;
  export const PACKAGE_NAME = pkg.name || "@earendil-works/pi-coding-agent";
  export const APP_NAME = piConfigName || "pi";
  export const APP_TITLE = piConfigName ? APP_NAME : "π";
@@ -25,7 +33,7 @@ index 4600b23493be21d2316303d056ef135313dcef43..85bd9b0d26c0de32a7aabfd0e254fed0
  export const VERSION = pkg.version || "0.0.0";
  // e.g., PI_CODING_AGENT_DIR or TAU_CODING_AGENT_DIR
  export const ENV_AGENT_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;
-@@ -414,7 +418,8 @@ export function getAgentDir() {
+@@ -422,7 +430,8 @@ export function getAgentDir() {
      if (envDir) {
          return expandTildePath(envDir);
      }
@@ -36,10 +44,10 @@ index 4600b23493be21d2316303d056ef135313dcef43..85bd9b0d26c0de32a7aabfd0e254fed0
  /** Get path to user's custom themes directory */
  export function getCustomThemesDir() {
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index 4bcf0d4b823d1cc847d1fa26a86a850761758194..ad31a0c8388e072ef932ed51b89d1bca0b1af609 100644
+index f4fd9f37d9826a3e791f25c9ec748645a33d5616..47dfba66f381888bff1cf849e2244fe5edbf7658 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
-@@ -951,29 +951,40 @@ export class AgentSession {
+@@ -954,29 +954,40 @@ export class AgentSession {
       * Emits errors via extension runner if file read fails.
       */
      _expandSkillCommand(text) {
@@ -104,7 +112,7 @@ index 4bcf0d4b823d1cc847d1fa26a86a850761758194..ad31a0c8388e072ef932ed51b89d1bca
      /**
       * Queue a steering message while the agent is running.
 diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
-index 6b2143e141ad2865616e42ae60b2f382fe443544..2c370fc2129a8a6e53e809070ff4f16f7eb40cf4 100644
+index d7940e14deb53a3a18237c51c5afb5712686f0ba..36a3d2be5dc5ec31199601965583eed0b3bd7503 100644
 --- a/dist/core/model-resolver.js
 +++ b/dist/core/model-resolver.js
 @@ -21,6 +21,7 @@ export const defaultModelPerProvider = {
@@ -113,7 +121,7 @@ index 6b2143e141ad2865616e42ae60b2f382fe443544..2c370fc2129a8a6e53e809070ff4f16f
      openrouter: "moonshotai/kimi-k2.6",
 +    "ollama-cloud": "glm-5.1",
      "vercel-ai-gateway": "zai/glm-5.1",
-     xai: "grok-4.5",
+     xai: "grok-4.6",
      groq: "openai/gpt-oss-120b",
 diff --git a/dist/core/model-runtime.js b/dist/core/model-runtime.js
 index 7d93ba62bdb5d47e129751e8075cbb34620322ad..fcd96e85d1b7f290f48e25df14d39fcd8b61afeb 100644
@@ -162,7 +170,7 @@ index 7d93ba62bdb5d47e129751e8075cbb34620322ad..fcd96e85d1b7f290f48e25df14d39fcd
          if (!base && !this.config.getProvider(providerId) && !extension) {
              this.models.deleteProvider(providerId);
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index f43bc9620f36d198d75abeeb5c84e171de0d5ffe..0d2aab1a54452a0105eb291325ea97fa99e541b7 100644
+index cd12d9e885c21ea14c3a1e681e9ca1544087600a..07ca8137332a28a1997b341cfb8a3eb282632a7d 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -13,6 +13,7 @@ export { type ModelScopeDiagnostic, type ResolveCliModelResult, type ResolveMode
@@ -172,9 +180,9 @@ index f43bc9620f36d198d75abeeb5c84e171de0d5ffe..0d2aab1a54452a0105eb291325ea97fa
 +export { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
  export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./core/resource-loader.ts";
  export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
- export { AgentSessionRuntime, type AgentSessionRuntimeDiagnostic, type AgentSessionServices, type CreateAgentSessionFromServicesOptions, type CreateAgentSessionOptions, type CreateAgentSessionResult, type CreateAgentSessionRuntimeFactory, type CreateAgentSessionRuntimeResult, type CreateAgentSessionServicesOptions, createAgentSession, createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices, createBashTool, createCodingTools, createEditTool, createFindTool, createGrepTool, createLsTool, createReadOnlyTools, createReadTool, createWriteTool, type PromptTemplate, } from "./core/sdk.ts";
+ export { AgentSessionRuntime, type AgentSessionRuntimeDiagnostic, type AgentSessionServices, type CreateAgentSessionFromServicesOptions, type CreateAgentSessionOptions, type CreateAgentSessionResult, type CreateAgentSessionRuntimeFactory, type CreateAgentSessionRuntimeResult, type CreateAgentSessionServicesOptions, createAgentSession, createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices, createBashTool, createCodingTools, createEditTool, createFindTool, createGrepTool, createLsTool, createPowerShellTool, createReadOnlyTools, createReadTool, createWriteTool, type PromptTemplate, } from "./core/sdk.ts";
 diff --git a/dist/index.js b/dist/index.js
-index 76d728eb6fa4cac493dfe1ba623ef8170235a310..9ef49b59878f45b35ccb210f8393061431b8fcc4 100644
+index 7bc4467f5af64aba74ab6cafd136e468b6aab803..59fdb706baf9674063152c6d10ba8ee7de4d0e1d 100644
 --- a/dist/index.js
 +++ b/dist/index.js
 @@ -13,6 +13,7 @@ export { ModelRegistry } from "./core/model-registry.js";
@@ -186,18 +194,18 @@ index 76d728eb6fa4cac493dfe1ba623ef8170235a310..9ef49b59878f45b35ccb210f83930614
  // SDK for programmatic usage
  export { AgentSessionRuntime, 
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 6a88679e03161d2c048e2abab0041e96d214e67b..823413825e1b4e272123359e1add807a1cbe28a0 100644
+index 19dafecadb76dab709f82544fa72de58d8fd1164..1d7ac0630bfa6b7b2d24069380db983fbeb6c70c 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -36,7 +36,6 @@ import { getCwdRelativePath } from "../../utils/paths.js";
- import { getPiUserAgent } from "../../utils/pi-user-agent.js";
+@@ -38,7 +38,6 @@ import { getPiUserAgent } from "../../utils/pi-user-agent.js";
  import { killTrackedDetachedChildren } from "../../utils/shell.js";
+ import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.js";
  import { ensureTool } from "../../utils/tools-manager.js";
 -import { checkForNewPiVersion } from "../../utils/version-check.js";
  import { ArminComponent } from "./components/armin.js";
  import { AssistantMessageComponent } from "./components/assistant-message.js";
  import { BashExecutionComponent } from "./components/bash-execution.js";
-@@ -777,12 +776,6 @@ export class InteractiveMode {
+@@ -805,12 +804,6 @@ export class InteractiveMode {
                  .catch(() => { })
                  .finally(() => clearTimeout(timeout));
          }
@@ -210,7 +218,7 @@ index 6a88679e03161d2c048e2abab0041e96d214e67b..823413825e1b4e272123359e1add807a
          // Start package update check asynchronously
          this.checkForPackageUpdates()
              .then((updates) => {
-@@ -3417,29 +3410,6 @@ export class InteractiveMode {
+@@ -3496,29 +3489,6 @@ export class InteractiveMode {
          this.chatContainer.addChild(new Text(theme.fg("warning", `Warning: ${warningMessage}`), 1, 0));
          this.ui.requestRender();
      }
