@@ -378,6 +378,14 @@ async function registerTuiSessionUnlocked(
             });
             resolvedParentSessionId = null;
             linkedParentId = null; // cross-user link: clear durable signal too
+        } else if (!runnerId && parentSession.runnerId) {
+            // In-process child sessions (e.g. subagent relay mirrors) register
+            // without a runner link because the runner daemon never reports
+            // session_ready for them. Inherit the parent's runner association
+            // so they group under the parent's runner instead of "Local".
+            runnerId = parentSession.runnerId;
+            runnerName = parentSession.runnerName ?? null;
+            await setRunnerAssociation(sessionId, runnerId, runnerName);
         }
     }
 
