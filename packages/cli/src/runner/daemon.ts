@@ -17,6 +17,7 @@ import { resolvePizzaPiVar } from "../config/io.js";
 import { mergeModelLists, readSessionModelsCache, type SessionModelEntry } from "../session-models-cache.js";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { getCachedOllamaCloudModels, registerOllamaCloudProvider, toOllamaCloudRuntimeModel } from "../ollama-cloud-models.js";
+import { registerNvidiaProvider } from "../nvidia-models.js";
 import { registerOpenRouterProvider } from "../openrouter-models.js";
 import { TunnelService } from "./services/tunnel-service.js";
 import { ProcessService } from "./services/process-service.js";
@@ -632,6 +633,9 @@ export async function listConfiguredModels(cwd = process.cwd()): Promise<Session
     // Same for openrouter: the builtin catalog here is pi-ai's static snapshot,
     // so swap in the live one cached by sessions (see openrouter-models.ts).
     registerOpenRouterProvider(runtime);
+    // Same for nvidia: swap pi-ai's static snapshot for build.nvidia.com's live
+    // catalog cached by sessions (see nvidia-models.ts).
+    registerNvidiaProvider(runtime);
     const modelRegistry = new ModelRegistry(runtime);
     const diskModels: SessionModelEntry[] = modelRegistry
         .getAvailable()

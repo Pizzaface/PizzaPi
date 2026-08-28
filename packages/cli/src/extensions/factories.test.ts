@@ -36,6 +36,7 @@ import { sessionProcessesExtension } from "./session-processes.js";
 import { backgroundBashExtension } from "./background-bash.js";
 import { queueFlushExtension } from "./queue-flush.js";
 import { ollamaCloudProviderExtension } from "./ollama-cloud-provider.js";
+import { nvidiaProviderExtension } from "./nvidia-provider.js";
 import { openrouterProviderExtension } from "./openrouter-provider.js";
 import { hostAnnounceExtension } from "./host-announce.js";
 import { runPackageCommand } from "../package-commands.js";
@@ -52,6 +53,7 @@ const CORE_EXTENSIONS_HEAD: ExtensionFactory[] = [
     hostAnnounceExtension,
     ollamaCloudProviderExtension,
     openrouterProviderExtension,
+    nvidiaProviderExtension,
     providerRequestLogExtension,
     fallbackModelsExtension,
     triggersExtension,  // Must be before remoteExtension (shutdown ordering)

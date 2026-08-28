@@ -30,6 +30,7 @@ import { pizzapiHeaderExtension } from "./pizzapi-header.js";
 import { toolSearchExtension } from "./tool-search.js";
 import { ollamaWebToolsExtension } from "./ollama-web-tools.js";
 import { ollamaCloudProviderExtension } from "./ollama-cloud-provider.js";
+import { nvidiaProviderExtension } from "./nvidia-provider.js";
 import { openrouterProviderExtension } from "./openrouter-provider.js";
 import { sessionAnalysisExtension } from "./session-analysis.js";
 import { fallbackModelsExtension } from "./fallback-models.js";
@@ -91,6 +92,10 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
     // Live OpenRouter catalog (openrouter.ai/api/v1/models) replacing pi-ai's
     // static snapshot — same reason: register before model resolution.
     factories.push(named(openrouterProviderExtension, "openrouter-provider"));
+
+    // Live NVIDIA catalog (integrate.api.nvidia.com/v1/models) replacing pi-ai's
+    // static snapshot — same reason: register before model resolution.
+    factories.push(named(nvidiaProviderExtension, "nvidia-provider"));
 
     // Diagnostic (off unless PIZZAPI_LOG_PROVIDER_REQUEST is set): log the
     // resolved provider/api and request shape for each outbound turn.

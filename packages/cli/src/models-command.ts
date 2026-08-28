@@ -11,6 +11,7 @@ import { join } from "path";
 import { c } from "./cli-colors.js";
 import { defaultAgentDir, expandHome, loadConfig } from "./config/io.js";
 import { createLogger } from "@pizzapi/tools";
+import { registerNvidiaProvider } from "./nvidia-models.js";
 import { fetchOllamaCloudModels, registerOllamaCloudProvider, type OllamaCloudModel } from "./ollama-cloud-models.js";
 import { mergeModelLists, readSessionModelsCache } from "./session-models-cache.js";
 
@@ -39,6 +40,9 @@ export async function runModelsCommand(args: string[], cwd: string, logger = log
     // unknown provider here: no offline fallback catalog and stored/env
     // credentials go unrecognized. Mirrors ollamaCloudProviderExtension.
     registerOllamaCloudProvider(runtime);
+    // nvidia is a builtin, but its catalog here is pi-ai's static snapshot — swap
+    // in build.nvidia.com's live list cached by sessions (see nvidia-models.ts).
+    registerNvidiaProvider(runtime, env.HOME);
     const modelRegistry = new ModelRegistry(runtime);
 
     const staticEntries = modelRegistry
