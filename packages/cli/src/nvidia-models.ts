@@ -36,7 +36,10 @@ function withReasoningEffort(model: NvidiaModel): NvidiaModel {
     return {
         ...model,
         compat: { ...model.compat, supportsReasoningEffort: true },
-        thinkingLevelMap: { ...NVIDIA_THINKING_LEVEL_MAP, ...model.thinkingLevelMap },
+        // NVIDIA's accepted values are a hard API constraint, so they win over
+        // whatever pi-ai (or an older cache) supplies — a resurrected "minimal"
+        // is a 400 on every request.
+        thinkingLevelMap: { ...model.thinkingLevelMap, ...NVIDIA_THINKING_LEVEL_MAP },
     };
 }
 
@@ -95,7 +98,10 @@ function readCache(home?: string): CacheEntry | null {
             const models = raw.models.filter(
                 (m: any) => typeof m?.id === "string" && m?.provider === "nvidia" && typeof m?.contextWindow === "number",
             );
-            if (models.length > 0) return { models, fetchedAt: raw.fetchedAt };
+            // Normalize on read, not just on write: a cache written by an older
+            // build (or a future pi-ai whose flags changed) must still come back
+            // with the thinking-effort settings applied.
+            if (models.length > 0) return { models: models.map(withReasoningEffort), fetchedAt: raw.fetchedAt };
         }
     } catch {
         // missing or corrupt cache — fall back to the static catalog

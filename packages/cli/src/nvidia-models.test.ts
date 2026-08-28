@@ -69,6 +69,12 @@ describe("toNvidiaModel", () => {
         expect(clampThinkingLevel(model, "medium")).toBe("medium");
     });
 
+    test("NVIDIA's accepted levels win over an upstream thinkingLevelMap", () => {
+        const upstream = [{ ...(STATIC.find((m) => m.reasoning) as any), thinkingLevelMap: { minimal: "minimal", max: "max" } }];
+        const model = toNvidiaModel({ id: upstream[0].id }, upstream as any)!;
+        expect(getSupportedThinkingLevels(model)).toEqual(["off", "low", "medium", "high"]);
+    });
+
     test("enables reasoning effort on curated reasoning models too", () => {
         const reasoner = STATIC.find((m) => m.reasoning)!;
         expect((reasoner.compat as any).supportsReasoningEffort).toBe(false); // pi-ai's default
@@ -168,6 +174,24 @@ describe("fetchNvidiaModels", () => {
         await expect(fetchNvidiaModels({ home, force: true })).rejects.toThrow(/Unexpected response/);
 
         expect(getCachedNvidiaModels(home)).toHaveLength(STATIC.length);
+    });
+
+    test("repairs a cache written before the thinking-effort fix", () => {
+        const home = tempHome();
+        mkdirSync(join(home, ".pizzapi"), { recursive: true });
+        const stale = {
+            ...(toNvidiaModel({ id: "moonshotai/kimi-k3" }, STATIC as any) as any),
+            compat: { maxTokensField: "max_tokens", supportsReasoningEffort: false },
+            thinkingLevelMap: { minimal: "minimal" }, // a 400 on NVIDIA's API
+        };
+        writeFileSync(
+            join(home, ".pizzapi", "nvidia-models-cache.json"),
+            JSON.stringify({ models: [stale], fetchedAt: Date.now() }),
+        );
+
+        const repaired = getCachedNvidiaModels(home)![0];
+        expect((repaired.compat as any).supportsReasoningEffort).toBe(true);
+        expect(getSupportedThinkingLevels(repaired)).toEqual(["off", "low", "medium", "high"]);
     });
 
     test("ignores a corrupt cache", () => {
