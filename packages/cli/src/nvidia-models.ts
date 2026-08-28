@@ -21,6 +21,25 @@ const MODELS_URL = "https://integrate.api.nvidia.com/v1/models";
 const BASE_URL = "https://integrate.api.nvidia.com/v1";
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * NVIDIA honours OpenAI-style `reasoning_effort`, but pi-ai's catalog marks
+ * every NVIDIA model `supportsReasoningEffort: false`, so the thinking-level
+ * control silently clamps back to "off". The API only accepts low|medium|high
+ * — pi's "minimal" is a 400 — so map it (and the xhigh/max levels NVIDIA has no
+ * equivalent for) to null, which hides them. "off" sends no parameter at all,
+ * i.e. the model's own default.
+ */
+const NVIDIA_THINKING_LEVEL_MAP = { minimal: null, xhigh: null, max: null } as const;
+
+function withReasoningEffort(model: NvidiaModel): NvidiaModel {
+    if (!model.reasoning) return model;
+    return {
+        ...model,
+        compat: { ...model.compat, supportsReasoningEffort: true },
+        thinkingLevelMap: { ...NVIDIA_THINKING_LEVEL_MAP, ...model.thinkingLevelMap },
+    };
+}
+
 /** Matches the headers/compat flags pi-ai generates for every static NVIDIA model. */
 const NVIDIA_HEADERS = { "NVCF-POLL-SECONDS": "3600" } as const;
 const NVIDIA_COMPAT = {
@@ -106,22 +125,25 @@ export function toNvidiaModel(entry: ApiModel, staticModels: readonly NvidiaMode
     if (!isChatModel(entry.id)) return null;
 
     const known = staticModels.find((model) => model.id === entry.id);
-    if (known) return known;
+    if (known) return withReasoningEffort(known);
 
-    return {
+    return withReasoningEffort({
         id: entry.id,
         name: entry.id,
         api: "openai-completions",
         provider: "nvidia",
         baseUrl: BASE_URL,
         headers: { ...NVIDIA_HEADERS },
-        reasoning: /reason|think/i.test(entry.id),
+        // ponytail: NVIDIA publishes no capability metadata, so assume unknown
+        // ids reason. A wrong true costs nothing (NVIDIA accepts reasoning_effort
+        // on non-reasoning models); a wrong false locks the thinking control off.
+        reasoning: true,
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 128000,
         maxTokens: 4096,
         compat: { ...NVIDIA_COMPAT },
-    } as NvidiaModel;
+    } as NvidiaModel);
 }
 
 export function getCachedNvidiaModels(home?: string): NvidiaModel[] | null {
@@ -145,7 +167,7 @@ export async function fetchNvidiaModels(
     const body = (await res.json()) as { data?: unknown };
     if (!Array.isArray(body?.data)) throw new Error("Unexpected response from NVIDIA /v1/models");
 
-    const staticModels = nvidiaProvider().getModels() as NvidiaModel[];
+    const staticModels = (nvidiaProvider().getModels() as NvidiaModel[]).map(withReasoningEffort);
     const live = body.data
         .map((entry) => toNvidiaModel(entry as ApiModel, staticModels))
         .filter((m): m is NvidiaModel => m !== null);
@@ -168,7 +190,9 @@ export function nvidiaDynamicProvider(home?: string) {
     const base = nvidiaProvider();
     return {
         ...base,
-        getModels: () => getCachedNvidiaModels(home) ?? base.getModels(),
+        // Even without a cached catalog the static models need the reasoning-effort
+        // fix, or the thinking-level control clamps to "off" on every NVIDIA model.
+        getModels: () => getCachedNvidiaModels(home) ?? (base.getModels() as NvidiaModel[]).map(withReasoningEffort),
     };
 }
 

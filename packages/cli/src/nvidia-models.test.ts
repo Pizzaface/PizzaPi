@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { nvidiaProvider } from "@earendil-works/pi-ai/providers/nvidia";
 import {
     fetchNvidiaModels,
@@ -33,9 +34,13 @@ function stubFetch(body: unknown, ok = true): void {
 }
 
 describe("toNvidiaModel", () => {
-    test("reuses pi-ai's curated entry for a known id", () => {
+    test("reuses pi-ai's curated metadata for a known id", () => {
+        const known = STATIC.find((m) => m.id === KNOWN_ID)!;
         const model = toNvidiaModel({ id: KNOWN_ID }, STATIC as any)!;
-        expect(model).toEqual(STATIC.find((m) => m.id === KNOWN_ID) as any);
+        expect(model.name).toBe(known.name);
+        expect(model.contextWindow).toBe(known.contextWindow);
+        expect(model.cost).toEqual(known.cost);
+        expect(model.input).toEqual(known.input);
     });
 
     test("synthesizes defaults for ids the package has never seen", () => {
@@ -44,7 +49,6 @@ describe("toNvidiaModel", () => {
         expect(model.api).toBe("openai-completions");
         expect(model.baseUrl).toBe("https://integrate.api.nvidia.com/v1");
         expect(model.name).toBe("moonshotai/kimi-k3");
-        expect(model.reasoning).toBe(false);
         expect(model.input).toEqual(["text"]);
         expect(model.contextWindow).toBe(128000);
         expect(model.maxTokens).toBe(4096);
@@ -53,8 +57,32 @@ describe("toNvidiaModel", () => {
         expect((model.compat as any).maxTokensField).toBe("max_tokens");
     });
 
-    test("flags reasoning models by id", () => {
-        expect(toNvidiaModel({ id: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning" }, [] as any)!.reasoning).toBe(true);
+    test("unknown ids are reasoning-capable so the thinking control is usable", () => {
+        const model = toNvidiaModel({ id: "moonshotai/kimi-k3" }, STATIC as any)!;
+        expect(model.reasoning).toBe(true);
+        expect((model.compat as any).supportsReasoningEffort).toBe(true);
+        // NVIDIA rejects "minimal" and has no xhigh/max equivalent.
+        expect(getSupportedThinkingLevels(model)).toEqual(["off", "low", "medium", "high"]);
+        // Levels pi can request land on values NVIDIA's API accepts.
+        expect(clampThinkingLevel(model, "minimal")).toBe("low");
+        expect(clampThinkingLevel(model, "xhigh")).toBe("high");
+        expect(clampThinkingLevel(model, "medium")).toBe("medium");
+    });
+
+    test("enables reasoning effort on curated reasoning models too", () => {
+        const reasoner = STATIC.find((m) => m.reasoning)!;
+        expect((reasoner.compat as any).supportsReasoningEffort).toBe(false); // pi-ai's default
+        const model = toNvidiaModel({ id: reasoner.id }, STATIC as any)!;
+        expect((model.compat as any).supportsReasoningEffort).toBe(true);
+        expect(getSupportedThinkingLevels(model)).toEqual(["off", "low", "medium", "high"]);
+    });
+
+    test("leaves non-reasoning curated models alone", () => {
+        const plain = STATIC.find((m) => !m.reasoning)!;
+        const model = toNvidiaModel({ id: plain.id }, STATIC as any)!;
+        expect(model.reasoning).toBe(false);
+        expect((model.compat as any).supportsReasoningEffort).toBe(false);
+        expect(getSupportedThinkingLevels(model)).toEqual(["off"]);
     });
 
     test("drops non-chat endpoints and malformed entries", () => {
@@ -154,6 +182,12 @@ describe("nvidiaDynamicProvider", () => {
     test("uses the live catalog when cached and the static one otherwise", async () => {
         const home = tempHome();
         expect(nvidiaDynamicProvider(home).getModels().length).toBe(STATIC.length);
+
+        // The static fallback still gets the reasoning-effort fix.
+        const staticReasoner = nvidiaDynamicProvider(home)
+            .getModels()
+            .find((m) => m.reasoning)!;
+        expect((staticReasoner.compat as any).supportsReasoningEffort).toBe(true);
 
         stubFetch({ data: [{ id: "vendor/new-model" }] });
         await fetchNvidiaModels({ home });
