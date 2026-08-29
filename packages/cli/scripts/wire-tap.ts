@@ -21,6 +21,24 @@ function tokenFingerprint(v: string): string {
     return `…${tok.slice(-6)}(len=${tok.length})`;
 }
 
+/** True only for requests to the real Anthropic messages endpoint.
+ *
+ * Parses the URL and compares the hostname exactly — a substring check like
+ * `url.includes("api.anthropic.com")` matches attacker-controlled hosts such
+ * as `https://api.anthropic.com.evil.com/` or `https://evil.com/?api.anthropic.com`.
+ *
+ * Keep in sync with `src/extensions/provider-request-log.ts` (that copy is
+ * unit-tested; this file must stay dependency-free for vanilla pi).
+ */
+export function isAnthropicMessagesUrl(url: string): boolean {
+    try {
+        const u = new URL(url);
+        return u.hostname === "api.anthropic.com" && u.pathname.startsWith("/v1/messages");
+    } catch {
+        return false;
+    }
+}
+
 export function installWireTap(label: string): void {
     if (installed) return;
     installed = true;
@@ -32,9 +50,7 @@ export function installWireTap(label: string): void {
 
     const wrapped = (async (input: any, init?: any) => {
         const url = typeof input === "string" ? input : (input?.url ?? String(input));
-        const isMessages = typeof url === "string"
-            && url.includes("api.anthropic.com")
-            && url.includes("/v1/messages");
+        const isMessages = typeof url === "string" && isAnthropicMessagesUrl(url);
         if (process.env.WIRE_CAPTURE_ALL === "1") {
             try { appendFileSync(outFile, JSON.stringify({ label, pid: process.pid, marker: "fetch-call", url: String(url).slice(0, 200) }) + "\n"); } catch {}
         }
