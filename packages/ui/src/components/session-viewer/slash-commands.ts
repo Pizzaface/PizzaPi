@@ -5,11 +5,7 @@ import type { SandboxViolationEntry } from "./cards/CommandResultCard";
 import type { ResumeSessionOption, ForkMessageOption } from "@/lib/types";
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import { loadAgents } from "./agent-loader";
-import {
-  type IncompleteTriggerItem,
-  type TriggerHistoryEntry,
-  getIncompleteTriggers,
-} from "@/components/TriggersPanel";
+import { type IncompleteTriggerItem, type TriggerHistoryEntry, getIncompleteTriggers } from "@/attention/trigger-groups";
 
 export interface SupportedSubCommand {
   name: string;

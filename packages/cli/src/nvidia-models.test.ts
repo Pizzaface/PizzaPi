@@ -44,11 +44,14 @@ describe("toNvidiaModel", () => {
     });
 
     test("synthesizes defaults for ids the package has never seen", () => {
-        const model = toNvidiaModel({ id: "moonshotai/kimi-k3" }, STATIC as any)!;
+        // "vendor/new-model" is deliberately synthetic — real ids (e.g.
+        // moonshotai/kimi-k3) get curated into pi-ai's catalog over time and
+        // stop exercising the synthesized-defaults path.
+        const model = toNvidiaModel({ id: "vendor/new-model" }, STATIC as any)!;
         expect(model.provider).toBe("nvidia");
         expect(model.api).toBe("openai-completions");
         expect(model.baseUrl).toBe("https://integrate.api.nvidia.com/v1");
-        expect(model.name).toBe("moonshotai/kimi-k3");
+        expect(model.name).toBe("vendor/new-model");
         expect(model.input).toEqual(["text"]);
         expect(model.contextWindow).toBe(128000);
         expect(model.maxTokens).toBe(4096);
@@ -58,7 +61,7 @@ describe("toNvidiaModel", () => {
     });
 
     test("unknown ids are reasoning-capable so the thinking control is usable", () => {
-        const model = toNvidiaModel({ id: "moonshotai/kimi-k3" }, STATIC as any)!;
+        const model = toNvidiaModel({ id: "vendor/new-model" }, STATIC as any)!;
         expect(model.reasoning).toBe(true);
         expect((model.compat as any).supportsReasoningEffort).toBe(true);
         // NVIDIA rejects "minimal" and has no xhigh/max equivalent.
@@ -70,9 +73,13 @@ describe("toNvidiaModel", () => {
     });
 
     test("NVIDIA's accepted levels win over an upstream thinkingLevelMap", () => {
-        const upstream = [{ ...(STATIC.find((m) => m.reasoning) as any), thinkingLevelMap: { minimal: "minimal", max: "max" } }];
-        const model = toNvidiaModel({ id: upstream[0].id }, upstream as any)!;
-        expect(getSupportedThinkingLevels(model)).toEqual(["off", "low", "medium", "high"]);
+        // pi-ai ≥ 0.84.3 ships per-model maps (deepseek entries null out low/medium);
+        // the overlay must force NVIDIA's accepted values back on.
+        for (const map of [{ minimal: "minimal", max: "max" }, { minimal: null, low: null, medium: null, high: "high", max: "max" }]) {
+            const upstream = [{ ...(STATIC.find((m) => m.reasoning) as any), thinkingLevelMap: map }];
+            const model = toNvidiaModel({ id: upstream[0].id }, upstream as any)!;
+            expect(getSupportedThinkingLevels(model)).toEqual(["off", "low", "medium", "high"]);
+        }
     });
 
     test("enables reasoning effort on curated reasoning models too", () => {
@@ -180,7 +187,7 @@ describe("fetchNvidiaModels", () => {
         const home = tempHome();
         mkdirSync(join(home, ".pizzapi"), { recursive: true });
         const stale = {
-            ...(toNvidiaModel({ id: "moonshotai/kimi-k3" }, STATIC as any) as any),
+            ...(toNvidiaModel({ id: "vendor/new-model" }, STATIC as any) as any),
             compat: { maxTokensField: "max_tokens", supportsReasoningEffort: false },
             thinkingLevelMap: { minimal: "minimal" }, // a 400 on NVIDIA's API
         };
