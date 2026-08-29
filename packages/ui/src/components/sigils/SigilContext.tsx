@@ -9,6 +9,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ServiceSigilDef, ServicePanelInfo } from "@pizzapi/protocol";
 import { SigilRegistry, createRegistry } from "@/lib/sigils/registry";
+import { buildResolveUrl } from "@/lib/sigils/resolve-url";
 
 // ── Resolve types ────────────────────────────────────────────────────────────
 
@@ -74,6 +75,9 @@ interface SigilProviderProps {
   sigilDefs: ServiceSigilDef[];
   panels: ServicePanelInfo[];
   runnerId?: string;
+  /** Working directory of the session being viewed — lets services resolve
+   *  sigils against the session's project (e.g. GitHub repo auto-detection). */
+  sessionCwd?: string;
   children: React.ReactNode;
 }
 
@@ -81,7 +85,7 @@ interface SigilProviderProps {
  * Provider that creates a SigilRegistry from service definitions
  * and manages resolve endpoint calls for enriching sigil display data.
  */
-export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilProviderProps) {
+export function SigilProvider({ sigilDefs, panels, runnerId, sessionCwd, children }: SigilProviderProps) {
   const registry = useMemo(() => createRegistry(sigilDefs), [sigilDefs]);
 
   // Resolve cache: keyed by "gen:type:id". Lives in a ref for instant reads.
@@ -94,7 +98,7 @@ export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilPr
   useEffect(() => {
     cacheRef.current.clear();
     bump();
-  }, [panels, runnerId, sigilDefs, bump]);
+  }, [panels, runnerId, sigilDefs, sessionCwd, bump]);
 
   // Build panel port lookup: serviceId → port
   const panelPortMap = useMemo(() => {
@@ -106,28 +110,28 @@ export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilPr
   // Bump generation and clear cache when infrastructure changes.
   // This invalidates all cached entries and causes pills to re-trigger
   // resolve via the generation dep in their useEffect.
-  const prevInfraRef = useRef({ panels, runnerId, sigilDefs });
+  const prevInfraRef = useRef({ panels, runnerId, sigilDefs, sessionCwd });
   useEffect(() => {
     const prev = prevInfraRef.current;
     // Skip the initial mount — only invalidate on actual changes
-    if (prev.panels !== panels || prev.runnerId !== runnerId || prev.sigilDefs !== sigilDefs) {
+    if (prev.panels !== panels || prev.runnerId !== runnerId || prev.sigilDefs !== sigilDefs || prev.sessionCwd !== sessionCwd) {
       cacheRef.current.clear();
       setGeneration((g) => g + 1);
     }
-    prevInfraRef.current = { panels, runnerId, sigilDefs };
-  }, [panels, runnerId, sigilDefs]);
+    prevInfraRef.current = { panels, runnerId, sigilDefs, sessionCwd };
+  }, [panels, runnerId, sigilDefs, sessionCwd]);
 
   const resolve = useCallback(
     (type: string, id: string): SigilResolveState => {
-      const key = `${type}:${id}`;
+      const key = `${type}:${id}:${sessionCwd ?? ""}`;
       return cacheRef.current.get(key) ?? { loading: false };
     },
-    [],
+    [sessionCwd],
   );
 
   const triggerResolve = useCallback(
     (type: string, id: string, params?: Record<string, string>) => {
-      const key = `${type}:${id}`;
+      const key = `${type}:${id}:${sessionCwd ?? ""}`;
       const cache = cacheRef.current;
 
       // Already resolved or in-flight
@@ -143,14 +147,16 @@ export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilPr
       const port = panelPortMap.get(def.serviceId) ?? def.resolvePort;
       if (!port) return;
 
-      // Build the resolve URL through the tunnel proxy, forwarding params as query string
-      const resolvePath = def.resolve.replace("{id}", encodeURIComponent(id));
-      const qs = params && Object.keys(params).length > 0
-        ? "?" + new URLSearchParams(
-            Object.entries(params).filter(([k]) => !["label", "link", "href"].includes(k)),
-          ).toString()
-        : "";
-      const url = `/api/tunnel/runner/${encodeURIComponent(runnerId)}/${port}${resolvePath}${qs}`;
+      // Build the resolve URL through the tunnel proxy. `cwd` (the session's
+      // project dir) is infrastructure-provided, not a sigil param — services
+      // use it for per-session repo detection.
+      const url = buildResolveUrl({
+        runnerId,
+        port,
+        resolvePath: def.resolve.replace("{id}", encodeURIComponent(id)),
+        params,
+        sessionCwd,
+      });
 
       // Mark as loading
       cache.set(key, { loading: true });
@@ -168,7 +174,7 @@ export function SigilProvider({ sigilDefs, panels, runnerId, children }: SigilPr
           setGeneration((g) => g + 1);
         });
     },
-    [registry, panelPortMap, runnerId],
+    [registry, panelPortMap, runnerId, sessionCwd],
   );
 
   const contextValue = useMemo<SigilContextValue>(
