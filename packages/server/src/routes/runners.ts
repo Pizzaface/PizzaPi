@@ -61,6 +61,11 @@ function runnerListenerAsSubscription(runnerId: string, listener: {
 
 const RUNNER_MCP_RELOAD_RE = /^\/api\/runners\/([^/]+)\/mcp\/reload$/;
 
+// ponytail: in-memory idempotency memo (single relay process) — move to Redis
+// if runners/spawn is ever served from a cluster, TTLs make stale entries self-clean.
+const SPAWN_IDEMPOTENCY_TTL_MS = 10 * 60_000;
+const recentSpawnIdempotency = new Map<string, { sessionId: string; ts: number }>();
+
 export const handleRunnersRoute: RouteHandler = async (req, url) => {
     // ── List runners ───────────────────────────────────────────────────
     if (url.pathname === "/api/runners" && req.method === "GET") {
@@ -83,6 +88,17 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         const requestedRunnerId = typeof body.runnerId === "string" ? body.runnerId : undefined;
         const requestedCwd = typeof body.cwd === "string" ? body.cwd : undefined;
         const requestedPrompt = typeof body.prompt === "string" ? body.prompt : undefined;
+        const idempotencyKey = typeof body.idempotencyKey === "string" && body.idempotencyKey.length > 0 && body.idempotencyKey.length <= 200
+            ? `runner-spawn:${body.idempotencyKey}`
+            : null;
+        if (idempotencyKey) {
+            // Schedule-driven spawns retry after ambiguous failures; without a
+            // key each retry mints a fresh duplicate replacement session.
+            const cached = recentSpawnIdempotency.get(idempotencyKey);
+            if (cached && Date.now() - cached.ts < SPAWN_IDEMPOTENCY_TTL_MS) {
+                return Response.json({ ok: true, runnerId: body.runnerId, sessionId: cached.sessionId, deduplicated: true });
+            }
+        }
         const requestedImageUrls = Array.isArray(body.imageUrls)
             ? body.imageUrls.filter((u: unknown): u is string => typeof u === "string").slice(0, 8)
             : undefined;
@@ -211,6 +227,16 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
         await recordRunnerSession(runnerId, sessionId);
         await linkSessionToRunner(runnerId, sessionId);
+
+        // Only the successful spawn (even ack-pending) is memoized as the
+        // idempotent outcome for this key.
+        if (idempotencyKey) {
+            recentSpawnIdempotency.set(idempotencyKey, { sessionId, ts: Date.now() });
+            if (recentSpawnIdempotency.size > 1000) {
+                const oldest = [...recentSpawnIdempotency.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
+                if (oldest) recentSpawnIdempotency.delete(oldest[0]);
+            }
+        }
 
         // Parent-child linking is now handled at registration time:
         // the worker sends parentSessionId in its relay `register` event,

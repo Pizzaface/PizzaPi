@@ -92,6 +92,9 @@ import {
     getSubscriptionFilters,
     updateSessionSubscription,
     getDurableSubscriptionRunnerId,
+    claimFireOnce,
+    confirmFireOnce,
+    releaseFireOnce,
     type SubscriptionParams,
     type SubscriptionFilter,
     type SubscriptionFilterMode,
@@ -298,7 +301,15 @@ async function spawnListenerSessionAndDeliver(
             ...(listener.autoClose ? { autoClose: true } : {}),
         });
         const ack = await ackPromise;
-        if (ack.ok === false) return { spawned: false };
+        if (ack.ok === false) {
+            // Ack timeout ≠ spawn failure: the runner received the emit and the
+            // session may come up anyway. Continue the normal flow — record,
+            // link, deliver (the orphan-kill fallback below covers the case
+            // where it never appeared). Bailing out here would leak an
+            // unaccounted session AND let the delivery retry spawn a duplicate.
+            if (!("timeout" in ack && ack.timeout)) return { spawned: false };
+            log.warn(`Auto-spawn listener: ack timed out for ${spawnedSessionId} — assuming it spawned, delivering anyway`);
+        }
         await recordRunnerSession(runnerId, spawnedSessionId);
         await linkSessionToRunner(runnerId, spawnedSessionId);
 
@@ -388,6 +399,12 @@ interface TriggerRequest {
      * reach the session that created it even if its worker has exited.
      */
     wakeSession?: boolean;
+    /**
+     * Stable per-fire identity supplied by schedule callers (time service).
+     * A retry after a lost response is treated as the SAME fire and is
+     * swallowed instead of being emitted twice. Optional.
+     */
+    fireId?: string;
 }
 
 // ── Offline-session wake ───────────────────────────────────────────
@@ -706,6 +723,25 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Invalid 'deliverAs' — must be 'steer' or 'followUp'" }, { status: 400 });
         }
 
+        // Fire-once dedup: schedule deliveries send a stable fireId; a retry
+        // after a lost response must not emit the trigger a second time.
+        const fireIdClaim = typeof body.fireId === "string" && body.fireId.length > 0 && body.fireId.length <= 200
+            ? body.fireId
+            : null;
+        if (fireIdClaim) {
+            const firstAttempt = await claimFireOnce(sessionId, fireIdClaim);
+            if (!firstAttempt) {
+                log.info(`Duplicate fire "${fireIdClaim}" for session ${sessionId} — already claimed/delivered, skipping`);
+                return Response.json({ ok: true, deduplicated: true });
+            }
+        }
+        const releaseFireClaim = () => {
+            if (fireIdClaim) void releaseFireOnce(sessionId, fireIdClaim);
+        };
+        const confirmFireClaim = () => {
+            if (fireIdClaim) void confirmFireOnce(sessionId, fireIdClaim);
+        };
+
         // A `runner-listener:<listenerId>` pseudo-session is a runner-level
         // auto-spawn listener — there is no real session to deliver into.
         // Fires addressed to it (the time service's cron/at/timer deliveries)
@@ -715,11 +751,13 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             const parsed = parseRunnerListenerSessionId(sessionId);
             const runnerData = parsed ? await getRunnerData(parsed.runnerId).catch(() => null) : null;
             if (!parsed || !runnerData || runnerData.userId !== identity.userId) {
+                releaseFireClaim();
                 return Response.json({ error: "Listener not found" }, { status: 404 });
             }
             const listener = (await listRunnerTriggerListeners(parsed.runnerId))
                 .find((entry) => entry.listenerId === parsed.listenerId);
             if (!listener) {
+                releaseFireClaim();
                 return Response.json({ error: "Listener not found" }, { status: 404 });
             }
             const listenerTriggerId = `ext_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
@@ -736,8 +774,10 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             if (!result.spawned) {
                 // 503 (not 404): the listener still exists — the caller's
                 // schedule must retry, not treat the schedule as deleted.
+                releaseFireClaim();
                 return Response.json({ error: "Failed to spawn listener session — retry delivery" }, { status: 503 });
             }
+            confirmFireClaim();
             return Response.json({ ok: true, triggerId: listenerTriggerId, spawnedSessionId: result.sessionId });
         }
 
@@ -753,6 +793,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             // No live record and nothing durable to resume — the session is
             // genuinely gone. Callers treat 404 as "start fresh work": the time
             // service spawns a replacement session for the schedule.
+            releaseFireClaim();
             return Response.json({ error: "Session not found or not connected" }, { status: 404 });
         }
 
@@ -795,9 +836,11 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                 log.info(`External trigger ${triggerId} delivered to session ${sessionId}`);
                 void Promise.resolve(pushTriggerHistory(sessionId, historyEntry)).catch(() => {});
                 broadcastToSessionViewers(sessionId, "trigger_delivered", { triggerId });
+                confirmFireClaim();
                 return Response.json({ ok: true, triggerId });
             } catch (err) {
                 log.error(`Failed to deliver trigger ${triggerId} to session ${sessionId}:`, err);
+                releaseFireClaim();
                 return Response.json({ error: "Failed to deliver trigger to session" }, { status: 502 });
             }
         }
@@ -808,6 +851,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             log.info(`External trigger ${triggerId} delivered cross-node to session ${sessionId}`);
             void Promise.resolve(pushTriggerHistory(sessionId, historyEntry)).catch(() => {});
             broadcastToSessionViewers(sessionId, "trigger_delivered", { triggerId });
+            confirmFireClaim();
             return Response.json({ ok: true, triggerId });
         }
 
@@ -827,6 +871,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             // to an unknown or foreign runner (cross-user command injection).
             if (!wakeRunnerData || wakeRunnerData.userId !== identity.userId) {
                 log.warn(`wake: runner ${target.runnerId} is missing or owned by a different user — refusing wake for session ${sessionId}`);
+                releaseFireClaim();
                 return Response.json({ error: "Session not found or not connected" }, { status: 404 });
             }
             const runnerReachable = !!getLocalRunnerSocket(target.runnerId) || !!wakeRunnerData;
@@ -841,6 +886,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
                 // to come back.
                 log.info(`External trigger ${triggerId}: runner ${target.runnerId} unreachable — caller should retry`);
             }
+            releaseFireClaim();
             return Response.json(
                 {
                     error: runnerReachable
@@ -852,6 +898,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             );
         }
 
+        releaseFireClaim();
         return Response.json(
             { error: "Session is registered but not currently connected" },
             { status: 503 },

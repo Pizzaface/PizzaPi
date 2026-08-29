@@ -365,4 +365,42 @@ describe("registerTuiSession parent resolution", () => {
             runnerName: "Persisted Runner",
         });
     });
+
+    it("inherits the parent's runner association when the child has none (subagent mirror)", async () => {
+        const socket = {
+            join: async () => {},
+            data: {},
+        } as any;
+
+        // Parent registered normally with a runner association.
+        store.set(
+            "__hash__:pizzapi:sio:session:parent-on-runner",
+            JSON.stringify({
+                sessionId: "parent-on-runner",
+                userId: "u1",
+                runnerId: "runner-1",
+                runnerName: "My Runner",
+            }),
+        );
+
+        await registerTuiSession(socket, "/repo", {
+            sessionId: "subagent-child",
+            userId: "u1",
+            userName: "User",
+            isEphemeral: true,
+            parentSessionId: "parent-on-runner",
+        });
+
+        const sessionHash = JSON.parse(
+            store.get("__hash__:pizzapi:sio:session:subagent-child") ?? "{}",
+        ) as Record<string, string>;
+        expect(sessionHash.runnerId).toBe("runner-1");
+        expect(sessionHash.runnerName).toBe("My Runner");
+
+        // Durable association persisted so it survives relay restarts.
+        expect(JSON.parse(store.get("pizzapi:sio:runner-assoc:subagent-child") ?? "null")).toEqual({
+            runnerId: "runner-1",
+            runnerName: "My Runner",
+        });
+    });
 });

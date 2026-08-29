@@ -221,6 +221,91 @@ describe("cron delivery retry and durable state", () => {
         expect(JSON.parse(fires[0]!.body).payload.iteration).toBe(4);
     });
 
+    test("subscription removal is retried on transient failure (a lost removal resurrects the schedule)", async () => {
+        setupEnv();
+        let deleteCount = 0;
+        const calls = routedFetch((url, init) => {
+            const method = init?.method ?? "GET";
+            if (method === "POST" && url.endsWith("/trigger")) return { status: 200 };
+            if (method === "DELETE") {
+                deleteCount++;
+                return { status: deleteCount < 3 ? 503 : 200 };
+            }
+            return { status: 404 };
+        });
+        service = new TimeService([10, 20], 30_000, 15_000, 5); // 5ms removal-retry delay
+
+        service.reconcileSubscriptions([
+            entry("sess-1", "time:timer_fired", { duration: "0.01s" }, "sub-1"),
+        ]);
+
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(deletes(calls)).toHaveLength(3); // 503, 503, 200
+    });
+
+    test("a snapshot re-apply during an in-flight one-shot fire does not double-fire", async () => {
+        setupEnv();
+        let posts = 0;
+        globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+            const method = init?.method ?? "GET";
+            const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+            if (method === "POST" && url.endsWith("/trigger")) {
+                posts++;
+                await new Promise((resolve) => setTimeout(resolve, 40)); // delivery in flight
+                return new Response(null, { status: 200 });
+            }
+            return new Response(null, { status: 200 }); // DELETE etc.
+        }) as typeof fetch;
+        service = new TimeService([10, 20], 30_000, 15_000, 5);
+
+        const sub = entry("sess-1", "time:timer_fired", { duration: "0.01s" }, "sub-1");
+        service.reconcileSubscriptions([sub]);
+        await new Promise((resolve) => setTimeout(resolve, 15)); // fired, delivery in flight
+        service.reconcileSubscriptions([sub]); // snapshot re-apply mid-flight
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        expect(posts).toBe(1);
+    });
+
+    test("schedule deliveries carry a stable fireId across retries", async () => {
+        setupEnv();
+        const calls = mockFetch([503, 200]);
+        service = new TimeService([10, 20]);
+
+        service.reconcileSubscriptions([
+            entry("sess-1", "time:timer_fired", { duration: "0.01s" }, "sub-1"),
+        ]);
+
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        const fired = posts(calls);
+        expect(fired).toHaveLength(2);
+        const first = JSON.parse(fired[0]!.body).fireId;
+        expect(typeof first).toBe("string");
+        expect(JSON.parse(fired[1]!.body).fireId).toBe(first); // same fire, retried — not a new fire id
+    });
+
+    test("a legacy type-wide unsubscribe delta disarms every cron the session holds", async () => {
+        const home = setupEnv();
+        const calls = routedFetch(() => ({ status: 503 })); // deliveries would fail — schedule must be DISARMED, not retrying
+        service = new TimeService([10, 20], 10, 15_000, 5);
+
+        service.reconcileSubscriptions([
+            entry("sess-1", "time:cron", { cron: "0 9 * * *", message: "a" }, "sub-a"),
+            entry("sess-1", "time:cron", { cron: "0 12 * * *", message: "b" }, "sub-b"),
+        ]);
+        expect(JSON.parse(readFileSync(join(home, ".pizzapi", "time-service-state.json"), "utf-8"))).toEqual({
+            "sub-a": expect.anything(),
+            "sub-b": expect.anything(),
+        });
+
+        // Type-wide DELETE without subscriptionId: server emits ONE synthetic delta.
+        service.reconcileSubscriptions([
+            entry("sess-1", "time:cron", undefined, "legacy:all:time:cron"),
+        ], { mode: "delta", action: "unsubscribe" });
+
+        // Both durable entries dropped — both crons disarmed.
+        expect(JSON.parse(readFileSync(join(home, ".pizzapi", "time-service-state.json"), "utf-8"))).toEqual({});
+    });
+
     test("cron owner gone: spawns a replacement session, re-owns the cron under it, and stops the old cron", async () => {
         const home = setupEnv();
         const calls = routedFetch((url) => {

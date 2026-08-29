@@ -53,6 +53,15 @@ const RETRY_BACKOFF_MS = [60_000, 5 * 60_000, 15 * 60_000, 30 * 60_000] as const
 /** How many times to retry handing a recurring schedule to its new owner. */
 const RESUBSCRIBE_ATTEMPTS = 3;
 
+/** How many times to retry retiring a fired/migrated subscription server-side.
+ *  A lost removal re-arms the schedule from the durable snapshot on the next
+ *  restart — a resurrected cron/at fires alongside its replacement. */
+const REMOVE_ATTEMPTS = 3;
+
+/** Pause between subscription-removal retries. Short — removal is quick, and
+ *  the caller is already past the point where the schedule did its job. */
+const REMOVE_RETRY_DELAY_MS = 5_000;
+
 /** Outcome of a trigger delivery attempt. */
 type DeliveryResult = "delivered" | "retry" | "gone";
 
@@ -167,6 +176,9 @@ interface CronEntry {
     delivering: boolean;
     /** Consecutive failed delivery attempts, for backoff. */
     retryCount: number;
+    /** Fire id memoized for the current fire-cycle, so delivery retries reuse
+     *  the same fireId even though nextFireAt moves with the backoff. */
+    currentFireId?: string;
 }
 
 // ── Static definitions ───────────────────────────────────────────────────────
@@ -318,6 +330,10 @@ export class TimeService implements ServiceHandler {
     #timers = new Map<string, TimerEntry>();
     #crons = new Map<string, CronEntry>();
     #cronIterations = new Map<string, number>();
+    /** One-shot runtime keys whose fire is currently in flight: the entry was
+     *  already consumed, so a re-applying snapshot must not re-arm it (would
+     *  fire the same schedule twice). */
+    #inFlightOneShots = new Set<string>();
     /** True after dispose() — in-flight fires must not re-arm or spawn replacements. */
     #disposed = false;
     /** Lazily-loaded durable cron state, keyed by subscriptionId. */
@@ -327,6 +343,7 @@ export class TimeService implements ServiceHandler {
         private readonly retryBackoffMs: readonly number[] = RETRY_BACKOFF_MS,
         private readonly cronCheckIntervalMs: number = 30_000,
         private readonly deliveryTimeoutMs: number = DELIVERY_TIMEOUT_MS,
+        private readonly removeRetryDelayMs: number = REMOVE_RETRY_DELAY_MS,
     ) {}
 
     /** Backoff delay for a failed delivery attempt, capped at the last entry. */
@@ -655,12 +672,37 @@ export class TimeService implements ServiceHandler {
     #applySubscription(sub: TriggerSubscriptionEntry, action: "subscribe" | "update" | "unsubscribe"): void {
         const { sessionId, triggerType, params } = sub;
         const subscriptionId = sub.subscriptionId ?? `${sessionId}\0${triggerType}`;
+        if (action === "unsubscribe" && (subscriptionId.startsWith("legacy:all:") || subscriptionId.includes("\0"))) {
+            // Type-wide or fabricated-legacy retirement: the synthetic id
+            // matches no runtime entry — clear every runtime entry this session
+            // holds for the trigger type, or they keep firing after the server
+            // rows are gone.
+            this.#clearRuntimeForSessionType(sessionId, triggerType);
+            return;
+        }
         if (triggerType === "time:timer_fired") {
             this.#handleTimerSubscription(subscriptionId, sessionId, params, action);
         } else if (triggerType === "time:at") {
             this.#handleAtSubscription(subscriptionId, sessionId, params, action);
         } else if (triggerType === "time:cron") {
             this.#handleCronSubscription(subscriptionId, sessionId, params, action);
+        }
+    }
+
+    /** Remove every timer/cron a session holds for one trigger type. */
+    #clearRuntimeForSessionType(sessionId: string, triggerType: string): void {
+        for (const [key, timer] of this.#timers) {
+            if (timer.sessionId !== sessionId || timer.triggerType !== triggerType) continue;
+            clearTimeout(timer.handle);
+            this.#timers.delete(key);
+            if (triggerType === "time:timer_fired") this.#dropTimerState(timer.subscriptionId);
+        }
+        for (const [key, cron] of this.#crons) {
+            if (cron.sessionId !== sessionId) continue;
+            clearInterval(cron.handle);
+            this.#crons.delete(key);
+            this.#cronIterations.delete(key);
+            this.#dropCronState(cron.subscriptionId);
         }
     }
 
@@ -676,6 +718,14 @@ export class TimeService implements ServiceHandler {
 
         if (action === "unsubscribe") {
             this.#dropTimerState(subscriptionId);
+            return;
+        }
+
+        if (this.#inFlightOneShots.has(key)) {
+            // A fire for this subscription is in flight (its runtime entry was
+            // already consumed). Re-arming from a snapshot would fire the same
+            // schedule twice.
+            logInfo(`[time] timer ${subscriptionId} fire already in flight — skipping re-arm`);
             return;
         }
 
@@ -707,10 +757,14 @@ export class TimeService implements ServiceHandler {
         const summary = message ?? (label ? `Timer "${label}" fired after ${formatDuration(durationMs)}` : `Timer fired after ${formatDuration(durationMs)}`);
         const buildPayload = () => ({ duration: durationStr, durationMs, firedAt: new Date().toISOString(), label, message });
         const replacementPrompt = buildReplacementPrompt(`timer "${durationStr}"`, label, message);
+        // Stable fire id: the absolute fire time distinguishes this fire from
+        // any future re-created schedule with the same subscription id.
+        const fireId = `os:${subscriptionId}:${fireAt}`;
         const fire = () => {
             this.#timers.delete(key);
             this.#dropTimerState(subscriptionId);
-            this.#fireOneShotWithRetry(key, sessionId, subscriptionId, "time:timer_fired", buildPayload, summary, label, 0, replacementPrompt, cwd, resumePath);
+            this.#inFlightOneShots.add(key);
+            this.#fireOneShotWithRetry(key, sessionId, subscriptionId, "time:timer_fired", buildPayload, summary, label, 0, replacementPrompt, cwd, resumePath, fireId);
         };
 
         const handle = this.#setTimeoutUntil(key, fireAt, fire);
@@ -752,6 +806,11 @@ export class TimeService implements ServiceHandler {
 
         if (action === "unsubscribe") return;
 
+        if (this.#inFlightOneShots.has(key)) {
+            logInfo(`[time] at ${subscriptionId} fire already in flight — skipping re-arm`);
+            return;
+        }
+
         const atStr = typeof params?.at === "string" ? params.at : null;
         if (!atStr) {
             logWarn(`[time] at subscription from ${sessionId} missing 'at' param`);
@@ -772,9 +831,11 @@ export class TimeService implements ServiceHandler {
         const summary = message ?? (label ? `Scheduled "${label}" fired` : `Scheduled trigger fired (target: ${atStr})`);
         const buildPayload = () => ({ at: new Date(targetMs).toISOString(), firedAt: new Date().toISOString(), label, message });
         const replacementPrompt = buildReplacementPrompt(`scheduled time ${atStr}`, label, message);
+        const fireId = `at:${subscriptionId}:${targetMs}`;
         const fire = () => {
             this.#timers.delete(key);
-            this.#fireOneShotWithRetry(key, sessionId, subscriptionId, "time:at", buildPayload, summary, label, 0, replacementPrompt, cwd, resumePath);
+            this.#inFlightOneShots.add(key);
+            this.#fireOneShotWithRetry(key, sessionId, subscriptionId, "time:at", buildPayload, summary, label, 0, replacementPrompt, cwd, resumePath, fireId);
         };
 
         const delayMs = targetMs - Date.now();
@@ -804,6 +865,14 @@ export class TimeService implements ServiceHandler {
 
         const existing = this.#crons.get(key);
         if (existing) {
+            if (existing.delivering) {
+                // A fire/migration is in flight for this exact cron — a
+                // re-applying snapshot must not recreate the entry: the fresh
+                // entry would have delivering=false and the 30s checker would
+                // double-fire against the past nextFireAt.
+                logInfo(`[time] cron ${subscriptionId} delivery in flight — skipping re-arm`);
+                return;
+            }
             clearInterval(existing.handle);
             this.#crons.delete(key);
         }
@@ -870,18 +939,29 @@ export class TimeService implements ServiceHandler {
 
             current.delivering = true;
             const nextIteration = (this.#cronIterations.get(key) ?? 0) + 1;
+            // Stable fire id across this fire's delivery retries (memoized on
+            // the entry — nextFireAt moves with the backoff, the id must not).
+            // Includes the scheduled fire time so cancelling and re-creating an
+            // identical schedule (same id, iteration restarts at 1) gets a fresh
+            // claim instead of being swallowed by the old schedule's dedup TTL
+            // — the Schedules panel's cancel/recreate flow.
+            if (!current.currentFireId) {
+                current.currentFireId = `cron:${subscriptionId}:${nextIteration}:${current.nextFireAt}`;
+            }
+            const fireId = current.currentFireId;
             void this.#deliverToSession(sessionId, "time:cron", {
                 cron: cronStr,
                 firedAt: new Date().toISOString(),
                 label,
                 message,
                 iteration: nextIteration,
-            }, message ?? (label ? `Cron "${label}" fired (#${nextIteration})` : `Cron "${cronStr}" fired (#${nextIteration})`)).then(async (result) => {
+            }, message ?? (label ? `Cron "${label}" fired (#${nextIteration})` : `Cron "${cronStr}" fired (#${nextIteration})`), fireId).then(async (result) => {
                 const cur = this.#crons.get(key);
                 if (!cur) return; // unsubscribed while delivering
 
                 if (result === "delivered") {
                     cur.delivering = false;
+                    cur.currentFireId = undefined;
                     this.#cronIterations.set(key, nextIteration);
                     cur.retryCount = 0;
                     const nextTime = nextCronTime(cron, now);
@@ -913,6 +993,7 @@ export class TimeService implements ServiceHandler {
                         buildReplacementPrompt(`cron "${cronStr}"`, label, message, true),
                         cwd,
                         resumePath,
+                        `spawn:cron:${subscriptionId}:${nextIteration}`,
                     );
                     const afterSpawn = this.#crons.get(key);
                     if (!afterSpawn) return; // unsubscribed while migrating
@@ -930,31 +1011,31 @@ export class TimeService implements ServiceHandler {
                         });
                         const stillMounted = this.#crons.get(key);
                         if (!stillMounted) return;
-                        stillMounted.delivering = false;
                         if (migrated) {
-                            // Retire the old subscription. It is durable, so leaving
-                            // it would restore it on the next reconnect snapshot,
-                            // re-arm this cron against a dead session, and migrate
-                            // AGAIN — one extra subscription and session per restart.
+                            // Retire the old subscription BEFORE releasing the
+                            // migration lock: removal (several timed attempts)
+                            // must not overlap the 30s checker, which would see
+                            // the still-past nextFireAt and migrate AGAIN.
                             await this.#removeSubscription(sessionId, "time:cron", subscriptionId);
                             logInfo(`[time] cron "${cronStr}" owner ${sessionId} is gone — re-owned by new session ${spawn.sessionId}`);
                             clearInterval(stillMounted.handle);
                             this.#crons.delete(key);
                             this.#cronIterations.delete(key);
                             this.#dropCronState(subscriptionId);
-                        } else {
-                            // The fire ran (a session is doing the work) but the
-                            // recurrence could not be handed over. Keep THIS cron
-                            // armed at its next natural time so the schedule is not
-                            // downgraded to a one-off, and try the handover again.
-                            const nextTime = nextCronTime(cron, Date.now());
-                            if (nextTime) {
-                                stillMounted.nextFireAt = nextTime;
-                                stillMounted.retryCount = 0;
-                                this.#persistCron(subscriptionId, nextTime, nextIteration);
-                                this.#cronIterations.set(key, nextIteration);
-                                logWarn(`[time] cron "${cronStr}" ran as ${spawn.sessionId} but could not be re-owned; keeping the old schedule armed for ${new Date(nextTime).toISOString()}`);
-                            }
+                            return; // entry retired — nothing to release
+                        }
+                        // The fire ran (a session is doing the work) but the
+                        // recurrence could not be handed over. Keep THIS cron
+                        // armed at its next natural time so the schedule is not
+                        // downgraded to a one-off, and try the handover again.
+                        stillMounted.delivering = false;
+                        const nextTime = nextCronTime(cron, Date.now());
+                        if (nextTime) {
+                            stillMounted.nextFireAt = nextTime;
+                            stillMounted.retryCount = 0;
+                            this.#persistCron(subscriptionId, nextTime, nextIteration);
+                            this.#cronIterations.set(key, nextIteration);
+                            logWarn(`[time] cron "${cronStr}" ran as ${spawn.sessionId} but could not be re-owned; keeping the old schedule armed for ${new Date(nextTime).toISOString()}`);
                         }
                     } else if (spawn.failure === "permanent") {
                         afterSpawn.delivering = false;
@@ -1010,8 +1091,9 @@ export class TimeService implements ServiceHandler {
         type: string,
         payload: Record<string, unknown>,
         summary?: string,
+        fireId?: string,
     ): Promise<DeliveryResult> {
-        const result = await this.#deliverToSession(sessionId, type, payload, summary);
+        const result = await this.#deliverToSession(sessionId, type, payload, summary, fireId);
         if (result === "delivered") {
             await this.#removeSubscription(sessionId, type, subscriptionId);
         }
@@ -1038,9 +1120,11 @@ export class TimeService implements ServiceHandler {
         replacementPrompt: string,
         cwd: string | undefined,
         resumePath: string | undefined,
+        fireId: string,
     ): void {
-        void this.#fireOneShot(sessionId, subscriptionId, triggerType, buildPayload(), summary).then(async (result) => {
+        void this.#fireOneShot(sessionId, subscriptionId, triggerType, buildPayload(), summary, fireId).then(async (result) => {
             if (this.#disposed) return;
+            this.#inFlightOneShots.delete(key);
             if (result === "delivered") return;
             if (result === "gone") {
                 if (sessionId.startsWith("runner-listener:")) {
@@ -1050,7 +1134,7 @@ export class TimeService implements ServiceHandler {
                     logWarn(`[time] ${triggerType} listener ${sessionId} no longer exists — dropping`);
                     return;
                 }
-                const spawn = await this.#spawnReplacementSession(replacementPrompt, cwd, resumePath);
+                const spawn = await this.#spawnReplacementSession(replacementPrompt, cwd, resumePath, `spawn:${fireId}`);
                 if ("sessionId" in spawn) {
                     // The one-shot has been handed to a live session; retire the
                     // subscription so it cannot re-arm on the next restart.
@@ -1072,7 +1156,8 @@ export class TimeService implements ServiceHandler {
             logWarn(`[time] ${triggerType} delivery to ${sessionId} failed; retrying in ${formatDuration(delay)}`);
             const handle = this.#setTimeoutUntil(key, fireAt, () => {
                 this.#timers.delete(key);
-                this.#fireOneShotWithRetry(key, sessionId, subscriptionId, triggerType, buildPayload, summary, label, retryCount + 1, replacementPrompt, cwd, resumePath);
+                this.#inFlightOneShots.add(key);
+                this.#fireOneShotWithRetry(key, sessionId, subscriptionId, triggerType, buildPayload, summary, label, retryCount + 1, replacementPrompt, cwd, resumePath, fireId);
             });
             this.#timers.set(key, { subscriptionId, handle, fireAt, sessionId, triggerType, label });
         });
@@ -1092,6 +1177,7 @@ export class TimeService implements ServiceHandler {
         prompt: string,
         cwd: string | undefined,
         resumePath?: string,
+        idempotencyKey?: string,
     ): Promise<{ sessionId: string } | { failure: "transient" | "permanent" }> {
         const apiKey = getApiKey();
         const runnerId = getOwnRunnerId();
@@ -1109,6 +1195,7 @@ export class TimeService implements ServiceHandler {
                     body: JSON.stringify({
                         runnerId,
                         prompt,
+                        ...(idempotencyKey ? { idempotencyKey } : {}),
                         ...(withCwd ? { cwd: withCwd } : {}),
                         // ponytail: a stale/deleted transcript just logs a warn
                         // worker-side and the session starts fresh — no need to
@@ -1185,6 +1272,7 @@ export class TimeService implements ServiceHandler {
         type: string,
         payload: Record<string, unknown>,
         summary?: string,
+        fireId?: string,
     ): Promise<DeliveryResult> {
         const apiKey = getApiKey();
         if (!apiKey) {
@@ -1205,6 +1293,9 @@ export class TimeService implements ServiceHandler {
                     source: "time",
                     deliverAs: "followUp",
                     summary,
+                    // Stable fire id so a retry after a lost response is
+                    // deduplicated server-side instead of delivered twice.
+                    ...(fireId ? { fireId } : {}),
                     // A schedule firing must reach the session that created it even
                     // if its worker has exited — the relay wakes it (resume) and
                     // the retry loop delivers into the awakened session.
@@ -1229,7 +1320,10 @@ export class TimeService implements ServiceHandler {
         }
     }
 
-    /** Remove a fired one-shot subscription server-side. */
+    /** Remove a fired/migrated subscription server-side. Retried because a
+     *  lost removal resurrects the schedule on the next restart snapshot: the
+     *  old cron re-arms against a dead session, fires again, and spawns a
+     *  duplicate replacement session. */
     async #removeSubscription(sessionId: string, triggerType: string, subscriptionId: string): Promise<void> {
         // Legacy entries without a real subscriptionId use a fabricated
         // "<sessionId>\0<triggerType>" key — skip targeted deletion for those.
@@ -1238,16 +1332,24 @@ export class TimeService implements ServiceHandler {
         const apiKey = getApiKey();
         if (!apiKey) return;
 
-        try {
-            const res = await fetch(
-                `${resolveRelayUrl()}/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions/${encodeURIComponent(triggerType)}?subscriptionId=${encodeURIComponent(subscriptionId)}`,
-                { method: "DELETE", headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(this.deliveryTimeoutMs) },
-            );
-            if (!res.ok) {
-                logWarn(`[time] failed to remove fired subscription ${subscriptionId}: ${res.status} ${res.statusText}`);
+        const url = `${resolveRelayUrl()}/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions/${encodeURIComponent(triggerType)}?subscriptionId=${encodeURIComponent(subscriptionId)}`;
+        for (let attempt = 0; attempt < REMOVE_ATTEMPTS; attempt++) {
+            try {
+                const res = await fetch(url, { method: "DELETE", headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(this.deliveryTimeoutMs) });
+                if (res.ok) return;
+                // A 4xx fails identically next time — don't spend the retries.
+                if (res.status >= 400 && res.status < 500 && res.status !== 429) {
+                    logWarn(`[time] failed to remove subscription ${subscriptionId}: ${res.status} ${res.statusText} — not retryable`);
+                    return;
+                }
+                logWarn(`[time] removing subscription ${subscriptionId} failed (${res.status}), attempt ${attempt + 1}/${REMOVE_ATTEMPTS}`);
+            } catch (err) {
+                logWarn(`[time] removing subscription ${subscriptionId} errored, attempt ${attempt + 1}/${REMOVE_ATTEMPTS}: ${err}`);
             }
-        } catch (err) {
-            logWarn(`[time] error removing fired subscription ${subscriptionId}: ${err}`);
+            if (attempt < REMOVE_ATTEMPTS - 1) {
+                await new Promise((resolve) => setTimeout(resolve, this.removeRetryDelayMs));
+            }
         }
+        logError(`[time] failed to remove subscription ${subscriptionId} after ${REMOVE_ATTEMPTS} attempts — it may re-arm and duplicate on the next restart`);
     }
 }
