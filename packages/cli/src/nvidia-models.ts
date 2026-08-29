@@ -25,11 +25,14 @@ const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
  * NVIDIA honours OpenAI-style `reasoning_effort`, but pi-ai's catalog marks
  * every NVIDIA model `supportsReasoningEffort: false`, so the thinking-level
  * control silently clamps back to "off". The API only accepts low|medium|high
- * — pi's "minimal" is a 400 — so map it (and the xhigh/max levels NVIDIA has no
- * equivalent for) to null, which hides them. "off" sends no parameter at all,
- * i.e. the model's own default.
+ * — pi's "minimal" is a 400 — so force those three on and map the levels
+ * NVIDIA has no equivalent for (minimal, xhigh, max) to null, which hides
+ * them. "off" sends no parameter at all, i.e. the model's own default.
+ * pi-ai ≥ 0.84.3 ships per-model thinkingLevelMaps (e.g. deepseek entries
+ * null out low/medium); NVIDIA's accepted values are a hard API constraint,
+ * so they win over every upstream or cached value.
  */
-const NVIDIA_THINKING_LEVEL_MAP = { minimal: null, xhigh: null, max: null } as const;
+const NVIDIA_THINKING_LEVEL_MAP = { minimal: null, low: "low", medium: "medium", high: "high", xhigh: null, max: null } as const;
 
 function withReasoningEffort(model: NvidiaModel): NvidiaModel {
     if (!model.reasoning) return model;

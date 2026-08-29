@@ -6,7 +6,7 @@
  * Fetches on mount, on session change, and on trigger_delivered events.
  */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { type TriggerHistoryEntry, getIncompleteTriggers } from "@/components/TriggersPanel";
+import { getIncompleteTriggers, type TriggerHistoryEntry } from "@/attention/trigger-groups";
 
 export interface TriggerCounts {
   /** Incomplete triggers (pending questions, plans, etc.) */
