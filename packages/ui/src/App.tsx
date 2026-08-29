@@ -5727,7 +5727,7 @@ export function App() {
                     </ErrorBoundary>
                   ) : (
                     <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
-                      <SigilProvider sigilDefs={runnerSigilDefs} panels={dynamicPanels} runnerId={activeSessionInfo?.runnerId ?? undefined}>
+                      <SigilProvider sigilDefs={runnerSigilDefs} panels={dynamicPanels} runnerId={activeSessionInfo?.runnerId ?? undefined} sessionCwd={activeSessionInfo?.cwd}>
                       <PizzaPiNavProvider actions={pizzaPiNavActions}>
                       <SessionViewer
                         promptRef={promptRef}
