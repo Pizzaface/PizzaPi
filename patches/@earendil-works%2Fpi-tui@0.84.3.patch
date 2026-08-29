@@ -1,7 +1,9 @@
+diff --git a/dist/terminal.js b/dist/terminal.js
+index de2c7e49c351d2b084f7df1e939070f895eb3225..35ec8c7c76199ef30632eb980c9ae7e9b5f0fdd7 100644
 --- a/dist/terminal.js
 +++ b/dist/terminal.js
-@@ -6,6 +6,100 @@
- import { isNativeModifierPressed } from "./native-modifiers.js";
+@@ -6,6 +6,100 @@ import { isNativeModifierPressed } from "./native-modifiers.js";
+ import { getNativeModuleCandidates } from "./native-module-path.js";
  import { StdinBuffer } from "./stdin-buffer.js";
  const cjsRequire = createRequire(import.meta.url);
 +// PATCH(pizzapi): Windows console output lifecycle helpers
@@ -101,7 +103,7 @@
  const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
  const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
  const TERMINAL_PROGRESS_CLEAR_SEQUENCE = "\x1b]9;4;0\x07";
-@@ -69,6 +163,7 @@
+@@ -69,6 +163,7 @@ export class ProcessTerminal {
      stdinBuffer;
      stdinDataHandler;
      progressInterval;
@@ -109,7 +111,7 @@
      writeLogPath = (() => {
          const env = process.env.PI_TUI_WRITE_LOG || "";
          if (!env)
-@@ -115,11 +210,30 @@
+@@ -115,10 +210,29 @@ export class ProcessTerminal {
          // events that lose modifier information. Must run AFTER setRawMode(true)
          // since that resets console mode flags.
          this.enableWindowsVTInput();
@@ -119,7 +121,7 @@
          // See: https://sw.kovidgoyal.net/kitty/keyboard-protocol/
          this.queryAndEnableKittyProtocol();
      }
-     /**
++    /**
 +     * On Windows, set up VT output and UTF-8 code page for Unicode rendering,
 +     * and publish a capability signal for downstream renderers.
 +     */
@@ -136,11 +138,10 @@
 +            // Best-effort: if console API setup fails, leave it alone
 +        }
 +    }
-+    /**
+     /**
       * Set up StdinBuffer to split batched input into individual sequences.
       * This ensures components receive single events, making matchesKey/isKeyRelease work correctly.
-      *
-@@ -370,6 +484,17 @@
+@@ -364,6 +478,17 @@ export class ProcessTerminal {
              process.stdout.removeListener("resize", this.resizeHandler);
              this.resizeHandler = undefined;
          }
