@@ -33,6 +33,7 @@
 import { connectRedisClient, isRedisDisabled, type RedisClient } from "../redis-client.js";
 import { createLogger } from "@pizzapi/tools";
 import { getKysely } from "../auth.js";
+import { createHash } from "node:crypto";
 
 const log = createLogger("trigger-subscription-store");
 
@@ -225,10 +226,25 @@ export async function rehydrateRunnerSubscriptions(runnerId: string): Promise<nu
 
     let restored = 0;
     try {
+        // Heal past duplicates: identical (sessionId, triggerType, runnerId,
+        // params, filters, filterMode) rows must not both come back — a
+        // double-subscribed cron fires twice per tick. Extras are skipped
+        // here and dropped from the durable table.
+        const seen = new Set<string>();
+        const duplicateIds: string[] = [];
         const pipeline = redis.multi();
         for (const row of rows) {
             const sub = parseSubValues(row.sessionId, row.subscriptionJson)[0];
             if (!sub) continue;
+            const identity = `${row.sessionId}|${sub.triggerType}|${sub.runnerId}|${JSON.stringify(sub.params ?? null)}|${JSON.stringify(sub.filters ?? [])}|${sub.filterMode ?? "and"}`;
+            if (seen.has(identity)) {
+                duplicateIds.push(sub.subscriptionId);
+                // Also drop any duplicate field already cached in Redis — the
+                // pipeline below only writes the first row, it never deletes.
+                pipeline.hDel(SESSION_SUBS_KEY(row.sessionId), sub.subscriptionId);
+                continue;
+            }
+            seen.add(identity);
             const sessionKey = SESSION_SUBS_KEY(row.sessionId);
             pipeline.hSet(sessionKey, sub.subscriptionId, row.subscriptionJson);
             pipeline.expire(sessionKey, DEFAULT_TTL_SECONDS);
@@ -241,12 +257,72 @@ export async function rehydrateRunnerSubscriptions(runnerId: string): Promise<nu
             restored++;
         }
         await pipeline.exec();
+        if (duplicateIds.length > 0) {
+            await deleteSubscriptionRows({ subscriptionIds: duplicateIds });
+            log.info(`Pruned ${duplicateIds.length} duplicate trigger subscription(s) for runner ${runnerId} during rehydration`);
+        }
     } catch (err) {
         log.warn("Failed to rehydrate trigger subscriptions into Redis:", err);
         return 0;
     }
     if (restored > 0) log.info(`Rehydrated ${restored} trigger subscription(s) for runner ${runnerId} from durable storage`);
     return restored;
+}
+
+// ── Fire-once dedup (schedule delivery) ─────────────────────────────────
+//
+// A schedule delivery whose HTTP response is lost (timeout, dropped
+// connection) is retried by the time service — but the relay may already
+// have emitted the trigger. A stable fireId supplied by the caller makes
+// the retry idempotent: the first claim wins, retries are swallowed.
+
+/** Short claim TTL: a crash between claim and delivery only swallows the
+ *  retry briefly. Confirmed fires are extended to the full TTL. */
+const FIRE_ONCE_CLAIM_TTL_SECONDS = 120;
+const FIRE_ONCE_CONFIRMED_TTL_SECONDS = 86_400;
+
+function fireOnceKey(sessionId: string, fireId: string): string {
+    return `pizzapi:fire-once:${sessionId}:${fireId}`;
+}
+
+/** True the first time a (session, fireId) is seen within its TTL; false when
+ *  this fire was already claimed/delivered. Best-effort: without Redis the
+ *  fire proceeds (at-least-once semantics). */
+export async function claimFireOnce(sessionId: string, fireId: string): Promise<boolean> {
+    const redis = await getClient();
+    if (!redis) return true;
+    try {
+        const claimed = await redis.set(fireOnceKey(sessionId, fireId), "claimed", {
+            NX: true,
+            EX: FIRE_ONCE_CLAIM_TTL_SECONDS,
+        });
+        return claimed !== null;
+    } catch (err) {
+        log.warn("Failed to claim fire-once key (best-effort):", err);
+        return true;
+    }
+}
+
+/** Extend a claimed fire to the full TTL after successful delivery. */
+export async function confirmFireOnce(sessionId: string, fireId: string): Promise<void> {
+    const redis = await getClient();
+    if (!redis) return;
+    try {
+        await redis.expire(fireOnceKey(sessionId, fireId), FIRE_ONCE_CONFIRMED_TTL_SECONDS);
+    } catch (err) {
+        log.warn("Failed to confirm fire-once key (best-effort):", err);
+    }
+}
+
+/** Release a claim after a failed delivery so the caller's retry is not swallowed. */
+export async function releaseFireOnce(sessionId: string, fireId: string): Promise<void> {
+    const redis = await getClient();
+    if (!redis) return;
+    try {
+        await redis.del(fireOnceKey(sessionId, fireId));
+    } catch (err) {
+        log.warn("Failed to release fire-once key (best-effort):", err);
+    }
 }
 
 let _redis: RedisClient | null = null;
@@ -368,8 +444,51 @@ interface SubscriptionValue {
 
 export interface SessionTriggerSubscription extends SubscriptionValue {}
 
+/**
+ * Order-independent JSON canonicalization (sorted object keys). Used for
+ * subscription identity: two semantically identical param objects must
+ * produce the same identity string regardless of key insertion order.
+ */
+function canonicalJson(value: unknown): string {
+    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+    if (value !== null && typeof value === "object") {
+        const entries = Object.entries(value as Record<string, unknown>)
+            .filter(([, v]) => v !== undefined)
+            .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+        return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
+    }
+    return JSON.stringify(value ?? null);
+}
+
+/** Canonical identity string for a subscription (used for dedup and id derivation). */
+function subIdentity(
+    triggerType: string,
+    runnerId: string,
+    params: SubscriptionParams | undefined,
+    filters: SubscriptionFilter[] | undefined,
+    filterMode: SubscriptionFilterMode | undefined,
+): string {
+    // Filters are order-insensitive — sort them so {a},{b} and {b},{a} match.
+    const sortedFilters = [...(filters ?? [])].sort(
+        (a, b) => a.field.localeCompare(b.field) || canonicalJson(a).localeCompare(canonicalJson(b)),
+    );
+    return canonicalJson({ triggerType, runnerId, params: params ?? null, filters: sortedFilters, filterMode: filterMode ?? "and" });
+}
+
+/**
+ * Stable fabricated id for legacy-format rows (no id in the stored JSON).
+ * Derived deterministically from the hash field so ids are stable across
+ * reads — snapshot runtime keys and persisted cron state survive restarts.
+ * (The fabricated id still does not equal the hash field, so targeted
+ * deletion of legacy rows by id is not possible — known limitation.)
+ */
 function generateSubscriptionId(sessionId: string, triggerType: string): string {
-    return `sub:${sessionId}:${triggerType}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+    return `sub:legacy:${sessionId}:${triggerType}`;
+}
+
+function deterministicSubscriptionId(triggerType: string, runnerId: string, params: SubscriptionParams | undefined, filters: SubscriptionFilter[] | undefined, filterMode: SubscriptionFilterMode | undefined): string {
+    const hash = createHash("sha256").update(subIdentity(triggerType, runnerId, params, filters, filterMode)).digest("hex").slice(0, 16);
+    return `sub:${triggerType}:${hash}`;
 }
 
 function isLegacySubscriptionCollection(parsed: unknown): parsed is { triggerType: string; runnerId: string; params?: SubscriptionParams; filters?: SubscriptionFilter[]; filterMode?: SubscriptionFilterMode }[] {
@@ -490,7 +609,41 @@ export async function subscribeSessionToTrigger(
     const runnerSessionsKey = RUNNER_SESSIONS_INDEX_KEY(runnerId);
 
     try {
-        const subscriptionId = generateSubscriptionId(sessionId, triggerType);
+        // Idempotent subscribe: re-subscribing with identical (triggerType,
+        // runnerId, params, filters, filterMode) must reuse the existing
+        // subscription, not add a second row — a double-subscribed time:cron
+        // fires twice per tick. Extra identical rows left by past duplicates
+        // are pruned here too.
+        const identical = subIdentity(triggerType, runnerId, params, filters, filterMode);
+        const hash = await redis.hGetAll(sessionKey);
+        const dupFields: string[] = [];
+        let reuseId: string | null = null;
+        for (const [field, raw] of Object.entries(hash)) {
+            const sub = parseSubValues(field, raw).find((e) => e.triggerType === triggerType);
+            if (!sub) continue;
+            const have = subIdentity(sub.triggerType, sub.runnerId, sub.params, sub.filters, sub.filterMode);
+            if (have !== identical) continue;
+            // Only reusable when the hash field IS the subscriptionId (new
+            // format) — legacy rows have fabricated ids we can't hDel by id.
+            if (reuseId === null && field === sub.subscriptionId) reuseId = field;
+            dupFields.push(field);
+        }
+        if (reuseId !== null) {
+            dupFields.splice(dupFields.indexOf(reuseId), 1);
+            const pipeline = redis.multi();
+            pipeline.expire(sessionKey, ttlSeconds);
+            pipeline.expire(indexKey, ttlSeconds);
+            pipeline.expire(runnerSessionsKey, ttlSeconds);
+            for (const field of dupFields) pipeline.hDel(sessionKey, field);
+            await pipeline.exec();
+            if (dupFields.length > 0) await deleteSubscriptionRows({ subscriptionIds: dupFields });
+            return reuseId;
+        }
+
+        // Deterministic id: two concurrent identical subscribes write the SAME
+        // hash field, so the read-then-write race collapses instead of minting
+        // duplicate schedules in different fields.
+        const subscriptionId = deterministicSubscriptionId(triggerType, runnerId, params, filters, filterMode);
         const value = serializeSubValue({
             subscriptionId,
             triggerType,

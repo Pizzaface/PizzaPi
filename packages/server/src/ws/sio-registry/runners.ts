@@ -158,6 +158,15 @@ export async function registerRunner(
         }
         // Re-registration (existing secret matched) or first claim: clean up any
         // stale local socket association for this runnerId.
+        // Two sockets reusing the same persistent runnerId must not BOTH hold
+        // schedule state: the map keeps only the newest, but the stale socket
+        // (already in the runner room, already reconciled) keeps running —
+        // every cron/timer would fire once per live socket. Disconnect it.
+        const staleSocket = localRunnerSockets.get(requestedId);
+        if (staleSocket && staleSocket !== socket && staleSocket.connected) {
+            log.warn(`Runner ${requestedId} re-registered — disconnecting stale socket`);
+            staleSocket.disconnect();
+        }
         localRunnerSockets.delete(requestedId);
         runnerId = requestedId;
     } else {

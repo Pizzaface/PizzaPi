@@ -17,6 +17,9 @@ import {
     refreshRunnerSubscriptionTtls,
     sessionHasScheduleSubscription,
     isDurableTriggerType,
+    claimFireOnce,
+    confirmFireOnce,
+    releaseFireOnce,
     _injectRedisForTesting,
     _resetRedisForTesting,
 } from "./trigger-subscription-store";
@@ -26,6 +29,7 @@ import {
 const hashes = new Map<string, Map<string, string>>();
 const sets = new Map<string, Set<string>>();
 const expirations = new Map<string, number>();
+const strings = new Map<string, string>();
 
 const mockRedisClient = {
     isOpen: true,
@@ -66,7 +70,14 @@ const mockRedisClient = {
     del: mock((key: string) => {
         hashes.delete(key);
         sets.delete(key);
+        strings.delete(key);
         return Promise.resolve(1);
+    }),
+    set: mock((key: string, value: string, opts?: { NX?: boolean; EX?: number }) => {
+        if (opts?.NX && strings.has(key)) return Promise.resolve(null);
+        strings.set(key, value);
+        if (opts?.EX) expirations.set(key, opts.EX);
+        return Promise.resolve("OK");
     }),
     multi: mock(() => {
         const ops: Array<() => Promise<unknown>> = [];
@@ -107,6 +118,7 @@ function resetState() {
     hashes.clear();
     sets.clear();
     expirations.clear();
+    strings.clear();
     _injectRedisForTesting(mockRedisClient);
 }
 
@@ -279,6 +291,79 @@ describe("multi-subscription support", () => {
 
         const subs = await getSubscriptionsForSessionTrigger("session-1", "svc:event");
         expect(subs).toHaveLength(2);
+    });
+});
+
+describe("idempotent subscribe (duplicate prevention)", () => {
+    beforeEach(resetState);
+
+    test("re-subscribing with identical params reuses the subscriptionId instead of duplicating", async () => {
+        const first = await subscribeSessionToTrigger("session-1", "runner-A", "time:cron", undefined, { cron: "0 9 * * *", message: "standup" });
+        const second = await subscribeSessionToTrigger("session-1", "runner-A", "time:cron", undefined, { cron: "0 9 * * *", message: "standup" });
+        expect(second).toBe(first);
+        const subs = await listSessionSubscriptions("session-1");
+        expect(subs.filter((s) => s.triggerType === "time:cron")).toHaveLength(1);
+    });
+
+    test("same triggerType with different params still creates a second subscription", async () => {
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:cron", undefined, { cron: "0 9 * * *" });
+        await subscribeSessionToTrigger("session-1", "runner-A", "time:cron", undefined, { cron: "0 12 * * *" });
+        const subs = await listSessionSubscriptions("session-1");
+        expect(subs.filter((s) => s.triggerType === "time:cron")).toHaveLength(2);
+    });
+
+    test("pre-existing identical duplicate rows are pruned on re-subscribe", async () => {
+        const seedId = "sub:session-1:time:cron:seed1";
+        const dupId = "sub:session-1:time:cron:dup1";
+        const seedValue = JSON.stringify({ subscriptionId: seedId, triggerType: "time:cron", runnerId: "runner-A", params: { cron: "0 9 * * *" }, filters: [] });
+        hashes.set("pizzapi:trigger-subs:session-1", new Map([
+            [seedId, seedValue],
+            [dupId, JSON.stringify({ subscriptionId: dupId, triggerType: "time:cron", runnerId: "runner-A", params: { cron: "0 9 * * *" }, filters: [] })],
+        ]));
+        const id = await subscribeSessionToTrigger("session-1", "runner-A", "time:cron", undefined, { cron: "0 9 * * *" });
+        expect(id).toBe(seedId);
+        const subs = await listSessionSubscriptions("session-1");
+        expect(subs.filter((s) => s.triggerType === "time:cron")).toHaveLength(1);
+        expect(subs[0]!.subscriptionId).toBe(seedId);
+    });
+
+    test("identical params on a different runner are separate subscriptions", async () => {
+        const first = await subscribeSessionToTrigger("session-1", "runner-A", "time:cron", undefined, { cron: "0 9 * * *" });
+        const second = await subscribeSessionToTrigger("session-1", "runner-B", "time:cron", undefined, { cron: "0 9 * * *" });
+        expect(second).not.toBe(first);
+        const subs = await listSessionSubscriptions("session-1");
+        expect(subs.filter((s) => s.triggerType === "time:cron")).toHaveLength(2);
+    });
+
+    test("param key order does not defeat dedup (canonical identity)", async () => {
+        const first = await subscribeSessionToTrigger("session-1", "runner-A", "time:cron", undefined, { cron: "0 9 * * *", _cwd: "/tmp/x" });
+        const second = await subscribeSessionToTrigger("session-1", "runner-A", "time:cron", undefined, { _cwd: "/tmp/x", cron: "0 9 * * *" });
+        expect(second).toBe(first);
+        const subs = await listSessionSubscriptions("session-1");
+        expect(subs.filter((s) => s.triggerType === "time:cron")).toHaveLength(1);
+    });
+});
+
+describe("claimFireOnce (delivery fire dedup)", () => {
+    beforeEach(resetState);
+
+    test("claims once, blocks replays, releases on failure", async () => {
+        await expect(claimFireOnce("session-1", "fire-1")).resolves.toBe(true);
+        await expect(claimFireOnce("session-1", "fire-1")).resolves.toBe(false);
+        await releaseFireOnce("session-1", "fire-1");
+        await expect(claimFireOnce("session-1", "fire-1")).resolves.toBe(true);
+    });
+
+    test("different fireIds and sessions do not collide", async () => {
+        await expect(claimFireOnce("session-1", "a")).resolves.toBe(true);
+        await expect(claimFireOnce("session-1", "b")).resolves.toBe(true);
+        await expect(claimFireOnce("session-2", "a")).resolves.toBe(true);
+    });
+
+    test("confirm extends the TTL without releasing the claim", async () => {
+        await expect(claimFireOnce("session-1", "fire-1")).resolves.toBe(true);
+        await expect(confirmFireOnce("session-1", "fire-1")).resolves.toBeUndefined();
+        await expect(claimFireOnce("session-1", "fire-1")).resolves.toBe(false);
     });
 });
 
