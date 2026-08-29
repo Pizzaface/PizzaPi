@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { providerRequestLogExtension } from "./provider-request-log.js";
+import { providerRequestLogExtension, isAnthropicMessagesUrl } from "./provider-request-log.js";
 
 describe("providerRequestLogExtension", () => {
     test("wraps global fetch and passes through non-anthropic calls unchanged", async () => {
@@ -45,5 +45,29 @@ describe("providerRequestLogExtension", () => {
         } finally {
             globalThis.fetch = original;
         }
+    });
+});
+
+// scripts/wire-tap.ts carries an identical copy of this predicate (it must stay
+// dependency-free for vanilla pi, so it cannot import from src/) — keep them in
+// sync by hand.
+describe("isAnthropicMessagesUrl", () => {
+    test("matches the real endpoint, with path suffixes and query strings", () => {
+        expect(isAnthropicMessagesUrl("https://api.anthropic.com/v1/messages")).toBe(true);
+        expect(isAnthropicMessagesUrl("https://api.anthropic.com/v1/messages?beta=true")).toBe(true);
+        expect(isAnthropicMessagesUrl("https://api.anthropic.com/v1/messages/count_tokens")).toBe(true);
+    });
+
+    test("rejects lookalike and embedded hosts (substring confusion)", () => {
+        expect(isAnthropicMessagesUrl("https://api.anthropic.com.evil.com/v1/messages")).toBe(false);
+        expect(isAnthropicMessagesUrl("https://evil.com/?u=api.anthropic.com/v1/messages")).toBe(false);
+        expect(isAnthropicMessagesUrl("https://api.anthropic.com%2eevil.com/v1/messages")).toBe(false);
+    });
+
+    test("rejects other hosts, wrong paths, and non-URLs", () => {
+        expect(isAnthropicMessagesUrl("https://evil.com/v1/messages")).toBe(false);
+        expect(isAnthropicMessagesUrl("https://api.anthropic.com/v1/complete")).toBe(false);
+        expect(isAnthropicMessagesUrl("localhost:3000/api.anthropic.com/v1/messages")).toBe(false);
+        expect(isAnthropicMessagesUrl("")).toBe(false);
     });
 });

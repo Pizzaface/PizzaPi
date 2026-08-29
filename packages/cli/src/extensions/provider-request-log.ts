@@ -45,6 +45,21 @@ function summarizeBody(bodyText: string): Record<string, unknown> {
     return out;
 }
 
+/** True only for requests to the real Anthropic messages endpoint.
+ *
+ * Parses the URL and compares the hostname exactly — a substring check like
+ * `url.includes("api.anthropic.com")` matches attacker-controlled hosts such
+ * as `https://api.anthropic.com.evil.com/` or `https://evil.com/?api.anthropic.com`.
+ */
+export function isAnthropicMessagesUrl(url: string): boolean {
+    try {
+        const u = new URL(url);
+        return u.hostname === "api.anthropic.com" && u.pathname.startsWith("/v1/messages");
+    } catch {
+        return false;
+    }
+}
+
 function wrapFetch(): void {
     if (fetchWrapped) return;
     fetchWrapped = true;
@@ -52,7 +67,7 @@ function wrapFetch(): void {
     globalThis.fetch = (async (input: any, init?: any) => {
         try {
             const url = typeof input === "string" ? input : input?.url ?? String(input);
-            if (typeof url === "string" && url.includes("api.anthropic.com") && url.includes("/v1/messages")) {
+            if (typeof url === "string" && isAnthropicMessagesUrl(url)) {
                 const headers = new Headers(init?.headers ?? (typeof input === "object" ? input.headers : undefined));
                 const hdr: Record<string, string> = {};
                 headers.forEach((v, k) => { hdr[k] = k.toLowerCase() === "authorization" ? tokenFingerprint(v) : v; });
