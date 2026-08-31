@@ -11,6 +11,7 @@ function makeSession(overrides: Partial<{
     registryHas: boolean;
     hasAuth: boolean;
     messages: unknown[];
+    legacyRegistry: boolean;
 }> = {}) {
     const opts = {
         current: { provider: "openai", id: "gpt-5.5" },
@@ -19,19 +20,31 @@ function makeSession(overrides: Partial<{
         registryHas: true,
         hasAuth: true,
         messages: [],
+        legacyRegistry: false,
         ...overrides,
     };
     const setCalls: unknown[] = [];
+    // pi ≥0.84 exposes modelRuntime; pre-0.84 exposed modelRegistry. Support both.
+    const registry = opts.legacyRegistry
+        ? {
+              find: (p: string, m: string) => (opts.registryHas ? { provider: p, id: m } : undefined),
+              hasConfiguredAuth: () => opts.hasAuth,
+          }
+        : undefined;
+    const runtime = opts.legacyRegistry
+        ? undefined
+        : {
+              getModel: (p: string, m: string) => (opts.registryHas ? { provider: p, id: m } : undefined),
+              hasConfiguredAuth: () => opts.hasAuth,
+          };
     const session: DefaultModelSession = {
         model: opts.current,
         settingsManager: {
             getDefaultProvider: () => opts.defaultProvider,
             getDefaultModel: () => opts.defaultModel,
         },
-        modelRegistry: {
-            find: (p, m) => (opts.registryHas ? { provider: p, id: m } : undefined),
-            hasConfiguredAuth: () => opts.hasAuth,
-        },
+        modelRuntime: runtime,
+        modelRegistry: registry,
         agent: { state: { messages: opts.messages } },
         setModel: async (m) => { setCalls.push(m); },
     };
@@ -122,6 +135,20 @@ describe("applySettingsDefaultModel", () => {
 
     test("no-op for sessions with restored messages (resume keeps its model)", async () => {
         const { session, setCalls } = makeSession({ messages: [{ role: "user" }] });
+        expect(await applySettingsDefaultModel(session)).toBe(false);
+        expect(setCalls).toEqual([]);
+    });
+
+    test("works against the legacy modelRegistry shape (pi <0.84)", async () => {
+        const { session, setCalls } = makeSession({ legacyRegistry: true });
+        expect(await applySettingsDefaultModel(session)).toBe(true);
+        expect(setCalls).toEqual([{ provider: "claude-subscription", id: "claude-fable-5" }]);
+    });
+
+    test("no-op when neither registry accessor is present (instead of throwing)", async () => {
+        const { session, setCalls } = makeSession();
+        delete (session as any).modelRuntime;
+        delete (session as any).modelRegistry;
         expect(await applySettingsDefaultModel(session)).toBe(false);
         expect(setCalls).toEqual([]);
     });

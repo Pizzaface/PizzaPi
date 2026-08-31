@@ -639,29 +639,26 @@ async function main(): Promise<void> {
 
             // Restore model if the session had one saved
             if (sessionContext.model) {
-                const modelRegistry = (session as any)._modelRegistry;
-                if (modelRegistry) {
-                    try {
-                        const available = await modelRegistry.getAvailable();
-                        // Ollama Cloud models are discovered dynamically and
-                        // aren't in getAvailable() — fall back to the cached
-                        // catalog so a resumed ollama-cloud model is restored.
-                        const match =
-                            available.find(
-                                (m: any) =>
-                                    m.provider === sessionContext.model!.provider &&
-                                    m.id === sessionContext.model!.modelId,
-                            ) ??
-                            findCachedOllamaCloudModel(
-                                sessionContext.model!.provider,
-                                sessionContext.model!.modelId,
-                            );
-                        if (match) {
-                            await session.setModel(match);
-                        }
-                    } catch {
-                        // Model restore is best-effort
+                try {
+                    const available = await modelRuntime.getAvailable();
+                    // Ollama Cloud models are discovered dynamically and
+                    // aren't in getAvailable() — fall back to the cached
+                    // catalog so a resumed ollama-cloud model is restored.
+                    const match =
+                        available.find(
+                            (m: any) =>
+                                m.provider === sessionContext.model!.provider &&
+                                m.id === sessionContext.model!.modelId,
+                        ) ??
+                        findCachedOllamaCloudModel(
+                            sessionContext.model!.provider,
+                            sessionContext.model!.modelId,
+                        );
+                    if (match) {
+                        await session.setModel(match);
                     }
+                } catch {
+                    // Model restore is best-effort
                 }
             }
 

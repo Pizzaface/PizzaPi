@@ -66,18 +66,47 @@ interface ModelRef {
     id: string;
 }
 
+/** pi ≥0.84: AgentSession.modelRuntime getter (ModelRuntime API). */
+interface ModelRuntimeLike {
+    getModel(provider: string, modelId: string): unknown;
+    hasConfiguredAuth(provider: string): boolean;
+}
+
+/** pi <0.84 legacy: AgentSession.modelRegistry getter (ModelRegistry API). */
+interface ModelRegistryLike {
+    find(provider: string, modelId: string): unknown;
+    hasConfiguredAuth(model: unknown): boolean;
+}
+
 export interface DefaultModelSession {
     model?: ModelRef;
     settingsManager: {
         getDefaultProvider(): string | undefined;
         getDefaultModel(): string | undefined;
     };
-    modelRegistry: {
-        find(provider: string, modelId: string): unknown;
-        hasConfiguredAuth(model: unknown): boolean;
-    };
+    /** At least one of the two must be present. Prefer modelRuntime (current pi). */
+    modelRuntime?: ModelRuntimeLike;
+    modelRegistry?: ModelRegistryLike;
     agent: { state: { messages: unknown[] } };
     setModel(model: unknown): Promise<void>;
+}
+
+function resolveFromRegistry(
+    session: DefaultModelSession,
+    provider: string,
+    modelId: string,
+): unknown {
+    if (session.modelRuntime) {
+        return session.modelRuntime.getModel(provider, modelId);
+    }
+    return session.modelRegistry?.find(provider, modelId);
+}
+
+function hasAuthFor(session: DefaultModelSession, resolved: unknown): boolean {
+    if (session.modelRuntime) {
+        return session.modelRuntime.hasConfiguredAuth((resolved as ModelRef).provider);
+    }
+    return session.modelRegistry?.hasConfiguredAuth(resolved) ?? false;
 }
 
 /** Returns true when the session's model was switched to the settings default. */
@@ -91,11 +120,11 @@ export async function applySettingsDefaultModel(session: DefaultModelSession): P
     if (current?.provider === provider && current?.id === modelId) return false;
     // Ollama Cloud models are discovered dynamically and aren't in the static
     // registry — fall back to the cached catalog so a settings default pointing
-    // at e.g. ollama-cloud/glm-5.2 still gets applied.
+    // at e.g. ollama-cloud/glm-5.3 still gets applied.
     const resolved =
-        session.modelRegistry.find(provider, modelId) ??
+        resolveFromRegistry(session, provider, modelId) ??
         findCachedOllamaCloudModel(provider, modelId);
-    if (!resolved || !session.modelRegistry.hasConfiguredAuth(resolved)) return false;
+    if (!resolved || !hasAuthFor(session, resolved)) return false;
     await session.setModel(resolved);
     return true;
 }
