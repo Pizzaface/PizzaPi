@@ -10,6 +10,7 @@ import { pluginCommandExtension } from "./plugin-command.js";
 import { sessionProcessesExtension } from "./session-processes.js";
 
 import { setSessionNameExtension } from "./set-session-name.js";
+import { gitBranchExtension } from "./git-branch.js";
 import { currentTimeExtension } from "./current-time.js";
 import { backgroundBashExtension } from "./background-bash.js";
 import { queueFlushExtension } from "./queue-flush.js";
@@ -148,6 +149,7 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
         named(pluginCommandExtension, "plugin-command"),
         named(sessionProcessesExtension, "session-processes"),
         named(setSessionNameExtension, "session-name"),
+        named(gitBranchExtension, "git-branch"),
         named(currentTimeExtension, "current-time"),
         named(backgroundBashExtension, "background-bash"),
         named(queueFlushExtension, "queue-flush"),
