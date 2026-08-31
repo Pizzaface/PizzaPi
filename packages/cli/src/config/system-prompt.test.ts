@@ -102,7 +102,7 @@ describe("buildSystemPrompt", () => {
     test("describes id-based trigger CRUD for multi-subscription support", () => {
         const result = buildSystemPrompt({ isRunner: true });
         expect(result).toContain("subscriptionId");
-        expect(result).toContain("creates a Route targeting this session");
+        expect(result).toContain("Multiple subscriptions of the same trigger type can exist at once");
         expect(result).toContain("legacy bulk operations");
     });
 
