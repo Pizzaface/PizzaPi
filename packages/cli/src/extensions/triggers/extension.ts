@@ -188,6 +188,7 @@ export const BUILTIN_SIGIL_DEFS: ServiceSigilDef[] = [
         type: "action",
         label: "Action",
         description: "Interactive action button rendered inline. Pick a variant via the id, e.g. [[action:confirm question=\"...\"]], [[action:choose question=\"...\" options=\"a,b,c\"]], or [[action:input question=\"...\" placeholder=\"...\"]].",
+        example: "[[action:confirm question=\"Proceed to implementation?\"]]]",
         icon: "mouse-pointer-click",
         variants: [
             { name: "confirm", description: "Yes/No confirmation — renders Confirm and Cancel buttons. Params: question." },
@@ -195,7 +196,7 @@ export const BUILTIN_SIGIL_DEFS: ServiceSigilDef[] = [
             { name: "input", description: "Free-text entry — renders a text field and Submit button. Params: question, placeholder (optional)." },
         ],
     },
-    { type: "file", label: "File", description: "A file path reference. Renders as a clickable file pill.", icon: "file" },
+    { type: "file", label: "File", description: "A file path reference. Renders as a clickable file pill.", example: "[[file:src/index.ts]]", icon: "file" },
     { type: "status", label: "Status", description: "A status indicator.", icon: "circle" },
     { type: "error", label: "Error", description: "An error or warning indicator.", icon: "alert-triangle", aliases: ["warn", "notice"] },
     { type: "cost", label: "Cost", description: "A cost or price value.", icon: "dollar-sign", aliases: ["price", "budget"] },
@@ -205,7 +206,7 @@ export const BUILTIN_SIGIL_DEFS: ServiceSigilDef[] = [
     { type: "cmd", label: "Command", description: "A shell command reference.", icon: "terminal-square", aliases: ["bash", "shell"] },
     { type: "tag", label: "Tag", description: "A tag or label.", icon: "tag" },
     { type: "test", label: "Test", description: "A test case reference.", icon: "flask-conical" },
-    { type: "link", label: "Link", description: "An external URL link.", icon: "external-link", aliases: ["url", "href"] },
+    { type: "link", label: "Link", description: "An external URL link.", example: "[[link:https://example.com]]", icon: "external-link", aliases: ["url", "href"] },
     { type: "diff", label: "Diff", description: "A diff or changeset reference.", icon: "diff" },
     // ── PizzaPi entity sigils ──
     { type: "skill", label: "Skill", description: "A reference to an agent skill.", icon: "sparkles" },
@@ -677,7 +678,8 @@ export const triggersExtension: ExtensionFactory = (pi) => {
         label: "List Available Sigils",
         description:
             "List sigil types available on this session's runner. " +
-            "Shows all sigils declared by runner services that can be used in [[type:id]] references.",
+            "Shows all sigils declared by runner services that can be used in [[type:id]] references. " +
+            "The action sigil renders interactive buttons for a human viewer — in autonomous or child sessions where no human is watching, use the AskUserQuestion tool instead of emitting action sigils.",
         parameters: {
             type: "object",
             properties: {
@@ -701,7 +703,17 @@ export const triggersExtension: ExtensionFactory = (pi) => {
 
             // Merge service-provided sigils with built-in sigils.
             // Service defs take precedence — if a service registers "file", the built-in is skipped.
-            const defs = mergeWithBuiltinSigils(serviceDefs);
+            let defs = mergeWithBuiltinSigils(serviceDefs);
+
+            // Child sessions have no human viewer — an action button nobody can
+            // click is a question that never gets answered. Omit action for
+            // self-queries from children (default or explicit own session ID)
+            // and point them at AskUserQuestion, which reaches the parent/monitor as a trigger.
+            const childSelfQuery = parentSessionId != null
+                && (!params.sessionId || params.sessionId === getOwnSessionId());
+            if (childSelfQuery) {
+                defs = defs.filter((d) => d.type !== "action");
+            }
 
             if (defs.length === 0) {
                 return {
@@ -715,12 +727,16 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 const variants = d.variants && d.variants.length > 0
                     ? `\n  Variants:\n${d.variants.map((v) => `    - ${d.type}:${v.name} — ${v.description}`).join("\n")}`
                     : "";
+                const example = d.example ? `\n  Example: ${d.example}` : "";
                 const resolver = d.resolve ? `\n  Resolve: ${d.resolve}` : "";
                 const service = d.serviceId ? `\n  Service: ${d.serviceId}` : "";
-                return `• ${d.type} — ${d.label}${d.description ? `\n  ${d.description}` : ""}${variants}${aliases}${resolver}${service}`;
+                return `• ${d.type} — ${d.label}${d.description ? `\n  ${d.description}` : ""}${example}${variants}${aliases}${resolver}${service}`;
             });
+            const childNote = childSelfQuery
+                ? "\n\nNote: the interactive action sigil is omitted — this session appears to be an autonomous child session with no human viewer. Use the AskUserQuestion tool to ask questions; it reaches the parent/monitor as a trigger."
+                : "";
             return {
-                content: [{ type: "text" as const, text: `Available sigils (${defs.length}):\n${lines.join("\n")}` }],
+                content: [{ type: "text" as const, text: `Available sigils (${defs.length}):\n${lines.join("\n")}${childNote}` }],
                 details: null as any,
             };
         },
