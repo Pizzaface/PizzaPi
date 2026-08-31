@@ -411,6 +411,11 @@ export interface ServiceSigilDef {
   /** Optional description of what this sigil represents */
   description?: string;
   /**
+   * Canonical emit example shown by list_available_sigils so agents copy the
+   * correct syntax instead of inventing forms, e.g. '[[action:confirm question="..."]]'.
+   */
+  example?: string;
+  /**
    * Lucide icon name for rendering, e.g. "git-pull-request", "git-branch".
    * See https://lucide.dev/icons for the full list.
    */

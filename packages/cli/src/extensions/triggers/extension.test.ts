@@ -335,3 +335,93 @@ describe("mergeWithBuiltinSigils", () => {
         expect(new Set(types).size).toBe(types.length);
     });
 });
+
+// ============================================================================
+// list_available_sigils — child-session action sigil omission
+// ============================================================================
+
+import { triggersExtension } from "./extension.js";
+import { getRelaySessionId } from "../remote.js";
+import { afterEach } from "bun:test";
+
+function registerTriggersTools(): Map<string, any> {
+    const tools = new Map<string, any>();
+    triggersExtension({ registerTool: (t: any) => tools.set(t.name, t) } as any);
+    return tools;
+}
+
+async function listSigilsText(sessionId?: string): Promise<string> {
+    const tool = registerTriggersTools().get("list_available_sigils")!;
+    const result = await tool.execute("t0", sessionId ? { sessionId } : {});
+    return result.content[0].text as string;
+}
+
+describe("list_available_sigils", () => {
+    const ENV_KEY = "PIZZAPI_WORKER_PARENT_SESSION_ID";
+    const RELAY_URL_KEY = "PIZZAPI_RELAY_URL"; // "off" short-circuits getAvailableSigils → deterministic offline
+    const SESSION_ID_KEY = "PIZZAPI_SESSION_ID"; // controls getRelaySessionId() in tests
+    let prevParent: string | undefined;
+    let prevRelayUrl: string | undefined;
+    let prevSessionId: string | undefined;
+
+    beforeEach(() => {
+        prevParent = process.env[ENV_KEY];
+        prevRelayUrl = process.env[RELAY_URL_KEY];
+        prevSessionId = process.env[SESSION_ID_KEY];
+        process.env[RELAY_URL_KEY] = "off";
+    });
+
+    afterEach(() => {
+        if (prevParent === undefined) delete process.env[ENV_KEY];
+        else process.env[ENV_KEY] = prevParent;
+        if (prevRelayUrl === undefined) delete process.env[RELAY_URL_KEY];
+        else process.env[RELAY_URL_KEY] = prevRelayUrl;
+        if (prevSessionId === undefined) delete process.env[SESSION_ID_KEY];
+        else process.env[SESSION_ID_KEY] = prevSessionId;
+    });
+
+    it("omits action and points to AskUserQuestion for child self-queries", async () => {
+        process.env[ENV_KEY] = "parent-1";
+        const text = await listSigilsText();
+        expect(text).not.toContain("• action");
+        expect(text).toContain(`Available sigils (${BUILTIN_SIGIL_DEFS.length - 1})`);
+        expect(text).toContain("AskUserQuestion");
+        expect(text).toContain("action sigil is omitted");
+    });
+
+    it("keeps action (with canonical example) in top-level sessions", async () => {
+        delete process.env[ENV_KEY];
+        const text = await listSigilsText();
+        expect(text).toContain("• action");
+        expect(text).toContain(`Available sigils (${BUILTIN_SIGIL_DEFS.length})`);
+        expect(text).toContain('Example: [[action:confirm question="Proceed to implementation?"]]');
+        expect(text).not.toContain("action sigil is omitted");
+    });
+
+    it("keeps action when a parent explicitly queries another session", async () => {
+        delete process.env[ENV_KEY];
+        // Parent context: env unset, explicit target session — action stays.
+        const text = await listSigilsText("child-9");
+        expect(text).toContain("• action");
+    });
+
+    it("omits action when a child explicitly queries its own session id", async () => {
+        process.env[ENV_KEY] = "parent-1";
+        process.env[SESSION_ID_KEY] = "child-77";
+        // Resolve own id the same way the tool does — in full-suite runs
+        // new-session-cleanup.test.ts's mock.module pins getRelaySessionId()
+        // to "parent-session-1", so env is only authoritative in isolation.
+        const ownId = getRelaySessionId() ?? "child-77";
+        const text = await listSigilsText(ownId);
+        expect(text).not.toContain("• action");
+        expect(text).toContain("AskUserQuestion");
+    });
+
+    it("keeps action when a child queries a different session", async () => {
+        process.env[ENV_KEY] = "parent-1";
+        process.env[SESSION_ID_KEY] = "child-77";
+        const otherId = `${getRelaySessionId() ?? "child-77"}-other`;
+        const text = await listSigilsText(otherId);
+        expect(text).toContain("• action");
+    });
+});
