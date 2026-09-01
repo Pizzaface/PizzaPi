@@ -255,6 +255,9 @@ export function TunnelPanel({ sessionId, runnerId, panelId, onSpawnPanel }: Serv
                             title={`Tunnel preview — port ${activePort}`}
                             // SECURITY: allow-same-origin is needed because tunnel content is same-origin. TODO: serve tunnel content from a separate origin to enable full sandbox isolation.
                             sandbox="allow-scripts allow-forms allow-same-origin allow-popups"
+                            // See IframeServicePanel: framed voice capture needs
+                            // Permissions-Policy delegation or getUserMedia is blocked.
+                            allow="microphone"
                             onLoad={() => setIframeLoading(false)}
                             onLoadStart={() => setIframeLoading(true)}
                         />
