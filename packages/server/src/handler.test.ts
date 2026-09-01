@@ -292,6 +292,16 @@ describe("withSecurityHeaders", () => {
         expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     });
 
+    test("preserves an origin-provided Permissions-Policy (tunneled services can opt into mic)", () => {
+        const res = withSecurityHeaders(new Response("ok", { headers: { "Permissions-Policy": "microphone=self" } }));
+        expect(res.headers.get("permissions-policy")).toBe("microphone=self");
+    });
+
+    test("defaults to the restrictive policy when the origin declares none", () => {
+        const res = withSecurityHeaders(new Response("ok"));
+        expect(res.headers.get("permissions-policy")).toBe("camera=(), microphone=(), geolocation=()");
+    });
+
     test("injects X-Frame-Options: DENY", () => {
         const res = withSecurityHeaders(new Response("ok"));
         expect(res.headers.get("x-frame-options")).toBe("DENY");
