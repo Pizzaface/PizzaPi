@@ -102,6 +102,10 @@ export function IframeServicePanel({ sessionId, port, query, fragment, panelPara
                 title={`Service panel — port ${port}`}
                 // SECURITY: allow-same-origin is needed because tunnel content is same-origin. TODO: serve tunnel content from a separate origin to enable full sandbox isolation.
                 sandbox="allow-scripts allow-forms allow-same-origin allow-popups"
+                // Voice capture (e.g. the daily report's feedback Snippet) needs
+                // Permissions-Policy delegation; without `allow=`, getUserMedia
+                // is silently blocked in framed panels even with OS mic access.
+                allow="microphone"
                 onLoad={() => setLoaded(true)}
                 onError={() => reportError("tunnel", `Panel failed to load (port ${port})`, { detail: src, toast: false })}
             />
