@@ -12,6 +12,7 @@ import { reloadResourcesExtension } from "./reload-resources.js";
 import { pluginCommandExtension } from "./plugin-command.js";
 
 import { setSessionNameExtension } from "./set-session-name.js";
+import { gitBranchExtension } from "./git-branch.js";
 import { currentTimeExtension } from "./current-time.js";
 import { spawnSessionExtension } from "./spawn-session.js";
 import { updateTodoExtension } from "./update-todo.js";
@@ -72,6 +73,7 @@ const CORE_EXTENSIONS_TAIL: ExtensionFactory[] = [
     pluginCommandExtension,
     sessionProcessesExtension,
     setSessionNameExtension,
+    gitBranchExtension,
     currentTimeExtension,
     backgroundBashExtension,
     queueFlushExtension,

@@ -5,7 +5,7 @@ import type { SystemPromptContext } from "./system-prompt.precompiled.js";
 export type { SystemPromptContext };
 
 /** Run a git command and return trimmed stdout, or undefined on failure. */
-function git(args: string, cwd?: string): string | undefined {
+export function runGit(args: string, cwd?: string): string | undefined {
     try {
         return execSync(`git ${args}`, {
             cwd,
@@ -21,19 +21,21 @@ function git(args: string, cwd?: string): string | undefined {
 /**
  * Gather git context for the current working directory.
  * Returns only the fields that are available (non-undefined).
+ *
+ * No git branch here — it's injected per-session by the git-branch
+ * extension (extensions/git-branch.ts). Baking it at boot goes stale the
+ * moment anything checks out another branch.
  */
-function gatherGitContext(cwd?: string): Pick<SystemPromptContext, "gitBranch" | "gitWorktree"> {
-    const gitBranch = git("rev-parse --abbrev-ref HEAD", cwd);
-
+function gatherGitContext(cwd?: string): Pick<SystemPromptContext, "gitWorktree"> {
     // Detect worktree: if the git dir is a file (not a directory), we're in a linked worktree.
     // Also check `git rev-parse --show-toplevel` vs `git rev-parse --git-common-dir`.
-    const commonDir = git("rev-parse --git-common-dir", cwd);
-    const gitDir = git("rev-parse --git-dir", cwd);
+    const commonDir = runGit("rev-parse --git-common-dir", cwd);
+    const gitDir = runGit("rev-parse --git-dir", cwd);
     // In a worktree, gitDir points to .git/worktrees/<name>, commonDir points to main .git
     const isWorktree = commonDir && gitDir && commonDir !== gitDir && !gitDir.endsWith("/.git");
-    const gitWorktree = isWorktree ? git("rev-parse --show-toplevel", cwd) : undefined;
+    const gitWorktree = isWorktree ? runGit("rev-parse --show-toplevel", cwd) : undefined;
 
-    return { gitBranch, gitWorktree };
+    return { gitWorktree };
 }
 
 /**
@@ -54,7 +56,6 @@ export function buildSystemPrompt(ctx?: Partial<SystemPromptContext>): string {
             minute: "2-digit",
             hour12: true,
         }),
-        gitBranch: ctx?.gitBranch ?? gitCtx.gitBranch,
         gitWorktree: ctx?.gitWorktree ?? gitCtx.gitWorktree,
         cwd: ctx?.cwd,
         isRunner: ctx?.isRunner,

@@ -19,11 +19,6 @@ describe("buildSystemPrompt", () => {
         expect(result).toContain(year);
     });
 
-    test("includes gitBranch when provided", () => {
-        const result = buildSystemPrompt({ dateTime: "test", gitBranch: "feat/my-feature" });
-        expect(result).toContain("Git branch: feat/my-feature");
-    });
-
     test("includes gitWorktree when provided", () => {
         const result = buildSystemPrompt({ dateTime: "test", gitWorktree: "/path/to/worktree" });
         expect(result).toContain("Git worktree: /path/to/worktree");
@@ -34,16 +29,9 @@ describe("buildSystemPrompt", () => {
         expect(result).toContain("Working directory: /Users/dev/project");
     });
 
-    test("omits gitBranch line when not provided or unavailable", () => {
+    test("never bakes a git branch (the git-branch extension injects it per session)", () => {
         const result = buildSystemPrompt({ dateTime: "test" });
-        // Should not have "Git branch:" with empty value
-        expect(result).not.toContain("Git branch: \n");
-    });
-
-    test("auto-detects git branch from current repo", () => {
-        // We're in a git repo, so branch should be detected
-        const result = buildSystemPrompt();
-        expect(result).toContain("Git branch:");
+        expect(result).not.toContain("Git branch:");
     });
 
     test("contains all major sections as pseudo-XML when isRunner is true", () => {
