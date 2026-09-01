@@ -176,7 +176,13 @@ export function withSecurityHeaders(res: Response): Response {
     headers.set("X-Content-Type-Options", "nosniff");
     headers.set("X-XSS-Protection", "0");
     headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
-    headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    // Hardened default — but a tunneled service may declare its own
+    // Permissions-Policy (e.g. the daily report needs `microphone=self` for
+    // voice feedback). Origin-provided policy wins; the restrictive default
+    // still covers the relay's own surfaces and every origin that stays silent.
+    if (!headers.has("Permissions-Policy")) {
+        headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    }
 
     if (isTunnel) {
         // The tunnel URL is the bearer credential (token in path, or label in
