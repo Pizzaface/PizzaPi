@@ -2,12 +2,9 @@ import { readBestExternalCredential } from "./keychain-auth.js";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { isRecord } from "@pizzapi/protocol";
 
 export type RunnerAuthRecord = Record<string, unknown>;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null;
-}
 
 /** Read a Claude Code OAuth credential file, handling both the nested
  *  `{ claudeAiOauth: {...} }` shape and the flat `{ accessToken, ... }` shape. */

@@ -57,9 +57,7 @@ export interface MergeOverlayMcpServersResult {
     serverProvenance: OverlayMcpServerProvenance[];
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return !!value && typeof value === "object" && !Array.isArray(value);
-}
+import { isRecord } from "@pizzapi/protocol";
 
 /** Read+parse a JSON file with the same size cap overlay sidecars use. Returns undefined on any failure. */
 function readJsonCapped(path: string): unknown | undefined {

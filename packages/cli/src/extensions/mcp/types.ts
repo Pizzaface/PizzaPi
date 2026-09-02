@@ -47,7 +47,5 @@ export const MCP_SUPPORTED_VERSIONS = new Set(["2025-11-25", "2025-06-18", "2025
 /** Client info sent during the initialize handshake. */
 export const MCP_CLIENT_INFO = { name: "pizzapi", version: "1.0.0" };
 
-/** Type guard for plain objects (used by JSON-RPC response parsers). */
-export function isRecord(v: unknown): v is Record<string, unknown> {
-  return !!v && typeof v === "object" && !Array.isArray(v);
-}
+/** Type guard for plain objects (used by JSON-RPC response parsers). Re-exported from the protocol package. */
+export { isRecord } from "@pizzapi/protocol";

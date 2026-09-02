@@ -17,6 +17,7 @@ import type { RelayContext } from "./mcp-oauth.js";
 import { waitForRelayRegistration } from "./remote.js";
 import { getToolSearchBridge, type ToolSearchSnapshot } from "./tool-search-bridge.js";
 import { createLogger } from "@pizzapi/tools";
+import { isRecord } from "@pizzapi/protocol";
 
 const log = createLogger("mcp");
 
@@ -252,10 +253,6 @@ type McpBridge = {
   setRelayContext: (ctx: RelayContext | null) => void;
   deliverOAuthCallback: (nonce: string, code: string) => void;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
 
 function parseConfigFile(scope: "global" | "project", path: string): McpConfigFileState {
   if (!existsSync(path)) {
