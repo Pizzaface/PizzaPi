@@ -68,7 +68,7 @@ const MAX_MESSAGE_SIZE = 5 * 1024 * 1024; // 5 MB
  * so helpers don't re-stringify the same messages.
  */
 function computeMessageSizes(messages: unknown[]): number[] {
-    const sizes: number[] = new Array(messages.length);
+    const sizes: number[] = Array(messages.length);
     for (let i = 0; i < messages.length; i++) {
         try {
             sizes[i] = Buffer.byteLength(JSON.stringify(messages[i]), "utf8");

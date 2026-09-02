@@ -222,7 +222,7 @@ describe("session_end — pendingChunkedStates cleanup", () => {
         pending.set(sessionId, {
             snapshotId: "snap-leak",
             metadata: {},
-            chunks: [new Array(1000).fill("msg")],
+            chunks: [Array(1000).fill("msg")],
             totalChunks: 2,
             receivedChunks: 1,
         });

@@ -421,7 +421,7 @@ export function listInstalledPlugins(): Array<{ key: string; installPath: string
 /** Flip a plugin's `enabledPlugins` entry in ~/.claude/settings.json. */
 export function setPluginEnabled(key: string, enabled: boolean): void {
     const settings = readJson<Record<string, any>>(claudeSettingsPath(), {});
-    settings.enabledPlugins = { ...(settings.enabledPlugins ?? {}), [key]: enabled };
+    settings.enabledPlugins = { ...(settings.enabledPlugins), [key]: enabled };
     writeJson(claudeSettingsPath(), settings);
 }
 

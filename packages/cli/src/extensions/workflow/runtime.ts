@@ -297,12 +297,12 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunWorkflow
         pendingAgents: Set<Promise<unknown>>,
     ): Promise<TOut[]> {
         const limit = Math.max(1, Math.min(WORKFLOW_MAX_CONCURRENCY, list.length));
-        const results: TOut[] = new Array(list.length);
+        const results: TOut[] = Array(list.length);
         let nextIndex = 0;
         let firstError: unknown;
         let hasError = false;
 
-        const workers = new Array(limit).fill(null).map(async () => {
+        const workers = Array(limit).fill(null).map(async () => {
             while (!controller.signal.aborted) {
                 const current = nextIndex++;
                 if (current >= list.length) return;

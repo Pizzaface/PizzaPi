@@ -39,7 +39,7 @@ const strings = new Map<string, string>();
 const sets = new Map<string, Set<string>>();
 
 function hSetAll(key: string, fields: Record<string, string>): void {
-    hashes.set(key, { ...(hashes.get(key) ?? {}), ...fields });
+    hashes.set(key, { ...(hashes.get(key)), ...fields });
 }
 
 function sAddAll(key: string, members: unknown[]): void {
@@ -73,7 +73,7 @@ function makeMockRedis() {
                 return m;
             },
             hGetAll: (key: string) => {
-                ops.push(() => ({ ...(hashes.get(key) ?? {}) }));
+                ops.push(() => ({ ...(hashes.get(key)) }));
                 return m;
             },
             expire: () => {
@@ -102,7 +102,7 @@ function makeMockRedis() {
         on: () => client,
         connect: async () => {},
         multi,
-        hGetAll: async (key: string) => ({ ...(hashes.get(key) ?? {}) }),
+        hGetAll: async (key: string) => ({ ...(hashes.get(key)) }),
         hSet: async (key: string, field: string, value: string) => { hSetAll(key, { [field]: value }); return 1; },
         exists: async (key: string) => (hashes.has(key) || strings.has(key) || sets.has(key) ? 1 : 0),
         sMembers: async (key: string) => Array.from(sets.get(key) ?? []),

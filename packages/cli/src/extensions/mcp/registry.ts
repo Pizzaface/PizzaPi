@@ -652,7 +652,7 @@ export async function registerMcpTools(
   const serverPromises = clients.map((client) => initAndRegisterServer(client));
 
   // Track which servers are still pending.
-  const settled = new Array<McpServerInitResult | null>(clients.length).fill(null);
+  const settled = Array<McpServerInitResult | null>(clients.length).fill(null);
   const wrappedPromises = serverPromises.map(async (p, i) => {
     const result = await p;
     settled[i] = result;

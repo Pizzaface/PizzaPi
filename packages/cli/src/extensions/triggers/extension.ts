@@ -843,7 +843,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             if (params.triggerType.startsWith("time:")) {
                 const sessionFile = process.env.PIZZAPI_SESSION_FILE?.trim();
                 subParams = {
-                    ...(subParams ?? {}),
+                    ...(subParams),
                     _cwd: process.cwd(),
                     ...(sessionFile ? { _resumePath: sessionFile } : {}),
                 };

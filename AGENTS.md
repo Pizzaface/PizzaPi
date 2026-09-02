@@ -82,6 +82,9 @@ bun run build
 # Development (server + UI, hot-reload)
 bun run dev
 
+# Lint all packages
+bun run lint
+
 # Type-check all packages
 bun run typecheck
 
