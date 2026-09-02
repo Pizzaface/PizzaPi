@@ -3004,6 +3004,7 @@ export function App() {
       const raw = evt as unknown as { message: string; notifyType?: "info" | "warning" | "error" };
       // Strip ANSI escape codes (terminal color codes) so they don't show
       // as raw gibberish in the web UI.
+      // oxlint-disable-next-line no-control-regex -- intentional: matches ANSI escape sequences to strip them
       const clean = raw.message.replace(/\x1b\[[0-9;]*m/g, "");
       const payload = { message: clean, notifyType: raw.notifyType };
       handleUiNotifyRef.current(payload);

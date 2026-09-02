@@ -522,6 +522,7 @@ describe("native push registration", () => {
         (globalThis as any).fetch = (_url: string, init: RequestInit) => {
             // Real fetch throws on non-ByteString HEADER values; a JSON body is safe.
             for (const v of Object.values((init.headers ?? {}) as Record<string, string>)) {
+                // oxlint-disable-next-line no-control-regex -- intentional: replicates ByteString header validation (non-ASCII rejection)
                 if (/[^\u0000-\u00ff]/.test(v)) throw new TypeError("Invalid header value (non-ByteString)");
             }
             captured.push({ init });

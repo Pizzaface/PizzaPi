@@ -14,6 +14,7 @@ import { getAuthSource, authSourceLabel } from "./remote-auth-source.js";
 
 export function sanitizeStatusText(text: string): string {
     return text
+        // oxlint-disable-next-line no-control-regex -- intentional: matches ANSI escape sequences to strip them
         .replace(/\x1B\[[0-9;]*m/g, "")
         .replace(/[\r\n\t]/g, " ")
         .replace(/ +/g, " ")

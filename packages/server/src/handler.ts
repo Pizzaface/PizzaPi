@@ -99,6 +99,7 @@ export async function enforceBodySizeLimit(req: Request, url: URL): Promise<Resp
         // when Content-Length is set.
         if (req.body) {
             const body = await req.arrayBuffer();
+            // oxlint-disable-next-line unicorn/no-invalid-fetch-options -- intentional: proxied GET requests can carry bodies (reverse proxies like Tailscale serve); re-sending the body is a deliberate workaround
             return new Request(req, { body });
         }
         return req;
@@ -152,6 +153,7 @@ export async function enforceBodySizeLimit(req: Request, url: URL): Promise<Resp
         offset += chunk.byteLength;
     }
 
+    // oxlint-disable-next-line unicorn/no-invalid-fetch-options -- intentional: proxied GET requests can carry bodies (reverse proxies like Tailscale serve); re-sending the body is a deliberate workaround
     return new Request(req, { body: buffered.buffer as ArrayBuffer });
 }
 

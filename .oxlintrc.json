@@ -13,7 +13,7 @@
       }
     ],
     "no-useless-escape": "error",
-    "no-control-regex": "off",
+    "no-control-regex": "error",
     "no-unsafe-optional-chaining": "error",
     "no-self-assign": "error",
     "no-useless-length-check": "error",
@@ -22,6 +22,6 @@
     "no-irregular-whitespace": "error",
     "unicorn/no-useless-spread": "error",
     "unicorn/prefer-string-starts-ends-with": "error",
-    "unicorn/no-invalid-fetch-options": "off"
+    "unicorn/no-invalid-fetch-options": "error"
   }
 }

@@ -133,6 +133,7 @@ function isValidBranchName(name: string): boolean {
     // would be interpreted as git options (e.g. --abort, --continue).
     if (name.startsWith("-")) return false;
     // Reject control chars, space-only, "..", "~", "^", ":", "\\", NUL
+    // oxlint-disable-next-line no-control-regex -- intentional: git ref-name validation must reject control characters
     if (/[\x00-\x1f\x7f~^:\\]/.test(name)) return false;
     if (name.includes("..")) return false;
     if (name.includes("@{")) return false;
