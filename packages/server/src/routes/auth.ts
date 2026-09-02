@@ -6,6 +6,7 @@
  * registration endpoint and the signup-status check.
  */
 
+import { createLogger } from "@pizzapi/tools";
 import { getApiKeyRateLimitConfig, getAuth, getKysely, isSignupAllowed } from "../auth.js";
 import { RateLimiter, isValidEmail, isValidPassword, getClientIp } from "../security.js";
 import { PASSWORD_REQUIREMENTS_SUMMARY } from "@pizzapi/protocol";
@@ -15,6 +16,8 @@ import type { RouteHandler } from "./types.js";
 
 // 5 requests per 15 minutes
 const registerRateLimiter = new RateLimiter(5, 15 * 60 * 1000);
+
+const log = createLogger("auth");
 
 export const handleAuthRoute: RouteHandler = async (req, url) => {
     // ── Public endpoint: signup status ───────────────────────────────
@@ -61,11 +64,11 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
             `.execute(getKysely());
             existing = result.rows[0];
             if (process.env.CI) {
-                console.log(`[auth-debug] existing-query ok email=${email} hit=${existing ? "yes" : "no"}`);
+                log.debug(`existing-query ok email=${email} hit=${existing ? "yes" : "no"}`);
             }
         } catch (error) {
             if (process.env.CI) {
-                console.error(`[auth-debug] existing-query failed email=${email}`, error);
+                log.error(`existing-query failed email=${email}`, error);
             }
             throw error;
         }
@@ -84,7 +87,7 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
                 .api.signInEmail({ body: { email, password } })
                 .catch((error) => {
                     if (process.env.CI) {
-                        console.error(`[auth-debug] signInEmail failed email=${email}`, error);
+                        log.error(`signInEmail failed email=${email}`, error);
                     }
                     return null;
                 });
