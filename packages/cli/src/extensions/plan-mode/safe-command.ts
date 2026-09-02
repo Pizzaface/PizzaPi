@@ -75,7 +75,7 @@ function extractWrapperInnerCommand(segment: string): string | null {
     if (words.length < 2) return null;
 
     // Strip any leading path component so /usr/bin/bash, /bin/sh, etc. are handled
-    const first = words[0].toLowerCase().replace(/^.*[\/\\]/, "");
+    const first = words[0].toLowerCase().replace(/^.*[/\\]/, "");
 
     // ── Bare inline environment-variable assignments (VAR=val ... CMD args) ──────
     // e.g. `HOME=/tmp rm -rf /` — treat exactly like `env HOME=/tmp rm -rf /`.
@@ -281,7 +281,7 @@ function extractWrapperInnerCommand(segment: string): string | null {
 export function isWrapperShellFileExecution(segment: string): boolean {
     const words = splitShellWords(segment);
     if (words.length < 2) return false;
-    const first = words[0].toLowerCase().replace(/^.*[\/\\]/, "");
+    const first = words[0].toLowerCase().replace(/^.*[/\\]/, "");
     if (!WRAPPER_SHELLS.has(first)) return false;
 
     // If -c is present, extractWrapperInnerCommand handles it — not our concern.

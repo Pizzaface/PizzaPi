@@ -165,7 +165,7 @@ function registerPluginCommand(
             let prompt = expandArguments(templateContent, args);
 
             // Resolve inline shell commands: !`command`
-            const inlineShellPattern = /!\`([^`]+)\`/g;
+            const inlineShellPattern = /!`([^`]+)`/g;
             const inlineMatches = [...prompt.matchAll(inlineShellPattern)];
             for (const match of inlineMatches) {
                 const shellCmd = match[1];

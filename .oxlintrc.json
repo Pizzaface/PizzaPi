@@ -12,7 +12,7 @@
         "caughtErrorsIgnorePattern": "^_"
       }
     ],
-    "no-useless-escape": "off",
+    "no-useless-escape": "error",
     "no-control-regex": "off",
     "no-unsafe-optional-chaining": "off",
     "no-self-assign": "off",
