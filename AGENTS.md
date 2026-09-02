@@ -212,18 +212,11 @@ The CLI appends a built-in system prompt (`BUILTIN_SYSTEM_PROMPT` in `packages/c
 Spawned sessions are **automatically linked** — child events (questions, plans, completion) surface as trigger messages in the parent's conversation. No manual session ID plumbing needed.
 
 **Handling child triggers:**
-- Trigger messages arrive with a `<!-- trigger:ID -->` prefix and instructions.
+- Trigger messages arrive with a `<!-- trigger:ID -->` prefix and instructions — e.g. when the child calls AskUserQuestion or plan_mode, a trigger appears in your conversation.
 - Use `respond_to_trigger(triggerId, response)` to answer a child's question or approve a plan.
 - Use `escalate_trigger(triggerId)` to pass a trigger to the human viewer.
 - Use `tell_child(sessionId, message)` to proactively message a child session.
-
-**Example pattern:**
-```
-1. Spawn a session with `spawn_session` (child is automatically linked)
-2. When the child calls AskUserQuestion or plan_mode, a trigger appears in your conversation
-3. Respond with `respond_to_trigger(triggerId, "your answer")`
-4. When the child finishes, a session_complete trigger arrives — acknowledge or follow up
-```
+- When the child finishes, a `session_complete` trigger arrives — acknowledge or follow up.
 
 **For non-linked sessions** (e.g., two sessions that weren't spawned by each other):
 - Use `send_message`/`wait_for_message` for manual inter-session messaging.
@@ -237,44 +230,26 @@ Spawned sessions are **automatically linked** — child events (questions, plans
 
 ## Session Completion
 
-**When ending a work session**, complete ALL steps. Work is NOT done until `git push` succeeds.
-
-1. **Run quality gates** — typecheck, build, verify nothing is broken
-2. **Commit all changes** — clear commit message describing what changed
-3. **Push to remote**:
-   ```bash
-   git pull --rebase
-   git push
-   git status  # must show "up to date with origin"
-   ```
-4. **Hand off** — leave a clear summary of what was done and what's next
-
-**Rules:**
-- Work is NOT complete until `git push` succeeds
-- Never stop before pushing — that leaves work stranded locally
-- If push fails, resolve and retry until it succeeds
-
-## Landing the Plane (Session Completion)
-
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
 
 **MANDATORY WORKFLOW:**
 
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
+2. **Update issue status** - Close finished work, update in-progress items
+3. **Run quality gates** (if code changed) - Tests, linters, builds, typecheck — verify nothing is broken
+4. **Commit all changes** - clear commit message describing what changed
+5. **Push to remote** - This is MANDATORY:
    ```bash
    git pull --rebase
    git push
-   git status  # MUST show "up to date with origin"
+   git status  # must show "up to date with origin"
    ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
+6. **Clean up** - Clear stashes, prune remote branches
+7. **Verify** - All changes committed AND pushed
+8. **Hand off** — leave a clear summary of what was done and what's next
 
-**CRITICAL RULES:**
+**Rules:**
 - Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
+- Never stop before pushing — that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
