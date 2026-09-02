@@ -55,9 +55,9 @@
     "@capacitor/push-notifications": "^8.1.1",
     "@capawesome/capacitor-badge": "^8.0.2",
     "@capgo/capacitor-updater": "^8",
-    "@earendil-works/pi-agent-core": "^0.84.3",
-    "@earendil-works/pi-ai": "^0.84.3",
-    "@earendil-works/pi-tui": "^0.84.3",
+    "@earendil-works/pi-agent-core": "^0.84.4",
+    "@earendil-works/pi-ai": "^0.84.4",
+    "@earendil-works/pi-tui": "^0.84.4",
     "motion": "^12.34.2",
     "pizzapi": "."
   },
@@ -73,9 +73,9 @@
   "version": "",
   "patchedDependencies": {
     "pptx-browser@4.1.5": "patches/pptx-browser@4.1.5.patch",
-    "@earendil-works/pi-agent-core@0.84.3": "patches/@earendil-works%2Fpi-agent-core@0.84.3.patch",
-    "@earendil-works/pi-ai@0.84.3": "patches/@earendil-works%2Fpi-ai@0.84.3.patch",
-    "@earendil-works/pi-coding-agent@0.84.3": "patches/@earendil-works%2Fpi-coding-agent@0.84.3.patch",
-    "@earendil-works/pi-tui@0.84.3": "patches/@earendil-works%2Fpi-tui@0.84.3.patch"
+    "@earendil-works/pi-agent-core@0.84.4": "patches/@earendil-works%2Fpi-agent-core@0.84.4.patch",
+    "@earendil-works/pi-ai@0.84.4": "patches/@earendil-works%2Fpi-ai@0.84.4.patch",
+    "@earendil-works/pi-coding-agent@0.84.4": "patches/@earendil-works%2Fpi-coding-agent@0.84.4.patch",
+    "@earendil-works/pi-tui@0.84.4": "patches/@earendil-works%2Fpi-tui@0.84.4.patch"
   }
 }

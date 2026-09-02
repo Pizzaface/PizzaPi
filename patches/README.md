@@ -4,7 +4,7 @@ Patches in this directory are applied automatically by Bun via the
 `patchedDependencies` field in the root `package.json`. They are reapplied on
 every `bun install` — no postinstall script is needed.
 
-## @earendil-works/pi-agent-core@0.84.3
+## @earendil-works/pi-agent-core@0.84.4
 
 Refreshes the agent's system prompt and tool list before every assistant
 response, not just at loop start. `dist/agent.js` exposes the current
@@ -15,7 +15,7 @@ updates the prompt mid-turn (e.g. `search_tools`) wouldn't take effect until
 the *next* user turn. See the "pi-agent-core dynamic tool refresh" tests in
 `packages/cli/src/patches.test.ts`.
 
-## @earendil-works/pi-tui@0.84.3
+## @earendil-works/pi-tui@0.84.4
 
 Adds a Windows console lifecycle to `dist/terminal.js`:
 `createWindowsConsoleLifecycle()` enables VT output processing and switches
@@ -26,7 +26,7 @@ mode/code pages on `stop()`. This fixes garbled Unicode/ANSI rendering in
 Windows terminals; it's a no-op (best-effort, swallows failures) on other
 platforms. See `packages/cli/src/patches.test.ts`.
 
-## @earendil-works/pi-ai@0.84.3
+## @earendil-works/pi-ai@0.84.4
 
 Same intent as 0.80.6 (Anthropic web-search passthrough, Claude Code
 credentials fallback, retryable-JSON-parse patterns), ported to upstream's
@@ -67,7 +67,7 @@ assertions that the pi-ai patch no longer carries any ollama-cloud hunks.
 | `dist/auth/oauth/anthropic.js` | Claude Code Keychain/file credentials fallback, now inside `anthropicOAuth.refresh()` |
 | `dist/utils/retry.js` | Same retryable-JSON-parse patterns as 0.80.6 (unchanged file) |
 
-## @earendil-works/pi-coding-agent@0.84.3
+## @earendil-works/pi-coding-agent@0.84.4
 
 Same PizzaPi integration changes as 0.80.6, ported forward, with two upstream
 removals absorbed elsewhere rather than restored:

@@ -1,5 +1,5 @@
 diff --git a/dist/api/anthropic-messages.js b/dist/api/anthropic-messages.js
-index d04d7a9f59f3700a7e3bacb02aa68256215bee27..9805b75e36389df83bfd43aa133282b1fed5b5af 100644
+index d04d7a9..9805b75 100644
 --- a/dist/api/anthropic-messages.js
 +++ b/dist/api/anthropic-messages.js
 @@ -452,6 +452,29 @@ export const stream = (model, context, options) => {
@@ -120,7 +120,7 @@ index d04d7a9f59f3700a7e3bacb02aa68256215bee27..9805b75e36389df83bfd43aa133282b1
          const parameters = getJsonSchemaToolParameters(tool, strict);
          const schema = parameters;
 diff --git a/dist/auth/oauth/anthropic.js b/dist/auth/oauth/anthropic.js
-index 8692e906caa2609396bdccae98d4d593e024ecf6..815bf6fcfd39cec32e7943a931d1e02dc1c6b269 100644
+index 8692e90..815bf6f 100644
 --- a/dist/auth/oauth/anthropic.js
 +++ b/dist/auth/oauth/anthropic.js
 @@ -296,11 +296,49 @@ async function refreshAnthropicToken(refreshToken, signal) {
@@ -175,7 +175,7 @@ index 8692e906caa2609396bdccae98d4d593e024ecf6..815bf6fcfd39cec32e7943a931d1e02d
          return { apiKey: credential.access };
      },
 diff --git a/dist/utils/retry.js b/dist/utils/retry.js
-index 65c7c9efd7667445b711fcd43549062ee3eb5ecf..a20dab36b194559c5a40f42fa13a8ecf69a92940 100644
+index 65c7c9e..a20dab3 100644
 --- a/dist/utils/retry.js
 +++ b/dist/utils/retry.js
 @@ -64,6 +64,9 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
