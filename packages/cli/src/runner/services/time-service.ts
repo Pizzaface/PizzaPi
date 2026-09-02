@@ -326,7 +326,6 @@ export class TimeService implements ServiceHandler {
     readonly id = "time";
 
     #server: BunServer | null = null;
-    #socket: Socket | null = null;
     #timers = new Map<string, TimerEntry>();
     #crons = new Map<string, CronEntry>();
     #cronIterations = new Map<string, number>();
@@ -441,8 +440,7 @@ export class TimeService implements ServiceHandler {
         }
     }
 
-    init(socket: Socket, { announceSigilServer }: ServiceInitOptions): void {
-        this.#socket = socket;
+    init(_socket: Socket, { announceSigilServer }: ServiceInitOptions): void {
 
         // Start HTTP server for sigil resolve endpoints
         this.#server = Bun.serve({
@@ -593,7 +591,6 @@ export class TimeService implements ServiceHandler {
         this.#cronState = null;
 
         // No socket listener to remove — subscription changes come via reconcileSubscriptions().
-        this.#socket = null;
 
         // Stop HTTP server
         if (this.#server) {

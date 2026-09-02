@@ -21,7 +21,6 @@ const win = new Window({ url: "http://localhost/" });
 (win as any).SyntaxError = globalThis.SyntaxError;
 /* eslint-disable @typescript-eslint/no-explicit-any */
 (globalThis as any).window = win;
-(globalThis as any).SyntaxError = globalThis.SyntaxError;
 (globalThis as any).document = win.document;
 (globalThis as any).navigator = win.navigator;
 (globalThis as any).HTMLElement = win.HTMLElement;

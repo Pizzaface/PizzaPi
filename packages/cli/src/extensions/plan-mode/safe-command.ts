@@ -173,7 +173,7 @@ function extractWrapperInnerCommand(segment: string): string | null {
             if (w === "-S" || w === "--split-string") {
                 return i + 1 < words.length ? words[i + 1] : "";
             }
-            if (/^--split-string=/.test(w)) {
+            if (w.startsWith("--split-string=")) {
                 return w.slice("--split-string=".length);
             }
 
@@ -203,7 +203,7 @@ function extractWrapperInnerCommand(segment: string): string | null {
                 continue;
             }
             // --chdir=DIR inline form
-            if (/^--chdir=/.test(w)) {
+            if (w.startsWith("--chdir=")) {
                 i++;
                 continue;
             }

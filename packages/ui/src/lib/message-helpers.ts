@@ -122,7 +122,7 @@ export function deduplicateMessages(messages: RelayMessage[]): RelayMessage[] {
 
     // Extended heuristic: shares a toolCallId with any later timestamped assistant message.
     const ids = getAssistantToolCallIds(cur);
-    if (ids.length > 0 && ids.some((id) => timestampedToolCallIds.has(id))) {
+    if (ids.some((id) => timestampedToolCallIds.has(id))) {
       dropIndices.add(i);
       continue;
     }

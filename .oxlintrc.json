@@ -15,13 +15,13 @@
     "no-useless-escape": "error",
     "no-control-regex": "off",
     "no-unsafe-optional-chaining": "off",
-    "no-self-assign": "off",
-    "no-useless-length-check": "off",
-    "no-unused-private-class-members": "off",
-    "no-unused-expressions": "off",
-    "no-irregular-whitespace": "off",
+    "no-self-assign": "error",
+    "no-useless-length-check": "error",
+    "no-unused-private-class-members": "error",
+    "no-unused-expressions": "error",
+    "no-irregular-whitespace": "error",
     "unicorn/no-useless-spread": "error",
-    "unicorn/prefer-string-starts-ends-with": "off",
+    "unicorn/prefer-string-starts-ends-with": "error",
     "unicorn/no-invalid-fetch-options": "off"
   }
 }
