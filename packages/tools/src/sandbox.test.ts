@@ -821,12 +821,23 @@ describe("sandbox", () => {
         // === null and _buildSrtConfig runs outside the try block.
         test.todo("initSandbox throws on malformed configs (missing srtConfig / undefined fs arrays) instead of degrading gracefully");
 
-        // BUG (found by adversarial probing, not fixed per task instructions):
-        // validatePath("file:///etc/secrets/key", "read") returns { allowed: true }:
-        // pathResolve() treats "file://..." as a CWD-relative path, so denyRead
-        // rules never match and reads fail open. (Writes fail closed because the
-        // CWD-relative resolution is outside allowWrite, but denyRead is bypassed.)
-        test.todo("file:// URL prefix bypasses denyRead validation (pathResolve treats scheme as a CWD-relative segment)");
+        test("file:// URL prefix is normalized to a filesystem path before denyRead applies", async () => {
+            await initSandbox(makeConfig({ denyRead: ["/etc/secrets"] }));
+            expect(validatePath("file:///etc/secrets/key", "read").allowed).toBe(false);
+            expect(validatePath("file:///etc/other", "read").allowed).toBe(true);
+        });
+
+        test("non-file:// URL schemes are denied outright, not resolved as CWD-relative", async () => {
+            await initSandbox(makeConfig({ denyRead: [] }));
+            expect(validatePath("http://evil.example/etc/passwd", "read").allowed).toBe(false);
+            expect(validatePath("http://evil.example/etc/passwd", "write").allowed).toBe(false);
+        });
+
+        test("malformed file:// URL is denied, not treated as a relative path", async () => {
+            await initSandbox(makeConfig({ denyRead: [] }));
+            // Non-empty, non-"localhost" host on a file:// URL is malformed.
+            expect(validatePath("file://not-localhost/etc/passwd", "read").allowed).toBe(false);
+        });
 
         // BUG (found by adversarial probing, not fixed per task instructions):
         // A dangling symlink inside allowWrite passes validatePath for writes

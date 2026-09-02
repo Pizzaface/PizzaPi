@@ -9,6 +9,7 @@
 
 import { resolve as pathResolve, dirname } from "node:path";
 import { realpathSync, existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { platform } from "node:os";
 import {
     SandboxManager,
@@ -182,7 +183,17 @@ export function validatePath(
         return { allowed: true };
     }
 
-    const normalizedPath = _normalizePath(filePath);
+    let normalizedPath: string;
+    try {
+        normalizedPath = _normalizePath(filePath);
+    } catch {
+        // Unsupported/malformed URL scheme (see _normalizePath) — fail closed
+        // rather than falling through to CWD-relative resolution.
+        const label = op === "read" ? "Read" : "Write";
+        const reason = `${label} denied: path "${filePath}" could not be resolved to a filesystem path`;
+        _recordViolation(op, filePath, reason);
+        return { allowed: false, reason };
+    }
 
     return op === "read"
         ? _validateReadPath(normalizedPath)
@@ -398,9 +409,26 @@ function _isActive(): boolean {
     return _initialized && !_initFailed && _config?.mode !== "none" && _config?.srtConfig !== null;
 }
 
+/** Matches a "scheme://" prefix (e.g. "file://", "http://"). Requires the
+ *  "//" so Windows drive letters ("C:/foo", "C:\\foo") never match. */
+const _URL_SCHEME_RE = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//;
+
 /** Normalize a file path for comparison against config paths. */
 function _normalizePath(filePath: string): string {
     let expanded = filePath;
+
+    // Reject URL-scheme inputs before pathResolve() can mistake the scheme
+    // for an ordinary CWD-relative path segment. "file://" URLs are
+    // normalized to a real filesystem path so deny/allow rules still apply;
+    // any other scheme (or a malformed file:// URL) fails closed.
+    const schemeMatch = _URL_SCHEME_RE.exec(expanded);
+    if (schemeMatch) {
+        if (schemeMatch[1].toLowerCase() !== "file") {
+            throw new Error(`Unsupported URL scheme: "${schemeMatch[1]}"`);
+        }
+        expanded = fileURLToPath(expanded); // throws on malformed file:// URLs
+    }
+
     if (expanded.startsWith("~")) {
         const home = process.env.HOME ?? process.env.USERPROFILE ?? "/";
         expanded = home + expanded.slice(1);
