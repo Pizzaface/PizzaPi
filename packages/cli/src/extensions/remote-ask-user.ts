@@ -61,6 +61,7 @@ function _cpWidth(cp: number): number {
  * Wide characters (CJK, most emoji) count as 2 columns.
  */
 export function visLen(s: string): number {
+    // oxlint-disable-next-line no-control-regex -- intentional: matches ANSI escape sequences to strip them
     const stripped = s.replace(/\x1b\[[0-9;]*m/g, "");
     let width = 0;
     for (const char of stripped) {

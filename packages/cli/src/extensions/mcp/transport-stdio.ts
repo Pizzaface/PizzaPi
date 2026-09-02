@@ -34,7 +34,7 @@ export async function createStdioMcpClient(opts: {
   const args = (opts.args ?? []).map(expandStdioValue);
   const cwd = opts.cwd ? expandStdioValue(opts.cwd) : undefined;
   const env = opts.env ? Object.fromEntries(Object.entries(opts.env).map(([key, value]) => [key, expandStdioValue(value)])) : undefined;
-  const mergedEnv = { ...process.env, ...(env ?? {}) };
+  const mergedEnv = { ...process.env, ...(env) };
 
   // STDIO MCP servers are trusted local processes spawned from the user's
   // config — NOT agent-generated commands. We do NOT wrap them with the

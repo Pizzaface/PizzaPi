@@ -71,7 +71,7 @@ function validateScheduleParams(triggerType: string, params: Record<string, unkn
     if (!params) return null;
     if (triggerType === "time:cron") {
         const cron = params.cron;
-        if (typeof cron !== "string" || cron.trim().split(/\s+/).length !== 5 || cron.trim().split(/\s+/).some((f) => !/^[0-9*/?,\-]+$/.test(f))) return "Invalid cron expression";
+        if (typeof cron !== "string" || cron.trim().split(/\s+/).length !== 5 || cron.trim().split(/\s+/).some((f) => !/^[0-9*/?,-]+$/.test(f))) return "Invalid cron expression";
     }
     if (triggerType === "time:at" && typeof params.at === "string" && !/^\d{1,2}:\d{2}\s*UTC$/i.test(params.at) && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/.test(params.at)) return "Invalid time; use ISO 8601 with timezone or HH:MMUTC";
     if (triggerType === "time:timer_fired" && typeof params.duration !== "string") return "Invalid duration";
@@ -102,7 +102,6 @@ import {
 import {
     getRunnerListenerTypes,
     listRunnerTriggerListeners,
-    updateRunnerTriggerListener,
     removeRunnerTriggerListener,
     type RunnerTriggerListener,
 } from "../sessions/runner-trigger-listener-store.js";

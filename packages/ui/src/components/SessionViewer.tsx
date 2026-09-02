@@ -47,7 +47,6 @@ import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choic
 import { PlanModePanel, type PlanModeAnswer } from "@/components/ai-elements/plan-mode";
 import { ApprovalCard } from "@/components/session-viewer/ApprovalCard";
 import { formatAnswersForAgent } from "@/lib/ask-user-questions";
-import { exportToMarkdown } from "@/lib/export-markdown";
 import { dismissNotificationsForSession } from "@/lib/push";
 import { isEscapeAbortBlocked } from "@/lib/escape-abort-guard";
 import {
@@ -170,9 +169,7 @@ export function SessionViewer({
   showAnalyzerButton,
   isAnalyzerOpen,
   triggerCount,
-  todoList = [],
   goal,
-  analysis = null,
   planModeEnabled,
   runnerId,
   sessionCwd,
@@ -350,12 +347,10 @@ export function SessionViewer({
   const {
     commandOpen,
     setCommandOpen,
-    commandQuery,
     setCommandQuery,
     commandHighlightedIndex,
     setCommandHighlightedIndex,
     executeSlashCommand,
-    supportedWebCommands,
     knownCommandNames,
     keepPopoverOpenNames,
     commandSuggestions,
@@ -379,7 +374,7 @@ export function SessionViewer({
     ? trimmedInput.replace(/^\/agents\s*/i, "").trim().toLowerCase()
     : "";
 
-  const { agentsList, agentsLoading, agentCandidates } = useAgentLoading({
+  const { agentsLoading, agentCandidates } = useAgentLoading({
     sessionId,
     runnerId,
     runnerInfo,
@@ -401,7 +396,6 @@ export function SessionViewer({
     setAtMentionPath,
     atMentionQuery,
     setAtMentionQuery,
-    atMentionTriggerOffset,
     setAtMentionTriggerOffset,
     atMentionHighlightedIndex,
     setAtMentionHighlightedIndex,

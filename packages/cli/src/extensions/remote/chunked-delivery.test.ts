@@ -52,7 +52,6 @@ function makeContext(opts: {
     entries?: unknown[];
 } = {}): RelayContext & { emitted: unknown[] } {
     const leafId = opts.leafId ?? "leaf-1";
-    const messages = opts.messages ?? [];
     const emitted: unknown[] = [];
 
     // Minimal session manager stub

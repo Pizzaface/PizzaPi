@@ -1,6 +1,5 @@
 #!/usr/bin/env bun
 import {
-    createAgentSession,
     createAgentSessionFromServices,
     createAgentSessionRuntime,
     createAgentSessionServices,
@@ -491,7 +490,7 @@ async function main() {
         sandboxConfig.srtConfig = null;
     } else if (sandboxOverride === "basic" || sandboxOverride === "full") {
         // Re-resolve so srtConfig matches the overridden preset, not just the mode string.
-        const overrideConfig = { ...config, sandbox: { ...(config.sandbox ?? {}), mode: sandboxOverride } };
+        const overrideConfig = { ...config, sandbox: { ...(config.sandbox), mode: sandboxOverride } };
         const overridden = resolveSandboxConfig(cwd, overrideConfig);
         sandboxConfig.mode = overridden.mode;
         sandboxConfig.srtConfig = overridden.srtConfig;

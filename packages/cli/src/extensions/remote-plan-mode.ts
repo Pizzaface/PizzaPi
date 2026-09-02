@@ -22,6 +22,7 @@ const PLAN_MODE_TOOL_NAME = "plan_mode";
 
 /** Visible display width — strips ANSI escape codes and counts wide (astral) chars as 2. */
 export const vlen = (s: string): number => {
+    // oxlint-disable-next-line no-control-regex -- intentional: matches ANSI escape sequences to strip them
     const stripped = s.replace(/\x1b\[[0-9;]*m/g, "");
     let len = 0;
     for (const ch of stripped) {

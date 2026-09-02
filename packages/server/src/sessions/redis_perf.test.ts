@@ -8,7 +8,7 @@ import {
 
 // ── In-memory Redis mock ─────────────────────────────────────────────────────
 
-const mockDel = mock((keys: string | string[]) => Promise.resolve(1));
+const mockDel = mock((_keys: string | string[]) => Promise.resolve(1));
 
 const mockRedisClient = {
     isOpen: true,

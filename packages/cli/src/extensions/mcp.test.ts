@@ -416,6 +416,52 @@ describe("MCP config compatibility", () => {
             server.stop(true);
         }
     });
+
+    test("streamable transport expands @VAR@ tokens in headers", async () => {
+        // Regression: the expanded headers were computed but the raw config
+        // headers were passed to the streamable client, skipping expansion.
+        let receivedAuth = "";
+        const prevSessionId = process.env.PIZZAPI_SESSION_ID;
+        process.env.PIZZAPI_SESSION_ID = "sess-expanded";
+
+        const server = Bun.serve({
+            port: 0,
+            async fetch(req) {
+                receivedAuth = req.headers.get("authorization") ?? "";
+                const body = await req.json() as any;
+                if (!("id" in body)) return new Response(null, { status: 202 });
+                if (body.method === "initialize") {
+                    return Response.json({
+                        jsonrpc: "2.0",
+                        id: body.id,
+                        result: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, serverInfo: { name: "test", version: "1.0" } },
+                    });
+                }
+                return Response.json({ jsonrpc: "2.0", id: body.id, result: { tools: [] } });
+            },
+        });
+
+        try {
+            const clients = await createMcpClientsFromConfig({
+                mcpServers: {
+                    expanded: {
+                        transport: "streamable",
+                        url: `http://localhost:${server.port}`,
+                        headers: { Authorization: "Bearer @SESSION_ID@" },
+                    },
+                },
+            } as any);
+
+            expect(clients).toHaveLength(1);
+            await clients[0].listTools();
+            expect(receivedAuth).toBe("Bearer sess-expanded");
+            clients[0].close();
+        } finally {
+            server.stop(true);
+            if (prevSessionId === undefined) delete process.env.PIZZAPI_SESSION_ID;
+            else process.env.PIZZAPI_SESSION_ID = prevSessionId;
+        }
+    });
 });
 
 describe("MCP streamable HTTP smoke test", () => {
@@ -589,7 +635,7 @@ describe("MCP streamable HTTP smoke test", () => {
 describe("MCP init timeout cancellation", () => {
     test("init timeout aborts in-flight HTTP initialize request", async () => {
         let initRequestReceived = false;
-        let initRequestAborted = false;
+        let _initRequestAborted = false;
 
         const server = Bun.serve({
             port: 0,
@@ -603,7 +649,7 @@ describe("MCP init timeout cancellation", () => {
                     await new Promise((resolve) => {
                         // Detect abort via request signal
                         req.signal.addEventListener("abort", () => {
-                            initRequestAborted = true;
+                            _initRequestAborted = true;
                             resolve(undefined);
                         });
                         // Safety: resolve after 10s so test doesn't hang

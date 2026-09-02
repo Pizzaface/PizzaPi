@@ -12,7 +12,6 @@
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { MetaGoalStatus } from "@pizzapi/protocol";
 // NOTE: `pi` (the factory argument) is the PiInstance, which has .on()/.registerCommand()/.events
 // etc. but is not publicly exported. We type it as `any` in LifecycleHandlersDeps to avoid
@@ -430,7 +429,7 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         rctx.forwardEvent(rctx.buildHeartbeat());
     });
 
-    pi.on("agent_end", (event: any, ctx: any) => {
+    pi.on("agent_end", (event: any, _ctx: any) => {
         rctx.isAgentActive = false;
         rctx.isAgentSettling = true;
         // pi's agent_end.messages contains only THIS run's messages (prompts +

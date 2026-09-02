@@ -2,7 +2,6 @@ import { Buffer } from "node:buffer";
 import { EventEmitter } from "node:events";
 import { createServer, type Server } from "node:http";
 import https from "node:https";
-import net from "node:net";
 import { describe, expect, test, jest, afterEach } from "bun:test";
 import { TunnelClient } from "./client.js";
 
@@ -779,7 +778,7 @@ describe("TunnelClient probe timeout fallback", () => {
 
   function fakeRequest(behaviors: Array<"timeout" | "error">) {
     let index = 0;
-    return jest.spyOn(https, "request").mockImplementation((options: any) => {
+    return jest.spyOn(https, "request").mockImplementation((_options: any) => {
       const req = new EventEmitter() as any;
       // Simulate the real node behaviour: req.destroy() emits an async 'error'
       // ("socket hang up" / ERR_HTTP_SOCKET_CLOSED). The timedOut guard in
@@ -792,28 +791,6 @@ describe("TunnelClient probe timeout fallback", () => {
         queueMicrotask(() => req.emit(behavior, new Error(behavior)));
       };
       return req;
-    });
-  }
-
-  function fakeNetConnect(behaviors: Array<"timeout" | "connect" | "error">) {
-    let index = 0;
-    return jest.spyOn(net, "connect").mockImplementation(() => {
-      const sock = new EventEmitter() as any;
-      // Simulate sock.destroy() emitting 'error' to exercise the sockTimedOut
-      // symmetry guard (in production this rarely happens, but the guard must
-      // hold when it does).
-      sock.destroy = () => {
-        queueMicrotask(() => sock.emit("error", new Error("socket destroyed")));
-      };
-      sock.setTimeout = (_ms: number, cb: () => void) => {
-        sock._timeoutCb = cb;
-      };
-      queueMicrotask(() => {
-        const behavior = behaviors[index++] ?? "timeout";
-        if (behavior === "timeout") sock._timeoutCb?.();
-        else sock.emit(behavior, new Error(behavior));
-      });
-      return sock;
     });
   }
 

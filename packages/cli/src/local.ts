@@ -15,7 +15,6 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { c } from "./cli-colors.js";
 import { createLogger } from "@pizzapi/tools";
 import { loadGlobalConfig } from "./config.js";
@@ -266,7 +265,6 @@ export async function runLocal(args: string[] = [], deps: LocalDeps = defaultLoc
 
     const port = parsed.port;
     const relayUrl = buildLocalRelayUrl(port);
-    const wsRelayUrl = buildLocalWsRelayUrl(port);
     const browserUrl = buildLocalBrowserUrl(port);
 
     deps.log.info("");

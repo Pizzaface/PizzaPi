@@ -6,7 +6,6 @@ import { randomBytes } from "node:crypto";
 import {
     parseAgentFrontmatterFromString,
     scanAgentsDir,
-    scanGlobalAgents,
     readAgentContent,
     writeAgent,
     deleteAgent,

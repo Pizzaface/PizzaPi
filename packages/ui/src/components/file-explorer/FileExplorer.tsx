@@ -138,7 +138,7 @@ const FileTreeRow = React.memo(function FileTreeRow({ node, isExpanded, isLoadin
 
 // ── Main File Explorer Component ──────────────────────────────────────────────
 
-export function FileExplorer({ runnerId, cwd, className, onClose, position = "left", onPositionChange, onDragStart, openFile }: FileExplorerProps) {
+export function FileExplorer({ runnerId, cwd, className, openFile }: FileExplorerProps) {
   const storageKey = `file-explorer:${runnerId}:${cwd}`;
   const git = useGitService(cwd);
   const canBlame = Boolean(git.available && git.status);

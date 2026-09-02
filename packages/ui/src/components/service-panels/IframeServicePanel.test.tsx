@@ -106,7 +106,7 @@ describe("IframeServicePanel", () => {
         _setMobileRuntimeCache("key-123");
         globalThis.fetch = async (input, init) => {
             expect(String(input)).toBe("https://relay.example.com/api/tunnel-token");
-            expect((init?.headers as Record<string, string>)["x-api-key"]).toBe("key-123");
+            expect(((init?.headers as Record<string, string>) ?? {})["x-api-key"]).toBe("key-123");
             return new Response(JSON.stringify({ url: "/api/tunnel/auth/tok/sess-123/8080/" }), { status: 200 });
         };
         const { container } = render(

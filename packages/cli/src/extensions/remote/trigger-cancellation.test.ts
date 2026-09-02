@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import { createCancellationManager, type CancellationState } from "./trigger-cancellation.js";
 import type { RelayContext } from "../remote-types.js";
 

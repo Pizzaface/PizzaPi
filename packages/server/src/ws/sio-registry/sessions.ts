@@ -25,7 +25,6 @@ import {
     refreshSessionTTL,
     incrementSeq,
     getSeq,
-    setPendingRunnerLink,
     getPendingRunnerLink,
     deletePendingRunnerLink,
     getRunnerAssociation,
@@ -37,7 +36,6 @@ import {
     removeChildSession,
     isChildDelinked,
     clearParentSessionId,
-    refreshChildSessionsTTL,
     removePendingParentDelinkChild,
     getRunner as getRunnerState,
 } from "../sio-state/index.js";

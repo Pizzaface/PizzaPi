@@ -5,15 +5,15 @@
  */
 
 import { spawn } from "node:child_process";
-import { buildSessionContext, SessionManager, type ExtensionContext, type SessionInfo } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, type ExtensionContext, type SessionInfo } from "@earendil-works/pi-coding-agent";
 import { getMcpBridge } from "./mcp-bridge.js";
-import { toggleMcpServer, saveGlobalConfig, loadConfig, loadGlobalConfig, resolveSandboxConfig, type SandboxConfig } from "../config.js";
+import { toggleMcpServer, saveGlobalConfig, loadConfig, loadGlobalConfig, resolveSandboxConfig } from "../config.js";
 import { isPlanModeEnabled, togglePlanModeFromRemote, setPlanModeFromRemote } from "./plan-mode/index.js";
 import { isSandboxActive, getSandboxMode, getViolations, getResolvedConfig } from "@pizzapi/tools";
 import { refreshAllUsage, buildProviderUsage } from "./remote-provider-usage.js";
 import { backgroundPendingJobs } from "./background-bash.js";
 import { isModelHidden } from "../hidden-models.js";
-import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
+import type { RemoteExecRequest } from "./remote-commands.js";
 import type { RelayContext, RelayModelInfo } from "./remote-types.js";
 import { emitThinkingLevelChanged, emitCompactStarted, emitCompactEnded, emitRetryStateChanged, emitPluginTrustResolved } from "./remote-meta-events.js";
 import { listSessionsCached } from "../runner/session-list-cache.js";

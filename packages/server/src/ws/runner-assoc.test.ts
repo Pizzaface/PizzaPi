@@ -9,7 +9,7 @@
 // We mock the Redis client at module level so no live Redis is needed.
 // ============================================================================
 
-import { afterEach, describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, mock } from "bun:test";
 
 // ── Minimal Redis mock ──────────────────────────────────────────────────────
 

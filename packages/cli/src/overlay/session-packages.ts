@@ -17,7 +17,7 @@
  * startup or block that package's pi-native resources (§5.2, §10.1).
  */
 import { lstatSync, readdirSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { PizzaPiOverlayV1 } from "@pizzapi/extension-sdk";
 import { createLogger } from "@pizzapi/tools";
 import { listDedupedConfiguredPackages } from "./resolve.js";

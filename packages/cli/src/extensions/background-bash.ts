@@ -179,7 +179,7 @@ export function pendingCommands(): string[] {
  */
 export function backgroundPendingJobs(): string[] {
     const commands = pendingCommands();
-    for (const job of [...waiting.values()]) job.backgroundNow();
+    for (const job of waiting.values()) job.backgroundNow();
     return commands;
 }
 
@@ -199,7 +199,8 @@ function killTree(pid: number): void {
     if (!Number.isInteger(pid) || pid <= 0) return;
     try {
         // Detached on POSIX → child is its own group leader; kill the group.
-        process.platform === "win32" ? process.kill(pid) : process.kill(-pid);
+        if (process.platform === "win32") process.kill(pid);
+        else process.kill(-pid);
     } catch {
         try { process.kill(pid); } catch { /* already gone */ }
     }

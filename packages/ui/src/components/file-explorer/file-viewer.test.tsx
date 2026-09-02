@@ -56,7 +56,7 @@ afterEach(() => {
 
 describe("FileViewer", () => {
   test("shows blame button inside a git repo and toggles blame view", async () => {
-    const { getByText, queryByText, queryByTestId } = render(
+    const { getByText, queryByText } = render(
       <FileViewer runnerId="r1" filePath="/repo/readme.txt" blamePath="readme.txt" cwd="/repo" canBlame={true} onClose={mock(() => {})} />,
     );
 

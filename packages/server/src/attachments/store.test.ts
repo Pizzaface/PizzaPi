@@ -98,6 +98,7 @@ describe("sanitizeStoredFilename", () => {
         // Generate a string with chars 0x00 through 0x1F
         const controlChars = Array.from({ length: 32 }, (_, i) => String.fromCharCode(i)).join("");
         const result = sanitizeStoredFilename("a" + controlChars + "b");
+        // oxlint-disable-next-line no-control-regex -- intentional: asserts extracted content contains no control characters
         expect(result).not.toMatch(/[\x00-\x1F]/);
     });
 

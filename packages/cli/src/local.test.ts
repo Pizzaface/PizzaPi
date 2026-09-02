@@ -437,7 +437,7 @@ describe("runLocal orchestration", () => {
 
     test("runner exit code is forwarded", async () => {
         let supervisorCalled = false;
-        const { deps, calls } = makeDeps({
+        const { deps } = makeDeps({
             pollRelayHealth: async () => true,
             loadGlobalConfig: () => ({ apiKey: "k", relayUrl: "ws://localhost:7492" }),
             runSupervisor: async () => {

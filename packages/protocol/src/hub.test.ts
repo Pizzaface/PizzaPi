@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import type {
   HubServerToClientEvents,
   HubClientToServerEvents,
-  HubInterServerEvents,
   HubSocketData,
 } from "./hub";
 import type { SessionInfo, ModelInfo } from "./shared";

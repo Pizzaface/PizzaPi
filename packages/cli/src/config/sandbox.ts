@@ -88,7 +88,7 @@ function validateSandboxOverride(raw: string | undefined): SandboxMode | undefin
     if (raw === undefined || raw === "") return undefined;
     const resolved = SANDBOX_MODE_ALIASES[raw.toLowerCase()];
     if (resolved !== undefined) return resolved;
-    const validValues = [...new Set([...Object.keys(SANDBOX_MODE_ALIASES)])].join(", ");
+    const validValues = [...new Set(Object.keys(SANDBOX_MODE_ALIASES))].join(", ");
     throw new Error(
         `Invalid sandbox override "${raw}". ` +
         `Valid values: ${validValues}. Refusing to start with unknown mode.`,

@@ -9,7 +9,6 @@
 
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import type { ConversationTrigger } from "./types.js";
 import { getRelaySocket, getRelaySessionId } from "../remote.js";
 import {
     fireTrigger,
@@ -843,7 +842,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             if (params.triggerType.startsWith("time:")) {
                 const sessionFile = process.env.PIZZAPI_SESSION_FILE?.trim();
                 subParams = {
-                    ...(subParams ?? {}),
+                    ...(subParams),
                     _cwd: process.cwd(),
                     ...(sessionFile ? { _resumePath: sessionFile } : {}),
                 };

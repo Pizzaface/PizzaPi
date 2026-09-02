@@ -143,7 +143,7 @@ describe("mergeOverlayMcpServers", () => {
 
     test("preserves literal config tokens in the installed root through stdio construction", async () => {
         const pkgDir = join(tmpDir, "mcp-@HOME@-@PROJECT_DIR@");
-        const server = `#!${process.execPath}\nconst snapshot = () => ({ command: process.argv[1], args: process.argv.slice(2), cwd: process.cwd(), root: process.env.ROOT });\nlet buffer = \"\";\nprocess.stdin.on(\"data\", (chunk) => { buffer += chunk; for (;;) { const end = buffer.indexOf(\"\\n\"); if (end < 0) return; const line = buffer.slice(0, end); buffer = buffer.slice(end + 1); const message = JSON.parse(line); if (message.method === \"initialize\") process.stdout.write(JSON.stringify({ jsonrpc: \"2.0\", id: message.id, result: { protocolVersion: \"2025-03-26\", capabilities: {}, serverInfo: { name: \"fixture\", version: \"1\" } } }) + \"\\n\"); else if (message.method === \"tools/list\") process.stdout.write(JSON.stringify({ jsonrpc: \"2.0\", id: message.id, result: { tools: [{ name: \"details\", description: JSON.stringify(snapshot()) }] } }) + \"\\n\"); } });\n`;
+        const server = `#!${process.execPath}\nconst snapshot = () => ({ command: process.argv[1], args: process.argv.slice(2), cwd: process.cwd(), root: process.env.ROOT });\nlet buffer = "";\nprocess.stdin.on("data", (chunk) => { buffer += chunk; for (;;) { const end = buffer.indexOf("\\n"); if (end < 0) return; const line = buffer.slice(0, end); buffer = buffer.slice(end + 1); const message = JSON.parse(line); if (message.method === "initialize") process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "fixture", version: "1" } } }) + "\\n"); else if (message.method === "tools/list") process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { tools: [{ name: "details", description: JSON.stringify(snapshot()) }] } }) + "\\n"); } });\n`;
         writeFixturePackage(pkgDir, { schemaVersion: 1, mcp: "./.mcp.json" }, {
             ".mcp.json": JSON.stringify({
                 mcpServers: {
@@ -199,8 +199,8 @@ describe("mergeOverlayMcpServers", () => {
         await install("../mcp-root-project", { project: true });
 
         const { config, serverProvenance } = mergeOverlayMcpServers({}, cwd, agentDir, true);
-        expect((config.mcpServers?.shared as any).command).toEndWith("/project");
-        expect((config.mcpServers?.shared as any).command).not.toContain("mcp-root-user");
+        expect((config.mcpServers?.shared as any)?.command).toEndWith("/project");
+        expect((config.mcpServers?.shared as any)?.command).not.toContain("mcp-root-user");
         expect(serverProvenance.find((p) => p.name === "shared")?.identity).toContain("mcp-root-project");
     });
 
@@ -213,7 +213,7 @@ describe("mergeOverlayMcpServers", () => {
 
         const base = { mcpServers: { shared: { command: "explicit-config-command" } } };
         const { config } = mergeOverlayMcpServers(base, cwd, agentDir, true);
-        expect((config.mcpServers?.shared as any).command).toBe("explicit-config-command");
+        expect((config.mcpServers?.shared as any)?.command).toBe("explicit-config-command");
     });
 
     test("project-scope package wins over user-scope package for the same server name", async () => {
@@ -230,7 +230,7 @@ describe("mergeOverlayMcpServers", () => {
         await install("../mcp-project-pkg", { project: true });
 
         const { config } = mergeOverlayMcpServers({}, cwd, agentDir, true);
-        expect((config.mcpServers?.shared as any).command).toBe("project-command");
+        expect((config.mcpServers?.shared as any)?.command).toBe("project-command");
     });
 
     test("project-scope package overlay is excluded when the project is not explicitly trusted", async () => {
@@ -302,7 +302,7 @@ describe("mergeOverlayMcpServers", () => {
         installLegacyPlugin("legacy-plugin", { legacyServer: { command: "legacy-command" } });
 
         const { config } = mergeOverlayMcpServers({}, cwd, agentDir, true);
-        expect((config.mcpServers?.legacyServer as any).command).toBe("legacy-command");
+        expect((config.mcpServers?.legacyServer as any)?.command).toBe("legacy-command");
     });
 
     test("package overlay mcp wins over legacy plugin .mcp.json for the same name", async () => {
@@ -315,6 +315,6 @@ describe("mergeOverlayMcpServers", () => {
         await install("../mcp-beats-legacy-pkg");
 
         const { config } = mergeOverlayMcpServers({}, cwd, agentDir, true);
-        expect((config.mcpServers?.shared as any).command).toBe("package-command");
+        expect((config.mcpServers?.shared as any)?.command).toBe("package-command");
     });
 });

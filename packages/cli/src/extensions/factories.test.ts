@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -197,10 +197,6 @@ describe("buildPizzaPiExtensionFactories — safe mode", () => {
     });
 
     test("all skip flags together leaves only non-optional extensions", () => {
-        const hooks: HooksConfig = {
-            PreToolUse: [{ matcher: "Bash", hooks: [{ command: "echo hook" }] }],
-        };
-
         const factories = buildPizzaPiExtensionFactories({
             cwd: "/tmp/pizzapi-test",
             agentDir: TEST_AGENT_DIR,

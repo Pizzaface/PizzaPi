@@ -1,7 +1,4 @@
-import { exec, type ChildProcess } from "node:child_process";
-import { promisify } from "node:util";
-
-const execAsync = promisify(exec);
+import { type ChildProcess } from "node:child_process";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { existsSync, rmSync } from "node:fs";
@@ -1916,7 +1913,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         // ── session_ended — relay notifies us a worker disconnected ───────
         socket.on("session_ended", async (data: any) => {
             if (isShuttingDown) return;
-            const { sessionId, reason, sessionFile } = data;
+            const { sessionId, reason } = data;
 
             // If this session just did a restart-in-place (exit code 43), the relay fires
             // session_ended when the new worker's registerTuiSession tears down the OLD

@@ -21,7 +21,6 @@ const win = new Window({ url: "http://localhost/" });
 (win as any).SyntaxError = globalThis.SyntaxError;
 /* eslint-disable @typescript-eslint/no-explicit-any */
 (globalThis as any).window = win;
-(globalThis as any).SyntaxError = globalThis.SyntaxError;
 (globalThis as any).document = win.document;
 (globalThis as any).navigator = win.navigator;
 (globalThis as any).HTMLElement = win.HTMLElement;
@@ -384,9 +383,8 @@ describe("TriggersPanel — Send Trigger dialog", () => {
   test("dialog does not show payload editor initially", async () => {
     fetchState.response = { ok: true, body: { triggers: [] } };
 
-    let container!: HTMLElement;
     await act(async () => {
-      ({ container } = render(<TriggersPanel sessionId="sess-abc" />));
+      render(<TriggersPanel sessionId="sess-abc" />);
     });
 
     expect(document.body.textContent).not.toContain("Payload (JSON)");

@@ -3,7 +3,6 @@ import {
     isSandboxActive,
     getSandboxMode,
     getViolations,
-    clearViolations,
     onViolation,
     getResolvedConfig,
     type ViolationRecord,

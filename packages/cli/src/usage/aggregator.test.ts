@@ -1,8 +1,6 @@
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync } from "node:fs";
 import { Database } from "bun:sqlite";
 import { getUsageData } from "./aggregator.js";
-import type { UsageRange } from "./types.js";
 
 function createTestDb(): Database {
   const db = new Database(":memory:");

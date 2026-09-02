@@ -98,7 +98,7 @@ describe("headlessFork", () => {
     });
 
     test("position 'at' keeps the entry (clone semantics)", async () => {
-        const { sm, session, secondUserId } = buildSession();
+        const { session, secondUserId } = buildSession();
 
         const result = await headlessFork(session, secondUserId, { position: "at" });
 

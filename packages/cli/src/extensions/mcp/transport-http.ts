@@ -31,7 +31,7 @@ export function createHttpMcpClient(opts: { name: string; url: string; headers?:
 
     const res = await fetch(opts.url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...(opts.headers ?? {}) },
+      headers: { "Content-Type": "application/json", ...(opts.headers) },
       body: JSON.stringify(payload),
       signal,
     });
@@ -50,7 +50,7 @@ export function createHttpMcpClient(opts: { name: string; url: string; headers?:
 
     await fetch(opts.url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...(opts.headers ?? {}) },
+      headers: { "Content-Type": "application/json", ...(opts.headers) },
       body: JSON.stringify(payload),
     }).catch(() => {}); // best-effort
   }
@@ -194,9 +194,9 @@ export function createStreamableMcpClient(opts: {
     const h: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
-      ...(opts.headers ?? {}),
+      ...(opts.headers),
       ...(sessionId ? { "mcp-session-id": sessionId } : {}),
-      ...(extra ?? {}),
+      ...(extra),
     };
 
     // Attach stored OAuth access token if available
@@ -284,7 +284,7 @@ export function createStreamableMcpClient(opts: {
       if (closed) {
         fetch(opts.url, {
           method: "DELETE",
-          headers: { ...(opts.headers ?? {}), "mcp-session-id": sid },
+          headers: { ...(opts.headers), "mcp-session-id": sid },
         }).catch(() => {});
       } else {
         sessionId = sid;
@@ -500,7 +500,7 @@ export function createStreamableMcpClient(opts: {
         sessionId = undefined;
         fetch(opts.url, {
           method: "DELETE",
-          headers: { ...(opts.headers ?? {}), "mcp-session-id": sid },
+          headers: { ...(opts.headers), "mcp-session-id": sid },
         }).catch(() => {});
       }
     },

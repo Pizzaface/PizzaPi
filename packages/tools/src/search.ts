@@ -282,7 +282,7 @@ export const searchTool: AgentTool = {
         // GNU find/rg treat `./--help` as a literal path, not the --help flag.
         // Preserve Unix absolute (/), relative (. or ..), Windows drive (C:\ or C:/)
         // and UNC paths (\\server) — only prepend ./ for bare relative paths.
-        const safePath = /^[.\/\\]/.test(rawPath) || /^[a-zA-Z]:/.test(rawPath)
+        const safePath = /^[./\\]/.test(rawPath) || /^[a-zA-Z]:/.test(rawPath)
             ? rawPath
             : `./${rawPath}`;
 

@@ -44,7 +44,6 @@ const win = new Window({ url: "http://localhost/" });
 (globalThis as any).atob = (b64: string) => Buffer.from(b64, "base64").toString("binary");
 
 const { render, cleanup, fireEvent, waitFor } = await import("@testing-library/react");
-const React = (await import("react")).default;
 const { default: PptxPreview } = await import("./PptxPreview");
 const { PptxRenderer } = await import("pptx-browser");
 

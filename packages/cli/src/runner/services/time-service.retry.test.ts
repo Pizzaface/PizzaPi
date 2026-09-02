@@ -285,7 +285,7 @@ describe("cron delivery retry and durable state", () => {
 
     test("a legacy type-wide unsubscribe delta disarms every cron the session holds", async () => {
         const home = setupEnv();
-        const calls = routedFetch(() => ({ status: 503 })); // deliveries would fail — schedule must be DISARMED, not retrying
+        routedFetch(() => ({ status: 503 })); // deliveries would fail — schedule must be DISARMED, not retrying
         service = new TimeService([10, 20], 10, 15_000, 5);
 
         service.reconcileSubscriptions([

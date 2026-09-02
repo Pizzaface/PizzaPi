@@ -264,7 +264,6 @@ export class TunnelService implements ServiceHandler {
             return;
         }
 
-        const hadPort = this.sessionTunnels.get(sessionId)?.has(port) ?? false;
         const removed = this.removeSessionPort(sessionId, port);
         if (!removed) {
             this.emitTunnelError(requestId, sessionId, `Port ${port} is not exposed by this session`);

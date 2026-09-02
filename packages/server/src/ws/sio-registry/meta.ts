@@ -6,7 +6,7 @@
 // ============================================================================
 
 import { defaultMetaState, type SessionMetaState, type MetaRelayEvent } from "@pizzapi/protocol";
-import { getSession, getSessionField, updateSessionFields } from "../sio-state/index.js";
+import { getSessionField, updateSessionFields } from "../sio-state/index.js";
 import { getIo } from "./context.js";
 import { createLogger } from "@pizzapi/tools";
 

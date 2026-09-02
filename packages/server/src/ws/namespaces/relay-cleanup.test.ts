@@ -6,7 +6,7 @@
 // in isolation — the same approach used in extension.test.ts on the CLI side.
 // ============================================================================
 
-import { describe, it, expect, beforeEach } from "bun:test";
+import { describe, it, expect } from "bun:test";
 
 // ── Types mirroring relay session shape ──────────────────────────────────────
 
@@ -222,7 +222,7 @@ describe("session_end — pendingChunkedStates cleanup", () => {
         pending.set(sessionId, {
             snapshotId: "snap-leak",
             metadata: {},
-            chunks: [new Array(1000).fill("msg")],
+            chunks: [Array(1000).fill("msg")],
             totalChunks: 2,
             receivedChunks: 1,
         });

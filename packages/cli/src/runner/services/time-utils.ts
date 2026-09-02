@@ -255,7 +255,7 @@ export interface CronExpression {
 
 /**
  * Parse a cron expression string into a CronExpression.
- * Supports: *, ranges (1-5), lists (1,3,5), steps (*​/15, 1-10/2).
+ * Supports: *, ranges (1-5), lists (1,3,5), steps (* /15, 1-10/2).
  *
  * Returns null for invalid expressions.
  */

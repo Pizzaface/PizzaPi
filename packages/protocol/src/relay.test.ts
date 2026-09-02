@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import type {
   RelayClientToServerEvents,
   RelayServerToClientEvents,
-  RelayInterServerEvents,
   RelaySocketData,
 } from "./relay";
 import type { Attachment } from "./shared";

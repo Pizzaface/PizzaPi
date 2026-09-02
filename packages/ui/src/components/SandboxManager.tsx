@@ -5,14 +5,12 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import {
-    Shield,
     Loader2,
     Plus,
     X,
     ChevronDown,
     Lock,
     AlertTriangle,
-    Trash2,
     Save,
     RotateCcw,
 } from "lucide-react";

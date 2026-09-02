@@ -235,7 +235,7 @@ describe("tunnelToolsExtension", () => {
 
         test("closes tunnel on tunnel_removed response", async () => {
             const sock = mockSocket();
-            sock.emit = (_event: string, data: unknown) => {
+            sock.emit = (_event: string, _data: unknown) => {
                 setTimeout(() => {
                     sock.simulateMessage({
                         serviceId: "tunnel",

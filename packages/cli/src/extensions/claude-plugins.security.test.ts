@@ -426,7 +426,7 @@ describe("project-local vs global isolation", () => {
         // (or similar), the function returns non-null regardless of cwd.
         // Since Bun caches homedir() at process start, we can't override HOME.
         const emptyProject = freshTmpDir();
-        const result = createClaudePluginExtension(emptyProject);
+        createClaudePluginExtension(emptyProject);
         // If global plugins exist on this machine, result will be non-null.
         // The key invariant: no project-local plugins should be discovered
         // for an empty project directory.

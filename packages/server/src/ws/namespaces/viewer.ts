@@ -48,7 +48,7 @@ import { recordTriggerResponse } from "../../sessions/trigger-store.js";
 import { getHiddenModels } from "../../user-hidden-models.js";
 import { isHiddenModel } from "../../routes/model-guard.js";
 import { createLogger } from "@pizzapi/tools";
-import { hydrateViewerFromCache, sendCachedDeltaReplayEvents } from "./viewer-cache.js";
+import { hydrateViewerFromCache } from "./viewer-cache.js";
 import { getBestSnapshot } from "./snapshot-provider.js";
 
 export { hydrateViewerFromCache, sendCachedDeltaReplayEvents } from "./viewer-cache.js";
@@ -154,7 +154,7 @@ export function findLatestSnapshotEvent(cachedEvents: unknown[]): Record<string,
 /** @internal — exported for unit tests only */
 export function onViewerConnectedSignal(
     viewerReadyForRunnerSignal: boolean,
-    pendingConnectedSignal: boolean,
+    _pendingConnectedSignal: boolean,
 ): { pendingConnectedSignal: boolean; forwardNow: boolean } {
     if (viewerReadyForRunnerSignal) {
         return { pendingConnectedSignal: false, forwardNow: true };

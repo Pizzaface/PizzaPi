@@ -113,14 +113,6 @@ type GitLogEntry = {
     parents: string[];
 };
 
-type GitCommitSuggestion = {
-    subject: string;
-    body: string;
-    type: string;
-    scope: string;
-    files: Array<{ path: string; added: number; deleted: number }>;
-};
-
 type GitCommitFile = { status: string; path: string };
 
 type GitBlameLine = {
@@ -141,6 +133,7 @@ function isValidBranchName(name: string): boolean {
     // would be interpreted as git options (e.g. --abort, --continue).
     if (name.startsWith("-")) return false;
     // Reject control chars, space-only, "..", "~", "^", ":", "\\", NUL
+    // oxlint-disable-next-line no-control-regex -- intentional: git ref-name validation must reject control characters
     if (/[\x00-\x1f\x7f~^:\\]/.test(name)) return false;
     if (name.includes("..")) return false;
     if (name.includes("@{")) return false;
@@ -832,6 +825,7 @@ export class GitService implements ServiceHandler {
         const version = (this._repoVersion.get(commonDir) ?? 0) + 1;
         this._repoVersion.set(commonDir, version);
 
+        // oxlint-disable-next-line unicorn/no-useless-spread -- snapshot: awaits inside the loop let concurrent subscribe/unsubscribe mutate _cwdSubscribers mid-pass; iterating a copy keeps the pass deterministic
         for (const knownCwd of [...this._cwdSubscribers.keys()]) {
             const knownCommon = await this.resolveCommonDir(knownCwd);
             if (knownCommon !== commonDir) continue;

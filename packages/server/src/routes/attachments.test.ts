@@ -173,6 +173,7 @@ describe("buildContentDisposition", () => {
     test("strips newline from filename (prevents header injection)", () => {
         const result = buildContentDisposition("evil\r\nX-Injected: bad\r\nfile.txt");
         // Control chars must not appear raw in the output
+        // oxlint-disable-next-line no-control-regex -- intentional: asserts content contains no control characters
         expect(result).not.toMatch(/[\x00-\x1F\x7F]/);
         // Must not throw when used in a Response header
         expect(() => new Response("", { headers: { "content-disposition": result } })).not.toThrow();
@@ -180,12 +181,14 @@ describe("buildContentDisposition", () => {
 
     test("strips null byte from filename", () => {
         const result = buildContentDisposition("file\x00name.txt");
+        // oxlint-disable-next-line no-control-regex -- intentional: asserts content contains no control characters
         expect(result).not.toMatch(/[\x00-\x1F\x7F]/);
         expect(() => new Response("", { headers: { "content-disposition": result } })).not.toThrow();
     });
 
     test("strips DEL (0x7F) from filename", () => {
         const result = buildContentDisposition("file\x7Fname.txt");
+        // oxlint-disable-next-line no-control-regex -- intentional: asserts content contains no control characters
         expect(result).not.toMatch(/[\x00-\x1F\x7F]/);
         expect(() => new Response("", { headers: { "content-disposition": result } })).not.toThrow();
     });
@@ -235,12 +238,14 @@ describe("encodeHeaderFilename", () => {
     test("strips newline before encoding (prevents header injection)", () => {
         const result = encodeHeaderFilename("evil\r\nX-Injected: bad");
         // After control-char stripping, \r\n become underscores → URL-safe
+        // oxlint-disable-next-line no-control-regex -- intentional: asserts content contains no control characters
         expect(result).not.toMatch(/[\x00-\x1F\x7F]/);
         expect(() => new Response("", { headers: { "x-attachment-filename": result } })).not.toThrow();
     });
 
     test("strips null byte before encoding", () => {
         const result = encodeHeaderFilename("file\x00name.txt");
+        // oxlint-disable-next-line no-control-regex -- intentional: asserts content contains no control characters
         expect(result).not.toMatch(/[\x00-\x1F\x7F]/);
         expect(() => new Response("", { headers: { "x-attachment-filename": result } })).not.toThrow();
     });

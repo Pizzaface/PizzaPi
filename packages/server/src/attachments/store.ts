@@ -495,16 +495,6 @@ async function persistSessionRef(attachmentId: string, sessionId: string): Promi
         .execute();
 }
 
-/** Load all session IDs that reference a given extracted attachment from SQLite. */
-async function loadSessionRefsFromDb(attachmentId: string): Promise<string[]> {
-    const rows = await getKysely()
-        .selectFrom("extracted_attachment_session" as any)
-        .select("sessionId")
-        .where("attachmentId", "=", attachmentId)
-        .execute();
-    return rows.map((r: any) => r.sessionId as string);
-}
-
 /** Batch-load all session refs for a set of attachment IDs in a single query. */
 async function batchLoadSessionRefsFromDb(attachmentIds: string[]): Promise<Map<string, Set<string>>> {
     const result = new Map<string, Set<string>>();

@@ -99,7 +99,6 @@ export function AtMentionPopover({
   onClose,
   onBack,
   sessionCwd,
-  highlightedIndex = 0,
   onHighlightedIndexChange,
   onHighlightedEntryChange,
   agents,

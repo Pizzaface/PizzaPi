@@ -14,7 +14,7 @@ import { getMcpBridge } from "../mcp-bridge.js";
 import { messageBus } from "../session-message-bus.js";
 import { buildProviderUsage, refreshAllUsage } from "../remote-provider-usage.js";
 import { buildTokenUsage, startHeartbeat, stopHeartbeat } from "../remote-heartbeat.js";
-import { emitAuthSourceChanged, emitThinkingLevelChanged, emitMcpStartupReport, emitTokenUsageUpdated } from "../remote-meta-events.js";
+import { emitAuthSourceChanged, emitThinkingLevelChanged, emitTokenUsageUpdated } from "../remote-meta-events.js";
 import { getAuthSource } from "../remote-auth-source.js";
 import { cancelPendingAskUserQuestion, consumePendingAskUserQuestionFromWeb } from "../remote-ask-user.js";
 import { cancelPendingPlanMode, consumePendingPlanModeFromWeb } from "../remote-plan-mode.js";

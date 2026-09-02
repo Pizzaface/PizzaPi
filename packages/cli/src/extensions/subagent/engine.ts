@@ -19,7 +19,7 @@ import { findCachedOllamaCloudModel } from "../../ollama-cloud-models.js";
 import { isModelHidden } from "../../hidden-models.js";
 import { getSubagentDefaultModelKey } from "../../subagent-default-model.js";
 import type { SingleResult, SubagentDetails, OnUpdateCallback } from "./types.js";
-import { getFinalOutput, summarizeResultForStreaming } from "./types.js";
+import { summarizeResultForStreaming } from "./types.js";
 import { createSubagentMirror, type SubagentMirror } from "./relay-mirror.js";
 
 // ── Built-in tool registry ─────────────────────────────────────────────
@@ -64,9 +64,9 @@ export async function mapWithConcurrencyLimit<TIn, TOut>(
 ): Promise<TOut[]> {
     if (items.length === 0) return [];
     const limit = Math.max(1, Math.min(concurrency, items.length));
-    const results: TOut[] = new Array(items.length);
+    const results: TOut[] = Array(items.length);
     let nextIndex = 0;
-    const workers = new Array(limit).fill(null).map(async () => {
+    const workers = Array(limit).fill(null).map(async () => {
         while (true) {
             const current = nextIndex++;
             if (current >= items.length) return;

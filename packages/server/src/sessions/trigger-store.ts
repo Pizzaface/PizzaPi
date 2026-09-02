@@ -6,7 +6,7 @@
  * and the Triggers Panel UI.
  */
 
-import { connectRedisClient, isRedisDisabled, type RedisClient } from "../redis-client.js";
+import { connectRedisClient, type RedisClient } from "../redis-client.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("trigger-store");

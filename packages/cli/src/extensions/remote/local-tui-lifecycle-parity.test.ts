@@ -283,7 +283,7 @@ describe("local-TUI transition cleanup parity", () => {
 
         test("session_switch with reason:new cleans exactly once (no double-clean)", () => {
             process.env.PIZZAPI_WORKER_CWD = "/tmp/worker-cwd";
-            const { handlers, state, rctx } = makeMinimalDeps();
+            const { handlers, state } = makeMinimalDeps();
             const sessionStart = handlers.get("session_start")!;
             const sessionSwitch = handlers.get("session_switch")!;
 

@@ -1,10 +1,11 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect } from "bun:test";
 
 // We test the module behaviour by controlling the TTY + env state before import.
 // Because Bun caches modules we use dynamic imports with cache-busting.
 
 describe("cli-colors (NO_COLOR / non-TTY)", () => {
     // Strip ANSI escape sequences from a string
+    // oxlint-disable-next-line no-control-regex -- intentional: matches ANSI escape sequences to strip them
     const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
     test("usageBar returns plain text when NO_COLOR is set", async () => {

@@ -500,7 +500,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     const hubSocket = useHubSocket();
 
     // ── Pinned sessions ──────────────────────────────────────────────────
-    const [pinnedSessions, setPinnedSessions] = React.useState<PinnedSession[]>([]);
+    const [, setPinnedSessions] = React.useState<PinnedSession[]>([]);
     const [pinnedSessionIds, setPinnedSessionIds] = React.useState<Set<string>>(new Set());
     const [pinPendingSessionIds, setPinPendingSessionIds] = React.useState<Set<string>>(new Set());
     const [pinError, setPinError] = React.useState<string | null>(null);
@@ -1450,7 +1450,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
                                                     {/* Sliding session card */}
                                                     <button
-                                                        onClick={(e) => {
+                                                        onClick={(_e) => {
                                                             if (selectMode) {
                                                                 toggleSelectSession(s.sessionId);
                                                                 return;

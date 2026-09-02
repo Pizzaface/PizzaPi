@@ -13,7 +13,7 @@ import { loadGlobalConfig } from "../config/io.js";
 import { computePackageIdentity, packageScopeBaseDir } from "./identity.js";
 import { formatOverlayIssue, readOverlayManifest, type OverlayReadResult, type PackageProvenance } from "./manifest.js";
 import { getGrantedServiceIds, grantServices, revokeServices, resolveServiceGrantState } from "./grants.js";
-import { dedupeConfiguredPackages, packageManagerFor, type ConfiguredPkg } from "./resolve.js";
+import { dedupeConfiguredPackages, packageManagerFor } from "./resolve.js";
 import { defaultStatePath, isPidRunning, type RunnerState } from "../runner/runner-state.js";
 import { existsSync, readFileSync } from "node:fs";
 

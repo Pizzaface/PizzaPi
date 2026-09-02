@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, test, expect, mock } from "bun:test";
 
 /**
  * Sandbox events extension tests.
@@ -19,8 +19,6 @@ const mockGetViolations = mock(() => [
         reason: 'Read denied: path matches deny rule ~/.ssh',
     },
 ]);
-const mockClearViolations = mock(() => {});
-const mockOnViolation = mock((_listener: any) => () => {});
 const mockGetResolvedConfig = mock(() => ({
     mode: "basic" as const,
     srtConfig: {

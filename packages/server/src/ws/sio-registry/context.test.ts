@@ -2,7 +2,6 @@ import { describe, test, expect, beforeEach, mock } from "bun:test";
 import {
     runnerSecrets,
     validateAndPersistRunnerSecret,
-    deleteRunnerSecret,
     getRunnerSecret,
     _resetRunnerSecretsForTesting,
     initSioRegistry,

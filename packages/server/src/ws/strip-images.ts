@@ -156,7 +156,7 @@ function processMessage(
 
         // Build replacement block — preserve all fields except inline data
         const newSource: Record<string, unknown> = {
-            ...(source ?? {}),
+            ...(source),
             type: "url",
             url: getExtractedImageUrl(attachmentId),
             extracted: true,

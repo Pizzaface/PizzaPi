@@ -223,7 +223,7 @@ export function mergeProviderOverridesSection(
     existing: Record<string, unknown> | undefined,
     incoming: Record<string, unknown>,
 ): Record<string, unknown> {
-    const ps: Record<string, any> = { ...(existing ?? {}) };
+    const ps: Record<string, any> = { ...(existing) };
 
     // Drop all existing overrides — the payload replaces them wholesale.
     for (const key of Object.keys(ps)) {
@@ -251,7 +251,7 @@ export function mergeProviderOverridesSection(
             delete overrides.disabledMcpServers;
         }
         if (Object.keys(overrides).length === 0) continue;
-        ps[provider] = { ...(ps[provider] ?? {}), overrides };
+        ps[provider] = { ...(ps[provider]), overrides };
     }
 
     return ps;

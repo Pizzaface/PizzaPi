@@ -33,36 +33,13 @@ import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/comp
 
 import {
   Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
+  DialogContent
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
-import { Skeleton } from "@/components/ui/skeleton";
 import { PizzaLogo } from "@/components/PizzaLogo";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { X, TerminalIcon, FolderTree, GitBranch, EyeOff, Zap, BarChart3, FileText, Briefcase } from "lucide-react";
 import { ArtifactViewerContent } from "@/components/session-viewer/ArtifactCard";
-import type { TriggerHistoryEntry } from "@/components/TriggersPanel";
 import type { ProviderUsageMap } from "@/components/UsageIndicator";
 import { CombinedPanel, type CombinedPanelTab } from "@/components/CombinedPanel";
 import { DockedPanelGroup, TAB_BAR_HEIGHT } from "@/components/DockedPanelGroup";
@@ -325,7 +302,7 @@ export function App() {
     viewerSocket, messages, retryState,
     pendingQuestion, pendingPlan, pluginTrustPrompt, pendingApproval, activeToolCalls,
     mcpOAuthPastes, messageQueue, activeModel, sessionName, availableModels,
-    modelSelectorOpen, isChangingModel, agentActive, effortLevel, authSource,
+    modelSelectorOpen, agentActive, effortLevel, authSource,
     tokenUsage, providerUsage, usageRefreshing, lastHeartbeatAt,
     availableCommands, resumeSessions, resumeSessionsLoading, resumeSessionsNextCursor,
     forkMessages, forkMessagesLoading,
@@ -589,7 +566,6 @@ export function App() {
   const lifecycle = useSessionLifecycle({ liveSessions });
   const activeSessionId = lifecycle.state.activeSessionId;
   const viewerStatus = lifecycle.viewerStatus;
-  const lifecycleIsHydrating = lifecycle.isHydrating;
   const lifecycleState = lifecycle.state;
   const lifecycleRefs = lifecycle.refs;
   const lifecycleDispatch = lifecycle.dispatch;
@@ -605,8 +581,6 @@ export function App() {
   const onSnapshotStarted = lifecycle.onSnapshotStarted;
   const onChunkProgress = lifecycle.onChunkProgress;
   const onSnapshotComplete = lifecycle.onSnapshotComplete;
-  const onReconnecting = lifecycle.onReconnecting;
-  const onRestartPendingCleared = lifecycle.onRestartPendingCleared;
 
   // Derive a sessionId → sessionName map for browser notifications.
   const sessionNamesMap = React.useMemo(() => {
@@ -1752,7 +1726,7 @@ export function App() {
     }
   }, [patchSessionCache]);
 
-  const handleRelayEvent = React.useCallback((event: unknown, seq?: number) => {
+  const handleRelayEvent = React.useCallback((event: unknown, _seq?: number) => {
     if (!event || typeof event !== "object") return;
 
     const evt = event as Record<string, unknown>;
@@ -3030,6 +3004,7 @@ export function App() {
       const raw = evt as unknown as { message: string; notifyType?: "info" | "warning" | "error" };
       // Strip ANSI escape codes (terminal color codes) so they don't show
       // as raw gibberish in the web UI.
+      // oxlint-disable-next-line no-control-regex -- intentional: matches ANSI escape sequences to strip them
       const clean = raw.message.replace(/\x1b\[[0-9;]*m/g, "");
       const payload = { message: clean, notifyType: raw.notifyType };
       handleUiNotifyRef.current(payload);
@@ -4865,7 +4840,7 @@ export function App() {
     [declaredPanelPlacements],
   );
 
-  const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, closePanelById: closeServicePanelById, closeAllPanels: closeAllServicePanels, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition, setEphemeralPanelPosition: setEphemeralServicePanelPosition, getNavParams: getServicePanelNavParams } = useServicePanelState(resolveDeclaredPanelPlacement);
+  const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, closePanelById: closeServicePanelById, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition, setEphemeralPanelPosition: setEphemeralServicePanelPosition, getNavParams: getServicePanelNavParams } = useServicePanelState(resolveDeclaredPanelPlacement);
 
   // Always-current ref so the runner-change effect below can read the active
   // panel set without listing it as a dependency (avoids a close→reopen loop).

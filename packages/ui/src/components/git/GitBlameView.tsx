@@ -10,7 +10,7 @@ import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
-import { useGitService, type GitBlameLine } from "@/hooks/useGitService";
+import { useGitService } from "@/hooks/useGitService";
 import {
     ChevronLeft,
     Clock,

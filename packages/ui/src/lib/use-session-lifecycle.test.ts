@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach, mock } from "bun:test";
-import { render, act, waitFor } from "@testing-library/react";
+import { render, act } from "@testing-library/react";
 import { Window } from "happy-dom";
 import * as React from "react";
 import type { HubSession } from "@/components/SessionSidebar";

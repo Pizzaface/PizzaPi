@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generateRunnerServiceFiles, runInstall } from "./install.js";
+import { generateRunnerServiceFiles } from "./install.js";
 
 describe("runner install", () => {
     test("generates macOS and Linux service files", () => {

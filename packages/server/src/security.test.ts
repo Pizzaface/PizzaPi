@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeAll, afterAll } from "bun:test";
+import { describe, expect, test, afterAll } from "bun:test";
 import { RateLimiter, isValidEmail, isValidPassword, cwdMatchesRoots, getClientIp, _resetTrustedProxyCidrCacheForTests } from "./security";
 
 describe("RateLimiter", () => {

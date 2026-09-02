@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir, homedir } from "node:os";
+import { tmpdir } from "node:os";
 
 // Override HOME before importing the module so cache persistence goes to a temp dir
 const originalHome = process.env.HOME;
@@ -157,7 +157,7 @@ describe("session-list-cache", () => {
     });
 
     test("prunes deleted files from cache", async () => {
-        const f1 = writeSessionFile(sessionDir, "session1.jsonl", {
+        writeSessionFile(sessionDir, "session1.jsonl", {
             id: "keep-me",
             messages: [{ role: "user", content: "Keep" }],
         });

@@ -192,7 +192,7 @@ export function registerTerminalNamespace(io: SocketIOServer, context: AuthConte
         });
 
         // ── kill_terminal — forward to runner ────────────────────────────────
-        socket.on("kill_terminal", async (data) => {
+        socket.on("kill_terminal", async (_data) => {
             const tid = socket.data.terminalId;
             if (!tid) return;
 

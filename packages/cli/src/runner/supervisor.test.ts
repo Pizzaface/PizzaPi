@@ -4,7 +4,7 @@
  * Race: SIGTERM arrives AFTER child exits with code 42 but BEFORE the
  * supervisor re-spawns. Without the guard the supervisor would respawn anyway.
  */
-import { afterEach, describe, expect, test, mock, spyOn } from "bun:test";
+import { afterEach, describe, expect, test, mock } from "bun:test";
 import { EventEmitter } from "node:events";
 
 // ---------------------------------------------------------------------------

@@ -231,6 +231,7 @@ describe("remote-ask-user", () => {
         test("wraps inner content with │ border characters", () => {
             const result = bRow("content");
             // Contains the border characters (ANSI-stripped)
+            // oxlint-disable-next-line no-control-regex -- intentional: matches ANSI escape sequences to strip them
             const stripped = result.replace(/\x1b\[[0-9;]*m/g, "");
             expect(stripped.startsWith("│")).toBe(true);
             expect(stripped.endsWith("│")).toBe(true);
@@ -241,6 +242,7 @@ describe("remote-ask-user", () => {
             const inner = padTo("  hello");
             const row = bRow(inner);
             // Strip ANSI and measure: should be BOX_W + 2 borders
+            // oxlint-disable-next-line no-control-regex -- intentional: matches ANSI escape sequences to strip them
             const stripped = row.replace(/\x1b\[[0-9;]*m/g, "");
             expect(stripped.length).toBe(BOX_W + 2);
         });
@@ -270,12 +272,14 @@ describe("remote-ask-user", () => {
 
         test("produces output containing the question text", () => {
             const box = buildBox(simpleQ, 0, 1);
+            // oxlint-disable-next-line no-control-regex -- intentional: matches ANSI escape sequences to strip them
             const stripped = box.replace(/\x1b\[[0-9;]*m/g, "");
             expect(stripped).toContain("Pick a color");
         });
 
         test("produces output containing each option", () => {
             const box = buildBox(simpleQ, 0, 1);
+            // oxlint-disable-next-line no-control-regex -- intentional: matches ANSI escape sequences to strip them
             const stripped = box.replace(/\x1b\[[0-9;]*m/g, "");
             expect(stripped).toContain("red");
             expect(stripped).toContain("blue");
@@ -284,12 +288,14 @@ describe("remote-ask-user", () => {
 
         test("includes step counter for multi-question batches", () => {
             const box = buildBox(simpleQ, 1, 3);
+            // oxlint-disable-next-line no-control-regex -- intentional: matches ANSI escape sequences to strip them
             const stripped = box.replace(/\x1b\[[0-9;]*m/g, "");
             expect(stripped).toContain("Q2 of 3");
         });
 
         test("omits step counter for single-question batches", () => {
             const box = buildBox(simpleQ, 0, 1);
+            // oxlint-disable-next-line no-control-regex -- intentional: matches ANSI escape sequences to strip them
             const stripped = box.replace(/\x1b\[[0-9;]*m/g, "");
             expect(stripped).not.toContain("Q1 of 1");
         });
@@ -297,6 +303,7 @@ describe("remote-ask-user", () => {
         test("all interior rows fit within BOX_W + 2 border chars", () => {
             const box = buildBox(simpleQ, 0, 1);
             for (const line of box.split("\n")) {
+                // oxlint-disable-next-line no-control-regex -- intentional: matches ANSI escape sequences to strip them
                 const stripped = line.replace(/\x1b\[[0-9;]*m/g, "");
                 // Border rows: ╭...╮  or ╰...╯ are BOX_W + 2 wide
                 // Content rows │...│ are also BOX_W + 2 wide
@@ -311,6 +318,7 @@ describe("remote-ask-user", () => {
             };
             const box = buildBox(longQ, 0, 1);
             for (const line of box.split("\n")) {
+                // oxlint-disable-next-line no-control-regex -- intentional: matches ANSI escape sequences to strip them
                 const stripped = line.replace(/\x1b\[[0-9;]*m/g, "");
                 expect(stripped.length).toBeLessThanOrEqual(BOX_W + 2);
             }
@@ -323,6 +331,7 @@ describe("remote-ask-user", () => {
             };
             const box = buildBox(q, 0, 1);
             for (const line of box.split("\n")) {
+                // oxlint-disable-next-line no-control-regex -- intentional: matches ANSI escape sequences to strip them
                 const stripped = line.replace(/\x1b\[[0-9;]*m/g, "");
                 expect(stripped.length).toBeLessThanOrEqual(BOX_W + 2);
             }
@@ -335,6 +344,7 @@ describe("remote-ask-user", () => {
             };
             const box = buildBox(q, 0, 1);
             for (const line of box.split("\n")) {
+                // oxlint-disable-next-line no-control-regex -- intentional: matches ANSI escape sequences to strip them
                 const stripped = line.replace(/\x1b\[[0-9;]*m/g, "");
                 expect(stripped.length).toBeLessThanOrEqual(BOX_W + 2);
             }

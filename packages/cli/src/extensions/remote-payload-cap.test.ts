@@ -185,7 +185,7 @@ describe("capOversizedMessages", () => {
 
     test("caps oversized details field when content alone is not enough", () => {
         // Small content but huge details (e.g. subagent results)
-        const hugeDetails = { results: [{ messages: Array.from({ length: 5000 }, (_, i) => ({ role: "assistant", content: "x".repeat(11_000) })) }] };
+        const hugeDetails = { results: [{ messages: Array.from({ length: 5000 }, (_, _i) => ({ role: "assistant", content: "x".repeat(11_000) })) }] };
         const msgs = [{ role: "assistant", content: "done", details: hugeDetails }];
         const result = capOversizedMessages(msgs);
         const truncated = result[0] as Record<string, unknown>;

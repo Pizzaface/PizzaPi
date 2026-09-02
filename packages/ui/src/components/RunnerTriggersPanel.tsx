@@ -21,21 +21,15 @@ import {
   Zap,
   FolderOpen,
   Pencil,
-  RotateCcw,
-  Sparkles,
   Bot,
   Layers,
   Clock,
   Globe,
   GitPullRequest,
-  Check,
-  Cpu,
-  Sliders,
   Filter,
   RefreshCw,
   ArrowRight,
-  ArrowLeft,
-  CheckCircle2,
+  ArrowLeft
 } from "lucide-react";
 import { useRunnerModels, type RunnerModel } from "@/hooks/useRunnerModels";
 import { formatPathTail } from "@/lib/path";
@@ -49,12 +43,6 @@ import type { JsonValue, ServiceTriggerDef, ServiceTriggerParamDef } from "@pizz
 function servicePrefix(type: string): string {
   const idx = type.indexOf(":");
   return idx > 0 ? type.slice(0, idx) : type;
-}
-
-function truncateCompactId(id?: string, fallback?: string, maxLen = 18): string {
-  if (!id) return fallback ?? "listener";
-  if (id.length <= maxLen) return id;
-  return id.slice(0, maxLen) + "…";
 }
 
 function formatParamValue(value: JsonValue): string {

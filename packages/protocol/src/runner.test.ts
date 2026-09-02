@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import type {
   RunnerClientToServerEvents,
   RunnerServerToClientEvents,
-  RunnerInterServerEvents,
   RunnerSocketData,
 } from "./runner";
 import type { RunnerSkill, RunnerAgent, RunnerPlugin, RunnerHook } from "./shared";
