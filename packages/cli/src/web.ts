@@ -766,7 +766,6 @@ function prebuildUI(repoPath: string): PrebuildResult {
     const uiDist = join(repoPath, "packages", "ui", "dist");
     const uiDistIndex = join(uiDist, "index.html");
     const nodeModulesPath = join(repoPath, "node_modules");
-    const protocolDist = join(repoPath, "packages", "protocol", "dist");
 
     try {
         execFileSync("bun", ["--version"], { stdio: "ignore" });

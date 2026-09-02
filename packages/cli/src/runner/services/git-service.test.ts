@@ -382,7 +382,7 @@ describe("GitService git metadata watchers", () => {
                 watchPaths.push(path);
                 return { close: () => {} };
             },
-            execGit: async (args, options) => {
+            execGit: async (args, _options) => {
                 if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
                 if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: "/repo\n", stderr: "" };
                 if (args[0] === "rev-parse" && args[1] === "--git-path") {
@@ -578,7 +578,7 @@ describe("GitService git_full_status", () => {
         });
 
         const service = new GitService({
-            execGit: async (args, options) => {
+            execGit: async (args, _options) => {
                 const cmd = args[0];
 
                 if (cmd === "rev-parse" && args[1] === "--abbrev-ref") {

@@ -363,7 +363,7 @@ export function NotificationToggle({ dependencies }: { dependencies?: PushDepend
  * Notification toggle rendered as a DropdownMenuItem (for mobile menus).
  */
 export function MobileNotificationMenuItem() {
-    const { subscribed, loading, supported, native, permissionDenied, nativeUnconfigured, toggle, suppressChild, suppressChildLoading, toggleSuppressChild } = usePushState();
+    const { subscribed, loading, supported, permissionDenied, nativeUnconfigured, toggle, suppressChild, suppressChildLoading, toggleSuppressChild } = usePushState();
 
     if (!supported) return null;
 

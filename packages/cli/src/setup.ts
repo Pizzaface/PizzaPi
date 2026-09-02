@@ -3,7 +3,7 @@ import { homedir } from "os";
 import { join, dirname } from "path";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { saveGlobalConfig } from "./config.js";
-import { validatePassword, PASSWORD_REQUIREMENTS } from "@pizzapi/protocol";
+import { validatePassword } from "@pizzapi/protocol";
 import { createLogger } from "@pizzapi/tools";
 import { c } from "./cli-colors.js";
 import qrcode from "qrcode";

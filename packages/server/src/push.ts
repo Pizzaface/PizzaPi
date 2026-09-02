@@ -472,7 +472,7 @@ async function sendNtfyToUser(userId: string, payload: PushPayload, isChildSessi
             let res: Response;
             try {
                 res = await publishOnce(reg);
-            } catch (err) {
+            } catch (_err) {
                 // Network-level failure (throw) — retry once.
                 try {
                     res = await publishOnce(reg);

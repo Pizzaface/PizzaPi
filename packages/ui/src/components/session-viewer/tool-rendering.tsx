@@ -71,7 +71,6 @@ function MobileMediaImg({ url, alt, className, loading }: { url: string; alt: st
 }
 import { SessionNameCard } from "@/components/session-viewer/cards/SessionNameCard";
 import {
-  truncateSessionId,
   SpawnSessionCard,
   SendMessageCard,
   WaitForMessageCard,

@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import type {
   TerminalServerToClientEvents,
   TerminalClientToServerEvents,
-  TerminalInterServerEvents,
   TerminalSocketData,
 } from "./terminal";
 

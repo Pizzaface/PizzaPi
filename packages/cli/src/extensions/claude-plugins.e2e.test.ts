@@ -19,18 +19,12 @@ import { EventEmitter } from "node:events";
 
 import {
     parsePlugin,
-    parseCommands,
-    parseHooks,
-    parsePluginSkills,
-    parseRules,
     scanPluginsDir,
-    parseManifest,
     matchesTool,
     resolvePluginRoot,
     mapHookEventToPi,
     toPluginInfo,
-    projectPluginDirs,
-    type DiscoveredPlugin,
+    projectPluginDirs
 } from "../plugins.js";
 import { createClaudePluginExtension } from "./claude-plugins.js";
 

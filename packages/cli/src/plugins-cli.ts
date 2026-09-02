@@ -18,7 +18,6 @@ import {
     scanPluginsDir,
     projectPluginDirs,
     globalPluginDirs,
-    toPluginInfo,
     type DiscoveredPlugin,
 } from "./plugins.js";
 import {

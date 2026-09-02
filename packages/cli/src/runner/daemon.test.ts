@@ -3,7 +3,7 @@ import { initServiceHandlers } from "./daemon.js";
 import type { ServiceHandler, ServiceInitOptions } from "./service-handler.js";
 import type { Socket } from "socket.io-client";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 

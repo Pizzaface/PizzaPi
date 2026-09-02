@@ -12,7 +12,7 @@ interface InstalledPackage {
     type?: "npm" | "git" | "path" | "url";
 }
 
-export default function PackagesSettings({ runnerId, onSave }: SectionProps) {
+export default function PackagesSettings({ runnerId }: SectionProps) {
     const [packages, setPackages] = useState<InstalledPackage[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);

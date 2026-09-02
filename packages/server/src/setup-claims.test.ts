@@ -8,7 +8,6 @@ import {
     createSetupClaim,
     pollSetupClaim,
     approveSetupClaim,
-    sweepExpiredSetupClaims,
     getSetupClaimInfo,
 } from "./setup-claims.js";
 import { runWithAuthContext } from "./auth.js";

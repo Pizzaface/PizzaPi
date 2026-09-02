@@ -378,7 +378,6 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
 
       const config = loadConfig(process.cwd());
       const maxResults = config.toolSearch?.maxResults ?? DEFAULT_MAX_RESULTS;
-      const keepLoaded = config.toolSearch?.keepLoadedTools ?? DEFAULT_KEEP_LOADED;
 
       const matches = searchDeferredTools(state.deferredTools, params.query, maxResults);
 

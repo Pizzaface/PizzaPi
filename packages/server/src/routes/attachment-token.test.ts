@@ -44,7 +44,7 @@ describe("attachment token", () => {
             expect(verifyAttachmentToken(`${token}x`, 1_000)).toBeNull();
             expect(verifyAttachmentToken(token.slice(0, -1), 1_000)).toBeNull();
             // Tamper the payload portion
-            const [payload, sig] = token.split(".");
+            const [, sig] = token.split(".");
             const tamperedPayload = Buffer.from(JSON.stringify({ v: 1, userId: "u-evil", attachmentId: "att-1", exp: 9999999 })).toString("base64url");
             expect(verifyAttachmentToken(`${tamperedPayload}.${sig}`, 1_000)).toBeNull();
         });

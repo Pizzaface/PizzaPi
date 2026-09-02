@@ -28,19 +28,16 @@ import {
   Plus,
   BellRing,
   Trash2,
-  Zap as ZapIcon,
   BookOpen,
   CheckCircle2,
   AlertCircle,
   HelpCircle,
-  XCircle,
   Pencil,
   Copy,
   Check,
   Filter,
   Cpu,
   Layers,
-  Sparkles,
   GitPullRequest,
   ArrowRight,
   ArrowLeft,
@@ -62,10 +59,10 @@ import type { JsonValue, ServiceTriggerDef, ServiceTriggerParamDef } from "@pizz
 export type { TriggerHistoryEntry } from "../attention/trigger-utils";
 export { isPendingTrigger, RESPONSE_TRIGGER_TYPES } from "../attention/trigger-utils";
 import type { TriggerHistoryEntry } from "../attention/trigger-utils";
-import { isPendingTrigger, RESPONSE_TRIGGER_TYPES } from "../attention/trigger-utils";
+import { isPendingTrigger } from "../attention/trigger-utils";
 // Pure grouping helpers live outside the panel so this file stays code-split
 // (React.lazy in App.tsx) — see attention/trigger-groups.ts.
-import { groupByLinkedSession, getIncompleteTriggers, type LinkedSessionGroup } from "../attention/trigger-groups";
+import { groupByLinkedSession, type LinkedSessionGroup } from "../attention/trigger-groups";
 export type { LinkedSessionGroup, IncompleteTriggerItem } from "../attention/trigger-groups";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -593,189 +590,6 @@ function EventRow({ entry }: { entry: TriggerHistoryEntry }) {
   );
 }
 
-// ── Linked Session Card ────────────────────────────────────────────────────
-
-interface LinkedSessionCardProps {
-  group: LinkedSessionGroup;
-  statusUpdates: Map<string, TriggerStatusUpdate>;
-}
-
-function LinkedSessionCard({ group, statusUpdates }: LinkedSessionCardProps) {
-  const [expanded, setExpanded] = React.useState(false);
-  const status = deriveSessionStatus(group);
-  const isPending = !!group.pendingTrigger;
-
-  // Find the most recent status update for any trigger in this group
-  const latestStatusUpdate = React.useMemo(() => {
-    let latest: TriggerStatusUpdate | null = null;
-    for (const event of group.events) {
-      const update = statusUpdates.get(event.triggerId);
-      if (update && (!latest || new Date(update.ts) > new Date(latest.ts))) {
-        latest = update;
-      }
-    }
-    return latest;
-  }, [group.events, statusUpdates]);
-
-  const colorMap = {
-    amber: {
-      border: "border-amber-500/40",
-      bg: "bg-gradient-to-b from-amber-500/[0.08] to-zinc-900/30",
-      highlightBar: "from-transparent via-amber-400 to-transparent",
-      text: "text-amber-300",
-      badge: "border-amber-500/40 bg-amber-500/10 text-amber-400",
-      icon: "text-amber-400",
-      iconBg: "bg-amber-500/20 border-amber-500/30",
-      pulse: true,
-    },
-    blue: {
-      border: "border-blue-500/40",
-      bg: "bg-gradient-to-b from-blue-500/[0.08] to-zinc-900/30",
-      highlightBar: "from-transparent via-blue-400 to-transparent",
-      text: "text-blue-300",
-      badge: "border-blue-500/40 bg-blue-500/10 text-blue-400",
-      icon: "text-blue-400",
-      iconBg: "bg-blue-500/20 border-blue-500/30",
-      pulse: true,
-    },
-    red: {
-      border: "border-red-500/40",
-      bg: "bg-gradient-to-b from-red-500/[0.08] to-zinc-900/30",
-      highlightBar: "from-transparent via-red-400 to-transparent",
-      text: "text-red-300",
-      badge: "border-red-500/40 bg-red-500/10 text-red-400",
-      icon: "text-red-400",
-      iconBg: "bg-red-500/20 border-red-500/30",
-      pulse: true,
-    },
-    emerald: {
-      border: "border-emerald-500/30",
-      bg: "bg-zinc-900/40",
-      highlightBar: "from-transparent via-emerald-400/40 to-transparent",
-      text: "text-emerald-300",
-      badge: "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
-      icon: "text-emerald-400",
-      iconBg: "bg-emerald-500/10 border-emerald-500/20",
-      pulse: false,
-    },
-    zinc: {
-      border: "border-border/60",
-      bg: "bg-zinc-900/30",
-      highlightBar: "from-transparent via-zinc-500/20 to-transparent",
-      text: "text-muted-foreground",
-      badge: "border-border/80 bg-muted/40 text-muted-foreground",
-      icon: "text-muted-foreground",
-      iconBg: "bg-muted/40 border-border/40",
-      pulse: false,
-    },
-  };
-
-  const colors = colorMap[status.color];
-
-  return (
-    <div className={cn("rounded-xl border overflow-hidden shadow-md relative transition-all", colors.border, colors.bg)}>
-      {isPending && (
-        <div className={cn("absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r", colors.highlightBar)} />
-      )}
-
-      {/* Main clickable header */}
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-start gap-3 p-3 text-left transition-colors hover:bg-white/[0.02]"
-      >
-        {/* Status icon badge */}
-        <div className={cn("size-7 rounded-lg border flex items-center justify-center shrink-0 mt-0.5 shadow-sm", colors.iconBg, colors.icon, colors.pulse && "animate-pulse")}>
-          {status.icon}
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 min-w-0">
-          {/* Session name + status */}
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-semibold text-foreground truncate">
-              {group.lastSummary || truncateId(group.source)}
-            </span>
-            <Badge
-              variant="outline"
-              className={cn("px-2 py-0.5 text-[10px] font-medium rounded-md shrink-0 capitalize", colors.badge)}
-            >
-              {status.label}
-            </Badge>
-          </div>
-
-          {/* Pending trigger detail */}
-          {isPending && (
-            <div className="mt-1.5 p-2 rounded-lg bg-zinc-950/60 border border-border/50 space-y-1">
-              <div className="flex items-center justify-between">
-                <span className={cn("text-xs font-medium", colors.text)}>
-                  {group.pendingTrigger!.type === "ask_user_question" && "Waiting for your answer"}
-                  {group.pendingTrigger!.type === "plan_review" && "Waiting for plan approval"}
-                  {group.pendingTrigger!.type === "session_complete" && "Session finished — needs acknowledgement"}
-                  {group.pendingTrigger!.type === "escalate" && "Escalated — needs human attention"}
-                  {!["ask_user_question", "plan_review", "session_complete", "escalate"].includes(group.pendingTrigger!.type) && `Awaiting response to ${group.pendingTrigger!.type}`}
-                </span>
-                <span className="text-[10px] text-muted-foreground/70 font-mono ml-2">
-                  <RelativeTime isoTs={group.pendingTrigger!.ts} />
-                </span>
-              </div>
-            </div>
-          )}
-
-          {/* Streaming status update */}
-          {latestStatusUpdate && (
-            <div className="mt-1.5 flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-blue-950/30 border border-blue-500/20">
-              <Loader2 className="size-3 animate-spin text-blue-400 shrink-0" />
-              <span className="text-[11px] text-blue-200/90 font-medium truncate">
-                {latestStatusUpdate.statusText}
-              </span>
-            </div>
-          )}
-
-          {/* Non-pending: show last event summary */}
-          {!isPending && !latestStatusUpdate && (
-            <div className="flex items-center gap-2 mt-1 text-[11px] text-muted-foreground/70">
-              <span>
-                Last: <span className="font-mono text-foreground/80">{group.lastType}</span>
-              </span>
-              <span>·</span>
-              <span className="font-mono text-muted-foreground/50">
-                <RelativeTime isoTs={group.lastTs} />
-              </span>
-            </div>
-          )}
-
-          {/* Event count + session ID hint */}
-          <div className="flex items-center gap-2 mt-1.5 text-[10px] text-muted-foreground/50">
-            <span className="font-medium bg-muted/40 px-1.5 py-0.5 rounded border border-border/40">
-              {group.events.length} event{group.events.length !== 1 ? "s" : ""}
-            </span>
-            {group.lastSummary && (
-              <span className="font-mono text-muted-foreground/40 truncate">
-                #{truncateId(group.source)}
-              </span>
-            )}
-          </div>
-        </div>
-
-        {/* Expand chevron */}
-        <div className="mt-0.5 shrink-0 text-muted-foreground/40 p-1 hover:text-foreground">
-          {expanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
-        </div>
-      </button>
-
-      {/* Expanded event history */}
-      {expanded && (
-        <div className={cn("border-t bg-zinc-950/40 divide-y divide-border/30", colors.border)}>
-          {group.events.map((event) => (
-            <EventRow key={event.triggerId} entry={event} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ── Collapsible Param Defs ──────────────────────────────────────────────────
 
 function CollapsibleParamDefs({ params }: { params: ServiceTriggerParamDef[] }) {
@@ -1212,11 +1026,9 @@ function ServiceCatalogAccordion({
   service,
   defs,
   subscribedCount,
-  subscribedTypes,
   subscriptionsByType,
   pending,
   paramFormOpen,
-  editingSubscriptionId,
   editMode,
   paramValues,
   paramError,
@@ -1224,8 +1036,6 @@ function ServiceCatalogAccordion({
   filterModeValues,
   onToggle,
   onEdit,
-  onUnsubscribe,
-  onParamFormOpen,
   onParamFormClose,
   onParamValuesChange,
   onFilterValuesChange,
@@ -1903,82 +1713,6 @@ function ActiveSubscriptionsSection({ subscriptions }: { subscriptions: TriggerS
           </div>
         ))}
       </div>
-    </div>
-  );
-}
-
-// ── Other Events Row ───────────────────────────────────────────────────────
-
-function OtherTriggerRow({ entry }: { entry: TriggerHistoryEntry }) {
-  const [expanded, setExpanded] = React.useState(false);
-  const hasPayload = Object.keys(entry.payload).length > 0;
-  const payloadStr = hasPayload ? JSON.stringify(entry.payload, null, 2) : null;
-
-  return (
-    <div className="border-b border-border/40 last:border-0 hover:bg-white/[0.015] transition-colors">
-      <button
-        type="button"
-        onClick={() => hasPayload && setExpanded((v) => !v)}
-        className={cn(
-          "w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors",
-          hasPayload ? "hover:bg-muted/40 cursor-pointer" : "cursor-default",
-        )}
-      >
-        <div className="shrink-0">
-          {entry.direction === "inbound" ? (
-            <ArrowDownCircle className="size-3.5 text-blue-400" />
-          ) : (
-            <ArrowUpCircle className="size-3.5 text-violet-400" />
-          )}
-        </div>
-
-        <div className="shrink-0 text-muted-foreground">
-          <SourceIcon source={entry.source} />
-        </div>
-
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-xs font-semibold text-foreground truncate">{entry.type}</span>
-            <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4">
-              {sourceLabel(entry.source)}
-            </Badge>
-            {entry.deliverAs === "steer" ? (
-              <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-amber-500/40 text-amber-400 bg-amber-500/5">
-                steer
-              </Badge>
-            ) : (
-              <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-blue-500/40 text-blue-400 bg-blue-500/5">
-                follow-up
-              </Badge>
-            )}
-          </div>
-          <div className="flex items-center gap-2 mt-0.5 text-[11px]">
-            <span className="text-[10px] text-muted-foreground/70 font-mono"><RelativeTime isoTs={entry.ts} /></span>
-            {entry.response && (
-              <span className="text-[10px] text-emerald-400 font-medium">
-                ✓ {entry.response.action ?? "responded"}
-              </span>
-            )}
-            {entry.summary && (
-              <span className="text-[11px] text-muted-foreground/70 truncate">{entry.summary}</span>
-            )}
-          </div>
-        </div>
-
-        {hasPayload && (
-          <div className="shrink-0 text-muted-foreground/50">
-            {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-          </div>
-        )}
-      </button>
-
-      {expanded && payloadStr && (
-        <div className="px-3 pb-2.5 pt-0.5">
-          <pre className="rounded-lg bg-zinc-950/80 border border-border/60 p-2.5 text-[10px] font-mono text-zinc-300 overflow-auto max-h-40 whitespace-pre-wrap break-all leading-relaxed shadow-inner">
-            {payloadStr}
-          </pre>
-        </div>
-      )}
     </div>
   );
 }

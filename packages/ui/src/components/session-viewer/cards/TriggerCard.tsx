@@ -4,12 +4,11 @@
  */
 
 import * as React from "react";
-import { ChevronDown, ChevronRight, Send, AlertCircle, CheckCircle2, Clock, Zap, XCircle } from "lucide-react";
+import { Send, AlertCircle, CheckCircle2, Clock, Zap, XCircle } from "lucide-react";
 import {
   ToolCardShell,
   ToolCardHeader,
   ToolCardTitle,
-  ToolCardActions,
   ToolCardSection,
 } from "@/components/ui/tool-card";
 import { Button } from "@/components/ui/button";
@@ -318,7 +317,6 @@ function SessionCompleteCard({
 // ── Session Error Card ──────────────────────────────────────────────────────
 
 function SessionErrorCard({
-  triggerId,
   childName,
   message,
 }: {

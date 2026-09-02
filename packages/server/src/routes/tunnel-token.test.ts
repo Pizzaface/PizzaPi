@@ -1,8 +1,8 @@
-import { describe, expect, mock, test, beforeEach, afterEach } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import { createTestAuthContext, runWithAuthContext } from "../auth.js";
 
 const mockGetActiveRelaySessionUserId = mock(
-    (sessionId: string): Promise<string | null> => Promise.resolve("u-1"),
+    (_sessionId: string): Promise<string | null> => Promise.resolve("u-1"),
 );
 const mockGetRunnerData = mock(
     (runnerId: string): Promise<{ runnerId: string; userId: string } | null> =>

@@ -25,8 +25,7 @@ import {
     resolvePluginRoot,
     matchesTool,
     mapHookEventToPi,
-    toPluginInfo,
-    type DiscoveredPlugin,
+    toPluginInfo
 } from "./plugins.js";
 
 // ── Test fixtures ─────────────────────────────────────────────────────────────
@@ -963,7 +962,7 @@ describe("discoverClaudeInstalledPlugins", () => {
     }
 
     test("returns empty array when installed_plugins.json does not exist", () => {
-        const home = setupHome("no-file");
+        setupHome("no-file");
         const result = discoverClaudeInstalledPlugins("/tmp");
         expect(result).toEqual([]);
     });

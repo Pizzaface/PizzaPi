@@ -33,7 +33,7 @@ interface MockError {
 let mockSuccess: MockSuccess | null = null;
 let mockError: MockError | null = null;
 /** Captured from the most recent exec() call inside bashTool.execute() */
-let capturedCmd = "";
+let _capturedCmd = "";
 let capturedOpts: { timeout?: number; env?: NodeJS.ProcessEnv; maxBuffer?: number } = {};
 
 /** Sandbox state controlled per-test */
@@ -54,7 +54,7 @@ function setError(err: MockError) {
 function resetMockState() {
     mockSuccess = null;
     mockError = null;
-    capturedCmd = "";
+    _capturedCmd = "";
     capturedOpts = {};
     sandboxActive = false;
     sandboxEnvVars = {};
@@ -74,7 +74,7 @@ function mockExecCallback(
     opts: any,
     callback: (err: any, stdout: string, stderr: string) => void
 ): void {
-    capturedCmd = cmd;
+    _capturedCmd = cmd;
     capturedOpts = { timeout: opts?.timeout, env: opts?.env, maxBuffer: opts?.maxBuffer };
 
     if (mockError) {

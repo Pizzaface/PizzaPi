@@ -10,7 +10,7 @@ import { SOCKET_PROTOCOL_VERSION } from "@pizzapi/protocol";
 import { getSocketIOBase, getSocketIOAuth } from "@/lib/relay";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { TerminalIcon, X, Maximize2, Minimize2 } from "lucide-react";
+import { X, Maximize2, Minimize2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const DARK_THEME = {

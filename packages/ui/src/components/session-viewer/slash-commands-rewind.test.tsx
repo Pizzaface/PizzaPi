@@ -22,7 +22,6 @@ const win = new Window({ url: "http://localhost/" });
 (globalThis as any).requestAnimationFrame = (() => 0) as any;
 
 const { renderHook, act, cleanup } = await import("@testing-library/react");
-const React = (await import("react")).default;
 const { useSlashCommands } = await import("./slash-commands");
 import type { SlashCommandDeps } from "./slash-commands";
 import type { ForkMessageOption } from "@/lib/types";

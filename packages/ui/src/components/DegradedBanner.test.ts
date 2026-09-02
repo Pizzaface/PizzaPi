@@ -1,4 +1,4 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, mock, afterEach } from "bun:test";
 import {
     parseHealthDegraded,
     fetchHealthDegraded,

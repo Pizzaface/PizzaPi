@@ -1,6 +1,5 @@
 #!/usr/bin/env bun
 import {
-    createAgentSession,
     createAgentSessionFromServices,
     createAgentSessionRuntime,
     createAgentSessionServices,

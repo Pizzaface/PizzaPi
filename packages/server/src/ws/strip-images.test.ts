@@ -1,4 +1,4 @@
-import { describe, test, expect, mock } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import { extractImages, estimateBase64Bytes, stripDataUriPrefix } from "./strip-images.js";
 
 // ── estimateBase64Bytes ──────────────────────────────────────────────────────

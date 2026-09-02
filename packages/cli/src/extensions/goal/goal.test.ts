@@ -31,8 +31,8 @@ import {
     resetSessionContext,
     toLlmMessages,
 } from "./session-context.js";
-import { extractLatestTurnText, buildTranscript, extractAgentMessageText } from "./transcript.js";
-import type { AssistantMessage, Context, Model, SimpleStreamOptions, ToolResultMessage } from "@earendil-works/pi-ai";
+import { extractLatestTurnText, buildTranscript } from "./transcript.js";
+import type { AssistantMessage, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type { GoalState, GoalVerdict } from "./types.js";
 import type {
     ExtensionAPI,
@@ -322,7 +322,7 @@ describe("goal state", () => {
     test("cleanupStaleGoals removes stopped goals older than 24 hours", () => {
         resetSession("session-old");
         resetSession("session-new");
-        const oldState = setGoal(
+        setGoal(
             "session-old",
             { description: "old", evaluator: "keyword", successKeywords: ["done"], minTurnsBeforeEvaluate: 0 },
             {},

@@ -14,7 +14,6 @@ import {
     resolveSandboxConfig,
     mergeSandboxConfig,
     type SandboxConfig,
-    type ResolvedSandboxConfig,
     type PizzaPiConfig,
 } from "./config";
 

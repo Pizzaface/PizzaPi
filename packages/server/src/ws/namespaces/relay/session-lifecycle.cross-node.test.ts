@@ -135,8 +135,6 @@ describe("A2-017: cross-node stale socket protection", () => {
     });
 
     it("stale event from node-A socket is rejected after replacement registers", async () => {
-        // Spy on the event pipeline enqueue to check if processing runs.
-        const processedEvents: string[] = [];
         const { socket: socketA, fire: fireA } = makeSocket("sess-1", "token-node-a");
         localSocketMap.set("sess-1", socketA);
 

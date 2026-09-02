@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import type {
   ViewerServerToClientEvents,
   ViewerClientToServerEvents,
-  ViewerInterServerEvents,
   ViewerSocketData,
 } from "./viewer";
 import type { Attachment } from "./shared";

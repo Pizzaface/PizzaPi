@@ -102,7 +102,6 @@ import {
 import {
     getRunnerListenerTypes,
     listRunnerTriggerListeners,
-    updateRunnerTriggerListener,
     removeRunnerTriggerListener,
     type RunnerTriggerListener,
 } from "../sessions/runner-trigger-listener-store.js";

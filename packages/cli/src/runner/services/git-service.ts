@@ -113,14 +113,6 @@ type GitLogEntry = {
     parents: string[];
 };
 
-type GitCommitSuggestion = {
-    subject: string;
-    body: string;
-    type: string;
-    scope: string;
-    files: Array<{ path: string; added: number; deleted: number }>;
-};
-
 type GitCommitFile = { status: string; path: string };
 
 type GitBlameLine = {

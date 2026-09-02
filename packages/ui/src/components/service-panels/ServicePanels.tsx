@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { X, Check } from "lucide-react";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
-import { SERVICE_PANELS, type ServicePanelDef } from "./registry";
+import { SERVICE_PANELS } from "./registry";
 import { DynamicLucideIcon } from "./lucide-icon";
 import { IframeServicePanel } from "./IframeServicePanel";
 import type { ServicePanelInfo } from "@pizzapi/protocol";

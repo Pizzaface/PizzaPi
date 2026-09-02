@@ -1,4 +1,4 @@
-import { describe, expect, test, spyOn, mock } from "bun:test";
+import { describe, expect, test, spyOn } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import { notifyWorkersOfRestart, killSessionProcessGroup, type RunnerSession } from "./session-spawner.js";
 

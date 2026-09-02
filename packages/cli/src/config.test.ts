@@ -1105,7 +1105,6 @@ describe("loadConfig transport field blocking", () => {
 
 describe("expandVars", () => {
   const originalEnv = { ...process.env };
-  const originalCwd = process.cwd;
 
   beforeEach(() => {
     process.env.PIZZAPI_SESSION_ID = "test-session-abc";

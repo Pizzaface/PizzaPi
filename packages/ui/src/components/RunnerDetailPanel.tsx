@@ -30,8 +30,6 @@ import {
     Power,
     Loader2,
     AlertTriangle,
-    Clock,
-    Terminal,
     ChevronRight,
     Server,
 } from "lucide-react";

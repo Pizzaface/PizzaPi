@@ -19,7 +19,7 @@ import { findCachedOllamaCloudModel } from "../../ollama-cloud-models.js";
 import { isModelHidden } from "../../hidden-models.js";
 import { getSubagentDefaultModelKey } from "../../subagent-default-model.js";
 import type { SingleResult, SubagentDetails, OnUpdateCallback } from "./types.js";
-import { getFinalOutput, summarizeResultForStreaming } from "./types.js";
+import { summarizeResultForStreaming } from "./types.js";
 import { createSubagentMirror, type SubagentMirror } from "./relay-mirror.js";
 
 // ── Built-in tool registry ─────────────────────────────────────────────

@@ -6,7 +6,7 @@
 // in isolation — the same approach used in extension.test.ts on the CLI side.
 // ============================================================================
 
-import { describe, it, expect, beforeEach } from "bun:test";
+import { describe, it, expect } from "bun:test";
 
 // ── Types mirroring relay session shape ──────────────────────────────────────
 

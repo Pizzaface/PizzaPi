@@ -589,7 +589,7 @@ describe("MCP streamable HTTP smoke test", () => {
 describe("MCP init timeout cancellation", () => {
     test("init timeout aborts in-flight HTTP initialize request", async () => {
         let initRequestReceived = false;
-        let initRequestAborted = false;
+        let _initRequestAborted = false;
 
         const server = Bun.serve({
             port: 0,
@@ -603,7 +603,7 @@ describe("MCP init timeout cancellation", () => {
                     await new Promise((resolve) => {
                         // Detect abort via request signal
                         req.signal.addEventListener("abort", () => {
-                            initRequestAborted = true;
+                            _initRequestAborted = true;
                             resolve(undefined);
                         });
                         // Safety: resolve after 10s so test doesn't hang

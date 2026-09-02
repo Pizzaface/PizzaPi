@@ -150,8 +150,7 @@ export function DeviceSetupScanner({ initialToken, onClose }: { initialToken?: s
         try {
             // This call triggers the browser's camera permission prompt.
             cameras = await Html5Qrcode.getCameras();
-        } catch (e) {
-            const detail = e instanceof Error ? e.message : String(e);
+        } catch {
             setCameraError("Camera access was denied or is unavailable.");
             setState({ kind: "idle" });
             return;

@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect } from "bun:test";
 
 // We test the module behaviour by controlling the TTY + env state before import.
 // Because Bun caches modules we use dynamic imports with cache-busting.

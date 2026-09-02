@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, test, expect, beforeEach, mock } from "bun:test";
 import { RateLimiter } from "./security";
 import { _injectRedisForTesting, _resetRedisKvStoreForTesting } from "./redis-kv-store";
 

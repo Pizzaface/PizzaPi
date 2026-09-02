@@ -10,7 +10,7 @@
  * Results are cached in ~/.pizzapi/openrouter-models-cache.json for 24h so
  * startup and model listing stay fast and offline-safe.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";

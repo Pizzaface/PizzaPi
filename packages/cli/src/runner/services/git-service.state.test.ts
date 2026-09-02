@@ -357,7 +357,7 @@ describe("index mutation serialization (fix 6)", () => {
             now: () => now,
             setTimeoutFn: (cb) => { now += 1000; queueMicrotask(cb); return 0 as unknown as ReturnType<typeof setTimeout>; },
             clearTimeoutFn: () => {},
-            execGit: async (args, { cwd }) => {
+            execGit: async (args, { cwd: _cwd }) => {
                 if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: "/repo\n", stderr: "" };
                 if (args[0] === "rev-parse") return { stdout: "main\n", stderr: "" };
                 if (args[0] === "add") { await gate; return { stdout: "", stderr: "" }; }

@@ -4,7 +4,7 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { createLogger } from "@pizzapi/tools";
-import type { SessionHeader, UsageMessage } from "./types.js";
+import type { SessionHeader } from "./types.js";
 import { getSessionsDir } from "./schema.js";
 import { GOAL_EVALUATOR_USAGE_CUSTOM_TYPE } from "../extensions/goal/state.js";
 

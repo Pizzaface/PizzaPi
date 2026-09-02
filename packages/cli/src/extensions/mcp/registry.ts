@@ -248,7 +248,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
         createStreamableMcpClient({
           name: s.name,
           url: s.url,
-          headers: s.headers,
+          headers,
           oauthProvider: provider,
         }),
       );

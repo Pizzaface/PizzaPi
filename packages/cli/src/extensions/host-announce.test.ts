@@ -154,7 +154,7 @@ describe("hostAnnounceExtension", () => {
     });
 
     test("session_shutdown removes the probe listener from the real pi event bus (no accumulation across reloads)", () => {
-        const { pi, bus, fireShutdown } = realBusPi();
+        const { pi, fireShutdown } = realBusPi();
 
         // Simulate `/reload`: pi re-invokes the SAME inline factory against the
         // SAME bus on every reload (resource-loader.js loadExtensionFactories()

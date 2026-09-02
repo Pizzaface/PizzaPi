@@ -167,7 +167,6 @@ describe("searchDeferredTools", () => {
   });
 
   test("multi-word query narrows results", () => {
-    const broadResults = searchDeferredTools(sampleTools, "list", 10);
     const narrowResults = searchDeferredTools(sampleTools, "list channels", 10);
     // Narrow should rank slack_list_channels higher
     if (narrowResults.length > 0) {

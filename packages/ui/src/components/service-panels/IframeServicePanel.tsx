@@ -32,7 +32,7 @@ interface IframeServicePanelProps {
 }
 
 export function IframeServicePanel({ sessionId, port, query, fragment, panelParams, cwd, runnerId }: IframeServicePanelProps) {
-    const { base, loading, error } = useTunnelSrc({ sessionId, port, runnerId });
+    const { base, error } = useTunnelSrc({ sessionId, port, runnerId });
     // Heuristic: HTTP failures inside an iframe don't fire onError, so flag a
     // panel that never fires onLoad within a grace window as likely-broken.
     const [loadTimedOut, setLoadTimedOut] = useState(false);

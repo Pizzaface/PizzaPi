@@ -17,7 +17,7 @@
  *
  * No panel — the service runs a minimal HTTP server for sigil resolve endpoints only.
  */
-import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Socket } from "socket.io-client";

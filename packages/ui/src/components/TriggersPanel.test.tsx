@@ -384,9 +384,8 @@ describe("TriggersPanel — Send Trigger dialog", () => {
   test("dialog does not show payload editor initially", async () => {
     fetchState.response = { ok: true, body: { triggers: [] } };
 
-    let container!: HTMLElement;
     await act(async () => {
-      ({ container } = render(<TriggersPanel sessionId="sess-abc" />));
+      render(<TriggersPanel sessionId="sess-abc" />);
     });
 
     expect(document.body.textContent).not.toContain("Payload (JSON)");

@@ -30,7 +30,7 @@
  * the stale reverse-index entry. That entry will expire via its own TTL.
  */
 
-import { connectRedisClient, isRedisDisabled, type RedisClient } from "../redis-client.js";
+import { connectRedisClient, type RedisClient } from "../redis-client.js";
 import { createLogger } from "@pizzapi/tools";
 import { getKysely } from "../auth.js";
 import { createHash } from "node:crypto";
@@ -776,7 +776,6 @@ export async function getSubscriptionParams(
     const redis = await getClient();
     if (!redis) return undefined;
 
-    const sessionKey = SESSION_SUBS_KEY(sessionId);
     try {
         const subs = await getSubscriptionsForSessionTrigger(sessionId, triggerType);
         return subs[0]?.params;

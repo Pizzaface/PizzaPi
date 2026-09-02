@@ -21,7 +21,7 @@ function base64ToBytes(base64: string): Uint8Array {
  * navigator. Lazy-loaded (see ArtifactCard) so the renderer stays out of the
  * main bundle.
  */
-export default function PptxPreview({ content, full = false }: { content: string; full?: boolean }) {
+export default function PptxPreview({ content }: { content: string; full?: boolean }) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const rendererRef = React.useRef<PptxRenderer | null>(null);
   const [slideCount, setSlideCount] = React.useState(0);

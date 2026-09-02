@@ -58,9 +58,6 @@ const defaultDeps: TunnelToolsDeps = {
     getRunnerId: getRunnerIdDefault,
 };
 
-/** Minimal Component that renders nothing — keeps the tool call invisible in the TUI. */
-const silent = { render: (_width: number): string[] => [], invalidate: () => {} };
-
 /**
  * Send a service_message to the daemon's TunnelService via the relay socket
  * and wait for a response with matching requestId.

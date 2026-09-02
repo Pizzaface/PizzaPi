@@ -493,7 +493,6 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
             // Determine which segment index in winner/latest corresponds to gap g
             // Gap g is after mergeToolCalls[g-1] and before mergeToolCalls[g]
             const prevTcId = g > 0 ? tcId(mergeToolCalls[g - 1]) : null;
-            const nextTcId = g < mergeToolCalls.length ? tcId(mergeToolCalls[g]) : null;
 
             // Winner segment: the segment after prevTcId (or segment 0 if no prevTcId)
             let wSegIdx = -1;

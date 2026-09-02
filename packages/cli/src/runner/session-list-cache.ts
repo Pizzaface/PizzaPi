@@ -14,7 +14,7 @@
  * the common case where most sessions haven't changed.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync, readdirSync, openSync, readSync, closeSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, openSync, readSync, closeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { readFile, stat, readdir } from "node:fs/promises";

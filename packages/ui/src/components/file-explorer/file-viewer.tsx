@@ -3,7 +3,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { ChevronLeft, GitCommit } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { GitBlameView } from "@/components/git/GitBlameView";
-import { getFileIcon, formatSize, repoRelativePath } from "./utils";
+import { getFileIcon, formatSize } from "./utils";
 
 // ── File Viewer ───────────────────────────────────────────────────────────────
 

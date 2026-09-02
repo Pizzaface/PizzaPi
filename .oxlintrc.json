@@ -4,7 +4,14 @@
     "correctness": "error"
   },
   "rules": {
-    "no-unused-vars": "off",
+    "no-unused-vars": [
+      "error",
+      {
+        "argsIgnorePattern": "^_",
+        "varsIgnorePattern": "^_",
+        "caughtErrorsIgnorePattern": "^_"
+      }
+    ],
     "no-useless-escape": "off",
     "no-control-regex": "off",
     "no-unsafe-optional-chaining": "off",

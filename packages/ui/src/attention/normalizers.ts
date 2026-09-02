@@ -7,7 +7,7 @@
  */
 import type { AttentionItem } from "./types";
 import type { TriggerHistoryEntry } from "./trigger-utils";
-import { isPendingTrigger, RESPONSE_TRIGGER_TYPES } from "./trigger-utils";
+import { isPendingTrigger } from "./trigger-utils";
 
 // ── Session Meta Normalization ──────────────────────────────────────────────
 

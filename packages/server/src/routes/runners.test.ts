@@ -70,8 +70,8 @@ mock.module("../runner-recent-folders.js", () => ({
 mock.module("../user-hidden-models.js", () => ({ getHiddenModels: mock(() => Promise.resolve([])) }));
 import * as _runnerRegistryModule from "../ws/sio-registry/runners.js";
 import * as _sioStateModule from "../ws/sio-state/index.js";
-const mockRunnerServicesSpy = spyOn(_runnerRegistryModule, "getRunnerServices").mockImplementation(mockGetRunnerServices as any);
-const mockGetSessionSpy = spyOn(_sioStateModule, "getSession").mockImplementation(mockGetSession as any);
+spyOn(_runnerRegistryModule, "getRunnerServices").mockImplementation(mockGetRunnerServices as any);
+spyOn(_sioStateModule, "getSession").mockImplementation(mockGetSession as any);
 
 const { handleRunnersRoute } = await import("./runners.js");
 

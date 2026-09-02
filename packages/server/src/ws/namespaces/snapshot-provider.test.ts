@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 
 import {
     truncateSnapshotMessages,
@@ -7,8 +7,7 @@ import {
     tryMemoryState,
     tryPersistedSnapshot,
     getBestSnapshot,
-    type SnapshotProviderDeps,
-    type SnapshotResult,
+    type SnapshotProviderDeps
 } from "./snapshot-provider.js";
 import type { CachedRelayEvent } from "./viewer-cache.js";
 

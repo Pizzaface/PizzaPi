@@ -19,7 +19,6 @@ export interface AskUserQuestionCardProps {
 export function AskUserQuestionCard({
   toolInput,
   resultText,
-  isStreaming,
 }: AskUserQuestionCardProps) {
   const inputArgs =
     toolInput && typeof toolInput === "object"

@@ -12,7 +12,7 @@
  *
  *   { "fallbackModels": ["openai-codex:gpt-5.5", "ollama-cloud:glm-5.2"] }
  */
-import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import type { ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";

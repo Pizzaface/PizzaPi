@@ -17,7 +17,6 @@ import {
   ReasoningContent,
 } from "@/components/ai-elements/reasoning";
 import {
-  hasVisibleContent,
   normalizeToolName,
 } from "@/components/session-viewer/utils";
 import type { SubAgentTurn } from "@/components/session-viewer/types";
@@ -57,8 +56,6 @@ export {
 import { renderGroupedToolExecution, renderToolResult } from "@/components/session-viewer/tool-rendering";
 import { WriteFileCard } from "@/components/session-viewer/cards/WriteFileCard";
 import { SubAgentConversationCard } from "@/components/session-viewer/cards/SubAgentCards";
-import { CompactionSummaryCard } from "@/components/session-viewer/cards/CompactionSummaryCard";
-
 export { CompactionSummaryCard } from "@/components/session-viewer/cards/CompactionSummaryCard";
 export { ContextDonut } from "@/components/session-viewer/ContextDonut";
 export { CommandResultCard, type CommandResultData } from "@/components/session-viewer/cards/CommandResultCard";

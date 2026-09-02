@@ -41,7 +41,7 @@ import {
     type SubagentDetails,
     type SingleResult,
 } from "./types.js";
-import { runSingleAgent, mapWithConcurrencyLimit, type ModelOverride } from "./engine.js";
+import { runSingleAgent, mapWithConcurrencyLimit } from "./engine.js";
 import { renderSubagentCall, renderSubagentResult } from "./render.js";
 import { reserveSubagentSlots, resetSubagentState, resetSubagentCounters } from "./background-state.js";
 

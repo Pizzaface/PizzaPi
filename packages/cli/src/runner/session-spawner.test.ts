@@ -674,7 +674,7 @@ describe("session-spawner child", () => {
             pid = 4321;
             killed = false;
             exitCode: number | null = null;
-            send = mock((msg: unknown) => {});
+            send = mock((_msg: unknown) => {});
         }
 
         const spawnMock = mock((_execPath: string, _args: string[], _options: any) => new FakeChild());
