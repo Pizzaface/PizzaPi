@@ -16,6 +16,7 @@ import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "nod
 import { isAbsolute, join, resolve as resolvePath, sep } from "node:path";
 import type { PanelVariable, PizzaPiOverlayV1, PizzaPiServiceDeclaration } from "@pizzapi/extension-sdk";
 import { MAX_PLUGIN_FILE_SIZE } from "../plugins/types.js";
+import { isRecord as isPlainObject } from "@pizzapi/protocol";
 
 /** Reuse the existing 2 MiB per-file cap already used for plugin sidecar files. */
 export const OVERLAY_SIDECAR_MAX_BYTES = MAX_PLUGIN_FILE_SIZE;
@@ -88,10 +89,6 @@ export interface OverlayReadResult {
 /** One-line provenance-rich rendering of an issue, per spec §11. */
 export function formatOverlayIssue(issue: OverlayIssue): string {
     return `[${issue.identity} (${issue.scope}: ${issue.source})] ${issue.field}: ${issue.message} — ${issue.remediation}`;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-    return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 /**

@@ -33,9 +33,13 @@ export type ParseResult<T> =
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+/** Canonical plain-object guard: true for non-null `object` values that are not arrays. */
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+
+// ponytail: internal alias for ~40 call sites in this file
+const isPlainObject = isRecord;
 
 function optionalNumber(value: unknown): number | undefined {
   return typeof value === "number" ? value : undefined;

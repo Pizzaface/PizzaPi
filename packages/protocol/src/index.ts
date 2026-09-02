@@ -121,6 +121,7 @@ export {
 
 // Runtime payload guards for critical external boundaries
 export {
+  isRecord,
   parseViewerEventEnvelope,
   parseViewerConnectedEnvelope,
   parseHubStateSnapshot,
