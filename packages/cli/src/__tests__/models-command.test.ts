@@ -34,7 +34,7 @@ describe("models command", () => {
 
     async function runAndCaptureJson(cwd: string): Promise<{ code: number; models: any[] }> {
         const output: string[] = [];
-        const logger = { info: (message: string) => output.push(message), warn: (message: string) => output.push(message), error: (message: string) => output.push(message) };
+        const logger = { debug: (message: string) => output.push(message), info: (message: string) => output.push(message), warn: (message: string) => output.push(message), error: (message: string) => output.push(message) };
         const code = await runModelsCommand(["--json"], cwd, logger);
         const captured = output.find((line) => line.startsWith("{")) ?? "{}";
         return { code, models: JSON.parse(captured).models ?? [] };

@@ -16,6 +16,8 @@
  */
 
 export interface Logger {
+    /** Log at debug level (→ stdout / console.log). For high-noise diagnostics. */
+    debug(msg: string, ...args: unknown[]): void;
     /** Log at info level (→ stdout / console.log). */
     info(msg: string, ...args: unknown[]): void;
     /** Log at warn level (→ stderr / console.warn). */
@@ -33,6 +35,7 @@ export interface Logger {
 export function createLogger(tag: string): Logger {
     const prefix = `[${tag}]`;
     return {
+        debug: (msg, ...args) => console.log(new Date().toISOString(), prefix, msg, ...args),
         info:  (msg, ...args) => console.log(new Date().toISOString(), prefix, msg, ...args),
         warn:  (msg, ...args) => console.warn(new Date().toISOString(), prefix, msg, ...args),
         error: (msg, ...args) => console.error(new Date().toISOString(), prefix, msg, ...args),

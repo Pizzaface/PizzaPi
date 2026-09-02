@@ -18,6 +18,17 @@ describe("createLogger", () => {
         errorSpy.mockRestore();
     });
 
+    test("debug() writes to console.log with timestamp and tag", () => {
+        const log = createLogger("auth");
+        log.debug("existing-query ok email=x@y.z");
+
+        expect(logSpy).toHaveBeenCalledTimes(1);
+        const [ts, tag, msg] = logSpy.mock.calls[0];
+        expect(tag).toBe("[auth]");
+        expect(msg).toBe("existing-query ok email=x@y.z");
+        expect(() => new Date(ts as string).toISOString()).not.toThrow();
+    });
+
     test("info() writes to console.log with timestamp and tag", () => {
         const log = createLogger("health");
         log.info("Redis connected");
