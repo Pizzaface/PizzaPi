@@ -199,8 +199,8 @@ describe("mergeOverlayMcpServers", () => {
         await install("../mcp-root-project", { project: true });
 
         const { config, serverProvenance } = mergeOverlayMcpServers({}, cwd, agentDir, true);
-        expect((config.mcpServers?.shared as any).command).toEndWith("/project");
-        expect((config.mcpServers?.shared as any).command).not.toContain("mcp-root-user");
+        expect((config.mcpServers?.shared as any)?.command).toEndWith("/project");
+        expect((config.mcpServers?.shared as any)?.command).not.toContain("mcp-root-user");
         expect(serverProvenance.find((p) => p.name === "shared")?.identity).toContain("mcp-root-project");
     });
 
@@ -213,7 +213,7 @@ describe("mergeOverlayMcpServers", () => {
 
         const base = { mcpServers: { shared: { command: "explicit-config-command" } } };
         const { config } = mergeOverlayMcpServers(base, cwd, agentDir, true);
-        expect((config.mcpServers?.shared as any).command).toBe("explicit-config-command");
+        expect((config.mcpServers?.shared as any)?.command).toBe("explicit-config-command");
     });
 
     test("project-scope package wins over user-scope package for the same server name", async () => {
@@ -230,7 +230,7 @@ describe("mergeOverlayMcpServers", () => {
         await install("../mcp-project-pkg", { project: true });
 
         const { config } = mergeOverlayMcpServers({}, cwd, agentDir, true);
-        expect((config.mcpServers?.shared as any).command).toBe("project-command");
+        expect((config.mcpServers?.shared as any)?.command).toBe("project-command");
     });
 
     test("project-scope package overlay is excluded when the project is not explicitly trusted", async () => {
@@ -302,7 +302,7 @@ describe("mergeOverlayMcpServers", () => {
         installLegacyPlugin("legacy-plugin", { legacyServer: { command: "legacy-command" } });
 
         const { config } = mergeOverlayMcpServers({}, cwd, agentDir, true);
-        expect((config.mcpServers?.legacyServer as any).command).toBe("legacy-command");
+        expect((config.mcpServers?.legacyServer as any)?.command).toBe("legacy-command");
     });
 
     test("package overlay mcp wins over legacy plugin .mcp.json for the same name", async () => {
@@ -315,6 +315,6 @@ describe("mergeOverlayMcpServers", () => {
         await install("../mcp-beats-legacy-pkg");
 
         const { config } = mergeOverlayMcpServers({}, cwd, agentDir, true);
-        expect((config.mcpServers?.shared as any).command).toBe("package-command");
+        expect((config.mcpServers?.shared as any)?.command).toBe("package-command");
     });
 });

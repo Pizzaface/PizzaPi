@@ -85,6 +85,6 @@ describe("GitCommitForm", () => {
         );
         const auto = queryByText("Auto");
         // Button exists but is disabled because no onSuggest is wired.
-        expect((auto?.closest("button") as HTMLButtonElement).disabled).toBe(true);
+        expect((auto?.closest("button") as HTMLButtonElement)?.disabled).toBe(true);
     });
 });
