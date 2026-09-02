@@ -100,8 +100,10 @@ let _readOnlyOverlay = false;
  * Graceful degradation:
  * - Mode `"none"` or null srtConfig: skips initialization entirely.
  * - Unsupported platforms (Windows): logs a warning and continues unsandboxed.
- * - If `SandboxManager.initialize()` throws: logs the error and continues
- *   unsandboxed. Never crashes the worker.
+ * - If config building or `SandboxManager.initialize()` throws (including a
+ *   malformed `srtConfig` — missing entirely, or with undefined filesystem
+ *   arrays): logs the error and continues unsandboxed. Never crashes the
+ *   worker.
  */
 export async function initSandbox(config: ResolvedSandboxConfig): Promise<void> {
     _config = config;
@@ -128,14 +130,15 @@ export async function initSandbox(config: ResolvedSandboxConfig): Promise<void> 
         return;
     }
 
-    // Build the SandboxRuntimeConfig to pass to srt
-    const runtimeConfig = _buildSrtConfig(config);
-
     try {
+        // Config building runs inside the try too: a malformed config
+        // (missing srtConfig, undefined fs arrays) must degrade to
+        // unsandboxed like any other init failure, not crash the worker.
+        const runtimeConfig = _buildSrtConfig(config);
         await SandboxManager.initialize(runtimeConfig);
         _initialized = true;
     } catch (err) {
-        log.error(`Failed to initialize sandbox. Continuing unsandboxed: ${err instanceof Error ? err.message : String(err)}`);
+        log.error("Failed to initialize sandbox. Continuing unsandboxed:", err);
         _initialized = true;
         _initFailed = true;
     }
@@ -327,6 +330,15 @@ export async function cleanupSandbox(): Promise<void> {
 /** Build the SandboxRuntimeConfig to pass to srt from our resolved config. */
 function _buildSrtConfig(config: ResolvedSandboxConfig): SandboxRuntimeConfig {
     const srt = config.srtConfig!;
+    // Malformed configs can omit the fs arrays entirely; default them to []
+    // rather than crashing on `...undefined` below (they retain their
+    // documented empty-array meaning: deny-all-writes / allow-all-reads).
+    const fsConfig = {
+        denyRead: srt.filesystem?.denyRead ?? [],
+        allowWrite: srt.filesystem?.allowWrite ?? [],
+        denyWrite: srt.filesystem?.denyWrite ?? [],
+        allowGitConfig: srt.filesystem?.allowGitConfig,
+    };
 
     // Merge SSH agent socket into allowUnixSockets if detected.
     // Runs regardless of whether srt.network is defined — basic mode's
@@ -341,14 +353,14 @@ function _buildSrtConfig(config: ResolvedSandboxConfig): SandboxRuntimeConfig {
 
     return {
         filesystem: {
-            denyRead: srt.filesystem.denyRead,
+            denyRead: fsConfig.denyRead,
             allowWrite: [
                 ...getDefaultWritePaths(),
-                ...srt.filesystem.allowWrite,
+                ...fsConfig.allowWrite,
             ],
-            denyWrite: srt.filesystem.denyWrite,
-            ...(srt.filesystem.allowGitConfig !== undefined
-                ? { allowGitConfig: srt.filesystem.allowGitConfig }
+            denyWrite: fsConfig.denyWrite,
+            ...(fsConfig.allowGitConfig !== undefined
+                ? { allowGitConfig: fsConfig.allowGitConfig }
                 : {}),
         },
         // SandboxManager.initialize() requires a `network` key — omitting it

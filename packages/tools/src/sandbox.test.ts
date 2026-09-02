@@ -812,14 +812,24 @@ describe("sandbox", () => {
             expect(getSandboxMode()).toBe("full");
         });
 
-        // BUG (found by adversarial probing, not fixed per task instructions):
-        // initSandbox({ mode: "basic" }) with srtConfig absent (undefined, not
-        // null) throws TypeError ("evaluating 'srt.network'"), and undefined
-        // denyRead/allowWrite/denyWrite arrays throw during _buildSrtConfig
-        // (spread of undefined) — both escape the documented "never crashes
-        // the worker" graceful degradation because the guards only check
-        // === null and _buildSrtConfig runs outside the try block.
-        test.todo("initSandbox throws on malformed configs (missing srtConfig / undefined fs arrays) instead of degrading gracefully");
+        test("initSandbox does not throw on malformed configs (missing srtConfig / undefined fs arrays)", async () => {
+            // srtConfig entirely absent (undefined, not null).
+            await expect(
+                initSandbox({ mode: "basic" } as unknown as ResolvedSandboxConfig),
+            ).resolves.toBeUndefined();
+            expect(getSandboxMode()).toBe("basic");
+
+            _resetState();
+
+            // srtConfig present but its filesystem arrays are undefined.
+            await expect(
+                initSandbox({
+                    mode: "basic",
+                    srtConfig: { filesystem: {} },
+                } as unknown as ResolvedSandboxConfig),
+            ).resolves.toBeUndefined();
+            expect(getSandboxMode()).toBe("basic");
+        });
 
         test("file:// URL prefix is normalized to a filesystem path before denyRead applies", async () => {
             await initSandbox(makeConfig({ denyRead: ["/etc/secrets"] }));
