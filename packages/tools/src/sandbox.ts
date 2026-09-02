@@ -483,10 +483,11 @@ function _normalizePath(filePath: string): string {
 
         let hops = 0;
         while (!existsSync(parent)) {
-            // ponytail: bound against pathological/circular symlink chains
-            if (++hops > 40) break;
             const linkTarget = _readDanglingSymlinkTarget(parent);
             if (linkTarget !== null) {
+                // ponytail: bound against circular symlink chains; only link
+                // follows count so deep nonexistent dirs still walk to root
+                if (++hops > 40) break;
                 // `parent` is itself a dangling symlink — validate against
                 // where it actually points, not where it sits. Closes a
                 // TOCTOU window: an attacker who creates the link target
