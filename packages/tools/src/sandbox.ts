@@ -8,7 +8,7 @@
  */
 
 import { resolve as pathResolve, dirname } from "node:path";
-import { realpathSync, existsSync } from "node:fs";
+import { realpathSync, existsSync, lstatSync, readlinkSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { platform } from "node:os";
 import {
@@ -425,6 +425,22 @@ function _isActive(): boolean {
  *  "//" so Windows drive letters ("C:/foo", "C:\\foo") never match. */
 const _URL_SCHEME_RE = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//;
 
+/**
+ * If `path` is a symlink whose target doesn't (yet) exist — lstat sees it
+ * but existsSync (which follows links) doesn't — return the resolved
+ * absolute target path. Returns null when `path` doesn't exist at all, or
+ * exists as something other than a dangling symlink.
+ */
+function _readDanglingSymlinkTarget(path: string): string | null {
+    try {
+        const stat = lstatSync(path);
+        if (!stat.isSymbolicLink()) return null;
+        return pathResolve(dirname(path), readlinkSync(path));
+    } catch {
+        return null;
+    }
+}
+
 /** Normalize a file path for comparison against config paths. */
 function _normalizePath(filePath: string): string {
     let expanded = filePath;
@@ -451,9 +467,34 @@ function _normalizePath(filePath: string): string {
         if (existsSync(resolved)) {
             return realpathSync(resolved);
         }
-        let parent = dirname(resolved);
-        const tail: string[] = [resolved.slice(parent.length)];
+
+        // `resolved` itself may be a dangling symlink (the validated path IS
+        // the link, not a child under it) — follow it before treating it as
+        // an unresolved tail segment.
+        const selfTarget = _readDanglingSymlinkTarget(resolved);
+        let parent: string;
+        const tail: string[] = [];
+        if (selfTarget !== null) {
+            parent = selfTarget;
+        } else {
+            parent = dirname(resolved);
+            tail.push(resolved.slice(parent.length));
+        }
+
+        let hops = 0;
         while (!existsSync(parent)) {
+            // ponytail: bound against pathological/circular symlink chains
+            if (++hops > 40) break;
+            const linkTarget = _readDanglingSymlinkTarget(parent);
+            if (linkTarget !== null) {
+                // `parent` is itself a dangling symlink — validate against
+                // where it actually points, not where it sits. Closes a
+                // TOCTOU window: an attacker who creates the link target
+                // after validation but before the write would otherwise
+                // escape the allowed root undetected.
+                parent = linkTarget;
+                continue;
+            }
             const next = dirname(parent);
             if (next === parent) break; // filesystem root ("/", "C:\", or a UNC root)
             tail.unshift(parent.slice(next.length));

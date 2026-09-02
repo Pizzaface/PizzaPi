@@ -685,15 +685,14 @@ describe("sandbox", () => {
             expect(result.reason).toContain("denied");
         });
 
-        test("dangling symlink under allowWrite passes validation (documents current gap)", async () => {
-            // existsSync() is false for a dangling symlink, so _normalizePath's
-            // parent walk treats it as an ordinary (unrealpath'd) child of the
-            // allowed root. The write itself would fail at the OS level today
-            // (target doesn't exist), but see the test.todo below for the
-            // TOCTOU variant this enables when OS enforcement is inactive.
+        test("dangling symlink under allowWrite is validated against its link target, not the allowed root", async () => {
+            // The symlink's target ("created-later") doesn't exist yet, so
+            // existsSync() is false for it — _normalizePath must still follow
+            // the link (via lstat) rather than treating it as an ordinary
+            // child of the allowed root.
             symlinkSync(join(outsideDir, "created-later"), join(tmpDir, "dangling"), "junction");
             await initSandbox(makeConfig({ denyRead: [], allowWrite: [tmpDir], denyWrite: [] }));
-            expect(validatePath(join(tmpDir, "dangling", "x.txt"), "write").allowed).toBe(true);
+            expect(validatePath(join(tmpDir, "dangling", "x.txt"), "write").allowed).toBe(false);
         });
 
         test("symlink resolving within the allowed root is allowed (no false positive)", async () => {
@@ -849,13 +848,30 @@ describe("sandbox", () => {
             expect(validatePath("file://not-localhost/etc/passwd", "read").allowed).toBe(false);
         });
 
-        // BUG (found by adversarial probing, not fixed per task instructions):
-        // A dangling symlink inside allowWrite passes validatePath for writes
-        // (existsSync is false, so the parent walk never resolves its target).
-        // An attacker who creates the symlink target between validation and
-        // write escapes the allowed root — a TOCTOU window whenever OS-level
-        // enforcement is inactive (init failed, unsupported platform).
-        test.todo("dangling symlink under allowWrite passes write validation (TOCTOU escape when OS enforcement is inactive)");
+        test("dangling symlink written directly (not as a path prefix) is still resolved against its link target", async () => {
+            const tmp = mkdtempSync(join(tmpdir(), "sandbox-dangle-"));
+            const outside = mkdtempSync(join(tmpdir(), "sandbox-dangle-outside-"));
+            try {
+                symlinkSync(join(outside, "created-later"), join(tmp, "dangling"), "junction");
+                await initSandbox(makeConfig({ denyRead: [], allowWrite: [tmp], denyWrite: [] }));
+                // Validating the symlink path itself (no child segment below it).
+                expect(validatePath(join(tmp, "dangling"), "write").allowed).toBe(false);
+            } finally {
+                rmSync(tmp, { recursive: true, force: true });
+                rmSync(outside, { recursive: true, force: true });
+            }
+        });
+
+        test("dangling symlink whose target resolves inside the allowed root is still allowed (no false positive)", async () => {
+            const tmp = mkdtempSync(join(tmpdir(), "sandbox-dangle-ok-"));
+            try {
+                symlinkSync(join(tmp, "not-created-yet"), join(tmp, "dangling-inside"), "junction");
+                await initSandbox(makeConfig({ denyRead: [], allowWrite: [tmp], denyWrite: [] }));
+                expect(validatePath(join(tmp, "dangling-inside", "x.txt"), "write").allowed).toBe(true);
+            } finally {
+                rmSync(tmp, { recursive: true, force: true });
+            }
+        });
     });
 
     describe("adversarial: read-only overlay", () => {
