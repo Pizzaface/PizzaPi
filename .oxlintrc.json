@@ -20,7 +20,7 @@
     "no-unused-private-class-members": "off",
     "no-unused-expressions": "off",
     "no-irregular-whitespace": "off",
-    "unicorn/no-useless-spread": "off",
+    "unicorn/no-useless-spread": "error",
     "unicorn/prefer-string-starts-ends-with": "off",
     "unicorn/no-invalid-fetch-options": "off"
   }

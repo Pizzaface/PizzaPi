@@ -170,7 +170,7 @@ function untrustCommand(args: string[], cwd: string): void {
             return;
         }
         // Remove all
-        for (const p of [...list]) {
+        for (const p of list) {
             untrustPlugin(p);
         }
         log.info(`Removed ${list.length} plugin${list.length > 1 ? "s" : ""} from the trust list.`);

@@ -824,6 +824,7 @@ export class GitService implements ServiceHandler {
         const version = (this._repoVersion.get(commonDir) ?? 0) + 1;
         this._repoVersion.set(commonDir, version);
 
+        // oxlint-disable-next-line unicorn/no-useless-spread -- snapshot: awaits inside the loop let concurrent subscribe/unsubscribe mutate _cwdSubscribers mid-pass; iterating a copy keeps the pass deterministic
         for (const knownCwd of [...this._cwdSubscribers.keys()]) {
             const knownCommon = await this.resolveCommonDir(knownCwd);
             if (knownCommon !== commonDir) continue;

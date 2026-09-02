@@ -335,7 +335,7 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunWorkflow
         // can still be in flight. Await those too before returning/throwing,
         // so nothing is still mutating `details` in the background.
         await Promise.allSettled(workers);
-        await Promise.allSettled([...pendingAgents]);
+        await Promise.allSettled(pendingAgents);
         if (hasError) throw firstError;
         return results;
     }
@@ -402,7 +402,7 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunWorkflow
         // must see status:"error", not a stale success.
         if (signal?.aborted || runController.signal.aborted) {
             runController.abort();
-            await Promise.allSettled([...runPendingAgents]);
+            await Promise.allSettled(runPendingAgents);
             details.status = "error";
             details.error = "aborted";
             emit();
@@ -427,7 +427,7 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunWorkflow
         // returning — so nothing mutates `details` or fires onUpdate after
         // this promise has already resolved.
         runController.abort();
-        await Promise.allSettled([...runPendingAgents]);
+        await Promise.allSettled(runPendingAgents);
         details.status = "error";
         details.error = err instanceof Error ? err.message : String(err);
         emit();

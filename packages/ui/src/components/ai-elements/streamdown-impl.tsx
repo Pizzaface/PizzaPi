@@ -24,7 +24,7 @@ const plugins = getMobileRuntimeConfig().isMobileBundled
 // Spreading defaultRehypePlugins preserves the XSS protections
 // (rehype-sanitize etc.) that Streamdown applies by default.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const safeRehypePlugins = [...Object.values(defaultRehypePlugins)] as any;
+const safeRehypePlugins = Object.values(defaultRehypePlugins) as any;
 // Merge rehypeSigils WITH the built-ins instead of replacing them.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const sigilRehypePlugins = [...safeRehypePlugins, [rehypeSigils]] as any;

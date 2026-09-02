@@ -179,7 +179,7 @@ export function pendingCommands(): string[] {
  */
 export function backgroundPendingJobs(): string[] {
     const commands = pendingCommands();
-    for (const job of [...waiting.values()]) job.backgroundNow();
+    for (const job of waiting.values()) job.backgroundNow();
     return commands;
 }
 
