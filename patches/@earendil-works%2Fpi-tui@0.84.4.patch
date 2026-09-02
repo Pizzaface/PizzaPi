@@ -1,5 +1,5 @@
 diff --git a/dist/terminal.js b/dist/terminal.js
-index de2c7e49c351d2b084f7df1e939070f895eb3225..35ec8c7c76199ef30632eb980c9ae7e9b5f0fdd7 100644
+index de2c7e4..35ec8c7 100644
 --- a/dist/terminal.js
 +++ b/dist/terminal.js
 @@ -6,6 +6,100 @@ import { isNativeModifierPressed } from "./native-modifiers.js";

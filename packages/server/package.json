@@ -14,8 +14,8 @@
     },
     "dependencies": {
         "@aws-sdk/client-s3": "^3.995.0",
-        "@earendil-works/pi-agent-core": "^0.84.3",
-        "@earendil-works/pi-ai": "^0.84.3",
+        "@earendil-works/pi-agent-core": "^0.84.4",
+        "@earendil-works/pi-ai": "^0.84.4",
         "@pizzapi/protocol": "workspace:*",
         "@pizzapi/tools": "workspace:*",
         "@pizzapi/tunnel": "workspace:*",
