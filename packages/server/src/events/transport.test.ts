@@ -10,6 +10,7 @@
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
 import { Database } from "bun:sqlite";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Kysely } from "kysely";
 import { BunSqliteDialect } from "kysely-bun-sqlite";
 import type { TriggerEvent } from "@pizzapi/protocol";
@@ -41,6 +42,11 @@ function makeLocalSocket(): LocalSocket {
 }
 
 // Mutable per-test fakes.
+const authStorage = new AsyncLocalStorage<unknown>();
+const authCtx = { db: "test" };
+// Flip on to make DB access require an active context (production semantics);
+// off by default so test bodies can hit memDb directly.
+let strictAuth = false;
 let sharedSession: Record<string, unknown> | null = null;
 let localSocket: LocalSocket | null = null;
 let relayAcked: { attempts: number; settle: (acked: boolean) => void } | null = null;
@@ -50,7 +56,21 @@ let runnerEmits: Array<{ runnerId: string; event: string; data: any }> = [];
 let runnerPresence: { kind: "count"; count: number } | { kind: "unknown" } = { kind: "unknown" };
 
 const modsPromise = (async () => {
-  mock.module("../auth.js", () => ({ getKysely: () => memDb }));
+  // Mirror production auth semantics: DB access requires an active context.
+  // Socket.IO ack callbacks run outside the emit's async chain, so a settle
+  // that forgets to re-enter the context throws here exactly as it did in prod.
+  mock.module("../auth.js", () => ({
+    getAuthContext: () => {
+      const ctx = authStorage.getStore();
+      if (!ctx) throw new Error("[auth] No auth context is active (test)");
+      return ctx;
+    },
+    runWithAuthContext: <T,>(ctx: unknown, fn: () => T) => authStorage.run(ctx, fn),
+    getKysely: () => {
+      if (strictAuth && !authStorage.getStore()) throw new Error("[auth] No auth context is active (test)");
+      return memDb;
+    },
+  }));
   mock.module("./redis.js", () => ({
     getEventsRedis: async () => wakeRedis,
     _injectRedisForTesting: () => {},
@@ -115,7 +135,7 @@ describe("trigger transport delivery receipt", () => {
   async function publishTo(sessionId: string): Promise<{ deliveryId: string; event: TriggerEvent }> {
     const source = { kind: "api" as const, id: "hook", auth: "api-key" as const, userId: "u1" };
     const deps = transport.createEngineDeps();
-    const outcome = await engine.publishEvent({ type: "t:x" }, source, deps, [{ sessionId }]);
+    const outcome = await authStorage.run(authCtx, () => engine.publishEvent({ type: "t:x" }, source, deps, [{ sessionId }]));
     return { deliveryId: outcome.deliveries[0].deliveryId, event: outcome.event };
   }
 
@@ -137,9 +157,15 @@ describe("trigger transport delivery receipt", () => {
     expect((await store.getDelivery(deliveryId))?.status).toBe("inflight");
     expect(localSocket.emits[0].ack).toBeTypeOf("function");
 
-    // Recipient's ack lands: inflight → delivered.
-    localSocket.emits[0].ack!(null, [{ ok: true }]);
-    await new Promise((r) => setTimeout(r, 0));
+    // Recipient's ack lands: inflight → delivered. Socket.IO invokes ack
+    // callbacks from the packet handler — outside the emit's auth context.
+    strictAuth = true;
+    try {
+      authStorage.exit(() => localSocket!.emits[0].ack!(null, [{ ok: true }]));
+      await new Promise((r) => setTimeout(r, 0));
+    } finally {
+      strictAuth = false;
+    }
     const settled = await store.getDelivery(deliveryId);
     expect(settled?.status).toBe("delivered");
     expect(settled?.deliveredAt).toBeDefined();

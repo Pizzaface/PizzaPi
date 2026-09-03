@@ -36,8 +36,25 @@ import { sendPushToUser } from "../push.js";
 import { getDelivery, getEvent, getEventByFireId, listPendingWakeDeliveries, updateDelivery } from "./store.js";
 import { settleDeliveryAck, type DeliverOutcome, type EngineDeps } from "./engine.js";
 import { getEventsRedis } from "./redis.js";
+import { getAuthContext, runWithAuthContext } from "../auth.js";
 
 const log = createLogger("event-transport");
+
+/**
+ * Socket.IO ack callbacks run from the packet handler, outside the
+ * AsyncLocalStorage chain that carried the auth context into the emit — so
+ * settling the delivery row there threw "No auth context is active" as an
+ * unhandledRejection and took the whole server down. Capture the context at
+ * emit time and re-enter it in the callback; never let a settle failure escape.
+ */
+function settleAckBound(deliveryId: string): (acked: boolean) => void {
+  const ctx = getAuthContext();
+  return (acked) => {
+    runWithAuthContext(ctx, () => settleDeliveryAck(deliveryId, acked)).catch((err) => {
+      log.error(`Failed to settle delivery ${deliveryId} ack:`, err);
+    });
+  };
+}
 
 /** How long the transport waits for a recipient's session_trigger ack before
  *  treating the handoff as lost (row returns to pending; re-delivery is
@@ -93,6 +110,7 @@ async function emitToSessionAcked(
   trigger: ReturnType<typeof toWireEnvelope>,
   deliveryId: string,
 ): Promise<boolean> {
+  const settle = settleAckBound(deliveryId);
   const local = getLocalTuiSocket(sessionId);
   if (local?.connected) {
     try {
@@ -101,7 +119,7 @@ async function emitToSessionAcked(
         "session_trigger",
         { trigger },
         (err: unknown, ackResponses: unknown[] = []) => {
-          void settleDeliveryAck(deliveryId, !err && ackResponses.length > 0);
+          settle(!err && ackResponses.length > 0);
         },
       );
       return true;
@@ -110,9 +128,7 @@ async function emitToSessionAcked(
       return false;
     }
   }
-  return emitToRelaySessionAcked(sessionId, "session_trigger", { trigger }, (acked) => {
-    void settleDeliveryAck(deliveryId, acked);
-  }, SESSION_TRIGGER_ACK_TIMEOUT_MS);
+  return emitToRelaySessionAcked(sessionId, "session_trigger", { trigger }, settle, SESSION_TRIGGER_ACK_TIMEOUT_MS);
 }
 
 /** Registered CLI generation: does this session ack session_trigger emissions? */
