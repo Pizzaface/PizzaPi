@@ -26,30 +26,8 @@ import type {
 import { shouldPreserveOnSocketDisconnect } from "../../health.js";
 import { apiKeyAuthMiddleware } from "./auth.js";
 import { bindSocketHandlersToAuthContext } from "./context.js";
-import { getSubscriptionsForRunnerSessions, getSessionIdsWithSubscriptionsForRunner, refreshRunnerSubscriptionTtls, sessionHasScheduleSubscription, rehydrateRunnerSubscriptions, nextTriggerSubRevision } from "../../sessions/trigger-subscription-store.js";
+import { subscriptionsForRunner, sessionIdsWithRoutesForRunner, nextReconcileRevision } from "../../events/reconcile.js";
 
-/**
- * Refresh subscription TTLs for sessions that own subscriptions on this runner.
- *
- * Kept alive while the runner is connected:
- *   - sessions that still exist, and
- *   - schedules (time:*) whose owning session is gone — those are durable by
- *     design and migrate to a fresh session on their next fire, so expiring
- *     them out of Redis would silently cancel standing work.
- * Anything else ages out via the normal TTL.
- */
-async function refreshSubscriptionTtlsForRunner(runnerId: string): Promise<void> {
-    const sessionIds = await getSessionIdsWithSubscriptionsForRunner(runnerId);
-    if (sessionIds.length === 0) return;
-    const alive: string[] = [];
-    for (const sessionId of sessionIds) {
-        if (await getSharedSession(sessionId) || await sessionHasScheduleSubscription(sessionId)) {
-            alive.push(sessionId);
-        }
-    }
-    await refreshRunnerSubscriptionTtls(runnerId, alive);
-}
-import { listRunnerTriggerListeners } from "../../sessions/runner-trigger-listener-store.js";
 
 // Inline definitions mirror packages/protocol/src/shared.ts.
 // Using local aliases avoids a cross-worktree symlink resolution issue where
@@ -77,21 +55,8 @@ export function forwardServiceMessageToSession(
 
 // ── Trigger subscription reconciliation ──────────────────────────────────────
 // Revision counter is now Redis-backed (globally monotonic across all server
-// nodes). See nextTriggerSubRevision() in trigger-subscription-store.ts.
+// nodes). See nextReconcileRevision() in events/reconcile.ts.
 
-function runnerListenerAsSubscription(runnerId: string, listener: {
-    listenerId?: string;
-    triggerType: string;
-    params?: Record<string, unknown>;
-}): TriggerSubscriptionEntry {
-    return {
-        subscriptionId: listener.listenerId ?? `runner-listener:${runnerId}:${listener.triggerType}`,
-        sessionId: `runner-listener:${listener.listenerId ?? listener.triggerType}`,
-        runnerId,
-        triggerType: listener.triggerType,
-        ...(listener.params ? { params: listener.params as TriggerSubscriptionEntry["params"] } : {}),
-    };
-}
 
 /**
  * Emit a trigger_subscription_delta to a runner. Exported so the triggers
@@ -104,7 +69,7 @@ export async function emitTriggerSubscriptionDelta(
     runnerId: string,
     delta: Omit<TriggerSubscriptionDelta, "revision">,
 ): Promise<void> {
-    const revision = await nextTriggerSubRevision();
+    const revision = await nextReconcileRevision();
     emitToRunnerRoom(runnerId, "trigger_subscription_delta", {
         ...delta,
         revision,
@@ -570,21 +535,11 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             socket.data.runnerId = result;
             runnerHasBroadcastLiveServiceAnnounce.delete(result);
 
-            // Start periodic Redis TTL refresh for this runner. Subscription
-            // TTLs ride along so standing schedules (time:cron etc.) never
-            // expire while their runner is connected.
+            // Periodic Redis state refresh for this runner (keepalive).
             if (runnerTtlTimer) clearInterval(runnerTtlTimer);
             runnerTtlTimer = setInterval(() => {
                 void touchRunner(result);
-                void refreshSubscriptionTtlsForRunner(result).catch((err) => {
-                    log.warn(`failed to refresh subscription TTLs for runner ${result}:`, err);
-                });
             }, 30 * 60 * 1000); // every 30 minutes
-            // Refresh once now — a schedule created just under 24h before this
-            // reconnect must not expire before the first interval tick.
-            void refreshSubscriptionTtlsForRunner(result).catch((err) => {
-                log.warn(`failed to refresh subscription TTLs for runner ${result}:`, err);
-            });
 
             // Look up sessions still connected to the relay that belong to this runner.
             // This allows the daemon to re-adopt orphaned worker processes after a restart.
@@ -636,16 +591,6 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             // subscriptions for this runner's sessions so the runner can rebuild
             // its in-memory subscription state (timers, watchers, etc.).
             try {
-                // Rebuild Redis from durable storage FIRST. Production Redis is
-                // ephemeral (`--save "" --appendonly no`, no volume), so after a
-                // relay redeploy it holds nothing — and the snapshot below is
-                // authoritative, meaning an empty one makes the runner drop every
-                // timer/cron it holds and discard its durable state. Without this
-                // line a routine deploy silently cancels every schedule.
-                await rehydrateRunnerSubscriptions(result).catch((err) => {
-                    log.warn(`[trigger-reconciliation] rehydrate failed for runner ${result}:`, err);
-                });
-
                 const sessionIdsList = existingSessions.map((s: { sessionId: string }) => s.sessionId);
                 // Also include sessions from our in-memory tracking (may include sessions
                 // not in existingSessions if they were already connected before this registration).
@@ -655,39 +600,21 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
                         if (!sessionIdsList.includes(sid)) sessionIdsList.push(sid);
                     }
                 }
-                // Include OFFLINE sessions that still own trigger subscriptions on this
-                // runner. Schedules (time:cron / time:at / time:timer_fired) must survive
-                // a runner restart even when the owning session's worker is not running —
-                // otherwise the time service never rebuilds their timers and durable cron
-                // state is stranded until the session happens to reconnect.
-                for (const sid of await getSessionIdsWithSubscriptionsForRunner(result)) {
+                // Include OFFLINE sessions that still own routes on this runner.
+                // Schedules (time:cron / time:at / time:timer_fired) must survive a
+                // runner restart even when the owning session's worker is not running —
+                // otherwise the time service never rebuilds their timers and their
+                // durable state is stranded until the session happens to reconnect.
+                for (const sid of await sessionIdsWithRoutesForRunner(result)) {
                     if (!sessionIdsList.includes(sid)) sessionIdsList.push(sid);
                 }
                 // P1 fix: capture the revision BEFORE the async snapshot read.
-                // Any delta emitted concurrently will call nextTriggerSubRevision()
+                // Any delta emitted concurrently will call nextReconcileRevision()
                 // after this point and therefore receive a strictly higher revision,
                 // so the runner will never overwrite delta-applied state with a stale
                 // snapshot.
-                const snapshotRevision = await nextTriggerSubRevision();
-                const [allSubs, runnerListeners] = await Promise.all([
-                    sessionIdsList.length > 0 ? getSubscriptionsForRunnerSessions(sessionIdsList) : Promise.resolve([]),
-                    listRunnerTriggerListeners(result),
-                ]);
-                const combinedSubs: TriggerSubscriptionEntry[] = [
-                    // A session can hold subscriptions on multiple runners — this
-                    // runner's snapshot must only carry its own, or its services
-                    // would double-fire schedules owned by another runner.
-                    ...allSubs.filter(s => s.runnerId === result).map(s => ({
-                        subscriptionId: s.subscriptionId,
-                        sessionId: s.sessionId,
-                        triggerType: s.triggerType,
-                        runnerId: s.runnerId,
-                        ...(s.params ? { params: s.params } : {}),
-                        ...(s.filters && s.filters.length > 0 ? { filters: s.filters } : {}),
-                        ...(s.filterMode ? { filterMode: s.filterMode } : {}),
-                    })),
-                    ...runnerListeners.map((listener) => runnerListenerAsSubscription(result, listener)),
-                ];
+                const snapshotRevision = await nextReconcileRevision();
+                const combinedSubs: TriggerSubscriptionEntry[] = await subscriptionsForRunner(result);
                 socket.emit("trigger_subscriptions_snapshot" as any, {
                     revision: snapshotRevision,
                     isReconnect: true,

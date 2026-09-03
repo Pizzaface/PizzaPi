@@ -1,13 +1,12 @@
 /**
- * Trigger Client — HTTP client for firing triggers into sessions.
+ * Trigger Client — HTTP client for the unified trigger system (ADR-0002).
  *
- * Provides a clean `fireTrigger(sessionId, params)` API that:
- * 1. Tries POST /api/sessions/:id/trigger via HTTP with API key auth
- * 2. Falls back to Socket.IO session_trigger emission if HTTP is unavailable
+ * `fireTrigger(sessionId, params)` publishes via POST /api/events with an
+ * explicit target (the one fire path; no Socket.IO fallback). `publishEvent`
+ * is the same thing without a forced target. Offline/local mode returns a
+ * clear "requires relay" error.
  *
- * Usage pattern for runner services (e.g. Godmother):
- *
- *   import { fireTrigger } from "../extensions/trigger-client.js";
+ *   import { publishEvent, fireTrigger } from "../extensions/trigger-client.js";
  *
  *   await fireTrigger("session-abc123", {
  *     type: "godmother:idea_started",
@@ -25,7 +24,6 @@
  *   });
  */
 
-import { randomUUID } from "node:crypto";
 import { createLogger } from "@pizzapi/tools";
 import type { JsonValue } from "@pizzapi/protocol";
 import type { ServiceSigilDef } from "@pizzapi/protocol";
@@ -54,9 +52,7 @@ export interface FireTriggerParams {
 
 export interface FireTriggerResult {
     ok: boolean;
-    triggerId?: string;
-    /** Which transport was used for delivery */
-    method: "http" | "socketio";
+    eventId?: string;
     error?: string;
 }
 
@@ -105,20 +101,13 @@ const defaultDeps: TriggerClientDeps = {
 // ── Core client ───────────────────────────────────────────────────────────────
 
 /**
- * Fire a trigger into a session via HTTP or Socket.IO fallback.
+ * Fire a trigger into a session: publish an Event with an explicit target
+ * (implicit single-session Route). HTTP only — there is no Socket.IO fire
+ * fallback (ADR-0002); offline mode returns a clear error.
  *
- * Tries HTTP first (POST /api/sessions/:id/trigger with x-api-key auth).
- * Falls back to Socket.IO direct emission when:
- * - No base URL or API key is configured (offline mode)
- * - The HTTP request throws (network error, timeout)
- * - HTTP returns a 5xx or 503 error
- *
- * Auth errors (401/403) and not-found errors (404) are returned as definitive
- * failures without falling back to Socket.IO.
- *
- * @param sessionId Target session ID
- * @param params Trigger parameters
- * @param deps Optional dependency injection for testing
+ * Auth errors (401/403) and not-found errors (404) are definitive failures.
+ * Transient failures (5xx, network) are returned as { ok: false, method-less }
+ * for the caller's retry policy.
  */
 export async function fireTrigger(
     sessionId: string,
@@ -126,150 +115,32 @@ export async function fireTrigger(
     deps: Partial<TriggerClientDeps> = {},
 ): Promise<FireTriggerResult> {
     const d: TriggerClientDeps = { ...defaultDeps, ...deps };
-
-    const baseUrl = d.getRelayHttpBaseUrl();
-    const apiKey = d.getApiKey();
-
-    // Attempt HTTP delivery first
-    if (baseUrl && apiKey) {
-        try {
-            const url = `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/trigger`;
-            const response = await d.fetch(url, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "x-api-key": apiKey,
-                },
-                body: JSON.stringify({
-                    type: params.type,
-                    payload: params.payload,
-                    deliverAs: params.deliverAs ?? "steer",
-                    expectsResponse: params.expectsResponse ?? false,
-                    ...(params.source ? { source: params.source } : {}),
-                    ...(params.summary ? { summary: params.summary } : {}),
-                }),
-            });
-
-            if (response.ok) {
-                const data = await response.json() as { ok: boolean; triggerId?: string };
-                log.info(`Trigger ${data.triggerId} fired to session ${sessionId} via HTTP`);
-                return { ok: true, triggerId: data.triggerId, method: "http" };
-            }
-
-            const errorBody = await response.json().catch(() => ({ error: "Unknown error" })) as { error?: string };
-            const errorMsg = errorBody.error ?? `HTTP ${response.status}`;
-            log.info(`HTTP trigger failed for session ${sessionId}: ${errorMsg}`);
-
-            // Auth / not-found errors are definitive — no Socket.IO fallback
-            if (response.status === 401 || response.status === 403) {
-                return { ok: false, method: "http", error: `Authentication failed: ${errorMsg}` };
-            }
-            if (response.status === 404) {
-                return { ok: false, method: "http", error: `Session not found: ${errorMsg}` };
-            }
-            // For 5xx / 503 / other errors, fall through to Socket.IO
-        } catch (err) {
-            log.info(
-                `HTTP trigger request failed for session ${sessionId}: ` +
-                (err instanceof Error ? err.message : String(err)),
-            );
-            // Network failure — fall through to Socket.IO
-        }
-    }
-
-    // Socket.IO fallback (offline mode or HTTP transient failure).
-    //
-    // NOTE: session_trigger is fire-and-forget over Socket.IO — there is no
-    // server-side acknowledgement event for trigger delivery failures (unlike
-    // session_message which has session_message_error). This path returns
-    // { ok: true } as soon as the emit succeeds at the socket layer, which
-    // means a disconnected or non-existent target session will not surface as
-    // an error here. Prefer the HTTP path (which validates the session exists
-    // and returns 404/503 on failure) whenever a relay URL and API key are set.
-    const conn = d.getRelaySocket();
-    if (conn) {
-        const triggerId = `ext_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
-        try {
-            conn.socket.emit("session_trigger" as any, {
-                token: conn.token,
-                trigger: {
-                    type: params.type,
-                    sourceSessionId: `external:${params.source ?? "trigger-client"}`,
-                    sourceSessionName: params.summary ?? `Service (${params.source ?? "trigger-client"})`,
-                    targetSessionId: sessionId,
-                    payload: params.payload,
-                    deliverAs: params.deliverAs ?? "steer",
-                    expectsResponse: params.expectsResponse ?? false,
-                    triggerId,
-                    ts: new Date().toISOString(),
-                },
-            });
-            log.info(`Trigger ${triggerId} fired to session ${sessionId} via Socket.IO fallback`);
-            return { ok: true, triggerId, method: "socketio" };
-        } catch (err) {
-            return {
-                ok: false,
-                method: "socketio",
-                error: `Socket.IO emit failed: ${err instanceof Error ? err.message : String(err)}`,
-            };
-        }
-    }
-
-    return {
-        ok: false,
-        method: "http",
-        error: "Not connected to relay and HTTP is unavailable — cannot fire trigger",
-    };
-}
-
-/**
- * Broadcast a trigger by type to all sessions subscribed to that type on a runner.
- * This is the delivery path that makes subscriptions useful: instead of firing to
- * a specific session, a service fires to "all subscribers of type X on my runner."
- *
- * @param runnerId  The runner whose subscribers should receive the trigger.
- * @param params    Trigger parameters (type, payload, etc.)
- * @param deps      Optional dependency injection for testing.
- */
-export async function broadcastTrigger(
-    runnerId: string,
-    params: FireTriggerParams,
-    deps: Partial<TriggerClientDeps> = {},
-): Promise<{ ok: boolean; delivered?: number; triggerId?: string; error?: string }> {
-    const d: TriggerClientDeps = { ...defaultDeps, ...deps };
     const baseUrl = d.getRelayHttpBaseUrl();
     const apiKey = d.getApiKey();
 
     if (!baseUrl || !apiKey) {
-        return { ok: false, error: "No relay URL or API key configured" };
+        return {
+            ok: false,
+            error: "Not connected to relay — firing triggers requires a relay (PIZZAPI_RELAY_URL + PIZZAPI_API_KEY)",
+        };
     }
 
     try {
-        const url = `${baseUrl}/api/runners/${encodeURIComponent(runnerId)}/trigger-broadcast`;
-        const response = await d.fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "x-api-key": apiKey },
-            body: JSON.stringify({
-                type: params.type,
-                payload: params.payload,
-                // Broadcast (runner-wide) triggers default to non-interruptive
-                // "followUp", matching the server endpoint default and the
-                // documented runner-services contract. A service must opt into
-                // "steer" to interrupt an active turn. (Session-targeted
-                // fireTrigger above keeps its "steer" default by design.)
-                deliverAs: params.deliverAs ?? "followUp",
-                expectsResponse: params.expectsResponse ?? false,
-                ...(params.source ? { source: params.source } : {}),
-                ...(params.summary ? { summary: params.summary } : {}),
-            }),
-        });
-
-        const data = await response.json() as { ok?: boolean; delivered?: number; triggerId?: string; error?: string };
-        if (response.ok && data.ok) {
-            log.info(`Broadcast trigger ${data.triggerId} (type=${params.type}) delivered to ${data.delivered} subscriber(s) on runner ${runnerId}`);
-            return { ok: true, delivered: data.delivered, triggerId: data.triggerId ?? undefined };
+        const result = await publishEvent({
+            type: params.type,
+            payload: params.payload,
+            ...(params.summary ? { summary: params.summary } : {}),
+            // Same bound TTL as the lifecycle publisher — an escalate:true
+            // contract without ttlMs never expires, so escalation is dead.
+            ...(params.expectsResponse ? { responseContract: { escalate: true, ttlMs: 30 * 60 * 1000 } } : {}),
+            target: { sessionId, deliverAs: params.deliverAs ?? "steer" },
+            ...(params.source ? { source: { id: params.source, name: params.source } } : {}),
+        }, d);
+        if (result.ok) {
+            log.info(`Event ${result.eventId} (${params.type}) fired to session ${sessionId}`);
+            return { ok: true, eventId: result.eventId };
         }
-        return { ok: false, error: data.error ?? `HTTP ${response.status}` };
+        return { ok: false, error: result.error ?? "Publish failed" };
     } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
@@ -296,9 +167,101 @@ export function createTriggerClient(deps: Partial<TriggerClientDeps> = {}) {
     return {
         fire: (sessionId: string, params: FireTriggerParams) =>
             fireTrigger(sessionId, params, deps),
-        broadcast: (runnerId: string, params: FireTriggerParams) =>
-            broadcastTrigger(runnerId, params, deps),
+        publish: (params: PublishEventParams) => publishEvent(params, deps),
     };
+}
+
+// ── Unified event publish / respond (ADR-0002) ────────────────────────────────
+
+export interface PublishEventParams {
+    /** Registered namespaced Event Type, e.g. "lifecycle:plan_review". */
+    type: string;
+    payload?: Record<string, unknown>;
+    summary?: string;
+    /** Publisher's idempotency key + response-correlation id. */
+    fireId?: string;
+    responseContract?: { actions?: string[]; ttlMs?: number; escalate?: boolean };
+    /** Direct target — an implicit single-session route (ownership-checked). */
+    target?: { sessionId: string; deliverAs?: "steer" | "followUp" };
+    /** Who is publishing. Sessions pass their relay session id. */
+    source?: { kind?: "session" | "service" | "scheduler" | "api"; id?: string; name?: string };
+}
+
+export interface PublishEventResult {
+    ok: boolean;
+    eventId?: string;
+    created?: boolean;
+    deliveries?: Array<{ deliveryId: string; sessionId: string; status: string }>;
+    error?: string;
+    /** HTTP response status when publishing reached the relay but failed. */
+    status?: number;
+}
+
+/**
+ * Publish an Event through the unified engine (POST /api/events).
+ * Routing decides recipients: the optional target is an implicit single-session
+ * route; without one, existing routes for the event type deliver.
+ */
+export async function publishEvent(
+    params: PublishEventParams,
+    deps: Partial<TriggerClientDeps> = {},
+): Promise<PublishEventResult> {
+    const d: TriggerClientDeps = { ...defaultDeps, ...deps };
+    const baseUrl = d.getRelayHttpBaseUrl();
+    const apiKey = d.getApiKey();
+    if (!baseUrl || !apiKey) {
+        return { ok: false, error: "Not connected to relay — publishing events requires a relay (PIZZAPI_RELAY_URL + PIZZAPI_API_KEY)" };
+    }
+
+    try {
+        const url = `${baseUrl}/api/events`;
+        const response = await d.fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+            body: JSON.stringify(params),
+        });
+        const data = (await response.json().catch(() => ({}))) as PublishEventResult & { error?: string };
+        if (response.ok && data.ok) {
+            log.info(`Event ${data.eventId} (${params.type}) published — ${data.deliveries?.length ?? 0} deliveries`);
+            return { ok: true, eventId: data.eventId, created: data.created, deliveries: data.deliveries };
+        }
+        return { ok: false, error: data.error ?? `HTTP ${response.status}`, status: response.status };
+    } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+}
+
+/**
+ * Answer a contract-bearing Delivery (POST /api/deliveries/:id/response).
+ * Returns { ok: false, notFound: true } when the delivery is unknown to the
+ * engine — i.e. the trigger came through a legacy pathway (partial upgrades).
+ */
+export async function respondToDelivery(
+    deliveryId: string,
+    body: { response: string; action?: string },
+    deps: Partial<TriggerClientDeps> = {},
+): Promise<{ ok: boolean; relayed?: boolean; notFound?: boolean; error?: string }> {
+    const d: TriggerClientDeps = { ...defaultDeps, ...deps };
+    const baseUrl = d.getRelayHttpBaseUrl();
+    const apiKey = d.getApiKey();
+    if (!baseUrl || !apiKey) {
+        return { ok: false, error: "Not connected to relay — responding requires a relay (PIZZAPI_RELAY_URL + PIZZAPI_API_KEY)" };
+    }
+
+    try {
+        const url = `${baseUrl}/api/deliveries/${encodeURIComponent(deliveryId)}/response`;
+        const response = await d.fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+            body: JSON.stringify(body),
+        });
+        if (response.status === 404) return { ok: false, notFound: true, error: "Delivery not found" };
+        const data = (await response.json().catch(() => ({}))) as { ok?: boolean; relayed?: boolean; error?: string };
+        if (response.ok && data.ok) return { ok: true, relayed: data.relayed };
+        return { ok: false, error: data.error ?? `HTTP ${response.status}` };
+    } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
 }
 
 // ── Subscription helpers ──────────────────────────────────────────────────────
@@ -388,10 +351,11 @@ export async function getAvailableSigils(
 }
 
 /**
- * Subscribe a session to a trigger type.
- * The trigger type must be declared by a service on the session's runner.
+ * Subscribe a session to an event type (unified model: a Route targeting this
+ * session; ADR-0002). The runner learns of the route via reconcile snapshot/
+ * delta so services rebuild their in-memory state.
  *
- * @param params Optional subscription params — forwarded to the service (not used for filtering).
+ * @param params Optional service params — forwarded to the owning service (not used for routing).
  * @param filters Optional delivery filters — conditions on the output payload fields.
  * @param filterMode How filters combine: "and" (default) or "or".
  */
@@ -412,20 +376,26 @@ export async function subscribeTrigger(
     }
 
     try {
-        const url = `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions`;
+        const url = `${baseUrl}/api/routes`;
         const response = await d.fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json", "x-api-key": apiKey },
             body: JSON.stringify({
-                triggerType,
+                eventType: triggerType,
+                target: { kind: "session", sessionId },
+                // Subscription semantics: a schedule or service event must not
+                // interrupt an active turn unless it opts in — followUp default
+                // (matches the runner-broadcast contract).
+                deliverAs: "followUp",
+                origin: "agent",
                 ...(params && Object.keys(params).length > 0 ? { params } : {}),
                 ...(filters && filters.length > 0 ? { filters } : {}),
                 ...(filterMode ? { filterMode } : {}),
             }),
         });
-        const data = await response.json() as { ok?: boolean; subscriptionId?: string; triggerType?: string; runnerId?: string; params?: Record<string, unknown>; error?: string };
-        if (response.ok && data.ok) {
-            return { ok: true, subscriptionId: data.subscriptionId, triggerType: data.triggerType, runnerId: data.runnerId };
+        const data = (await response.json().catch(() => ({}))) as { ok?: boolean; route?: { routeId: string }; error?: string };
+        if (response.ok && data.ok && data.route) {
+            return { ok: true, subscriptionId: data.route.routeId, triggerType };
         }
         return { ok: false, error: data.error ?? `HTTP ${response.status}` };
     } catch (err) {
@@ -434,7 +404,9 @@ export async function subscribeTrigger(
 }
 
 /**
- * Update params/filters on an existing trigger subscription.
+ * Update params/filters on an existing subscription (Route).
+ * Targets by subscriptionId (the routeId) or by triggerType (bulk — updates
+ * every route of that type targeting the session).
  */
 export async function updateTriggerSubscription(
     sessionId: string,
@@ -458,51 +430,70 @@ export async function updateTriggerSubscription(
     }
 
     try {
-        const triggerType = target.triggerType ?? "";
-        const basePath = `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions`;
-        const url = target.subscriptionId
-            ? `${basePath}/${encodeURIComponent(triggerType || "_")}?subscriptionId=${encodeURIComponent(target.subscriptionId)}`
-            : `${basePath}/${encodeURIComponent(triggerType)}`;
-        const response = await d.fetch(url, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json", "x-api-key": apiKey },
-            body: JSON.stringify({
-                ...(updates.params && Object.keys(updates.params).length > 0 ? { params: updates.params } : {}),
-                ...(updates.filters && updates.filters.length > 0 ? { filters: updates.filters } : {}),
-                ...(updates.filterMode ? { filterMode: updates.filterMode } : {}),
-            }),
-        });
-        const data = await response.json() as { ok?: boolean; subscriptionId?: string; triggerType?: string; runnerId?: string; error?: string };
-        if (response.ok && data.ok) {
-            return { ok: true, subscriptionId: data.subscriptionId, triggerType: data.triggerType, runnerId: data.runnerId };
+        const routeIds = target.subscriptionId
+            ? [target.subscriptionId]
+            : (await listRoutesForSession(d, sessionId))
+                .filter((r) => r.eventType === target.triggerType)
+                .map((r) => r.routeId);
+        if (routeIds.length === 0) {
+            return { ok: false, error: `No route found for type ${target.triggerType ?? "?"}` };
         }
-        return { ok: false, error: data.error ?? `HTTP ${response.status}` };
+
+        let lastOk = false;
+        let lastId = target.subscriptionId;
+        for (const routeId of routeIds) {
+            const url = `${baseUrl}/api/routes/${encodeURIComponent(routeId)}`;
+            const response = await d.fetch(url, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+                body: JSON.stringify({
+                    ...(updates.params && Object.keys(updates.params).length > 0 ? { params: updates.params } : {}),
+                    ...(updates.filters && updates.filters.length > 0 ? { filters: updates.filters } : {}),
+                    ...(updates.filterMode ? { filterMode: updates.filterMode } : {}),
+                }),
+            });
+            const data = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+            lastOk = response.ok && !!data.ok;
+            lastId = routeId;
+            if (!lastOk) {
+                return { ok: false, error: data.error ?? `HTTP ${response.status}` };
+            }
+        }
+        return { ok: true, subscriptionId: lastId, triggerType: target.triggerType };
     } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
 }
 
+/** Session-target routes (subscriptions) for a session, via GET /api/routes. */
+async function listRoutesForSession(
+    d: TriggerClientDeps,
+    sessionId: string,
+): Promise<Array<{ routeId: string; eventType: string }>> {
+    const baseUrl = d.getRelayHttpBaseUrl()!;
+    const apiKey = d.getApiKey()!;
+    const response = await d.fetch(`${baseUrl}/api/routes`, {
+        headers: { "x-api-key": apiKey },
+    });
+    if (!response.ok) return [];
+    const data = (await response.json().catch(() => ({}))) as { routes?: Array<any> };
+    return (data.routes ?? [])
+        .filter((r) => r?.target?.kind === "session" && r.target.sessionId === sessionId)
+        .map((r) => ({ routeId: r.routeId as string, eventType: r.eventType as string }));
+}
+
 /**
- * List active trigger subscriptions for a session.
+ * List active trigger subscriptions (Routes) for a session.
  */
 export async function listTriggerSubscriptions(
     sessionId: string,
     deps: Partial<TriggerClientDeps> = {},
 ): Promise<TriggerSubscription[]> {
     const d: TriggerClientDeps = { ...defaultDeps, ...deps };
-    const baseUrl = d.getRelayHttpBaseUrl();
-    const apiKey = d.getApiKey();
-
-    if (!baseUrl || !apiKey) return [];
-
+    if (!d.getRelayHttpBaseUrl() || !d.getApiKey()) return [];
     try {
-        const url = `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions`;
-        const response = await d.fetch(url, {
-            headers: { "x-api-key": apiKey },
-        });
-        if (!response.ok) return [];
-        const data = await response.json() as { subscriptions?: TriggerSubscription[] };
-        return data.subscriptions ?? [];
+        const routes = await listRoutesForSession(d, sessionId);
+        return routes.map((r) => ({ subscriptionId: r.routeId, triggerType: r.eventType, runnerId: "" }));
     } catch (err) {
         log.info(`listTriggerSubscriptions failed: ${err instanceof Error ? err.message : String(err)}`);
         return [];
@@ -510,7 +501,8 @@ export async function listTriggerSubscriptions(
 }
 
 /**
- * Unsubscribe a session from a trigger type.
+ * Unsubscribe a session from an event type (deletes the Route).
+ * Targets by subscriptionId (the routeId) or by triggerType (bulk).
  */
 export async function unsubscribeTrigger(
     sessionId: string,
@@ -529,20 +521,31 @@ export async function unsubscribeTrigger(
     }
 
     try {
-        const triggerType = target.triggerType ?? "";
-        const basePath = `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions`;
-        const url = target.subscriptionId
-            ? `${basePath}/${encodeURIComponent(triggerType || "_")}?subscriptionId=${encodeURIComponent(target.subscriptionId)}`
-            : `${basePath}/${encodeURIComponent(triggerType)}`;
-        const response = await d.fetch(url, {
-            method: "DELETE",
-            headers: { "x-api-key": apiKey },
-        });
-        const data = await response.json() as { ok?: boolean; subscriptionId?: string; triggerType?: string; error?: string };
-        if (response.ok && data.ok) {
-            return { ok: true, subscriptionId: data.subscriptionId, triggerType: data.triggerType };
+        const routeIds = target.subscriptionId
+            ? [target.subscriptionId]
+            : (await listRoutesForSession(d, sessionId))
+                .filter((r) => r.eventType === target.triggerType)
+                .map((r) => r.routeId);
+        if (routeIds.length === 0) {
+            // Idempotent: nothing to unsubscribe is success (matches the
+            // legacy endpoint's semantics).
+            return { ok: true, triggerType: target.triggerType };
         }
-        return { ok: false, error: data.error ?? `HTTP ${response.status}` };
+
+        let lastId = target.subscriptionId;
+        for (const routeId of routeIds) {
+            const url = `${baseUrl}/api/routes/${encodeURIComponent(routeId)}`;
+            const response = await d.fetch(url, {
+                method: "DELETE",
+                headers: { "x-api-key": apiKey },
+            });
+            const data = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+            if (!response.ok || !data.ok) {
+                return { ok: false, error: data.error ?? `HTTP ${response.status}` };
+            }
+            lastId = routeId;
+        }
+        return { ok: true, subscriptionId: lastId, triggerType: target.triggerType };
     } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }

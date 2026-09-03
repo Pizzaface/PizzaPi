@@ -13,7 +13,7 @@ import {
   normalizeTriggerHistory,
   type SessionMetaForAttention,
 } from "@/attention";
-import type { TriggerHistoryEntry } from "@/components/TriggersPanel";
+import type { TriggerHistoryEntry } from "@/attention/trigger-utils";
 import type { TriggerCounts } from "@/hooks/useTriggerCount";
 
 export interface AttentionIngestionParams {

@@ -108,8 +108,9 @@ import {
 } from "./context.js";
 import { broadcastToHub } from "./hub.js";
 import { createLogger } from "@pizzapi/tools";
-import { clearSessionSubscriptions } from "../../sessions/trigger-subscription-store.js";
 import { pushTriggerHistory } from "../../sessions/trigger-store.js";
+import { deleteSessionRoutes } from "../../events/store.js";
+import { routeToSubscription } from "../../events/reconcile.js";
 
 export { markPendingRecovery, consumePendingRecovery, hasPendingRecovery, _resetPendingRecoveriesForTesting } from "./viewer-recovery.js";
 import { waitForTuiSocket, notifyTuiSocketConnected } from "./tui-socket-waiters.js";
@@ -146,6 +147,8 @@ export interface RegisterTuiSessionOpts {
     userName?: string;
     /** Parent session ID — set when registering a child session. */
     parentSessionId?: string | null;
+    /** CLI acks server→client session_trigger emissions (delivery guarantees). */
+    acksSessionTrigger?: boolean;
 }
 
 /**
@@ -429,6 +432,7 @@ async function registerTuiSessionUnlocked(
         // Fresh lifecycle generation on every (re)registration so a delayed
         // session-end from a prior socket can be matched and ignored.
         generation: randomUUID(),
+        acksSessionTrigger: opts.acksSessionTrigger === true,
     };
 
     await setSession(sessionId, sessionData);
@@ -1077,20 +1081,36 @@ async function endSharedSessionUnlocked(
         });
     }
 
-    // Clean up trigger subscriptions eagerly so reverse-index entries don't
-    // outlive the session (best-effort — failures are logged, not thrown).
-    // Skip on reconnect teardown: "Session reconnected" is called by
-    // registerTuiSession() during normal reconnects and the session
-    // immediately re-registers, so subscriptions must be preserved.
-    // Only clear on true termination paths (session ended, killed, expired).
+    // True termination removes non-durable session routes. Keep time:* routes:
+    // a standing schedule outlives its worker and can wake/resume it later.
+    // Reconnect teardown preserves everything because the same session is
+    // immediately registering again.
     if (reason !== "Session reconnected") {
-        // Schedules (time:*) are preserved: a standing schedule outlives the
-        // session that created it. When it next fires, the relay wakes that
-        // session (resume) or the time service starts a new one to run it.
-        // Everything else is cleaned up eagerly as before.
-        void clearSessionSubscriptions(sessionId, { preserveDurable: true }).catch((err) => {
-            log.warn("Failed to clear trigger subscriptions for session", sessionId, ":", err);
-        });
+        try {
+            const deletedRoutes = await deleteSessionRoutes(sessionId, { preserveDurable: true });
+            if (deletedRoutes.length > 0) {
+                // Dynamic import avoids runner.ts → sio-registry → sessions.ts
+                // initialization cycles. Reconcile is best-effort on teardown.
+                const { emitTriggerSubscriptionDelta } = await import("../namespaces/runner.js");
+                for (const route of deletedRoutes) {
+                    const subscription = routeToSubscription(route);
+                    if (!subscription) {
+                        log.warn(`endSharedSession: deleted route ${route.routeId} has no owning runner; cannot reconcile`);
+                        continue;
+                    }
+                    try {
+                        await emitTriggerSubscriptionDelta(subscription.runnerId, {
+                            action: "unsubscribe",
+                            subscription,
+                        });
+                    } catch (err) {
+                        log.warn(`endSharedSession: failed to reconcile deleted route ${route.routeId}:`, err);
+                    }
+                }
+            }
+        } catch (err) {
+            log.warn(`endSharedSession: failed to delete routes for ${sessionId}:`, err);
+        }
         // NOTE: Do NOT delete the relay event cache here. The cache is
         // needed for ended-session replay (viewers re-joining after agent_end).
         // The cache already has a TTL set via pExpire on every append, so it

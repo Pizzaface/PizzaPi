@@ -114,6 +114,8 @@ export function parseSessionFromHash(hash: Record<string, string>): RedisSession
         linkedParentId: hash.linkedParentId || null,
         metaState: hash.metaState || null,
         snapshotOverlay: hash.snapshotOverlay || null,
+        generation: hash.generation || null,
+        acksSessionTrigger: hash.acksSessionTrigger === "1",
     };
 }
 

@@ -1,10 +1,31 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRelayContext } from "./relay-context-factory.js";
 import { createTriggerWaitManager } from "../trigger-wait-manager.js";
 import { readSessionModelsCache, resetSessionModelsCacheMemo } from "../../session-models-cache.js";
+
+// Unified engine (ADR-0002): lifecycle triggers publish via the trigger-client
+// HTTP surface. Mock it so tests assert the publish mapping, not real HTTP.
+const publishEventMock = mock(async (_params: unknown): Promise<any> => ({
+    ok: true,
+    eventId: "evt-1",
+    deliveries: [{ deliveryId: "dlv-1", sessionId: "parent-1", status: "delivered" }],
+}));
+mock.module("../trigger-client.js", () => ({
+    publishEvent: publishEventMock,
+    respondToDelivery: async () => ({ ok: true, relayed: false }),
+    fireTrigger: async () => ({ ok: true, method: "http" }),
+    broadcastTrigger: async () => ({ ok: true }),
+    subscribeTrigger: async () => ({ ok: true }),
+    unsubscribeTrigger: async () => ({ ok: true }),
+    updateTriggerSubscription: async () => ({ ok: true }),
+    listTriggerSubscriptions: async () => [],
+    getAvailableTriggers: async () => [],
+    getAvailableSigils: async () => [],
+}));
+
+const { createRelayContext } = await import("./relay-context-factory.js");
 
 function createSocketMock() {
     const listeners = new Map<string, Array<(data?: any) => void>>();
@@ -72,14 +93,12 @@ describe("getConfiguredModels session snapshot", () => {
 });
 
 describe("createRelayContext child trigger delivery", () => {
-    test("emitTriggerWithAck emits a child ask_user_question trigger and waits for relay ack", async () => {
+    test("emitTriggerWithAck publishes a lifecycle:ask_question event with fireId correlation", async () => {
         const rctx = createRelayContext({}, createTriggerWaitManager(), { lastBroadcastSessionName: null });
-        const socket = createSocketMock();
         rctx.relay = { sessionId: "child-1", token: "relay-token", shareUrl: "", seq: 0, ackedSeq: 0 };
-        rctx.sioSocket = socket as any;
 
         const result = await rctx.emitTriggerWithAck({
-            type: "ask_user_question",
+            type: "lifecycle:ask_question",
             sourceSessionId: "child-1",
             sourceSessionName: "Child",
             targetSessionId: "parent-1",
@@ -91,19 +110,57 @@ describe("createRelayContext child trigger delivery", () => {
             ts: new Date().toISOString(),
         });
 
-        expect(result).toEqual({ ok: true });
-        expect(socket.emitted).toHaveLength(1);
-        expect(socket.emitted[0]).toMatchObject({
-            event: "session_trigger",
-            data: {
-                token: "relay-token",
-                trigger: {
-                    type: "ask_user_question",
-                    targetSessionId: "parent-1",
-                    triggerId: "trigger-1",
-                },
-            },
+        // The HTTP publish result IS the ack.
+        expect(result).toMatchObject({ ok: true });
+        expect(publishEventMock).toHaveBeenCalledTimes(1);
+        expect(publishEventMock.mock.calls[0][0]).toMatchObject({
+            type: "lifecycle:ask_question",
+            fireId: "trigger-1",
+            target: { sessionId: "parent-1", deliverAs: "followUp" },
+            source: { kind: "session", id: "child-1", name: "Child" },
+            responseContract: { escalate: true, ttlMs: 30 * 60 * 1000 },
+            payload: { question: "Continue?", options: ["Yes", "No"] },
         });
+    });
+
+    test("emitTriggerWithAck surfaces publish failures", async () => {
+        const rctx = createRelayContext({}, createTriggerWaitManager(), { lastBroadcastSessionName: null });
+        rctx.relay = { sessionId: "child-1", token: "relay-token", shareUrl: "", seq: 0, ackedSeq: 0 };
+        publishEventMock.mockImplementationOnce(async () => ({ ok: false, error: "relay unreachable" }));
+
+        const result = await rctx.emitTriggerWithAck({
+            type: "lifecycle:plan_review",
+            sourceSessionId: "child-1",
+            sourceSessionName: "Child",
+            targetSessionId: "parent-1",
+            payload: {},
+            deliverAs: "steer",
+            expectsResponse: true,
+            triggerId: "trigger-2",
+            ts: new Date().toISOString(),
+        });
+
+        expect(result).toEqual({ ok: false, error: "relay unreachable" });
+    });
+
+    test("emitTriggerWithAck fails fast with no relay configured", async () => {
+        publishEventMock.mockClear();
+        const rctx = createRelayContext({}, createTriggerWaitManager(), { lastBroadcastSessionName: null });
+        rctx.relay = null;
+
+        const result = await rctx.emitTriggerWithAck({
+            type: "lifecycle:plan_review",
+            sourceSessionId: "child-1",
+            targetSessionId: "parent-1",
+            payload: {},
+            deliverAs: "steer",
+            expectsResponse: true,
+            triggerId: "trigger-3",
+            ts: new Date().toISOString(),
+        });
+
+        expect(result).toEqual({ ok: false, error: "Not connected to relay" });
+        expect(publishEventMock).not.toHaveBeenCalled();
     });
 
     test("waitForTriggerResponse ignores unrelated session_message_error events", async () => {

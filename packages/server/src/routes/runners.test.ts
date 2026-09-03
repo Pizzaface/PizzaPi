@@ -35,17 +35,30 @@ mock.module("../ws/sio-registry.js", () => ({
 
 const mockGetRunnerServices = mock((_runnerId: string) => Promise.resolve(null as any));
 
-const mockAddRunnerTriggerListener = mock((_runnerId: string, _triggerType: string, _config: any) => Promise.resolve("listener-default"));
-const mockGetRunnerTriggerListener = mock((_runnerId: string, _target: string) => Promise.resolve(null as any));
-const mockRemoveRunnerTriggerListener = mock((_runnerId: string, _target: string) => Promise.resolve({ removed: 1, triggerType: _target }));
-const mockListRunnerTriggerListeners = mock((_runnerId: string) => Promise.resolve([] as any[]));
-const mockUpdateRunnerTriggerListener = mock((_runnerId: string, _target: string, _updates: any) => Promise.resolve({ updated: false }));
-mock.module("../sessions/runner-trigger-listener-store.js", () => ({
-    addRunnerTriggerListener: mockAddRunnerTriggerListener,
-    getRunnerTriggerListener: mockGetRunnerTriggerListener,
-    removeRunnerTriggerListener: mockRemoveRunnerTriggerListener,
-    listRunnerTriggerListeners: mockListRunnerTriggerListeners,
-    updateRunnerTriggerListener: mockUpdateRunnerTriggerListener,
+// In-memory routes store (listeners are spawn routes since Phase 6).
+const mockRoutes = new Map<string, any>();
+mock.module("../events/store.js", () => ({
+    createRoute: mock(async (input: any, opts?: { routeId?: string }) => {
+        const route = { ...input, routeId: opts?.routeId ?? `rt_${mockRoutes.size + 1}`, createdAt: new Date().toISOString() };
+        mockRoutes.set(route.routeId, route);
+        return route;
+    }),
+    listRoutes: mock(async () => [...mockRoutes.values()]),
+    getRoute: mock(async (id: string) => mockRoutes.get(id) ?? null),
+    updateRoute: mock(async (id: string, patch: any) => {
+        const existing = mockRoutes.get(id);
+        if (!existing) return null;
+        const updated = { ...existing, ...patch };
+        mockRoutes.set(id, updated);
+        return updated;
+    }),
+    deleteRoute: mock(async (id: string) => {
+        const route = mockRoutes.get(id);
+        // Faithful to the real store: config routes are read-only and deletion
+        // throws (guards the DELETE pre-validation path).
+        if (route?.origin === "config") throw new Error("Config-origin routes are read-only; edit the config file");
+        return mockRoutes.delete(id);
+    }),
 }));
 
 const mockGetSession = mock(() => Promise.resolve(null));
@@ -212,49 +225,71 @@ describe("runner analysis route", () => {
 });
 
 describe("runner trigger listener routes", () => {
+    const seedSpawnRoute = (routeId: string, eventType: string, spec: Record<string, unknown> = {}) => {
+        mockRoutes.set(routeId, {
+            routeId,
+            eventType,
+            target: { kind: "spawn", spec: { runnerId: "runner-A", ...spec } },
+            deliverAs: "followUp",
+            origin: "ui",
+            createdAt: new Date().toISOString(),
+        });
+    };
+
     beforeEach(() => {
+        mockRoutes.clear();
         mockRequireSession.mockReset();
         mockRequireSession.mockReturnValue(Promise.resolve({ userId: "user-1", userName: "TestUser" } as any));
         mockGetRunnerData.mockReset();
         mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
-        mockAddRunnerTriggerListener.mockReset();
-        mockAddRunnerTriggerListener.mockReturnValue(Promise.resolve("listener-default"));
         mockGetRunnerServices.mockReset();
         mockGetRunnerServices.mockReturnValue(Promise.resolve(null));
-        mockRemoveRunnerTriggerListener.mockReset();
-        mockRemoveRunnerTriggerListener.mockReturnValue(Promise.resolve({ removed: 1, triggerType: "svc:event" }));
-        mockGetRunnerTriggerListener.mockReset();
-        mockGetRunnerTriggerListener.mockReturnValue(Promise.resolve(null as any));
-        mockListRunnerTriggerListeners.mockReset();
-        mockListRunnerTriggerListeners.mockReturnValue(Promise.resolve([] as any[]));
-        mockUpdateRunnerTriggerListener.mockReset();
-        mockUpdateRunnerTriggerListener.mockReturnValue(Promise.resolve({ updated: false }));
-        mockGetLocalRunnerSocket.mockReset();
-        mockGetLocalTuiSocket.mockReset();
-        mockGetConnectedSessionsForRunner.mockReset();
-        mockGetConnectedSessionsForRunner.mockReturnValue(Promise.resolve([]));
         mockEmitTriggerSubscriptionDelta.mockReset();
         mockEmitTriggerSubscriptionDelta.mockReturnValue(Promise.resolve());
     });
 
-    test("GET returns all listeners with ids", async () => {
-        mockListRunnerTriggerListeners.mockReturnValue(Promise.resolve([
-            { listenerId: "listener-1", triggerType: "svc:event", prompt: "one" },
-            { listenerId: "listener-2", triggerType: "svc:event", prompt: "two" },
-        ]));
+    test("GET returns listeners mapped from spawn routes", async () => {
+        seedSpawnRoute("rt_1", "svc:event", { promptTemplate: "one" });
+        seedSpawnRoute("rt_2", "svc:event", { promptTemplate: "two" });
 
         const [req, url] = makeReq("GET", "/api/runners/runner-A/trigger-listeners");
         const res = await handleRunnersRoute(req, url);
         expect(res!.status).toBe(200);
         const body = await res!.json();
         expect(body.listeners).toHaveLength(2);
-        expect(body.listeners[0].listenerId).toBe("listener-1");
-        expect(body.listeners[1].listenerId).toBe("listener-2");
+        expect(body.listeners[0].listenerId).toBe("rt_1");
+        expect(body.listeners[0].triggerType).toBe("svc:event");
+        expect(body.listeners[0].prompt).toBe("one");
+        expect(body.listeners[1].listenerId).toBe("rt_2");
     });
 
-    test("POST returns listenerId and emits a runner subscription delta", async () => {
-        mockAddRunnerTriggerListener.mockReturnValue(Promise.resolve("listener-123"));
+    test("GET only lists spawn routes for this runner", async () => {
+        seedSpawnRoute("rt_1", "svc:event");
+        mockRoutes.set("rt_other", {
+            routeId: "rt_other",
+            eventType: "svc:event",
+            target: { kind: "spawn", spec: { runnerId: "runner-B" } },
+            deliverAs: "followUp",
+            origin: "ui",
+            createdAt: new Date().toISOString(),
+        });
+        mockRoutes.set("rt_sess", {
+            routeId: "rt_sess",
+            eventType: "svc:event",
+            target: { kind: "session", sessionId: "sess-1" },
+            deliverAs: "followUp",
+            origin: "ui",
+            createdAt: new Date().toISOString(),
+        });
 
+        const [req, url] = makeReq("GET", "/api/runners/runner-A/trigger-listeners");
+        const res = await handleRunnersRoute(req, url);
+        const body = await res!.json();
+        expect(body.listeners).toHaveLength(1);
+        expect(body.listeners[0].listenerId).toBe("rt_1");
+    });
+
+    test("POST creates a spawn route and returns its routeId as listenerId (no reconcile delta)", async () => {
         const [req, url] = makeReq("POST", "/api/runners/runner-A/trigger-listeners", {
             triggerType: "svc:event",
             prompt: "Investigate",
@@ -264,16 +299,15 @@ describe("runner trigger listener routes", () => {
         expect(res!.status).toBe(200);
         const body = await res!.json();
         expect(body.ok).toBe(true);
-        expect(body.listenerId).toBe("listener-123");
+        expect(body.listenerId).toMatch(/^rt_/);
         expect(body.triggerType).toBe("svc:event");
-        expect(mockEmitTriggerSubscriptionDelta).toHaveBeenCalledWith("runner-A", expect.objectContaining({
-            action: "subscribe",
-            subscription: expect.objectContaining({
-                subscriptionId: "listener-123",
-                triggerType: "svc:event",
-                params: { duration: "10m" },
-            }),
-        }));
+        const created = [...mockRoutes.values()][0];
+        expect(created.eventType).toBe("svc:event");
+        expect(created.target.kind).toBe("spawn");
+        expect(created.target.spec.promptTemplate).toBe("Investigate");
+        expect(created.target.spec.ownerUserId).toBe("user-1");
+        expect(created.params).toEqual({ duration: "10m" });
+        expect(mockEmitTriggerSubscriptionDelta).not.toHaveBeenCalled();
     });
 
     test("POST rejects a mode-scoped trigger when listener cwd is outside the mode", async () => {
@@ -292,7 +326,7 @@ describe("runner trigger listener routes", () => {
         expect(res!.status).toBe(422);
         const body = await res!.json();
         expect(body.error).toContain("scoped to session mode");
-        expect(mockAddRunnerTriggerListener).not.toHaveBeenCalled();
+        expect(mockRoutes.size).toBe(0);
     });
 
     test("POST allows a mode-scoped trigger when listener cwd is inside the mode", async () => {
@@ -301,7 +335,6 @@ describe("runner trigger listener routes", () => {
             triggerDefs: [{ type: "reporter:daily", label: "Daily", modes: ["work"] }],
             sessionModes: [{ id: "work", label: "Work", workspace: "/home/u/Workspace" }],
         }));
-        mockAddRunnerTriggerListener.mockReturnValue(Promise.resolve("listener-work"));
 
         const [req, url] = makeReq("POST", "/api/runners/runner-A/trigger-listeners", {
             triggerType: "reporter:daily",
@@ -310,7 +343,8 @@ describe("runner trigger listener routes", () => {
         });
         const res = await handleRunnersRoute(req, url);
         expect(res!.status).toBe(200);
-        expect((await res!.json()).listenerId).toBe("listener-work");
+        expect((await res!.json()).listenerId).toMatch(/^rt_/);
+        expect([...mockRoutes.values()][0].target.spec.cwd).toBe("/home/u/Workspace/reports");
     });
 
     test("PUT rejects moving a mode-scoped listener's cwd outside the mode", async () => {
@@ -319,67 +353,179 @@ describe("runner trigger listener routes", () => {
             triggerDefs: [{ type: "reporter:daily", label: "Daily", modes: ["work"] }],
             sessionModes: [{ id: "work", label: "Work", workspace: "/home/u/Workspace" }],
         }));
-        mockGetRunnerTriggerListener.mockReturnValue(Promise.resolve({ listenerId: "listener-123", triggerType: "reporter:daily" }));
+        seedSpawnRoute("rt_1", "reporter:daily", { cwd: "/home/u/Workspace/reports" });
 
-        const [req, url] = makeReq("PUT", "/api/runners/runner-A/trigger-listeners/listener-123", {
+        const [req, url] = makeReq("PUT", "/api/runners/runner-A/trigger-listeners/rt_1", {
             cwd: "/home/u/Projects/foo",
         });
         const res = await handleRunnersRoute(req, url);
         expect(res!.status).toBe(422);
-        expect(mockUpdateRunnerTriggerListener).not.toHaveBeenCalled();
-    });
-
-    test("POST returns 500 when listener creation fails", async () => {
-        mockAddRunnerTriggerListener.mockReturnValue(Promise.resolve(""));
-
-        const [req, url] = makeReq("POST", "/api/runners/runner-A/trigger-listeners", {
-            triggerType: "svc:event",
-            prompt: "Investigate",
-        });
-        const res = await handleRunnersRoute(req, url);
-        expect(res!.status).toBe(500);
-        const body = await res!.json();
-        expect(body.error).toBe("Failed to create trigger listener");
+        expect(mockRoutes.get("rt_1").target.spec.cwd).toBe("/home/u/Workspace/reports");
     });
 
     test("PUT updates one listener by id", async () => {
-        mockUpdateRunnerTriggerListener.mockReturnValue(Promise.resolve({ updated: true, listenerId: "listener-123", triggerType: "svc:event" }));
+        seedSpawnRoute("rt_1", "svc:event", { promptTemplate: "old" });
 
-        const [req, url] = makeReq("PUT", "/api/runners/runner-A/trigger-listeners/listener-123", {
+        const [req, url] = makeReq("PUT", "/api/runners/runner-A/trigger-listeners/rt_1", {
             prompt: "Updated prompt",
         });
         const res = await handleRunnersRoute(req, url);
         expect(res!.status).toBe(200);
         const body = await res!.json();
         expect(body.ok).toBe(true);
-        expect(body.listenerId).toBe("listener-123");
+        expect(body.listenerId).toBe("rt_1");
         expect(body.triggerType).toBe("svc:event");
-
+        expect(mockRoutes.get("rt_1").target.spec.promptTemplate).toBe("Updated prompt");
     });
 
-    test("DELETE removes one listener by id", async () => {
-        mockRemoveRunnerTriggerListener.mockReturnValue(Promise.resolve({ removed: 1, triggerType: "svc:event" }));
+    test("DELETE removes one listener by route id", async () => {
+        seedSpawnRoute("rt_1", "svc:event");
 
-        const [req, url] = makeReq("DELETE", "/api/runners/runner-A/trigger-listeners/listener-123");
+        const [req, url] = makeReq("DELETE", "/api/runners/runner-A/trigger-listeners/rt_1");
         const res = await handleRunnersRoute(req, url);
         expect(res!.status).toBe(200);
         const body = await res!.json();
         expect(body.ok).toBe(true);
-        expect(body.listenerId).toBe("listener-123");
+        expect(body.listenerId).toBe("rt_1");
         expect(body.triggerType).toBe("svc:event");
         expect(body.removed).toBe(1);
+        expect(mockRoutes.size).toBe(0);
     });
 
-    test("DELETE preserves legacy triggerType delete-all semantics", async () => {
-        mockRemoveRunnerTriggerListener.mockReturnValue(Promise.resolve({ removed: 2, triggerType: "svc:event" }));
+    test("DELETE by triggerType removes every spawn listener of that type", async () => {
+        seedSpawnRoute("rt_1", "svc:event");
+        seedSpawnRoute("rt_2", "svc:event");
+        seedSpawnRoute("rt_3", "other:thing");
 
         const [req, url] = makeReq("DELETE", "/api/runners/runner-A/trigger-listeners/svc:event");
         const res = await handleRunnersRoute(req, url);
         expect(res!.status).toBe(200);
         const body = await res!.json();
-        expect(body.ok).toBe(true);
         expect(body.triggerType).toBe("svc:event");
         expect(body.removed).toBe(2);
+        expect([...mockRoutes.keys()]).toEqual(["rt_3"]);
+    });
+
+    test("POST converts params to filters (legacy semantics) while keeping params", async () => {
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/trigger-listeners", {
+            triggerType: "github:pr_opened",
+            params: { repo: "org/repo", titleContains: "WIP" },
+        });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const created = [...mockRoutes.values()][0];
+        expect(created.params).toEqual({ repo: "org/repo", titleContains: "WIP" });
+        // Without route.filters the engine matches every payload of the type.
+        expect(created.filters).toEqual([
+            { field: "repo", value: "org/repo", op: "eq" },
+            { field: "title", value: "WIP", op: "contains" },
+        ]);
+    });
+
+    test("POST does not convert time:* params to filters (schedule config, not filters)", async () => {
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/trigger-listeners", {
+            triggerType: "time:cron",
+            params: { cron: "0 9 * * *" },
+        });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const created = [...mockRoutes.values()][0];
+        expect(created.params).toEqual({ cron: "0 9 * * *" });
+        expect(created.filters).toBeUndefined();
+    });
+
+    test("POST writes the prompt to route-level promptTemplate (delivery renders from there)", async () => {
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/trigger-listeners", {
+            triggerType: "svc:event",
+            prompt: "Investigate",
+        });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const created = [...mockRoutes.values()][0];
+        expect(created.promptTemplate).toBe("Investigate");
+        expect(created.target.spec.promptTemplate).toBe("Investigate"); // backward-compat read path
+    });
+
+    test("PUT keeps route.filters in lockstep with params", async () => {
+        seedSpawnRoute("rt_1", "github:pr_opened");
+
+        const [req, url] = makeReq("PUT", "/api/runners/runner-A/trigger-listeners/rt_1", {
+            params: { repo: "org/repo" },
+        });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const updated = mockRoutes.get("rt_1");
+        expect(updated.params).toEqual({ repo: "org/repo" });
+        expect(updated.filters).toEqual([{ field: "repo", value: "org/repo", op: "eq" }]);
+    });
+
+    test("PUT clears filters when the new params produce none", async () => {
+        mockRoutes.set("rt_1", {
+            routeId: "rt_1",
+            eventType: "github:pr_opened",
+            target: { kind: "spawn", spec: { runnerId: "runner-A" } },
+            deliverAs: "followUp",
+            origin: "ui",
+            params: { repo: "org/repo" },
+            filters: [{ field: "repo", value: "org/repo", op: "eq" }],
+            createdAt: new Date().toISOString(),
+        });
+
+        const [req, url] = makeReq("PUT", "/api/runners/runner-A/trigger-listeners/rt_1", {
+            params: {},
+        });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        expect(mockRoutes.get("rt_1").filters).toBeUndefined();
+    });
+
+    test("PUT writes the prompt to route-level promptTemplate", async () => {
+        seedSpawnRoute("rt_1", "svc:event", { promptTemplate: "old" });
+
+        const [req, url] = makeReq("PUT", "/api/runners/runner-A/trigger-listeners/rt_1", {
+            prompt: "Updated prompt",
+        });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const updated = mockRoutes.get("rt_1");
+        expect(updated.promptTemplate).toBe("Updated prompt");
+        expect(updated.target.spec.promptTemplate).toBe("Updated prompt");
+    });
+
+    test("DELETE by triggerType leaves webhook and config routes alone (candidates pre-validated before any delete)", async () => {
+        // Config routes make deleteRoute throw — seeded FIRST so an
+        // unvalidated delete loop would abort before reaching the listener.
+        mockRoutes.set("rt_cfg", {
+            routeId: "rt_cfg",
+            eventType: "svc:event",
+            target: { kind: "spawn", spec: { runnerId: "runner-A" } },
+            deliverAs: "followUp",
+            origin: "config",
+            createdAt: new Date().toISOString(),
+        });
+        seedSpawnRoute("rt_wh_wh-9", "svc:event");
+        seedSpawnRoute("rt_listener", "svc:event");
+
+        const [req, url] = makeReq("DELETE", "/api/runners/runner-A/trigger-listeners/svc:event");
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.removed).toBe(1);
+        expect(body.listenerId).toBe("rt_listener");
+        expect(mockRoutes.has("rt_wh_wh-9")).toBe(true);
+        expect(mockRoutes.has("rt_cfg")).toBe(true);
+        expect(mockRoutes.has("rt_listener")).toBe(false);
+    });
+
+    test("DELETE by route id removes nothing when the id is a webhook route", async () => {
+        seedSpawnRoute("rt_wh_wh-1", "webhook:thing");
+
+        const [req, url] = makeReq("DELETE", "/api/runners/runner-A/trigger-listeners/rt_wh_wh-1");
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.removed).toBe(0);
+        expect(mockRoutes.has("rt_wh_wh-1")).toBe(true);
     });
 });
 

@@ -24,7 +24,7 @@ function isTriggerMessage(text: string): boolean {
 
 function makeTrigger(overrides: Partial<ConversationTrigger> = {}): ConversationTrigger {
     return {
-        type: "ask_user_question",
+        type: "lifecycle:ask_question",
         sourceSessionId: "child-session-1",
         sourceSessionName: "worker-1",
         targetSessionId: "parent-session-1",
@@ -66,26 +66,26 @@ describe("trigger routing flow", () => {
 
     describe("received trigger tracking", () => {
         it("tracks a received trigger for response routing", () => {
-            trackReceivedTrigger("trigger-1", "child-1", "ask_user_question");
+            trackReceivedTrigger("trigger-1", "child-1", "lifecycle:ask_question");
             expect(receivedTriggers.has("trigger-1")).toBe(true);
             const entry = receivedTriggers.get("trigger-1")!;
             expect(entry.sourceSessionId).toBe("child-1");
-            expect(entry.type).toBe("ask_user_question");
+            expect(entry.type).toBe("lifecycle:ask_question");
             expect(entry.trackedAt).toBeGreaterThan(0);
         });
 
         it("preserves original source when same triggerId is re-tracked (escalation)", () => {
-            trackReceivedTrigger("trigger-1", "child-1", "ask_user_question");
+            trackReceivedTrigger("trigger-1", "child-1", "lifecycle:ask_question");
             // Escalation re-delivers the same triggerId with the parent's session ID
             // (server overwrites sourceSessionId). The original child source must be kept.
-            trackReceivedTrigger("trigger-1", "parent-1", "escalate");
+            trackReceivedTrigger("trigger-1", "parent-1", "lifecycle:escalation");
             const entry = receivedTriggers.get("trigger-1")!;
             expect(entry.sourceSessionId).toBe("child-1");
-            expect(entry.type).toBe("ask_user_question");
+            expect(entry.type).toBe("lifecycle:ask_question");
         });
 
         it("can delete a trigger after responding", () => {
-            trackReceivedTrigger("trigger-1", "child-1", "ask_user_question");
+            trackReceivedTrigger("trigger-1", "child-1", "lifecycle:ask_question");
             receivedTriggers.delete("trigger-1");
             expect(receivedTriggers.has("trigger-1")).toBe(false);
         });
@@ -94,11 +94,11 @@ describe("trigger routing flow", () => {
             // Manually insert an old entry (a parent that's taken a long time to respond)
             receivedTriggers.set("old-trigger", {
                 sourceSessionId: "old-child",
-                type: "ask_user_question",
+                type: "lifecycle:ask_question",
                 trackedAt: Date.now() - 60 * 60 * 1000, // 1 hour ago
             });
             // Tracking a new trigger must not evict the old, still-pending one.
-            trackReceivedTrigger("fresh-trigger", "new-child", "plan_review");
+            trackReceivedTrigger("fresh-trigger", "new-child", "lifecycle:plan_review");
             expect(receivedTriggers.has("old-trigger")).toBe(true);
             expect(receivedTriggers.has("fresh-trigger")).toBe(true);
         });
@@ -109,11 +109,11 @@ describe("trigger routing flow", () => {
             it(`${type} renderer produces non-empty output`, () => {
                 const trigger = makeTrigger({
                     type,
-                    payload: type === "ask_user_question" ? { question: "Q?", options: ["A"] }
-                        : type === "plan_review" ? { title: "Plan", steps: [{ title: "Step 1" }] }
-                        : type === "session_complete" ? { summary: "Done" }
-                        : type === "session_error" ? { message: "Error" }
-                        : type === "escalate" ? { reason: "Help" }
+                    payload: type === "lifecycle:ask_question" ? { question: "Q?", options: ["A"] }
+                        : type === "lifecycle:plan_review" ? { title: "Plan", steps: [{ title: "Step 1" }] }
+                        : type === "lifecycle:session_complete" ? { summary: "Done" }
+                        : type === "lifecycle:session_error" ? { message: "Error" }
+                        : type === "lifecycle:escalation" ? { reason: "Help" }
                         : {},
                 });
                 const rendered = renderer.render(trigger);
@@ -124,7 +124,7 @@ describe("trigger routing flow", () => {
 
     describe("response parsing", () => {
         it("session_complete: ack vs follow-up", () => {
-            const trigger = makeTrigger({ type: "session_complete" });
+            const trigger = makeTrigger({ type: "lifecycle:session_complete" });
             expect(parseTriggerResponse(trigger, "ok")).toEqual({ action: "ack" });
             expect(parseTriggerResponse(trigger, "Please fix tests")).toEqual({
                 action: "followUp",
@@ -133,7 +133,7 @@ describe("trigger routing flow", () => {
         });
 
         it("plan_review: approve vs cancel vs edit", () => {
-            const trigger = makeTrigger({ type: "plan_review" });
+            const trigger = makeTrigger({ type: "lifecycle:plan_review" });
             expect(parseTriggerResponse(trigger, "Begin")).toEqual({ action: "approve" });
             expect(parseTriggerResponse(trigger, "cancel")).toEqual({ action: "cancel" });
             expect(parseTriggerResponse(trigger, "Add more tests please")).toEqual({
@@ -168,8 +168,8 @@ describe("trigger routing flow", () => {
         });
 
         it("multiple triggers: contains all trigger IDs", () => {
-            const t1 = makeTrigger({ triggerId: "tid-1", sourceSessionId: "child-1", sourceSessionName: "worker-1", type: "session_complete", payload: { summary: "Done A" } });
-            const t2 = makeTrigger({ triggerId: "tid-2", sourceSessionId: "child-2", sourceSessionName: "worker-2", type: "session_complete", payload: { summary: "Done B" } });
+            const t1 = makeTrigger({ triggerId: "tid-1", sourceSessionId: "child-1", sourceSessionName: "worker-1", type: "lifecycle:session_complete", payload: { summary: "Done A" } });
+            const t2 = makeTrigger({ triggerId: "tid-2", sourceSessionId: "child-2", sourceSessionName: "worker-2", type: "lifecycle:session_complete", payload: { summary: "Done B" } });
             const rendered = renderTriggerBatch([t1, t2]);
             expect(rendered).toContain("tid-1");
             expect(rendered).toContain("tid-2");
@@ -179,24 +179,24 @@ describe("trigger routing flow", () => {
 
         it("multiple triggers: includes batch header", () => {
             const triggers = [
-                makeTrigger({ triggerId: "tid-1", type: "session_complete", payload: { summary: "A" } }),
-                makeTrigger({ triggerId: "tid-2", type: "session_complete", payload: { summary: "B" } }),
-                makeTrigger({ triggerId: "tid-3", type: "session_complete", payload: { summary: "C" } }),
+                makeTrigger({ triggerId: "tid-1", type: "lifecycle:session_complete", payload: { summary: "A" } }),
+                makeTrigger({ triggerId: "tid-2", type: "lifecycle:session_complete", payload: { summary: "B" } }),
+                makeTrigger({ triggerId: "tid-3", type: "lifecycle:session_complete", payload: { summary: "C" } }),
             ];
             const rendered = renderTriggerBatch(triggers);
             expect(rendered).toContain("3 child triggers");
         });
 
         it("multiple triggers: separated by ---", () => {
-            const t1 = makeTrigger({ triggerId: "tid-1", type: "session_complete", payload: { summary: "A" } });
-            const t2 = makeTrigger({ triggerId: "tid-2", type: "session_complete", payload: { summary: "B" } });
+            const t1 = makeTrigger({ triggerId: "tid-1", type: "lifecycle:session_complete", payload: { summary: "A" } });
+            const t2 = makeTrigger({ triggerId: "tid-2", type: "lifecycle:session_complete", payload: { summary: "B" } });
             const rendered = renderTriggerBatch([t1, t2]);
             expect(rendered).toContain("---");
         });
 
         it("each batched trigger still has its metadata comment for respond_to_trigger", () => {
-            const t1 = makeTrigger({ triggerId: "trigger-alpha", sourceSessionId: "child-alpha", type: "session_complete", payload: { summary: "Done" } });
-            const t2 = makeTrigger({ triggerId: "trigger-beta", sourceSessionId: "child-beta", type: "session_complete", payload: { summary: "Done" } });
+            const t1 = makeTrigger({ triggerId: "trigger-alpha", sourceSessionId: "child-alpha", type: "lifecycle:session_complete", payload: { summary: "Done" } });
+            const t2 = makeTrigger({ triggerId: "trigger-beta", sourceSessionId: "child-beta", type: "lifecycle:session_complete", payload: { summary: "Done" } });
             const rendered = renderTriggerBatch([t1, t2]);
             // Each individual trigger must have its trigger comment so respond_to_trigger IDs are present
             expect(rendered).toContain("<!-- trigger:trigger-alpha");

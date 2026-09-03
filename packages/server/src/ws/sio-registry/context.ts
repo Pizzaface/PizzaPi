@@ -410,6 +410,41 @@ export async function emitToRelaySessionAwaitingAck(
 }
 
 /**
+ * Emit an event to a relay session room with a Socket.IO ack callback, WITHOUT
+ * blocking the caller on the ack: the ack (or Socket.IO's timeout) later invokes
+ * `onSettled(acked)`. Returns true when a recipient was present (or presence
+ * was unknown but delivery was attempted). Used by the trigger transport's
+ * delivery-receipt flow — the engine hands off and the ack settles the row.
+ */
+export async function emitToRelaySessionAcked(
+    sessionId: string,
+    eventName: string,
+    data: unknown,
+    onSettled: (acked: boolean) => void,
+    timeoutMs: number = 10_000,
+): Promise<boolean> {
+    if (!io) return false;
+    const room = relaySessionRoom(sessionId);
+    try {
+        const presence = await countSocketsInRoomCluster(io.of("/relay"), room);
+        if (presence.kind === "count" && presence.count === 0) return false;
+
+        // Unknown presence must still attempt delivery (see emitToRelaySessionChecked).
+        // Cast needed: Socket.IO's typed namespace doesn't expose the
+        // .timeout().emit() ack pattern in its TypeScript interface.
+        const relayNs = io.of("/relay") as any;
+        relayNs.to(room).timeout(timeoutMs).emit(eventName, data, (err: unknown, ackResponses: unknown[] = []) => {
+            onSettled(!err && ackResponses.length > 0);
+        });
+        return true;
+    } catch (err) {
+        log.warn("emitToRelaySessionAcked failed:", (err as Error)?.message);
+        onSettled(false);
+        return true;
+    }
+}
+
+/**
  * Broadcast an event to all viewers of a specific session.
  * Used to forward runner service messages to session watchers.
  */

@@ -57,9 +57,9 @@ describe("clearAndCancelPendingTriggers", () => {
     });
 
     it("clears all pending triggers", () => {
-        trackReceivedTrigger("t1", "child-1", "ask_user_question");
-        trackReceivedTrigger("t2", "child-2", "plan_review");
-        trackReceivedTrigger("t3", "child-3", "session_complete");
+        trackReceivedTrigger("t1", "child-1", "lifecycle:ask_question");
+        trackReceivedTrigger("t2", "child-2", "lifecycle:plan_review");
+        trackReceivedTrigger("t3", "child-3", "lifecycle:session_complete");
 
         expect(receivedTriggers.size).toBe(3);
 
@@ -75,8 +75,8 @@ describe("clearAndCancelPendingTriggers", () => {
     });
 
     it("sends cancel trigger_response to each child", () => {
-        trackReceivedTrigger("t1", "child-1", "ask_user_question");
-        trackReceivedTrigger("t2", "child-2", "plan_review");
+        trackReceivedTrigger("t1", "child-1", "lifecycle:ask_question");
+        trackReceivedTrigger("t2", "child-2", "lifecycle:plan_review");
 
         clearAndCancelPendingTriggers();
 
@@ -100,8 +100,8 @@ describe("clearAndCancelPendingTriggers", () => {
     });
 
     it("attaches an ack callback to each emitted trigger_response", () => {
-        trackReceivedTrigger("t1", "child-1", "ask_user_question");
-        trackReceivedTrigger("t2", "child-2", "plan_review");
+        trackReceivedTrigger("t1", "child-1", "lifecycle:ask_question");
+        trackReceivedTrigger("t2", "child-2", "lifecycle:plan_review");
 
         clearAndCancelPendingTriggers();
 
@@ -112,8 +112,8 @@ describe("clearAndCancelPendingTriggers", () => {
     });
 
     it("calls onConfirmed when server acks with ok:true", () => {
-        trackReceivedTrigger("t1", "child-1", "ask_user_question");
-        trackReceivedTrigger("t2", "child-2", "plan_review");
+        trackReceivedTrigger("t1", "child-1", "lifecycle:ask_question");
+        trackReceivedTrigger("t2", "child-2", "lifecycle:plan_review");
 
         const confirmed: Array<{ triggerId: string; childSessionId: string }> = [];
         clearAndCancelPendingTriggers((triggerId, childSessionId) => {
@@ -133,7 +133,7 @@ describe("clearAndCancelPendingTriggers", () => {
     });
 
     it("does NOT call onConfirmed when server acks with ok:false", () => {
-        trackReceivedTrigger("t1", "child-1", "ask_user_question");
+        trackReceivedTrigger("t1", "child-1", "lifecycle:ask_question");
 
         const confirmed: Array<{ triggerId: string; childSessionId: string }> = [];
         clearAndCancelPendingTriggers((triggerId, childSessionId) => {
@@ -150,7 +150,7 @@ describe("clearAndCancelPendingTriggers", () => {
     });
 
     it("does NOT call onConfirmed when no ack fires (socket dropped)", () => {
-        trackReceivedTrigger("t1", "child-1", "ask_user_question");
+        trackReceivedTrigger("t1", "child-1", "lifecycle:ask_question");
 
         const confirmed: Array<{ triggerId: string; childSessionId: string }> = [];
         clearAndCancelPendingTriggers((triggerId, childSessionId) => {
@@ -172,8 +172,8 @@ describe("clearAndCancelPendingTriggers", () => {
     it("works gracefully when relay is not connected", () => {
         mockSocket = null; // simulate disconnected relay
 
-        trackReceivedTrigger("t1", "child-1", "ask_user_question");
-        trackReceivedTrigger("t2", "child-2", "session_complete");
+        trackReceivedTrigger("t1", "child-1", "lifecycle:ask_question");
+        trackReceivedTrigger("t2", "child-2", "lifecycle:session_complete");
 
         // Should not throw, should still clear triggers
         const result = clearAndCancelPendingTriggers();
@@ -185,8 +185,8 @@ describe("clearAndCancelPendingTriggers", () => {
     });
 
     it("includes the correct triggerId in each cancel response", () => {
-        trackReceivedTrigger("trigger-abc", "child-1", "ask_user_question");
-        trackReceivedTrigger("trigger-xyz", "child-2", "plan_review");
+        trackReceivedTrigger("trigger-abc", "child-1", "lifecycle:ask_question");
+        trackReceivedTrigger("trigger-xyz", "child-2", "lifecycle:plan_review");
 
         clearAndCancelPendingTriggers();
 

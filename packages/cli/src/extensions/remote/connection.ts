@@ -22,7 +22,7 @@ import { cancelPendingApproval, consumePendingApprovalFromWeb } from "../remote-
 import { normalizeRemoteInputAttachments, buildUserMessageFromRemoteInput } from "../remote-input.js";
 import { handleExecFromWeb } from "../remote-exec-handler.js";
 import { renderTrigger, renderTriggerBatch } from "../triggers/registry.js";
-import { trackReceivedTrigger, receivedTriggers, sendTriggerResponseWithAck, markTriggerHandled, markTriggerDelivered, markTriggerInjectionFailed, partitionTriggerBatchByDeliveryMode } from "../triggers/extension.js";
+import { trackReceivedTrigger, receivedTriggers, sendTriggerResponseWithAck, markTriggerHandled, markTriggerDelivered, markTriggerInjectionFailed, partitionTriggerBatchByDeliveryMode, finalizeSessionCompleteResponse, isSessionCompleteType } from "../triggers/extension.js";
 import type { ConversationTrigger } from "../triggers/types.js";
 import type { RelayContext } from "../remote-types.js";
 import { emitSessionActive } from "./chunked-delivery.js";
@@ -121,6 +121,72 @@ export interface ConnectionHandlers {
     onSocketTeardown: () => void;
     /** Compute parentSessionId for register (accounts for pendingDelinkOwnParent). */
     getParentSessionIdForRegister: () => string | null | undefined;
+}
+
+export function handleTriggerResponse(
+    rctx: RelayContext,
+    data: { triggerId: string; response: string; action?: string; targetSessionId?: string },
+    deps: {
+        finalizeSessionComplete?: typeof finalizeSessionCompleteResponse;
+    } = {},
+): void {
+    if (!data?.triggerId) return;
+    const pending = receivedTriggers.get(data.triggerId);
+    const socket = rctx.sioSocket;
+    if (!pending || !rctx.relay || !socket?.connected) return;
+
+    if (isSessionCompleteType(pending.type)) {
+        const action = data.action ?? "ack";
+        const finalize = deps.finalizeSessionComplete ?? finalizeSessionCompleteResponse;
+        if (action === "followUp") {
+            const childId = pending.sourceSessionId;
+            void sendSessionCompleteFollowUp({
+                socket,
+                token: rctx.relay.token,
+                childSessionId: childId,
+                message: data.response,
+            }).then((result) => {
+                if (result.ok) {
+                    void finalize({
+                        triggerId: data.triggerId,
+                        response: data.response,
+                        action,
+                    });
+                }
+            });
+        } else {
+            socket.emit("cleanup_child_session", {
+                token: rctx.relay.token,
+                childSessionId: pending.sourceSessionId,
+            }, (result: { ok: boolean; error?: string }) => {
+                if (result?.ok) {
+                    void finalize({
+                        triggerId: data.triggerId,
+                        response: data.response,
+                        action,
+                    });
+                }
+            });
+        }
+        return;
+    }
+
+    void sendTriggerResponseWithAck({ socket, token: rctx.relay.token }, {
+        triggerId: data.triggerId,
+        response: data.response,
+        action: data.action,
+        targetSessionId: pending.sourceSessionId,
+    }).then((result) => {
+        if (result.ok) {
+            markTriggerHandled(data.triggerId);
+            return;
+        }
+        log.info(`pizzapi: failed to deliver trigger response ${data.triggerId}: ${result.error ?? "unknown error"}`);
+        rctx.latestCtx?.ui.notify(
+            `⚠ Failed to deliver trigger response ${data.triggerId}: ${result.error ?? "unknown error"}\n` +
+            "The linked parent/child relationship may be broken or stale. The trigger has been kept so it can be retried or escalated.",
+        );
+    });
 }
 
 // ── URL helpers ───────────────────────────────────────────────────────────────
@@ -324,6 +390,10 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
             sessionName: rctx.getCurrentSessionName() ?? undefined,
             ...(process.env.PIZZAPI_SESSION_FILE ? { sessionFile: process.env.PIZZAPI_SESSION_FILE } : {}),
             ...(parentSessionIdForRegister === undefined ? {} : { parentSessionId: parentSessionIdForRegister }),
+            // Delivery guarantees: this CLI acks server→client session_trigger
+            // emissions once it has durably accepted them (tracked/batched),
+            // so the server can confirm receipt instead of assuming handoff.
+            acksSessionTrigger: true,
         });
     });
 
@@ -533,9 +603,16 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         });
     });
 
-    sock.on("session_trigger" as any, (data: { trigger: ConversationTrigger }) => {
+    sock.on("session_trigger" as any, (data: { trigger: ConversationTrigger }, ack?: (result: { ok: boolean }) => void) => {
         const trigger = data?.trigger;
         if (!trigger) return;
+        // Receipt ack (delivery guarantees): from here on the trigger is
+        // durably accepted — consumed by a pending prompt, tracked for
+        // response routing, deduped as already-accepted, or deliberately
+        // discarded (stale child). Ack immediately so the server can mark the
+        // delivery received; a crash after this is bounded by the CLI's own
+        // durability, not the wire.
+        ack?.({ ok: true });
         // Drop triggers from known pre-/new children.
         if (handlers.isStaleChild(trigger.sourceSessionId)) {
             log.info(`dropping stale session_trigger (${trigger.type}) from ${trigger.sourceSessionId} — sender is a pre-/new child`);
@@ -598,53 +675,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
     });
 
     sock.on("trigger_response" as any, (data: { triggerId: string; response: string; action?: string; targetSessionId?: string }) => {
-        if (!data?.triggerId) return;
-        const pending = receivedTriggers.get(data.triggerId);
-        if (!pending || !rctx.relay || !rctx.sioSocket?.connected) return;
-
-        if (pending.type === "session_complete") {
-            const action = data.action ?? "ack";
-            if (action === "followUp") {
-                const childId = pending.sourceSessionId;
-                void sendSessionCompleteFollowUp({
-                    socket: rctx.sioSocket,
-                    token: rctx.relay.token,
-                    childSessionId: childId,
-                    message: data.response,
-                }).then((result) => {
-                    if (result.ok) {
-                        markTriggerHandled(data.triggerId);
-                    }
-                });
-            } else {
-                rctx.sioSocket.emit("cleanup_child_session", {
-                    token: rctx.relay.token,
-                    childSessionId: pending.sourceSessionId,
-                }, (result: { ok: boolean; error?: string }) => {
-                    if (result?.ok) {
-                        markTriggerHandled(data.triggerId);
-                    }
-                });
-            }
-            return;
-        }
-
-        void sendTriggerResponseWithAck({ socket: rctx.sioSocket, token: rctx.relay.token }, {
-            triggerId: data.triggerId,
-            response: data.response,
-            action: data.action,
-            targetSessionId: pending.sourceSessionId,
-        }).then((result) => {
-            if (result.ok) {
-                markTriggerHandled(data.triggerId);
-                return;
-            }
-            log.info(`pizzapi: failed to deliver trigger response ${data.triggerId}: ${result.error ?? "unknown error"}`);
-            rctx.latestCtx?.ui.notify(
-                `⚠ Failed to deliver trigger response ${data.triggerId}: ${result.error ?? "unknown error"}\n` +
-                "The linked parent/child relationship may be broken or stale. The trigger has been kept so it can be retried or escalated.",
-            );
-        });
+        handleTriggerResponse(rctx, data);
     });
 
     sock.on("session_expired", (_data: any) => {
@@ -679,8 +710,12 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
     });
 
     sock.on("disconnect", (_reason) => {
-        // Discard any pending batched triggers — don't deliver them after disconnect.
+        // Discard any pending batched triggers — don't deliver them after
+        // disconnect. Also untrack them so a server re-delivery (the ack
+        // settle returned the row to pending) is accepted instead of deduped
+        // as already-seen — otherwise the trigger would be permanently lost.
         if (triggerBatchTimer !== null) { clearTimeout(triggerBatchTimer); triggerBatchTimer = null; }
+        for (const item of pendingTriggerBatch) markTriggerInjectionFailed(item.trigger.triggerId);
         pendingTriggerBatch = [];
         handlers.onDelinkDisconnect();
         rctx.relay = null;

@@ -27,6 +27,7 @@ import { handlePackagesRoute } from "./packages.js";
 import { handleMcpOAuthRoute } from "./mcp-oauth.js";
 import { handleTunnelRoute } from "./tunnel.js";
 import { handleTriggersRoute } from "./triggers.js";
+import { handleEventsRoute } from "./events.js";
 import { handleWebhooksRoute } from "./webhooks.js";
 import type { RouteHandler } from "./types.js";
 
@@ -46,6 +47,7 @@ const routers: RouteHandler[] = [
     handleRunnerSettingsRoute,
     handlePackagesRoute,
     handleSessionsRoute,
+    handleEventsRoute,      // Unified trigger system (ADR-0002) — /api/events, /api/routes
     handleTriggersRoute,    // Before attachments — /api/sessions/:id/trigger
     handleWebhooksRoute,    // Webhook CRUD + fire endpoint
     handleAttachmentsRoute,

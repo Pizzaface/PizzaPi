@@ -34,3 +34,11 @@ packages/cli/src/config/claude-code-provider.precompiled.ts
 
 # Published self-hosted mobile OTA bundles (generated)
 mobile-ota/
+
+# Stray SQLite databases from test/sandbox runs (harness uses temp dirs; a bad
+# AUTH_DB_PATH or a positional arg can drop one in the repo)
+test.db
+test.db-shm
+test.db-wal
+*.db-shm
+*.db-wal

@@ -10,6 +10,19 @@ import { afterAll, describe, it, expect, beforeEach, mock } from "bun:test";
 const endedSessions: Array<{ sessionId: string; reason?: string; opts?: unknown }> = [];
 let sharedOwnerToken = "tok";
 
+// Unified event engine — the register-drain hook is incidental to this test.
+mock.module("../../../events/engine.js", () => ({
+    drainPendingDeliveries: async () => 0,
+    drainPendingResponseRelays: async () => 0,
+    publishEvent: async () => ({ event: null, created: false, deliveries: [], spawnedSessions: [] }),
+    sweepExpiredContracts: async () => 0,
+}));
+mock.module("../../../events/transport.js", () => ({
+    createEngineDeps: () => ({} as never),
+    emitTriggerResponse: async () => false,
+    wakeOfflineSession: async () => false,
+}));
+
 mock.module("../../sio-registry.js", () => ({
     registerTuiSession: async () => ({ sessionId: "s", token: "t", shareUrl: "", parentSessionId: null, wasDelinked: false }),
     getLocalTuiSocket: () => undefined,
@@ -26,6 +39,14 @@ mock.module("../../sio-registry.js", () => ({
     // A2-017: cross-node owner token guard — return matching token so
     // the existing disconnect tests are not blocked by the stale-socket guard.
     getSessionOwnerToken: async () => sharedOwnerToken,
+    getSharedSession: async () => null,
+    emitToRunner: () => {},
+    getLocalRunnerSocket: () => null,
+    waitForLocalTuiSocket: async () => false,
+    emitToRelaySessionVerified: async () => false,
+    linkSessionToRunner: async () => {},
+    recordRunnerSession: async () => {},
+    broadcastToSessionViewers: () => {},
 }));
 
 mock.module("../../sio-state/index.js", () => ({

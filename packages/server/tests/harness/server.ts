@@ -18,6 +18,7 @@ import { createAdapter } from "@socket.io/redis-adapter";
 import type { RedisClientType } from "redis";
 
 import { createTestAuthContext, runWithAuthContext } from "../../src/auth.js";
+import { startTriggerMaintenance } from "../../src/trigger-maintenance.js";
 import { runAllMigrations } from "../../src/migrations.js";
 import { handleFetch } from "../../src/handler.js";
 import { ensureBetterAuthCoreTables } from "./ensure-auth-tables.js";
@@ -253,6 +254,14 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
 
     // 10. Register all namespaces
     registerNamespaces(io, authContext);
+
+    // Trigger-system maintenance loops (ADR-0002): the sandbox must run the
+    // same sweeps as production so contract expiry / inflight backstop /
+    // dead-runner cleanup are testable end-to-end. Shortened intervals.
+    const stopTriggerMaintenance = startTriggerMaintenance(authContext, {
+        contractSweepMs: 2_000,
+        retentionSweepMs: 5 * 60_000,
+    });
     serverHealth.socketio = true;
 
     // 10b. Init tunnel relay so mock runners can connect via /_tunnel WS
@@ -386,6 +395,9 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
     // ── Cleanup ──────────────────────────────────────────────────────────────
 
     async function cleanup(): Promise<void> {
+        // Stop the trigger maintenance loops first so a sweep can't race teardown.
+        for (const stop of stopTriggerMaintenance) stop();
+
         // Clear the active-server guard so a new server can be created.
         _activeServer = false;
 
@@ -436,6 +448,7 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
         addTrustedOrigin,
         fetch: testFetch,
         cleanup,
+        stopTriggerMaintenance,
     };
 
     } catch (err) {

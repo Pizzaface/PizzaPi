@@ -24,6 +24,19 @@ let getSessionOwnerTokenForTest = async (_sessionId: string) => {
     return redisOwnerToken;
 };
 
+// Unified event engine — the register-drain hook is incidental to this test.
+mock.module("../../../events/engine.js", () => ({
+    drainPendingDeliveries: async () => 0,
+    drainPendingResponseRelays: async () => 0,
+    publishEvent: async () => ({ event: null, created: false, deliveries: [], spawnedSessions: [] }),
+    sweepExpiredContracts: async () => 0,
+}));
+mock.module("../../../events/transport.js", () => ({
+    createEngineDeps: () => ({} as never),
+    emitTriggerResponse: async () => false,
+    wakeOfflineSession: async () => false,
+}));
+
 mock.module("../../sio-registry.js", () => ({
     registerTuiSession: async (_socket: unknown, _cwd: string, opts: { sessionId?: string }) => ({
         sessionId: opts.sessionId ?? "sess-1",
@@ -55,6 +68,14 @@ mock.module("../../sio-registry.js", () => ({
     // After the A2-017 expo fix, getSessionOwnerToken catches Redis errors and
     // returns null (fail-open).  Simulate that: return null when shouldThrow.
     getSessionOwnerToken: (sessionId: string) => getSessionOwnerTokenForTest(sessionId),
+    getSharedSession: async () => null,
+    emitToRunner: () => {},
+    getLocalRunnerSocket: () => null,
+    waitForLocalTuiSocket: async () => false,
+    emitToRelaySessionVerified: async () => false,
+    linkSessionToRunner: async () => {},
+    recordRunnerSession: async () => {},
+    broadcastToSessionViewers: () => {},
 }));
 
 mock.module("../../sio-state/index.js", () => ({

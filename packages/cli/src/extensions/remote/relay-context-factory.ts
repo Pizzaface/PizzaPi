@@ -9,6 +9,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { createLogger } from "@pizzapi/tools";
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "../../config.js";
 import { normalizeLoopbackHost } from "../../relay-url.js";
@@ -24,13 +25,49 @@ import type { ConversationTrigger } from "../triggers/types.js";
 import { isCancelTriggerAction } from "../remote-trigger-response.js";
 import type { TriggerWaitManager } from "../trigger-wait-manager.js";
 import { emitSessionActive } from "./chunked-delivery.js";
-import { emitSessionTriggerWithAck } from "./session-complete-delivery.js";
+import { publishEvent } from "../trigger-client.js";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { fetchOllamaCloudModels, getCachedOllamaCloudModels, toOllamaCloudRuntimeModel } from "../../ollama-cloud-models.js";
 import { writeSessionModelsCache } from "../../session-models-cache.js";
 
+const log = createLogger("relay-context");
+
 const RELAY_DEFAULT = "ws://localhost:7492";
 const RELAY_STATUS_KEY = "relay";
+
+/** How long a contract-bearing lifecycle event may sit unanswered before the
+ * server escalates it up the chain (parent → human push). */
+const LIFECYCLE_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Publish a lifecycle trigger as a unified Event (ADR-0002). The trigger's own
+ * id becomes the fireId, so the server's response relay echoes it back and the
+ * publisher's waitForTriggerResponse waiter resolves unchanged.
+ */
+async function publishLifecycleEvent(
+    rctx: Pick<RelayContext, "relay" | "relaySessionId">,
+    trigger: ConversationTrigger,
+): Promise<{ ok: boolean; error?: string; status?: number }> {
+    if (!rctx.relay) return { ok: false, error: "Not connected to relay" };
+    const result = await publishEvent({
+        type: trigger.type,
+        payload: trigger.payload,
+        ...(trigger.sourceSessionName ? { summary: trigger.sourceSessionName } : {}),
+        fireId: trigger.triggerId,
+        ...(trigger.expectsResponse
+            ? { responseContract: { escalate: true, ttlMs: LIFECYCLE_TTL_MS } }
+            : {}),
+        target: { sessionId: trigger.targetSessionId, deliverAs: trigger.deliverAs },
+        source: {
+            kind: "session" as const,
+            id: trigger.sourceSessionId,
+            ...(trigger.sourceSessionName ? { name: trigger.sourceSessionName } : {}),
+        },
+    });
+    return result.ok
+        ? result
+        : { ok: false, error: result.error ?? "Publish failed", status: result.status };
+}
 
 /** Subset of shared factory state that relay-context-factory needs to mutate. */
 export interface RelayContextFactoryState {
@@ -292,23 +329,18 @@ export function createRelayContext(
         },
 
         emitTrigger(trigger: ConversationTrigger) {
-            if (!rctx.relay || !rctx.sioSocket?.connected) return;
-            rctx.sioSocket.emit("session_trigger" as any, {
-                token: rctx.relay.token,
-                trigger,
+            // Unified model (ADR-0002): lifecycle triggers are Events published
+            // through the engine (POST /api/events); routing + response relay
+            // are server-side. Fire-and-forget.
+            void publishLifecycleEvent(rctx, trigger).then((result) => {
+                if (!result.ok) {
+                    log.warn(`publish of ${trigger.type} trigger ${trigger.triggerId} failed: ${result.error ?? "unknown error"}`);
+                }
             });
         },
 
         emitTriggerWithAck(trigger: ConversationTrigger) {
-            if (!rctx.relay || !rctx.sioSocket?.connected) {
-                return Promise.resolve({ ok: false, error: "Not connected to relay" });
-            }
-            return emitSessionTriggerWithAck({
-                socket: rctx.sioSocket,
-                token: rctx.relay.token,
-                trigger,
-                assumeSuccessOnAckTimeout: !rctx.supportsSessionTriggerAck,
-            });
+            return publishLifecycleEvent(rctx, trigger);
         },
 
         waitForTriggerResponse(
@@ -317,6 +349,11 @@ export function createRelayContext(
             signal?: AbortSignal,
         ): Promise<TriggerResponse> {
             return new Promise<TriggerResponse>((resolve) => {
+                if (signal?.aborted) {
+                    resolve({ response: "Aborted", cancelled: true });
+                    return;
+                }
+
                 let settled = false;
                 let unregisterWait = () => {};
 
@@ -376,6 +413,7 @@ export function createRelayContext(
                 rctx.sioSocket!.on("trigger_response" as any, handler);
                 rctx.sioSocket!.on("session_message_error" as any, errorHandler);
                 signal?.addEventListener("abort", abortHandler);
+                if (signal?.aborted) abortHandler();
             });
         },
     };

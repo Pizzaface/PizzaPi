@@ -20,6 +20,8 @@ import { forgetViewerGate } from "./viewer-gate.js";
 import { pendingChunkedStates, enqueueSessionEvent } from "./event-pipeline.js";
 import type { RelaySocket } from "./types.js";
 import { getUserPreference, PREF_SUBAGENT_MODEL } from "../../../user-preferences.js";
+import { drainPendingDeliveries, drainPendingResponseRelays } from "../../../events/engine.js";
+import { createEngineDeps } from "../../../events/transport.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("sio/relay");
@@ -41,6 +43,10 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             userId: socket.data.userId,
             userName: (socket.data as RelaySocketData & { userName?: string }).userName,
             parentSessionId: data.parentSessionId ?? undefined,
+            // Delivery guarantees: the CLI generation that acks session_trigger
+            // emissions declares itself here; the trigger transport reads this
+            // to wait for receipt confirmation instead of handoff-optimism.
+            acksSessionTrigger: data.acksSessionTrigger === true,
         });
 
         socket.data.sessionId = sessionId;
@@ -76,6 +82,19 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
                 })
                 .catch(() => {});
         }
+
+        // Unified event engine (ADR-0002): deliver Events that queued while
+        // this session was offline (or during a wake). FIFO by event time.
+        void drainPendingDeliveries(sessionId, createEngineDeps()).catch((err) => {
+            // Never block registration on the drain; failures retry next time.
+            // ponytail: surface via log only — the pending rows survive.
+            log.error(`pending-delivery drain failed for ${sessionId}:`, err);
+        });
+        // Re-relay responses recorded while this session (as an event SOURCE)
+        // was unreachable — its waiters are still parked on trigger_response.
+        void drainPendingResponseRelays(sessionId, createEngineDeps()).catch((err) => {
+            log.error(`pending-response-relay drain failed for ${sessionId}:`, err);
+        });
     });
 
     // ── session_end ──────────────────────────────────────────────────────

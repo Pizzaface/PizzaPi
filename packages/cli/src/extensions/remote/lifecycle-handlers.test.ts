@@ -2,11 +2,12 @@
  * Regression test for the session_error / session_complete emit ordering.
  *
  * Docs promise session_error is an "early signal" delivered before
- * session_complete. Both are emitted synchronously (direct socket.emit calls)
- * from the agent_end handler, so which call comes first in the source
- * determines wire order. This exercises the real registerLifecycleHandlers
- * agent_end handler end-to-end (not a reimplementation) so a future accidental
- * reordering fails the test.
+ * session_complete. Both are published through the unified engine
+ * (rctx.emitTriggerWithAck); session_complete is chained after the
+ * session_error publish resolves, so arrival order at the engine is
+ * deterministic. This exercises the real registerLifecycleHandlers agent_end
+ * handler end-to-end (not a reimplementation) so a future accidental reordering
+ * fails the test.
  */
 import { describe, test, expect, mock } from "bun:test";
 
@@ -62,9 +63,7 @@ function setup(lastRetryableError: { errorMessage: string; detectedAt: number } 
 
     const socket: any = {
         connected: true,
-        emit: mock((_event: string, payload: any) => {
-            emitted.push(payload?.trigger?.type ?? "unknown");
-        }),
+        emit: mock(() => {}),
         on: () => {},
         off: () => {},
     };
@@ -81,6 +80,13 @@ function setup(lastRetryableError: { errorMessage: string; detectedAt: number } 
         supportsSessionTriggerAck: true,
         forwardEvent: mock(() => {}),
         buildHeartbeat: () => ({ type: "heartbeat", ts: Date.now() }),
+        emitTrigger: mock((trigger: any) => {
+            emitted.push(trigger.type);
+        }),
+        emitTriggerWithAck: mock(async (trigger: any) => {
+            emitted.push(trigger.type);
+            return { ok: true };
+        }),
     } as unknown as RelayContext;
 
     const state = makeState();
@@ -108,8 +114,13 @@ function setup(lastRetryableError: { errorMessage: string; detectedAt: number } 
 
 const agentEndCtx = { hasPendingMessages: () => false, shutdown: () => {} };
 
+/** Publishes are promise-chained now — flush microtasks before asserting order. */
+function flush(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 describe("agent_end — session_error / session_complete ordering", () => {
-    test("emits session_error before session_complete for a child session usage-limit error", () => {
+    test("emits session_error before session_complete for a child session usage-limit error", async () => {
         const { agentEnd, agentSettled, emitted } = setup({
             errorMessage: "You have exceeded your usage limit",
             detectedAt: Date.now(),
@@ -117,48 +128,54 @@ describe("agent_end — session_error / session_complete ordering", () => {
 
         agentEnd({ messages: [] }, agentEndCtx);
         agentSettled({}, agentEndCtx);
+        await flush();
 
-        // Both are emitted synchronously within the handler call (before any
-        // await/microtask), so capturing immediately after invocation is safe.
-        expect(emitted).toEqual(["session_error", "session_complete"]);
+        // session_complete is chained after the session_error publish resolves,
+        // so the engine receives them in this order.
+        expect(emitted).toEqual(["lifecycle:session_error", "lifecycle:session_complete"]);
     });
 
-    test("emits only session_complete when there is no usage-limit error", () => {
+    test("emits only session_complete when there is no usage-limit error", async () => {
         const { agentEnd, agentSettled, emitted } = setup(null);
 
         agentEnd({ messages: [] }, agentEndCtx);
         agentSettled({}, agentEndCtx);
+        await flush();
 
-        expect(emitted).toEqual(["session_complete"]);
+        expect(emitted).toEqual(["lifecycle:session_complete"]);
     });
 
-    test("defers session_complete until background subagents settle", () => {
+    test("defers session_complete until background subagents settle", async () => {
         const release = reserveSubagentSlots(1, 1)!;
         const { agentEnd, agentSettled, emitted } = setup(null);
 
         agentEnd({ messages: [] }, agentEndCtx);
         agentSettled({}, agentEndCtx);
+        await flush();
         expect(emitted).toEqual([]);
 
         release();
-        expect(emitted).toEqual(["session_complete"]);
+        await flush();
+        expect(emitted).toEqual(["lifecycle:session_complete"]);
     });
 
-    test("does not report deferred completion after a result starts a follow-up turn", () => {
+    test("does not report deferred completion after a result starts a follow-up turn", async () => {
         const release = reserveSubagentSlots(1, 1)!;
         const { agentEnd, agentSettled, emitted } = setup(null);
 
         agentEnd({ messages: [] }, agentEndCtx);
         agentSettled({}, agentEndCtx);
         release(true);
+        await flush();
         expect(emitted).toEqual([]);
 
         agentEnd({ messages: [] }, agentEndCtx);
         agentSettled({}, agentEndCtx);
-        expect(emitted).toEqual(["session_complete"]);
+        await flush();
+        expect(emitted).toEqual(["lifecycle:session_complete"]);
     });
 
-    test("replays settlement when the last of concurrent subagents does not deliver", () => {
+    test("replays settlement when the last of concurrent subagents does not deliver", async () => {
         const releaseA = reserveSubagentSlots(1, 2)!;
         const releaseB = reserveSubagentSlots(1, 2)!;
         const { agentEnd, agentSettled, emitted } = setup(null);
@@ -170,8 +187,9 @@ describe("agent_end — session_error / session_complete ordering", () => {
         agentEnd({ messages: [] }, agentEndCtx);
         agentSettled({}, agentEndCtx);
         releaseB(false);
+        await flush();
 
-        expect(emitted).toEqual(["session_complete"]);
+        expect(emitted).toEqual(["lifecycle:session_complete"]);
     });
 
     test("agent_end alone emits nothing — reporting waits for agent_settled (auto-retry pending)", () => {
@@ -198,7 +216,7 @@ describe("agent_end — session_error / session_complete ordering", () => {
         expect((rctx as any).lastRetryableError).toBeNull();
     });
 
-    test("no session_error when a retry recovers before settling", () => {
+    test("no session_error when a retry recovers before settling", async () => {
         const { agentEnd, agentSettled, emitted, rctx } = setup({
             errorMessage: "You have exceeded your usage limit",
             detectedAt: Date.now(),
@@ -210,8 +228,9 @@ describe("agent_end — session_error / session_complete ordering", () => {
         (rctx as any).lastRetryableError = null;
         agentEnd({ messages: [] }, agentEndCtx);
         agentSettled({}, agentEndCtx);
+        await flush();
 
-        expect(emitted).toEqual(["session_complete"]);
+        expect(emitted).toEqual(["lifecycle:session_complete"]);
     });
 });
 
@@ -220,7 +239,7 @@ describe("agent_end — forwarded event must not carry run-scoped messages", () 
     // UI and server snapshot cache treat agent_end.messages as a full-transcript
     // snapshot, so forwarding them truncates the visible transcript to the last
     // run. The handler must strip messages before forwarding.
-    test("forwards agent_end without messages, keeps them for the settled summary", () => {
+    test("forwards agent_end without messages, keeps them for the settled summary", async () => {
         const { agentEnd, agentSettled, emitted, rctx } = setup(null);
         const runMessages = [{ role: "assistant", content: [{ type: "text", text: "turn 2 only" }] }];
 
@@ -234,7 +253,8 @@ describe("agent_end — forwarded event must not carry run-scoped messages", () 
 
         // Summary reporting still sees the run messages via agent_settled.
         agentSettled({}, agentEndCtx);
-        expect(emitted).toEqual(["session_complete"]);
+        await flush();
+        expect(emitted).toEqual(["lifecycle:session_complete"]);
     });
 });
 

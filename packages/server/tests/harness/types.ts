@@ -14,6 +14,8 @@ export interface TestServerOptions {
 }
 
 export interface TestServer {
+    /** Stop the trigger-system maintenance loops (ADR-0002 sweeps). */
+    stopTriggerMaintenance: Array<() => void>;
     /** Ephemeral port the server is listening on */
     port: number;
     /** Base URL: http://127.0.0.1:{port} */

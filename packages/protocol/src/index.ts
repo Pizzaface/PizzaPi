@@ -39,6 +39,35 @@ export type {
   TunnelInfo,
 } from "./shared.js";
 
+// Unified trigger system (ADR-0002): Source → Event → Route → Delivery
+export type {
+  SourceKind,
+  SourceAuth,
+  SourceIdentity,
+  ResponseContract,
+  TriggerEvent,
+  PublishEventInput,
+  EventTypeDef,
+  DeliverAs,
+  RouteOrigin,
+  SpawnSpec,
+  RouteTarget,
+  Route,
+  RouteInput,
+  DeliveryStatus,
+  Delivery,
+  DeliveryView,
+} from "./events.js";
+export {
+  isValidEventType,
+  routeMatchesOwner,
+  isSourceIdentity,
+  isTriggerEvent,
+  isRouteTarget,
+  isDeliveryStatus,
+  renderEventText,
+} from "./events.js";
+
 // Session mode UI resolution (shared across server, UI, CLI)
 export {
   resolveModeUi,

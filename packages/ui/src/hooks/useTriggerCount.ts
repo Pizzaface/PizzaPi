@@ -24,6 +24,8 @@ export interface TriggerCounts {
    * evicted for every new one (length stays constant but this key changes).
    */
   latestTriggerKey: string;
+  /** Re-fetch both count sources, preserving each last-known value on failure. */
+  refresh: () => Promise<void>;
 }
 
 export function useTriggerCount(
@@ -31,7 +33,7 @@ export function useTriggerCount(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   viewerSocket?: any,
 ): TriggerCounts {
-  const [counts, setCounts] = useState<TriggerCounts>({ pending: 0, subscriptions: 0, total: 0, latestTriggerKey: "" });
+  const [counts, setCounts] = useState<Omit<TriggerCounts, "refresh">>({ pending: 0, subscriptions: 0, total: 0, latestTriggerKey: "" });
 
   const generation = useRef(0);
 
@@ -41,38 +43,61 @@ export function useTriggerCount(
       setCounts({ pending: 0, subscriptions: 0, total: 0, latestTriggerKey: "" });
       return;
     }
-    try {
-      const [trigRes, subRes] = await Promise.all([
-        fetch(`/api/sessions/${encodeURIComponent(sessionId)}/triggers?limit=50`, { credentials: "include" }),
-        fetch(`/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions`, { credentials: "include" }),
-      ]);
-      const triggerHistory = trigRes.ok
-        ? ((await trigRes.json()) as { triggers: TriggerHistoryEntry[] }).triggers ?? []
-        : [];
-      const pending = getIncompleteTriggers(triggerHistory).length;
-      const subscriptions = subRes.ok
-        ? ((await subRes.json()) as { subscriptions?: unknown[] }).subscriptions?.length ?? 0
-        : 0;
-      if (current === generation.current) setCounts({ pending, subscriptions, total: pending + subscriptions, latestTriggerKey: triggerHistory[0]?.triggerId ?? "" });
-    } catch {
-      if (current === generation.current) setCounts({ pending: 0, subscriptions: 0, total: 0, latestTriggerKey: "" });
-    }
+    const refreshTriggers = async () => {
+      try {
+        const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/triggers?limit=50`, { credentials: "include" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const triggerHistory = ((await res.json()) as { triggers?: TriggerHistoryEntry[] }).triggers ?? [];
+        const pending = getIncompleteTriggers(triggerHistory).length;
+        if (current === generation.current) {
+          setCounts((previous) => ({
+            ...previous,
+            pending,
+            total: pending + previous.subscriptions,
+            latestTriggerKey: triggerHistory[0]?.triggerId ?? "",
+          }));
+        }
+      } catch {
+        // Keep the last-known trigger count when this source fails.
+      }
+    };
+
+    const refreshRoutes = async () => {
+      try {
+        // Routes are the subscriptions (ADR-0002): count the session-target
+        // routes for this session.
+        const res = await fetch("/api/routes", { credentials: "include" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const routes = ((await res.json()) as { routes?: Array<{ target?: { kind?: string; sessionId?: string } }> }).routes ?? [];
+        const subscriptions = routes.filter((r) => r.target?.kind === "session" && r.target.sessionId === sessionId).length;
+        if (current === generation.current) {
+          setCounts((previous) => ({
+            ...previous,
+            subscriptions,
+            total: previous.pending + subscriptions,
+          }));
+        }
+      } catch {
+        // Keep the last-known route count when this source fails.
+      }
+    };
+
+    await Promise.all([refreshTriggers(), refreshRoutes()]);
   }, [sessionId]);
 
   // Fetch on mount and session change
   useEffect(() => { void refresh(); }, [refresh]);
 
-  // Refresh on trigger_delivered and trigger_subscriptions_changed events
+  // Refresh on trigger_delivered events (route changes surface on the next
+  // badge refresh — deltas are runner-scoped, not viewer-scoped).
   useEffect(() => {
     if (!viewerSocket) return;
     const handler = () => { void refresh(); };
     viewerSocket.on("trigger_delivered", handler);
-    viewerSocket.on("trigger_subscriptions_changed", handler);
     return () => {
       viewerSocket.off("trigger_delivered", handler);
-      viewerSocket.off("trigger_subscriptions_changed", handler);
     };
   }, [viewerSocket, refresh]);
 
-  return counts;
+  return { ...counts, refresh };
 }

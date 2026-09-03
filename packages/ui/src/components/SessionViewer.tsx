@@ -75,7 +75,7 @@ import { AtMentionPopover } from "@/components/AtMentionPopover";
 import { McpToggleContext } from "@/components/session-viewer/McpToggleContext";
 import { SessionActionsProvider } from "@/components/session-viewer/session-actions-context";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
-import { type IncompleteTriggerItem } from "@/components/TriggersPanel";
+import { type IncompleteTriggerItem } from "@/attention/trigger-groups";
 import { useDocumentPopoverKeyboardNavigation } from "@/components/session-viewer/popover-keyboard";
 import { resolveCommandPopoverState, scanSlashCommandToken } from "@/components/session-viewer/utils";
 

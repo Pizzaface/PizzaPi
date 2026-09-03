@@ -7,7 +7,8 @@
 // ============================================================================
 
 import { describe, it, expect, beforeEach } from "bun:test";
-import { trackReceivedTrigger, receivedTriggers, sendTriggerResponseWithAck } from "./extension.js";
+import { clearAndCancelPendingTriggers, finalizeSessionCompleteResponse, isSessionCompleteType, trackReceivedTrigger, receivedTriggers, sendTriggerResponseWithAck } from "./extension.js";
+import { handleTriggerResponse } from "../remote/connection.js";
 
 interface EmittedEvent {
     event: string;
@@ -52,16 +53,21 @@ function createMockSocket(opts?: { failSessionMessage?: boolean; failTriggerResp
     };
 }
 
+type DeliveryResponder = NonNullable<
+    NonNullable<Parameters<typeof finalizeSessionCompleteResponse>[1]>["respond"]
+>;
+
 async function simulateRespondToTrigger(
     params: { triggerId: string; response: string; action?: string },
     conn: ReturnType<typeof createMockSocket>,
+    respond: DeliveryResponder = async () => ({ ok: true }),
 ): Promise<{ text: string } | null> {
     const pending = receivedTriggers.get(params.triggerId);
     if (!pending) {
         return { text: `Error: No pending trigger with ID ${params.triggerId}` };
     }
 
-    if (pending.type === "session_complete") {
+    if (isSessionCompleteType(pending.type)) {
         const action = params.action ?? "ack";
         if (action === "followUp") {
             const result = await new Promise<{ ok: boolean; text: string }>((resolve) => {
@@ -87,15 +93,23 @@ async function simulateRespondToTrigger(
                 });
             });
             if (result.ok) {
-                receivedTriggers.delete(params.triggerId);
+                await finalizeSessionCompleteResponse({
+                    triggerId: params.triggerId,
+                    response: params.response,
+                    action,
+                }, { respond });
             }
             return { text: result.text };
         }
-        receivedTriggers.delete(params.triggerId);
         conn.socket.emit("cleanup_child_session", {
             token: conn.token,
             childSessionId: pending.sourceSessionId,
         });
+        await finalizeSessionCompleteResponse({
+            triggerId: params.triggerId,
+            response: params.response,
+            action,
+        }, { respond });
         return { text: `Acknowledged session completion from ${pending.sourceSessionId}` };
     }
 
@@ -119,7 +133,7 @@ describe("respond_to_trigger handling for session_complete", () => {
 
     it("ack emits cleanup_child_session instead of trigger_response", async () => {
         const conn = createMockSocket();
-        trackReceivedTrigger("trig_123", "child-abc", "session_complete");
+        trackReceivedTrigger("trig_123", "child-abc", "lifecycle:session_complete");
 
         const result = await simulateRespondToTrigger(
             { triggerId: "trig_123", response: "Done, thanks!", action: "ack" },
@@ -142,7 +156,7 @@ describe("respond_to_trigger handling for session_complete", () => {
 
     it("default action for session_complete is ack (cleanup)", async () => {
         const conn = createMockSocket();
-        trackReceivedTrigger("trig_456", "child-def", "session_complete");
+        trackReceivedTrigger("trig_456", "child-def", "lifecycle:session_complete");
 
         const result = await simulateRespondToTrigger(
             { triggerId: "trig_456", response: "Looks good" },
@@ -153,9 +167,108 @@ describe("respond_to_trigger handling for session_complete", () => {
         expect(conn.emitted.some((e) => e.event === "cleanup_child_session")).toBe(true);
     });
 
+    it("treats a pre-upgrade session_complete trigger as a completion", async () => {
+        const conn = createMockSocket();
+        trackReceivedTrigger("trig_legacy_type", "child-legacy", "session_complete");
+
+        const result = await simulateRespondToTrigger(
+            { triggerId: "trig_legacy_type", response: "Looks good", action: "ack" },
+            conn,
+        );
+
+        expect(result?.text).toBe("Acknowledged session completion from child-legacy");
+        expect(conn.emitted.some((e) => e.event === "cleanup_child_session")).toBe(true);
+        expect(conn.emitted.some((e) => e.event === "trigger_response")).toBe(false);
+    });
+
+    it("trigger_response handler treats a pre-upgrade session_complete as a completion", async () => {
+        const conn = createMockSocket();
+        const rctx = {
+            relay: { token: conn.token, sessionId: "parent-1" },
+            sioSocket: conn.socket,
+            latestCtx: null,
+        } as any;
+        trackReceivedTrigger("trig_legacy_handler", "child-legacy", "session_complete");
+
+        handleTriggerResponse(rctx, {
+            triggerId: "trig_legacy_handler",
+            response: "Acknowledged",
+            action: "ack",
+        });
+        await Promise.resolve();
+
+        expect(conn.emitted.some((e) => e.event === "cleanup_child_session")).toBe(true);
+        expect(conn.emitted.some((e) => e.event === "trigger_response")).toBe(false);
+    });
+
+    it("answers the unified Delivery after cleanup succeeds", async () => {
+        const conn = createMockSocket();
+        const responses: Array<{ triggerId: string; body: { response: string; action?: string } }> = [];
+        trackReceivedTrigger("trig_engine_ack", "child-engine", "lifecycle:session_complete");
+
+        await simulateRespondToTrigger(
+            { triggerId: "trig_engine_ack", response: "Done, thanks!", action: "ack" },
+            conn,
+            async (triggerId, body) => {
+                responses.push({ triggerId, body });
+                return { ok: true };
+            },
+        );
+
+        expect(responses).toEqual([{
+            triggerId: "trig_engine_ack",
+            body: { response: "Done, thanks!", action: "ack" },
+        }]);
+    });
+
+    it("viewer response relay cannot repeat cleanup for an already handled completion", async () => {
+        const conn = createMockSocket();
+        const engineResponses: string[] = [];
+        const rctx = {
+            relay: { token: conn.token, sessionId: "parent-1" },
+            sioSocket: conn.socket,
+            latestCtx: null,
+        } as any;
+        trackReceivedTrigger("trig_no_loop", "child-loop", "lifecycle:session_complete");
+
+        const finalize = async (params: { triggerId: string; response: string; action: string }) => {
+            await finalizeSessionCompleteResponse(params, {
+                respond: async (triggerId) => {
+                    engineResponses.push(triggerId);
+                    return { ok: true };
+                },
+            });
+        };
+        const response = { triggerId: "trig_no_loop", response: "Acknowledged", action: "ack" };
+        handleTriggerResponse(rctx, response, { finalizeSessionComplete: finalize });
+        // The engine relays this same trigger_response to the parent. The first
+        // handler invocation tombstones it before issuing the HTTP response.
+        handleTriggerResponse(rctx, response, { finalizeSessionComplete: finalize });
+        await Promise.resolve();
+
+        expect(engineResponses).toEqual(["trig_no_loop"]);
+        expect(conn.emitted.filter((event) => event.event === "cleanup_child_session")).toHaveLength(1);
+        expect(receivedTriggers.has("trig_no_loop")).toBe(false);
+        expect(trackReceivedTrigger("trig_no_loop", "child-loop", "lifecycle:session_complete")).toBe(false);
+    });
+
+    it("ignores notFound when answering a legacy child's completion Delivery", async () => {
+        const conn = createMockSocket();
+        trackReceivedTrigger("trig_legacy", "child-legacy", "lifecycle:session_complete");
+
+        const result = await simulateRespondToTrigger(
+            { triggerId: "trig_legacy", response: "Thanks", action: "ack" },
+            conn,
+            async () => ({ ok: false, notFound: true, error: "Delivery not found" }),
+        );
+
+        expect(result?.text).toBe("Acknowledged session completion from child-legacy");
+        expect(receivedTriggers.has("trig_legacy")).toBe(false);
+    });
+
     it("followUp sends session_message and does not emit cleanup", async () => {
         const conn = createMockSocket();
-        trackReceivedTrigger("trig_789", "child-ghi", "session_complete");
+        trackReceivedTrigger("trig_789", "child-ghi", "lifecycle:session_complete");
 
         const result = await simulateRespondToTrigger(
             { triggerId: "trig_789", response: "Please fix the edge case and rerun tests", action: "followUp" },
@@ -178,9 +291,29 @@ describe("respond_to_trigger handling for session_complete", () => {
         expect(cleanup).toBeUndefined();
     });
 
+    it("answers the unified Delivery after follow-up succeeds", async () => {
+        const conn = createMockSocket();
+        const responses: Array<{ triggerId: string; body: { response: string; action?: string } }> = [];
+        trackReceivedTrigger("trig_engine_followup", "child-engine", "lifecycle:session_complete");
+
+        await simulateRespondToTrigger(
+            { triggerId: "trig_engine_followup", response: "Please rerun tests", action: "followUp" },
+            conn,
+            async (triggerId, body) => {
+                responses.push({ triggerId, body });
+                return { ok: true };
+            },
+        );
+
+        expect(responses).toEqual([{
+            triggerId: "trig_engine_followup",
+            body: { response: "Please rerun tests", action: "followUp" },
+        }]);
+    });
+
     it("followUp preserves trigger when session_message delivery fails", async () => {
         const conn = createMockSocket({ failSessionMessage: true });
-        trackReceivedTrigger("trig_fail", "child-missing", "session_complete");
+        trackReceivedTrigger("trig_fail", "child-missing", "lifecycle:session_complete");
 
         const result = await simulateRespondToTrigger(
             { triggerId: "trig_fail", response: "keep working", action: "followUp" },
@@ -194,7 +327,7 @@ describe("respond_to_trigger handling for session_complete", () => {
 
     it("non-session_complete triggers still use trigger_response", async () => {
         const conn = createMockSocket();
-        trackReceivedTrigger("trig_plan", "child-plan", "plan_review");
+        trackReceivedTrigger("trig_plan", "child-plan", "lifecycle:plan_review");
 
         const result = await simulateRespondToTrigger(
             { triggerId: "trig_plan", response: "Approved", action: "approve" },
@@ -215,7 +348,7 @@ describe("respond_to_trigger handling for session_complete", () => {
 
     it("non-session_complete preserves trigger when relay rejects delivery", async () => {
         const conn = createMockSocket({ failTriggerResponse: true });
-        trackReceivedTrigger("trig_plan_fail", "child-plan", "plan_review");
+        trackReceivedTrigger("trig_plan_fail", "child-plan", "lifecycle:plan_review");
 
         const result = await simulateRespondToTrigger(
             { triggerId: "trig_plan_fail", response: "Approved", action: "approve" },
@@ -228,7 +361,7 @@ describe("respond_to_trigger handling for session_complete", () => {
 
     it("triggers never expire — an old pending trigger can still be responded to", async () => {
         const conn = createMockSocket();
-        trackReceivedTrigger("trig_old", "child-old", "session_complete");
+        trackReceivedTrigger("trig_old", "child-old", "lifecycle:session_complete");
         const pending = receivedTriggers.get("trig_old");
         if (pending) pending.trackedAt = Date.now() - 60 * 60 * 1000; // 1 hour ago
 
@@ -240,6 +373,41 @@ describe("respond_to_trigger handling for session_complete", () => {
         expect(result?.text).toBe("Acknowledged session completion from child-old");
         expect(receivedTriggers.has("trig_old")).toBe(false);
         expect(conn.emitted.some((e) => e.event === "cleanup_child_session")).toBe(true);
+    });
+});
+
+describe("new-session cancellation correlation", () => {
+    beforeEach(() => {
+        receivedTriggers.clear();
+    });
+
+    it("answers a unified Delivery before using the legacy socket", async () => {
+        const conn = createMockSocket();
+        const respond = async () => ({ ok: true });
+        trackReceivedTrigger("dlv_unified", "child-unified", "lifecycle:plan_review");
+
+        clearAndCancelPendingTriggers(undefined, { connection: conn as any, respond });
+        await Promise.resolve();
+
+        expect(conn.emitted.some((e) => e.event === "trigger_response")).toBe(false);
+    });
+
+    it("falls back to legacy trigger_response only when the Delivery is not found", async () => {
+        const conn = createMockSocket();
+        const respond = async () => ({ ok: false, notFound: true, error: "Delivery not found" });
+        trackReceivedTrigger("dlv_legacy", "child-legacy", "plan_review");
+
+        clearAndCancelPendingTriggers(undefined, { connection: conn as any, respond });
+        await Promise.resolve();
+
+        const fallback = conn.emitted.find((e) => e.event === "trigger_response");
+        expect(fallback?.data).toEqual({
+            token: "test-token",
+            triggerId: "dlv_legacy",
+            response: "Parent started a new session — trigger cancelled.",
+            action: "cancel",
+            targetSessionId: "child-legacy",
+        });
     });
 });
 

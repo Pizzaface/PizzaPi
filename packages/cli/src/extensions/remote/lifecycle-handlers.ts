@@ -22,6 +22,7 @@ import { stopHeartbeat, buildTokenUsage } from "../remote-heartbeat.js";
 import { buildProviderUsage } from "../remote-provider-usage.js";
 import { installFooter } from "../remote-footer.js";
 import { maybeFireSessionError } from "./session-error-trigger.js";
+import type { ConversationTrigger } from "../triggers/types.js";
 import {
     emitRetryStateChanged,
     emitPluginTrustRequired,
@@ -345,6 +346,9 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         rctx.latestCtx = ctx;
         rctx.sessionStartedAt = Date.now();
         rctx.isAgentActive = false;
+        // Clear both follow-up shutdown state and any retry from the previous
+        // generation before resetting completion payload state.
+        followUpGrace.clearFollowUpGrace();
 
         // ── /new cleanup: cancel pending triggers and delink children ─────────
         if (event.reason === "new") {
@@ -517,32 +521,30 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
             // "killed" when the session is actually ending (end_session sets
             // shuttingDown before shutdown()).
             // Fire session_error BEFORE session_complete so the parent sees the
-            // error as an early signal. maybeFireSessionError emits synchronously
-            // (direct socket.emit); fireSessionComplete's ack-wrapped emit also
-            // fires synchronously on invocation, so ordering these two calls
-            // determines wire order. Must run first.
-            if (
-                maybeFireSessionError({
-                    sessionErrorFired,
-                    errorMessage: lastError?.errorMessage,
-                    isChildSession: rctx.isChildSession,
-                    parentSessionId: rctx.parentSessionId,
-                    socketConnected: rctx.sioSocket?.connected ?? false,
-                    emitFn: rctx.sioSocket
-                        ? (ev: string, payload: any) => (rctx.sioSocket as any).emit(ev, payload)
-                        : null,
-                    relayToken: rctx.relay?.token,
-                    relaySessionId: rctx.relay?.sessionId,
-                })
-            ) {
-                sessionErrorFired = true;
-            }
+            // error as an early signal. Both are HTTP publishes now; the
+            // session_complete publish is chained after the error publish so
+            // arrival order at the engine is deterministic.
+            const sessionErrorPublish = maybeFireSessionError({
+                sessionErrorFired,
+                errorMessage: lastError?.errorMessage,
+                isChildSession: rctx.isChildSession,
+                parentSessionId: rctx.parentSessionId,
+                relaySessionId: rctx.relay?.sessionId,
+                emitTriggerWithAck: rctx.emitTriggerWithAck
+                    ? (trigger: ConversationTrigger) => rctx.emitTriggerWithAck(trigger)
+                    : null,
+            });
 
             const manualAbort = isManualAbort(rctx);
             if (rctx.isChildSession && manualAbort) {
                 log.info("pizzapi: turn aborted manually — keeping child session alive");
             } else {
-                void followUpGrace.fireSessionComplete(summary, fullOutputPath, exitReason);
+                void sessionErrorPublish.then((fired) => {
+                    if (fired) {
+                        sessionErrorFired = true;
+                    }
+                    return followUpGrace.fireSessionComplete(summary, fullOutputPath, exitReason);
+                });
             }
 
             if (rctx.isChildSession) {

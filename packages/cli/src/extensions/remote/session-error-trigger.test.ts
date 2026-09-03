@@ -1,12 +1,13 @@
 import { describe, test, expect, mock } from "bun:test";
 import { maybeFireSessionError, type SessionErrorParams } from "./session-error-trigger.js";
+import type { ConversationTrigger } from "../triggers/types.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-type EmitFn = (event: string, payload: unknown) => void;
+type EmitFn = (trigger: ConversationTrigger) => Promise<{ ok: boolean; error?: string }>;
 
-function makeEmitFn(): ReturnType<typeof mock<EmitFn>> {
-    return mock<EmitFn>(() => {});
+function makeEmitFn(overrides: { ok?: boolean; error?: string } = {}): ReturnType<typeof mock<EmitFn>> {
+    return mock<EmitFn>(async () => ({ ok: overrides.ok ?? true, error: overrides.error }));
 }
 
 function makeParams(overrides: Partial<SessionErrorParams> = {}): SessionErrorParams {
@@ -15,78 +16,62 @@ function makeParams(overrides: Partial<SessionErrorParams> = {}): SessionErrorPa
         errorMessage: "You have exceeded your usage limit",
         isChildSession: true,
         parentSessionId: "parent-session-123",
-        socketConnected: true,
-        emitFn: makeEmitFn(),
-        relayToken: "relay-token-abc",
         relaySessionId: "relay-session-xyz",
+        emitTriggerWithAck: makeEmitFn(),
         ...overrides,
     };
 }
 
-// ── Happy path: trigger IS emitted ───────────────────────────────────────────
+// ── Happy path: event IS published ───────────────────────────────────────────
 
 describe("maybeFireSessionError — happy path", () => {
-    test("emits session_trigger when all conditions are met", () => {
+    test("publishes when all conditions are met", async () => {
         const emitFn = makeEmitFn();
-        const params = makeParams({ emitFn });
-
-        const result = maybeFireSessionError(params);
+        const result = await maybeFireSessionError(makeParams({ emitTriggerWithAck: emitFn }));
 
         expect(result).toBe(true);
         expect(emitFn).toHaveBeenCalledTimes(1);
     });
 
-    test("emits to the 'session_trigger' event name", () => {
+    test("trigger carries correct type, target, and source", async () => {
         const emitFn = makeEmitFn();
-        maybeFireSessionError(makeParams({ emitFn }));
-
-        expect(emitFn.mock.calls[0][0]).toBe("session_trigger");
-    });
-
-    test("payload contains correct type, relayToken, and targetSessionId", () => {
-        const emitFn = makeEmitFn();
-        const params = makeParams({
-            emitFn,
-            relayToken: "tok-123",
+        await maybeFireSessionError(makeParams({
+            emitTriggerWithAck: emitFn,
             parentSessionId: "parent-456",
             relaySessionId: "source-789",
-        });
+        }));
 
-        maybeFireSessionError(params);
-
-        const payload = emitFn.mock.calls[0][1] as any;
-        expect(payload.token).toBe("tok-123");
-        expect(payload.trigger.type).toBe("session_error");
-        expect(payload.trigger.targetSessionId).toBe("parent-456");
-        expect(payload.trigger.sourceSessionId).toBe("source-789");
-        expect(payload.trigger.deliverAs).toBe("steer");
-        expect(payload.trigger.expectsResponse).toBe(true);
+        const trigger = emitFn.mock.calls[0][0];
+        expect(trigger.type).toBe("lifecycle:session_error");
+        expect(trigger.targetSessionId).toBe("parent-456");
+        expect(trigger.sourceSessionId).toBe("source-789");
+        expect(trigger.deliverAs).toBe("steer");
+        expect(trigger.expectsResponse).toBe(true);
     });
 
-    test("payload.trigger.payload.message contains the error message", () => {
+    test("payload.message contains the error message", async () => {
         const emitFn = makeEmitFn();
         const errMsg = "Rate limit reached for your plan";
-        maybeFireSessionError(makeParams({ emitFn, errorMessage: errMsg }));
+        await maybeFireSessionError(makeParams({ emitTriggerWithAck: emitFn, errorMessage: errMsg }));
 
-        const payload = emitFn.mock.calls[0][1] as any;
-        expect(payload.trigger.payload.message).toBe(errMsg);
+        expect(emitFn.mock.calls[0][0].payload.message).toBe(errMsg);
     });
 
-    test("payload includes a triggerId (UUID) and ts (ISO string)", () => {
+    test("trigger includes a triggerId (UUID) and ts (ISO string)", async () => {
         const emitFn = makeEmitFn();
-        maybeFireSessionError(makeParams({ emitFn }));
+        await maybeFireSessionError(makeParams({ emitTriggerWithAck: emitFn }));
 
-        const payload = emitFn.mock.calls[0][1] as any;
-        expect(typeof payload.trigger.triggerId).toBe("string");
-        expect(payload.trigger.triggerId.length).toBeGreaterThan(0);
-        expect(typeof payload.trigger.ts).toBe("string");
-        expect(() => new Date(payload.trigger.ts)).not.toThrow();
+        const trigger = emitFn.mock.calls[0][0];
+        expect(typeof trigger.triggerId).toBe("string");
+        expect(trigger.triggerId.length).toBeGreaterThan(0);
+        expect(typeof trigger.ts).toBe("string");
+        expect(() => new Date(trigger.ts)).not.toThrow();
     });
 
-    test("works with gRPC RESOURCE_EXHAUSTED (underscore)", () => {
+    test("works with gRPC RESOURCE_EXHAUSTED (underscore)", async () => {
         const emitFn = makeEmitFn();
-        const result = maybeFireSessionError(makeParams({
-            emitFn,
+        const result = await maybeFireSessionError(makeParams({
+            emitTriggerWithAck: emitFn,
             errorMessage: "grpc status RESOURCE_EXHAUSTED",
         }));
 
@@ -94,140 +79,99 @@ describe("maybeFireSessionError — happy path", () => {
         expect(emitFn).toHaveBeenCalledTimes(1);
     });
 
-    test("works with gRPC QUOTA_EXCEEDED (underscore)", () => {
+    test("works with gRPC QUOTA_EXCEEDED (underscore)", async () => {
         const emitFn = makeEmitFn();
-        const result = maybeFireSessionError(makeParams({
-            emitFn,
+        const result = await maybeFireSessionError(makeParams({
+            emitTriggerWithAck: emitFn,
             errorMessage: "grpc status QUOTA_EXCEEDED",
         }));
 
         expect(result).toBe(true);
         expect(emitFn).toHaveBeenCalledTimes(1);
     });
+
+    test("reports failure when the publish fails", async () => {
+        const emitFn = makeEmitFn({ ok: false, error: "relay unavailable" });
+        const result = await maybeFireSessionError(makeParams({ emitTriggerWithAck: emitFn }));
+
+        expect(result).toBe(false);
+        expect(emitFn).toHaveBeenCalledTimes(1);
+    });
 });
 
-// ── Guard conditions: trigger must NOT fire ───────────────────────────────────
+// ── Guard conditions: event must NOT publish ──────────────────────────────────
 
 describe("maybeFireSessionError — guard conditions", () => {
-    test("returns false and does not emit when sessionErrorFired is already true", () => {
+    test("returns false when sessionErrorFired is already true", async () => {
         const emitFn = makeEmitFn();
-        const result = maybeFireSessionError(makeParams({ emitFn, sessionErrorFired: true }));
+        const result = await maybeFireSessionError(makeParams({ emitTriggerWithAck: emitFn, sessionErrorFired: true }));
 
         expect(result).toBe(false);
         expect(emitFn).not.toHaveBeenCalled();
     });
 
-    test("returns false and does not emit when errorMessage is undefined", () => {
+    test("returns false when errorMessage is undefined", async () => {
         const emitFn = makeEmitFn();
-        const result = maybeFireSessionError(makeParams({ emitFn, errorMessage: undefined }));
+        const result = await maybeFireSessionError(makeParams({ emitTriggerWithAck: emitFn, errorMessage: undefined }));
 
         expect(result).toBe(false);
         expect(emitFn).not.toHaveBeenCalled();
     });
 
-    test("returns false and does not emit when errorMessage is null", () => {
+    test("returns false when errorMessage is null", async () => {
         const emitFn = makeEmitFn();
-        const result = maybeFireSessionError(makeParams({ emitFn, errorMessage: null }));
+        const result = await maybeFireSessionError(makeParams({ emitTriggerWithAck: emitFn, errorMessage: null }));
 
         expect(result).toBe(false);
         expect(emitFn).not.toHaveBeenCalled();
     });
 
-    test("returns false and does not emit when errorMessage is empty string", () => {
+    test("returns false when errorMessage is empty string", async () => {
         const emitFn = makeEmitFn();
-        const result = maybeFireSessionError(makeParams({ emitFn, errorMessage: "" }));
+        const result = await maybeFireSessionError(makeParams({ emitTriggerWithAck: emitFn, errorMessage: "" }));
 
         expect(result).toBe(false);
         expect(emitFn).not.toHaveBeenCalled();
     });
 
-    test("returns false and does not emit when not a child session", () => {
+    test("returns false when not a child session", async () => {
         const emitFn = makeEmitFn();
-        const result = maybeFireSessionError(makeParams({ emitFn, isChildSession: false }));
+        const result = await maybeFireSessionError(makeParams({ emitTriggerWithAck: emitFn, isChildSession: false }));
 
         expect(result).toBe(false);
         expect(emitFn).not.toHaveBeenCalled();
     });
 
-    test("returns false and does not emit when parentSessionId is null", () => {
+    test("returns false when parentSessionId is null", async () => {
         const emitFn = makeEmitFn();
-        const result = maybeFireSessionError(makeParams({ emitFn, parentSessionId: null }));
+        const result = await maybeFireSessionError(makeParams({ emitTriggerWithAck: emitFn, parentSessionId: null }));
 
         expect(result).toBe(false);
         expect(emitFn).not.toHaveBeenCalled();
     });
 
-    test("returns false and does not emit when socket is not connected", () => {
+    test("returns false when emitTriggerWithAck is null", async () => {
+        const result = await maybeFireSessionError(makeParams({ emitTriggerWithAck: null }));
+
+        expect(result).toBe(false);
+    });
+
+    test("returns false when relaySessionId is missing", async () => {
         const emitFn = makeEmitFn();
-        const result = maybeFireSessionError(makeParams({ emitFn, socketConnected: false }));
+        const result = await maybeFireSessionError(makeParams({ emitTriggerWithAck: emitFn, relaySessionId: null }));
 
         expect(result).toBe(false);
         expect(emitFn).not.toHaveBeenCalled();
     });
 
-    test("returns false and does not emit when emitFn is null", () => {
-        const result = maybeFireSessionError(makeParams({ emitFn: null }));
-
-        expect(result).toBe(false);
-    });
-
-    test("returns false and does not emit when relayToken is missing", () => {
+    test("returns false when error is not a usage-limit error", async () => {
         const emitFn = makeEmitFn();
-        const result = maybeFireSessionError(makeParams({ emitFn, relayToken: null }));
-
-        expect(result).toBe(false);
-        expect(emitFn).not.toHaveBeenCalled();
-    });
-
-    test("returns false and does not emit when relaySessionId is missing", () => {
-        const emitFn = makeEmitFn();
-        const result = maybeFireSessionError(makeParams({ emitFn, relaySessionId: null }));
-
-        expect(result).toBe(false);
-        expect(emitFn).not.toHaveBeenCalled();
-    });
-
-    test("returns false and does not emit when error is not a usage-limit error", () => {
-        const emitFn = makeEmitFn();
-        const result = maybeFireSessionError(makeParams({
-            emitFn,
+        const result = await maybeFireSessionError(makeParams({
+            emitTriggerWithAck: emitFn,
             errorMessage: "Connection reset by peer",
         }));
 
         expect(result).toBe(false);
         expect(emitFn).not.toHaveBeenCalled();
-    });
-
-    test("returns false and does not emit for generic server errors", () => {
-        const emitFn = makeEmitFn();
-        const result = maybeFireSessionError(makeParams({
-            emitFn,
-            errorMessage: "Internal server error (500)",
-        }));
-
-        expect(result).toBe(false);
-        expect(emitFn).not.toHaveBeenCalled();
-    });
-});
-
-// ── One-shot guard behaviour ──────────────────────────────────────────────────
-
-describe("maybeFireSessionError — one-shot semantics", () => {
-    test("caller is responsible for setting sessionErrorFired after return", () => {
-        // Simulate the agent_end pattern from index.ts:
-        //   if (maybeFireSessionError(...)) { sessionErrorFired = true; }
-        let sessionErrorFired = false;
-        const emitFn = makeEmitFn();
-
-        // First call: fires and caller sets the flag
-        if (maybeFireSessionError(makeParams({ emitFn, sessionErrorFired }))) {
-            sessionErrorFired = true;
-        }
-
-        // Second call with updated flag: must NOT fire again
-        const secondResult = maybeFireSessionError(makeParams({ emitFn, sessionErrorFired }));
-
-        expect(secondResult).toBe(false);
-        expect(emitFn).toHaveBeenCalledTimes(1); // only the first call emitted
     });
 });

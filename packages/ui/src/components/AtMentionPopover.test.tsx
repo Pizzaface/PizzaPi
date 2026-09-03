@@ -1,7 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { Window } from "happy-dom";
-import { act, cleanup, render, waitFor } from "@testing-library/react";
-import React from "react";
 
 const win = new Window({ url: "http://localhost/" });
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -41,6 +39,15 @@ mock.module("@/hooks/useAtMentionFiles", () => ({
 mock.module("@/hooks/useAtMentionSearch", () => ({
   useAtMentionSearch: () => ({ entries: [], loading: false, error: null }),
 }));
+
+// Dynamic imports AFTER the happy-dom globals: this file is the first in the
+// suite to pull in React, and react-dom probes `window.document` exactly once
+// at import (canUseDOM / isInputEventSupported). A static import would load
+// React before this file's window exists, permanently disabling text-input
+// change events for every later test file in the run.
+const { act, cleanup, render, waitFor } = await import("@testing-library/react");
+const React = (await import("react")).default;
+void React; // JSX factory in scope for the classic transform
 
 const { AtMentionPopover } = await import("./AtMentionPopover");
 

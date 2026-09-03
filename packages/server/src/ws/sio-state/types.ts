@@ -72,6 +72,18 @@ export interface RedisSessionData {
      * at read time so metadata events never rewrite the multi-MB state blob.
      */
     snapshotOverlay?: string | null;
+    /**
+     * Lifecycle generation (epoch) captured at session registration. Bumped on
+     * every (re)registration so a delayed session-end from a prior socket can
+     * be matched against the current generation and ignored if stale.
+     */
+    generation?: string | null;
+    /**
+     * True when the registered CLI acknowledges server→client session_trigger
+     * emissions (delivery guarantees). Absent/false on legacy CLIs — the
+     * trigger transport then keeps handoff-equals-delivered semantics.
+     */
+    acksSessionTrigger?: boolean | null;
 }
 
 /**

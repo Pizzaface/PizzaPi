@@ -18,6 +18,9 @@ import { WebhooksManager } from "@/components/WebhooksManager";
 import { HooksManager } from "@/components/HooksManager";
 import { AgentRulesEditor } from "@/components/AgentRulesEditor";
 import { TrustedPluginsEditor } from "@/components/TrustedPluginsEditor";
+const LazyEventsRoutesPanel = React.lazy(() =>
+    import("@/components/events/EventsRoutesPanel").then((m) => ({ default: m.EventsRoutesPanel }))
+);
 const UsageDashboard = React.lazy(() =>
     import("@/components/usage-dashboard/UsageDashboard").then((m) => ({
         default: m.UsageDashboard,
@@ -42,7 +45,7 @@ import { McpServersManager } from "@/components/McpServersManager";
 // Types
 // ---------------------------------------------------------------------------
 
-export type RunnerTab = "sessions" | "skills" | "agents" | "plugins" | "sandbox" | "hooks" | "mcp" | "webhooks" | "services" | "triggers" | "usage" | "settings";
+export type RunnerTab = "sessions" | "skills" | "agents" | "plugins" | "sandbox" | "hooks" | "mcp" | "webhooks" | "services" | "triggers" | "events" | "usage" | "settings";
 
 interface RunnerHook {
     type: string;
@@ -223,11 +226,13 @@ function SubTabPanel({ tabs }: { tabs: SubTab[] }) {
     const current = tabs.find((t) => t.key === active) ?? tabs[0];
     return (
         <div className="flex flex-col gap-3">
-            <div className="flex gap-1.5 border-b border-border pb-2">
+            <div role="tablist" className="flex gap-1.5 border-b border-border pb-2">
                 {tabs.map((tab) => (
                     <button
                         key={tab.key}
                         type="button"
+                        role="tab"
+                        aria-selected={active === tab.key}
                         onClick={() => setActive(tab.key)}
                         className={cn(
                             "px-2.5 py-1 text-[11px] font-medium rounded-md transition-all whitespace-nowrap",
@@ -259,6 +264,7 @@ const TABS: { key: RunnerTab; label: string; countKey?: "skills" | "agents" | "p
     { key: "webhooks", label: "Webhooks" },
     { key: "services", label: "Services" },
     { key: "triggers", label: "Triggers" },
+    { key: "events", label: "Events (account-wide)" },
     { key: "usage", label: "Usage" },
     { key: "sandbox", label: "Sandbox" },
     { key: "settings", label: "Settings" },
@@ -279,7 +285,7 @@ function TabBar({
                 the tabs overflow (common on narrow/mobile viewports). */}
             <div className="pointer-events-none absolute right-0 top-0 bottom-0 w-6 bg-gradient-to-l from-background to-transparent sm:hidden" aria-hidden="true" />
             <div className="overflow-x-auto px-4 sm:px-6">
-            <div className="flex gap-1 border-b border-border/40 min-w-max">
+            <div role="tablist" className="flex gap-1 border-b border-border/40 min-w-max">
                 {TABS.map((tab) => {
                     const isActive = activeTab === tab.key;
                     const countSource = tab.countKey ? runner[tab.countKey] : null;
@@ -288,6 +294,8 @@ function TabBar({
                         <button
                             key={tab.key}
                             type="button"
+                            role="tab"
+                            aria-selected={isActive}
                             onClick={() => onTabChange(tab.key)}
                             className={cn(
                                 "px-3 py-2 text-xs font-medium transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0",
@@ -462,6 +470,24 @@ export function RunnerDetailPanel({
                 <RunnerTriggersPanel
                     runnerId={runner.runnerId}
                 />
+            );
+            break;
+        case "events":
+            tabContent = (
+                <div className="space-y-3">
+                    <p className="text-xs text-muted-foreground">
+                        Account-wide event feed and routes. This view is not scoped to the selected runner.
+                    </p>
+                    <Suspense
+                        fallback={
+                            <div className="flex items-center justify-center p-8">
+                                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                            </div>
+                        }
+                    >
+                        <LazyEventsRoutesPanel bare />
+                    </Suspense>
+                </div>
             );
             break;
         case "usage":
