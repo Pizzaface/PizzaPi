@@ -586,9 +586,14 @@ function applySqlitePerfPragmas(db: Database): void {
         db.run("PRAGMA journal_mode = WAL");
         db.run("PRAGMA synchronous = NORMAL");
         db.run("PRAGMA busy_timeout = 5000");
-        // Enforce declared FK constraints (trigger_delivery's ON DELETE CASCADE
-        // — see ensureEventTables; SQLite defaults this OFF per connection).
-        db.run("PRAGMA foreign_keys = ON");
+        // NOTE: deliberately NOT enabling `PRAGMA foreign_keys`. SQLite defaults
+        // it OFF per connection, and this schema has carried unenforced FK
+        // declarations for a long time (relay_session children, better-auth's
+        // user/session/account graph) with rows that predate any enforcement.
+        // Turning it on globally makes historical rows unwritable and is a
+        // migration project of its own — not a side effect of the trigger work.
+        // trigger_delivery's ON DELETE CASCADE is therefore declarative only;
+        // pruneEvents() deletes deliveries explicitly inside its transaction.
     } catch (err) {
         console.warn("[auth-db] Could not apply SQLite perf pragmas (keeping defaults):", err);
     }

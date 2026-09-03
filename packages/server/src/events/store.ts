@@ -124,10 +124,12 @@ export async function ensureEventTables(): Promise<void> {
     .createTable(DELIVERY_TABLE)
     .ifNotExists()
     .addColumn("id", "text", (c) => c.primaryKey())
-    // FK cascade for NEW databases only — SQLite cannot add FK constraints to
-    // an existing table, so pre-upgrade databases keep the subquery delete in
-    // pruneEvents. Both paths are correct; the FK also protects direct event
-    // deletes on new databases. Requires PRAGMA foreign_keys = ON (auth.ts).
+    // FK cascade declared for NEW databases only (SQLite cannot add FK
+    // constraints to an existing table). It is DECLARATIVE: the server does not
+    // enable `PRAGMA foreign_keys` (see applySqlitePerfPragmas — the schema has
+    // long-standing unenforced FKs elsewhere). Orphan prevention comes from
+    // pruneEvents(), which deletes deliveries explicitly inside its transaction;
+    // the constraint only bites if a deployment opts into enforcement.
     .addColumn("eventId", "text", (c) => c.notNull().references("trigger_event.id").onDelete("cascade"))
     .addColumn("sessionId", "text", (c) => c.notNull())
     .addColumn("status", "text", (c) => c.notNull())

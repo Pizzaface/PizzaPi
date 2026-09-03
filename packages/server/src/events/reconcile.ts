@@ -19,7 +19,6 @@ import { createLogger } from "@pizzapi/tools";
 import { connectRedisClient, type RedisClient } from "../redis-client.js";
 import { listRoutes } from "./store.js";
 import { routeMatchesOwner } from "@pizzapi/protocol";
-import { getRunnerData } from "../ws/sio-registry/runners.js";
 import { getRunnerOwner } from "../runner-owner.js";
 
 const log = createLogger("routes-reconcile");
@@ -111,6 +110,11 @@ export async function subscriptionsForRunner(runnerId: string): Promise<TriggerS
 }
 
 async function runnerOwnerFor(runnerId: string): Promise<string | null> {
+    // Lazy import on purpose: this module sits at the store layer and is pulled
+    // in by sio-registry/sessions.ts. A static import of the socket registry
+    // creates a cycle back into sessions/store.js, which surfaces as
+    // "Export named X not found" in any test that partially mocks that module.
+    const { getRunnerData } = await import("../ws/sio-registry/runners.js");
     const live = await getRunnerData(runnerId).catch(() => null);
     if (live?.userId) return live.userId;
     return getRunnerOwner(runnerId);

@@ -574,8 +574,10 @@ describe("storage integrity (FK cascade, tx prune/sync)", () => {
     // Fresh :memory: database at module scope → ensureEventTables creates
     // trigger_delivery WITH the FK cascade (new-database schema).
     await store.ensureEventTables();
-    // PRAGMA foreign_keys is per-connection and OFF by default; the server
-    // turns it on in applySqlitePerfPragmas. Enable it here the same way.
+    // PRAGMA foreign_keys is per-connection and OFF by default (the server
+    // leaves it off — see applySqlitePerfPragmas). Enable it just for this
+    // suite to prove the declared cascade is correct for deployments that do
+    // opt into enforcement.
     await memDb.executeQuery(sql`PRAGMA foreign_keys = ON`.compile(memDb));
   });
   afterAll(async () => {
