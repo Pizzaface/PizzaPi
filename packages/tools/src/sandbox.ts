@@ -8,7 +8,8 @@
  */
 
 import { resolve as pathResolve, dirname } from "node:path";
-import { realpathSync, existsSync } from "node:fs";
+import { realpathSync, existsSync, lstatSync, readlinkSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { platform } from "node:os";
 import {
     SandboxManager,
@@ -19,6 +20,9 @@ import { createLogger } from "./log.js";
 
 /** Whether the current platform is case-insensitive (macOS, Windows). */
 const _caseInsensitiveFS = platform() === "darwin" || platform() === "win32";
+
+/** Whether the current platform uses backslash path separators (Windows). */
+const _windowsFS = platform() === "win32";
 const log = createLogger("sandbox");
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -99,8 +103,10 @@ let _readOnlyOverlay = false;
  * Graceful degradation:
  * - Mode `"none"` or null srtConfig: skips initialization entirely.
  * - Unsupported platforms (Windows): logs a warning and continues unsandboxed.
- * - If `SandboxManager.initialize()` throws: logs the error and continues
- *   unsandboxed. Never crashes the worker.
+ * - If config building or `SandboxManager.initialize()` throws (including a
+ *   malformed `srtConfig` — missing entirely, or with undefined filesystem
+ *   arrays): logs the error and continues unsandboxed. Never crashes the
+ *   worker.
  */
 export async function initSandbox(config: ResolvedSandboxConfig): Promise<void> {
     _config = config;
@@ -127,14 +133,15 @@ export async function initSandbox(config: ResolvedSandboxConfig): Promise<void> 
         return;
     }
 
-    // Build the SandboxRuntimeConfig to pass to srt
-    const runtimeConfig = _buildSrtConfig(config);
-
     try {
+        // Config building runs inside the try too: a malformed config
+        // (missing srtConfig, undefined fs arrays) must degrade to
+        // unsandboxed like any other init failure, not crash the worker.
+        const runtimeConfig = _buildSrtConfig(config);
         await SandboxManager.initialize(runtimeConfig);
         _initialized = true;
     } catch (err) {
-        log.error(`Failed to initialize sandbox. Continuing unsandboxed: ${err instanceof Error ? err.message : String(err)}`);
+        log.error("Failed to initialize sandbox. Continuing unsandboxed:", err);
         _initialized = true;
         _initFailed = true;
     }
@@ -182,7 +189,17 @@ export function validatePath(
         return { allowed: true };
     }
 
-    const normalizedPath = _normalizePath(filePath);
+    let normalizedPath: string;
+    try {
+        normalizedPath = _normalizePath(filePath);
+    } catch {
+        // Unsupported/malformed URL scheme (see _normalizePath) — fail closed
+        // rather than falling through to CWD-relative resolution.
+        const label = op === "read" ? "Read" : "Write";
+        const reason = `${label} denied: path "${filePath}" could not be resolved to a filesystem path`;
+        _recordViolation(op, filePath, reason);
+        return { allowed: false, reason };
+    }
 
     return op === "read"
         ? _validateReadPath(normalizedPath)
@@ -316,6 +333,15 @@ export async function cleanupSandbox(): Promise<void> {
 /** Build the SandboxRuntimeConfig to pass to srt from our resolved config. */
 function _buildSrtConfig(config: ResolvedSandboxConfig): SandboxRuntimeConfig {
     const srt = config.srtConfig!;
+    // Malformed configs can omit the fs arrays entirely; default them to []
+    // rather than crashing on `...undefined` below (they retain their
+    // documented empty-array meaning: deny-all-writes / allow-all-reads).
+    const fsConfig = {
+        denyRead: srt.filesystem?.denyRead ?? [],
+        allowWrite: srt.filesystem?.allowWrite ?? [],
+        denyWrite: srt.filesystem?.denyWrite ?? [],
+        allowGitConfig: srt.filesystem?.allowGitConfig,
+    };
 
     // Merge SSH agent socket into allowUnixSockets if detected.
     // Runs regardless of whether srt.network is defined — basic mode's
@@ -330,14 +356,14 @@ function _buildSrtConfig(config: ResolvedSandboxConfig): SandboxRuntimeConfig {
 
     return {
         filesystem: {
-            denyRead: srt.filesystem.denyRead,
+            denyRead: fsConfig.denyRead,
             allowWrite: [
                 ...getDefaultWritePaths(),
-                ...srt.filesystem.allowWrite,
+                ...fsConfig.allowWrite,
             ],
-            denyWrite: srt.filesystem.denyWrite,
-            ...(srt.filesystem.allowGitConfig !== undefined
-                ? { allowGitConfig: srt.filesystem.allowGitConfig }
+            denyWrite: fsConfig.denyWrite,
+            ...(fsConfig.allowGitConfig !== undefined
+                ? { allowGitConfig: fsConfig.allowGitConfig }
                 : {}),
         },
         // SandboxManager.initialize() requires a `network` key — omitting it
@@ -398,9 +424,42 @@ function _isActive(): boolean {
     return _initialized && !_initFailed && _config?.mode !== "none" && _config?.srtConfig !== null;
 }
 
+/** Matches a "scheme://" prefix (e.g. "file://", "http://"). Requires the
+ *  "//" so Windows drive letters ("C:/foo", "C:\\foo") never match. */
+const _URL_SCHEME_RE = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//;
+
+/**
+ * If `path` is a symlink whose target doesn't (yet) exist — lstat sees it
+ * but existsSync (which follows links) doesn't — return the resolved
+ * absolute target path. Returns null when `path` doesn't exist at all, or
+ * exists as something other than a dangling symlink.
+ */
+function _readDanglingSymlinkTarget(path: string): string | null {
+    try {
+        const stat = lstatSync(path);
+        if (!stat.isSymbolicLink()) return null;
+        return pathResolve(dirname(path), readlinkSync(path));
+    } catch {
+        return null;
+    }
+}
+
 /** Normalize a file path for comparison against config paths. */
 function _normalizePath(filePath: string): string {
     let expanded = filePath;
+
+    // Reject URL-scheme inputs before pathResolve() can mistake the scheme
+    // for an ordinary CWD-relative path segment. "file://" URLs are
+    // normalized to a real filesystem path so deny/allow rules still apply;
+    // any other scheme (or a malformed file:// URL) fails closed.
+    const schemeMatch = _URL_SCHEME_RE.exec(expanded);
+    if (schemeMatch) {
+        if (schemeMatch[1].toLowerCase() !== "file") {
+            throw new Error(`Unsupported URL scheme: "${schemeMatch[1]}"`);
+        }
+        expanded = fileURLToPath(expanded); // throws on malformed file:// URLs
+    }
+
     if (expanded.startsWith("~")) {
         const home = process.env.HOME ?? process.env.USERPROFILE ?? "/";
         expanded = home + expanded.slice(1);
@@ -411,9 +470,35 @@ function _normalizePath(filePath: string): string {
         if (existsSync(resolved)) {
             return realpathSync(resolved);
         }
-        let parent = dirname(resolved);
-        const tail: string[] = [resolved.slice(parent.length)];
+
+        // `resolved` itself may be a dangling symlink (the validated path IS
+        // the link, not a child under it) — follow it before treating it as
+        // an unresolved tail segment.
+        const selfTarget = _readDanglingSymlinkTarget(resolved);
+        let parent: string;
+        const tail: string[] = [];
+        if (selfTarget !== null) {
+            parent = selfTarget;
+        } else {
+            parent = dirname(resolved);
+            tail.push(resolved.slice(parent.length));
+        }
+
+        let hops = 0;
         while (!existsSync(parent)) {
+            const linkTarget = _readDanglingSymlinkTarget(parent);
+            if (linkTarget !== null) {
+                // ponytail: bound against circular symlink chains; only link
+                // follows count so deep nonexistent dirs still walk to root
+                if (++hops > 40) break;
+                // `parent` is itself a dangling symlink — validate against
+                // where it actually points, not where it sits. Closes a
+                // TOCTOU window: an attacker who creates the link target
+                // after validation but before the write would otherwise
+                // escape the allowed root undetected.
+                parent = linkTarget;
+                continue;
+            }
             const next = dirname(parent);
             if (next === parent) break; // filesystem root ("/", "C:\", or a UNC root)
             tail.unshift(parent.slice(next.length));
@@ -518,9 +603,14 @@ function _pathStartsWith(path: string, prefix: string): boolean {
  * Canonicalize separators for comparison: resolved paths use backslashes on
  * Windows, and comparing them against a "/"-joined rule prefix would make
  * every allow-check fail (and every deny-check under-match).
+ *
+ * POSIX only: backslash is a LITERAL filename character there — the kernel
+ * never treats it as a separator, so canonicalizing it would make deny rules
+ * over-match ("/etc\secrets" is not under "/etc"). Keep conversion
+ * Windows-only to match kernel semantics on both platforms.
  */
 function _toComparable(p: string): string {
-    return p.replace(/\\/g, "/");
+    return _windowsFS ? p.replace(/\\/g, "/") : p;
 }
 
 function _pathIsUnderRule(normalizedPath: string, rulePath: string): boolean {

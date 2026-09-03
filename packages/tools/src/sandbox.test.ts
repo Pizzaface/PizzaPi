@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync } from "fs";
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -8,6 +8,8 @@ import {
     validatePath,
     getSandboxEnv,
     isSandboxActive,
+    isReadOnlyOverlay,
+    setReadOnlyOverlay,
     getSandboxMode,
     getViolations,
     clearViolations,
@@ -531,6 +533,378 @@ describe("sandbox", () => {
             const b = getResolvedConfig();
             expect(a).toEqual(b);
             expect(a).not.toBe(b);
+        });
+    });
+
+    // ── Adversarial hardening ─────────────────────────────────────────────────
+    // These tests exercise the real validatePath/wrapCommand/getSandboxEnv
+    // against hostile inputs. Network domain matching itself is delegated to
+    // @anthropic-ai/sandbox-runtime and is not observable through this
+    // module's public API, so only config pass-through is asserted here.
+
+    describe("adversarial: traversal & encoding", () => {
+        let tracked: string[] = [];
+        const track = (dir: string) => { tracked.push(dir); return dir; };
+
+        beforeEach(() => { tracked = []; });
+        afterEach(() => {
+            for (const dir of tracked.splice(0)) {
+                rmSync(dir, { recursive: true, force: true });
+            }
+        });
+
+        test("blocks deep ../ chains resolving outside denyRead", async () => {
+            await initSandbox(makeConfig({ denyRead: ["/etc"], allowWrite: ["/tmp"], denyWrite: [] }));
+            const deep = "/tmp/" + "../".repeat(60) + "etc/passwd";
+            expect(validatePath(deep, "read").allowed).toBe(false);
+        });
+
+        test("blocks .. traversal starting inside an allowed write dir", async () => {
+            const tmpDir = track(mkdtempSync(join(tmpdir(), "sandbox-trav-")));
+            await initSandbox(makeConfig({ denyRead: [], allowWrite: [tmpDir], denyWrite: [] }));
+            const escape = join(tmpDir, "sub", "..", "..", "..", "..", "etc", "passwd");
+            expect(validatePath(escape, "write").allowed).toBe(false);
+        });
+
+        test("allows .. traversal that lands back inside the allowed root (no false positive)", async () => {
+            const tmpDir = track(mkdtempSync(join(tmpdir(), "sandbox-trav-")));
+            await initSandbox(makeConfig({ denyRead: [], allowWrite: [tmpDir], denyWrite: [] }));
+            const staysInside = join(tmpDir, "a", "..", "b.txt");
+            expect(validatePath(staysInside, "write").allowed).toBe(true);
+        });
+
+        test("prefix confusion: /tmp-evil and /tmpfile are outside allowWrite /tmp", async () => {
+            await initSandbox(makeConfig({ denyRead: [], allowWrite: ["/tmp"], denyWrite: [] }));
+            expect(validatePath("/tmp-evil/file", "write").allowed).toBe(false);
+            expect(validatePath("/tmpfile", "write").allowed).toBe(false);
+        });
+
+        test("deny rule prefix boundary: /etc/secretsx is not under /etc/secrets", async () => {
+            await initSandbox(makeConfig({ denyRead: ["/etc/secrets"] }));
+            expect(validatePath("/etc/secretsx/key", "read").allowed).toBe(true);
+            expect(validatePath("/etc/secrets/key", "read").allowed).toBe(false);
+        });
+
+        test("URL-encoded segments are treated literally (kernel never decodes %2e%2e)", async () => {
+            // %2e%2e is a literal directory name to the kernel, so this string
+            // does NOT traverse on disk and must not match denyRead (and must
+            // not be silently decoded into a traversal either).
+            await initSandbox(makeConfig({ denyRead: ["/etc"], allowWrite: ["/tmp"], denyWrite: [] }));
+            expect(validatePath("/tmp/%2e%2e/%2e%2e/etc/passwd", "read").allowed).toBe(true);
+            expect(validatePath("/tmp/%252e%252e/etc/passwd", "read").allowed).toBe(true);
+            // ...but if the encoded path is under a denied rule as written, it's denied.
+            expect(validatePath("/etc/%2e%2e/passwd", "read").allowed).toBe(false);
+        });
+
+        test("null byte in path does not crash and follows parent normalization", async () => {
+            await initSandbox(makeConfig({ denyRead: ["/etc"] }));
+            expect(() => validatePath("/etc/secrets/key\0.txt", "read")).not.toThrow();
+            expect(validatePath("/etc/secrets/key\0.txt", "read").allowed).toBe(false);
+        });
+
+        test("empty path resolves to CWD: read allowed, write denied", async () => {
+            await initSandbox(makeConfig({ denyRead: [], allowWrite: ["/nonexistent-allow-root"], denyWrite: [] }));
+            expect(validatePath("", "read").allowed).toBe(true);
+            expect(validatePath("", "write").allowed).toBe(false);
+        });
+
+        test("relative paths resolve against CWD", async () => {
+            await initSandbox(makeConfig({ denyRead: [], allowWrite: ["/nonexistent-allow-root"], denyWrite: [] }));
+            expect(validatePath("foo/bar.txt", "write").allowed).toBe(false);
+        });
+
+        test("trailing slash on input path still matches deny rule", async () => {
+            await initSandbox(makeConfig({ denyRead: ["/etc/secrets"] }));
+            expect(validatePath("/etc/secrets/", "read").allowed).toBe(false);
+        });
+
+        test("backslashes are literal filename characters on POSIX (no traversal)", async () => {
+            // Real-dir geometry that works on every POSIX platform — on macOS
+            // /etc is a symlink to /private/etc, which makes the /etc variant
+            // pass there by accident (rule resolves away from the literal
+            // path string). This sibling shape catches the bug everywhere.
+            const tmpDir = track(mkdtempSync(join(tmpdir(), "sandbox-bs-")));
+            await initSandbox(makeConfig({ denyRead: [join(tmpDir, "secrets")] }));
+            // <tmpDir>/secrets\x is a sibling named "secrets\x", NOT under
+            // <tmpDir>/secrets on POSIX — misread as secrets/x if separators
+            // were canonicalized outside Windows.
+            expect(validatePath(join(tmpDir, "secrets\\x"), "read").allowed).toBe(true);
+            expect(validatePath(join(tmpDir, "secrets", "x"), "read").allowed).toBe(false);
+            // The classic /etc variant pins it on Linux, where /etc is a real dir.
+            await initSandbox(makeConfig({ denyRead: ["/etc"] }));
+            // On POSIX backslash is not a separator, so this is one weird
+            // filename, not /etc/secrets/x. Allowed — pinning correct POSIX
+            // semantics against a future over-eager "fix".
+            expect(validatePath("/etc\\secrets\\x", "read").allowed).toBe(true);
+        });
+
+        test("writing to filesystem root is denied", async () => {
+            const tmpDir = track(mkdtempSync(join(tmpdir(), "sandbox-root-")));
+            await initSandbox(makeConfig({ denyRead: [], allowWrite: [tmpDir], denyWrite: [] }));
+            expect(validatePath("/", "write").allowed).toBe(false);
+        });
+    });
+
+    describe("adversarial: symlink escapes", () => {
+        let tmpDir: string;
+        let outsideDir: string;
+        let tracked: string[] = [];
+        const track = (dir: string) => { tracked.push(dir); return dir; };
+
+        beforeEach(() => {
+            tracked = [];
+            tmpDir = track(mkdtempSync(join(tmpdir(), "sandbox-sym-")));
+            outsideDir = track(mkdtempSync(join(tmpdir(), "sandbox-sym-outside-")));
+        });
+        afterEach(() => {
+            for (const dir of tracked.splice(0)) {
+                rmSync(dir, { recursive: true, force: true });
+            }
+        });
+
+        test("write through dir symlink to existing outside dir is denied", async () => {
+            const linkPath = join(tmpDir, "escape");
+            symlinkSync(outsideDir, linkPath, "junction");
+            await initSandbox(makeConfig({ denyRead: [], allowWrite: [tmpDir], denyWrite: [] }));
+            expect(validatePath(join(linkPath, "new.txt"), "write").allowed).toBe(false);
+        });
+
+        test("read through dir symlink is denied when target is in denyRead", async () => {
+            const linkPath = join(tmpDir, "peek");
+            symlinkSync(outsideDir, linkPath, "junction");
+            await initSandbox(makeConfig({ denyRead: [outsideDir], allowWrite: [tmpDir], denyWrite: [] }));
+            expect(validatePath(join(linkPath, "secret.txt"), "read").allowed).toBe(false);
+        });
+
+        test("write through file symlink to an existing outside file is denied", async () => {
+            const outsideFile = join(outsideDir, "victim.txt");
+            writeFileSync(outsideFile, "original");
+            const linkPath = join(tmpDir, "out.txt");
+            symlinkSync(outsideFile, linkPath, "file");
+            await initSandbox(makeConfig({ denyRead: [], allowWrite: [tmpDir], denyWrite: [] }));
+            expect(validatePath(linkPath, "write").allowed).toBe(false);
+        });
+
+        test("read through file symlink into a denyRead dir is denied", async () => {
+            const deniedDir = track(mkdtempSync(join(tmpdir(), "sandbox-sym-denied-")));
+            const secretFile = join(deniedDir, "secret.txt");
+            writeFileSync(secretFile, "topsecret");
+            const linkPath = join(tmpDir, "sneaky.txt");
+            symlinkSync(secretFile, linkPath, "file");
+            await initSandbox(makeConfig({ denyRead: [deniedDir], allowWrite: [tmpDir], denyWrite: [] }));
+            const result = validatePath(linkPath, "read");
+            expect(result.allowed).toBe(false);
+            expect(result.reason).toContain("denied");
+        });
+
+        test("dangling symlink under allowWrite is validated against its link target, not the allowed root", async () => {
+            // The symlink's target ("created-later") doesn't exist yet, so
+            // existsSync() is false for it — _normalizePath must still follow
+            // the link (via lstat) rather than treating it as an ordinary
+            // child of the allowed root.
+            symlinkSync(join(outsideDir, "created-later"), join(tmpDir, "dangling"), "junction");
+            await initSandbox(makeConfig({ denyRead: [], allowWrite: [tmpDir], denyWrite: [] }));
+            expect(validatePath(join(tmpDir, "dangling", "x.txt"), "write").allowed).toBe(false);
+        });
+
+        test("symlink resolving within the allowed root is allowed (no false positive)", async () => {
+            const realDir = join(tmpDir, "real");
+            mkdirSync(realDir);
+            symlinkSync(realDir, join(tmpDir, "alias"), "junction");
+            await initSandbox(makeConfig({ denyRead: [], allowWrite: [tmpDir], denyWrite: [] }));
+            expect(validatePath(join(tmpDir, "alias", "f.txt"), "write").allowed).toBe(true);
+        });
+
+        test("denial through symlink records a violation with the resolved target", async () => {
+            const linkPath = join(tmpDir, "escape");
+            symlinkSync(outsideDir, linkPath, "junction");
+            await initSandbox(makeConfig({ denyRead: [], allowWrite: [tmpDir], denyWrite: [] }));
+            validatePath(join(linkPath, "f.txt"), "write");
+            const violations = getViolations();
+            expect(violations.length).toBe(1);
+            expect(violations[0].operation).toBe("write");
+            expect(violations[0].target.replace(/\\/g, "/")).toContain(outsideDir.replace(/\\/g, "/").replace(/^\//, ""));
+        });
+    });
+
+    describe("adversarial: env leakage", () => {
+        test("getSandboxEnv only ever exposes proxy-shaped variables", async () => {
+            await initSandbox(makeConfig({
+                mode: "full",
+                network: {
+                    allowedDomains: ["example.com"],
+                    deniedDomains: [],
+                    allowLocalBinding: true,
+                    httpProxyPort: 18888,
+                    socksProxyPort: 18889,
+                },
+            }));
+            if (!isSandboxActive()) return; // CI: init failed, nothing further to assert
+            const env = getSandboxEnv();
+            const allowedKeys = new Set([
+                "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy",
+            ]);
+            for (const [key, value] of Object.entries(env)) {
+                expect(allowedKeys.has(key)).toBe(true);
+                expect(value).toMatch(/^https?:\/\/127\.0\.0\.1:\d+$|^socks5:\/\/127\.0\.0\.1:\d+$/);
+            }
+        });
+
+        test("sandbox env never carries host secrets", async () => {
+            const origSock = process.env.SSH_AUTH_SOCK;
+            const origAws = process.env.AWS_SECRET_ACCESS_KEY;
+            process.env.SSH_AUTH_SOCK = "/tmp/sandbox-test-agent.sock";
+            process.env.AWS_SECRET_ACCESS_KEY = "sandbox-test-topsecret";
+            try {
+                await initSandbox(makeConfig({ mode: "full" }));
+                const env = getSandboxEnv();
+                const serialized = JSON.stringify(env);
+                expect(serialized).not.toContain("SSH_AUTH_SOCK");
+                expect(serialized).not.toContain("sandbox-test-agent.sock");
+                expect(serialized).not.toContain("topsecret");
+                expect(serialized).not.toContain("AWS_SECRET");
+            } finally {
+                if (origSock !== undefined) process.env.SSH_AUTH_SOCK = origSock;
+                else delete process.env.SSH_AUTH_SOCK;
+                if (origAws !== undefined) process.env.AWS_SECRET_ACCESS_KEY = origAws;
+                else delete process.env.AWS_SECRET_ACCESS_KEY;
+            }
+        });
+
+        test("getSandboxEnv is empty again after cleanup", async () => {
+            await initSandbox(makeConfig({ mode: "full" }));
+            await cleanupSandbox();
+            expect(getSandboxEnv()).toEqual({});
+        });
+    });
+
+    describe("adversarial: network config pass-through", () => {
+        // Domain matching semantics (subdomains, ports, case, trailing dot)
+        // live inside @anthropic-ai/sandbox-runtime; sandbox.ts only forwards
+        // allowedDomains/deniedDomains. What this module owns is that hostile
+        // domain strings must not crash initialization.
+        test("edge-case domain strings are accepted without crashing init", async () => {
+            await initSandbox(makeConfig({
+                mode: "full",
+                network: {
+                    allowedDomains: ["Example.COM.", "api.example.com:8443", "*.EXAMPLE.com", "localhost", ""],
+                    deniedDomains: ["EVIL.com", "evil.com.", "sub.evil.com:8080"],
+                    allowLocalBinding: true,
+                },
+            }));
+            expect(getSandboxMode()).toBe("full");
+        });
+    });
+
+    describe("adversarial: malformed config inputs", () => {
+        test("mode full with null srtConfig degrades to permissive validation", async () => {
+            await initSandbox({ mode: "full", srtConfig: null });
+            expect(getSandboxMode()).toBe("full");
+            expect(isSandboxActive()).toBe(false);
+            expect(validatePath("/etc/shadow", "read").allowed).toBe(true);
+            expect(validatePath("/etc/cron.d", "write").allowed).toBe(true);
+        });
+
+        test("empty allowWrite denies all writes; empty denyRead allows all reads", async () => {
+            await initSandbox(makeConfig({
+                denyRead: [],
+                allowWrite: [],
+                denyWrite: [],
+            }));
+            expect(validatePath("/tmp/x", "write").allowed).toBe(false);
+            expect(validatePath("/etc/shadow", "read").allowed).toBe(true);
+        });
+
+        test("empty allowedDomains config does not crash init", async () => {
+            await initSandbox(makeConfig({
+                mode: "full",
+                network: { allowedDomains: [], deniedDomains: [] },
+            }));
+            expect(getSandboxMode()).toBe("full");
+        });
+
+        test("initSandbox does not throw on malformed configs (missing srtConfig / undefined fs arrays)", async () => {
+            // srtConfig entirely absent (undefined, not null).
+            await expect(
+                initSandbox({ mode: "basic" } as unknown as ResolvedSandboxConfig),
+            ).resolves.toBeUndefined();
+            expect(getSandboxMode()).toBe("basic");
+
+            _resetState();
+
+            // srtConfig present but its filesystem arrays are undefined.
+            await expect(
+                initSandbox({
+                    mode: "basic",
+                    srtConfig: { filesystem: {} },
+                } as unknown as ResolvedSandboxConfig),
+            ).resolves.toBeUndefined();
+            expect(getSandboxMode()).toBe("basic");
+        });
+
+        test("file:// URL prefix is normalized to a filesystem path before denyRead applies", async () => {
+            await initSandbox(makeConfig({ denyRead: ["/etc/secrets"] }));
+            expect(validatePath("file:///etc/secrets/key", "read").allowed).toBe(false);
+            expect(validatePath("file:///etc/other", "read").allowed).toBe(true);
+        });
+
+        test("non-file:// URL schemes are denied outright, not resolved as CWD-relative", async () => {
+            await initSandbox(makeConfig({ denyRead: [] }));
+            expect(validatePath("http://evil.example/etc/passwd", "read").allowed).toBe(false);
+            expect(validatePath("http://evil.example/etc/passwd", "write").allowed).toBe(false);
+        });
+
+        test("malformed file:// URL is denied, not treated as a relative path", async () => {
+            await initSandbox(makeConfig({ denyRead: [] }));
+            // Non-empty, non-"localhost" host on a file:// URL is malformed.
+            expect(validatePath("file://not-localhost/etc/passwd", "read").allowed).toBe(false);
+        });
+
+        test("dangling symlink written directly (not as a path prefix) is still resolved against its link target", async () => {
+            const tmp = mkdtempSync(join(tmpdir(), "sandbox-dangle-"));
+            const outside = mkdtempSync(join(tmpdir(), "sandbox-dangle-outside-"));
+            try {
+                symlinkSync(join(outside, "created-later"), join(tmp, "dangling"), "junction");
+                await initSandbox(makeConfig({ denyRead: [], allowWrite: [tmp], denyWrite: [] }));
+                // Validating the symlink path itself (no child segment below it).
+                expect(validatePath(join(tmp, "dangling"), "write").allowed).toBe(false);
+            } finally {
+                rmSync(tmp, { recursive: true, force: true });
+                rmSync(outside, { recursive: true, force: true });
+            }
+        });
+
+        test("dangling symlink whose target resolves inside the allowed root is still allowed (no false positive)", async () => {
+            const tmp = mkdtempSync(join(tmpdir(), "sandbox-dangle-ok-"));
+            try {
+                symlinkSync(join(tmp, "not-created-yet"), join(tmp, "dangling-inside"), "junction");
+                await initSandbox(makeConfig({ denyRead: [], allowWrite: [tmp], denyWrite: [] }));
+                expect(validatePath(join(tmp, "dangling-inside", "x.txt"), "write").allowed).toBe(true);
+            } finally {
+                rmSync(tmp, { recursive: true, force: true });
+            }
+        });
+    });
+
+    describe("adversarial: read-only overlay", () => {
+        test("overlay flag is tracked and reset by cleanup", async () => {
+            await initSandbox(makeConfig({ mode: "basic" }));
+            setReadOnlyOverlay(true);
+            expect(isReadOnlyOverlay()).toBe(true);
+            await cleanupSandbox();
+            expect(isReadOnlyOverlay()).toBe(false);
+        });
+
+        test("overlay-enabled wrapCommand: deny-all wrap when active, documented no-op when inactive", async () => {
+            await initSandbox(makeConfig({ mode: "basic" }));
+            setReadOnlyOverlay(true);
+            const cmd = "echo sandbox-overlay-probe";
+            const wrapped = await wrapCommand(cmd);
+            if (isSandboxActive()) {
+                expect(wrapped).not.toBe(cmd);
+            } else {
+                expect(wrapped).toBe(cmd);
+            }
         });
     });
 });
