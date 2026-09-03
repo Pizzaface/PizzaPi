@@ -619,6 +619,18 @@ describe("sandbox", () => {
         });
 
         test("backslashes are literal filename characters on POSIX (no traversal)", async () => {
+            // Real-dir geometry that works on every POSIX platform — on macOS
+            // /etc is a symlink to /private/etc, which makes the /etc variant
+            // pass there by accident (rule resolves away from the literal
+            // path string). This sibling shape catches the bug everywhere.
+            const tmpDir = track(mkdtempSync(join(tmpdir(), "sandbox-bs-")));
+            await initSandbox(makeConfig({ denyRead: [join(tmpDir, "secrets")] }));
+            // <tmpDir>/secrets\x is a sibling named "secrets\x", NOT under
+            // <tmpDir>/secrets on POSIX — misread as secrets/x if separators
+            // were canonicalized outside Windows.
+            expect(validatePath(join(tmpDir, "secrets\\x"), "read").allowed).toBe(true);
+            expect(validatePath(join(tmpDir, "secrets", "x"), "read").allowed).toBe(false);
+            // The classic /etc variant pins it on Linux, where /etc is a real dir.
             await initSandbox(makeConfig({ denyRead: ["/etc"] }));
             // On POSIX backslash is not a separator, so this is one weird
             // filename, not /etc/secrets/x. Allowed — pinning correct POSIX

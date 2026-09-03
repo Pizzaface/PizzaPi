@@ -20,6 +20,9 @@ import { createLogger } from "./log.js";
 
 /** Whether the current platform is case-insensitive (macOS, Windows). */
 const _caseInsensitiveFS = platform() === "darwin" || platform() === "win32";
+
+/** Whether the current platform uses backslash path separators (Windows). */
+const _windowsFS = platform() === "win32";
 const log = createLogger("sandbox");
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -600,9 +603,14 @@ function _pathStartsWith(path: string, prefix: string): boolean {
  * Canonicalize separators for comparison: resolved paths use backslashes on
  * Windows, and comparing them against a "/"-joined rule prefix would make
  * every allow-check fail (and every deny-check under-match).
+ *
+ * POSIX only: backslash is a LITERAL filename character there — the kernel
+ * never treats it as a separator, so canonicalizing it would make deny rules
+ * over-match ("/etc\secrets" is not under "/etc"). Keep conversion
+ * Windows-only to match kernel semantics on both platforms.
  */
 function _toComparable(p: string): string {
-    return p.replace(/\\/g, "/");
+    return _windowsFS ? p.replace(/\\/g, "/") : p;
 }
 
 function _pathIsUnderRule(normalizedPath: string, rulePath: string): boolean {
