@@ -185,7 +185,7 @@ cd packages/cli && bun test src/patches.test.ts
 
 | Package | Test files | What's covered |
 |---------|-----------|----------------|
-| **server** | 10 | Validation, security, sessions store, attachments store, API routes, pruning, pi-compat |
+| **server** | 11 | Validation, security, sessions store, attachments store, API routes, pruning, pi-compat, SIGTERM drain upgrade guard |
 | **ui** | 3 | Message grouping, session viewer utils, path utilities |
 | **tools** | 2 | Toolkit helpers, pi-compat |
 | **cli** | 1 | Patch application and runtime behavior |

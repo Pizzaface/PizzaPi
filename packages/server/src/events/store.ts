@@ -47,6 +47,16 @@ function parseJson<T>(json: string, what: string): T | null {
 
 // ── Schema ───────────────────────────────────────────────────────────────────
 
+/** True when `table` already has `column` (SQLite pragma table-info probe).
+ *  Replaces the old try/catch ALTER pattern: already-migrated databases logged
+ *  a noisy "duplicate column name" warning on every boot, and the catch also
+ *  swallowed genuine ALTER failures (locked/corrupt DB) as warnings. */
+async function hasColumn(table: string, column: string): Promise<boolean> {
+  const db = getKysely();
+  const res = await db.executeQuery(sql<{ name: string }>`SELECT name FROM pragma_table_info(${table})`.compile(db));
+  return res.rows.some((r) => r.name === column);
+}
+
 export async function ensureEventTables(): Promise<void> {
   const db = getKysely();
   await db.schema
@@ -64,10 +74,8 @@ export async function ensureEventTables(): Promise<void> {
   // Tenant scope column. fireId idempotency is per owner: two publishers
   // reusing the same key must not collide (the second would silently get the
   // first's event). The old global unique index is replaced.
-  try {
+  if (!(await hasColumn(EVENT_TABLE, "ownerUserId"))) {
     await db.schema.alterTable(EVENT_TABLE).addColumn("ownerUserId", "text").execute();
-  } catch (err) {
-    log.warn("trigger_event ownerUserId column migration:", err);
   }
   await db.executeQuery(
     sql`UPDATE trigger_event SET ownerUserId = json_extract(eventJson, '$.source.userId') WHERE ownerUserId IS NULL`.compile(db),
@@ -75,10 +83,8 @@ export async function ensureEventTables(): Promise<void> {
   // seq migration for existing databases: backfill from rowid (a globally
   // monotonic insertion counter, so every source's subsequence is monotonic)
   // so drain ordering stays correct for pre-upgrade rows.
-  try {
+  if (!(await hasColumn(EVENT_TABLE, "seq"))) {
     await db.schema.alterTable(EVENT_TABLE).addColumn("seq", "integer").execute();
-  } catch (err) {
-    log.warn("trigger_event seq column migration:", err);
   }
   await db.executeQuery(sql`UPDATE trigger_event SET seq = rowid WHERE seq IS NULL`.compile(db));
   await db.schema.dropIndex("trigger_event_fire_idx").ifExists().execute();
@@ -111,10 +117,8 @@ export async function ensureEventTables(): Promise<void> {
     .on(ROUTE_TABLE)
     .column("eventType")
     .execute();
-  try {
+  if (!(await hasColumn(ROUTE_TABLE, "ownerUserId"))) {
     await db.schema.alterTable(ROUTE_TABLE).addColumn("ownerUserId", "text").execute();
-  } catch (err) {
-    log.warn("trigger_route ownerUserId column migration:", err);
   }
   await db.executeQuery(
     sql`UPDATE trigger_route SET ownerUserId = json_extract(routeJson, '$.ownerUserId') WHERE ownerUserId IS NULL`.compile(db),
@@ -138,10 +142,8 @@ export async function ensureEventTables(): Promise<void> {
     .execute();
   // Exposed column for contract TTL sweeps (indexed — the 30s sweep was an
   // unbounded scan when expiry lived only inside deliveryJson).
-  try {
+  if (!(await hasColumn(DELIVERY_TABLE, "expiresAt"))) {
     await db.schema.alterTable(DELIVERY_TABLE).addColumn("expiresAt", "text").execute();
-  } catch (err) {
-    log.warn("trigger_delivery expiresAt column migration:", err);
   }
   // Backfill pre-upgrade rows from their JSON so in-flight contracts survive.
   await db.executeQuery(

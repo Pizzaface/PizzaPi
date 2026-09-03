@@ -15,7 +15,7 @@ import { runAllMigrations } from "./migrations.js";
 import { loadConfigRoutes } from "./events/config-routes.js";
 
 import { startTriggerMaintenance } from "./trigger-maintenance.js";
-import { setServerShuttingDown } from "./health.js";
+import { setServerShuttingDown, isServerShuttingDown } from "./health.js";
 import { handleTunnelWsUpgrade } from "./routes/tunnel-ws.js";
 import { createLogger } from "@pizzapi/tools";
 import {
@@ -366,6 +366,18 @@ const existingUpgradeListeners = httpServer.listeners("upgrade").slice();
 httpServer.removeAllListeners("upgrade");
 
 httpServer.on("upgrade", (req, socket, head) => {
+    // SIGTERM drain window: io.close() closes the engine's WebSocketServer
+    // first while this HTTP server keeps accepting for up to the grace
+    // period. Bun's built-in ws shim throws (uncaughtException → the whole
+    // relay goes down) when an upgrade reaches a closed WebSocketServer —
+    // its completeUpgrade calls abortHandshake on a missing ServerResponse
+    // (oven-sh/bun#39766). Destroy the socket instead of delegating; clients
+    // reconnect against the restarted server anyway.
+    if (isServerShuttingDown) {
+        socket.destroy();
+        return;
+    }
+
     // Viewer tunnel upgrades first: host-based tunnels own their whole origin
     // (including a /_tunnel path), so the label check must precede the relay
     // endpoint. Path-based checks (/api/tunnel/*) are disjoint from /_tunnel.

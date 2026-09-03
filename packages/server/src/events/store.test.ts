@@ -565,6 +565,31 @@ describe("per-source FIFO (seq)", () => {
     const pending = await store.pendingDeliveriesFor("s");
     expect(pending.map((d) => d.eventId)).toEqual([old.event.eventId, fresh.event.eventId]);
   });
+
+  it("ensureEventTables is idempotent — re-running on a migrated schema adds nothing and breaks nothing", async () => {
+    // Production re-runs this on every boot; the old try/catch ALTER logged a
+    // "duplicate column name" warning each time (and seq is even in the
+    // fresh-DB CREATE TABLE, so it warned on brand-new databases too).
+    await store.ensureEventTables(); // second run against the live schema
+
+    // The upgraded columns exist and the pragma probe sees them all.
+    for (const [table, column] of [
+      ["trigger_event", "ownerUserId"],
+      ["trigger_event", "seq"],
+      ["trigger_route", "ownerUserId"],
+      ["trigger_delivery", "expiresAt"],
+    ] as const) {
+      const cols = await memDb
+        .executeQuery(sql`SELECT name FROM pragma_table_info(${table})`.compile(memDb));
+      const names = cols.rows.map((r: any) => r.name);
+      expect(names).toContain(column);
+    }
+
+    // Store remains fully functional after the re-run.
+    const { event, created } = await store.insertEvent(eventInput("t:after"));
+    expect(created).toBe(true);
+    expect(await store.getEvent(event.eventId)).not.toBeNull();
+  });
 });
 
 describe("storage integrity (FK cascade, tx prune/sync)", () => {
