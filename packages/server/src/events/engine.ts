@@ -48,19 +48,19 @@ function matchesSingleFilter(filter: TriggerFilter, payload: Record<string, unkn
     throw new Error("Filter field must be a non-empty string");
   }
   const actual = payload[filter.field];
+  // Case-insensitive by default: GitHub logins/repos/branches are, and a route
+  // filtering author "pizzaface" against payload "Pizzaface" silently dropped
+  // every event. Opt into exact casing per filter.
+  const fold = (s: string) => (filter.caseSensitive ? s : s.toLowerCase());
+  const values = Array.isArray(filter.value) ? filter.value : [filter.value];
   if (filter.op === "contains") {
     if (typeof actual !== "string") return false;
-    const values = Array.isArray(filter.value) ? filter.value : [filter.value];
-    return values.some((v) => actual.toLowerCase().includes(String(v).toLowerCase()));
+    return values.some((v) => fold(actual).includes(fold(String(v))));
   }
-  const values = Array.isArray(filter.value) ? filter.value : [filter.value];
   // Loose equality on purpose: payloads arrive as JSON with mixed number/string types.
-  // String compares are case-insensitive: GitHub logins/repos/branches are, and a
-  // route filtering author "pizzaface" against payload "Pizzaface" silently
-  // dropped every event.
   return values.some((v) =>
     typeof actual === "string" && typeof v === "string"
-      ? actual.toLowerCase() === v.toLowerCase()
+      ? fold(actual) === fold(v)
       // eslint-disable-next-line eqeqeq
       : actual == v,
   );

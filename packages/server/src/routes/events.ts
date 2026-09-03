@@ -159,6 +159,9 @@ export function validateRouteFields(patch: unknown): string | null {
       if (filter.op !== undefined && filter.op !== "eq" && filter.op !== "contains") {
         return "filters op must be eq | contains";
       }
+      if (filter.caseSensitive !== undefined && typeof filter.caseSensitive !== "boolean") {
+        return "filters caseSensitive must be a boolean";
+      }
     }
   }
   if (patch.filterMode !== undefined && patch.filterMode !== "and" && patch.filterMode !== "or") {

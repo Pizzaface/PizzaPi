@@ -38,6 +38,7 @@ interface FilterRow {
   field: string;
   op: "eq" | "contains";
   value: string;
+  caseSensitive: boolean;
 }
 
 interface RouteFormProps {
@@ -79,6 +80,7 @@ function initialFilterRows(route: Route | null): FilterRow[] {
     field: filter.field,
     op: filter.op ?? "eq",
     value: Array.isArray(filter.value) ? filter.value.join(",") : String(filter.value),
+    caseSensitive: filter.caseSensitive === true,
   }));
 }
 
@@ -161,6 +163,7 @@ export function RouteForm({ catalog, targetSessionId, editing = null, onDone, on
         field: filter.field.trim(),
         op: filter.op,
         value: parseFilterValue(filter.value, schemaProps[filter.field.trim()]?.type),
+        ...(filter.caseSensitive ? { caseSensitive: true } : {}),
       }));
 
     setBusy(true);
@@ -355,7 +358,7 @@ export function RouteForm({ catalog, targetSessionId, editing = null, onDone, on
             onRemove={() => setFilters((prev) => prev.filter((_, i) => i !== index))}
           />
         ))}
-        <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[11px]" onClick={() => setFilters((prev) => [...prev, { field: "", op: "eq", value: "" }])}>
+        <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[11px]" onClick={() => setFilters((prev) => [...prev, { field: "", op: "eq", value: "", caseSensitive: false }])}>
           <Plus className="h-3 w-3" /> Add filter
         </Button>
       </fieldset>
@@ -515,6 +518,15 @@ function FilterRowEditor({
           className="h-7 text-[11px]"
         />
       </div>
+      <label className="flex items-center gap-1 self-end pb-1.5 text-[10px] text-muted-foreground" title="Match string case exactly (default: case-insensitive)">
+        <input
+          type="checkbox"
+          checked={filter.caseSensitive}
+          onChange={(e) => onChange({ ...filter, caseSensitive: e.target.checked })}
+          className="h-3 w-3"
+        />
+        Aa
+      </label>
       <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={onRemove} title="Remove filter" aria-label="Remove filter">
         <Trash2 className="h-3 w-3" />
       </Button>

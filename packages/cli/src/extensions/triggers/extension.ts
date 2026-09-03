@@ -874,13 +874,14 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 },
                 filters: {
                     type: "array",
-                    description: "Optional delivery filters based on the trigger's output schema. Each filter is { field, value, op? }. 'field' is a payload property name, 'value' is the expected value (or array for OR), 'op' is 'eq' (default) or 'contains'.",
+                    description: "Optional delivery filters based on the trigger's output schema. Each filter is { field, value, op?, caseSensitive? }. 'field' is a payload property name, 'value' is the expected value (or array for OR), 'op' is 'eq' (default) or 'contains'. String matching is case-insensitive unless caseSensitive is true.",
                     items: {
                         type: "object",
                         properties: {
                             field: { type: "string", description: "Payload field name to filter on" },
                             value: { description: "Expected value or array of values (OR within this filter)" },
                             op: { type: "string", enum: ["eq", "contains"], description: "Match operator: 'eq' (default) or 'contains' (substring)" },
+                            caseSensitive: { type: "boolean", description: "Exact-case string matching (default false)" },
                         },
                         required: ["field", "value"],
                     },
@@ -898,7 +899,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 triggerType: string;
                 sessionId?: string;
                 params?: Record<string, unknown>;
-                filters?: Array<{ field: string; value: unknown; op?: string }>;
+                filters?: Array<{ field: string; value: unknown; op?: string; caseSensitive?: boolean }>;
                 filterMode?: string;
             };
             const targetId = params.sessionId ?? getOwnSessionId() ?? "";
@@ -933,7 +934,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             }
 
             // Coerce filter values
-            let subFilters: Array<{ field: string; value: string | number | boolean | Array<string | number | boolean>; op?: "eq" | "contains" }> | undefined;
+            let subFilters: Array<{ field: string; value: string | number | boolean | Array<string | number | boolean>; op?: "eq" | "contains"; caseSensitive?: boolean }> | undefined;
             if (Array.isArray(params.filters) && params.filters.length > 0) {
                 subFilters = [];
                 for (const f of params.filters) {
@@ -950,7 +951,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                         value = String(f.value);
                     }
                     const op = f.op === "contains" ? "contains" as const : "eq" as const;
-                    subFilters.push({ field: f.field, value, op });
+                    subFilters.push({ field: f.field, value, op, ...(f.caseSensitive === true ? { caseSensitive: true } : {}) });
                 }
                 if (subFilters.length === 0) subFilters = undefined;
             }
@@ -1103,6 +1104,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                             field: { type: "string", description: "Payload field name to filter on" },
                             value: { description: "Expected value or array of values" },
                             op: { type: "string", enum: ["eq", "contains"], description: "Match operator" },
+                            caseSensitive: { type: "boolean", description: "Exact-case string matching (default false)" },
                         },
                         required: ["field", "value"],
                     },
@@ -1121,7 +1123,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 subscriptionId?: string;
                 sessionId?: string;
                 params?: Record<string, unknown>;
-                filters?: Array<{ field: string; value: unknown; op?: string }>;
+                filters?: Array<{ field: string; value: unknown; op?: string; caseSensitive?: boolean }>;
                 filterMode?: string;
             };
             const targetId = params.sessionId ?? getOwnSessionId() ?? "";
@@ -1140,7 +1142,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             }
 
             // Coerce filter values
-            let subFilters: Array<{ field: string; value: string | number | boolean | Array<string | number | boolean>; op?: "eq" | "contains" }> | undefined;
+            let subFilters: Array<{ field: string; value: string | number | boolean | Array<string | number | boolean>; op?: "eq" | "contains"; caseSensitive?: boolean }> | undefined;
             if (Array.isArray(params.filters) && params.filters.length > 0) {
                 subFilters = [];
                 for (const f of params.filters) {
@@ -1157,7 +1159,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                         value = String(f.value);
                     }
                     const op = f.op === "contains" ? "contains" as const : "eq" as const;
-                    subFilters.push({ field: f.field, value, op });
+                    subFilters.push({ field: f.field, value, op, ...(f.caseSensitive === true ? { caseSensitive: true } : {}) });
                 }
                 if (subFilters.length === 0) subFilters = undefined;
             }

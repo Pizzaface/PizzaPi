@@ -12,3 +12,12 @@ describe("payloadMatchesFilters eq", () => {
     expect(payloadMatchesFilters({ draft: false }, [{ field: "draft", value: true }])).toBe(false);
   });
 });
+
+describe("payloadMatchesFilters caseSensitive", () => {
+  it("opts into exact casing for eq and contains", () => {
+    expect(payloadMatchesFilters({ author: "Pizzaface" }, [{ field: "author", value: "pizzaface", caseSensitive: true }])).toBe(false);
+    expect(payloadMatchesFilters({ author: "Pizzaface" }, [{ field: "author", value: "Pizzaface", caseSensitive: true }])).toBe(true);
+    expect(payloadMatchesFilters({ body: "!Pizza go" }, [{ field: "body", value: "!pizza", op: "contains", caseSensitive: true }])).toBe(false);
+    expect(payloadMatchesFilters({ body: "!Pizza go" }, [{ field: "body", value: "!pizza", op: "contains" }])).toBe(true);
+  });
+});

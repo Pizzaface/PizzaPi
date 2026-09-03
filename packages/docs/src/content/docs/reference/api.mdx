@@ -1093,7 +1093,7 @@ Subscribe a session to an event type (or register an auto-spawn listener).
   "deliverAs": "followUp",               // "steer" or "followUp"
   "params": { "branch": "main" },        // optional, forwarded to the emitting service
   "filters": [                            // optional payload filters
-    { "field": "repo", "value": "my/repo", "op": "eq" }
+    { "field": "repo", "value": "my/repo", "op": "eq" }   // "eq" | "contains"; add "caseSensitive": true for exact casing
   ],
   "filterMode": "and",                    // optional: "and" (default) or "or"
   "origin": "agent"                      // optional: "agent" or "ui"
