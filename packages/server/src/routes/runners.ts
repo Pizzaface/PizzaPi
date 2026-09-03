@@ -18,7 +18,7 @@ import {
 } from "../ws/sio-registry.js";
 import { getRunnerServices } from "../ws/sio-registry/runners.js";
 import { triggerAllowedForCwd } from "./mode-scope.js";
-import { createRoute, deleteRoute, getRoute, listRoutes, updateRoute } from "../events/store.js";
+import { createRoute, deleteRoute, listRoutes, updateRoute } from "../events/store.js";
 import type { JsonValue, Route } from "@pizzapi/protocol";
 import { getPersistedRelaySessionOwner } from "../sessions/store.js";
 import { getSession } from "../ws/sio-state/index.js";
