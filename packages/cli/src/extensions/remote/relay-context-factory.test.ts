@@ -7,7 +7,7 @@ import { readSessionModelsCache, resetSessionModelsCacheMemo } from "../../sessi
 
 // Unified engine (ADR-0002): lifecycle triggers publish via the trigger-client
 // HTTP surface. Mock it so tests assert the publish mapping, not real HTTP.
-const publishEventMock = mock(async (params: unknown): Promise<any> => ({
+const publishEventMock = mock(async (_params: unknown): Promise<any> => ({
     ok: true,
     eventId: "evt-1",
     deliveries: [{ deliveryId: "dlv-1", sessionId: "parent-1", status: "delivered" }],

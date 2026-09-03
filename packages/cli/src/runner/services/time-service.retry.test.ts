@@ -308,7 +308,7 @@ describe("cron delivery retry and durable state", () => {
 
     test("cron owner gone: spawns a replacement session, re-owns the cron under it, and stops the old cron", async () => {
         const home = setupEnv();
-        const calls = routedFetch((url, init) => {
+        const calls = routedFetch((url) => {
             if (url.includes("/api/runners/spawn")) return { status: 200, body: { ok: true, sessionId: "replacement-2" } };
             if (url.includes("/api/routes/")) return { status: 200, body: { ok: true, route: { routeId: "sub-cron" } } };
             return { status: 404 };

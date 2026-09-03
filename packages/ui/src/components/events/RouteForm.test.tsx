@@ -36,6 +36,7 @@ mock.module("@/lib/utils", () => actualUtils);
 
 const { act, cleanup, fireEvent, render, waitFor } = await import("@testing-library/react");
 const React = (await import("react")).default;
+void React; // JSX factory in scope for the classic transform
 const { RouteForm } = await import("./RouteForm");
 
 afterAll(() => mock.restore());

@@ -26,7 +26,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
-import { Trash2, Plus, RefreshCw, Lock, ChevronRight, ChevronDown, Zap, Pencil, WifiOff } from "lucide-react";
+import { Trash2, RefreshCw, Lock, ChevronRight, ChevronDown, Zap, Pencil, WifiOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { RouteForm } from "./RouteForm";
 import {

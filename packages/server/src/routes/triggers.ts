@@ -38,7 +38,7 @@ import {
     broadcastToSessionViewers,
     emitToRelaySessionVerified,
 } from "../ws/sio-registry.js";
-import { getRunnerServices, getRunnerData } from "../ws/sio-registry/runners.js";
+import { getRunnerServices } from "../ws/sio-registry/runners.js";
 import { triggerAllowedForCwd } from "./mode-scope.js";
 import type { RouteHandler } from "./types.js";
 import { randomUUID } from "crypto";

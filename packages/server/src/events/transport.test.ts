@@ -12,7 +12,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock 
 import { Database } from "bun:sqlite";
 import { Kysely } from "kysely";
 import { BunSqliteDialect } from "kysely-bun-sqlite";
-import type { Delivery, TriggerEvent } from "@pizzapi/protocol";
+import type { TriggerEvent } from "@pizzapi/protocol";
 
 const memDb = new Kysely<any>({
   dialect: new BunSqliteDialect({ database: new Database(":memory:") }),
@@ -45,7 +45,6 @@ let sharedSession: Record<string, unknown> | null = null;
 let localSocket: LocalSocket | null = null;
 let relayAcked: { attempts: number; settle: (acked: boolean) => void } | null = null;
 let relayVerified = false;
-let triggerResponseEmits: Array<{ sessionId: string; data: any }> = [];
 let runnerEmits: Array<{ runnerId: string; event: string; data: any }> = [];
 // Cluster-wide runner presence for the cross-node spawn path.
 let runnerPresence: { kind: "count"; count: number } | { kind: "unknown" } = { kind: "unknown" };
@@ -92,7 +91,6 @@ function resetFakes() {
   localSocket = null;
   relayAcked = null;
   relayVerified = false;
-  triggerResponseEmits = [];
   runnerEmits = [];
   wakeRedis = null;
   runnerPresence = { kind: "unknown" };
@@ -245,11 +243,10 @@ describe("trigger transport delivery receipt", () => {
 });
 
 describe("distributed wake lock (multi-node)", () => {
-  let store: Awaited<typeof modsPromise>["store"];
   let transport: Awaited<typeof modsPromise>["transport"];
 
   beforeAll(async () => {
-    ({ store, transport } = await modsPromise);
+    ({ transport } = await modsPromise);
   });
 
   afterEach(() => resetFakes());

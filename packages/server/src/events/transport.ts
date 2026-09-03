@@ -355,7 +355,7 @@ export function createEngineDeps(): EngineDeps {
       return "unreachable";
     },
 
-    async spawn(route, event) {
+    async spawn(route, _event) {
       if (route.target.kind !== "spawn") return null;
       const spec = route.target.spec;
       const sessionId = randomUUID();

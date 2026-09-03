@@ -24,7 +24,6 @@
  *   });
  */
 
-import { randomUUID } from "node:crypto";
 import { createLogger } from "@pizzapi/tools";
 import type { JsonValue } from "@pizzapi/protocol";
 import type { ServiceSigilDef } from "@pizzapi/protocol";

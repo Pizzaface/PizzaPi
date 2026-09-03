@@ -218,7 +218,6 @@ export async function insertEventWithPlan(
         WHERE json_extract(eventJson, '$.source.id') = ${full.source.id}`.compile(trx),
     );
     const seq = Number(seqRow.rows[0]?.next ?? 1);
-    let created = false;
     try {
       await trx
         .insertInto(EVENT_TABLE)
@@ -232,7 +231,6 @@ export async function insertEventWithPlan(
           seq,
         })
         .execute();
-      created = true;
     } catch (err) {
       if (fireId) {
         // Same-owner dedup only (NULL owners never collide in SQLite's

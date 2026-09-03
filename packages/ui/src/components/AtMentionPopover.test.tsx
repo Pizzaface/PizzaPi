@@ -47,6 +47,7 @@ mock.module("@/hooks/useAtMentionSearch", () => ({
 // change events for every later test file in the run.
 const { act, cleanup, render, waitFor } = await import("@testing-library/react");
 const React = (await import("react")).default;
+void React; // JSX factory in scope for the classic transform
 
 const { AtMentionPopover } = await import("./AtMentionPopover");
 

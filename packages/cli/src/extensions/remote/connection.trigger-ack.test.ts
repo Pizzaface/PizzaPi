@@ -41,7 +41,7 @@ class FakeSocket {
         for (const handler of this.handlers.get(event) ?? []) handler(data, ack);
     }
     io = {
-        on: (event: string, handler: (data: any) => void) => {
+        on: (event: string, _handler: (data: any) => void) => {
             const list = this.ioHandlers.get(event) ?? [];
             this.ioHandlers.set(event, list);
             return this.io;
