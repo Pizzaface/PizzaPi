@@ -378,6 +378,18 @@ describe("runner trigger listener routes", () => {
         expect(mockRoutes.get("rt_1").target.spec.promptTemplate).toBe("Updated prompt");
     });
 
+    test("PUT resolves a legacy event-type target to the runner's spawn listener", async () => {
+        seedSpawnRoute("rt_1", "linear:project_comment_added", { promptTemplate: "old" });
+
+        const [req, url] = makeReq("PUT", "/api/runners/runner-A/trigger-listeners/linear%3Aproject_comment_added", {
+            prompt: "Updated prompt",
+        });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        expect((await res!.json()).listenerId).toBe("rt_1");
+        expect(mockRoutes.get("rt_1").target.spec.promptTemplate).toBe("Updated prompt");
+    });
+
     test("DELETE removes one listener by route id", async () => {
         seedSpawnRoute("rt_1", "svc:event");
 

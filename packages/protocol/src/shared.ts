@@ -275,9 +275,11 @@ export interface TriggerFilter {
   value: string | number | boolean | Array<string | number | boolean>;
   /**
    * Match operator. Defaults to "eq" (exact match / set membership).
-   * "contains" does case-insensitive substring matching on string fields.
+   * "contains" does substring matching on string fields.
    */
   op?: "eq" | "contains";
+  /** String comparisons are case-insensitive unless this is true. */
+  caseSensitive?: boolean;
 }
 
 /** How multiple filters combine: "and" = all must match, "or" = any must match. */

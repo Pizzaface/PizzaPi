@@ -36,7 +36,13 @@ function signBody(secret: string, timestamp: string, nonce: string, body: string
 const memDb = new Kysely<any>({
     dialect: new BunSqliteDialect({ database: new Database(":memory:") }),
 });
-mock.module("../auth.js", () => ({ getKysely: () => memDb }));
+// transport.ts named-imports these; ack-settle only runs on the acked
+// emit path, which these tests never exercise.
+mock.module("../auth.js", () => ({
+    getKysely: () => memDb,
+    getAuthContext: () => ({ userId: "user-1" }),
+    runWithAuthContext: <T,>(_ctx: unknown, fn: () => T) => fn(),
+}));
 mock.module("../push.js", () => ({ sendPushToUser: mock(() => Promise.resolve()) }));
 
 // ── Mock webhook store ───────────────────────────────────────────────────────

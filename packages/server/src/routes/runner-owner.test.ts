@@ -15,7 +15,13 @@ const memDb = new Kysely<any>({
 });
 
 const modsPromise = (async () => {
-  mock.module("../auth.js", () => ({ getKysely: () => memDb }));
+  // transport.ts named-imports these; ack-settle only runs on the acked
+  // emit path, which these route tests never exercise.
+  mock.module("../auth.js", () => ({
+    getKysely: () => memDb,
+    getAuthContext: () => ({ userId: "u1" }),
+    runWithAuthContext: <T,>(_ctx: unknown, fn: () => T) => fn(),
+  }));
   mock.module("../middleware.js", () => ({
     requireSession: async () => ({ userId: "u1", userName: "tester" }),
     validateApiKey: async () => ({ userId: "u1", userName: "api-tester" }),

@@ -18,7 +18,7 @@ import {
 } from "../ws/sio-registry.js";
 import { getRunnerServices } from "../ws/sio-registry/runners.js";
 import { triggerAllowedForCwd } from "./mode-scope.js";
-import { createRoute, deleteRoute, getRoute, listRoutes, updateRoute } from "../events/store.js";
+import { createRoute, deleteRoute, listRoutes, updateRoute } from "../events/store.js";
 import type { JsonValue, Route } from "@pizzapi/protocol";
 import { getPersistedRelaySessionOwner } from "../sessions/store.js";
 import { getSession } from "../ws/sio-state/index.js";
@@ -767,7 +767,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         }
 
         if (req.method === "PUT" && listenerMatch[2]) {
-            const target = decodeURIComponent(listenerMatch[2]);
+            let target = decodeURIComponent(listenerMatch[2]);
             const body = await req.json().catch(() => null) as Record<string, unknown> | null;
             if (!body) return Response.json({ error: "Invalid JSON body" }, { status: 400 });
 
@@ -792,11 +792,17 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
             // A cwd change on a listener for a mode-scoped trigger must stay
             // inside a matching mode workspace.
-            const existingListener = await getRoute(target)
-                .then((r) => (r && r.target.kind === "spawn" && r.target.spec.runnerId === runnerId ? routeToListener(r) : null))
-                .catch(() => null);
+            // Target is a routeId or (legacy UI) an event type — same
+            // resolution as DELETE below; the type form picks the first
+            // spawn listener of that type on this runner.
+            const existingRoute = (await listRoutes().catch(() => []))
+                .find((r) => r.target.kind === "spawn"
+                    && r.target.spec.runnerId === runnerId
+                    && (r.routeId === target || r.eventType === target)) ?? null;
+            const existingListener = existingRoute ? routeToListener(existingRoute) : null;
+            if (existingRoute) target = existingRoute.routeId;
             if (typeof body.cwd === "string") {
-                const existingType = existingListener?.triggerType ?? (target.includes(":") ? await getRoute(target).then((r) => (r && r.target.kind === "spawn" ? r.eventType : target)).catch(() => undefined) : undefined);
+                const existingType = existingListener?.triggerType ?? (target.includes(":") ? target : undefined);
                 if (existingType) {
                     const catalog = await getRunnerServices(runnerId);
                     const triggerDef = catalog?.triggerDefs?.find((d) => d.type === existingType);
