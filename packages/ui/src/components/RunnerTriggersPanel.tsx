@@ -1108,7 +1108,7 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
       try {
         if (editMode) {
           const res = await fetch(
-            `/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners/${encodeURIComponent(def.type)}`,
+            `/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners/${encodeURIComponent(editingListenerId ?? def.type)}`,
             {
               method: "PUT",
               credentials: "include",
