@@ -274,7 +274,8 @@ export interface TriggerFilter {
   /** Expected value(s). Arrays use OR semantics (payload value must be in the set). */
   value: string | number | boolean | Array<string | number | boolean>;
   /**
-   * Match operator. Defaults to "eq" (exact match / set membership).
+   * Match operator. Defaults to "eq" (exact match / set membership;
+   * case-insensitive for strings).
    * "contains" does case-insensitive substring matching on string fields.
    */
   op?: "eq" | "contains";

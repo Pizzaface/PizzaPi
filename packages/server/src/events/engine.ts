@@ -55,8 +55,15 @@ function matchesSingleFilter(filter: TriggerFilter, payload: Record<string, unkn
   }
   const values = Array.isArray(filter.value) ? filter.value : [filter.value];
   // Loose equality on purpose: payloads arrive as JSON with mixed number/string types.
-  // eslint-disable-next-line eqeqeq
-  return values.some((v) => actual == v);
+  // String compares are case-insensitive: GitHub logins/repos/branches are, and a
+  // route filtering author "pizzaface" against payload "Pizzaface" silently
+  // dropped every event.
+  return values.some((v) =>
+    typeof actual === "string" && typeof v === "string"
+      ? actual.toLowerCase() === v.toLowerCase()
+      // eslint-disable-next-line eqeqeq
+      : actual == v,
+  );
 }
 
 export function payloadMatchesFilters(
