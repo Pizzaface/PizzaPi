@@ -56,7 +56,7 @@ function mockFetch(statuses: number[]): RecordedCall[] {
         });
         const status = statuses[Math.min(i, statuses.length - 1)] ?? 200;
         i++;
-        return new Response(null, { status });
+        return new Response(JSON.stringify({ ok: true, created: true }), { status, headers: { "content-type": "application/json" } });
     }) as typeof fetch;
     return calls;
 }
@@ -121,7 +121,7 @@ describe("one-shot delivery retry", () => {
         await new Promise((resolve) => setTimeout(resolve, 40));
         const fire = posts(calls)[0];
         expect(fire).toBeDefined();
-        expect(JSON.parse(fire!.body).wakeSession).toBe(true);
+        expect(JSON.parse(fire!.body).target.wake).toBe(true);
     });
 
     test("session gone (404): starts a replacement session with the instruction as prompt and settles", async () => {
@@ -147,11 +147,11 @@ describe("one-shot delivery retry", () => {
         // wakes up with the conversation that set the timer.
         expect(spawnBody.resumePath).toBe("/tmp/proj/sess-1.jsonl");
         // Settled — exactly one trigger attempt, no retries.
-        expect(toUrl(posts(calls), "/trigger")).toHaveLength(1);
-        // The dead subscription is retired once a live session owns the work,
-        // or it would re-arm on the next reconnect snapshot and spawn again.
+        expect(toUrl(posts(calls), "/api/events")).toHaveLength(1);
+        // The dead schedule's route is retired once a live session owns the
+        // work, or it would re-arm on the next reconnect snapshot and spawn again.
         expect(deletes(calls)).toHaveLength(1);
-        expect(deletes(calls)[0]!.url).toContain("subscriptionId=sub-1");
+        expect(deletes(calls)[0]!.url).toContain("/api/routes/sub-1");
     });
 
     test("session gone and the spawn is rejected permanently (4xx): retries once without cwd, then gives up", async () => {
@@ -176,7 +176,7 @@ describe("one-shot delivery retry", () => {
         // Then it stops: no endless 30-minute retry loop against a spawn that
         // cannot succeed. One delivery attempt, and the subscription is left in
         // place so the schedule stays visible and cancellable.
-        expect(toUrl(posts(calls), "/trigger")).toHaveLength(1);
+        expect(toUrl(posts(calls), "/api/events")).toHaveLength(1);
         expect(deletes(calls)).toHaveLength(0);
     });
 
@@ -193,7 +193,7 @@ describe("one-shot delivery retry", () => {
         ]);
 
         await new Promise((resolve) => setTimeout(resolve, 80));
-        expect(toUrl(posts(calls), "/trigger").length).toBeGreaterThan(1); // re-armed and retried
+        expect(toUrl(posts(calls), "/api/events").length).toBeGreaterThan(1); // re-armed and retried
     });
 });
 
@@ -226,7 +226,7 @@ describe("cron delivery retry and durable state", () => {
         let deleteCount = 0;
         const calls = routedFetch((url, init) => {
             const method = init?.method ?? "GET";
-            if (method === "POST" && url.endsWith("/trigger")) return { status: 200 };
+            if (method === "POST" && url.endsWith("/api/events")) return { status: 200, body: { ok: true, created: true } };
             if (method === "DELETE") {
                 deleteCount++;
                 return { status: deleteCount < 3 ? 503 : 200 };
@@ -249,10 +249,10 @@ describe("cron delivery retry and durable state", () => {
         globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
             const method = init?.method ?? "GET";
             const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-            if (method === "POST" && url.endsWith("/trigger")) {
+            if (method === "POST" && url.endsWith("/api/events")) {
                 posts++;
                 await new Promise((resolve) => setTimeout(resolve, 40)); // delivery in flight
-                return new Response(null, { status: 200 });
+                return new Response(JSON.stringify({ ok: true, created: true }), { status: 200, headers: { "content-type": "application/json" } });
             }
             return new Response(null, { status: 200 }); // DELETE etc.
         }) as typeof fetch;
@@ -308,9 +308,9 @@ describe("cron delivery retry and durable state", () => {
 
     test("cron owner gone: spawns a replacement session, re-owns the cron under it, and stops the old cron", async () => {
         const home = setupEnv();
-        const calls = routedFetch((url) => {
+        const calls = routedFetch((url, init) => {
             if (url.includes("/api/runners/spawn")) return { status: 200, body: { ok: true, sessionId: "replacement-2" } };
-            if (url.includes("/trigger-subscriptions")) return { status: 200, body: { ok: true, subscriptionId: "sub-new" } };
+            if (url.includes("/api/routes/")) return { status: 200, body: { ok: true, route: { routeId: "sub-cron" } } };
             return { status: 404 };
         });
         writeFileSync(
@@ -330,28 +330,107 @@ describe("cron delivery retry and durable state", () => {
         expect(JSON.parse(spawns[0]!.body).prompt).toContain("daily standup");
         expect(JSON.parse(spawns[0]!.body).resumePath).toBe("/tmp/proj/sess-1.jsonl");
 
-        // The recurring schedule is re-owned by the replacement session.
-        const resubs = toUrl(posts(calls), "/api/sessions/replacement-2/trigger-subscriptions");
-        expect(resubs).toHaveLength(1);
-        const resubBody = JSON.parse(resubs[0]!.body);
-        expect(resubBody.triggerType).toBe("time:cron");
-        expect(resubBody.params.cron).toBe("0 0 * * *");
-        expect(resubBody.params._cwd).toBe("/tmp/proj");
-        // Resume appends to the same transcript, so the migrated cron keeps
-        // pointing at it and every future wake continues the same thread.
-        expect(resubBody.params._resumePath).toBe("/tmp/proj/sess-1.jsonl");
+        // The recurring schedule is re-owned in place: the SAME route moves
+        // to the replacement session (PUT — the id is stable, so durable cron
+        // state survives the handover).
+        const puts = calls.filter((c: any) => c.method === "PUT" && c.url.includes("/api/routes/sub-cron"));
+        expect(puts).toHaveLength(1);
+        const putBody = JSON.parse(puts[0]!.body);
+        expect(putBody.target.kind).toBe("session");
+        expect(putBody.target.sessionId).toBe("replacement-2");
 
         // Old durable state dropped and the old cron stops firing.
         expect(JSON.parse(readFileSync(join(home, ".pizzapi", "time-service-state.json"), "utf-8")).hasOwnProperty("sub-cron")).toBe(false);
-        const fires = posts(calls).filter((c) => c.url.endsWith("/trigger"));
+        const fires = posts(calls).filter((c) => c.url.endsWith("/api/events"));
         expect(fires).toHaveLength(1);
 
-        // The old subscription is retired. Leaving it would restore it on the
-        // next reconnect snapshot, re-arm this cron against a dead session and
-        // migrate again — one extra subscription and session per restart.
-        const cleanup = deletes(calls);
-        expect(cleanup).toHaveLength(1);
-        expect(cleanup[0]!.url).toContain("subscriptionId=sub-cron");
+        // The route moved in place — no removal. Deleting it would undo the
+        // re-own; the update delta re-homes the runner-side entry instead.
+        expect(deletes(calls)).toHaveLength(0);
+    });
+
+    test("an update delta arriving mid-delivery re-arms the cron under the delta's new owner once delivery settles", async () => {
+        const home = setupEnv();
+        let deltaSent = false;
+        const calls = routedFetch((url, init) => {
+            const method = init?.method ?? "GET";
+            if (method === "POST" && url.endsWith("/api/events")) {
+                if (!deltaSent) {
+                    deltaSent = true;
+                    // The route's target moved server-side while this fire's
+                    // delivery was in flight — the update delta arrives with
+                    // `delivering` still held and must not be lost.
+                    service!.reconcileSubscriptions([
+                        entry("sess-new", "time:cron", { cron: "0 0 * * *", message: "moved" }, "sub-cron"),
+                    ], { mode: "delta", action: "update" });
+                    return { status: 503 }; // transient failure — settle without re-own
+                }
+                return { status: 200, body: { ok: true, created: true } };
+            }
+            return { status: 200 };
+        });
+        writeFileSync(
+            join(home, ".pizzapi", "time-service-state.json"),
+            JSON.stringify({ "sub-cron": { nextFireAt: Date.now() - 1000, iteration: 1 } }),
+            "utf-8",
+        );
+        service = new TimeService([10, 20], 10); // 10ms check interval
+
+        service.reconcileSubscriptions([
+            entry("sess-1", "time:cron", { cron: "0 0 * * *", message: "original" }, "sub-cron"),
+        ]);
+
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        const fires = posts(calls).filter((c) => c.url.endsWith("/api/events"));
+        expect(fires).toHaveLength(2);
+        // First fire went to the original owner and failed transiently.
+        expect(JSON.parse(fires[0]!.body).target.sessionId).toBe("sess-1");
+        // After the delivery settled, the queued delta replayed — the cron is
+        // re-armed under the NEW owner (its catch-up fire delivers there).
+        const refire = JSON.parse(fires[1]!.body);
+        expect(refire.target.sessionId).toBe("sess-new");
+        expect(refire.payload.message).toBe("moved");
+    });
+
+    test("cron re-own: the update delta emitted by the PUT re-arms the moved route for the new owner", async () => {
+        const home = setupEnv();
+        const calls = routedFetch((url, init) => {
+            const method = init?.method ?? "GET";
+            if (method === "POST" && url.includes("/api/runners/spawn")) return { status: 200, body: { ok: true, sessionId: "replacement-4" } };
+            if (method === "PUT" && url.includes("/api/routes/sub-cron")) {
+                // Server-side effect of the target move: an update delta is
+                // pushed to the runner while `delivering` is still held.
+                service!.reconcileSubscriptions([
+                    entry("replacement-4", "time:cron", { cron: "0 0 * * *", message: "daily standup" }, "sub-cron"),
+                ], { mode: "delta", action: "update" });
+                return { status: 200, body: { ok: true, route: { routeId: "sub-cron" } } };
+            }
+            return { status: 404 }; // events → gone (owner dead)
+        });
+        writeFileSync(
+            join(home, ".pizzapi", "time-service-state.json"),
+            JSON.stringify({ "sub-cron": { nextFireAt: Date.now() - 1000, iteration: 2 } }),
+            "utf-8",
+        );
+        service = new TimeService([10, 20], 10);
+
+        service.reconcileSubscriptions([
+            entry("sess-1", "time:cron", { cron: "0 0 * * *", message: "daily standup" }, "sub-cron"),
+        ]);
+
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        const puts = calls.filter((c: any) => c.method === "PUT" && c.url.includes("/api/routes/sub-cron"));
+        expect(puts).toHaveLength(1);
+        // The re-owned route is re-armed for its new owner: without replaying
+        // the queued delta the cron stayed disarmed (no durable state) until
+        // the next runner reconnect.
+        const state = JSON.parse(readFileSync(join(home, ".pizzapi", "time-service-state.json"), "utf-8"));
+        expect(state.hasOwnProperty("sub-cron")).toBe(true);
+        expect(state["sub-cron"].nextFireAt).toBeGreaterThan(Date.now());
+        // Exactly one delivery (the failed one) — the re-armed cron's next
+        // fire is at its natural cron time, not during this test.
+        expect(posts(calls).filter((c) => c.url.endsWith("/api/events"))).toHaveLength(1);
+        expect(deletes(calls)).toHaveLength(0); // route moved in place, not removed
     });
 
     test("cron migration whose handover fails keeps the recurrence instead of downgrading to a one-off", async () => {
@@ -359,7 +438,7 @@ describe("cron delivery retry and durable state", () => {
         const calls = routedFetch((url) => {
             if (url.includes("/api/runners/spawn")) return { status: 200, body: { ok: true, sessionId: "replacement-3" } };
             // Handing the recurrence to the new session keeps failing (5xx).
-            if (url.includes("/trigger-subscriptions")) return { status: 503 };
+            if (url.includes("/api/routes/")) return { status: 503 };
             return { status: 404 };
         });
         writeFileSync(
@@ -377,7 +456,7 @@ describe("cron delivery retry and durable state", () => {
         // The fire itself was handled by a replacement session...
         expect(toUrl(posts(calls), "/api/runners/spawn")).toHaveLength(1);
         // ...the handover was retried rather than abandoned after one failure...
-        expect(toUrl(posts(calls), "/trigger-subscriptions").length).toBeGreaterThan(1);
+        expect(calls.filter((c: any) => c.method === "PUT" && c.url.includes("/api/routes/")).length).toBeGreaterThan(1);
         // ...and the original subscription is NOT retired, so the schedule still
         // exists and will retry the handover on its next fire.
         expect(deletes(calls)).toHaveLength(0);

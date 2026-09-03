@@ -18,20 +18,15 @@ import {
 } from "../ws/sio-registry.js";
 import { getRunnerServices } from "../ws/sio-registry/runners.js";
 import { triggerAllowedForCwd } from "./mode-scope.js";
-import {
-    addRunnerTriggerListener,
-    getRunnerTriggerListener,
-    removeRunnerTriggerListener,
-    listRunnerTriggerListeners,
-    updateRunnerTriggerListener,
-} from "../sessions/runner-trigger-listener-store.js";
-import { listRunnerSchedules } from "../sessions/trigger-subscription-store.js";
+import { createRoute, deleteRoute, getRoute, listRoutes, updateRoute } from "../events/store.js";
+import type { JsonValue, Route } from "@pizzapi/protocol";
 import { getPersistedRelaySessionOwner } from "../sessions/store.js";
 import { getSession } from "../ws/sio-state/index.js";
-import { sendSkillCommand, sendAgentCommand, sendRunnerCommand, emitTriggerSubscriptionDelta } from "../ws/namespaces/runner.js";
+import { sendSkillCommand, sendAgentCommand, sendRunnerCommand } from "../ws/namespaces/runner.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
 import { requireSession, validateApiKey } from "../middleware.js";
 import { deleteRecentFolder, getRecentFolders, recordRecentFolder } from "../runner-recent-folders.js";
+import { legacyFiltersFromParams } from "../events/legacy-filters.js";
 import { getHiddenModels } from "../user-hidden-models.js";
 import { cwdMatchesRoots } from "../security.js";
 import { isValidSkillName } from "../validation.js";
@@ -45,18 +40,78 @@ const skillsLog = createLogger("skills");
 const agentsLog = createLogger("agents");
 const pluginsLog = createLogger("plugins");
 
-function runnerListenerAsSubscription(runnerId: string, listener: {
-    listenerId?: string;
+/**
+ * Auto-spawn listeners ARE spawn routes (ADR-0002): the listener endpoints
+ * below are thin shims over the routes store so the UI keeps its listener
+ * vocabulary while the data lives in one place.
+ */
+interface ListenerInfo {
+    listenerId: string;
     triggerType: string;
+    prompt?: string;
+    cwd?: string;
+    model?: { provider: string; id: string };
     params?: Record<string, unknown>;
-}) {
+    autoClose?: boolean;
+    createdAt: string;
+}
+
+function routeToListener(route: Route): ListenerInfo | null {
+    if (route.target.kind !== "spawn") return null;
+    const spec = route.target.spec;
     return {
-        subscriptionId: listener.listenerId ?? `runner-listener:${runnerId}:${listener.triggerType}`,
-        sessionId: `runner-listener:${listener.listenerId ?? listener.triggerType}`,
-        runnerId,
-        triggerType: listener.triggerType,
-        ...(listener.params ? { params: listener.params as Record<string, string | number | boolean | Array<string | number | boolean>> } : {}),
+        listenerId: route.routeId,
+        triggerType: route.eventType,
+        ...(spec.promptTemplate ? { prompt: spec.promptTemplate } : {}),
+        ...(spec.cwd ? { cwd: spec.cwd } : {}),
+        ...(spec.model ? { model: spec.model } : {}),
+        ...(route.params ? { params: route.params } : {}),
+        ...(spec.autoClose ? { autoClose: true } : {}),
+        createdAt: route.createdAt,
     };
+}
+
+function listenerToRouteInput(runnerId: string, triggerType: string, fields: {
+    prompt?: string;
+    cwd?: string;
+    model?: { provider: string; id: string };
+    params?: Record<string, JsonValue>;
+    autoClose?: boolean;
+}) {
+    // Params double as delivery filters (legacy semantics — see
+    // legacyParamsToFilters): the unified engine matches on route.filters, so
+    // without the conversion a listener fires on every payload of its type.
+    const filters = legacyFiltersFromParams(triggerType, fields.params as Record<string, unknown> | undefined);
+    return {
+        eventType: triggerType,
+        target: {
+            kind: "spawn" as const,
+            spec: {
+                runnerId,
+                ...(fields.prompt ? { promptTemplate: fields.prompt } : {}),
+                ...(fields.cwd ? { cwd: fields.cwd } : {}),
+                ...(fields.model ? { model: fields.model } : {}),
+                ...(fields.autoClose ? { autoClose: true } : {}),
+            },
+        },
+        deliverAs: "followUp" as const,
+        // Delivery rendering reads the ROUTE-level promptTemplate
+        // (transport.ts toWireEnvelope); spec.promptTemplate is kept for
+        // backward-compat reads (routeToListener).
+        ...(fields.prompt ? { promptTemplate: fields.prompt } : {}),
+        ...(fields.params ? { params: fields.params } : {}),
+        ...(filters ? { filters: filters as never } : {}),
+        origin: "ui" as const,
+    };
+}
+
+/** All auto-spawn listeners for a runner (spawn routes stamped with the runner). */
+async function listListeners(runnerId: string): Promise<ListenerInfo[]> {
+    const routes = await listRoutes();
+    return routes
+        .filter((r) => r.target.kind === "spawn" && r.target.spec.runnerId === runnerId)
+        .map(routeToListener)
+        .filter((l): l is ListenerInfo => l !== null);
 }
 
 const RUNNER_MCP_RELOAD_RE = /^\/api\/runners\/([^/]+)\/mcp\/reload$/;
@@ -585,13 +640,10 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
         if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
 
-        const [services, listeners] = await Promise.all([
-            getRunnerServices(runnerId),
-            listRunnerTriggerListeners(runnerId),
-        ]);
+        const services = await getRunnerServices(runnerId);
         return Response.json({
             triggerDefs: services?.triggerDefs ?? [],
-            listeners,
+            listeners: await listListeners(runnerId),
         });
     }
 
@@ -611,7 +663,19 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
         if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
 
-        const entries = await listRunnerSchedules(runnerId);
+        const entries = (await listRoutes())
+            .map((route) => ({
+                subscriptionId: route.routeId,
+                sessionId: route.target.kind === "session" ? route.target.sessionId : "",
+                runnerId: route.target.kind === "session" ? (route.target.runnerId ?? "") : "",
+                triggerType: route.eventType,
+                ...(route.params ? { params: route.params } : {}),
+                ...(route.filters && route.filters.length > 0 ? { filters: route.filters } : {}),
+                ...(route.filterMode ? { filterMode: route.filterMode } : {}),
+            }))
+            .filter((entry) => entry.runnerId === runnerId && entry.triggerType.startsWith("time:"));
+        // (Schedules are the durable time:* routes — everything else lives in
+        // the routes/events surface.)
         // Label each schedule with its owning session so the UI can show where
         // it runs and filter by workspace, without a per-session round trip.
         const schedules = await Promise.all(entries.map(async (entry) => {
@@ -644,8 +708,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
         // GET /api/runners/:id/trigger-listeners — list
         if (req.method === "GET" && !listenerMatch[2]) {
-            const listeners = await listRunnerTriggerListeners(runnerId);
-            return Response.json({ listeners });
+            return Response.json({ listeners: await listListeners(runnerId) });
         }
 
         // POST /api/runners/:id/trigger-listeners — add
@@ -655,7 +718,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
             if (!triggerType) return Response.json({ error: "Missing triggerType" }, { status: 400 });
 
             const params = body?.params && typeof body.params === "object" && !Array.isArray(body.params)
-                ? body.params as Record<string, unknown>
+                ? body.params as Record<string, JsonValue>
                 : undefined;
             const model = body?.model && typeof body.model === "object" && !Array.isArray(body.model)
                 && typeof (body.model as Record<string, unknown>).provider === "string"
@@ -686,27 +749,21 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 );
             }
 
-            const listenerId = await addRunnerTriggerListener(runnerId, triggerType, {
-                prompt: typeof body?.prompt === "string" ? body.prompt : undefined,
+            const input = listenerToRouteInput(runnerId, triggerType, {
+                ...(typeof body?.prompt === "string" ? { prompt: body.prompt } : {}),
                 cwd: listenerCwd,
                 model,
                 params,
                 autoClose,
             });
-            if (!listenerId) {
-                return Response.json({ error: "Failed to create trigger listener" }, { status: 500 });
-            }
-            await emitTriggerSubscriptionDelta(runnerId, {
-                action: "subscribe",
-                subscription: runnerListenerAsSubscription(runnerId, {
-                    listenerId,
-                    triggerType,
-                    params,
-                }),
-            }).catch((err) => {
-                log.warn("Failed to emit runner listener subscribe delta:", err);
+            // Stamp the creator so spawning fails closed if the runner is
+            // later reclaimed by another user.
+            const route = await createRoute({
+                ...input,
+                target: { kind: "spawn", spec: { ...input.target.spec, ownerUserId: identity.userId } },
+                ownerUserId: identity.userId,
             });
-            return Response.json({ ok: true, listenerId, triggerType });
+            return Response.json({ ok: true, listenerId: route.routeId, triggerType });
         }
 
         if (req.method === "PUT" && listenerMatch[2]) {
@@ -715,7 +772,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
             if (!body) return Response.json({ error: "Invalid JSON body" }, { status: 400 });
 
             const params = body.params && typeof body.params === "object" && !Array.isArray(body.params)
-                ? body.params as Record<string, unknown>
+                ? body.params as Record<string, JsonValue>
                 : undefined;
             const model = body.model && typeof body.model === "object" && !Array.isArray(body.model)
                 && typeof (body.model as Record<string, unknown>).provider === "string"
@@ -735,9 +792,11 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
             // A cwd change on a listener for a mode-scoped trigger must stay
             // inside a matching mode workspace.
+            const existingListener = await getRoute(target)
+                .then((r) => (r && r.target.kind === "spawn" && r.target.spec.runnerId === runnerId ? routeToListener(r) : null))
+                .catch(() => null);
             if (typeof body.cwd === "string") {
-                const existing = !target.includes(":") ? await getRunnerTriggerListener(runnerId, target) : null;
-                const existingType = existing?.triggerType ?? (target.includes(":") ? target : undefined);
+                const existingType = existingListener?.triggerType ?? (target.includes(":") ? await getRoute(target).then((r) => (r && r.target.kind === "spawn" ? r.eventType : target)).catch(() => undefined) : undefined);
                 if (existingType) {
                     const catalog = await getRunnerServices(runnerId);
                     const triggerDef = catalog?.triggerDefs?.find((d) => d.type === existingType);
@@ -750,61 +809,71 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 }
             }
 
-            const updated = await updateRunnerTriggerListener(runnerId, target, {
-                prompt: typeof body.prompt === "string" ? body.prompt : undefined,
-                cwd: typeof body.cwd === "string" ? body.cwd : undefined,
-                model,
-                params,
-                autoClose,
-            }) as any;
-
-            if (!updated || updated.updated === false) {
+            if (!existingListener) {
                 return Response.json({ error: `No listener for target '${target}'` }, { status: 404 });
             }
-
-            const triggerType = updated.triggerType ?? target;
-            const listenerId = updated.listenerId ?? (!target.includes(":") ? target : undefined);
-
-            if (listenerId) {
-                await emitTriggerSubscriptionDelta(runnerId, {
-                    action: "update",
-                    subscription: runnerListenerAsSubscription(runnerId, {
-                        listenerId,
-                        triggerType,
-                        params,
-                    }),
-                }).catch((err) => {
-                    log.warn("Failed to emit runner listener update delta:", err);
-                });
+            const updated = await updateRoute(target, {
+                ownerUserId: identity.userId,
+                ...(params !== undefined || model !== undefined || typeof body.cwd === "string" || autoClose !== undefined || typeof body.prompt === "string"
+                    ? {
+                        target: {
+                            kind: "spawn" as const,
+                            spec: {
+                                runnerId,
+                                // Stamp the creator (unchanged semantics: a PUT
+                                // may only be issued by the runner's owner — checked
+                                // above by getRunnerData).
+                                ownerUserId: identity.userId,
+                                ...(typeof body.prompt === "string" ? (body.prompt ? { promptTemplate: body.prompt } : {}) : (existingListener.prompt ? { promptTemplate: existingListener.prompt } : {})),
+                                ...(typeof body.cwd === "string" ? (body.cwd ? { cwd: body.cwd } : {}) : (existingListener.cwd ? { cwd: existingListener.cwd } : {})),
+                                ...(model ?? (existingListener.model ? { model: existingListener.model } : {})),
+                                ...(autoClose !== undefined ? (autoClose ? { autoClose: true } : {}) : (existingListener.autoClose ? { autoClose: true } : {})),
+                            },
+                        },
+                    }
+                    : {}),
+                ...(params !== undefined
+                    ? { params }
+                    : {}),
+                // Params double as delivery filters (legacy semantics — see
+                // legacyParamsToFilters): keep route.filters in lockstep with
+                // params, including clearing them when the new params produce
+                // no filters.
+                ...(params !== undefined
+                    ? { filters: legacyFiltersFromParams(existingListener.triggerType, params as Record<string, unknown>) as never }
+                    : {}),
+                // Delivery rendering reads the ROUTE-level promptTemplate;
+                // spec.promptTemplate above stays for backward-compat reads.
+                ...(typeof body.prompt === "string"
+                    ? { promptTemplate: body.prompt }
+                    : {}),
+            });
+            if (!updated) {
+                return Response.json({ error: `No listener for target '${target}'` }, { status: 404 });
             }
-
-            return Response.json({ ok: true, ...(listenerId ? { listenerId } : {}), triggerType });
+            return Response.json({ ok: true, listenerId: target, triggerType: updated.eventType });
         }
 
         if (req.method === "DELETE" && listenerMatch[2]) {
             const target = decodeURIComponent(listenerMatch[2]);
-            const normalizedListeners = target.includes(":")
-                ? (await listRunnerTriggerListeners(runnerId)).filter((listener) => listener.triggerType === target)
-                : (() => [])();
-            if (!target.includes(":")) {
-                const byId = await getRunnerTriggerListener(runnerId, target);
-                if (byId) normalizedListeners.push(byId);
+            // Target is a routeId → delete that route; otherwise treat it as an
+            // event type and delete every spawn listener of that type.
+            const candidates = (await listRoutes()).filter((r) =>
+                r.target.kind === "spawn"
+                && r.target.spec.runnerId === runnerId
+                && (r.routeId === target || r.eventType === target));
+            // Only true listeners may be deleted here: webhook routes
+            // (rt_wh_*) belong to the webhooks surface and config routes are
+            // read-only (deleteRoute THROWS on them, which would abort a
+            // half-finished delete). Validate every candidate BEFORE deleting
+            // any — no partial deletes.
+            const deletable = candidates.filter((r) => !r.routeId.startsWith("rt_wh_") && r.origin !== "config");
+            const triggerType = candidates[0]?.eventType ?? target;
+            let removedCount = 0;
+            for (const route of deletable) {
+                if (await deleteRoute(route.routeId)) removedCount++;
             }
-            const removed = await removeRunnerTriggerListener(runnerId, target) as any;
-            const triggerType = removed?.triggerType ?? target;
-            const removedCount = typeof removed?.removed === "number"
-                ? removed.removed
-                : normalizedListeners.length > 0
-                    ? normalizedListeners.length
-                    : 0;
-            const listenerId = !target.includes(":") ? target : undefined;
-            await Promise.all(normalizedListeners.map((listener) => emitTriggerSubscriptionDelta(runnerId, {
-                action: "unsubscribe",
-                subscription: runnerListenerAsSubscription(runnerId, listener),
-            }).catch((err) => {
-                log.warn("Failed to emit runner listener unsubscribe delta:", err);
-            })));
-            return Response.json({ ok: true, ...(listenerId ? { listenerId } : {}), triggerType, removed: removedCount });
+            return Response.json({ ok: true, ...(deletable[0] ? { listenerId: deletable[0].routeId } : {}), triggerType, removed: removedCount });
         }
 
         return undefined;

@@ -337,6 +337,11 @@ export class TimeService implements ServiceHandler {
     #disposed = false;
     /** Lazily-loaded durable cron state, keyed by subscriptionId. */
     #cronState: Record<string, CronState> | null = null;
+    /** Deltas that arrived while a cron delivery was in flight, keyed by
+     *  subscriptionId. Re-arming mid-delivery would double-fire, but the delta
+     *  is the route's newest server-side truth (e.g. the re-own PUT's target
+     *  move) — queue the latest and replay it once delivery settles. */
+    #pendingCronDeltas = new Map<string, { sub: TriggerSubscriptionEntry; action: "subscribe" | "update" | "unsubscribe" }>();
 
     constructor(
         private readonly retryBackoffMs: readonly number[] = RETRY_BACKOFF_MS,
@@ -535,6 +540,10 @@ export class TimeService implements ServiceHandler {
                     this.#crons.delete(key);
                     this.#cronIterations.delete(key);
                     this.#dropCronState(cron.subscriptionId);
+                    // A queued delta for a removed cron is stale (the snapshot
+                    // is newer) — drop it so a later replay cannot resurrect
+                    // the route.
+                    this.#pendingCronDeltas.delete(cron.subscriptionId);
                     logInfo(`[time] reconcile: removed stale cron ${key}`);
                 }
             }
@@ -561,6 +570,20 @@ export class TimeService implements ServiceHandler {
 
         for (const sub of timeSubs) {
             try {
+                // A cron whose delivery is in flight must not be re-armed
+                // mid-flight (double-fire), but a delta is the route's newest
+                // server-side truth — dropping it (e.g. the re-own PUT's target
+                // move) leaves the moved route unarmed until reconnect. Queue
+                // the latest and replay it once the delivery settles.
+                if (mode === "delta" && sub.triggerType === "time:cron") {
+                    const inflight = this.#crons.get(this.#runtimeKey(sub));
+                    if (inflight?.delivering) {
+                        const subId = sub.subscriptionId ?? `${sub.sessionId}\0${sub.triggerType}`;
+                        this.#pendingCronDeltas.set(subId, { sub, action });
+                        applied++;
+                        continue;
+                    }
+                }
                 this.#applySubscription(sub, mode === "delta" ? action : "subscribe");
                 applied++;
             } catch (err) {
@@ -589,6 +612,7 @@ export class TimeService implements ServiceHandler {
         this.#crons.clear();
         this.#cronIterations.clear();
         this.#cronState = null;
+        this.#pendingCronDeltas.clear();
 
         // No socket listener to remove — subscription changes come via reconcileSubscriptions().
 
@@ -700,6 +724,7 @@ export class TimeService implements ServiceHandler {
             this.#crons.delete(key);
             this.#cronIterations.delete(key);
             this.#dropCronState(cron.subscriptionId);
+            this.#pendingCronDeltas.delete(cron.subscriptionId);
         }
     }
 
@@ -857,6 +882,22 @@ export class TimeService implements ServiceHandler {
         });
     }
 
+    /** Apply the newest delta queued while a cron delivery was in flight.
+     *  Called from every settle branch of the cron deliver() continuation —
+     *  the delivery has released or removed its entry, so re-applying now can
+     *  neither double-fire nor collide with the in-flight delivery. */
+    #replayPendingCronDelta(subscriptionId: string): void {
+        const pending = this.#pendingCronDeltas.get(subscriptionId);
+        if (!pending) return;
+        this.#pendingCronDeltas.delete(subscriptionId);
+        if (this.#disposed) return;
+        try {
+            this.#applySubscription(pending.sub, pending.action);
+        } catch (err) {
+            logWarn(`[time] replaying pending cron delta for ${subscriptionId}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
+
     #handleCronSubscription(subscriptionId: string, sessionId: string, params: any, action: string): void {
         const key = `cron:${subscriptionId}`;
 
@@ -877,6 +918,7 @@ export class TimeService implements ServiceHandler {
 
         if (action === "unsubscribe") {
             this.#dropCronState(subscriptionId);
+            this.#pendingCronDeltas.delete(subscriptionId);
             return;
         }
 
@@ -972,14 +1014,17 @@ export class TimeService implements ServiceHandler {
                         this.#cronIterations.delete(key);
                         this.#dropCronState(subscriptionId);
                     }
+                    this.#replayPendingCronDelta(subscriptionId);
                 } else if (result === "gone" && sessionId.startsWith("runner-listener:")) {
-                    // The listener row was deleted server-side — the schedule is
-                    // gone; drop the cron instead of migrating it to a session.
+                    // Listener pseudo-sessions no longer exist (listeners are
+                    // spawn routes now) — a leftover schedule pointed at one
+                    // cannot be migrated; drop it.
                     logWarn(`[time] cron "${cronStr}" listener ${sessionId} no longer exists — dropping schedule`);
                     clearInterval(cur.handle);
                     this.#crons.delete(key);
                     this.#cronIterations.delete(key);
                     this.#dropCronState(subscriptionId);
+                    this.#replayPendingCronDelta(subscriptionId);
                 } else if (result === "gone") {
                     // The owning session no longer exists — the recurring schedule
                     // must survive: start a new session for this fire and re-own
@@ -1005,10 +1050,27 @@ export class TimeService implements ServiceHandler {
                             ...(label ? { label } : {}),
                             ...(cwd ? { _cwd: cwd } : {}),
                             ...(resumePath ? { _resumePath: resumePath } : {}),
-                        });
+                        }, subscriptionId);
                         const stillMounted = this.#crons.get(key);
                         if (!stillMounted) return;
-                        if (migrated) {
+                        if (migrated === "reowned") {
+                            // The route moved in place (same id, new session):
+                            // nothing to retire — removing it would undo the
+                            // re-own. The update delta re-homes the runner-side
+                            // entry; just disarm this local cron.
+                            logInfo(`[time] cron "${cronStr}" owner ${sessionId} is gone — re-owned by new session ${spawn.sessionId}`);
+                            clearInterval(stillMounted.handle);
+                            this.#crons.delete(key);
+                            this.#cronIterations.delete(key);
+                            this.#dropCronState(subscriptionId);
+                            // The re-own PUT emitted an update delta while
+                            // `delivering` was held — replay it to re-arm the
+                            // cron under its new owner, or the moved route
+                            // stays unarmed until the next runner reconnect.
+                            this.#replayPendingCronDelta(subscriptionId);
+                            return; // entry handed over — nothing to release
+                        }
+                        if (migrated === "created") {
                             // Retire the old subscription BEFORE releasing the
                             // migration lock: removal (several timed attempts)
                             // must not overlap the 30s checker, which would see
@@ -1019,6 +1081,7 @@ export class TimeService implements ServiceHandler {
                             this.#crons.delete(key);
                             this.#cronIterations.delete(key);
                             this.#dropCronState(subscriptionId);
+                            this.#replayPendingCronDelta(subscriptionId);
                             return; // entry retired — nothing to release
                         }
                         // The fire ran (a session is doing the work) but the
@@ -1034,6 +1097,7 @@ export class TimeService implements ServiceHandler {
                             this.#cronIterations.set(key, nextIteration);
                             logWarn(`[time] cron "${cronStr}" ran as ${spawn.sessionId} but could not be re-owned; keeping the old schedule armed for ${new Date(nextTime).toISOString()}`);
                         }
+                        this.#replayPendingCronDelta(subscriptionId);
                     } else if (spawn.failure === "permanent") {
                         afterSpawn.delivering = false;
                         // The spawn cannot succeed as configured (e.g. its cwd is
@@ -1052,12 +1116,14 @@ export class TimeService implements ServiceHandler {
                             this.#cronIterations.delete(key);
                             this.#dropCronState(subscriptionId);
                         }
+                        this.#replayPendingCronDelta(subscriptionId);
                     } else {
                         // Transient — hold the fire and retry with backoff.
                         afterSpawn.delivering = false;
                         afterSpawn.retryCount++;
                         afterSpawn.nextFireAt = Date.now() + this.#backoffDelay(afterSpawn.retryCount - 1);
                         logWarn(`[time] cron "${cronStr}" owner ${sessionId} is gone and replacement spawn failed; retrying in ${formatDuration(afterSpawn.nextFireAt - Date.now())}`);
+                        this.#replayPendingCronDelta(subscriptionId);
                     }
                 } else {
                     // Transient — retry the same fire with backoff.
@@ -1065,6 +1131,7 @@ export class TimeService implements ServiceHandler {
                     cur.retryCount++;
                     cur.nextFireAt = now + this.#backoffDelay(cur.retryCount - 1);
                     logWarn(`[time] cron "${cronStr}" delivery to ${sessionId} failed; retrying in ${formatDuration(cur.nextFireAt - now)}`);
+                    this.#replayPendingCronDelta(subscriptionId);
                 }
             });
         };
@@ -1225,35 +1292,60 @@ export class TimeService implements ServiceHandler {
     }
 
     /**
-     * Re-own a recurring schedule: subscribe the replacement session to the
-     * same cron so future fires deliver there (and survive restarts under the
-     * new owner). Best-effort — a failure loses the recurrence but not this
-     * fire, and is logged loudly.
+     * Re-own a recurrence under its new session. With a stable subscription
+     * id the route's target is MOVED in place (PUT /api/routes/:id — the id
+     * never changes, so durable cron state survives); without one, a fresh
+     * route is created for the new session (the caller then retires the old
+     * subscription separately).
+     * Best-effort — a failure loses the recurrence but not this fire.
      */
-    async #resubscribeCron(newSessionId: string, params: Record<string, unknown>): Promise<boolean> {
+    async #resubscribeCron(newSessionId: string, params: Record<string, unknown>, subscriptionId?: string): Promise<"reowned" | "created" | false> {
         const apiKey = getApiKey();
         if (!apiKey) return false;
+        const url = subscriptionId
+            ? `${resolveRelayUrl()}/api/routes/${encodeURIComponent(subscriptionId)}`
+            : null;
         // Retried: this single call is what carries the recurrence to its new
         // owner, so dropping it on one blip silently downgrades a standing
         // schedule to a one-off.
         for (let attempt = 0; attempt < RESUBSCRIBE_ATTEMPTS; attempt++) {
             if (this.#disposed) return false;
-            try {
-                const res = await fetch(`${resolveRelayUrl()}/api/sessions/${encodeURIComponent(newSessionId)}/trigger-subscriptions`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json", "x-api-key": apiKey },
-                    signal: AbortSignal.timeout(this.deliveryTimeoutMs),
-                    body: JSON.stringify({ triggerType: "time:cron", params }),
-                });
-                if (res.ok) return true;
-                // A 4xx fails identically next time — don't spend the retries.
-                if (res.status >= 400 && res.status < 500 && res.status !== 429) {
-                    logError(`[time] failed to re-own cron under session ${newSessionId}: ${res.status} ${res.statusText} — not retryable`);
-                    return false;
+            if (!url) {
+                // Legacy row without a stable id: create a fresh route for the
+                // new session (the old one is retired separately).
+                try {
+                    const res = await fetch(`${resolveRelayUrl()}/api/routes`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+                        signal: AbortSignal.timeout(this.deliveryTimeoutMs),
+                        body: JSON.stringify({ eventType: "time:cron", target: { kind: "session", sessionId: newSessionId }, deliverAs: "followUp", params }),
+                    });
+                    if (res.ok) return "created";
+                    if (res.status >= 400 && res.status < 500 && res.status !== 429) {
+                        logError(`[time] failed to re-own cron under session ${newSessionId}: ${res.status} ${res.statusText} — not retryable`);
+                        return false;
+                    }
+                } catch (err) {
+                    logWarn(`[time] re-owning cron under ${newSessionId} errored, attempt ${attempt + 1}/${RESUBSCRIBE_ATTEMPTS}: ${err}`);
                 }
-                logWarn(`[time] re-owning cron under ${newSessionId} failed (${res.status}), attempt ${attempt + 1}/${RESUBSCRIBE_ATTEMPTS}`);
-            } catch (err) {
-                logWarn(`[time] re-owning cron under ${newSessionId} errored, attempt ${attempt + 1}/${RESUBSCRIBE_ATTEMPTS}: ${err}`);
+            } else {
+                try {
+                    const res = await fetch(url, {
+                        method: "PUT",
+                        headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+                        signal: AbortSignal.timeout(this.deliveryTimeoutMs),
+                        body: JSON.stringify({ target: { kind: "session", sessionId: newSessionId } }),
+                    });
+                    if (res.ok) return "reowned";
+                    // A 4xx fails identically next time — don't spend the retries.
+                    if (res.status >= 400 && res.status < 500 && res.status !== 429) {
+                        logError(`[time] failed to re-own cron under session ${newSessionId}: ${res.status} ${res.statusText} — not retryable`);
+                        return false;
+                    }
+                    logWarn(`[time] re-owning cron under ${newSessionId} failed (${res.status}), attempt ${attempt + 1}/${RESUBSCRIBE_ATTEMPTS}`);
+                } catch (err) {
+                    logWarn(`[time] re-owning cron under ${newSessionId} errored, attempt ${attempt + 1}/${RESUBSCRIBE_ATTEMPTS}: ${err}`);
+                }
             }
             if (attempt < RESUBSCRIBE_ATTEMPTS - 1) {
                 await new Promise((resolve) => setTimeout(resolve, this.#backoffDelay(attempt)));
@@ -1278,7 +1370,11 @@ export class TimeService implements ServiceHandler {
         }
 
         try {
-            const res = await fetch(`${resolveRelayUrl()}/api/sessions/${encodeURIComponent(sessionId)}/trigger`, {
+            // Unified engine (ADR-0002): publish an Event instead of hitting the
+            // legacy session-trigger endpoint. The engine owns delivery — the
+            // wake flag resumes an offline target and the event drains to it
+            // when the worker registers.
+            const res = await fetch(`${resolveRelayUrl()}/api/events`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json", "x-api-key": apiKey },
                 // A hung delivery must not wedge the cron's `delivering` flag
@@ -1287,40 +1383,43 @@ export class TimeService implements ServiceHandler {
                 body: JSON.stringify({
                     type,
                     payload,
-                    source: "time",
-                    deliverAs: "followUp",
                     summary,
                     // Stable fire id so a retry after a lost response is
                     // deduplicated server-side instead of delivered twice.
                     ...(fireId ? { fireId } : {}),
-                    // A schedule firing must reach the session that created it even
-                    // if its worker has exited — the relay wakes it (resume) and
-                    // the retry loop delivers into the awakened session.
-                    wakeSession: true,
+                    target: { sessionId, deliverAs: "followUp", wake: true },
+                    source: { kind: "scheduler", id: "time" },
                 }),
             });
 
             if (res.ok) {
-                logInfo(`[time] delivered ${type} to ${sessionId}: ${summary ?? "(no summary)"}`);
-                return "delivered";
+                const data = await res.json().catch(() => ({})) as { ok?: boolean; created?: boolean };
+                if (data.ok) {
+                    // created=false is a fireId dedup hit (already fired) —
+                    // treat as delivered. created=true with pending deliveries
+                    // is also delivered: the engine owns wake + drain.
+                    logInfo(`[time] published ${type} to ${sessionId}: ${summary ?? "(no summary)"}`);
+                    return "delivered";
+                }
             }
-            // 404 = session gone (permanent); 503 = offline (transient).
+            // 404 = session gone (permanent — even the schedule's runner is
+            // unknown); anything else is transient.
             if (res.status === 404) {
-                logWarn(`[time] trigger delivery to ${sessionId} failed: session not found`);
+                logWarn(`[time] event publish to ${sessionId} failed: session not found`);
                 return "gone";
             }
-            logWarn(`[time] trigger delivery to ${sessionId} failed: ${res.status} ${res.statusText}`);
+            logWarn(`[time] event publish to ${sessionId} failed: ${res.status} ${res.statusText}`);
             return "retry";
         } catch (err) {
-            logError(`[time] trigger delivery error: ${err}`);
+            logError(`[time] event publish error: ${err}`);
             return "retry";
         }
     }
 
-    /** Remove a fired/migrated subscription server-side. Retried because a
-     *  lost removal resurrects the schedule on the next restart snapshot: the
-     *  old cron re-arms against a dead session, fires again, and spawns a
-     *  duplicate replacement session. */
+    /** Remove a fired/retired schedule's route. Retried because a lost removal
+     *  resurrects the schedule from the durable store on the next restart
+     *  snapshot: the old cron re-arms against a dead session, fires again, and
+     *  spawns a duplicate replacement session. */
     async #removeSubscription(sessionId: string, triggerType: string, subscriptionId: string): Promise<void> {
         // Legacy entries without a real subscriptionId use a fabricated
         // "<sessionId>\0<triggerType>" key — skip targeted deletion for those.
@@ -1329,24 +1428,25 @@ export class TimeService implements ServiceHandler {
         const apiKey = getApiKey();
         if (!apiKey) return;
 
-        const url = `${resolveRelayUrl()}/api/sessions/${encodeURIComponent(sessionId)}/trigger-subscriptions/${encodeURIComponent(triggerType)}?subscriptionId=${encodeURIComponent(subscriptionId)}`;
+        // Routes (ADR-0002): the schedule IS the route; routeId == subscriptionId.
+        const url = `${resolveRelayUrl()}/api/routes/${encodeURIComponent(subscriptionId)}`;
         for (let attempt = 0; attempt < REMOVE_ATTEMPTS; attempt++) {
             try {
                 const res = await fetch(url, { method: "DELETE", headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(this.deliveryTimeoutMs) });
-                if (res.ok) return;
+                if (res.ok || res.status === 404) return;
                 // A 4xx fails identically next time — don't spend the retries.
                 if (res.status >= 400 && res.status < 500 && res.status !== 429) {
-                    logWarn(`[time] failed to remove subscription ${subscriptionId}: ${res.status} ${res.statusText} — not retryable`);
+                    logWarn(`[time] failed to remove schedule ${subscriptionId}: ${res.status} ${res.statusText} — not retryable`);
                     return;
                 }
-                logWarn(`[time] removing subscription ${subscriptionId} failed (${res.status}), attempt ${attempt + 1}/${REMOVE_ATTEMPTS}`);
+                logWarn(`[time] removing schedule ${subscriptionId} failed (${res.status}), attempt ${attempt + 1}/${REMOVE_ATTEMPTS}`);
             } catch (err) {
-                logWarn(`[time] removing subscription ${subscriptionId} errored, attempt ${attempt + 1}/${REMOVE_ATTEMPTS}: ${err}`);
+                logWarn(`[time] removing schedule ${subscriptionId} errored, attempt ${attempt + 1}/${REMOVE_ATTEMPTS}: ${err}`);
             }
             if (attempt < REMOVE_ATTEMPTS - 1) {
                 await new Promise((resolve) => setTimeout(resolve, this.removeRetryDelayMs));
             }
         }
-        logError(`[time] failed to remove subscription ${subscriptionId} after ${REMOVE_ATTEMPTS} attempts — it may re-arm and duplicate on the next restart`);
+        logError(`[time] failed to remove schedule ${subscriptionId} after ${REMOVE_ATTEMPTS} attempts — it may re-arm and duplicate on the next restart`);
     }
 }

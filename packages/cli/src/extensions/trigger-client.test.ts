@@ -18,7 +18,8 @@ import {
     subscribeTrigger,
     listTriggerSubscriptions,
     unsubscribeTrigger,
-    broadcastTrigger,
+    updateTriggerSubscription,
+    publishEvent,
 } from "./trigger-client.js";
 import type { TriggerClientDeps } from "./trigger-client.js";
 
@@ -43,30 +44,13 @@ function mockNetworkError(message = "fetch failed"): TriggerClientDeps["fetch"] 
     };
 }
 
-/** Capture emitted Socket.IO events. */
-function createMockSocket() {
-    const emitted: Array<{ event: string; data: unknown }> = [];
-    return {
-        emitted,
-        conn: {
-            socket: {
-                emit(event: string, data: unknown) {
-                    emitted.push({ event, data });
-                },
-                connected: true,
-            },
-            token: "test-relay-token",
-        } as ReturnType<TriggerClientDeps["getRelaySocket"]>,
-    };
-}
-
 /** Minimal deps where only HTTP is available (no socket). */
 function httpOnlyDeps(overrides: Partial<TriggerClientDeps> = {}): TriggerClientDeps {
     return {
         getRelaySocket: () => null,
         getRelayHttpBaseUrl: () => "http://localhost:7492",
         getApiKey: () => "test-api-key",
-        fetch: mockFetch(200, { ok: true, triggerId: "ext_abc123" }),
+        fetch: mockFetch(200, { ok: true, eventId: "evt_abc123", created: true, deliveries: [] }),
         ...overrides,
     };
 }
@@ -87,45 +71,44 @@ describe("fireTrigger — HTTP delivery", () => {
                     return {
                         ok: true,
                         status: 200,
-                        json: async () => ({ ok: true, triggerId: "ext_abc123" }),
+                        json: async () => ({ ok: true, eventId: "evt_abc123", created: true, deliveries: [] }),
                     } as Response;
                 },
             },
         );
 
         expect(result.ok).toBe(true);
-        expect(result.method).toBe("http");
-        expect(result.triggerId).toBe("ext_abc123");
+        expect(result.eventId).toBe("evt_abc123");
 
         expect(capturedRequests).toHaveLength(1);
         const req = capturedRequests[0];
-        expect(req.url).toBe("http://localhost:7492/api/sessions/session-xyz/trigger");
+        expect(req.url).toBe("http://localhost:7492/api/events");
         expect(req.init.method).toBe("POST");
         const headers = req.init.headers as Record<string, string>;
         expect(headers["x-api-key"]).toBe("test-api-key");
         expect(headers["Content-Type"]).toBe("application/json");
     });
 
-    test("encodes special characters in session ID", async () => {
-        const capturedUrls: string[] = [];
+    test("targets the session via the publish body target", async () => {
+        const capturedBodies: unknown[] = [];
 
         await fireTrigger(
             "session/with spaces&special=chars",
             { type: "test", payload: {} },
             {
                 ...httpOnlyDeps(),
-                fetch: async (url, _init) => {
-                    capturedUrls.push(url);
+                fetch: async (_url, init) => {
+                    capturedBodies.push(JSON.parse(init?.body as string));
                     return {
                         ok: true,
                         status: 200,
-                        json: async () => ({ ok: true, triggerId: "ext_xyz" }),
+                        json: async () => ({ ok: true, eventId: "evt_xyz", created: true, deliveries: [] }),
                     } as Response;
                 },
             },
         );
 
-        expect(capturedUrls[0]).toContain(encodeURIComponent("session/with spaces&special=chars"));
+        expect((capturedBodies[0] as any).target.sessionId).toBe("session/with spaces&special=chars");
     });
 
     test("sends correct payload body", async () => {
@@ -148,7 +131,7 @@ describe("fireTrigger — HTTP delivery", () => {
                     return {
                         ok: true,
                         status: 200,
-                        json: async () => ({ ok: true, triggerId: "ext_xyz" }),
+                        json: async () => ({ ok: true, eventId: "evt_xyz", created: true, deliveries: [] }),
                     } as Response;
                 },
             },
@@ -158,9 +141,9 @@ describe("fireTrigger — HTTP delivery", () => {
         const body = capturedBodies[0] as Record<string, unknown>;
         expect(body.type).toBe("godmother:idea_execute");
         expect(body.payload).toEqual({ ideaId: "idea-123", project: "PizzaPi" });
-        expect(body.deliverAs).toBe("followUp");
-        expect(body.expectsResponse).toBe(true);
-        expect(body.source).toBe("godmother");
+        expect(body.target).toEqual({ sessionId: "session-abc", deliverAs: "followUp" });
+        expect(body.responseContract).toEqual({ escalate: true, ttlMs: 30 * 60 * 1000 });
+        expect(body.source).toEqual({ id: "godmother", name: "godmother" });
         expect(body.summary).toBe("Idea moved to execute");
     });
 
@@ -184,7 +167,7 @@ describe("fireTrigger — HTTP delivery", () => {
         );
 
         const body = capturedBodies[0] as Record<string, unknown>;
-        expect(body.deliverAs).toBe("steer");
+        expect((body.target as Record<string, unknown>).deliverAs).toBe("steer");
     });
 
     test("does not include undefined optional fields in body", async () => {
@@ -200,7 +183,7 @@ describe("fireTrigger — HTTP delivery", () => {
                     return {
                         ok: true,
                         status: 200,
-                        json: async () => ({ ok: true, triggerId: "ext_xyz" }),
+                        json: async () => ({ ok: true, eventId: "evt_xyz", created: true, deliveries: [] }),
                     } as Response;
                 },
             },
@@ -209,6 +192,7 @@ describe("fireTrigger — HTTP delivery", () => {
         const body = capturedBodies[0] as Record<string, unknown>;
         expect("source" in body).toBe(false);
         expect("summary" in body).toBe(false);
+        expect("responseContract" in body).toBe(false);
     });
 });
 
@@ -227,7 +211,7 @@ describe("fireTrigger — auth token handling", () => {
                     capturedHeaders.push(init?.headers as Record<string, string>);
                     return {
                         ok: true, status: 200,
-                        json: async () => ({ ok: true, triggerId: "ext_x" }),
+                        json: async () => ({ ok: true, eventId: "evt_x", created: true, deliveries: [] }),
                     } as Response;
                 },
             },
@@ -236,15 +220,14 @@ describe("fireTrigger — auth token handling", () => {
         expect(capturedHeaders[0]["x-api-key"]).toBe("my-secret-key");
     });
 
-    test("skips HTTP and tries Socket.IO when no API key is configured", async () => {
-        const { emitted, conn } = createMockSocket();
+    test("returns a requires-relay error when no API key is configured (no fallback)", async () => {
         let fetchCalled = false;
 
         const result = await fireTrigger(
             "session-abc",
             { type: "test", payload: {} },
             {
-                getRelaySocket: () => conn,
+                getRelaySocket: () => null,
                 getRelayHttpBaseUrl: () => "http://localhost:7492",
                 getApiKey: () => undefined,
                 fetch: async () => {
@@ -255,21 +238,18 @@ describe("fireTrigger — auth token handling", () => {
         );
 
         expect(fetchCalled).toBe(false);
-        expect(result.ok).toBe(true);
-        expect(result.method).toBe("socketio");
-        expect(emitted).toHaveLength(1);
-        expect(emitted[0].event).toBe("session_trigger");
+        expect(result.ok).toBe(false);
+        expect(result.error).toContain("requires a relay");
     });
 
-    test("skips HTTP and tries Socket.IO when no base URL is configured", async () => {
-        const { emitted, conn } = createMockSocket();
+    test("returns a requires-relay error when no base URL is configured (no fallback)", async () => {
         let fetchCalled = false;
 
         const result = await fireTrigger(
             "session-abc",
             { type: "test", payload: {} },
             {
-                getRelaySocket: () => conn,
+                getRelaySocket: () => null,
                 getRelayHttpBaseUrl: () => null,
                 getApiKey: () => "api-key",
                 fetch: async () => {
@@ -280,116 +260,80 @@ describe("fireTrigger — auth token handling", () => {
         );
 
         expect(fetchCalled).toBe(false);
-        expect(result.ok).toBe(true);
-        expect(result.method).toBe("socketio");
-        expect(emitted).toHaveLength(1);
+        expect(result.ok).toBe(false);
+        expect(result.error).toContain("requires a relay");
     });
 });
 
 // ── Error cases ────────────────────────────────────────────────────────────────
 
 describe("fireTrigger — error cases", () => {
-    test("returns definitive failure on 401 (no Socket.IO fallback)", async () => {
-        const { emitted, conn } = createMockSocket();
-
+    test("returns definitive failure on 401", async () => {
         const result = await fireTrigger(
             "session-abc",
             { type: "test", payload: {} },
-            {
-                ...httpOnlyDeps({
-                    getRelaySocket: () => conn,
-                    fetch: mockFetch(401, { error: "Unauthorized" }),
-                }),
-            },
+            { ...httpOnlyDeps({ fetch: mockFetch(401, { error: "Unauthorized" }) }) },
         );
 
         expect(result.ok).toBe(false);
-        expect(result.method).toBe("http");
-        expect(result.error).toContain("Authentication failed");
-        // No Socket.IO fallback for auth errors
-        expect(emitted).toHaveLength(0);
+        expect(result.error).toContain("Unauthorized");
     });
 
-    test("returns definitive failure on 403 (no Socket.IO fallback)", async () => {
-        const { emitted, conn } = createMockSocket();
-
+    test("returns definitive failure on 403", async () => {
         const result = await fireTrigger(
             "session-abc",
             { type: "test", payload: {} },
-            {
-                ...httpOnlyDeps({
-                    getRelaySocket: () => conn,
-                    fetch: mockFetch(403, { error: "Forbidden" }),
-                }),
-            },
+            { ...httpOnlyDeps({ fetch: mockFetch(403, { error: "Forbidden" }) }) },
         );
 
         expect(result.ok).toBe(false);
-        expect(result.method).toBe("http");
-        expect(result.error).toContain("Authentication failed");
-        expect(emitted).toHaveLength(0);
+        expect(result.error).toContain("Forbidden");
     });
 
-    test("returns definitive failure on 404 (no Socket.IO fallback)", async () => {
-        const { emitted, conn } = createMockSocket();
-
+    test("returns definitive failure on 404", async () => {
         const result = await fireTrigger(
             "session-abc",
             { type: "test", payload: {} },
-            {
-                ...httpOnlyDeps({
-                    getRelaySocket: () => conn,
-                    fetch: mockFetch(404, { error: "Session not found or not connected" }),
-                }),
-            },
+            { ...httpOnlyDeps({ fetch: mockFetch(404, { error: "Session not found or not connected" }) }) },
         );
 
         expect(result.ok).toBe(false);
-        expect(result.method).toBe("http");
         expect(result.error).toContain("Session not found");
-        expect(emitted).toHaveLength(0);
     });
 
-    test("falls back to Socket.IO on network failure", async () => {
-        const { emitted, conn } = createMockSocket();
-
+    test("returns failure on network error (no fallback)", async () => {
         const result = await fireTrigger(
             "session-abc",
             { type: "test", payload: {} },
             {
-                getRelaySocket: () => conn,
+                getRelaySocket: () => null,
                 getRelayHttpBaseUrl: () => "http://localhost:7492",
                 getApiKey: () => "api-key",
                 fetch: mockNetworkError("ECONNREFUSED"),
             },
         );
 
-        expect(result.ok).toBe(true);
-        expect(result.method).toBe("socketio");
-        expect(emitted).toHaveLength(1);
-        expect(emitted[0].event).toBe("session_trigger");
+        expect(result.ok).toBe(false);
+        expect(result.error).toContain("ECONNREFUSED");
     });
 
-    test("falls back to Socket.IO on 5xx server error", async () => {
-        const { emitted, conn } = createMockSocket();
-
+    test("returns failure on 5xx server error (no fallback)", async () => {
         const result = await fireTrigger(
             "session-abc",
             { type: "test", payload: {} },
             {
-                getRelaySocket: () => conn,
+                getRelaySocket: () => null,
                 getRelayHttpBaseUrl: () => "http://localhost:7492",
                 getApiKey: () => "api-key",
                 fetch: mockFetch(502, { error: "Bad gateway" }),
             },
         );
 
-        expect(result.ok).toBe(true);
-        expect(result.method).toBe("socketio");
-        expect(emitted).toHaveLength(1);
+        expect(result.ok).toBe(false);
+        expect(result.error).toContain("Bad gateway");
     });
 
-    test("returns failure when both HTTP and Socket.IO are unavailable", async () => {
+    test("returns failure when no relay is configured at all", async () => {
         const result = await fireTrigger(
             "session-abc",
             { type: "test", payload: {} },
@@ -402,65 +346,33 @@ describe("fireTrigger — error cases", () => {
         );
 
         expect(result.ok).toBe(false);
-        expect(result.error).toContain("cannot fire trigger");
+        expect(result.error).toContain("requires a relay");
     });
 });
 
-// ── Socket.IO delivery tests ───────────────────────────────────────────────────
-
-describe("fireTrigger — Socket.IO delivery", () => {
-    test("emits session_trigger with correct shape", async () => {
-        const { emitted, conn } = createMockSocket();
-
-        const result = await fireTrigger(
-            "session-xyz",
-            {
-                type: "godmother:idea_execute",
-                payload: { ideaId: "idea-abc", project: "PizzaPi" },
-                source: "godmother",
-                deliverAs: "steer",
-            },
-            {
-                getRelaySocket: () => conn,
-                getRelayHttpBaseUrl: () => null,
-                getApiKey: () => undefined,
-                fetch: async () => { throw new Error("HTTP not available"); },
-            },
+describe("publishEvent — HTTP status", () => {
+    test("exposes the HTTP status on a failed publish", async () => {
+        const result = await publishEvent(
+            { type: "test:event", payload: {} },
+            httpOnlyDeps({ fetch: mockFetch(404, { error: "Parent session not found" }) }),
         );
 
-        expect(result.ok).toBe(true);
-        expect(result.method).toBe("socketio");
-        expect(result.triggerId).toMatch(/^ext_/);
-
-        expect(emitted).toHaveLength(1);
-        const { event, data } = emitted[0] as { event: string; data: any };
-        expect(event).toBe("session_trigger");
-        expect(data.token).toBe("test-relay-token");
-        expect(data.trigger.type).toBe("godmother:idea_execute");
-        expect(data.trigger.targetSessionId).toBe("session-xyz");
-        expect(data.trigger.payload).toEqual({ ideaId: "idea-abc", project: "PizzaPi" });
-        expect(data.trigger.sourceSessionId).toBe("external:godmother");
-        expect(data.trigger.deliverAs).toBe("steer");
-        expect(data.trigger.triggerId).toMatch(/^ext_/);
-        expect(typeof data.trigger.ts).toBe("string");
+        expect(result).toEqual({
+            ok: false,
+            error: "Parent session not found",
+            status: 404,
+        });
     });
 
-    test("uses trigger-client as default source when source not specified", async () => {
-        const { emitted, conn } = createMockSocket();
-
-        await fireTrigger(
-            "session-xyz",
-            { type: "test", payload: {} },
-            {
-                getRelaySocket: () => conn,
-                getRelayHttpBaseUrl: () => null,
-                getApiKey: () => undefined,
-                fetch: async () => { throw new Error("not available"); },
-            },
+    test("leaves status absent for network failures", async () => {
+        const result = await publishEvent(
+            { type: "test:event", payload: {} },
+            httpOnlyDeps({ fetch: mockNetworkError("ECONNRESET") }),
         );
 
-        const data = emitted[0].data as any;
-        expect(data.trigger.sourceSessionId).toBe("external:trigger-client");
+        expect(result.ok).toBe(false);
+        expect(result.error).toContain("ECONNRESET");
+        expect(result.status).toBeUndefined();
     });
 });
 
@@ -468,13 +380,11 @@ describe("fireTrigger — Socket.IO delivery", () => {
 
 describe("createTriggerClient", () => {
     test("returns a bound client that delegates to fireTrigger", async () => {
-        const { emitted, conn } = createMockSocket();
-
         const client = createTriggerClient({
-            getRelaySocket: () => conn,
-            getRelayHttpBaseUrl: () => null,
-            getApiKey: () => undefined,
-            fetch: async () => { throw new Error("not available"); },
+            getRelaySocket: () => null,
+            getRelayHttpBaseUrl: () => "http://localhost:7492",
+            getApiKey: () => "test-api-key",
+            fetch: mockFetch(200, { ok: true, eventId: "evt_1", created: true, deliveries: [] }),
         });
 
         const result = await client.fire("session-abc", {
@@ -483,26 +393,31 @@ describe("createTriggerClient", () => {
         });
 
         expect(result.ok).toBe(true);
-        expect(result.method).toBe("socketio");
-        expect(emitted).toHaveLength(1);
+        expect(result.eventId).toBe("evt_1");
     });
 
     test("can fire multiple triggers with the same client", async () => {
-        const { emitted, conn } = createMockSocket();
+        const capturedBodies: any[] = [];
 
         const client = createTriggerClient({
-            getRelaySocket: () => conn,
-            getRelayHttpBaseUrl: () => null,
-            getApiKey: () => undefined,
-            fetch: async () => { throw new Error("not available"); },
+            getRelaySocket: () => null,
+            getRelayHttpBaseUrl: () => "http://localhost:7492",
+            getApiKey: () => "test-api-key",
+            fetch: async (_url, init) => {
+                capturedBodies.push(JSON.parse(init?.body as string));
+                return {
+                    ok: true, status: 200,
+                    json: async () => ({ ok: true, eventId: "evt_x", created: true, deliveries: [] }),
+                } as Response;
+            },
         });
 
         await client.fire("session-a", { type: "type-1", payload: { n: 1 } });
         await client.fire("session-b", { type: "type-2", payload: { n: 2 } });
 
-        expect(emitted).toHaveLength(2);
-        expect((emitted[0].data as any).trigger.targetSessionId).toBe("session-a");
-        expect((emitted[1].data as any).trigger.targetSessionId).toBe("session-b");
+        expect(capturedBodies).toHaveLength(2);
+        expect(capturedBodies[0].target.sessionId).toBe("session-a");
+        expect(capturedBodies[1].target.sessionId).toBe("session-b");
     });
 
     test("HTTP client fires via HTTP when configured", async () => {
@@ -516,7 +431,7 @@ describe("createTriggerClient", () => {
                 capturedUrls.push(url);
                 return {
                     ok: true, status: 200,
-                    json: async () => ({ ok: true, triggerId: "ext_http_trigger" }),
+                    json: async () => ({ ok: true, eventId: "evt_http_trigger", created: true, deliveries: [] }),
                 } as Response;
             },
         });
@@ -527,11 +442,8 @@ describe("createTriggerClient", () => {
         });
 
         expect(result.ok).toBe(true);
-        expect(result.method).toBe("http");
-        expect(result.triggerId).toBe("ext_http_trigger");
-        expect(capturedUrls[0]).toBe(
-            "https://relay.example.com/api/sessions/session-abc/trigger",
-        );
+        expect(result.eventId).toBe("evt_http_trigger");
+        expect(capturedUrls[0]).toBe("https://relay.example.com/api/events");
     });
 });
 
@@ -637,44 +549,40 @@ describe("getAvailableSigils", () => {
     });
 });
 
-describe("subscribeTrigger", () => {
-    test("subscribes to a trigger type successfully", async () => {
-        const deps = subsDeps(async () => ({
-            ok: true,
-            status: 200,
-            json: async () => ({ ok: true, subscriptionId: "sub-1", triggerType: "godmother:idea_moved", runnerId: "runner-A" }),
-        } as Response));
+describe("subscribeTrigger (unified routes)", () => {
+    test("creates a session-target route and returns the routeId as subscriptionId", async () => {
+        const captured: Array<{ url: string; method: string; body: any }> = [];
+        const deps = subsDeps(async (url, init) => {
+            captured.push({ url, method: init?.method ?? "GET", body: JSON.parse(init?.body as string ?? "{}") });
+            return { ok: true, status: 200, json: async () => ({ ok: true, route: { routeId: "rt-1", eventType: "godmother:idea_moved" } }) } as Response;
+        });
 
-        const result = await subscribeTrigger("session-1", "godmother:idea_moved", deps);
+        const result = await subscribeTrigger("session-1", "godmother:idea_moved", deps, { repo: "acme/app" });
         expect(result.ok).toBe(true);
-        expect(result.subscriptionId).toBe("sub-1");
+        expect(result.subscriptionId).toBe("rt-1");
         expect(result.triggerType).toBe("godmother:idea_moved");
-        expect(result.runnerId).toBe("runner-A");
+
+        expect(captured[0].url).toBe("http://localhost:7492/api/routes");
+        expect(captured[0].method).toBe("POST");
+        expect(captured[0].body).toEqual({
+            eventType: "godmother:idea_moved",
+            target: { kind: "session", sessionId: "session-1" },
+            deliverAs: "followUp",
+            origin: "agent",
+            params: { repo: "acme/app" },
+        });
     });
 
-    test("returns error when server returns 422", async () => {
+    test("returns error when server rejects the route", async () => {
         const deps = subsDeps(async () => ({
             ok: false,
-            status: 422,
-            json: async () => ({ error: "Trigger type not available on runner" }),
+            status: 400,
+            json: async () => ({ error: "Route requires deliverAs" }),
         } as Response));
 
         const result = await subscribeTrigger("session-1", "bad:type", deps);
         expect(result.ok).toBe(false);
-        expect(result.error).toContain("not available");
-    });
-
-    test("sends POST with correct body and API key header", async () => {
-        const captured: Array<{ url: string; method: string; body: unknown }> = [];
-        const deps = subsDeps(async (url, init) => {
-            captured.push({ url, method: init?.method ?? "GET", body: JSON.parse(init?.body as string ?? "{}") });
-            return { ok: true, status: 200, json: async () => ({ ok: true, triggerType: "svc:event", runnerId: "r-1" }) } as Response;
-        });
-
-        await subscribeTrigger("session-1", "svc:event", deps);
-        expect(captured[0].url).toBe("http://localhost:7492/api/sessions/session-1/trigger-subscriptions");
-        expect(captured[0].method).toBe("POST");
-        expect((captured[0].body as any).triggerType).toBe("svc:event");
+        expect(result.error).toContain("deliverAs");
     });
 
     test("returns error when no base URL configured", async () => {
@@ -690,26 +598,25 @@ describe("subscribeTrigger", () => {
     });
 });
 
-describe("listTriggerSubscriptions", () => {
-    test("returns active subscriptions", async () => {
+describe("listTriggerSubscriptions (unified routes)", () => {
+    test("lists session-target routes as subscriptions, filtering other sessions", async () => {
         const deps = subsDeps(async () => ({
             ok: true,
             status: 200,
             json: async () => ({
-                subscriptions: [
-                    { subscriptionId: "sub-1", triggerType: "godmother:idea_moved", runnerId: "runner-A" },
-                    { subscriptionId: "sub-2", triggerType: "godmother:idea_moved", runnerId: "runner-A" },
+                routes: [
+                    { routeId: "rt-1", eventType: "godmother:idea_moved", target: { kind: "session", sessionId: "session-1" } },
+                    { routeId: "rt-2", eventType: "time:timer_fired", target: { kind: "session", sessionId: "session-1" } },
+                    { routeId: "rt-3", eventType: "godmother:idea_moved", target: { kind: "session", sessionId: "other-session" } },
+                    { routeId: "rt-4", eventType: "t:spawn", target: { kind: "spawn", spec: { runnerId: "r" } } },
                 ],
             }),
         } as Response));
 
         const subs = await listTriggerSubscriptions("session-1", deps);
         expect(subs).toHaveLength(2);
-        expect(subs[0].subscriptionId).toBe("sub-1");
-        expect(subs[0].triggerType).toBe("godmother:idea_moved");
-        expect(subs[0].runnerId).toBe("runner-A");
-        expect(subs[1].subscriptionId).toBe("sub-2");
-        expect(subs[1].triggerType).toBe("godmother:idea_moved");
+        expect(subs[0]).toEqual({ subscriptionId: "rt-1", triggerType: "godmother:idea_moved", runnerId: "" });
+        expect(subs[1]).toEqual({ subscriptionId: "rt-2", triggerType: "time:timer_fired", runnerId: "" });
     });
 
     test("returns empty array when not ok", async () => {
@@ -719,117 +626,129 @@ describe("listTriggerSubscriptions", () => {
     });
 });
 
-describe("unsubscribeTrigger", () => {
-    test("unsubscribes successfully by subscription id", async () => {
-        const deps = subsDeps(async () => ({
-            ok: true,
-            status: 200,
-            json: async () => ({ ok: true, subscriptionId: "sub-1", triggerType: "godmother:idea_moved" }),
-        } as Response));
+describe("unsubscribeTrigger (unified routes)", () => {
+    test("deletes by subscription id (routeId)", async () => {
+        const captured: Array<{ url: string; method: string }> = [];
+        const deps = subsDeps(async (url, init) => {
+            captured.push({ url, method: init?.method ?? "GET" });
+            return { ok: true, status: 200, json: async () => ({ ok: true }) } as Response;
+        });
 
-        const result = await unsubscribeTrigger("session-1", { subscriptionId: "sub-1" }, deps);
+        const result = await unsubscribeTrigger("session-1", { subscriptionId: "rt-1" }, deps);
         expect(result.ok).toBe(true);
-        expect(result.subscriptionId).toBe("sub-1");
-        expect(result.triggerType).toBe("godmother:idea_moved");
+        expect(result.subscriptionId).toBe("rt-1");
+        expect(captured).toEqual([
+            { url: "http://localhost:7492/api/routes/rt-1", method: "DELETE" },
+        ]);
     });
 
-    test("sends DELETE to correct URL with subscription id query", async () => {
+    test("trigger-type-only bulk unsubscribe lists routes then deletes each", async () => {
         const captured: Array<{ url: string; method: string }> = [];
         const deps = subsDeps(async (url, init) => {
             captured.push({ url, method: init?.method ?? "GET" });
-            return { ok: true, status: 200, json: async () => ({ ok: true, subscriptionId: "sub-1", triggerType: "godmother:idea_moved" }) } as Response;
+            if (url.endsWith("/api/routes")) {
+                return {
+                    ok: true, status: 200,
+                    json: async () => ({
+                        routes: [
+                            { routeId: "rt-1", eventType: "godmother:idea_moved", target: { kind: "session", sessionId: "session-1" } },
+                            { routeId: "rt-2", eventType: "godmother:idea_moved", target: { kind: "session", sessionId: "session-1" } },
+                            { routeId: "rt-3", eventType: "other:type", target: { kind: "session", sessionId: "session-1" } },
+                        ],
+                    }),
+                } as Response;
+            }
+            return { ok: true, status: 200, json: async () => ({ ok: true }) } as Response;
         });
 
-        await unsubscribeTrigger("session-1", { triggerType: "godmother:idea_moved", subscriptionId: "sub-1" }, deps);
-        expect(captured[0].method).toBe("DELETE");
-        expect(captured[0].url).toBe(
-            "http://localhost:7492/api/sessions/session-1/trigger-subscriptions/godmother%3Aidea_moved?subscriptionId=sub-1",
-        );
+        const result = await unsubscribeTrigger("session-1", { triggerType: "godmother:idea_moved" }, deps);
+        expect(result.ok).toBe(true);
+        expect(captured[0]).toEqual({ url: "http://localhost:7492/api/routes", method: "GET" });
+        expect(captured.slice(1)).toEqual([
+            { url: "http://localhost:7492/api/routes/rt-1", method: "DELETE" },
+            { url: "http://localhost:7492/api/routes/rt-2", method: "DELETE" },
+        ]);
     });
 
-    test("preserves legacy trigger-type-only unsubscribe behavior", async () => {
-        const captured: Array<{ url: string; method: string }> = [];
-        const deps = subsDeps(async (url, init) => {
-            captured.push({ url, method: init?.method ?? "GET" });
-            return { ok: true, status: 200, json: async () => ({ ok: true, triggerType: "godmother:idea_moved" }) } as Response;
-        });
-
-        await unsubscribeTrigger("session-1", { triggerType: "godmother:idea_moved" }, deps);
-        expect(captured[0].url).toBe(
-            "http://localhost:7492/api/sessions/session-1/trigger-subscriptions/godmother%3Aidea_moved",
-        );
-    });
-
-    test("returns error when server returns non-ok", async () => {
+    test("nothing found is idempotent success", async () => {
         const deps = subsDeps(async () => ({
-            ok: false,
-            status: 404,
-            json: async () => ({ error: "Session not found" }),
+            ok: true, status: 200,
+            json: async () => ({ routes: [] }),
         } as Response));
 
         const result = await unsubscribeTrigger("session-1", { triggerType: "svc:event" }, deps);
+        expect(result.ok).toBe(true);
+    });
+
+    test("returns error when the delete fails", async () => {
+        const captured: Array<{ url: string; method: string }> = [];
+        const deps = subsDeps(async (url, init) => {
+            captured.push({ url, method: init?.method ?? "GET" });
+            return { ok: false, status: 403, json: async () => ({ error: "Config routes are read-only" }) } as Response;
+        });
+
+        const result = await unsubscribeTrigger("session-1", { subscriptionId: "rt-cfg" }, deps);
         expect(result.ok).toBe(false);
+        expect(result.error).toContain("read-only");
     });
 });
 
-describe("broadcastTrigger", () => {
-    test("broadcasts trigger to runner subscribers and returns delivery count", async () => {
-        const deps = subsDeps(async () => ({
-            ok: true,
-            status: 200,
-            json: async () => ({ ok: true, delivered: 3, triggerId: "ext_abc" }),
-        } as Response));
-
-        const result = await broadcastTrigger("runner-A", { type: "svc:event", payload: { x: 1 } }, deps);
-        expect(result.ok).toBe(true);
-        expect(result.delivered).toBe(3);
-        expect(result.triggerId).toBe("ext_abc");
-    });
-
-    test("sends POST to correct broadcast endpoint", async () => {
-        const captured: Array<{ url: string; method: string; body: unknown }> = [];
+describe("updateTriggerSubscription (unified routes)", () => {
+    test("updates params by subscription id", async () => {
+        const captured: Array<{ url: string; method: string; body: any }> = [];
         const deps = subsDeps(async (url, init) => {
             captured.push({ url, method: init?.method ?? "GET", body: JSON.parse(init?.body as string ?? "{}") });
-            return { ok: true, status: 200, json: async () => ({ ok: true, delivered: 0 }) } as Response;
+            return { ok: true, status: 200, json: async () => ({ ok: true, route: { routeId: "rt-1" } }) } as Response;
         });
 
-        await broadcastTrigger("runner-A", { type: "svc:event", payload: {} }, deps);
-        expect(captured[0].url).toBe("http://localhost:7492/api/runners/runner-A/trigger-broadcast");
-        expect(captured[0].method).toBe("POST");
+        const result = await updateTriggerSubscription("session-1", { subscriptionId: "rt-1" }, { params: { repo: "new/repo" } }, deps);
+        expect(result.ok).toBe(true);
+        expect(result.subscriptionId).toBe("rt-1");
+        expect(captured).toEqual([
+            { url: "http://localhost:7492/api/routes/rt-1", method: "PUT", body: { params: { repo: "new/repo" } } },
+        ]);
     });
 
-    test("defaults deliverAs to 'followUp' when omitted (non-interruptive broadcast)", async () => {
-        const captured: Array<{ body: any }> = [];
-        const deps = subsDeps(async (_url, init) => {
-            captured.push({ body: JSON.parse(init?.body as string ?? "{}") });
-            return { ok: true, status: 200, json: async () => ({ ok: true, delivered: 0 }) } as Response;
+    test("trigger-type-only bulk update lists routes then updates each", async () => {
+        const captured: Array<{ url: string; method: string }> = [];
+        const deps = subsDeps(async (url, init) => {
+            captured.push({ url, method: init?.method ?? "GET" });
+            if (url.endsWith("/api/routes")) {
+                return {
+                    ok: true, status: 200,
+                    json: async () => ({
+                        routes: [
+                            { routeId: "rt-1", eventType: "github:pr_comment", target: { kind: "session", sessionId: "session-1" } },
+                            { routeId: "rt-2", eventType: "other:type", target: { kind: "session", sessionId: "session-1" } },
+                        ],
+                    }),
+                } as Response;
+            }
+            return { ok: true, status: 200, json: async () => ({ ok: true, route: { routeId: "rt-1" } }) } as Response;
         });
 
-        await broadcastTrigger("runner-A", { type: "svc:event", payload: {} }, deps);
-        expect(captured[0].body.deliverAs).toBe("followUp");
+        const result = await updateTriggerSubscription(
+            "session-1",
+            { triggerType: "github:pr_comment" },
+            { params: { repo: "acme/app" } },
+            deps,
+        );
+        expect(result.ok).toBe(true);
+        expect(captured[0]).toEqual({ url: "http://localhost:7492/api/routes", method: "GET" });
+        expect(captured[1]).toEqual({ url: "http://localhost:7492/api/routes/rt-1", method: "PUT" });
+        expect(captured).toHaveLength(2);
     });
 
-    test("passes through an explicit deliverAs: 'steer'", async () => {
-        const captured: Array<{ body: any }> = [];
-        const deps = subsDeps(async (_url, init) => {
-            captured.push({ body: JSON.parse(init?.body as string ?? "{}") });
-            return { ok: true, status: 200, json: async () => ({ ok: true, delivered: 0 }) } as Response;
-        });
+    test("no matching route is an error", async () => {
+        const deps = subsDeps(async () => ({
+            ok: true, status: 200,
+            json: async () => ({ routes: [] }),
+        } as Response));
 
-        await broadcastTrigger("runner-A", { type: "svc:event", payload: {}, deliverAs: "steer" }, deps);
-        expect(captured[0].body.deliverAs).toBe("steer");
-    });
-
-    test("returns error when no base URL configured", async () => {
-        const deps: TriggerClientDeps = {
-            getRelaySocket: () => null,
-            getRelayHttpBaseUrl: () => null,
-            getApiKey: () => "key",
-            fetch: async () => { throw new Error("should not be called"); },
-        };
-        const result = await broadcastTrigger("runner-A", { type: "svc:event", payload: {} }, deps);
+        const result = await updateTriggerSubscription("session-1", { triggerType: "svc:event" }, { params: { a: 1 } }, deps);
         expect(result.ok).toBe(false);
-        expect(result.error).toBeTruthy();
+        expect(result.error).toContain("No route found");
     });
 });
+
 

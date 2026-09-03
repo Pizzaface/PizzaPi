@@ -6,6 +6,9 @@
  */
 
 import { describe, test, expect, beforeEach, afterAll, mock } from "bun:test";
+import { Database } from "bun:sqlite";
+import { Kysely } from "kysely";
+import { BunSqliteDialect } from "kysely-bun-sqlite";
 import {
     _injectRedisForTesting as _injectKvRedis,
     _resetRedisKvStoreForTesting as _resetKvStore,
@@ -28,6 +31,13 @@ function signBody(secret: string, timestamp: string, nonce: string, body: string
         .update(`${timestamp}.${nonce}.${body}`)
         .digest("hex");
 }
+
+// ── In-memory DB for the unified event store ───────────────────────────
+const memDb = new Kysely<any>({
+    dialect: new BunSqliteDialect({ database: new Database(":memory:") }),
+});
+mock.module("../auth.js", () => ({ getKysely: () => memDb }));
+mock.module("../push.js", () => ({ sendPushToUser: mock(() => Promise.resolve()) }));
 
 // ── Mock webhook store ───────────────────────────────────────────────────────
 const mockCreateWebhook = mock((_input: any) =>
@@ -77,15 +87,21 @@ const mockGetRunnerData = mock((_runnerId: string) =>
 
 mock.module("../ws/sio-registry.js", () => ({
     emitToRunner: mock(() => {}),
+    getIo: () => undefined, // presence lookup → unknown → spawn attempts
+    runnerRoom: (id: string) => `runner:${id}`,
+    countSocketsInRoomCluster: async () => ({ kind: "unknown" }),
     getSharedSession: mockGetSharedSession,
     getLocalTuiSocket: mockGetLocalTuiSocket,
     emitToRelaySessionVerified: mockEmitToRelaySessionVerified,
+    emitToRelaySessionAcked: mock(async () => true),
     broadcastToSessionViewers: mockBroadcastToSessionViewers,
     getLocalRunnerSocket: mockGetLocalRunnerSocket,
     recordRunnerSession: mockRecordRunnerSession,
     linkSessionToRunner: mockLinkSessionToRunner,
     getRunnerData: mockGetRunnerData,
+    waitForLocalTuiSocket: mock(() => Promise.resolve(true)),
 }));
+mock.module("../ws/sio-registry/runners.js", () => ({ getRunnerData: mockGetRunnerData }));
 
 // ── Mock runner-control ──────────────────────────────────────────────────────
 const mockWaitForSpawnAck = mock((_sessionId: string, _timeoutMs: number) =>
@@ -121,6 +137,16 @@ mock.module("../user-hidden-models.js", () => ({
 
 // Import AFTER mocks
 const { handleWebhooksRoute } = await import("./webhooks.js");
+const eventStore = await import("../events/store.js");
+await eventStore.ensureEventTables();
+
+// Lazy default routes persist per webhook name — clear between tests so each
+// fire re-derives its route from the webhook config under test.
+beforeEach(async () => {
+    await memDb.deleteFrom("trigger_delivery").execute();
+    await memDb.deleteFrom("trigger_route").execute();
+    await memDb.deleteFrom("trigger_event").execute();
+});
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -517,6 +543,7 @@ describe("PUT /api/webhooks/:id — update webhook", () => {
 describe("DELETE /api/webhooks/:id — delete webhook", () => {
     beforeEach(() => {
         mockRequireSession.mockReset();
+        mockGetWebhook.mockReset();
         mockDeleteWebhook.mockReset();
         mockRequireSession.mockReturnValue(
             Promise.resolve({ userId: "user-1", userName: "TestUser" }),
@@ -524,19 +551,53 @@ describe("DELETE /api/webhooks/:id — delete webhook", () => {
     });
 
     test("returns 404 when webhook not found", async () => {
-        mockDeleteWebhook.mockReturnValue(Promise.resolve(false));
+        mockGetWebhook.mockReturnValue(Promise.resolve(null));
         const [req, url] = makeReq("DELETE", "/api/webhooks/missing");
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(404);
+        expect(mockDeleteWebhook).not.toHaveBeenCalled();
     });
 
-    test("deletes webhook and returns ok", async () => {
-        mockDeleteWebhook.mockReturnValue(Promise.resolve(true));
+    test("deletes the route before the webhook and returns ok", async () => {
+        await eventStore.createRoute(
+            {
+                eventType: "webhook:test-hook",
+                target: { kind: "spawn", spec: { runnerId: "runner-1", ownerUserId: "user-1" } },
+                deliverAs: "steer",
+                origin: "ui",
+            },
+            { routeId: "rt_wh_wh-1" },
+        );
+        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+        mockDeleteWebhook.mockImplementation(async () => {
+            expect(await eventStore.getRoute("rt_wh_wh-1")).toBeNull();
+            return true;
+        });
+
         const [req, url] = makeReq("DELETE", "/api/webhooks/wh-1");
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(200);
         const body = await res!.json();
         expect(body.ok).toBe(true);
+    });
+
+    test("returns 500 without deleting the webhook when route deletion throws", async () => {
+        await eventStore.createRoute(
+            {
+                eventType: "webhook:test-hook",
+                target: { kind: "session", sessionId: "session-1" },
+                deliverAs: "steer",
+                origin: "config",
+            },
+            { routeId: "rt_wh_wh-1" },
+        );
+        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+
+        const [req, url] = makeReq("DELETE", "/api/webhooks/wh-1");
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(500);
+        expect(mockDeleteWebhook).not.toHaveBeenCalled();
+        expect(await eventStore.getRoute("rt_wh_wh-1")).not.toBeNull();
     });
 });
 
@@ -769,8 +830,9 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
         expect(res?.status).toBe(200);
         const resBody = await res!.json();
         expect(resBody.ok).toBe(true);
-        expect(resBody.triggerId).toMatch(/^wh_/);
-        expect(resBody.sessionId).toBeTruthy();
+        expect(resBody.eventId).toMatch(/^evt_/);
+        expect(resBody.sessionIds.length).toBe(1);
+        expect(resBody.spawnedSessions.length).toBe(1);
 
         // Session should have received the trigger
         expect(sessionEmitMock).toHaveBeenCalledTimes(1);
@@ -778,6 +840,27 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
         // Runner spawn should have been called
         expect(mockRecordRunnerSession).toHaveBeenCalledTimes(1);
         expect(mockLinkSessionToRunner).toHaveBeenCalledTimes(1);
+    });
+
+    test("creates its deterministic route when another route has the same event type", async () => {
+        await eventStore.createRoute({
+            eventType: "webhook:test-hook",
+            target: { kind: "session", sessionId: "existing-session" },
+            deliverAs: "steer",
+            origin: "agent",
+        });
+        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+        setupSpawnAndDeliverMocks();
+
+        const [req, url] = makeFireReq(
+            "/api/webhooks/wh-1/fire",
+            { event: "deploy" },
+            ACTIVE_WEBHOOK.secret,
+        );
+        const res = await handleWebhooksRoute(req, url);
+
+        expect(res?.status).toBe(200);
+        expect(await eventStore.getRoute("rt_wh_wh-1")).not.toBeNull();
     });
 
     test("returns 409 when nonce is reused", async () => {
@@ -818,16 +901,21 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
         expect(res?.status).toBe(403);
     });
 
-    test("returns 503 when runner is not connected", async () => {
+    test("runner not connected locally still publishes through the cluster runner room (ADR-0002)", async () => {
         mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
         mockGetLocalRunnerSocket.mockReturnValue(null);
 
         const body = { event: "test" };
         const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret);
         const res = await handleWebhooksRoute(req, url);
-        expect(res?.status).toBe(503);
+        // The engine owns delivery now: the event is durable, the spawn is
+        // emitted via the cluster-wide runner room, and the delivery stays
+        // pending until the spawned worker registers (drain-on-register).
+        expect(res?.status).toBe(200);
         const resBody = await res!.json();
-        expect(resBody.error).toContain("Runner");
+        expect(resBody.spawnedSessions).toHaveLength(1);
+        const [delivery] = await eventStore.listDeliveries({ sessionId: resBody.spawnedSessions[0] });
+        expect(delivery?.status).toBe("pending");
     });
 
     test("returns 500 when webhook has no runnerId", async () => {
@@ -969,14 +1057,17 @@ describe("POST /api/webhooks/:id/fire — spawn behavior", () => {
         const res = await handleWebhooksRoute(req, url);
         expect(res?.status).toBe(200);
 
-        // Verify runner received cwd and prompt
+        // cwd goes to the runner spawn; the prompt is rendered into the
+        // trigger payload (unified model), not passed at spawn time.
         expect(runnerEmitMock).toHaveBeenCalledTimes(1);
         const spawnArgs = (runnerEmitMock.mock.calls[0] as any[])[1];
         expect(spawnArgs.cwd).toBe("/my/project");
-        expect(spawnArgs.prompt).toBe("Handle deploy");
+        expect(spawnArgs.prompt).toBeUndefined();
+        const trigger = (sessionEmitMock.mock.calls[0] as any[])[1].trigger;
+        expect(trigger.payload.prompt).toBe("Handle deploy");
     });
 
-    test("returns 502 when runner rejects spawn", async () => {
+    test("returns 503 when runner rejects spawn", async () => {
         mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
         const runnerEmitMock = mock(() => {});
         mockGetLocalRunnerSocket.mockReturnValue({ emit: runnerEmitMock });
@@ -985,7 +1076,7 @@ describe("POST /api/webhooks/:id/fire — spawn behavior", () => {
         const body = { event: "test" };
         const [req, url] = makeFireReq("/api/webhooks/wh-1/fire", body, ACTIVE_WEBHOOK.secret);
         const res = await handleWebhooksRoute(req, url);
-        expect(res?.status).toBe(502);
+        expect(res?.status).toBe(503);
     });
 
     test("cross-node fallback delivery", async () => {
@@ -1018,5 +1109,161 @@ describe("non-matching routes", () => {
         const [req, url] = makeReq("GET", "/api/webhooks/wh-1/unknown");
         const res = await handleWebhooksRoute(req, url);
         expect(res).toBeUndefined();
+    });
+});
+
+describe("webhook config-backed route sync (ADR-0002)", () => {
+    beforeEach(() => {
+        mockRequireSession.mockReset();
+        mockCreateWebhook.mockReset();
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ runnerId: "runner-1", userId: "user-1" }));
+        mockRequireSession.mockReturnValue(Promise.resolve({ userId: "user-1", userName: "TestUser" }));
+        mockCreateWebhook.mockImplementation((input: any) =>
+            Promise.resolve({
+                id: "wh-1",
+                userId: "user-1",
+                name: input.name ?? "Test Hook",
+                secret: "test-secret-abc",
+                eventFilter: null,
+                source: input.source ?? "custom",
+                runnerId: input.runnerId ?? null,
+                cwd: input.cwd ?? null,
+                prompt: input.prompt ?? null,
+                model: input.model ?? null,
+                enabled: true,
+                createdAt: "2026-01-01T00:00:00Z",
+                updatedAt: "2026-01-01T00:00:00Z",
+            }),
+        );
+    });
+
+    test("creating a webhook with a runner syncs a deterministic route; updates propagate", async () => {
+        const [req, url] = makeReq("POST", "/api/webhooks", {
+            name: "Sync Hook",
+            source: "custom",
+            runnerId: "runner-1",
+            cwd: "/repo",
+            prompt: "do the thing",
+        });
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(201);
+        const route = await eventStore.getRoute("rt_wh_wh-1");
+        expect(route).not.toBeNull();
+        expect(route!.eventType).toBe("webhook:sync-hook");
+        expect(route!.target.kind === "spawn" && route!.target.spec.cwd).toBe("/repo");
+        expect(route!.promptTemplate).toBe("do the thing");
+
+        // Update the webhook's prompt — the route reflects the new spec.
+        mockUpdateWebhook.mockImplementation(() =>
+            Promise.resolve({
+                id: "wh-1",
+                userId: "user-1",
+                name: "Sync Hook",
+                secret: "test-secret-abc",
+                eventFilter: null,
+                source: "custom",
+                runnerId: "runner-1",
+                cwd: "/repo2",
+                prompt: "new instructions",
+                model: null,
+                enabled: true,
+                createdAt: "2026-01-01T00:00:00Z",
+                updatedAt: "2026-01-01T00:00:00Z",
+            }),
+        );
+        const [ureq, uurl] = makeReq("PUT", "/api/webhooks/wh-1", { prompt: "new instructions" });
+        const ures = await handleWebhooksRoute(ureq, uurl);
+        expect(ures?.status).toBe(200);
+        const updated = await eventStore.getRoute("rt_wh_wh-1");
+        expect(updated!.promptTemplate).toBe("new instructions");
+        expect(updated!.target.kind === "spawn" && updated!.target.spec.cwd).toBe("/repo2");
+    });
+
+    test("clearing a webhook runner deletes its deterministic route", async () => {
+        await eventStore.createRoute(
+            {
+                eventType: "webhook:sync-hook",
+                target: { kind: "spawn", spec: { runnerId: "runner-1", ownerUserId: "user-1" } },
+                deliverAs: "steer",
+                origin: "ui",
+            },
+            { routeId: "rt_wh_wh-1" },
+        );
+        mockGetWebhook.mockReturnValue(Promise.resolve({
+            id: "wh-1", userId: "user-1", name: "Sync Hook", runnerId: "runner-1",
+        }));
+        mockUpdateWebhook.mockReturnValue(Promise.resolve({
+            id: "wh-1", userId: "user-1", name: "Sync Hook", secret: "s", eventFilter: null,
+            source: "custom", runnerId: null, cwd: null, prompt: null, model: null,
+            enabled: true, createdAt: "", updatedAt: "",
+        }));
+
+        const [req, url] = makeReq("PUT", "/api/webhooks/wh-1", { runnerId: null });
+        const res = await handleWebhooksRoute(req, url);
+
+        expect(res?.status).toBe(200);
+        expect(await eventStore.getRoute("rt_wh_wh-1")).toBeNull();
+    });
+
+    test("returns 500 when PUT cannot sync the deterministic route", async () => {
+        await eventStore.createRoute(
+            {
+                eventType: "webhook:sync-hook",
+                target: { kind: "session", sessionId: "session-1" },
+                deliverAs: "steer",
+                origin: "config",
+            },
+            { routeId: "rt_wh_wh-1" },
+        );
+        mockGetWebhook.mockReturnValue(Promise.resolve({
+            id: "wh-1", userId: "user-1", name: "Sync Hook", runnerId: "runner-1",
+        }));
+        mockUpdateWebhook.mockReturnValue(Promise.resolve({
+            id: "wh-1", userId: "user-1", name: "Sync Hook", secret: "s", eventFilter: null,
+            source: "custom", runnerId: "runner-1", cwd: null, prompt: "new prompt", model: null,
+            enabled: true, createdAt: "", updatedAt: "",
+        }));
+
+        const [req, url] = makeReq("PUT", "/api/webhooks/wh-1", { prompt: "new prompt" });
+        const res = await handleWebhooksRoute(req, url);
+
+        expect(res?.status).toBe(500);
+        const route = await eventStore.getRoute("rt_wh_wh-1");
+        expect(route?.origin).toBe("config");
+    });
+
+    test("legacy lazily-created twins with the identical spec shape are retired on sync", async () => {
+        // A pre-deterministic-id lazy route with the exact shape the old fire
+        // path created.
+        await eventStore.createRoute(
+            {
+                eventType: "webhook:sync-hook",
+                target: {
+                    kind: "spawn",
+                    spec: { runnerId: "runner-1", ownerUserId: "user-1", cwd: "/repo" },
+                },
+                deliverAs: "steer",
+                promptTemplate: "do the thing",
+                origin: "ui",
+                ownerUserId: "user-1",
+            },
+            { routeId: "rt_lazy_legacy" },
+        );
+        mockGetWebhook.mockImplementation(() => Promise.resolve({
+            id: "wh-1", userId: "user-1", name: "Sync Hook", secret: "s", eventFilter: null,
+            source: "custom", runnerId: "runner-1", cwd: "/repo", prompt: "do the thing",
+            model: null, enabled: true, createdAt: "", updatedAt: "",
+        }));
+        mockUpdateWebhook.mockImplementation(() => Promise.resolve({
+            id: "wh-1", userId: "user-1", name: "Sync Hook", secret: "s", eventFilter: null,
+            source: "custom", runnerId: "runner-1", cwd: "/repo", prompt: "do the thing",
+            model: null, enabled: true, createdAt: "", updatedAt: "",
+        }));
+        const [req, url] = makeReq("PUT", "/api/webhooks/wh-1", { prompt: "do the thing" });
+        const res = await handleWebhooksRoute(req, url);
+        expect(res?.status).toBe(200);
+        expect(await eventStore.getRoute("rt_lazy_legacy")).toBeNull();
+        expect(await eventStore.getRoute("rt_wh_wh-1")).not.toBeNull();
     });
 });

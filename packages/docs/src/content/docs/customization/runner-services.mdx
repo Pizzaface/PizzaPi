@@ -328,14 +328,16 @@ Trigger types are advertised to all connected viewers and agent sessions via the
 
 ### Firing Triggers
 
-To deliver a trigger to subscribed sessions, `POST` to the relay's broadcast endpoint:
+Publish an Event through the unified engine (ADR-0002); Routes decide which
+sessions receive it. A session subscribed to your trigger type has a Route for
+it — your publish reaches exactly the interested sessions:
 
 ```
-POST /api/runners/{runnerId}/trigger-broadcast
+POST /api/events
 ```
 
 ```typescript
-await fetch(`${relayUrl}/api/runners/${runnerId}/trigger-broadcast`, {
+await fetch(`${relayUrl}/api/events`, {
     method: "POST",
     headers: {
         "Content-Type": "application/json",
@@ -344,8 +346,7 @@ await fetch(`${relayUrl}/api/runners/${runnerId}/trigger-broadcast`, {
     body: JSON.stringify({
         type: "my-service:file_changed",
         payload: { path: "/src/app.ts", changeType: "modified" },
-        source: "my-service",
-        deliverAs: "followUp",
+        source: { kind: "service", id: "my-service" },
         summary: "File changed: /src/app.ts",
     }),
 });
@@ -354,13 +355,15 @@ await fetch(`${relayUrl}/api/runners/${runnerId}/trigger-broadcast`, {
 | Field | Required | Description |
 |-------|----------|-------------|
 | `type` | Yes | Must match a type declared in the manifest `triggers[]` array |
-| `payload` | Yes | Arbitrary JSON object delivered to subscribers |
-| `source` | No | Identifier shown in trigger history (typically the service name) |
-| `deliverAs` | No | `"steer"` interrupts the current turn; `"followUp"` queues after the turn ends. Default: `"followUp"`. |
-| `summary` | No | Human-readable one-liner for trigger history |
-| `expectsResponse` | No | Whether the delivered trigger expects a response from the agent/viewer |
+| `payload` | Yes | Arbitrary JSON object delivered via routes |
+| `source` | No | Publisher identity shown in the events feed |
+| `summary` | No | Human-readable one-liner for the events feed |
+| `fireId` | No | Idempotency key: a retried publish with the same fireId is deduplicated |
+| `responseContract` | No | Declare the event awaits a response (actions/ttlMs/escalate) |
+| `target.sessionId` | No | Direct one-session delivery (implicit single-session route); supports `deliverAs` + `wake` |
 
-The relay fans out the trigger to every session subscribed to that type on this runner.
+Delivery urgency is decided by each subscriber's route (`deliverAs` on the
+route: `"steer"` interrupts, `"followUp"` queues), not by the publisher.
 
 Subscription params are matched against the trigger payload at delivery time. Scalar params use loose equality, array payload fields match if they contain the subscriber's value, and param names ending in `Contains` do substring matching against string payload fields.
 
@@ -811,9 +814,9 @@ await fetch(`${relayUrl}/api/sessions/${sessionId}/trigger`, {
 });
 ```
 
-Use `POST /api/runners/{runnerId}/trigger-broadcast` instead only when the event
-has **no** single owner and any interested session should hear it — a CI result,
-a repo-wide push. Broadcast fans out to every *subscriber*; it cannot address one
+Publish without a `target` when the event has **no** single owner and any
+interested session should hear it — a CI result, a repo-wide push. Every session
+with a route for the type receives it; `target.sessionId` addresses exactly one
 conversation.
 
 **Outbound — session → outside world.** The session emits a `service_message`
@@ -983,26 +986,24 @@ function getApiKey(): string | null {
     return process.env.PIZZAPI_RUNNER_API_KEY ?? process.env.PIZZAPI_API_KEY ?? null;
 }
 
-async function broadcastTrigger(
+async function publishTrigger(
     type: string,
     payload: Record<string, unknown>,
-    opts?: { deliverAs?: "steer" | "followUp"; summary?: string; expectsResponse?: boolean },
+    opts?: { summary?: string },
 ): Promise<void> {
-    const runnerId = readRunnerId();
     const apiKey = getApiKey();
-    if (!runnerId || !apiKey) return;
+    if (!apiKey) return;
 
-    await fetch(`${resolveRelayUrl()}/api/runners/${runnerId}/trigger-broadcast`, {
+    await fetch(`${resolveRelayUrl()}/api/events`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-api-key": apiKey },
         body: JSON.stringify({
             type,
             payload,
-            source: "my-service",
-            deliverAs: opts?.deliverAs ?? "steer",
-            summary: opts?.summary,
+            ...(opts?.summary ? { summary: opts.summary } : {}),
+            source: { kind: "service", id: "my-service" },
         }),
-    }).catch(err => console.error("[my-service] trigger broadcast failed:", err));
+    }).catch(err => console.error("[my-service] trigger publish failed:", err));
 }
 
 // ── Service ───────────────────────────────────────────────────────────────
@@ -1100,7 +1101,7 @@ Panels render inside an iframe in the PizzaPi web interface. The bottom dock is 
 5. The daemon aggregates all trigger defs and sigil defs from all loaded services
 6. The daemon emits a `service_announce` event with panels, trigger defs, and sigil defs
 7. The UI renders panel iframes; agents discover triggers via `list_available_triggers()`
-8. When a service fires a trigger via `POST /api/runners/{runnerId}/trigger-broadcast`, the relay fans it out to all subscribed sessions
+8. When a service publishes an event via `POST /api/events`, the routing engine delivers it to every route matching the type
 
 ---
 
@@ -1110,7 +1111,7 @@ Panels render inside an iframe in the PizzaPi web interface. The bottom dock is 
 |------|-----|
 | Declare triggers | Add `triggers[]` to the service declaration, or point it at `triggers.json` |
 | Declare sigils | Add `sigils[]` to the service declaration, or point it at `sigils.json` |
-| Fire a trigger | `POST /api/runners/{runnerId}/trigger-broadcast` with API key |
+| Fire a trigger | `POST /api/events` with API key (routes decide recipients) |
 | Serve static files | `Bun.serve()` with `readFileSync` for `index.html` |
 | Expose an API | Add route checks in the `fetch` handler |
 | Get a random port | `Bun.serve({ port: 0 })` then read `.port` |

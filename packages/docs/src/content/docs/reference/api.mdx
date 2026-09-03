@@ -905,9 +905,22 @@ Download a previously uploaded attachment. Returns the file with appropriate con
 
 ## Triggers
 
-### `POST /api/sessions/{sessionId}/trigger`
+**Tenant isolation.** Every Event is stamped with the authenticated publisher's
+`source.userId`, and every Route carries an `ownerUserId` (stamped server-side
+from the creating principal — client-supplied values are ignored). A Route only
+matches Events whose `source.userId` equals its `ownerUserId`, so one user's
+publish can never fire another user's session or spawn routes, and webhook
+event types can't cross-fire between users even when their names collide.
+`fireId` idempotency is likewise scoped per owner. The only exception is a
+config-file Route (`PIZZAPI_ROUTES_FILE`) with no `ownerUserId`: it is
+operator-level and matches all users. Legacy rows whose owner could not be
+backfilled at startup match nothing (they're logged and remain deletable).
 
-Fire a trigger into a connected session. Used by external integrations to send events to running agents.
+### `POST /api/events` — publish an Event
+
+The one fire path (ADR-0002): publish an Event; Routes decide which sessions
+receive it. A `target.sessionId` makes an implicit single-session route
+(ownership-checked); without one, existing routes for the event type deliver.
 
 **Auth:** API key (`x-api-key` header) or session cookie.
 
@@ -915,19 +928,224 @@ Fire a trigger into a connected session. Used by external integrations to send e
 
 ```json
 {
-  "type": "webhook",                   // trigger type identifier
-  "payload": { "repo": "my/repo" },    // arbitrary payload object
-  "deliverAs": "steer",                // optional: "steer" (default, interrupts) or "followUp" (queues)
-  "expectsResponse": false,            // optional, default false
-  "source": "github",                  // optional source identifier
-  "summary": "New push to main"        // optional human-readable summary
+  "type": "github:pr_opened",           // namespaced event type
+  "payload": { "repo": "my/repo" },      // arbitrary payload object
+  "summary": "PR #12 opened",            // optional human-readable summary
+  "fireId": "unique-if-retried",         // optional: idempotency + response correlation
+  "target": {                            // optional: direct one-session delivery
+    "sessionId": "sess_abc",
+    "deliverAs": "steer",                // "steer" (default, interrupts) or "followUp" (queues)
+    "wake": true                         // resume an offline target session
+  },
+  "source": { "kind": "service", "id": "github" }  // optional; defaults from auth
 }
 ```
 
 **Response:**
 
 ```json
-{ "ok": true, "triggerId": "ext_abc123" }
+{
+  "ok": true,
+  "eventId": "evt_abc123",
+  "created": true,                       // false when fireId dedup hit
+  "deliveries": [{ "deliveryId": "dlv_1", "sessionId": "sess_abc", "status": "delivered" }],
+  "spawnedSessions": []
+}
+```
+
+---
+
+### `GET /api/events` — global feed
+
+List published events. Query: `type`, `before` (ISO timestamp cursor), `limit`.
+
+**Auth:** API key or session cookie.
+
+**Scoping:** only events the caller can see — events they sourced (their own
+sessions, or their own API identity) and events with a delivery into a session
+they own. Other users' payloads never cross the boundary.
+
+---
+
+### `GET /api/events/{eventId}/deliveries`
+
+List deliveries recorded for an event, ordered by update time.
+
+**Auth:** API key or session cookie.
+
+**Scoping:** only deliveries into sessions owned by the caller are returned. An
+unknown event returns `404`; an existing event for which the caller owns no
+target sessions returns an empty list.
+
+**Response:**
+
+```json
+{
+  "deliveries": [
+    {
+      "deliveryId": "dlv_abc",
+      "eventId": "evt_abc123",
+      "eventType": "github:pr_opened",
+      "sessionId": "sess_abc",
+      "routeId": "rt_abc123",
+      "deliverAs": "steer",
+      "status": "delivered",
+      "createdAt": "2025-01-15T12:00:00.000Z",
+      "deliveredAt": "2025-01-15T12:00:01.000Z"
+    }
+  ]
+}
+```
+
+`routeId`, `deliveredAt`, `respondedAt`, `response`, and `expiresAt` are present
+only when applicable. `status` is:
+
+- `pending` — queued, the target session is not available (yet)
+- `inflight` — emitted to an ack-capable session; waiting for its receipt
+  acknowledgement (transient — settles to `delivered` on the ack, or back to
+  `pending` on ack timeout/disconnect for re-delivery)
+- `delivered` — handed to the session (ack-confirmed by the recipient, or
+  legacy handoff for older CLIs)
+- `responded` — the response contract was answered
+- `escalated` — unanswered, re-routed up the escalation chain
+- `expired` — TTL lapsed with no answer / no recipient
+
+---
+
+### `GET /api/sessions/{sessionId}/deliveries`
+
+Per-session delivery view (feed + respond surface). Ordered by update time.
+
+**Auth:** API key or session cookie.
+
+---
+
+### `POST /api/deliveries/{deliveryId}/response`
+
+Answer a contract-bearing delivery (e.g. a plan review). Records the response
+against the delivery and relays it back to the publishing session.
+
+**Auth:** API key or session cookie.
+
+**Request body:**
+
+```json
+{ "response": "Approved — go ahead.", "action": "approve" }
+```
+
+The `action` must be one of the event's declared contract actions, when any.
+
+**Response:**
+
+```json
+{ "ok": true, "deliveryId": "dlv_abc", "relayed": true }
+```
+
+---
+
+### `GET /api/routes` — list routes
+
+Routes are subscriptions (ADR-0002): an event type + a target (a session, or a
+spawn spec for auto-spawn listeners). Query: `eventType`. Only routes the caller
+owns (or ownerless config/legacy routes they can manage) are returned.
+
+Routes whose runner is dead — no registration for 7+ days and no live socket on
+any relay node — carry `runnerDead: true` and `runnerDeadSince` (ISO date of
+the last registration). Such routes can never fire; delete them individually or
+with `DELETE /api/runners/{runnerId}/routes`.
+
+**Auth:** API key or session cookie.
+
+---
+
+### `DELETE /api/runners/{runnerId}/routes` — bulk-delete a runner's routes
+
+Delete every route stamped with the runner (spawn listeners via
+`spec.runnerId`, session subscriptions/schedules via `target.runnerId`) and
+emit an unsubscribe reconcile delta per session route. Config-origin routes
+(read-only) and webhook routes (`rt_wh_*`, managed by the webhooks surface)
+are skipped and counted. Intended for cleaning up after a dead runner.
+
+**Auth:** API key or session cookie; the caller must own the runner (live state
+or the durable owner record). Runners with no resolvable owner are cleanable by
+any authenticated user.
+
+**Response:**
+
+```json
+{ "ok": true, "removed": 4, "skipped": 1 }
+```
+
+---
+
+### `POST /api/routes` — create a route
+
+Subscribe a session to an event type (or register an auto-spawn listener).
+
+**Auth:** API key or session cookie.
+
+**Request body (session subscription):**
+
+```json
+{
+  "eventType": "github:pr_opened",
+  "target": { "kind": "session", "sessionId": "sess_abc" },
+  "deliverAs": "followUp",               // "steer" or "followUp"
+  "params": { "branch": "main" },        // optional, forwarded to the emitting service
+  "filters": [                            // optional payload filters
+    { "field": "repo", "value": "my/repo", "op": "eq" }
+  ],
+  "filterMode": "and",                    // optional: "and" (default) or "or"
+  "origin": "agent"                      // optional: "agent" or "ui"
+}
+```
+
+**Request body (auto-spawn listener):**
+
+```json
+{
+  "eventType": "github:pr_opened",
+  "target": { "kind": "spawn", "spec": { "runnerId": "runner_a1b2c3", "promptTemplate": "Review this PR", "cwd": "/work/repo", "autoClose": true } },
+  "deliverAs": "followUp"
+}
+```
+
+**Response:**
+
+```json
+{ "ok": true, "route": { "routeId": "rt_abc123", "eventType": "github:pr_opened", "...": "..." } }
+```
+
+The `routeId` doubles as the subscription id: pass it to
+`PUT/DELETE /api/routes/{routeId}` to update or unsubscribe.
+
+---
+
+### `PUT /api/routes/{routeId}` — update a route
+
+Update params/filters, or re-own a schedule by changing `target.sessionId`
+(the route keeps its id, so durable schedule state survives the move).
+
+Target changes are re-validated like `POST`: a spawn target must reference a
+runner owned by the caller (the fail-closed owner stamp is re-applied), and a
+session target must be owned by the caller.
+
+**Auth:** API key or session cookie.
+
+---
+
+### `DELETE /api/routes/{routeId}` — delete a route
+
+Unsubscribe. Sessions that have ended remain manageable: authorization falls
+back through the route's stamped runner owner, so a standing schedule is
+always cancellable.
+
+**Auth:** API key or session cookie.
+
+**Response:**
+
+```json
+{ "ok": true }
 ```
 
 ---
@@ -1002,128 +1220,9 @@ List trigger types available on the session's runner (from runner service catalo
 
 ---
 
-### `GET /api/sessions/{sessionId}/trigger-subscriptions`
-
-List active trigger subscriptions for a session.
-
-**Auth:** API key or session cookie.
-
-**Response:**
-
-```json
-{
-  "subscriptions": [
-    { "subscriptionId": "sub_abc123", "triggerType": "github_push", "runnerId": "runner_a1b2c3" }
-  ]
-}
-```
-
----
-
-### `POST /api/sessions/{sessionId}/trigger-subscriptions`
-
-Subscribe a session to a trigger type. The trigger type must be available on the session's runner.
-
-**Auth:** API key or session cookie.
-
-**Request body:**
-
-```json
-{
-  "triggerType": "github_push",
-  "params": { "branch": "main" },           // optional, validated against trigger def
-  "filters": [                               // optional output filters
-    { "field": "repo", "value": "my/repo", "op": "eq" }
-  ],
-  "filterMode": "and"                        // optional: "and" (default) or "or"
-}
-```
-
-**Response:**
-
-```json
-{
-  "ok": true,
-  "subscriptionId": "sub_abc123",
-  "triggerType": "github_push",
-  "runnerId": "runner_a1b2c3"
-}
-```
-
----
-
-### `PUT /api/sessions/{sessionId}/trigger-subscriptions/{target}`
-
-Update params/filters on an existing trigger subscription. Prefer passing a `subscriptionId` as `{target}` or via `?subscriptionId=` when multiple same-type subscriptions exist. Passing only a trigger type is legacy behavior.
-
-**Auth:** API key or session cookie.
-
-**Request body:**
-
-```json
-{
-  "params": { "branch": "develop" },
-  "filters": [{ "field": "author", "value": "bot", "op": "contains" }],
-  "filterMode": "and"
-}
-```
-
-**Response:**
-
-```json
-{ "ok": true, "subscriptionId": "sub_abc123", "triggerType": "github_push", "runnerId": "runner_a1b2c3" }
-```
-
----
-
-### `DELETE /api/sessions/{sessionId}/trigger-subscriptions/{target}`
-
-Unsubscribe a session from a trigger subscription. Prefer passing a `subscriptionId` as `{target}` or via `?subscriptionId=` when deleting one specific subscription. Passing only a trigger type is legacy bulk-style behavior.
-
-**Auth:** API key or session cookie.
-
-**Response:**
-
-```json
-{ "ok": true, "subscriptionId": "sub_abc123", "triggerType": "github_push", "removed": 1 }
-```
-
----
-
-### `POST /api/runners/{runnerId}/trigger-broadcast`
-
-Broadcast a trigger to all sessions subscribed to a trigger type on this runner. Intended for runner services.
-
-**Auth:** API key only (`x-api-key` header).
-
-**Request body:**
-
-```json
-{
-  "type": "github_push",
-  "payload": { "repo": "my/repo", "branch": "main" },
-  "deliverAs": "steer",        // optional: "steer" or "followUp"
-  "source": "github",          // optional
-  "summary": "Push to main"    // optional
-}
-```
-
-**Response:**
-
-```json
-{
-  "ok": true,
-  "delivered": 3,       // number of existing sessions that received the trigger
-  "spawned": 1,         // number of auto-spawned sessions from listeners
-  "triggerId": "ext_abc123"
-}
-```
-
----
-
 ## Webhooks
 
-Webhooks allow external services to spawn sessions and fire triggers via HMAC-authenticated HTTP requests.
+Webhooks allow external services to publish Events via HMAC-authenticated HTTP requests. Routes determine whether each Event is delivered to existing sessions, spawns new sessions, or both.
 
 ### `POST /api/webhooks`
 
@@ -1222,7 +1321,7 @@ Delete a webhook.
 
 ### `POST /api/webhooks/{id}/fire`
 
-Fire a webhook — spawns a new session and delivers the payload as a trigger. **No session cookie required** — authenticated via HMAC signature.
+Fire a webhook — publishes a `webhook:<slug>` Event and delivers it through all matching Routes. A Route may target an existing session or spawn a new one, so a fire can reach multiple sessions. **No session cookie required** — authenticated via HMAC signature.
 
 **Auth:** HMAC-SHA256 signature of the request body using the webhook's `secret`. Two modes are supported and auto-detected by header presence:
 
@@ -1246,8 +1345,16 @@ X-Webhook-Nonce: <unique nonce>
 **Response:**
 
 ```json
-{ "ok": true, "triggerId": "wh_abc123", "sessionId": "session_x1y2z3" }
+{
+  "ok": true,
+  "eventId": "evt_abc123",
+  "sessionIds": ["session_existing", "session_spawned"],
+  "spawnedSessions": ["session_spawned"]
+}
 ```
+
+`sessionIds` contains every delivery target; `spawnedSessions` contains only
+the sessions created by spawn Routes.
 
 If the event type is filtered out:
 
@@ -1256,6 +1363,11 @@ If the event type is filtered out:
 ```
 
 A reused nonce in enhanced mode returns `409` with `{ "error": "Webhook nonce has already been used" }`.
+
+The webhook's spawn config (runner/cwd/prompt/model) is synced into a
+deterministic route (`rt_wh_<webhookId>`) on every webhook create/update/delete,
+so config edits always apply. If no route accepts the delivery (e.g. the runner
+rejects the spawn), the fire returns `503` — senders should retry.
 
 ---
 

@@ -443,7 +443,7 @@ export function registerAskUserTool(rctx: RelayContext) {
             if (rctx.isChildSession && rctx.parentSessionId && rctx.isConnected()) {
                 const triggerId = randomUUID();
                 const trigger = {
-                    type: "ask_user_question" as const,
+                    type: "lifecycle:ask_question" as const,
                     sourceSessionId: rctx.relaySessionId,
                     sourceSessionName: rctx.getCurrentSessionName() ?? rctx.relaySessionId.slice(0, 8),
                     targetSessionId: rctx.parentSessionId,

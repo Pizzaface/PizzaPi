@@ -440,7 +440,7 @@ export function registerPlanModeTool(rctx: RelayContext) {
             if (rctx.isChildSession && rctx.parentSessionId && rctx.isConnected()) {
                 const triggerId = randomUUID();
                 const trigger = {
-                    type: "plan_review" as const,
+                    type: "lifecycle:plan_review" as const,
                     sourceSessionId: rctx.relaySessionId,
                     sourceSessionName: rctx.getCurrentSessionName() ?? rctx.relaySessionId.slice(0, 8),
                     targetSessionId: rctx.parentSessionId,

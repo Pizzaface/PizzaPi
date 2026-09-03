@@ -20,6 +20,11 @@ export interface RelayClientToServerEvents {
     sessionFile?: string | null;
     /** Parent session ID for child→parent linking (trigger system). */
     parentSessionId?: string | null;
+    /** True when this CLI acks server→client session_trigger emissions.
+     *  Lets the server wait for confirmed receipt (delivery guarantees)
+     *  only for sessions that speak the ack protocol; legacy CLIs keep
+     *  handoff-equals-delivered semantics. */
+    acksSessionTrigger?: boolean;
   }) => void;
 
   /** TUI forwards an agent event (heartbeat, message_update, etc.)
@@ -198,7 +203,10 @@ export interface RelayServerToClientEvents {
     triggerId?: string;
   }) => void;
 
-  /** Delivers a trigger from a child to the target session */
+  /** Delivers a trigger from a child to the target session.
+   *  The optional ack is the delivery-receipt confirmation (trigger delivery
+   *  guarantees): the CLI must call it once it has durably accepted the
+   *  trigger (tracked / batched for injection). */
   session_trigger: (data: {
     trigger: {
       type: string;
@@ -212,7 +220,7 @@ export interface RelayServerToClientEvents {
       timeoutMs?: number;
       ts: string;
     };
-  }) => void;
+  }, ack?: (result: { ok: boolean }) => void) => void;
 
   /** Delivers a trigger response back to the source child.
    *  May also be forwarded via the parent session when a human viewer reply

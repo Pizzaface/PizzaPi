@@ -116,6 +116,15 @@ export interface PushSubscriptionTable {
     enabledEvents: string;
 }
 
+/** Durable runner ownership — runner state in Redis is TTL'd; this survives restarts. */
+export interface RunnerOwnerTable {
+    runnerId: string;
+    userId: string;
+    updatedAt: string;
+    /** Last registration; NULL on rows from before the column landed. */
+    lastSeenAt: string | null;
+}
+
 export interface RunnerRecentFolderTable {
     id: string;
     userId: string;
@@ -250,7 +259,45 @@ export interface NativePushRegistrationTable {
     suppressChildNotifications: number;
 }
 
+// Unified trigger system tables (ADR-0002) — owned by src/events/store.ts
+export interface TriggerEventTable {
+    id: string;
+    type: string;
+    fireId: string | null;
+    /** Tenant scope of the publish (added by ensureEventTables). fireId is unique per owner. */
+    ownerUserId: string | null;
+    eventJson: string;
+    createdAt: string;
+    /** Per-source FIFO counter (added by ensureEventTables): monotonic per
+     *  source.id, assigned inside the publish transaction. */
+    seq: number | null;
+}
+
+export interface TriggerRouteTable {
+    id: string;
+    eventType: string;
+    origin: string;
+    /** Tenant scope (added by ensureEventTables); mirrors routeJson.ownerUserId. */
+    ownerUserId: string | null;
+    routeJson: string;
+    updatedAt: string;
+}
+
+export interface TriggerDeliveryTable {
+    id: string;
+    eventId: string;
+    sessionId: string;
+    status: string;
+    deliveryJson: string;
+    updatedAt: string;
+    /** Exposed column for contract TTL sweeps (added by ensureEventTables). */
+    expiresAt: string | null;
+}
+
 export interface DB {
+    trigger_event: TriggerEventTable;
+    trigger_route: TriggerRouteTable;
+    trigger_delivery: TriggerDeliveryTable;
     user: UserTable;
     session: SessionTable;
     account: AccountTable;
@@ -258,6 +305,7 @@ export interface DB {
     apikey: ApiKeyTable;
     relay_session: RelaySessionTable;
     relay_session_state: RelaySessionStateTable;
+    runner_owner: RunnerOwnerTable;
     push_subscription: PushSubscriptionTable;
     runner_recent_folder: RunnerRecentFolderTable;
     runner_trigger_listener: RunnerTriggerListenerTable;
@@ -538,6 +586,9 @@ function applySqlitePerfPragmas(db: Database): void {
         db.run("PRAGMA journal_mode = WAL");
         db.run("PRAGMA synchronous = NORMAL");
         db.run("PRAGMA busy_timeout = 5000");
+        // Enforce declared FK constraints (trigger_delivery's ON DELETE CASCADE
+        // — see ensureEventTables; SQLite defaults this OFF per connection).
+        db.run("PRAGMA foreign_keys = ON");
     } catch (err) {
         console.warn("[auth-db] Could not apply SQLite perf pragmas (keeping defaults):", err);
     }

@@ -9,7 +9,7 @@ describe("isManualAbort", () => {
     });
 });
 
-const mockEmitSessionCompleteWithAck = mock(async (_opts: any) => ({ ok: true }));
+const mockEmitTriggerWithAck = mock(async (_trigger: any): Promise<{ ok: boolean; error?: string; status?: number }> => ({ ok: true }));
 const mockLogger = {
     info: mock((_message: string) => {}),
 };
@@ -74,27 +74,67 @@ describe("startFollowUpGrace / shutdownFollowUpGraceImmediately", () => {
 
 describe("createFollowUpGrace fireSessionComplete", () => {
     beforeEach(() => {
-        mockEmitSessionCompleteWithAck.mockReset();
-        mockEmitSessionCompleteWithAck.mockImplementation(async (_opts: any) => ({ ok: true }));
+        mockEmitTriggerWithAck.mockReset();
+        mockEmitTriggerWithAck.mockImplementation(async (_opts: any) => ({ ok: true }));
         mockLogger.info.mockReset();
+    });
+
+    test("does not retry a definitive 4xx publish failure", async () => {
+        const state = makeState();
+        mockEmitTriggerWithAck.mockResolvedValueOnce({ ok: false, error: "Parent session not found", status: 404 });
+        const setTimeoutSpy = spyOn(globalThis, "setTimeout");
+        const followUpGrace = createFollowUpGrace(makeRelayContext(), state, {
+            emitTriggerWithAck: mockEmitTriggerWithAck,
+            logger: mockLogger,
+        });
+
+        const result = await followUpGrace.fireSessionComplete("Done", undefined, "completed");
+
+        expect(result).toEqual({ ok: false, error: "Parent session not found", status: 404 });
+        expect(state.sessionCompleteRetryTimer).toBeNull();
+        expect(setTimeoutSpy).not.toHaveBeenCalled();
+        expect(mockLogger.info).toHaveBeenCalledTimes(1);
+        expect(mockLogger.info).toHaveBeenCalledWith("session_complete undeliverable (HTTP 404) — not retrying");
+        setTimeoutSpy.mockRestore();
+    });
+
+    test("keeps retrying 408, 429, 5xx, and network failures", async () => {
+        for (const failure of [
+            { error: "Request timeout", status: 408 },
+            { error: "Rate limited", status: 429 },
+            { error: "Bad gateway", status: 502 },
+            { error: "ECONNRESET" },
+        ]) {
+            const state = makeState();
+            const emit = mock(async () => ({ ok: false as const, ...failure }));
+            const followUpGrace = createFollowUpGrace(makeRelayContext(), state, {
+                emitTriggerWithAck: emit,
+                logger: mockLogger,
+            });
+
+            await followUpGrace.fireSessionComplete("Done", undefined, "completed");
+
+            expect(state.sessionCompleteRetryTimer).not.toBeNull();
+            followUpGrace.clearFollowUpGrace();
+        }
     });
 
     test("reuses the in-flight completion delivery promise instead of emitting twice", async () => {
         let resolveDelivery: ((value: { ok: boolean; error?: string }) => void) | null = null;
-        mockEmitSessionCompleteWithAck.mockImplementation(
+        mockEmitTriggerWithAck.mockImplementation(
             () => new Promise<{ ok: boolean; error?: string }>((resolve) => {
                 resolveDelivery = resolve;
             }),
         );
 
         const followUpGrace = createFollowUpGrace(makeRelayContext(), makeState(), {
-            emitSessionCompleteWithAck: mockEmitSessionCompleteWithAck,
+            emitTriggerWithAck: mockEmitTriggerWithAck,
             logger: mockLogger,
         });
         const first = followUpGrace.fireSessionComplete("Done", "/tmp/out.md", "completed");
         const second = followUpGrace.fireSessionComplete(undefined, undefined, "completed");
 
-        expect(mockEmitSessionCompleteWithAck).toHaveBeenCalledTimes(1);
+        expect(mockEmitTriggerWithAck).toHaveBeenCalledTimes(1);
         if (!resolveDelivery) throw new Error("missing deferred resolver");
         const resolver = resolveDelivery as (value: { ok: boolean; error?: string }) => void;
         resolver({ ok: true });
@@ -103,12 +143,12 @@ describe("createFollowUpGrace fireSessionComplete", () => {
     });
 
     test("retries with the stored summary and fullOutputPath after an earlier failure", async () => {
-        mockEmitSessionCompleteWithAck
+        mockEmitTriggerWithAck
             .mockImplementationOnce(async () => ({ ok: false, error: "Target session parent-1 is not connected" } as { ok: boolean; error?: string }))
             .mockImplementationOnce(async () => ({ ok: true } as { ok: boolean; error?: string }));
 
         const followUpGrace = createFollowUpGrace(makeRelayContext(), makeState(), {
-            emitSessionCompleteWithAck: mockEmitSessionCompleteWithAck,
+            emitTriggerWithAck: mockEmitTriggerWithAck,
             logger: mockLogger,
         });
 
@@ -117,34 +157,37 @@ describe("createFollowUpGrace fireSessionComplete", () => {
 
         expect(first).toEqual({ ok: false, error: "Target session parent-1 is not connected" });
         expect(second).toEqual({ ok: true });
-        expect(mockEmitSessionCompleteWithAck).toHaveBeenCalledTimes(2);
-        expect(mockEmitSessionCompleteWithAck.mock.calls[1]?.[0]).toMatchObject({
-            summary: "Rich summary",
-            fullOutputPath: "/tmp/out.md",
-            exitReason: "completed",
+        expect(mockEmitTriggerWithAck).toHaveBeenCalledTimes(2);
+        expect(mockEmitTriggerWithAck.mock.calls[1]?.[0]).toMatchObject({
+            type: "lifecycle:session_complete",
+            payload: {
+                summary: "Rich summary",
+                fullOutputPath: "/tmp/out.md",
+                exitReason: "completed",
+            },
         });
-        expect(mockEmitSessionCompleteWithAck.mock.calls[1]?.[0]?.triggerId).toBe(
-            mockEmitSessionCompleteWithAck.mock.calls[0]?.[0]?.triggerId,
+        expect(mockEmitTriggerWithAck.mock.calls[1]?.[0]?.triggerId).toBe(
+            mockEmitTriggerWithAck.mock.calls[0]?.[0]?.triggerId,
         );
     });
 
     test("ignores a stale in-flight delivery that resolves after a new turn starts", async () => {
         let resolveFirst: ((value: { ok: boolean; error?: string }) => void) | null = null;
-        mockEmitSessionCompleteWithAck.mockImplementationOnce(
+        mockEmitTriggerWithAck.mockImplementationOnce(
             () => new Promise<{ ok: boolean; error?: string }>((resolve) => {
                 resolveFirst = resolve;
             }),
         );
-        mockEmitSessionCompleteWithAck.mockImplementationOnce(async () => ({ ok: true }));
+        mockEmitTriggerWithAck.mockImplementationOnce(async () => ({ ok: true }));
 
         const state = makeState();
         const followUpGrace = createFollowUpGrace(makeRelayContext(), state, {
-            emitSessionCompleteWithAck: mockEmitSessionCompleteWithAck,
+            emitTriggerWithAck: mockEmitTriggerWithAck,
             logger: mockLogger,
         });
 
         const first = followUpGrace.fireSessionComplete("First turn", undefined, "completed");
-        expect(mockEmitSessionCompleteWithAck).toHaveBeenCalledTimes(1);
+        expect(mockEmitTriggerWithAck).toHaveBeenCalledTimes(1);
 
         // Simulate turn_start/session_switch resetting completion state for a new turn.
         state.sessionCompleteFired = false;
@@ -162,42 +205,39 @@ describe("createFollowUpGrace fireSessionComplete", () => {
 
         const second = await followUpGrace.fireSessionComplete("Second turn", undefined, "completed");
         expect(second).toEqual({ ok: true });
-        expect(mockEmitSessionCompleteWithAck).toHaveBeenCalledTimes(2);
-        expect(mockEmitSessionCompleteWithAck.mock.calls[1]?.[0]).toMatchObject({ summary: "Second turn" });
+        expect(mockEmitTriggerWithAck).toHaveBeenCalledTimes(2);
+        expect(mockEmitTriggerWithAck.mock.calls[1]?.[0]).toMatchObject({ payload: { summary: "Second turn" } });
     });
 
-    test("stores completion payload even when the first attempt cannot send due to a disconnected socket", async () => {
+    test("publishes completion over HTTP when the legacy socket is disconnected", async () => {
         const disconnected = makeRelayContext();
         disconnected.sioSocket = { connected: false };
         const state = makeState();
         const followUpGrace = createFollowUpGrace(disconnected, state, {
-            emitSessionCompleteWithAck: mockEmitSessionCompleteWithAck,
+            emitTriggerWithAck: mockEmitTriggerWithAck,
             logger: mockLogger,
         });
 
-        const first = await followUpGrace.fireSessionComplete("Buffered summary", "/tmp/buffered.md", "completed");
-        expect(first).toEqual({ ok: false, error: "Child session is not connected to a linked parent" });
+        const result = await followUpGrace.fireSessionComplete("Buffered summary", "/tmp/buffered.md", "completed");
 
-        disconnected.sioSocket = { connected: true };
-        mockEmitSessionCompleteWithAck.mockResolvedValueOnce({ ok: true });
-
-        const second = await followUpGrace.fireSessionComplete(undefined, undefined, "completed");
-        expect(second).toEqual({ ok: true });
-        expect(mockEmitSessionCompleteWithAck).toHaveBeenCalledTimes(1);
-        expect(mockEmitSessionCompleteWithAck.mock.calls[0]?.[0]).toMatchObject({
-            summary: "Buffered summary",
-            fullOutputPath: "/tmp/buffered.md",
-            exitReason: "completed",
+        expect(result).toEqual({ ok: true });
+        expect(mockEmitTriggerWithAck).toHaveBeenCalledTimes(1);
+        expect(mockEmitTriggerWithAck.mock.calls[0]?.[0]).toMatchObject({
+            payload: {
+                summary: "Buffered summary",
+                fullOutputPath: "/tmp/buffered.md",
+                exitReason: "completed",
+            },
         });
     });
 
     test("preserves the original error exitReason on a shutdown-style retry", async () => {
-        mockEmitSessionCompleteWithAck
+        mockEmitTriggerWithAck
             .mockImplementationOnce(async () => ({ ok: false, error: "relay down" } as { ok: boolean; error?: string }))
             .mockImplementationOnce(async () => ({ ok: true } as { ok: boolean; error?: string }));
 
         const followUpGrace = createFollowUpGrace(makeRelayContext(), makeState(), {
-            emitSessionCompleteWithAck: mockEmitSessionCompleteWithAck,
+            emitTriggerWithAck: mockEmitTriggerWithAck,
             logger: mockLogger,
         });
 
@@ -206,14 +246,16 @@ describe("createFollowUpGrace fireSessionComplete", () => {
 
         expect(first).toEqual({ ok: false, error: "relay down" });
         expect(second).toEqual({ ok: true });
-        expect(mockEmitSessionCompleteWithAck).toHaveBeenCalledTimes(2);
-        expect(mockEmitSessionCompleteWithAck.mock.calls[1]?.[0]).toMatchObject({
-            summary: "Errored summary",
-            fullOutputPath: "/tmp/error.md",
-            exitReason: "error",
+        expect(mockEmitTriggerWithAck).toHaveBeenCalledTimes(2);
+        expect(mockEmitTriggerWithAck.mock.calls[1]?.[0]).toMatchObject({
+            payload: {
+                summary: "Errored summary",
+                fullOutputPath: "/tmp/error.md",
+                exitReason: "error",
+            },
         });
-        expect(mockEmitSessionCompleteWithAck.mock.calls[1]?.[0]?.triggerId).toBe(
-            mockEmitSessionCompleteWithAck.mock.calls[0]?.[0]?.triggerId,
+        expect(mockEmitTriggerWithAck.mock.calls[1]?.[0]?.triggerId).toBe(
+            mockEmitTriggerWithAck.mock.calls[0]?.[0]?.triggerId,
         );
     });
 });

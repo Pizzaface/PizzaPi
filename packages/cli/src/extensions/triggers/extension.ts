@@ -9,23 +9,31 @@
 
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { createLogger } from "@pizzapi/tools";
 import { getRelaySocket, getRelaySessionId } from "../remote.js";
 import {
-    fireTrigger,
     getAvailableTriggers,
     getAvailableSigils,
     subscribeTrigger,
     listTriggerSubscriptions,
     unsubscribeTrigger,
     updateTriggerSubscription,
+    publishEvent,
+    respondToDelivery,
 } from "../trigger-client.js";
 import type { ServiceSigilDef } from "@pizzapi/protocol";
+
+const log = createLogger("triggers");
 
 function shortId(id: string, len = 8): string {
     return id.length > len ? id.slice(-len) : id;
 }
 function preview(text: string, max = 50): string {
     return text.length > max ? text.slice(0, max) + "..." : text;
+}
+
+export function isSessionCompleteType(type: string): boolean {
+    return type === "lifecycle:session_complete" || type === "session_complete";
 }
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -99,38 +107,54 @@ export async function sendTriggerResponseWithAck(
  */
 export function clearAndCancelPendingTriggers(
     onConfirmed?: (triggerId: string, childSessionId: string) => void,
+    deps: {
+        respond?: typeof respondToDelivery;
+        connection?: ReturnType<typeof getRelaySocket>;
+    } = {},
 ): { cancelled: number; sent: Array<{ triggerId: string; childSessionId: string }>; failed: Array<{ triggerId: string; childSessionId: string }> } {
-    const conn = getRelaySocket();
+    const conn = "connection" in deps ? deps.connection : getRelaySocket();
+    const respond = deps.respond ?? respondToDelivery;
     const sent: Array<{ triggerId: string; childSessionId: string }> = [];
     const failed: Array<{ triggerId: string; childSessionId: string }> = [];
+    const response = "Parent started a new session — trigger cancelled.";
+
+    const sendLegacyCancellation = (triggerId: string, childSessionId: string): boolean => {
+        if (!conn) return false;
+        conn.socket.emit("trigger_response" as any, {
+            token: conn.token,
+            triggerId,
+            response,
+            action: "cancel",
+            targetSessionId: childSessionId,
+        }, (result: { ok: boolean; error?: string }) => {
+            if (result?.ok) onConfirmed?.(triggerId, childSessionId);
+            // If !ok, the item stays in pendingCancellations for retry on reconnect.
+        });
+        return true;
+    };
 
     for (const [triggerId, entry] of receivedTriggers) {
-        // Send a cancel response to children so they don't block.
-        if (conn) {
-            // Use an ack callback so we know the server received the cancel.
-            // If the socket drops before the ack arrives, the caller keeps the
-            // item in pendingCancellations and retries on the next reconnect.
-            // Only call onConfirmed once the server acknowledges the delivery —
-            // that's the signal to remove this item from the retry queue.
-            const capturedTriggerId = triggerId;
-            const capturedChildSessionId = entry.sourceSessionId;
-            conn.socket.emit("trigger_response" as any, {
-                token: conn.token,
-                triggerId: capturedTriggerId,
-                response: "Parent started a new session — trigger cancelled.",
-                action: "cancel",
-                targetSessionId: capturedChildSessionId,
-            }, (result: { ok: boolean; error?: string }) => {
-                if (result?.ok) {
-                    onConfirmed?.(capturedTriggerId, capturedChildSessionId);
-                }
-                // If !ok, the item stays in pendingCancellations for retry on reconnect.
-            });
-            // Mark as sent-pending-ack: caller should add to pendingCancellations
-            // so the retry path handles the case where the socket drops before the ack.
-            sent.push({ triggerId, childSessionId: entry.sourceSessionId });
+        const childSessionId = entry.sourceSessionId;
+        if (triggerId.startsWith("dlv_")) {
+            // Unified session_trigger envelopes carry their Delivery id. Answer
+            // that Delivery so the engine correlates the cancellation back to
+            // the publisher's fireId. Only a 404 identifies a legacy delivery.
+            sent.push({ triggerId, childSessionId });
+            void respond(triggerId, { response, action: "cancel" })
+                .then((result) => {
+                    if (result.ok) {
+                        onConfirmed?.(triggerId, childSessionId);
+                    } else if (result.notFound) {
+                        sendLegacyCancellation(triggerId, childSessionId);
+                    }
+                })
+                .catch((err) => {
+                    log.error(`Failed to cancel trigger Delivery ${triggerId}:`, err);
+                });
+        } else if (sendLegacyCancellation(triggerId, childSessionId)) {
+            sent.push({ triggerId, childSessionId });
         } else {
-            failed.push({ triggerId, childSessionId: entry.sourceSessionId });
+            failed.push({ triggerId, childSessionId });
         }
     }
 
@@ -142,6 +166,38 @@ export function clearAndCancelPendingTriggers(
 export function markTriggerHandled(triggerId: string): void {
     handledTriggerTombstones.set(triggerId, Date.now());
     receivedTriggers.delete(triggerId);
+}
+
+/**
+ * Mark a locally handled session completion before answering its unified
+ * Delivery. The tombstone must exist first because the server relays the
+ * response back to this parent socket synchronously; connection.ts then sees
+ * no pending trigger and cannot repeat cleanup/follow-up work.
+ */
+export async function finalizeSessionCompleteResponse(
+    params: { triggerId: string; response: string; action: string },
+    deps: {
+        respond?: typeof respondToDelivery;
+        logger?: Pick<typeof log, "info" | "error">;
+    } = {},
+): Promise<void> {
+    markTriggerHandled(params.triggerId);
+    const respond = deps.respond ?? respondToDelivery;
+    const logger = deps.logger ?? log;
+    try {
+        const result = await respond(params.triggerId, {
+            response: params.response,
+            action: params.action,
+        });
+        // A missing Delivery means the child used the legacy direct-wire path.
+        // The local cleanup/follow-up already succeeded, so there is nothing
+        // else to do for mixed-version children.
+        if (!result.ok && !result.notFound) {
+            logger.info(`Failed to answer session_complete Delivery ${params.triggerId}: ${result.error ?? "unknown error"}`);
+        }
+    } catch (err) {
+        logger.error(`Failed to answer session_complete Delivery ${params.triggerId}:`, err);
+    }
 }
 
 export function trackReceivedTrigger(triggerId: string, sourceSessionId: string, type: string): boolean {
@@ -337,7 +393,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             // session_complete is respondable but handled differently:
             // - "ack": just acknowledge, no message to child
             // - "followUp": deliver as input message to resume the child (like tell_child)
-            if (pending.type === "session_complete") {
+            if (isSessionCompleteType(pending.type)) {
                 const action = params.action ?? "ack";
                 if (action === "followUp") {
                     // Deliver as agent input so it starts a new turn in the child.
@@ -366,7 +422,11 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                         });
                     });
                     if (result.ok) {
-                        markTriggerHandled(params.triggerId);
+                        await finalizeSessionCompleteResponse({
+                            triggerId: params.triggerId,
+                            response: params.response,
+                            action,
+                        });
                     }
                     return { content: [{ type: "text" as const, text: result.text }], details: null as any };
                 }
@@ -390,16 +450,40 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                     // Don't delete the trigger — agent can retry
                     return { content: [{ type: "text" as const, text: `Failed to clean up child session ${pending.sourceSessionId}: ${cleanupResult.error ?? "unknown error"}` }], details: null as any };
                 }
-                markTriggerHandled(params.triggerId);
+                await finalizeSessionCompleteResponse({
+                    triggerId: params.triggerId,
+                    response: params.response,
+                    action,
+                });
                 return { content: [{ type: "text" as const, text: `Acknowledged session completion from ${pending.sourceSessionId}` }], details: null as any };
             }
 
-            const result = await sendTriggerResponseWithAck(conn, {
-                triggerId: params.triggerId,
+            const result = await respondToDelivery(params.triggerId, {
                 response: params.response,
-                action: params.action,
-                targetSessionId: pending.sourceSessionId,
+                ...(params.action ? { action: params.action } : {}),
             });
+            if (!result.ok && result.notFound) {
+                // Delivery unknown to the engine — the trigger came from a child
+                // running pre-ADR-0002 CLI code (runners keep old code until
+                // they restart). Fall back to the direct wire response so mixed
+                // versions keep working. TODO(phase-6-followup): delete this
+                // fallback once every runner daemon has restarted onto the
+                // unified engine — no child can then fire outside it.
+                const conn = getRelaySocket();
+                if (conn) {
+                    const legacy = await sendTriggerResponseWithAck(conn, {
+                        triggerId: params.triggerId,
+                        response: params.response,
+                        action: params.action,
+                        targetSessionId: pending.sourceSessionId,
+                    });
+                    if (legacy.ok) {
+                        markTriggerHandled(params.triggerId);
+                        return { content: [{ type: "text" as const, text: `Response sent for trigger ${params.triggerId}` }], details: null as any };
+                    }
+                    return { content: [{ type: "text" as const, text: `Failed to deliver response for trigger ${params.triggerId}: ${legacy.error ?? "unknown error"}` }], details: null as any };
+                }
+            }
             if (!result.ok) {
                 return {
                     content: [{
@@ -439,62 +523,66 @@ export const triggersExtension: ExtensionFactory = (pi) => {
         },
     });
 
-    // ── fire_trigger ──────────────────────────────────────────────────────
+    // ── publish_event ──────────────────────────────────────────────────
     pi.registerTool({
-        name: "fire_trigger",
-        label: "Fire Trigger",
+        name: "publish_event",
+        label: "Publish Event",
         description:
-            "Fire a trigger into any session (not just children). Uses the HTTP Trigger API " +
-            "with API key auth, with Socket.IO fallback for offline/local mode. " +
-            "This lets agents fire triggers into peer sessions they are not directly linked to.",
+            "Publish an Event through the unified trigger system (ADR-0002). Without a target, " +
+            "every route matching the event type delivers it; with a target session it is an " +
+            "implicit single-session route. Event types must be namespaced (e.g. 'github:pr_comment'). " +
+            "Requires a relay — offline/local sessions cannot publish events.",
         parameters: {
             type: "object",
             properties: {
-                sessionId: {
-                    type: "string",
-                    description: "Target session ID to fire the trigger into",
-                },
                 type: {
                     type: "string",
-                    description: "Trigger type — e.g. 'service', 'webhook', 'godmother:idea_started'",
+                    description: "Namespaced event type — e.g. 'service:deploy_done', 'godmother:idea_moved'",
                 },
                 payload: {
                     type: "object",
-                    description: "Arbitrary payload object delivered to the session",
+                    description: "Arbitrary payload object carried by the event",
                 },
-                source: {
+                sessionId: {
                     type: "string",
-                    description: "Optional source identifier shown in trigger history (e.g. 'godmother', 'github')",
+                    description: "Optional direct target session — an implicit single-session route",
                 },
                 deliverAs: {
                     type: "string",
                     enum: ["steer", "followUp"],
                     description: "How to deliver: 'steer' (default) interrupts the current turn; 'followUp' queues after the turn ends",
                 },
+                summary: {
+                    type: "string",
+                    description: "Optional human-readable summary shown in event feeds",
+                },
             },
-            required: ["sessionId", "type", "payload"],
+            required: ["type", "payload"],
         } as any,
         async execute(_toolCallId, rawParams) {
             const params = rawParams as {
-                sessionId: string;
                 type: string;
                 payload: Record<string, unknown>;
-                source?: string;
+                sessionId?: string;
                 deliverAs?: "steer" | "followUp";
+                summary?: string;
             };
 
-            const result = await fireTrigger(params.sessionId, {
+            const result = await publishEvent({
                 type: params.type,
                 payload: params.payload,
-                source: params.source,
-                deliverAs: params.deliverAs,
+                ...(params.summary ? { summary: params.summary } : {}),
+                ...(params.sessionId
+                    ? { target: { sessionId: params.sessionId, deliverAs: params.deliverAs } }
+                    : {}),
             });
 
             if (result.ok) {
+                const n = result.deliveries?.length ?? 0;
                 return {
                     content: [{
                         type: "text" as const,
-                        text: `Trigger ${result.triggerId} fired to session ${params.sessionId} via ${result.method}`,
+                        text: `Event ${result.eventId} (${params.type}) published — ${n} deliver${n === 1 ? "y" : "ies"}`,
                     }],
                     details: null as any,
                 };
@@ -502,22 +590,19 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             return {
                 content: [{
                     type: "text" as const,
-                    text: `Error firing trigger to session ${params.sessionId}: ${result.error ?? "Unknown error"}`,
+                    text: `Error publishing ${params.type} event: ${result.error ?? "Unknown error"}`,
                 }],
                 details: null as any,
             };
         },
         renderCall: (args: any, theme: any) => {
-            const sid = shortId(args.sessionId ?? "", 8);
             const type = preview(args.type ?? "?", 30);
-            const via = args.deliverAs === "followUp" ? "followUp" : "steer";
+            const sid = args.sessionId ? ` → ${shortId(args.sessionId, 8)}` : "";
             return new Text(
                 theme.fg("accent", "⚡") + " " +
-                theme.fg("muted", "fire ") +
+                theme.fg("muted", "publish ") +
                 theme.fg("dim", type) +
-                theme.fg("muted", " → ") +
-                theme.fg("dim", sid) +
-                theme.fg("muted", ` [${via}]`),
+                theme.fg("muted", sid),
                 0, 0
             );
         },
@@ -526,8 +611,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             if (text.startsWith("Error")) {
                 return new Text(theme.fg("error", "✗ ") + theme.fg("muted", preview(text, 60)), 0, 0);
             }
-            const method = text.includes("http") ? "HTTP" : "Socket.IO";
-            return new Text(theme.fg("success", "✓ ") + theme.fg("dim", `trigger fired via ${method}`), 0, 0);
+            return new Text(theme.fg("success", "✓ ") + theme.fg("dim", "event published"), 0, 0);
         },
     });
 
@@ -546,29 +630,29 @@ export const triggersExtension: ExtensionFactory = (pi) => {
         } as any,
         async execute(_toolCallId, rawParams) {
             const params = rawParams as { triggerId: string; context?: string };
-            const conn = getRelaySocket();
-            if (!conn) {
-                return { content: [{ type: "text" as const, text: "Error: Not connected to relay." }], details: null as any };
-            }
             const pending = receivedTriggers.get(params.triggerId);
             if (!pending) {
                 return { content: [{ type: "text" as const, text: `Error: No pending trigger with ID ${params.triggerId}.` }], details: null as any };
             }
-            // Fire an escalate trigger to the parent's own session so the web UI
-            // surfaces it to the human viewer (not back to the child).
-            conn.socket.emit("session_trigger" as any, {
-                token: conn.token,
-                trigger: {
-                    type: "escalate",
-                    sourceSessionId: pending.sourceSessionId,
-                    targetSessionId: getOwnSessionId() ?? "",
-                    payload: { reason: params.context ?? "Parent escalated", originalTriggerId: params.triggerId },
-                    deliverAs: "steer" as const,
-                    expectsResponse: true,
-                    triggerId: params.triggerId,  // Inherit original triggerId per spec
-                    ts: new Date().toISOString(),
-                },
+            // Publish an escalation Event to the parent's own session so the
+            // web UI surfaces it to the human viewer (not back to the child).
+            // No re-escalation: an escalation event never escalates again.
+            const ownId = getOwnSessionId();
+            if (!ownId) {
+                return { content: [{ type: "text" as const, text: "Error: Not connected to relay." }], details: null as any };
+            }
+            const result = await publishEvent({
+                type: "lifecycle:escalation",
+                payload: { reason: params.context ?? "Parent escalated", originalTriggerId: params.triggerId },
+                summary: `Escalation: ${pending.type}`,
+                fireId: `escalate:${params.triggerId}`,
+                responseContract: { escalate: false },
+                target: { sessionId: ownId, deliverAs: "steer" },
+                source: { kind: "session", id: pending.sourceSessionId, name: "escalation" },
             });
+            if (!result.ok) {
+                return { content: [{ type: "text" as const, text: `Error escalating trigger ${params.triggerId}: ${result.error ?? "unknown error"}` }], details: null as any };
+            }
             // Don't delete from receivedTriggers — the trigger is still pending
             // and respond_to_trigger needs the original sourceSessionId to route
             // the response back to the child (not the parent).

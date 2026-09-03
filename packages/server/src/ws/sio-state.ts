@@ -265,6 +265,12 @@ export interface RedisSessionData {
      * be matched against the current generation and ignored if stale.
      */
     generation?: string | null;
+    /**
+     * True when the registered CLI acknowledges server→client session_trigger
+     * emissions (delivery guarantees). Absent/false on legacy CLIs — the
+     * trigger transport then keeps handoff-equals-delivered semantics.
+     */
+    acksSessionTrigger?: boolean | null;
 }
 
 /**
@@ -447,6 +453,7 @@ function parseSessionFromHash(hash: Record<string, string>): RedisSessionData | 
         metaState: hash.metaState || null,
         snapshotOverlay: hash.snapshotOverlay || null,
         generation: hash.generation || null,
+        acksSessionTrigger: hash.acksSessionTrigger === "1",
     };
 }
 

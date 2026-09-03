@@ -4,7 +4,7 @@ import type { ConversationTrigger } from "./types.js";
 
 function makeTrigger(overrides: Partial<ConversationTrigger> = {}): ConversationTrigger {
     return {
-        type: "ask_user_question",
+        type: "lifecycle:ask_question",
         sourceSessionId: "child-abc-123",
         sourceSessionName: "my-child",
         targetSessionId: "parent-xyz",
@@ -24,10 +24,10 @@ describe("renderTrigger", () => {
         expect(result).toStartWith("<!-- trigger:trigger-001 source:child-abc-123 -->");
     });
 
-    describe("ask_user_question", () => {
+    describe("lifecycle:ask_question", () => {
         it("renders question and options", () => {
             const trigger = makeTrigger({
-                type: "ask_user_question",
+                type: "lifecycle:ask_question",
                 payload: { question: "Which DB?", options: ["PostgreSQL", "SQLite"] },
             });
             const result = renderTrigger(trigger);
@@ -41,7 +41,7 @@ describe("renderTrigger", () => {
 
         it("renders without options when none provided", () => {
             const trigger = makeTrigger({
-                type: "ask_user_question",
+                type: "lifecycle:ask_question",
                 payload: { question: "What now?" },
             });
             const result = renderTrigger(trigger);
@@ -51,7 +51,7 @@ describe("renderTrigger", () => {
 
         it("encodes UTF-8 questions (emoji, CJK) as valid base64 without throwing", () => {
             const trigger = makeTrigger({
-                type: "ask_user_question",
+                type: "lifecycle:ask_question",
                 payload: {
                     question: "Choose 🎉",
                     options: ["日本語"],
@@ -72,10 +72,10 @@ describe("renderTrigger", () => {
         });
     });
 
-    describe("plan_review", () => {
+    describe("lifecycle:plan_review", () => {
         it("renders plan title, steps, and instructions", () => {
             const trigger = makeTrigger({
-                type: "plan_review",
+                type: "lifecycle:plan_review",
                 payload: {
                     title: "Refactor Auth",
                     steps: [
@@ -94,7 +94,7 @@ describe("renderTrigger", () => {
 
         it("renders with description", () => {
             const trigger = makeTrigger({
-                type: "plan_review",
+                type: "lifecycle:plan_review",
                 payload: {
                     title: "Plan",
                     description: "Detailed description here",
@@ -106,10 +106,10 @@ describe("renderTrigger", () => {
         });
     });
 
-    describe("session_complete", () => {
+    describe("lifecycle:session_complete", () => {
         it("renders completion summary with exitReason", () => {
             const trigger = makeTrigger({
-                type: "session_complete",
+                type: "lifecycle:session_complete",
                 payload: { summary: "All tests pass. Feature deployed.", exitReason: "completed" },
             });
             const result = renderTrigger(trigger);
@@ -124,7 +124,7 @@ describe("renderTrigger", () => {
 
         it("renders killed session", () => {
             const trigger = makeTrigger({
-                type: "session_complete",
+                type: "lifecycle:session_complete",
                 payload: { summary: "Session killed by user", exitReason: "killed" },
             });
             const result = renderTrigger(trigger);
@@ -134,7 +134,7 @@ describe("renderTrigger", () => {
 
         it("renders errored session", () => {
             const trigger = makeTrigger({
-                type: "session_complete",
+                type: "lifecycle:session_complete",
                 payload: { summary: "Crash", exitReason: "error" },
             });
             const result = renderTrigger(trigger);
@@ -144,7 +144,7 @@ describe("renderTrigger", () => {
 
         it("defaults exitReason to completed when missing", () => {
             const trigger = makeTrigger({
-                type: "session_complete",
+                type: "lifecycle:session_complete",
                 payload: { summary: "Done" },
             });
             const result = renderTrigger(trigger);
@@ -154,7 +154,7 @@ describe("renderTrigger", () => {
 
         it("includes full output path when provided", () => {
             const trigger = makeTrigger({
-                type: "session_complete",
+                type: "lifecycle:session_complete",
                 payload: { summary: "Truncated summary...", fullOutputPath: "/tmp/pizzapi-session-abc12345-output.md" },
             });
             const result = renderTrigger(trigger);
@@ -166,7 +166,7 @@ describe("renderTrigger", () => {
 
         it("omits file path when not truncated", () => {
             const trigger = makeTrigger({
-                type: "session_complete",
+                type: "lifecycle:session_complete",
                 payload: { summary: "Short result" },
             });
             const result = renderTrigger(trigger);
@@ -174,10 +174,10 @@ describe("renderTrigger", () => {
         });
     });
 
-    describe("session_error", () => {
+    describe("lifecycle:session_error", () => {
         it("renders error message from payload.message", () => {
             const trigger = makeTrigger({
-                type: "session_error",
+                type: "lifecycle:session_error",
                 payload: { message: "Build failed with exit code 1" },
             });
             const result = renderTrigger(trigger);
@@ -187,7 +187,7 @@ describe("renderTrigger", () => {
 
         it("falls back to payload.error", () => {
             const trigger = makeTrigger({
-                type: "session_error",
+                type: "lifecycle:session_error",
                 payload: { error: "Timeout" },
             });
             const result = renderTrigger(trigger);
@@ -195,10 +195,10 @@ describe("renderTrigger", () => {
         });
     });
 
-    describe("escalate", () => {
+    describe("lifecycle:escalation", () => {
         it("renders escalation with reason", () => {
             const trigger = makeTrigger({
-                type: "escalate",
+                type: "lifecycle:escalation",
                 payload: { reason: "Parent cannot handle this" },
             });
             const result = renderTrigger(trigger);
@@ -222,7 +222,7 @@ describe("renderTrigger", () => {
 
     it("uses sourceSessionId when sourceSessionName is missing", () => {
         const trigger = makeTrigger({
-            type: "session_complete",
+            type: "lifecycle:session_complete",
             sourceSessionName: undefined,
             sourceSessionId: "abcdefgh-1234",
             payload: { summary: "Done" },
@@ -233,60 +233,60 @@ describe("renderTrigger", () => {
 });
 
 describe("parseTriggerResponse", () => {
-    describe("session_complete", () => {
+    describe("lifecycle:session_complete", () => {
         it("classifies 'ok' as ack", () => {
-            const trigger = makeTrigger({ type: "session_complete" });
+            const trigger = makeTrigger({ type: "lifecycle:session_complete" });
             expect(parseTriggerResponse(trigger, "ok")).toEqual({ action: "ack" });
         });
 
         it("classifies 'thanks' as ack", () => {
-            const trigger = makeTrigger({ type: "session_complete" });
+            const trigger = makeTrigger({ type: "lifecycle:session_complete" });
             expect(parseTriggerResponse(trigger, "Thanks!")).toEqual({ action: "ack" });
         });
 
         it("classifies 'lgtm' as ack", () => {
-            const trigger = makeTrigger({ type: "session_complete" });
+            const trigger = makeTrigger({ type: "lifecycle:session_complete" });
             expect(parseTriggerResponse(trigger, "LGTM")).toEqual({ action: "ack" });
         });
 
         it("classifies follow-up text as followUp", () => {
-            const trigger = makeTrigger({ type: "session_complete" });
+            const trigger = makeTrigger({ type: "lifecycle:session_complete" });
             const result = parseTriggerResponse(trigger, "Please also fix the tests") as any;
             expect(result.action).toBe("followUp");
             expect(result.message).toBe("Please also fix the tests");
         });
     });
 
-    describe("plan_review", () => {
+    describe("lifecycle:plan_review", () => {
         it("classifies 'Begin' as approve", () => {
-            const trigger = makeTrigger({ type: "plan_review" });
+            const trigger = makeTrigger({ type: "lifecycle:plan_review" });
             expect(parseTriggerResponse(trigger, "Begin")).toEqual({ action: "approve" });
         });
 
         it("classifies 'cancel' as cancel", () => {
-            const trigger = makeTrigger({ type: "plan_review" });
+            const trigger = makeTrigger({ type: "lifecycle:plan_review" });
             expect(parseTriggerResponse(trigger, "cancel")).toEqual({ action: "cancel" });
         });
 
         it("classifies 'Begin with context' as approve", () => {
-            const trigger = makeTrigger({ type: "plan_review" });
+            const trigger = makeTrigger({ type: "lifecycle:plan_review" });
             expect(parseTriggerResponse(trigger, "Begin with context")).toEqual({ action: "approve" });
         });
 
         it("does not false-positive on words containing approval substrings", () => {
-            const trigger = makeTrigger({ type: "plan_review" });
+            const trigger = makeTrigger({ type: "lifecycle:plan_review" });
             // "go" was removed — words like "algorithm" or "not good" should not match
             const result = parseTriggerResponse(trigger, "the algorithm is wrong") as any;
             expect(result.action).toBe("edit");
         });
 
         it("classifies 'cancel the plan' as cancel", () => {
-            const trigger = makeTrigger({ type: "plan_review" });
+            const trigger = makeTrigger({ type: "lifecycle:plan_review" });
             expect(parseTriggerResponse(trigger, "cancel the plan")).toEqual({ action: "cancel" });
         });
 
         it("classifies other text as edit feedback", () => {
-            const trigger = makeTrigger({ type: "plan_review" });
+            const trigger = makeTrigger({ type: "lifecycle:plan_review" });
             const result = parseTriggerResponse(trigger, "Add more tests") as any;
             expect(result.action).toBe("edit");
             expect(result.feedback).toBe("Add more tests");

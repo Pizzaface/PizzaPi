@@ -27,21 +27,17 @@
 
 import { requireSession } from "../middleware.js";
 import {
-    getSharedSession,
-    getLocalTuiSocket,
-    emitToRelaySessionVerified,
-    broadcastToSessionViewers,
-    getLocalRunnerSocket,
-    recordRunnerSession,
-    linkSessionToRunner,
     getRunnerData,
 } from "../ws/sio-registry.js";
-import { waitForSpawnAck } from "../ws/runner-control.js";
+import type { JsonValue } from "@pizzapi/protocol";
+import { publishEvent } from "../events/engine.js";
+import { createEngineDeps } from "../events/transport.js";
+import { createRoute, deleteRoute, getRoute, listRoutes, updateRoute } from "../events/store.js";
 import type { RouteHandler } from "./types.js";
-import { randomUUID } from "crypto";
+import type { RouteInput } from "@pizzapi/protocol";
+import type { Webhook } from "../webhooks/store.js";
 import { createHmac, timingSafeEqual } from "crypto";
 import { createLogger } from "@pizzapi/tools";
-import { pushTriggerHistory } from "../sessions/trigger-store.js";
 import { consumeNonceOnce } from "../redis-kv-store.js";
 import {
     createWebhook,
@@ -55,12 +51,6 @@ import { getHiddenModels } from "../user-hidden-models.js";
 import { isHiddenModel } from "./model-guard.js";
 
 const log = createLogger("webhooks-api");
-
-/** Timeout for waiting for a spawned session to register (ms). */
-const SPAWN_ACK_TIMEOUT_MS = 10_000;
-
-/** How long to wait after spawn for the session socket to appear (ms). */
-const SESSION_CONNECT_TIMEOUT_MS = 15_000;
 
 /** Maximum accepted age/skew for webhook timestamp headers (ms). */
 const WEBHOOK_REPLAY_WINDOW_MS = 5 * 60 * 1000;
@@ -90,170 +80,83 @@ function hmacEqual(a: string, b: string): boolean {
     }
 }
 
-// ── Spawn helper ──────────────────────────────────────────────────────────────
+/**
+ * Event type for a webhook Source: `webhook:<slug>` derived from its name.
+ * Slug must satisfy the protocol's namespaced-type grammar.
+ */
+function webhookEventType(name: string): string {
+    const slug = name
+        .toLowerCase()
+        .replace(/[^a-z0-9_.-]+/g, "-")
+        .replace(/^[^a-z0-9]+/, "")
+        .replace(/-+$/, "");
+    return `webhook:${slug || "unnamed"}`;
+}
+
+/** Deterministic route id for a webhook's config-backed spawn route. */
+function webhookRouteId(webhookId: string): string {
+    return `rt_wh_${webhookId}`;
+}
+
+function webhookRouteInput(webhook: Webhook): RouteInput {
+    return {
+        eventType: webhookEventType(webhook.name),
+        target: {
+            kind: "spawn",
+            spec: {
+                runnerId: webhook.runnerId as string,
+                ownerUserId: webhook.userId,
+                ...(webhook.cwd ? { cwd: webhook.cwd } : {}),
+                ...(webhook.model ? { model: webhook.model } : {}),
+            },
+        },
+        deliverAs: "steer",
+        promptTemplate: webhook.prompt ?? undefined,
+        origin: "ui",
+        ownerUserId: webhook.userId,
+    };
+}
 
 /**
- * Spawn a session on the webhook's designated runner.
- * Returns the new sessionId, or an error Response.
+ * The webhook's spawn config lives as its route (ADR-0002). The route is
+ * keyed deterministically and re-synced on webhook create/update/delete so
+ * config edits propagate — previously the route was created once on first
+ * fire and later webhook edits silently stopped applying.
  */
-async function spawnSessionForWebhook(
-    runnerId: string,
-    webhookUserId: string,
-    cwd: string | null,
-    prompt: string | null,
-    model: { provider: string; id: string } | null,
-): Promise<{ sessionId: string } | Response> {
-    const runner = await getRunnerData(runnerId);
-    if (!runner || runner.userId !== webhookUserId) {
-        return Response.json(
-            { error: "Runner not found or not owned by webhook owner" },
-            { status: 403 },
-        );
+async function syncWebhookRoute(webhook: Webhook): Promise<void> {
+    const routeId = webhookRouteId(webhook.id);
+    const existing = await getRoute(routeId);
+    if (!webhook.runnerId) {
+        if (existing) await deleteRoute(routeId);
+        return;
     }
-
-    const runnerSocket = getLocalRunnerSocket(runnerId);
-    if (!runnerSocket) {
-        return Response.json(
-            { error: "Runner is not connected to this server" },
-            { status: 503 },
-        );
-    }
-
-    // Re-check the stored model against the owner's *current* hidden list —
-    // it may have been hidden after the webhook was configured. Hidden model
-    // → spawn without it (runner default) rather than failing the delivery.
-    const hiddenModels = await getHiddenModels(webhookUserId).catch(() => [] as string[]);
-    let effectiveModel = model;
-    if (model && isHiddenModel(hiddenModels, model)) {
-        log.warn(`webhook spawn: dropping hidden model ${model.provider}/${model.id}, using runner default`);
-        effectiveModel = null;
-    }
-
-    const sessionId = randomUUID();
-    const ackPromise = waitForSpawnAck(sessionId, SPAWN_ACK_TIMEOUT_MS);
-
-    try {
-        runnerSocket.emit("new_session", {
-            sessionId,
-            ...(cwd ? { cwd } : {}),
-            ...(prompt ? { prompt } : {}),
-            ...(effectiveModel ? { model: effectiveModel } : {}),
-            ...(hiddenModels.length > 0 ? { hiddenModels } : {}),
+    const input = webhookRouteInput(webhook);
+    if (existing) {
+        await updateRoute(routeId, {
+            eventType: input.eventType,
+            target: input.target,
+            deliverAs: input.deliverAs,
+            promptTemplate: input.promptTemplate,
+            ownerUserId: input.ownerUserId,
         });
-    } catch {
-        return Response.json(
-            { error: "Failed to send spawn request to runner" },
-            { status: 502 },
-        );
+    } else {
+        await createRoute(input, { routeId });
     }
-
-    const ack = await ackPromise;
-    if (ack.ok === false && !(ack as any).timeout) {
-        return Response.json(
-            { error: (ack as any).message ?? "Runner rejected the spawn request" },
-            { status: 502 },
-        );
+    // Retire legacy lazily-created copies of THIS webhook's route (created by
+    // the old fire path with the exact same spec shape) so the deterministic
+    // route is the only one and fires don't double-spawn. User-customized
+    // routes with different specs are left alone.
+    for (const route of await listRoutes({ eventType: input.eventType, ownerUserId: webhook.userId })) {
+        if (route.routeId === routeId || route.origin !== "ui") continue;
+        const spec = route.target.kind === "spawn" ? route.target.spec : null;
+        if (!spec) continue;
+        const sameShape =
+            spec.runnerId === webhook.runnerId &&
+            (spec.cwd ?? undefined) === (webhook.cwd ?? undefined) &&
+            (route.promptTemplate ?? undefined) === (webhook.prompt ?? undefined) &&
+            JSON.stringify(spec.model ?? null) === JSON.stringify(webhook.model ?? null);
+        if (sameShape) await deleteRoute(route.routeId).catch(() => {});
     }
-
-    await recordRunnerSession(runnerId, sessionId);
-    await linkSessionToRunner(runnerId, sessionId);
-
-    return { sessionId };
-}
-
-/**
- * Wait for a session's TUI socket to appear (it registers after spawn).
- * Polls every 200ms up to the timeout.
- */
-async function waitForSessionSocket(
-    sessionId: string,
-    timeoutMs: number = SESSION_CONNECT_TIMEOUT_MS,
-): Promise<boolean> {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-        // Check local socket first
-        const local = getLocalTuiSocket(sessionId);
-        if (local?.connected) return true;
-        // Check shared session (cross-node)
-        const shared = await getSharedSession(sessionId);
-        if (shared) return true;
-        await new Promise((r) => setTimeout(r, 200));
-    }
-    return false;
-}
-
-// ── Fire logic ────────────────────────────────────────────────────────────────
-
-async function fireWebhookTrigger(
-    webhookId: string,
-    webhookName: string,
-    source: string,
-    targetSessionId: string,
-    userId: string,
-    payload: Record<string, unknown>,
-    prompt: string | null,
-): Promise<Response> {
-    const triggerId = `wh_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
-    const ts = new Date().toISOString();
-
-    const triggerPayload = prompt
-        ? { ...payload, prompt }
-        : payload;
-
-    const trigger = {
-        type: "webhook",
-        sourceSessionId: `external:${source}`,
-        sourceSessionName: `Webhook: ${webhookName}`,
-        targetSessionId,
-        payload: triggerPayload,
-        deliverAs: "steer" as const,
-        expectsResponse: false,
-        triggerId,
-        ts,
-    };
-
-    const historyEntry = {
-        triggerId,
-        type: "webhook",
-        // Prefix with "external:" so deriveLinkedSessions() in the UI
-        // doesn't misclassify webhook sources as child sessions.
-        source: `external:${source}`,
-        summary: webhookName,
-        payload: triggerPayload,
-        deliverAs: "steer" as const,
-        ts,
-        direction: "inbound" as const,
-    };
-
-    // Deliver locally first. Write trigger history only after confirmed delivery
-    // so the observability log reflects what was actually received.
-    const targetSocket = getLocalTuiSocket(targetSessionId);
-    if (targetSocket?.connected) {
-        try {
-            targetSocket.emit("session_trigger", { trigger });
-            log.info(`Webhook trigger ${triggerId} delivered to session ${targetSessionId}`);
-            void Promise.resolve(pushTriggerHistory(targetSessionId, historyEntry)).catch(() => {});
-            broadcastToSessionViewers(targetSessionId, "trigger_delivered", { triggerId });
-            return Response.json({ ok: true, triggerId, sessionId: targetSessionId });
-        } catch (err) {
-            log.error(`Failed to deliver webhook trigger ${triggerId}:`, err);
-            return Response.json({ error: "Failed to deliver trigger to session" }, { status: 502 });
-        }
-    }
-
-    // Cross-node fallback
-    const delivered = await emitToRelaySessionVerified(targetSessionId, "session_trigger", { trigger });
-    if (delivered) {
-        log.info(`Webhook trigger ${triggerId} delivered cross-node to session ${targetSessionId}`);
-        void Promise.resolve(pushTriggerHistory(targetSessionId, historyEntry)).catch(() => {});
-        broadcastToSessionViewers(targetSessionId, "trigger_delivered", { triggerId });
-        return Response.json({ ok: true, triggerId, sessionId: targetSessionId });
-    }
-
-    return Response.json(
-        { error: "Session was spawned but is not yet connected — trigger could not be delivered" },
-        { status: 503 },
-    );
 }
 
 // ── Route handler ─────────────────────────────────────────────────────────────
@@ -341,6 +244,7 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             prompt,
             model,
         });
+        if (webhook) await syncWebhookRoute(webhook).catch((err) => log.warn("webhook route sync failed:", err));
 
         return Response.json({ webhook }, { status: 201 });
     }
@@ -452,6 +356,12 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
         if (!updated) {
             return Response.json({ error: "Webhook not found" }, { status: 404 });
         }
+        try {
+            await syncWebhookRoute(updated);
+        } catch (err) {
+            log.error("Webhook route sync failed:", err);
+            return Response.json({ error: "Failed to sync webhook route" }, { status: 500 });
+        }
 
         return Response.json({ webhook: toPublicWebhook(updated) });
     }
@@ -463,8 +373,21 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
         if (identity instanceof Response) return identity;
 
         const webhookId = decodeURIComponent(deleteMatch[1]);
-        const deleted = await deleteWebhook(webhookId, identity.userId);
+        const webhook = await getWebhook(webhookId);
+        if (!webhook || webhook.userId !== identity.userId) {
+            return Response.json({ error: "Webhook not found" }, { status: 404 });
+        }
 
+        // Delete the route first so a route failure cannot leave an active
+        // orphan after the webhook row is gone.
+        try {
+            await deleteRoute(webhookRouteId(webhookId));
+        } catch (err) {
+            log.error("Webhook route delete failed:", err);
+            return Response.json({ error: "Failed to delete webhook route" }, { status: 500 });
+        }
+
+        const deleted = await deleteWebhook(webhookId, identity.userId);
         if (!deleted) {
             return Response.json({ error: "Webhook not found" }, { status: 404 });
         }
@@ -566,46 +489,66 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             }
         }
 
-        // Webhook must have a runner assigned
-        if (!webhook.runnerId) {
-            return Response.json(
-                { error: "Webhook has no runner assigned" },
-                { status: 500 },
-            );
+        // Unified trigger system (ADR-0002): a webhook is a Source publishing
+        // `webhook:<slug>` events; routing decides the target. A default
+        // spawn-spec route is ensured lazily from the webhook's spawn config,
+        // and users can repoint/extend routes via /api/routes.
+        // SECURITY: fail-closed — never spawn on a runner the webhook owner no
+        // longer owns (runner reclaimed by another user after webhook creation).
+        if (webhook.runnerId) {
+            const runnerData = await getRunnerData(webhook.runnerId).catch(() => null);
+            if (!runnerData || runnerData.userId !== webhook.userId) {
+                return Response.json({ error: "Runner is not available for this webhook" }, { status: 403 });
+            }
         }
 
-        // Spawn a new session on the webhook's designated runner
-        const spawnResult = await spawnSessionForWebhook(
-            webhook.runnerId,
-            webhook.userId,
-            webhook.cwd,
-            webhook.prompt,
-            webhook.model,
-        );
-        if (spawnResult instanceof Response) return spawnResult;
-
-        const { sessionId } = spawnResult;
-        log.info(`Webhook ${webhookId} spawned session ${sessionId}`);
-
-        // Wait for the session to connect before firing the trigger
-        const connected = await waitForSessionSocket(sessionId);
-        if (!connected) {
-            log.warn(`Webhook ${webhookId}: session ${sessionId} spawned but never connected`);
-            return Response.json(
-                { error: "Session was spawned but did not connect in time" },
-                { status: 504 },
-            );
+        const routeType = webhookEventType(webhook.name);
+        const configRoute = await getRoute(webhookRouteId(webhook.id));
+        if (webhook.runnerId && !configRoute) {
+            // Ensure this webhook's config-backed route even when unrelated
+            // routes already exist for the same event type.
+            await syncWebhookRoute(webhook).catch((err) => log.warn("webhook route sync failed:", err));
+        } else if (!webhook.runnerId) {
+            const existingRoutes = await listRoutes({ eventType: routeType, ownerUserId: webhook.userId });
+            if (existingRoutes.length === 0) {
+                return Response.json(
+                    { error: "Webhook has no runner assigned and no routes configured" },
+                    { status: 500 },
+                );
+            }
         }
 
-        return fireWebhookTrigger(
-            webhook.id,
-            webhook.name,
-            webhook.source,
-            sessionId,
-            webhook.userId,
-            body,
-            webhook.prompt,
-        );
+        try {
+            const outcome = await publishEvent(
+                {
+                    type: routeType,
+                    payload: { ...(body as Record<string, JsonValue>), externalType: eventType },
+                    summary: `Webhook ${webhook.name}`,
+                },
+                // Tenant scope: the webhook's owner. Only their routes match, so
+                // two users' equivalently named webhooks can never cross-fire.
+                { kind: "webhook", id: webhook.id, name: webhook.name, auth: "hmac", userId: webhook.userId },
+                createEngineDeps(),
+            );
+            log.info(`Webhook ${webhookId} published ${outcome.event.eventId} (${outcome.deliveries.length} deliveries, ${outcome.spawnedSessions.length} spawns)`);
+            if (outcome.deliveries.length === 0) {
+                // 503: routes exist but nothing accepted the delivery (runner
+                // offline, spawn rejected) — the sender should retry.
+                return Response.json(
+                    { error: "Webhook event published but no route delivered it — retry" },
+                    { status: 503 },
+                );
+            }
+            return Response.json({
+                ok: true,
+                eventId: outcome.event.eventId,
+                sessionIds: outcome.deliveries.map((d) => d.sessionId),
+                spawnedSessions: outcome.spawnedSessions,
+            });
+        } catch (err) {
+            log.error(`Webhook ${webhookId} publish failed:`, err);
+            return Response.json({ error: "Failed to publish webhook event" }, { status: 500 });
+        }
     }
 
     return undefined;

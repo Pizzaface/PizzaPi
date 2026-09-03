@@ -63,7 +63,7 @@ function mockFetch(status = 200): RecordedCall[] {
             url: typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
             body: typeof init?.body === "string" ? init.body : "",
         });
-        return new Response(null, { status });
+        return new Response(JSON.stringify({ ok: true, created: true }), { status, headers: { "content-type": "application/json" } });
     }) as typeof fetch;
     return calls;
 }
@@ -363,7 +363,7 @@ describe("TimeService.reconcileSubscriptions()", () => {
             await new Promise((resolve) => setTimeout(resolve, 70));
             const fires = posts(fetchCalls);
             expect(fires).toHaveLength(1);
-            expect(fires[0]?.url).toBe("http://relay.test/api/sessions/sess-b/trigger");
+            expect(fires[0]?.url).toBe("http://relay.test/api/events");
             expect(fires[0]?.body).toContain('"label":"short"');
         });
     });
@@ -381,11 +381,14 @@ describe("TimeService.reconcileSubscriptions()", () => {
             await new Promise((resolve) => setTimeout(resolve, 60));
             const fires = posts(fetchCalls);
             expect(fires).toHaveLength(1);
-            expect(fires[0]?.url).toBe("http://relay.test/api/sessions/sess-1/trigger");
+            expect(fires[0]?.url).toBe("http://relay.test/api/events");
             const body = JSON.parse(fires[0]!.body);
             expect(body.payload.message).toBe("Check the build");
             expect(body.summary).toBe("Check the build");
-            expect(body.deliverAs).toBe("followUp");
+            expect(body.target.sessionId).toBe("sess-1");
+            expect(body.target.deliverAs).toBe("followUp");
+            expect(body.target.wake).toBe(true);
+            expect(body.source.kind).toBe("scheduler");
         });
 
         test("one-shot subscription is removed server-side after successful delivery", async () => {
@@ -400,9 +403,7 @@ describe("TimeService.reconcileSubscriptions()", () => {
             await new Promise((resolve) => setTimeout(resolve, 60));
             const cleanup = deletes(fetchCalls);
             expect(cleanup).toHaveLength(1);
-            expect(cleanup[0]?.url).toBe(
-                "http://relay.test/api/sessions/sess-1/trigger-subscriptions/time%3Atimer_fired?subscriptionId=sub-1",
-            );
+            expect(cleanup[0]?.url).toBe("http://relay.test/api/routes/sub-1");
         });
 
         test("past time:at fires immediately and removes its subscription", async () => {
@@ -417,7 +418,7 @@ describe("TimeService.reconcileSubscriptions()", () => {
             await new Promise((resolve) => setTimeout(resolve, 30));
             const fires = posts(fetchCalls);
             expect(fires).toHaveLength(1);
-            expect(fires[0]?.url).toBe("http://relay.test/api/sessions/sess-1/trigger");
+            expect(fires[0]?.url).toBe("http://relay.test/api/events");
             expect(JSON.parse(fires[0]!.body).payload.message).toBe("Morning check-in");
             expect(deletes(fetchCalls)).toHaveLength(1);
         });

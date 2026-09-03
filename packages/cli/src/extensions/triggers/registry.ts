@@ -21,7 +21,7 @@ function respondLine(triggerId: string): string {
 // ── Built-in renderers ──────────────────────────────────────────────────────
 
 const askUserQuestionRenderer: TriggerRenderer = {
-    type: "ask_user_question",
+    type: "lifecycle:ask_question",
     render(trigger) {
         const name = displayName(trigger);
         const question = typeof trigger.payload.question === "string"
@@ -44,7 +44,7 @@ const askUserQuestionRenderer: TriggerRenderer = {
 };
 
 const planReviewRenderer: TriggerRenderer = {
-    type: "plan_review",
+    type: "lifecycle:plan_review",
     render(trigger) {
         const name = displayName(trigger);
         const title = typeof trigger.payload.title === "string"
@@ -91,7 +91,7 @@ const planReviewRenderer: TriggerRenderer = {
 };
 
 const sessionCompleteRenderer: TriggerRenderer = {
-    type: "session_complete",
+    type: "lifecycle:session_complete",
     render(trigger) {
         const name = displayName(trigger);
         const summary = typeof trigger.payload.summary === "string"
@@ -134,7 +134,7 @@ const sessionCompleteRenderer: TriggerRenderer = {
 };
 
 const sessionErrorRenderer: TriggerRenderer = {
-    type: "session_error",
+    type: "lifecycle:session_error",
     render(trigger) {
         const name = displayName(trigger);
         const message = typeof trigger.payload.message === "string"
@@ -195,7 +195,7 @@ const externalRenderer: TriggerRenderer = {
 };
 
 const escalateRenderer: TriggerRenderer = {
-    type: "escalate",
+    type: "lifecycle:escalation",
     render(trigger) {
         const name = displayName(trigger);
         const reason = typeof trigger.payload.reason === "string"
@@ -217,11 +217,11 @@ const escalateRenderer: TriggerRenderer = {
 // ── Registry ────────────────────────────────────────────────────────────────
 
 export const TRIGGER_RENDERERS: ReadonlyMap<string, TriggerRenderer> = new Map([
-    ["ask_user_question", askUserQuestionRenderer],
-    ["plan_review", planReviewRenderer],
-    ["session_complete", sessionCompleteRenderer],
-    ["session_error", sessionErrorRenderer],
-    ["escalate", escalateRenderer],
+    ["lifecycle:ask_question", askUserQuestionRenderer],
+    ["lifecycle:plan_review", planReviewRenderer],
+    ["lifecycle:session_complete", sessionCompleteRenderer],
+    ["lifecycle:session_error", sessionErrorRenderer],
+    ["lifecycle:escalation", escalateRenderer],
     ["external", externalRenderer],
     ["webhook", externalRenderer],
     ["service", externalRenderer],
@@ -254,7 +254,7 @@ export function renderTrigger(trigger: ConversationTrigger): string {
     // Embed structured questions as base64 inside the trigger metadata comment
     // so the web UI can render rich multi-question / checkbox / ranked triggers
     // without polluting the agent-facing prompt text with a separate comment.
-    const questions = trigger.type === "ask_user_question" && Array.isArray(trigger.payload.questions)
+    const questions = trigger.type === "lifecycle:ask_question" && Array.isArray(trigger.payload.questions)
         ? trigger.payload.questions
         : undefined;
     const q64 = questions

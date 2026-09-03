@@ -143,7 +143,7 @@ const LazyRunnerManager = React.lazy(() => import("@/components/RunnerManager").
 const LazyNewSessionWizardDialog = React.lazy(() => import("@/components/NewSessionWizardDialog").then((m) => ({ default: m.NewSessionWizardDialog })));
 const LazyHistoryCommandPalette = React.lazy(() => import("@/components/HistoryCommandPalette").then((m) => ({ default: m.HistoryCommandPalette })));
 const LazySessionAnalyzerBody = React.lazy(() => import("@/components/session-viewer/SessionAnalyzerPanel").then((m) => ({ default: m.SessionAnalyzerBody })));
-const LazyTriggersPanel = React.lazy(() => import("@/components/TriggersPanel").then((m) => ({ default: m.TriggersPanel })));
+const LazyEventsRoutesPanel = React.lazy(() => import("@/components/events/EventsRoutesPanel").then((m) => ({ default: m.EventsRoutesPanel })));
 const LazyTerminalManager = React.lazy(() => import("@/components/TerminalManager").then((m) => ({ default: m.TerminalManager })));
 const LazyFileExplorer = React.lazy(() => import("@/components/FileExplorer").then((m) => ({ default: m.FileExplorer })));
 const LazyGitPanel = React.lazy(() => import("@/components/git").then((m) => ({ default: m.GitPanel })));
@@ -4627,10 +4627,6 @@ export function App() {
     () => resolveLauncherSource(dynamicPanels, activeRunnerInfo?.runnerId ?? null, feedRunners, selectedRunnerId),
     [dynamicPanels, activeRunnerInfo?.runnerId, feedRunners, selectedRunnerId],
   );
-  const modeTriggerDefs = React.useMemo(
-    () => runnerTriggerDefs.filter((t) => surfaceVisibleInMode(t.modes, activeMode)),
-    [runnerTriggerDefs, activeMode],
-  );
 
   // Mode selected in the sidebar, which drives the mode home shown when no
   // session is open. Independent of the active session's own mode.
@@ -4724,10 +4720,10 @@ export function App() {
   }, [reloadScheduled]);
 
   const handleCancelScheduled = React.useCallback(async (instruction: ScheduledInstruction) => {
-    const query = instruction.subscriptionId ? `?subscriptionId=${encodeURIComponent(instruction.subscriptionId)}` : "";
+    if (!instruction.subscriptionId) return;
     try {
       const res = await fetch(
-        `/api/sessions/${encodeURIComponent(instruction.sessionId)}/trigger-subscriptions/${encodeURIComponent(instruction.triggerType)}${query}`,
+        `/api/routes/${encodeURIComponent(instruction.subscriptionId)}`,
         { method: "DELETE", credentials: "include" },
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -5079,10 +5075,10 @@ export function App() {
     onDragStart: (e) => startPanelDragWith(e, handleTriggersPositionChange),
     content: (
       <Suspense fallback={<PanelFallback label="Triggers" />}>
-        <LazyTriggersPanel sessionId={activeSessionId} triggerDefs={modeTriggerDefs} viewerSocket={viewerSocket} />
+        <LazyEventsRoutesPanel sessionId={activeSessionId} viewerSocket={viewerSocket} onBadgeRefresh={triggerCounts.refresh} />
       </Suspense>
     ),
-  } : null, [showTriggers, activeSessionId, modeTriggerDefs, viewerSocket, startPanelDragWith, handleTriggersPositionChange, setShowTriggers]);
+  } : null, [showTriggers, activeSessionId, viewerSocket, triggerCounts.refresh, startPanelDragWith, handleTriggersPositionChange, setShowTriggers]);
 
   const analyzerPanelTab = React.useMemo<CombinedPanelTab | null>(() => {
     if (!showAnalyzer || !activeSessionId) return null;

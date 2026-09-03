@@ -39,6 +39,7 @@ import {
 } from "./context.js";
 import { broadcastToHub } from "./hub.js";
 import { broadcastToRunnersNs } from "./runners-broadcast.js";
+import { rememberRunnerOwner, touchRunnerSeen } from "../../runner-owner.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("sio-registry");
@@ -213,6 +214,12 @@ export async function registerRunner(
 
     await setRunner(runnerId, runnerData);
     localRunnerSockets.set(runnerId, socket);
+    // Durable ownership record — Redis runner state is TTL'd and deleted on
+    // disconnect; route management needs owner resolution even while offline.
+    await rememberRunnerOwner(runnerId, opts.userId);
+    // Liveness stamp for the dead-runner sweep (rememberRunnerOwner already
+    // stamps it, but only when the registration carries a userId).
+    if (!opts.userId) await touchRunnerSeen(runnerId);
 
     // Join a per-runner room so cluster-wide emits can reach this runner via
     // the Redis adapter (see emitToRunner / endSharedSession).

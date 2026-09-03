@@ -23,10 +23,6 @@ mock.module("../../sessions/store.js", () => ({
     touchRelaySession: async () => {},
 }));
 
-mock.module("../../sessions/trigger-subscription-store.js", () => ({
-    clearSessionSubscriptions: async () => {},
-}));
-
 mock.module("../../sessions/trigger-store.js", () => ({
     pushTriggerHistory: async () => {},
 }));

@@ -12,6 +12,9 @@ import { sweepExpiredSetupClaims } from "./setup-claims.js";
 import { sweepExpiredMobileLinks } from "./mobile-links.js";
 import { runAllMigrations } from "./migrations.js";
 
+import { loadConfigRoutes } from "./events/config-routes.js";
+
+import { startTriggerMaintenance } from "./trigger-maintenance.js";
 import { setServerShuttingDown } from "./health.js";
 import { handleTunnelWsUpgrade } from "./routes/tunnel-ws.js";
 import { createLogger } from "@pizzapi/tools";
@@ -127,6 +130,11 @@ const shutdownLog = createLogger("shutdown");
 const authContext = createAuthContext();
 
 await runAllMigrations(authContext);
+
+// Sync declarative config-file routes (ADR-0002). Never fails startup.
+await runWithAuthContext(authContext, () => loadConfigRoutes()).catch((err) => {
+    log.error("Failed to sync config routes:", err);
+});
 void initializeRelayRedisCache();
 
 // Rehydrate extracted image attachments from SQLite so URLs in persisted
@@ -398,6 +406,10 @@ setInterval(() => {
 }, sweepMs);
 
 log.info(`Relay session maintenance enabled (every ${Math.round(sweepMs / 1000)}s).`);
+
+// Unified trigger system (ADR-0002) maintenance sweeps (contract expiry,
+// inflight backstop, wake retry, spawn-intent cleanup, retention, dead runners).
+startTriggerMaintenance(authContext);
 
 // Hourly cleanup of expired device-enrollment rows (setup claims + mobile links).
 // Unref'd so it never keeps the process alive on its own.

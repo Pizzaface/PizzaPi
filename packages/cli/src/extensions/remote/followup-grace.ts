@@ -19,7 +19,8 @@
 
 import { createLogger } from "@pizzapi/tools";
 import type { RelayContext } from "../remote-types.js";
-import { emitSessionCompleteWithAck } from "./session-complete-delivery.js";
+import { buildSessionCompleteTrigger } from "./session-complete-delivery.js";
+import type { ConversationTrigger } from "../triggers/types.js";
 
 const SESSION_COMPLETE_RETRY_MS = 3_000;
 const log = createLogger("remote");
@@ -45,7 +46,7 @@ export interface FollowUpGraceState {
     /** Increments on relay disconnect so in-flight sends on the old transport are not reused after reconnect. */
     sessionCompleteTransportGeneration: number;
     sessionCompleteRetryTimer: ReturnType<typeof setTimeout> | null;
-    pendingSessionCompleteDelivery: Promise<{ ok: boolean; error?: string }> | null;
+    pendingSessionCompleteDelivery: Promise<{ ok: boolean; error?: string; status?: number }> | null;
     pendingSessionCompleteSocket: RelayContext["sioSocket"] | null;
     pendingSessionCompleteTransportGeneration: number | null;
     lastSessionCompletePayload: {
@@ -66,11 +67,11 @@ export function createFollowUpGrace(
     rctx: RelayContext,
     state: FollowUpGraceState,
     deps?: {
-        emitSessionCompleteWithAck?: typeof emitSessionCompleteWithAck;
+        emitTriggerWithAck?: (trigger: ConversationTrigger) => Promise<{ ok: boolean; error?: string; status?: number }>;
         logger?: Pick<typeof log, "info">;
     },
 ) {
-    const emitSessionComplete = deps?.emitSessionCompleteWithAck ?? emitSessionCompleteWithAck;
+    const emitTriggerWithAck = deps?.emitTriggerWithAck ?? ((trigger) => rctx.emitTriggerWithAck(trigger));
     const logger = deps?.logger ?? log;
 
     function clearFollowUpGrace(): void {
@@ -111,7 +112,7 @@ export function createFollowUpGrace(
         summary?: string,
         fullOutputPath?: string,
         exitReason?: "completed" | "killed" | "error",
-    ): Promise<{ ok: boolean; error?: string }> {
+    ): Promise<{ ok: boolean; error?: string; status?: number }> {
         if (state.sessionCompleteFired) return { ok: true };
 
         if (summary !== undefined || fullOutputPath !== undefined || state.lastSessionCompletePayload === null) {
@@ -123,7 +124,7 @@ export function createFollowUpGrace(
             };
         }
 
-        if (!rctx.isChildSession || !rctx.parentSessionId || !rctx.relay || !rctx.sioSocket?.connected) {
+        if (!rctx.isChildSession || !rctx.parentSessionId || !rctx.relay) {
             return { ok: false, error: "Child session is not connected to a linked parent" };
         }
 
@@ -160,17 +161,14 @@ export function createFollowUpGrace(
             }
         };
 
-        const deliveryPromise = emitSessionComplete({
-            socket: rctx.sioSocket,
-            token: rctx.relay.token,
+        const deliveryPromise = emitTriggerWithAck(buildSessionCompleteTrigger({
             sourceSessionId: rctx.relay.sessionId,
             targetSessionId: rctx.parentSessionId,
             triggerId: payload.triggerId,
             summary: payload.summary,
             fullOutputPath: payload.fullOutputPath,
             exitReason: payload.exitReason,
-            assumeSuccessOnAckTimeout: !rctx.supportsSessionTriggerAck,
-        }).then((result) => {
+        })).then((result) => {
             if (state.sessionCompleteGeneration !== generation || state.sessionCompleteTransportGeneration !== transportGeneration) {
                 return result;
             }
@@ -180,6 +178,14 @@ export function createFollowUpGrace(
                     clearTimeout(state.sessionCompleteRetryTimer);
                     state.sessionCompleteRetryTimer = null;
                 }
+            } else if (
+                result.status !== undefined &&
+                result.status >= 400 &&
+                result.status < 500 &&
+                result.status !== 408 &&
+                result.status !== 429
+            ) {
+                logger.info(`session_complete undeliverable (HTTP ${result.status}) — not retrying`);
             } else {
                 logger.info(`pizzapi: session_complete delivery failed — ${result.error ?? "unknown error"}`);
                 scheduleRetry();
