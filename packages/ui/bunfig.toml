@@ -1,4 +1,8 @@
 [test]
+# Install happy-dom globals before any test module — see src/test-setup.ts
+# (react-dom caches its DOM probes at import time; file order must not decide
+# whether text-input events work).
+preload = ["./src/test-setup.ts"]
 
 [test.module-resolution]
 paths = { "@/*" = ["./src/*"] }
