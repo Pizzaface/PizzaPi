@@ -685,15 +685,14 @@ describe("sandbox", () => {
             expect(result.reason).toContain("denied");
         });
 
-        test("dangling symlink under allowWrite passes validation (documents current gap)", async () => {
-            // existsSync() is false for a dangling symlink, so _normalizePath's
-            // parent walk treats it as an ordinary (unrealpath'd) child of the
-            // allowed root. The write itself would fail at the OS level today
-            // (target doesn't exist), but see the test.todo below for the
-            // TOCTOU variant this enables when OS enforcement is inactive.
+        test("dangling symlink under allowWrite is validated against its link target, not the allowed root", async () => {
+            // The symlink's target ("created-later") doesn't exist yet, so
+            // existsSync() is false for it — _normalizePath must still follow
+            // the link (via lstat) rather than treating it as an ordinary
+            // child of the allowed root.
             symlinkSync(join(outsideDir, "created-later"), join(tmpDir, "dangling"), "junction");
             await initSandbox(makeConfig({ denyRead: [], allowWrite: [tmpDir], denyWrite: [] }));
-            expect(validatePath(join(tmpDir, "dangling", "x.txt"), "write").allowed).toBe(true);
+            expect(validatePath(join(tmpDir, "dangling", "x.txt"), "write").allowed).toBe(false);
         });
 
         test("symlink resolving within the allowed root is allowed (no false positive)", async () => {
@@ -812,29 +811,67 @@ describe("sandbox", () => {
             expect(getSandboxMode()).toBe("full");
         });
 
-        // BUG (found by adversarial probing, not fixed per task instructions):
-        // initSandbox({ mode: "basic" }) with srtConfig absent (undefined, not
-        // null) throws TypeError ("evaluating 'srt.network'"), and undefined
-        // denyRead/allowWrite/denyWrite arrays throw during _buildSrtConfig
-        // (spread of undefined) — both escape the documented "never crashes
-        // the worker" graceful degradation because the guards only check
-        // === null and _buildSrtConfig runs outside the try block.
-        test.todo("initSandbox throws on malformed configs (missing srtConfig / undefined fs arrays) instead of degrading gracefully");
+        test("initSandbox does not throw on malformed configs (missing srtConfig / undefined fs arrays)", async () => {
+            // srtConfig entirely absent (undefined, not null).
+            await expect(
+                initSandbox({ mode: "basic" } as unknown as ResolvedSandboxConfig),
+            ).resolves.toBeUndefined();
+            expect(getSandboxMode()).toBe("basic");
 
-        // BUG (found by adversarial probing, not fixed per task instructions):
-        // validatePath("file:///etc/secrets/key", "read") returns { allowed: true }:
-        // pathResolve() treats "file://..." as a CWD-relative path, so denyRead
-        // rules never match and reads fail open. (Writes fail closed because the
-        // CWD-relative resolution is outside allowWrite, but denyRead is bypassed.)
-        test.todo("file:// URL prefix bypasses denyRead validation (pathResolve treats scheme as a CWD-relative segment)");
+            _resetState();
 
-        // BUG (found by adversarial probing, not fixed per task instructions):
-        // A dangling symlink inside allowWrite passes validatePath for writes
-        // (existsSync is false, so the parent walk never resolves its target).
-        // An attacker who creates the symlink target between validation and
-        // write escapes the allowed root — a TOCTOU window whenever OS-level
-        // enforcement is inactive (init failed, unsupported platform).
-        test.todo("dangling symlink under allowWrite passes write validation (TOCTOU escape when OS enforcement is inactive)");
+            // srtConfig present but its filesystem arrays are undefined.
+            await expect(
+                initSandbox({
+                    mode: "basic",
+                    srtConfig: { filesystem: {} },
+                } as unknown as ResolvedSandboxConfig),
+            ).resolves.toBeUndefined();
+            expect(getSandboxMode()).toBe("basic");
+        });
+
+        test("file:// URL prefix is normalized to a filesystem path before denyRead applies", async () => {
+            await initSandbox(makeConfig({ denyRead: ["/etc/secrets"] }));
+            expect(validatePath("file:///etc/secrets/key", "read").allowed).toBe(false);
+            expect(validatePath("file:///etc/other", "read").allowed).toBe(true);
+        });
+
+        test("non-file:// URL schemes are denied outright, not resolved as CWD-relative", async () => {
+            await initSandbox(makeConfig({ denyRead: [] }));
+            expect(validatePath("http://evil.example/etc/passwd", "read").allowed).toBe(false);
+            expect(validatePath("http://evil.example/etc/passwd", "write").allowed).toBe(false);
+        });
+
+        test("malformed file:// URL is denied, not treated as a relative path", async () => {
+            await initSandbox(makeConfig({ denyRead: [] }));
+            // Non-empty, non-"localhost" host on a file:// URL is malformed.
+            expect(validatePath("file://not-localhost/etc/passwd", "read").allowed).toBe(false);
+        });
+
+        test("dangling symlink written directly (not as a path prefix) is still resolved against its link target", async () => {
+            const tmp = mkdtempSync(join(tmpdir(), "sandbox-dangle-"));
+            const outside = mkdtempSync(join(tmpdir(), "sandbox-dangle-outside-"));
+            try {
+                symlinkSync(join(outside, "created-later"), join(tmp, "dangling"), "junction");
+                await initSandbox(makeConfig({ denyRead: [], allowWrite: [tmp], denyWrite: [] }));
+                // Validating the symlink path itself (no child segment below it).
+                expect(validatePath(join(tmp, "dangling"), "write").allowed).toBe(false);
+            } finally {
+                rmSync(tmp, { recursive: true, force: true });
+                rmSync(outside, { recursive: true, force: true });
+            }
+        });
+
+        test("dangling symlink whose target resolves inside the allowed root is still allowed (no false positive)", async () => {
+            const tmp = mkdtempSync(join(tmpdir(), "sandbox-dangle-ok-"));
+            try {
+                symlinkSync(join(tmp, "not-created-yet"), join(tmp, "dangling-inside"), "junction");
+                await initSandbox(makeConfig({ denyRead: [], allowWrite: [tmp], denyWrite: [] }));
+                expect(validatePath(join(tmp, "dangling-inside", "x.txt"), "write").allowed).toBe(true);
+            } finally {
+                rmSync(tmp, { recursive: true, force: true });
+            }
+        });
     });
 
     describe("adversarial: read-only overlay", () => {
