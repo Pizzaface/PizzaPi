@@ -1413,14 +1413,24 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
         if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
 
-        // Verify the target session belongs to the authenticated user before
+        // Verify the target session isn't owned by a *different* user before
         // forwarding the analyze_session command. Check the live registry first,
         // then the persisted store (for sessions that have already ended).
+        //
+        // An unresolvable owner is NOT a denial: relay_session rows for ephemeral
+        // sessions are hard-deleted ~10 minutes after they go idle
+        // (pruneExpiredRelaySessions), and analysis is by definition a post-hoc
+        // operation on a finished session. Treating "no row" as 404 made the
+        // inspector fail with "Session not found" for every session older than the
+        // ephemeral TTL. Authorization still holds: the runner ownership check
+        // above proves the caller owns this runner, and the runner only ever
+        // analyzes transcripts under its own agent dir.
         const live = await getSession(sessionId).catch(() => null);
         const persisted = await getPersistedRelaySessionOwner(sessionId).catch(() => null);
         const ownerUserId = live?.userId ?? persisted?.userId ?? null;
-        if (ownerUserId === null) return Response.json({ error: "Session not found" }, { status: 404 });
-        if (ownerUserId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+        if (ownerUserId !== null && ownerUserId !== identity.userId) {
+            return Response.json({ error: "Forbidden" }, { status: 403 });
+        }
 
         try {
             const result = await sendRunnerCommand(runnerId, { type: "analyze_session", sessionId }, 30_000) as any;
