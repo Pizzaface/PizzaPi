@@ -5,7 +5,7 @@
 // existing callers continue importing from `../sio-registry.js` unchanged.
 // ============================================================================
 
-export { initSioRegistry, getIo, runnerRoom, emitToRunner, emitToRelaySession, emitToRelaySessionVerified, emitToRelaySessionChecked, emitToRelaySessionAwaitingAck, emitToRelaySessionAcked, countSocketsInRoomCluster, runnersUserRoom, broadcastToSessionViewers, type RelayEmitCheckResult, type ClusterSocketCount } from "./context.js";
+export { initSioRegistry, getIo, runnerRoom, emitToRunner, emitToRelaySession, emitToRelaySessionVerified, emitToRelaySessionChecked, emitToRelaySessionAwaitingAck, emitToRelaySessionAcked, countSocketsInRoomCluster, runnersUserRoom, broadcastToSessionViewers, serviceFollowRoom, broadcastToServiceFollowers, type RelayEmitCheckResult, type ClusterSocketCount } from "./context.js";
 export { broadcastToHub, addHubClient, removeHubClient } from "./hub.js";
 export type { RegisterTuiSessionOpts, UpdateSessionStateOpts } from "./sessions.js";
 export {

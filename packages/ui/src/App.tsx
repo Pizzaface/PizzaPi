@@ -61,7 +61,8 @@ import { resolveFilePath } from "@/components/file-explorer/utils";
 import { ServicePanelButtons, ServicePanelOverflowItems, useServicePanelState, useVisibleServicePanels } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
-import { parsePanelId } from "@/components/service-panels/panel-instance";
+import { parsePanelId, scopePanelIdToRunner } from "@/components/service-panels/panel-instance";
+import { runnerDisplayName, runnerHue } from "@/components/service-panels/runner-scope";
 import { resolveNewPanelPosition, resolveActiveTabIdFromIds, resolvePanelToggleAction, computeAutoOpenPanels, resolveLauncherSource } from "@/utils/servicePanelUtils";
 import { IframeServicePanel } from "@/components/service-panels/IframeServicePanel";
 import {
@@ -4565,11 +4566,25 @@ export function App() {
     if (cached) {
       // Verify the cached session is still live — if it was ended, the
       // tunnel proxy would 404. Fall through to adopt the current session.
-      if (liveSessions.some((s) => s.sessionId === cached)) return cached;
+      if (liveSessions.some((s) => s.sessionId === cached && s.runnerId === runnerId)) return cached;
     }
     tunnelSessionMapRef.current.set(runnerId, activeSessionId);
     return activeSessionId;
   }, [activeSessionId, activeSessionInfo?.runnerId, liveSessions]);
+
+  // Runner-scoped tunnel panels keep their own service-session identity while
+  // the viewer moves between runners. HTTP itself uses runnerId, but tunnel
+  // service commands still need a live session to own/list session tunnels.
+  const resolveTunnelSessionForRunner = React.useCallback((runnerId: string): string | undefined => {
+    const cached = tunnelSessionMapRef.current.get(runnerId);
+    if (cached && liveSessions.some((s) => s.sessionId === cached && s.runnerId === runnerId)) return cached;
+    const live = liveSessions.find((s) => s.runnerId === runnerId);
+    if (live) {
+      tunnelSessionMapRef.current.set(runnerId, live.sessionId);
+      return live.sessionId;
+    }
+    return undefined;
+  }, [liveSessions]);
 
   // Runner service panels — dynamically discovered
   const { services: availableServices, disabledServices: disabledServiceIds, panels: dynamicPanels, sigilDefs: runnerSigilDefs } = useRunnerServices(viewerSocket, activeRunnerInfo);
@@ -4855,12 +4870,26 @@ export function App() {
     );
     const dynamicAvailable = new Set(modePanels.filter((p) => !p.launcher).map(p => p.serviceId));
     for (const id of current) {
+      // Runner-scoped tunnel tabs are governed by their pinned runner, not by
+      // whichever runner happens to be active in the viewer.
+      if (parsePanelId(id).runnerId) continue;
       if (!staticAvailable.has(id) && !dynamicAvailable.has(id)) {
         closeServicePanelById(id);
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modeVisibleServices, modePanels, closeServicePanelById]);
+
+  // A traveling panel remains available while its own runner is connected,
+  // even when the active session belongs to another runner.
+  React.useEffect(() => {
+    for (const id of activeServicePanels) {
+      const { runnerId } = parsePanelId(id);
+      if (runnerId && !feedRunners.some((runner) => runner.runnerId === runnerId)) {
+        closeServicePanelById(id);
+      }
+    }
+  }, [activeServicePanels, feedRunners, closeServicePanelById]);
 
   // Auto-open package panels that ask for it (ServicePanelInfo.defaultOpen) when
   // they become visible in the active mode, so a package-owned, mode-scoped
@@ -4895,85 +4924,102 @@ export function App() {
   // Auto-open Tunnel panel when a non-pinned tunnel is registered.
   React.useEffect(() => {
     if (!viewerSocket) return;
-    const handler = (envelope: { serviceId: string; type: string; sessionId?: string; generation?: number; payload: unknown }) => {
+    const handler = (envelope: { serviceId: string; type: string; sessionId?: string; runnerId?: string; generation?: number; payload: unknown }) => {
       if (envelope.serviceId !== "tunnel" || envelope.type !== "tunnel_registered") return;
+      // Follow-room runner-level announcements can coexist on the same socket
+      // with the active session's events; never let one auto-open a tab for a
+      // runner the viewer is not currently looking at.
+      if (envelope.runnerId && envelope.runnerId !== activeSessionInfo?.runnerId) return;
       if (
         !matchesViewerSession(lifecycleRefs.activeSessionId.current, envelope.sessionId) ||
         !matchesViewerGeneration(lifecycleRefs.generation.current, envelope.generation)
       ) return;
       const info = envelope.payload as { pinned?: boolean } | undefined;
       if (info?.pinned) return; // Don't auto-open for daemon-pinned panel ports
+      const targetRunnerId = envelope.runnerId ?? activeSessionInfo?.runnerId;
       // Open the Tunnel panel if not already open
-      if (!activeServicePanels.has("tunnel")) {
-        toggleServicePanel("tunnel");
+      if (!activeServicePanels.has(scopePanelIdToRunner("tunnel", targetRunnerId))) {
+        toggleServicePanel(scopePanelIdToRunner("tunnel", targetRunnerId));
       }
     };
     viewerSocket.on("service_message", handler);
     return () => { viewerSocket.off("service_message", handler); };
-  }, [viewerSocket, activeServicePanels, toggleServicePanel]);
+  }, [viewerSocket, activeServicePanels, activeSessionInfo?.runnerId, toggleServicePanel]);
 
   // Always-current ref to the computed panel groups (defined below) so the
   // toggle handler can check zone contents without a dependency cycle.
   const panelGroupsRef = React.useRef<Record<PanelPosition, CombinedPanelTab[]> | null>(null);
 
   const handleToggleServicePanel = React.useCallback((serviceId: string, query?: string, fragment?: string, positionOverride?: PanelPosition) => {
+    // Tunnel panels are pinned to the runner active when they are opened;
+    // other service panels retain their historical unscoped ids.
+    const panelId = serviceId === "tunnel"
+      ? scopePanelIdToRunner(serviceId, activeSessionInfo?.runnerId)
+      : serviceId;
     // When called with nav params on an already-open panel, update params
     // and re-navigate rather than closing.
     const hasNavParams = !!(query || fragment);
-    if (activeServicePanels.has(serviceId) && !hasNavParams) {
+    if (activeServicePanels.has(panelId) && !hasNavParams) {
       // Only close when the panel is the tab actually shown in its dock zone.
       // If another tab is on top of the same zone, bring this panel forward
       // instead of closing it.
-      const zoneTabs = panelGroupsRef.current?.[getServicePanelPosition(serviceId)] ?? [];
-      const action = resolvePanelToggleAction(zoneTabs.map(t => t.id), combinedActiveTab, serviceId);
+      const zoneTabs = panelGroupsRef.current?.[getServicePanelPosition(panelId)] ?? [];
+      const action = resolvePanelToggleAction(zoneTabs.map(t => t.id), combinedActiveTab, panelId);
       if (action === "close") {
-        closeServicePanelById(serviceId);
+        closeServicePanelById(panelId);
       } else {
-        handleCombinedTabChange(serviceId);
+        handleCombinedTabChange(panelId);
       }
     } else {
-      if (!activeServicePanels.has(serviceId) && positionOverride) {
+      if (!activeServicePanels.has(panelId) && positionOverride) {
         // Opened from a docked button — the button's dock zone wins over
         // auto-placement so the panel opens on the side the icon is on.
-        setServicePanelPosition(serviceId, positionOverride);
-      } else if (!activeServicePanels.has(serviceId)) {
-        // Resolve the correct position for the new panel using the shared pure
-        // helper (also tested in ServicePanels.test.ts).  When the currently-
-        // active tab is a service panel, the new panel inherits that panel's
-        // position so both appear together rather than in separate dock groups.
+        setServicePanelPosition(panelId, positionOverride);
+      } else if (!activeServicePanels.has(panelId)) {
         const newPosition = resolveNewPanelPosition(
-          serviceId,
+          panelId,
           combinedActiveTab,
           activeServicePanels,
           getServicePanelPosition,
         );
         if (activeServicePanels.has(combinedActiveTab)) {
-          // Auto-placement: the position was derived from another panel, not from
-          // this panel's own saved preference.  Store it as an ephemeral override
-          // so it is used for rendering this session but does NOT overwrite the
-          // panel's persisted dock preference in localStorage.
-          setEphemeralServicePanelPosition(serviceId, newPosition);
+          setEphemeralServicePanelPosition(panelId, newPosition);
         }
       }
-      // When the active tab is NOT a service panel, newPosition equals the
-      // panel's own stored/default preference — no action needed, getPanelPosition
-      // will already return the correct value.
-      toggleServicePanel(serviceId, query, fragment);
-      handleCombinedTabChange(serviceId);
+      toggleServicePanel(panelId, query, fragment);
+      handleCombinedTabChange(panelId);
     }
-  }, [activeServicePanels, closeServicePanelById, toggleServicePanel, handleCombinedTabChange, combinedActiveTab, setEphemeralServicePanelPosition, getServicePanelPosition, setServicePanelPosition]);
+  }, [activeServicePanels, activeSessionInfo?.runnerId, closeServicePanelById, toggleServicePanel, handleCombinedTabChange, combinedActiveTab, setEphemeralServicePanelPosition, getServicePanelPosition, setServicePanelPosition]);
 
   // ── Service panel buttons in rails/strips ────────────────────────────
   const visibleServicePanels = useVisibleServicePanels(modeVisibleServices, modePanels, disabledServiceIds);
+  const isActiveServicePanel = React.useCallback((serviceId: string) => {
+    if (serviceId !== "tunnel") return activeServicePanels.has(serviceId);
+    return activeServicePanels.has(scopePanelIdToRunner("tunnel", activeSessionInfo?.runnerId));
+  }, [activeServicePanels, activeSessionInfo?.runnerId]);
+
   const railServicePanels = React.useMemo(
-    () => visibleServicePanels.map((p) => ({ ...p, active: activeServicePanels.has(p.serviceId) })),
-    [visibleServicePanels, activeServicePanels],
+    () => visibleServicePanels.map((p) => ({ ...p, active: isActiveServicePanel(p.serviceId) })),
+    [visibleServicePanels, isActiveServicePanel],
   );
+  const servicePanelButtonActiveIds = React.useMemo(() => {
+    const ids = new Set<string>();
+    for (const id of activeServicePanels) {
+      const parsed = parsePanelId(id);
+      if (parsed.serviceId === "tunnel") {
+        if (parsed.runnerId === activeSessionInfo?.runnerId) ids.add("tunnel");
+      } else if (!parsed.runnerId) {
+        ids.add(id);
+      }
+    }
+    return ids;
+  }, [activeServicePanels, activeSessionInfo?.runnerId]);
+
   const handleToggleServicePanelFromDock = React.useCallback((serviceId: string) => {
     const slot = buttonPositions.positions[`service:${serviceId}`];
-    const override = !activeServicePanels.has(serviceId) && slot && slot !== "top" ? slot : undefined;
+    const override = !isActiveServicePanel(serviceId) && slot && slot !== "top" ? slot : undefined;
     handleToggleServicePanel(serviceId, undefined, undefined, override);
-  }, [buttonPositions.positions, activeServicePanels, handleToggleServicePanel]);
+  }, [buttonPositions.positions, isActiveServicePanel, handleToggleServicePanel]);
 
   // File sigils → open the file in the file explorer panel.
   const [fileToOpen, setFileToOpen] = React.useState<{ path: string } | null>(null);
@@ -5122,30 +5168,49 @@ export function App() {
   }, [artifactViewer, activeSessionId, activeSessionInfo?.runnerId, modeUi.files, handleOpenFileInExplorer, startPanelDragWith, handleArtifactViewerPositionChange]);
 
   const servicePanelTabs = React.useMemo<CombinedPanelTab[]>(() => {
-    // Use tunnelSessionId (runner-stable) instead of activeSessionId so
-    // iframe service panels don't reload on same-runner session switches.
-    // The tunnel proxy resolves sessionId → runnerId, so any valid session
-    // on the same runner reaches the same localhost ports.
+    // Scoped tunnel panels keep their own runner/session identity. Other
+    // panels retain the active-session behavior they have always had.
     const effectiveSessionId = tunnelSessionId ?? activeSessionId;
-    if (activeServicePanels.size === 0 || !effectiveSessionId) return [];
+    if (activeServicePanels.size === 0) return [];
 
     const tabs: CombinedPanelTab[] = [];
     for (const panelId of activeServicePanels) {
-      // Panel ids may carry an instance suffix (`tunnel#3000`) when a panel has
-      // detached a sub-view into its own dock tab — registry lookup uses the base.
-      const { serviceId, instance } = parsePanelId(panelId);
-      // Try static registry first, then dynamic panels
+      const { serviceId, instance, runnerId: scopedRunnerId } = parsePanelId(panelId);
       const staticDef = SERVICE_PANELS.find(p => p.serviceId === serviceId);
       const dynamicDef = !staticDef ? dynamicPanels.find(p => p.serviceId === serviceId) : null;
       if (!staticDef && !dynamicDef) continue;
 
+      const panelRunnerId = scopedRunnerId ?? activeSessionInfo?.runnerId ?? undefined;
+      const panelSessionId = scopedRunnerId
+        ? resolveTunnelSessionForRunner(scopedRunnerId)
+        : effectiveSessionId;
+      // A runner-scoped tunnel can still render its runner URL without a live
+      // session; other panels require the active session as before.
+      if (!panelSessionId && !scopedRunnerId) continue;
+
       const baseLabel = staticDef?.label ?? dynamicDef!.label;
-      const label = instance ? `${baseLabel} ${instance}` : baseLabel;
-      const icon = staticDef?.icon ?? <DynamicLucideIcon name={dynamicDef!.icon} />;
+      const runnerLabel = scopedRunnerId ? runnerDisplayName(scopedRunnerId, feedRunners) : undefined;
+      const label = scopedRunnerId
+        ? `${baseLabel}${instance ? ` ${instance}` : ""} · ${runnerLabel}`
+        : instance ? `${baseLabel} ${instance}` : baseLabel;
+      const baseIcon = staticDef?.icon ?? <DynamicLucideIcon name={dynamicDef!.icon} />;
+      const icon = scopedRunnerId ? (
+        <span className="inline-flex items-center gap-1">
+          <span className="size-2 rounded-full shrink-0" style={{ backgroundColor: `hsl(${runnerHue(scopedRunnerId)} 70% 50%)` }} />
+          {baseIcon}
+        </span>
+      ) : baseIcon;
       const navParams = getServicePanelNavParams(panelId);
       const content = staticDef
-        ? <staticDef.component sessionId={effectiveSessionId} runnerId={activeSessionInfo?.runnerId ?? undefined} panelId={panelId} onSpawnPanel={handleToggleServicePanel} />
-        : <IframeServicePanel sessionId={effectiveSessionId} port={dynamicDef!.port} query={navParams?.query} fragment={navParams?.fragment} panelParams={dynamicDef!.panelParams} cwd={activeSessionInfo?.cwd ?? undefined} />;
+        ? <staticDef.component
+            sessionId={panelSessionId ?? ""}
+            runnerId={panelRunnerId}
+            panelId={panelId}
+            onSpawnPanel={handleToggleServicePanel}
+            runnerName={runnerLabel}
+            runnerOnline={scopedRunnerId ? feedRunners.some((runner) => runner.runnerId === scopedRunnerId) : undefined}
+          />
+        : <IframeServicePanel sessionId={panelSessionId!} port={dynamicDef!.port} query={navParams?.query} fragment={navParams?.fragment} panelParams={dynamicDef!.panelParams} cwd={activeSessionInfo?.cwd ?? undefined} />;
 
       tabs.push({
         id: panelId,
@@ -5153,8 +5218,6 @@ export function App() {
         icon,
         onDragStart: (e) => startPanelDragWith(e, (pos) => {
           setServicePanelPosition(panelId, pos);
-          // Re-assert focus on the moved panel so the destination group
-          // highlights it rather than falling back to tabs[0] (Tunnels).
           handleCombinedTabChange(panelId);
         }),
         onClose: () => closeServicePanelById(panelId),
@@ -5162,7 +5225,7 @@ export function App() {
       });
     }
     return tabs;
-  }, [activeServicePanels, tunnelSessionId, activeSessionId, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, dynamicPanels, startPanelDragWith, setServicePanelPosition, closeServicePanelById, handleCombinedTabChange, handleToggleServicePanel, getServicePanelNavParams]);
+  }, [activeServicePanels, tunnelSessionId, activeSessionId, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, dynamicPanels, feedRunners, resolveTunnelSessionForRunner, startPanelDragWith, setServicePanelPosition, closeServicePanelById, handleCombinedTabChange, handleToggleServicePanel, getServicePanelNavParams]);
 
   const panelGroups = React.useMemo(() => {
     type PG = import("@/hooks/usePanelLayout").PanelPosition;
@@ -5792,7 +5855,7 @@ export function App() {
                             availableServices={modeVisibleServices}
                             disabledServiceIds={disabledServiceIds}
                             dynamicPanels={modePanels}
-                            activePanelIds={activeServicePanels}
+                            activePanelIds={servicePanelButtonActiveIds}
                             onTogglePanel={handleToggleServicePanel}
                             onButtonDragStart={handleButtonDragStart}
                             toolbarPositions={buttonPositions.positions}
@@ -5803,7 +5866,7 @@ export function App() {
                             availableServices={modeVisibleServices}
                             disabledServiceIds={disabledServiceIds}
                             dynamicPanels={modePanels}
-                            activePanelIds={activeServicePanels}
+                            activePanelIds={servicePanelButtonActiveIds}
                             onTogglePanel={handleToggleServicePanel}
                           />
                         }

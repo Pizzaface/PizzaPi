@@ -19,8 +19,8 @@ import { reportError } from "@/lib/frontend-log";
 /**
  * One-shot variant of useTunnelSrc for event handlers (e.g. "open in new tab").
  * Web: returns the same-origin relative path. Mobile: mints a signed tunnel
- * token and returns the absolute relay URL. Mints runner-scoped when only
- * runnerId is given, session-scoped otherwise.
+ * token and returns the absolute relay URL. Mints runner-scoped whenever a
+ * runnerId is given (stable across session switches), session-scoped otherwise.
  */
 export async function resolveTunnelHref(
     opts: { sessionId?: string; runnerId?: string; port: number; preferHostOrigin?: boolean },
@@ -37,7 +37,7 @@ export async function resolveTunnelHref(
         const res = await fetch(resolveMobileUrl("/api/tunnel-token"), {
             method: "POST",
             headers: { "Content-Type": "application/json", ...(apiKey ? { "x-api-key": apiKey } : {}) },
-            body: JSON.stringify(sessionId ? { sessionId, port } : { runnerId, port }),
+            body: JSON.stringify(runnerId ? { runnerId, port } : { sessionId, port }),
             signal,
         });
         if (!res.ok) {
@@ -101,6 +101,10 @@ export function useTunnelSrc(opts: {
 }): UseTunnelSrcResult {
     const { sessionId, port, runnerId, enabled = true, preferHostOrigin = false } = opts;
     const { isMobileBundled, apiKey } = getMobileRuntimeConfig();
+    // Runner-scoped URLs do not depend on the active/service session. Keeping
+    // the session out of the effect identity prevents a same-URL iframe reload
+    // when a runner-pinned panel travels to another session.
+    const routingSessionId = runnerId ? undefined : sessionId;
 
     const [base, setBase] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
@@ -118,7 +122,7 @@ export function useTunnelSrc(opts: {
         if (!isMobileBundled && !preferHostOrigin) {
             setBase(runnerId
                 ? `/api/tunnel/runner/${encodeURIComponent(runnerId)}/${port}/`
-                : `/api/tunnel/${encodeURIComponent(sessionId)}/${port}/`);
+                : `/api/tunnel/${encodeURIComponent(routingSessionId ?? "")}/${port}/`);
             setLoading(false);
             setError(null);
             return;
@@ -130,7 +134,7 @@ export function useTunnelSrc(opts: {
         setLoading(true);
         // Forward runnerId so runner-scoped tunnels mint runner-scoped tokens
         // (resolveTunnelHref prefers runner-scoped when runnerId is set).
-        resolveTunnelHref({ sessionId, runnerId, port, preferHostOrigin }, controller.signal)
+        resolveTunnelHref({ sessionId: routingSessionId, runnerId, port, preferHostOrigin }, controller.signal)
             .then((href) => {
                 setBase(href);
                 setLoading(false);
@@ -143,7 +147,7 @@ export function useTunnelSrc(opts: {
                     // internally, so an error here is unexpected; use the fallback.
                     setBase(runnerId
                         ? `/api/tunnel/runner/${encodeURIComponent(runnerId)}/${port}/`
-                        : `/api/tunnel/${encodeURIComponent(sessionId)}/${port}/`);
+                        : `/api/tunnel/${encodeURIComponent(routingSessionId ?? "")}/${port}/`);
                     setLoading(false);
                     return;
                 }
@@ -154,7 +158,7 @@ export function useTunnelSrc(opts: {
                 });
             });
         return () => controller.abort();
-    }, [enabled, isMobileBundled, apiKey, sessionId, port, runnerId, preferHostOrigin]);
+    }, [enabled, isMobileBundled, apiKey, routingSessionId, port, runnerId, preferHostOrigin]);
 
     return { base, loading, error };
 }

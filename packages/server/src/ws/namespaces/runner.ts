@@ -33,7 +33,7 @@ import { subscriptionsForRunner, sessionIdsWithRoutesForRunner, nextReconcileRev
 // Using local aliases avoids a cross-worktree symlink resolution issue where
 // node_modules/@pizzapi/protocol points to the main branch's dist, not this
 // worktree's updated dist.
-type ServiceEnvelope = { serviceId: string; type: string; requestId?: string; payload: unknown };
+type ServiceEnvelope = { serviceId: string; type: string; requestId?: string; payload: unknown; runnerId?: string; sessionId?: string; sourceRunnerId?: string };
 type ServiceMessageEnvelope = ServiceEnvelope & { sessionId?: string };
 
 /**
@@ -98,6 +98,7 @@ import {
     getConnectedSessionsForRunner,
     touchRunner,
     broadcastToSessionViewers,
+    broadcastToServiceFollowers,
     emitToRelaySession,
     getSharedSession,
 } from "../sio-registry.js";
@@ -1200,10 +1201,19 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
                 forwardServiceMessageToSession(envelope, targetSessionId, broadcastToSessionViewers, emitToRelaySession);
             } else {
                 const sessionIds = runnerSessionIds.get(runnerId);
-                if (!sessionIds || sessionIds.size === 0) return;
-                for (const sid of sessionIds) {
-                    forwardServiceMessageToSession(envelope, sid, broadcastToSessionViewers, emitToRelaySession);
+                if (sessionIds) {
+                    for (const sid of sessionIds) {
+                        forwardServiceMessageToSession(envelope, sid, broadcastToSessionViewers, emitToRelaySession);
+                    }
                 }
+            }
+            // Runner-scoped followers (traveling panels): viewers following this
+            // (serviceId, runnerId) pair get the same envelope regardless of which
+            // session they are currently viewing. Followers filter by the stamped
+            // sessionId (their pinned session) or by the absence of one for
+            // runner-level announcements.
+            if (envelope.serviceId === "tunnel") {
+                broadcastToServiceFollowers(envelope.serviceId, runnerId, "service_message", { ...envelope, sourceRunnerId: runnerId });
             }
         });
 

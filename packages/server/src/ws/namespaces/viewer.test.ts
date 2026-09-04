@@ -21,6 +21,7 @@ import {
     withLivenessOnlyHint,
     sendCachedDeltaReplayEvents,
     checkServiceMessageSize,
+    isValidViewerServiceEnvelope,
     checkServiceMessageRateLimit,
     forwardInputToRunner,
 } from "./viewer.js";
@@ -399,6 +400,25 @@ describe("checkServiceMessageSize", () => {
         const envelope = { serviceId: "svc", type: "cyclic", payload };
         const result = checkServiceMessageSize(envelope as any);
         expect(result.ok).toBe(false);
+    });
+});
+
+describe("isValidViewerServiceEnvelope", () => {
+    test("accepts a valid targeted envelope", () => {
+        expect(isValidViewerServiceEnvelope({
+            serviceId: "tunnel",
+            type: "tunnel_list",
+            runnerId: "runner-1",
+            sessionId: "session-1",
+            payload: {},
+        })).toBe(true);
+    });
+
+    test("rejects malformed values before property access or lookup", () => {
+        expect(isValidViewerServiceEnvelope(null)).toBe(false);
+        expect(isValidViewerServiceEnvelope([])).toBe(false);
+        expect(isValidViewerServiceEnvelope({ serviceId: "tunnel", type: "list", runnerId: 1, payload: {} })).toBe(false);
+        expect(isValidViewerServiceEnvelope({ serviceId: "", type: "list", payload: {} })).toBe(false);
     });
 });
 

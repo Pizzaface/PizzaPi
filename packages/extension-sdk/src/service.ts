@@ -81,8 +81,8 @@ export interface ServiceInitOptions {
 
 /**
  * Generic relay protocol envelope.
- * All service messages conceptually flow through this shape, even though
- * the actual socket events don't change in Phase 1 (relay unchanged).
+ * All service messages conceptually flow through this shape, including
+ * optional runner-scoped targeting for traveling panels.
  */
 export interface ServiceEnvelope {
   serviceId: string;
@@ -92,6 +92,10 @@ export interface ServiceEnvelope {
   requestId?: string;
   /** Attached by the relay when forwarding viewer→runner, so services can route responses back. */
   sessionId?: string;
+  /** Viewer-originated target runner for service commands. */
+  runnerId?: string;
+  /** Server-stamped source runner on follow-room service events. */
+  sourceRunnerId?: string;
   payload: unknown;
 }
 
