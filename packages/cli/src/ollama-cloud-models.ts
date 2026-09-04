@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import { OLLAMA_CLOUD_FALLBACK_MODELS } from "./ollama-cloud-fallback-models.js";
+import { ollamaCloudRates } from "./ollama-cloud-pricing.js";
 
 const OLLAMA_CLOUD_MODELS_URL = "https://ollama.com/v1/models";
 const OLLAMA_CLOUD_SHOW_URL = "https://ollama.com/api/show";
@@ -149,9 +150,12 @@ export function findCachedOllamaCloudModel(
 }
 
 export function toOllamaCloudRuntimeModel(model: OllamaCloudModel): Model<"openai-completions"> {
+    const rates = ollamaCloudRates(model.id);
     return {
         ...model,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        // cacheWrite: Ollama Cloud bills cache writes at the input rate (no
+        // separate write charge like Anthropic), so mirror input here.
+        cost: { input: rates.input, output: rates.output, cacheRead: rates.cacheRead, cacheWrite: rates.input },
         compat: {
             supportsStore: false,
             supportsDeveloperRole: false,

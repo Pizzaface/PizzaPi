@@ -156,3 +156,14 @@ describe("openrouterDynamicProvider", () => {
         expect(() => registerOpenRouterProvider({}, home)).toThrow(/no provider registration method/);
     });
 });
+
+describe("sentinel pricing", () => {
+    test("OpenRouter's -1 'price varies per request' sentinel becomes 0, not a negative rate", () => {
+        const model = toOpenRouterModel({
+            ...API_ENTRY,
+            id: "openrouter/auto",
+            pricing: { prompt: "-1", completion: "-1" },
+        } as any);
+        expect(model?.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    });
+});
