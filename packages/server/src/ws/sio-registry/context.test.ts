@@ -7,6 +7,7 @@ import {
     initSioRegistry,
     localRunnerSockets,
     runnerRoom,
+    serviceFollowRoom,
     emitToRunner,
 } from "./context";
 import {
@@ -14,7 +15,13 @@ import {
     _resetRedisKvStoreForTesting,
 } from "../../redis-kv-store";
 
-// ── In-memory Redis mock ─────────────────────────────────────────────────────
+describe("service follow rooms", () => {
+    test("is scoped by service and runner", () => {
+        expect(serviceFollowRoom("tunnel", "runner/one")).toBe("svc-follow:tunnel:runner/one");
+        expect(serviceFollowRoom("tunnel", "runner/two")).not.toBe(serviceFollowRoom("tunnel", "runner/one"));
+    });
+});
+
 
 const store = new Map<string, string>();
 

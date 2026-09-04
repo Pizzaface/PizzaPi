@@ -163,6 +163,14 @@ export interface ViewerClientToServerEvents {
   /** Generic service message from viewer → relay → runner. */
   service_message: (envelope: ServiceEnvelope) => void;
 
+  /** Follow a (serviceId, runnerId) pair to keep receiving that runner's service
+   *  events while viewing a session on a different runner (runner-scoped panels,
+   *  e.g. traveling tunnel tabs). Runner ownership is validated before joining. */
+  service_follow: (data: { serviceId: string; runnerId: string }, ack?: (ok: boolean) => void) => void;
+
+  /** Stop following a (serviceId, runnerId) pair previously joined via service_follow. */
+  service_unfollow: (data: { serviceId: string; runnerId: string }) => void;
+
   /** Human viewer responds to a pending trigger from a child session.
    *  Supports Socket.IO ack — server calls the ack callback only on
    *  successful delivery, so the client can detect failed sends. */

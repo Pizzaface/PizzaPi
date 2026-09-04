@@ -127,6 +127,10 @@ export interface ServiceEnvelope {
   requestId?: string;
   /** Attached by the relay when forwarding viewer→runner, so services can route responses back. */
   sessionId?: string;
+  /** Viewer-originated target runner for service commands. */
+  runnerId?: string;
+  /** Server-stamped source runner on follow-room service events. */
+  sourceRunnerId?: string;
   payload: unknown;
 }
 

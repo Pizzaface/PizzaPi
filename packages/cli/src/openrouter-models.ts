@@ -65,10 +65,17 @@ function writeCache(entry: CacheEntry, home?: string): void {
     writeFileSync(path, JSON.stringify(entry), { mode: 0o600 });
 }
 
-/** OpenRouter prices per token as a decimal string; pi costs are per million tokens. */
+/**
+ * OpenRouter prices per token as a decimal string; pi costs are per million tokens.
+ *
+ * OpenRouter reports "-1" for models whose price is only known per request
+ * (openrouter/auto and friends, which route to a different upstream each
+ * call). Passing that through produced a -$1,000,000/1M-token rate, so every
+ * auto-routed session booked a huge NEGATIVE cost. Unknown price => 0.
+ */
 function perMillion(price: unknown): number {
     const value = typeof price === "string" ? Number.parseFloat(price) : typeof price === "number" ? price : NaN;
-    return Number.isFinite(value) ? value * 1_000_000 : 0;
+    return Number.isFinite(value) && value > 0 ? value * 1_000_000 : 0;
 }
 
 export function toOpenRouterModel(entry: ApiModel): OpenRouterModel | null {

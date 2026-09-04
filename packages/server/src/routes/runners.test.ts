@@ -212,14 +212,40 @@ describe("runner analysis route", () => {
         expect(mockSendRunnerCommand).not.toHaveBeenCalled();
     });
 
-    test("returns 404 and does not forward when the session is not found", async () => {
+    // Ephemeral relay_session rows are pruned ~10 minutes after a session goes
+    // idle, so a post-hoc analysis request almost always has no owner record.
+    // Denying that made the inspector 404 on every session older than the TTL.
+    test("still forwards when no owner record survives (pruned relay_session row)", async () => {
         mockGetSession.mockReturnValue(Promise.resolve(null));
         mockGetPersistedRelaySessionOwner.mockReturnValue(Promise.resolve(null));
 
-        const [req, url] = makeReq("GET", "/api/runners/runner-A/analysis/sess-missing");
+        const [req, url] = makeReq("GET", "/api/runners/runner-A/analysis/sess-pruned");
         const res = await handleRunnersRoute(req, url);
 
-        expect(res!.status).toBe(404);
+        expect(res!.status).toBe(200);
+        expect(mockSendRunnerCommand).toHaveBeenCalledWith("runner-A", { type: "analyze_session", sessionId: "sess-pruned" }, 30_000);
+    });
+
+    test("a pruned row does not let a caller reach another user's runner", async () => {
+        mockGetSession.mockReturnValue(Promise.resolve(null));
+        mockGetPersistedRelaySessionOwner.mockReturnValue(Promise.resolve(null));
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-2", runnerId: "runner-A" } as any));
+
+        const [req, url] = makeReq("GET", "/api/runners/runner-A/analysis/sess-pruned");
+        const res = await handleRunnersRoute(req, url);
+
+        expect(res!.status).toBe(403);
+        expect(mockSendRunnerCommand).not.toHaveBeenCalled();
+    });
+
+    test("returns 403 when the persisted row names another owner", async () => {
+        mockGetSession.mockReturnValue(Promise.resolve(null));
+        mockGetPersistedRelaySessionOwner.mockReturnValue(Promise.resolve({ userId: "user-2", runnerId: "runner-A", cwd: "/repo" } as any));
+
+        const [req, url] = makeReq("GET", "/api/runners/runner-A/analysis/sess-1");
+        const res = await handleRunnersRoute(req, url);
+
+        expect(res!.status).toBe(403);
         expect(mockSendRunnerCommand).not.toHaveBeenCalled();
     });
 });

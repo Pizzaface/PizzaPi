@@ -102,6 +102,13 @@ Connects the web UI to a specific session. Viewers receive replayed event histor
 | `trigger_response` | Human viewer responds to a child trigger (with Socket.IO ack) |
 | `mcp_oauth_paste` | Submit a pasted OAuth callback code for MCP servers |
 
+A `service_message` envelope may carry an optional `runnerId` to target a specific
+runner you own (used by runner-scoped tunnel panels) instead of the runner of the
+currently-viewed session. The server validates runner ownership before forwarding;
+envelopes without `runnerId` route to the viewed session's runner as before. Tunnel
+panels can also `service_follow` / `service_unfollow` a runner to keep receiving its
+tunnel events while viewing a session elsewhere.
+
 **Key server→client events:**
 
 | Event | Purpose |

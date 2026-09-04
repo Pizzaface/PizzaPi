@@ -52,6 +52,13 @@ export function viewerSessionRoom(sessionId: string): string {
     return `session:${sessionId}`;
 }
 
+/** Room a viewer joins on the /viewer namespace to keep receiving one runner's
+ *  tunnel events while viewing a session elsewhere (runner-scoped panels).
+ *  Join is ownership-validated in the viewer namespace. */
+export function serviceFollowRoom(serviceId: string, runnerId: string): string {
+    return `svc-follow:${serviceId}:${runnerId}`;
+}
+
 /** Room that the TUI relay socket joins (on the /relay namespace). */
 export function relaySessionRoom(sessionId: string): string {
     return `session:${sessionId}`;
@@ -456,6 +463,22 @@ export function broadcastToSessionViewers(sessionId: string, eventName: string, 
             .emit(eventName, data);
     } catch (err) {
         log.warn("broadcastToSessionViewers failed:", (err as Error)?.message);
+    }
+}
+
+/**
+ * Broadcast an event to viewers following a (serviceId, runnerId) pair —
+ * used to forward runner service messages to runner-scoped panels (e.g.
+ * traveling tunnel tabs) whose viewer is watching a session elsewhere.
+ */
+export function broadcastToServiceFollowers(serviceId: string, runnerId: string, eventName: string, data: unknown): void {
+    if (!io) return;
+    try {
+        io.of("/viewer")
+            .to(serviceFollowRoom(serviceId, runnerId))
+            .emit(eventName, data);
+    } catch (err) {
+        log.warn("broadcastToServiceFollowers failed:", (err as Error)?.message);
     }
 }
 

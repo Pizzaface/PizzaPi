@@ -19,7 +19,15 @@ import type {
 // Using a local alias avoids a cross-worktree symlink resolution issue where
 // node_modules/@pizzapi/protocol points to the main branch's dist, not this
 // worktree's updated dist.
-type ServiceEnvelope = { serviceId: string; type: string; requestId?: string; payload: unknown };
+type ServiceEnvelope = {
+    serviceId: string;
+    type: string;
+    requestId?: string;
+    payload: unknown;
+    runnerId?: string;
+    sessionId?: string;
+    sourceRunnerId?: string;
+};
 import { browserAuthMiddleware } from "./auth.js";
 import { bindSocketHandlersToAuthContext } from "./context.js";
 import { getRunnerServiceAnnounce } from "./runner.js";
@@ -37,6 +45,8 @@ import {
     emitToRelaySessionChecked,
     type RelayEmitCheckResult,
     emitToRunner,
+    getRunnerData,
+    serviceFollowRoom,
     broadcastToSessionViewers,
     markPendingRecovery,
 } from "../sio-registry.js";
@@ -201,6 +211,18 @@ const SERVICE_MESSAGE_RATE_WINDOW_MS = 1000;
 interface ServiceMessageRateLimitState {
     count: number;
     resetAt: number;
+}
+
+/** Reject malformed Socket.IO input before touching Redis or runner state. */
+export function isValidViewerServiceEnvelope(value: unknown): value is ServiceEnvelope {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const envelope = value as Record<string, unknown>;
+    if (typeof envelope.serviceId !== "string" || envelope.serviceId.length === 0) return false;
+    if (typeof envelope.type !== "string" || envelope.type.length === 0) return false;
+    for (const field of ["requestId", "sessionId", "runnerId", "sourceRunnerId"] as const) {
+        if (envelope[field] !== undefined && typeof envelope[field] !== "string") return false;
+    }
+    return true;
 }
 
 /** @internal — exported for unit tests only */
@@ -1063,19 +1085,6 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
         // events — all viewer-initiated service requests would be silently dropped.
         // We must route to the runner via emitToRunner(runnerId, ...) instead.
         socket.on("service_message", async (envelope: ServiceEnvelope) => {
-            const currentSessionId = getCurrentSessionId();
-            if (!currentSessionId) return;
-
-            const forwardEnvelope = { ...envelope, sessionId: currentSessionId };
-
-            const sizeCheck = checkServiceMessageSize(forwardEnvelope);
-            if (!sizeCheck.ok) {
-                log.warn(
-                    `[service_message] dropped from viewer socket ${socket.id}: ${sizeCheck.reason} (bytes=${sizeCheck.bytes})`,
-                );
-                return;
-            }
-
             const rateCheck = checkServiceMessageRateLimit(Date.now(), serviceMessageRateLimit);
             if (!rateCheck.allowed) {
                 log.warn(
@@ -1083,6 +1092,51 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 );
                 return;
             }
+            if (!isValidViewerServiceEnvelope(envelope)) return;
+            // sourceRunnerId is server metadata on follow-room events; never
+            // allow a viewer to supply or forward a spoofed value.
+            const { sourceRunnerId: _ignoredSourceRunnerId, ...clientEnvelope } = envelope;
+            const sizeCheck = checkServiceMessageSize(clientEnvelope);
+            if (!sizeCheck.ok) {
+                log.warn(
+                    `[service_message] dropped from viewer socket ${socket.id}: ${sizeCheck.reason} (bytes=${sizeCheck.bytes})`,
+                );
+                return;
+            }
+            const currentSessionId = getCurrentSessionId();
+
+            // ── Runner-scoped targeting (traveling panels) ───────────────────
+            // A viewer envelope may name a target runner directly instead of
+            // relying on the viewed session's runner. Ownership is validated the
+            // same way as the runner-scoped HTTP tunnel proxy (runner belongs to
+            // the viewer's user), and the acting sessionId must be a collab
+            // session on that runner owned by the same user — otherwise a
+            // targeted envelope could act as another user's session.
+            if (envelope.runnerId) {
+                const viewerUserId = socket.data.userId;
+                const runnerData = await getRunnerData(envelope.runnerId);
+                if (!runnerData?.userId || runnerData.userId !== viewerUserId) {
+                    log.warn(
+                        `[service_message] targeted drop from viewer socket ${socket.id}: runner ${envelope.runnerId} not owned by viewer`,
+                    );
+                    return;
+                }
+
+                const candidateSessionId = envelope.sessionId ?? currentSessionId ?? undefined;
+                if (!candidateSessionId) return;
+                const candidate = await getSharedSessionSummary(candidateSessionId);
+                if (!candidate?.collabMode || candidate.runnerId !== envelope.runnerId || candidate.userId !== viewerUserId) {
+                    return;
+                }
+
+                const forwardEnvelope = { ...clientEnvelope, sessionId: candidateSessionId };
+                emitToRunner(envelope.runnerId, "service_message", forwardEnvelope);
+                return;
+            }
+
+            if (!currentSessionId) return;
+
+            const forwardEnvelope = { ...clientEnvelope, sessionId: currentSessionId };
 
             const currentSession = await getSharedSessionSummary(currentSessionId);
             if (!currentSession?.collabMode) return;
@@ -1091,6 +1145,46 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
 
             // Attach sessionId so the runner service knows which session to respond to
             emitToRunner(runnerId, "service_message", forwardEnvelope);
+        });
+
+        // ── service_follow / service_unfollow — runner-scoped service events ─
+        // Traveling panels (e.g. a tunnel tab pinned to another runner) follow a
+        // (serviceId, runnerId) pair to keep receiving that runner's service
+        // events while viewing a session elsewhere. Ownership is validated on
+        // join — same rule as the runner-scoped HTTP tunnel proxy.
+        socket.on("service_follow", async (data: { serviceId: string; runnerId: string }, ack?: (ok: boolean) => void) => {
+            const rateCheck = checkServiceMessageRateLimit(Date.now(), serviceMessageRateLimit);
+            if (!rateCheck.allowed) {
+                ack?.(false);
+                return;
+            }
+            if (!data || typeof data.serviceId !== "string" || typeof data.runnerId !== "string") {
+                ack?.(false);
+                return;
+            }
+            if (data.serviceId !== "tunnel" || !data.runnerId) {
+                ack?.(false);
+                return;
+            }
+            const viewerUserId = socket.data.userId;
+            const runnerData = await getRunnerData(data.runnerId);
+            if (!runnerData?.userId || runnerData.userId !== viewerUserId) {
+                log.warn(
+                    `[service_follow] denied for viewer socket ${socket.id}: runner ${data.runnerId} not owned by viewer`,
+                );
+                ack?.(false);
+                return;
+            }
+            await socket.join(serviceFollowRoom(data.serviceId, data.runnerId));
+            ack?.(true);
+        });
+
+        socket.on("service_unfollow", (data: { serviceId: string; runnerId: string }) => {
+            if (!data || typeof data.serviceId !== "string" || typeof data.runnerId !== "string") return;
+            const rateCheck = checkServiceMessageRateLimit(Date.now(), serviceMessageRateLimit);
+            if (!rateCheck.allowed) return;
+            if (data.serviceId !== "tunnel" || !data.runnerId) return;
+            socket.leave(serviceFollowRoom(data.serviceId, data.runnerId));
         });
 
         // ── load_messages — fetch older transcript pages on demand ──────────

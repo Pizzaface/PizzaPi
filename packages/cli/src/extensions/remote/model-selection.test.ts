@@ -166,7 +166,7 @@ describe("setModelFromWeb", () => {
             expect(selected).toMatchObject({
                 provider: "ollama-cloud",
                 id: "glm-5.2",
-                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                cost: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 1.4 },
                 compat: { supportsUsageInStreaming: true, maxTokensField: "max_tokens" },
             });
             expect(events).toContainEqual({

@@ -33,6 +33,9 @@ export interface ServicePanelProps {
     panelId?: string;
     /** Open (or focus) another dock panel by id — lets a panel detach a sub-view into its own tab. */
     onSpawnPanel?: (panelId: string) => void;
+    /** Runner label/connection state for runner-scoped traveling panels. */
+    runnerName?: string;
+    runnerOnline?: boolean;
 }
 
 export interface ServicePanelDef {
