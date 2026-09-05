@@ -49,16 +49,85 @@ export async function createStdioMcpClient(opts: {
   // On Windows, `.cmd`/`.bat` shims (npx, npm-installed servers) cannot be
   // spawned directly — reroute through cmd.exe with PATHEXT resolution.
   const invocation = buildSpawnInvocation(command, args);
-  const child: ChildProcessWithoutNullStreams = spawn(invocation.command, invocation.args, {
-    stdio: "pipe",
-    env: mergedEnv,
-    ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
-    ...(cwd ? { cwd } : {}),
-  });
 
   let nextId = 1;
+  let exited = false;
+  let initPromise: Promise<void> | null = null;
   const pending = new Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>();
   let buffer = "";
+
+  function rejectPending(err: Error) {
+    for (const p of pending.values()) p.reject(err);
+    pending.clear();
+  }
+
+  function spawnChild(): ChildProcessWithoutNullStreams {
+    const c: ChildProcessWithoutNullStreams = spawn(invocation.command, invocation.args, {
+      stdio: "pipe",
+      env: mergedEnv,
+      ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+      ...(cwd ? { cwd } : {}),
+    });
+
+    c.stdout.on("data", (chunk) => {
+      buffer += chunk.toString("utf-8");
+      while (true) {
+        const idx = buffer.indexOf("\n");
+        if (idx < 0) break;
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        if (!line) continue;
+
+        let msg: any;
+        try {
+          msg = JSON.parse(line);
+        } catch {
+          continue;
+        }
+
+        if (isRecord(msg) && typeof msg.id === "number") {
+          const p = pending.get(msg.id);
+          if (!p) continue;
+          pending.delete(msg.id);
+          if ("error" in msg) p.reject(new Error(String((msg as any).error?.message ?? "MCP error")));
+          else p.resolve((msg as any).result);
+        }
+      }
+    });
+
+    c.on("exit", (code, sig) => {
+      // Stale exit from a replaced child must not wedge the fresh one.
+      if (c !== child) return;
+      exited = true;
+      rejectPending(new Error(`MCP stdio server exited (code=${code}, signal=${sig ?? ""})`));
+    });
+
+    c.on("error", (e) => {
+      if (c !== child) return;
+      exited = true;
+      rejectPending(e instanceof Error ? e : new Error(String(e)));
+    });
+
+    // Writes to a dead server (EPIPE) must fail the pending request via the
+    // exit/error handlers above — never crash the process on an unhandled
+    // stream error.
+    c.stdin.on("error", () => {});
+
+    return c;
+  }
+
+  let child = spawnChild();
+
+  // Lazy recovery: if the server process died, spawn a fresh one and reset
+  // state so the next ensureInitialized() re-runs the handshake. Without this,
+  // requests would write into a dead pipe and pend forever.
+  function respawnIfNeeded() {
+    if (!exited) return;
+    exited = false;
+    buffer = "";
+    initPromise = null;
+    child = spawnChild();
+  }
 
   function send(msg: any) {
     child.stdin.write(JSON.stringify(msg) + "\n");
@@ -83,47 +152,10 @@ export async function createStdioMcpClient(opts: {
     });
   }
 
-  child.stdout.on("data", (chunk) => {
-    buffer += chunk.toString("utf-8");
-    while (true) {
-      const idx = buffer.indexOf("\n");
-      if (idx < 0) break;
-      const line = buffer.slice(0, idx).trim();
-      buffer = buffer.slice(idx + 1);
-      if (!line) continue;
-
-      let msg: any;
-      try {
-        msg = JSON.parse(line);
-      } catch {
-        continue;
-      }
-
-      if (isRecord(msg) && typeof msg.id === "number") {
-        const p = pending.get(msg.id);
-        if (!p) continue;
-        pending.delete(msg.id);
-        if ("error" in msg) p.reject(new Error(String((msg as any).error?.message ?? "MCP error")));
-        else p.resolve((msg as any).result);
-      }
-    }
-  });
-
-  child.on("exit", (code, sig) => {
-    const err = new Error(`MCP stdio server exited (code=${code}, signal=${sig ?? ""})`);
-    for (const p of pending.values()) p.reject(err);
-    pending.clear();
-  });
-
-  child.on("error", (e) => {
-    for (const p of pending.values()) p.reject(e);
-    pending.clear();
-  });
-
   // ── Lazy MCP initialize handshake ──────────────────────────────────────
-  let initPromise: Promise<void> | null = null;
 
   function ensureInitialized(signal?: AbortSignal): Promise<void> {
+    respawnIfNeeded();
     if (!initPromise) {
       initPromise = (async () => {
         const result = await request("initialize", {

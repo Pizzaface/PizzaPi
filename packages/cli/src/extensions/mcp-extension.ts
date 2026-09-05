@@ -13,6 +13,7 @@ import {
   markOAuthRelayWaitAnchorReady,
 } from "./mcp.js";
 import { setMcpBridge } from "./mcp-bridge.js";
+import { registerWorkerShutdownHook } from "./shutdown-hooks.js";
 import type { RelayContext } from "./mcp-oauth.js";
 import { waitForRelayRegistration } from "./remote.js";
 import { getToolSearchBridge, type ToolSearchSnapshot } from "./tool-search-bridge.js";
@@ -1119,5 +1120,20 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
     activeClients = [];
     lastRegistrationResult = null;
     setMcpBridge(null);
+  });
+
+  // pi's session_shutdown only fires for in-app transitions — when the runner
+  // is stopped or restarted, the daemon SIGTERMs the worker and only
+  // process-level shutdown hooks run. Without this, stdio MCP server processes
+  // (e.g. godmother) outlive the runner as orphans.
+  registerWorkerShutdownHook("mcp-close-clients", () => {
+    for (const client of activeClients) {
+      try {
+        client.close();
+      } catch {
+        // ignore best-effort shutdown errors
+      }
+    }
+    activeClients = [];
   });
 };
