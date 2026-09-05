@@ -21,7 +21,7 @@ function makeFakePi() {
         on: mock((event: string, handler: Function) => {
             handlers[event] = handler;
         }),
-        sendMessage: mock((msg: any) => sentMessages.push(msg)),
+        sendMessage: mock((msg: any, opts?: any) => sentMessages.push({ ...msg, _opts: opts })),
         sendUserMessage: mock((...args: any[]) => sentUserMessages.push(args)),
         setModel: mock(async (model: any) => {
             setModelCalls.push(model);
@@ -271,6 +271,29 @@ describe("fallbackModelsExtension", () => {
         expect(pi._setModelCalls).toHaveLength(1);
         const statusMessages = pi._sent.filter((m: any) => m.customType === "fallback_status");
         expect(statusMessages.at(-1)?.content).toContain("All configured fallback models");
+    });
+
+    test("status notices never trigger a turn (would otherwise loop on a rate-limited session)", async () => {
+        writeSettings(["openai-codex:gpt-5.5"]);
+        const pi = makeFakePi();
+        const ctx = makeFakeContext();
+        ctx.modelRegistry._register("openai-codex", "gpt-5.5");
+
+        fallbackModelsExtension(pi);
+        pi._handlers.session_start({}, ctx);
+        pi._handlers.input({ text: "hello" }, ctx);
+
+        const err = { message: { role: "assistant", stopReason: "error", errorMessage: "Rate limit reached" } };
+        await pi._handlers.turn_end(err, ctx);
+        ctx.model = { provider: "openai-codex", id: "gpt-5.5" };
+        await pi._handlers.turn_end(err, ctx);
+        await pi._handlers.turn_end(err, ctx);
+
+        // turn_end fires mid-stream; pi steers any sendMessage lacking triggerTurn:false into the agent.
+        expect(pi._sent.length).toBeGreaterThan(0);
+        for (const m of pi._sent) expect(m._opts).toEqual({ triggerTurn: false });
+        // Only the one real fallback retry is ever issued.
+        expect(pi._userMessages).toHaveLength(1);
     });
 
     test("resets the tried set after a successful turn so the chain can continue", async () => {
