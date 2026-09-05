@@ -42,3 +42,6 @@ test.db-shm
 test.db-wal
 *.db-shm
 *.db-wal
+
+# Generated UI service worker
+packages/ui/dev-dist/

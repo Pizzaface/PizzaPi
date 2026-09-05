@@ -92,11 +92,12 @@ function extractGroupedPendingToolCalls(message: RelayMessage): PendingToolCall[
 function collectToolCallIdsWithResult(messages: RelayMessage[]): Set<string> {
   const toolCallIdsWithResult = new Set<string>();
   const pendingToolCalls: PendingToolCall[] = [];
+  const knownToolCallIds = new Set<string>();
 
-  // Track which assistant indices have been seen so we can skip duplicates.
+  // Track which assistant turns have been seen so we can skip duplicates.
   // When the same turn appears multiple times (partial + final), we only want
   // to queue pending calls from the unique turns, not duplicate tool calls.
-  const seenTurns = new Map<string, number>(); // turnKey -> last assistant index
+  const seenTurns = new Set<string>();
 
   for (const message of messages) {
     if (message.role === "assistant") {
@@ -109,9 +110,12 @@ function collectToolCallIdsWithResult(messages: RelayMessage[]): Set<string> {
       if (seenTurns.has(turnKey)) {
         continue;
       }
-      seenTurns.set(turnKey, messages.indexOf(message));
+      seenTurns.add(turnKey);
 
       pendingToolCalls.push(...calls);
+      for (const call of calls) {
+        if (call.toolCallId) knownToolCallIds.add(call.toolCallId);
+      }
       continue;
     }
 
@@ -123,6 +127,7 @@ function collectToolCallIdsWithResult(messages: RelayMessage[]): Set<string> {
     if (message.isStreamingPartial) continue;
 
     let matchedPendingIndex = -1;
+    const hasKnownCallId = !!message.toolCallId && knownToolCallIds.has(message.toolCallId);
 
     if (message.toolCallId) {
       matchedPendingIndex = pendingToolCalls.findIndex(
@@ -130,7 +135,7 @@ function collectToolCallIdsWithResult(messages: RelayMessage[]): Set<string> {
       );
     }
 
-    if (matchedPendingIndex < 0) {
+    if (matchedPendingIndex < 0 && !hasKnownCallId) {
       const normalizedName = normalizeToolName(message.toolName);
       // Use FIFO (findIndex) so results map to pending calls in invocation
       // order. Stale streaming-partial duplicates are already excluded at
@@ -140,7 +145,7 @@ function collectToolCallIdsWithResult(messages: RelayMessage[]): Set<string> {
       );
     }
 
-    if (matchedPendingIndex < 0 && pendingToolCalls.length > 0) {
+    if (matchedPendingIndex < 0 && !hasKnownCallId && pendingToolCalls.length > 0) {
       matchedPendingIndex = 0;
     }
 
@@ -180,6 +185,7 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
   const lastNonErroredIndexForToolCallId = new Map<string, number>();
   // Cache the extracted IDs for each message index to avoid re-parsing the content during the filter pass.
   const messageIdsMap = new Map<number, Set<string>>();
+  const assistantIndexesByToolCallId = new Map<string, number[]>();
   const assistantIndexes: number[] = [];
 
   // Pre-collect tool call IDs that have a corresponding tool result in the
@@ -197,6 +203,9 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
     messageIdsMap.set(i, ids);
 
     for (const id of ids) {
+      const indexes = assistantIndexesByToolCallId.get(id);
+      if (indexes) indexes.push(i);
+      else assistantIndexesByToolCallId.set(id, [i]);
       lastIndexForToolCallId.set(id, i);
       // Only record the non-errored index when a tool result exists for this
       // ID.  If no result ever arrives the errored snapshot is the right one
@@ -307,22 +316,28 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
     const component: number[] = [];
     visitedAssistantIndexes.add(startIndex);
 
-    while (queue.length > 0) {
-      const currentIndex = queue.shift()!;
+    for (let head = 0; head < queue.length; head++) {
+      const currentIndex = queue[head]!;
       component.push(currentIndex);
       const currentIds = messageIdsMap.get(currentIndex)!;
 
-      for (const candidateIndex of assistantIndexes) {
-        if (visitedAssistantIndexes.has(candidateIndex)) continue;
-        const candidateIds = messageIdsMap.get(candidateIndex)!;
-        const overlaps = [...candidateIds].some((id) => currentIds.has(id));
-        if (!overlaps) continue;
-        visitedAssistantIndexes.add(candidateIndex);
-        queue.push(candidateIndex);
+      const neighbors: number[] = [];
+      for (const id of currentIds) {
+        // Expand each ID's adjacency list only once, even when many streaming
+        // snapshots share it. Unrelated turns never need to be compared.
+        for (const candidateIndex of assistantIndexesByToolCallId.get(id) ?? []) {
+          if (visitedAssistantIndexes.has(candidateIndex)) continue;
+          visitedAssistantIndexes.add(candidateIndex);
+          neighbors.push(candidateIndex);
+        }
+        assistantIndexesByToolCallId.delete(id);
       }
+      // Preserve the original chronological BFS order used by winner voting.
+      neighbors.sort((a, b) => a - b);
+      for (const index of neighbors) queue.push(index);
     }
 
-    const latestIndex = Math.max(...component);
+    const latestIndex = component.reduce((latest, index) => Math.max(latest, index), startIndex);
     const validIds = messageIdsMap.get(latestIndex)!;
     const componentSet = new Set(component);
 
@@ -768,6 +783,9 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
     if (message.role === "toolResult" || message.role === "tool") {
       // Prefer matching by toolCallId (reliable), fall back to tool name, then first available.
       let matchedPendingIndex = -1;
+      // A repeated result for an already-rendered call must not consume a
+      // different call's pending arguments through the legacy FIFO fallback.
+      const hasKnownCallId = !!message.toolCallId && toolCallIndexByCallId.has(message.toolCallId);
 
       if (message.toolCallId) {
         matchedPendingIndex = pendingToolCalls.findIndex(
@@ -775,7 +793,7 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
         );
       }
 
-      if (matchedPendingIndex < 0) {
+      if (matchedPendingIndex < 0 && !hasKnownCallId) {
         const normalizedName = normalizeToolName(message.toolName);
         // Use FIFO (findIndex) so results map to pending calls in invocation
         // order. Stale streaming-partial duplicates are excluded at enqueue
@@ -785,13 +803,15 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
         );
       }
 
-      if (matchedPendingIndex < 0 && pendingToolCalls.length > 0) {
+      if (matchedPendingIndex < 0 && !hasKnownCallId && pendingToolCalls.length > 0) {
         matchedPendingIndex = 0;
       }
 
       const matched =
         matchedPendingIndex >= 0
-          ? pendingToolCalls.splice(matchedPendingIndex, 1)[0]
+          ? message.isStreamingPartial
+            ? pendingToolCalls[matchedPendingIndex]
+            : pendingToolCalls.splice(matchedPendingIndex, 1)[0]
           : undefined;
 
       const resolvedToolName = message.toolName ?? matched?.toolName;
@@ -807,8 +827,9 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
             ...grouped[existingIdx],
             content: message.content,
             isError: message.isError,
-            toolName: resolvedToolName,
-            toolInput: resolvedArgs,
+            toolName: resolvedToolName ?? grouped[existingIdx].toolName,
+            toolInput: resolvedArgs ?? grouped[existingIdx].toolInput,
+            isStreamingPartial: message.isStreamingPartial,
             toolCallId: resolvedToolCallId,
             timestamp: message.timestamp ?? grouped[existingIdx].timestamp,
             details: message.details ?? grouped[existingIdx].details,
@@ -825,8 +846,9 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
             ...grouped[existingIdxByKey],
             content: message.content,
             isError: message.isError,
-            toolName: resolvedToolName,
-            toolInput: resolvedArgs,
+            toolName: resolvedToolName ?? grouped[existingIdxByKey].toolName,
+            toolInput: resolvedArgs ?? grouped[existingIdxByKey].toolInput,
+            isStreamingPartial: message.isStreamingPartial,
             toolCallId: resolvedToolCallId,
             timestamp: message.timestamp ?? grouped[existingIdxByKey].timestamp,
             details: message.details ?? grouped[existingIdxByKey].details,
