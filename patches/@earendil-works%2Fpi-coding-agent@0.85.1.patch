@@ -1,8 +1,8 @@
 diff --git a/dist/config.js b/dist/config.js
-index f04269f..e6d8366 100644
+index 95fa083..263c5af 100644
 --- a/dist/config.js
 +++ b/dist/config.js
-@@ -358,6 +358,10 @@ export function getReadmePath() {
+@@ -359,6 +359,10 @@ export function getReadmePath() {
  }
  /** Get path to docs directory */
  export function getDocsPath() {
@@ -13,7 +13,7 @@ index f04269f..e6d8366 100644
      return resolve(join(getPackageDir(), "docs"));
  }
  /** Get path to examples directory */
-@@ -366,6 +370,10 @@ export function getExamplesPath() {
+@@ -367,6 +371,10 @@ export function getExamplesPath() {
  }
  /** Get path to CHANGELOG.md */
  export function getChangelogPath() {
@@ -24,7 +24,7 @@ index f04269f..e6d8366 100644
      return resolve(join(getPackageDir(), "CHANGELOG.md"));
  }
  /**
-@@ -399,7 +407,7 @@ const piConfigName = pkg.piConfig?.name;
+@@ -400,7 +408,7 @@ const piConfigName = pkg.piConfig?.name;
  export const PACKAGE_NAME = pkg.name || "@earendil-works/pi-coding-agent";
  export const APP_NAME = piConfigName || "pi";
  export const APP_TITLE = piConfigName ? APP_NAME : "π";
@@ -33,7 +33,7 @@ index f04269f..e6d8366 100644
  export const VERSION = pkg.version || "0.0.0";
  // e.g., PI_CODING_AGENT_DIR or TAU_CODING_AGENT_DIR
  export const ENV_AGENT_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;
-@@ -422,7 +430,8 @@ export function getAgentDir() {
+@@ -423,7 +431,8 @@ export function getAgentDir() {
      if (envDir) {
          return expandTildePath(envDir);
      }
@@ -44,7 +44,7 @@ index f04269f..e6d8366 100644
  /** Get path to user's custom themes directory */
  export function getCustomThemesDir() {
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index fd82b71..3667a22 100644
+index 66e874e..f725f27 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
 @@ -981,29 +981,40 @@ export class AgentSession {
@@ -124,7 +124,7 @@ index d7940e1..36a3d2b 100644
      xai: "grok-4.6",
      groq: "openai/gpt-oss-120b",
 diff --git a/dist/core/model-runtime.js b/dist/core/model-runtime.js
-index 7d93ba6..fcd96e8 100644
+index fbcc6cb..463e277 100644
 --- a/dist/core/model-runtime.js
 +++ b/dist/core/model-runtime.js
 @@ -22,6 +22,32 @@ export class CredentialSynchronizationError extends Error {
@@ -170,7 +170,7 @@ index 7d93ba6..fcd96e8 100644
          if (!base && !this.config.getProvider(providerId) && !extension) {
              this.models.deleteProvider(providerId);
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 3e9241d..7199e30 100644
+index e2b640b..3d379dc 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -13,6 +13,7 @@ export { type ModelScopeDiagnostic, type ResolveCliModelResult, type ResolveMode
@@ -194,7 +194,7 @@ index 01017cd..cc39132 100644
  // SDK for programmatic usage
  export { AgentSessionRuntime, 
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index a27754f..56adec5 100644
+index a1e7d98..057c196 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -38,7 +38,6 @@ import { getPiUserAgent } from "../../utils/pi-user-agent.js";
@@ -202,10 +202,10 @@ index a27754f..56adec5 100644
  import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.js";
  import { ensureTool } from "../../utils/tools-manager.js";
 -import { checkForNewPiVersion } from "../../utils/version-check.js";
+ import { createChatViewport } from "./chat-viewport.js";
  import { ArminComponent } from "./components/armin.js";
  import { AssistantMessageComponent } from "./components/assistant-message.js";
- import { BashExecutionComponent } from "./components/bash-execution.js";
-@@ -809,12 +808,6 @@ export class InteractiveMode {
+@@ -760,12 +759,6 @@ export class InteractiveMode {
                  .catch(() => { })
                  .finally(() => clearTimeout(timeout));
          }
@@ -218,7 +218,7 @@ index a27754f..56adec5 100644
          // Start package update check asynchronously
          this.checkForPackageUpdates()
              .then((updates) => {
-@@ -3512,29 +3505,6 @@ export class InteractiveMode {
+@@ -3527,29 +3520,6 @@ export class InteractiveMode {
          this.chatContainer.addChild(new Text(theme.fg("warning", `Warning: ${warningMessage}`), 1, 0));
          this.ui.requestRender();
      }
