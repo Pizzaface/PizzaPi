@@ -1,5 +1,5 @@
 diff --git a/dist/agent-loop.js b/dist/agent-loop.js
-index 329c4e3..bab74ca 100644
+index ca1186c..d9888be 100644
 --- a/dist/agent-loop.js
 +++ b/dist/agent-loop.js
 @@ -118,6 +118,9 @@ async function runLoop(initialContext, newMessages, initialConfig, signal, emit,

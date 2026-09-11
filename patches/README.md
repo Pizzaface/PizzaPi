@@ -4,7 +4,7 @@ Patches in this directory are applied automatically by Bun via the
 `patchedDependencies` field in the root `package.json`. They are reapplied on
 every `bun install` — no postinstall script is needed.
 
-## @earendil-works/pi-agent-core@0.84.4
+## @earendil-works/pi-agent-core@0.85.1
 
 Refreshes the agent's system prompt and tool list before every assistant
 response, not just at loop start. `dist/agent.js` exposes the current
@@ -15,7 +15,7 @@ updates the prompt mid-turn (e.g. `search_tools`) wouldn't take effect until
 the *next* user turn. See the "pi-agent-core dynamic tool refresh" tests in
 `packages/cli/src/patches.test.ts`.
 
-## @earendil-works/pi-tui@0.84.4
+## @earendil-works/pi-tui@0.85.1
 
 Adds a Windows console lifecycle to `dist/terminal.js`:
 `createWindowsConsoleLifecycle()` enables VT output processing and switches
@@ -26,11 +26,17 @@ mode/code pages on `stop()`. This fixes garbled Unicode/ANSI rendering in
 Windows terminals; it's a no-op (best-effort, swallows failures) on other
 platforms. See `packages/cli/src/patches.test.ts`.
 
-## @earendil-works/pi-ai@0.84.4
+## @earendil-works/pi-ai@0.85.1
 
 Same intent as 0.80.6 (Anthropic web-search passthrough, Claude Code
-credentials fallback, retryable-JSON-parse patterns), ported to upstream's
-restructured 0.82.0 layout:
+credentials fallback, retryable-JSON-parse patterns), ported forward. At
+0.85.1 the web-search tool injection in `buildParams` re-anchored: upstream
+restructured the thinking-config section ("Managed effort models" adaptive-thinking
+block now sits where the old "Configure thinking mode" comment was), so the
+injection now sits directly after the `params.tools` assignment and before that
+block.
+
+Layout notes carried forward from the 0.82.0 port:
 
 - The Anthropic OAuth module moved from `dist/utils/oauth/anthropic.js` to
   `dist/auth/oauth/anthropic.js`, and its shape changed: the old
@@ -67,10 +73,13 @@ assertions that the pi-ai patch no longer carries any ollama-cloud hunks.
 | `dist/auth/oauth/anthropic.js` | Claude Code Keychain/file credentials fallback, now inside `anthropicOAuth.refresh()` |
 | `dist/utils/retry.js` | Same retryable-JSON-parse patterns as 0.80.6 (unchanged file) |
 
-## @earendil-works/pi-coding-agent@0.84.4
+## @earendil-works/pi-coding-agent@0.85.1
 
 Same PizzaPi integration changes as 0.80.6, ported forward, with two upstream
-removals absorbed elsewhere rather than restored:
+removals absorbed elsewhere rather than restored. At 0.85.1 the interactive-mode
+version-check removal re-anchored: upstream added a `createChatViewport` import
+next to the removed `version-check.js` import (context-only change, no semantic
+drift).
 
 - **`dist/core/provider-display-names.js` was deleted upstream.** Provider
   display names now come from each provider's own `name` field (set at
