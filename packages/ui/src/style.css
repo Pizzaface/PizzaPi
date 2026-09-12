@@ -384,6 +384,16 @@
     word-break: break-word;
   }
 
+  /* `anywhere` inherits into table cells and shrinks every word's min-content to
+     ~1ch, so auto table layout crushes columns ("Non-sensitive" wrapping at 4
+     chars, code spans split mid-token). Cells keep natural intrinsic sizing;
+     wide tables scroll in streamdown's overflow-x wrapper instead. */
+  .pp-message-content td,
+  .pp-message-content th {
+    overflow-wrap: break-word;
+    word-break: normal;
+  }
+
   /* Font size preference */
   /* Font size — override Tailwind text-sm on message content and all descendants */
   [data-font-size="small"] .pp-message-content,
