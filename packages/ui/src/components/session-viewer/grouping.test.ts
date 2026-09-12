@@ -1105,3 +1105,99 @@ describe("groupSubAgentConversations", () => {
         }
     });
 });
+
+describe("tool grouping scalability and streaming lifecycle", () => {
+    const call = (id: string) => ({ type: "toolCall", id, name: "bash", arguments: { command: id } });
+    const assistant = (key: string, ids: string[]) => msg({ key, role: "assistant", content: ids.map(call) });
+    const result = (id: string, text: string, partial = false) => msg({
+        key: `${id}:${text}`, role: "toolResult", toolCallId: id,
+        content: text, isStreamingPartial: partial || undefined,
+    });
+
+    test("preserves arguments through repeated partials, final delivery, and replay", () => {
+        const history = [assistant("a", ["first", "second"])];
+        for (const event of [
+            result("first", "part 1", true),
+            result("first", "part 2", true),
+            result("first", "complete"),
+            result("first", "complete replay"),
+            result("second", "second complete"),
+        ]) {
+            history.push(event);
+            const cards = groupToolExecutionMessages(history);
+            expect(cards).toHaveLength(2);
+            expect(cards.map((card) => card.toolInput)).toEqual([
+                { command: "first" }, { command: "second" },
+            ]);
+            expect(cards.map((card) => card.toolName)).toEqual(["bash", "bash"]);
+            const updated = cards.find((card) => card.toolCallId === event.toolCallId)!;
+            expect(updated.content).toBe(event.content);
+            expect(updated.isStreamingPartial).toBe(event.isStreamingPartial);
+        }
+    });
+
+    test("id-less partials leave FIFO matching intact for the terminal results", () => {
+        const messages = [assistant("a", ["first", "second"])];
+        for (const [text, partial] of [["partial", true], ["first done", false], ["second done", false]] as const) {
+            messages.push(msg({ key: text, role: "toolResult", toolName: "bash", content: text, isStreamingPartial: partial }));
+        }
+        const cards = groupToolExecutionMessages(messages);
+        expect(cards.map((card) => [card.toolCallId, card.content, card.toolInput])).toEqual([
+            ["first", "first done", { command: "first" }],
+            ["second", "second done", { command: "second" }],
+        ]);
+    });
+
+    test("follows transitive overlaps while retaining unrelated turns", () => {
+        const cards = groupToolExecutionMessages([
+            assistant("old", ["a"]),
+            assistant("unrelated", ["independent"]),
+            assistant("bridge", ["a", "b"]),
+            assistant("latest", ["b", "c"]),
+        ]);
+        expect(cards.map((card) => card.toolCallId)).toEqual(["independent", "b", "c"]);
+    });
+
+    test("collapses thousands of snapshots sharing the same tool call", () => {
+        const messages = Array.from({ length: 5000 }, (_, i) => assistant(`snapshot${i}`, ["shared"]));
+        messages.push(result("shared", "complete"));
+        const cards = groupToolExecutionMessages(messages);
+        expect(cards).toHaveLength(1);
+        expect(cards[0].toolCallId).toBe("shared");
+        expect(cards[0].content).toBe("complete");
+        expect(cards[0].toolInput).toEqual({ command: "shared" });
+    });
+
+    test("retains order and tool inputs in a long completed transcript", () => {
+        const messages: RelayMessage[] = [];
+        for (let i = 0; i < 5000; i++) {
+            messages.push(assistant(`a${i}`, [`tc${i}`]), result(`tc${i}`, `output ${i}`));
+        }
+        const cards = groupToolExecutionMessages(messages);
+        expect(cards).toHaveLength(5000);
+        for (let i = 0; i < cards.length; i++) {
+            expect(cards[i].toolCallId).toBe(`tc${i}`);
+            expect(cards[i].toolInput).toEqual({ command: `tc${i}` });
+            expect(cards[i].content).toBe(`output ${i}`);
+        }
+    });
+});
+
+test("replayed results do not hide completion evidence for a later id-less result", () => {
+    const content = [
+        { type: "text", text: "Running tools" },
+        { type: "toolCall", id: "one", name: "bash", arguments: { command: "one" } },
+        { type: "toolCall", id: "two", name: "bash", arguments: { command: "two" } },
+    ];
+    const cards = groupToolExecutionMessages([
+        msg({ key: "partial", role: "assistant", content }),
+        msg({ key: "final", role: "assistant", content, stopReason: "error", errorMessage: "stream interrupted" }),
+        msg({ key: "r1", role: "toolResult", toolCallId: "one", content: "first done" }),
+        msg({ key: "r1-replay", role: "toolResult", toolCallId: "one", content: "first done" }),
+        msg({ key: "r2", role: "toolResult", toolName: "bash", content: "second done" }),
+    ]);
+    expect(cards.filter((card) => card.role === "assistant").every((card) => card.stopReason !== "error")).toBe(true);
+    expect(cards.filter((card) => card.role === "tool").map((card) => [card.toolCallId, card.content])).toEqual([
+        ["one", "first done"], ["two", "second done"],
+    ]);
+});

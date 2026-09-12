@@ -1,7 +1,8 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
+import * as os from "node:os";
 import { randomBytes } from "node:crypto";
 import {
     parseSkillFrontmatterFromString,
@@ -573,13 +574,20 @@ describe("loadRulesDir", () => {
 
 describe("createAgentsFilesOverride", () => {
     let dir: string;
+    let testHome: string;
+    let homeSpy: ReturnType<typeof spyOn>;
 
     beforeEach(() => {
         dir = makeTmpDir();
+        testHome = makeTmpDir();
+        // Personal global rules must never leak into fixture expectations.
+        homeSpy = spyOn(os, "homedir").mockReturnValue(testHome);
     });
 
     afterEach(() => {
+        homeSpy.mockRestore();
         rmSync(dir, { recursive: true, force: true });
+        rmSync(testHome, { recursive: true, force: true });
     });
 
     test("returns null when no additional files exist", () => {

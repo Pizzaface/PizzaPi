@@ -115,6 +115,12 @@ function selectFallback(
 }
 
 export const fallbackModelsExtension: ExtensionFactory = (pi) => {
+    // turn_end fires while the session is still streaming; without
+    // triggerTurn:false pi steers the notice into the agent as a new message,
+    // which re-hits the rate limit and loops forever.
+    const notify = (content: string) =>
+        pi.sendMessage({ customType: "fallback_status", content, display: true }, { triggerTurn: false });
+
     pi.on("session_start", (_event, ctx) => {
         const sessionId = getSessionId(ctx);
         sessions.set(sessionId, { chain: loadFallbackModels(), tried: new Set() });
@@ -151,29 +157,17 @@ export const fallbackModelsExtension: ExtensionFactory = (pi) => {
 
         const selected = selectFallback(state, currentKey, ctx.modelRegistry);
         if (!selected) {
-            pi.sendMessage({
-                customType: "fallback_status",
-                content: "All configured fallback models are unavailable or also rate-limited. Returning control to you.",
-                display: true,
-            });
+            notify("All configured fallback models are unavailable or also rate-limited. Returning control to you.");
             return;
         }
 
         const ok = await pi.setModel(selected.model);
         if (!ok) {
-            pi.sendMessage({
-                customType: "fallback_status",
-                content: `Could not switch to fallback model ${selected.ref}. Returning control to you.`,
-                display: true,
-            });
+            notify(`Could not switch to fallback model ${selected.ref}. Returning control to you.`);
             return;
         }
 
-        pi.sendMessage({
-            customType: "fallback_status",
-            content: `${currentModel ? modelKey(currentModel) : "Primary model"} hit a provider limit. Retrying with ${selected.ref}.`,
-            display: true,
-        });
+        notify(`${currentModel ? modelKey(currentModel) : "Primary model"} hit a provider limit. Retrying with ${selected.ref}.`);
 
         if (state.lastInput) {
             pi.sendUserMessage(state.lastInput, { deliverAs: "steer" });
