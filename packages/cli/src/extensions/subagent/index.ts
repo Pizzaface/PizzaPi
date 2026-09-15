@@ -27,7 +27,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type AgentScope, discoverAgents } from "../subagent-agents.js";
 import { getPluginAgentPaths } from "../claude-plugins.js";
 import { loadGlobalConfig, resolveAgentDir, resolveExplicitProjectTrust } from "../../config.js";
-import { isThinkingLevel } from "../../effort.js";
+import { EFFORT_LEVELS, isThinkingLevel } from "../../effort.js";
 import { collectOverlayAgentDirs } from "../../overlay/session-packages.js";
 import {
     DEFAULT_MAX_PARALLEL_TASKS,
@@ -66,7 +66,7 @@ const TaskItemSchema = {
         task: { type: "string", description: "Task to delegate to the agent" },
         cwd: { type: "string", description: "Working directory for the agent process" },
         model: ModelSchema,
-        effort: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], description: "Reasoning effort for this task" },
+        effort: { type: "string", enum: EFFORT_LEVELS, description: "Reasoning effort for this task" },
     },
     required: ["agent", "task"],
 } as const;
@@ -78,7 +78,7 @@ const ChainItemSchema = {
         task: { type: "string", description: "Task with optional {previous} placeholder for prior output" },
         cwd: { type: "string", description: "Working directory for the agent process" },
         model: ModelSchema,
-        effort: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], description: "Reasoning effort for this task" },
+        effort: { type: "string", enum: EFFORT_LEVELS, description: "Reasoning effort for this task" },
     },
     required: ["agent", "task"],
 } as const;
@@ -111,7 +111,7 @@ const SubagentParams = {
         },
         cwd: { type: "string", description: "Working directory for the agent process (single mode)" },
         model: ModelSchema,
-        effort: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], description: "Reasoning effort for all subagent tasks unless overridden per task" },
+        effort: { type: "string", enum: EFFORT_LEVELS, description: "Reasoning effort for all subagent tasks unless overridden per task" },
     },
 } as const;
 
