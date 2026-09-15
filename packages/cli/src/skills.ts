@@ -7,7 +7,7 @@
 import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expandHome } from "./config.js";
 import { parseFrontmatterDescription } from "./frontmatter.js";
@@ -340,6 +340,33 @@ export function createAgentsFilesOverride(
 // expandHome is imported from config.ts
 
 /**
+ * Resolve + dedupe convention dirs, dropping ones that don't exist.
+ *
+ * Both halves matter, and both fix real startup bugs:
+ *
+ *  - Dedupe: when the agent is launched from `$HOME`, the `~`-relative and
+ *    `<cwd>`-relative entries collapse onto the same directory. pi's
+ *    `mergePaths()` dedupes by canonical path, but only *after* we've handed
+ *    it the same dir twice under two spellings.
+ *  - existsSync: pi reports every non-existent explicit resource path as a red
+ *    `error` diagnostic. These convention dirs are optional, so their absence
+ *    is normal and must not look like a failure. Paths the user configured
+ *    explicitly are NOT filtered here — there, absence is a real mistake and
+ *    the error is the point.
+ */
+function conventionPaths(paths: string[]): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const p of paths) {
+        const resolved = resolve(p);
+        if (seen.has(resolved)) continue;
+        seen.add(resolved);
+        if (existsSync(resolved)) out.push(resolved);
+    }
+    return out;
+}
+
+/**
  * Build the unified list of additional skill paths.
  *
  * Used by BOTH the interactive CLI and the headless runner worker so that
@@ -355,17 +382,34 @@ export function createAgentsFilesOverride(
  *   - <cwd>/.agents/skills/     (Claude Code compatible project skills)
  *   - <cwd>/.agents/agents/     (Claude Code compatible project agents)
  *   - Paths declared in config.skills
+ *
+ * USER-scope `skills/` dirs are omitted: pi auto-discovers
+ * `~/.pizzapi/skills` and `~/.agents/skills` unconditionally, so naming them
+ * again made `loadSkills()` read every `SKILL.md` twice and emit a duplicate
+ * `(skipped)` line for each name collision. This also covers the case where
+ * `cwd` IS the home dir, which is how the project-scoped entries below collapse
+ * onto the user ones.
+ *
+ * PROJECT-scope `skills/` dirs are still passed even though pi auto-discovers
+ * them too, because pi skips project-scoped auto-discovery for UNTRUSTED
+ * projects — dropping them would newly trust-gate project skills, a behaviour
+ * change tracked separately in Godmother `9py0SHJs`.
  */
 export function buildSkillPaths(cwd: string, configSkills?: string[]): string[] {
-    const paths: string[] = [
+    // Dirs pi auto-discovers regardless of project trust. Anything resolving to
+    // one of these is pure duplication on our side.
+    const piUserAutoDirs = new Set([
+        resolve(join(homedir(), ".pizzapi", "skills")),
+        resolve(join(homedir(), ".agents", "skills")),
+    ]);
+    const paths: string[] = conventionPaths([
         builtinSkillsDir(),
-        join(homedir(), ".pizzapi", "skills"),
         join(cwd, ".pizzapi", "skills"),
         join(homedir(), ".pizzapi", "agents"),
         join(cwd, ".pizzapi", "agents"),
         join(cwd, ".agents", "skills"),
         join(cwd, ".agents", "agents"),
-    ];
+    ]).filter((p) => !piUserAutoDirs.has(p));
     if (Array.isArray(configSkills)) {
         for (const p of configSkills) {
             if (typeof p === "string" && p.trim()) {
@@ -398,16 +442,25 @@ export function buildWorkerSkillPaths(cwd: string, configSkills?: string[]): str
  * Used by BOTH the interactive CLI and the headless runner worker.
  *
  * Includes:
- *   - <cwd>/.pizzapi/prompts/   (project-local prompt templates)
  *   - ~/.pizzapi/commands/       (global commands — Claude Code compatible)
  *   - <cwd>/.pizzapi/commands/   (project-local commands)
  *   - <cwd>/.agents/commands/    (Claude Code compatible project commands)
+ *
+ * Deliberately NOT included — pi auto-discovers it itself, via
+ * `collectAutoPromptEntries()`:
+ *   - <cwd>/.pizzapi/prompts/
+ *
+ * Naming that dir here made pi load every template twice (once as an
+ * auto-enabled `*.md` file, once by scanning the parent dir), so
+ * `dedupePrompts()` reported each one as colliding with itself — a wall of
+ * `"build" collision: ✓ ... ✗ ... (skipped)` at startup. `commands/` dirs
+ * stay: `commands` is not one of pi's resource types, so nothing else
+ * discovers them.
  */
 export function buildPromptTemplatePaths(cwd: string): string[] {
-    return [
-        join(cwd, ".pizzapi", "prompts"),
+    return conventionPaths([
         join(homedir(), ".pizzapi", "commands"),
         join(cwd, ".pizzapi", "commands"),
         join(cwd, ".agents", "commands"),
-    ];
+    ]);
 }

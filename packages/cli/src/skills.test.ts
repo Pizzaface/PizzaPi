@@ -421,67 +421,121 @@ describe("deleteSkill", () => {
 // ── buildSkillPaths (unified) ─────────────────────────────────────────────────
 
 describe("buildSkillPaths", () => {
-    test("includes all expected default paths", () => {
-        const home = require("os").homedir();
-        const paths = buildSkillPaths("/projects/my-app");
-        // Global paths
-        expect(paths).toContain(join(home, ".pizzapi", "skills"));
-        expect(paths).toContain(join(home, ".pizzapi", "agents"));
-        // Project-local paths
-        expect(paths).toContain(join("/projects/my-app", ".pizzapi", "skills"));
-        expect(paths).toContain(join("/projects/my-app", ".pizzapi", "agents"));
-        expect(paths).toContain(join("/projects/my-app", ".agents", "skills"));
-        expect(paths).toContain(join("/projects/my-app", ".agents", "agents"));
+    /** Build a project dir containing every convention subdir we might emit. */
+    function makeProject(): string {
+        const dir = makeTmpDir();
+        for (const sub of [[".pizzapi", "agents"], [".pizzapi", "skills"], [".agents", "agents"], [".agents", "skills"]]) {
+            mkdirSync(join(dir, ...sub), { recursive: true });
+        }
+        return dir;
+    }
+
+    test("includes the project skills and agents dirs that exist", () => {
+        const project = makeProject();
+        const paths = buildSkillPaths(project);
+        expect(paths).toContain(join(project, ".pizzapi", "agents"));
+        expect(paths).toContain(join(project, ".agents", "agents"));
+        expect(paths).toContain(join(project, ".pizzapi", "skills"));
+        expect(paths).toContain(join(project, ".agents", "skills"));
     });
 
     test("includes builtin skills dir", () => {
-        const paths = buildSkillPaths("/tmp");
+        const paths = buildSkillPaths(makeTmpDir());
         expect(paths[0]).toBe(builtinSkillsDir());
     });
 
+    test("omits convention dirs that do not exist", () => {
+        // An empty project dir has none of them; absence is normal and must not
+        // reach pi, which would flag each one as a red error diagnostic. The
+        // home-scoped dirs are independent of cwd, so only assert about the
+        // project-scoped ones.
+        const project = makeTmpDir();
+        const paths = buildSkillPaths(project);
+        expect(paths.filter((p) => p.startsWith(project))).toEqual([]);
+        expect(paths.every((p) => existsSync(p))).toBe(true);
+    });
+
+    test("never returns duplicates, even when cwd IS the home dir", () => {
+        // Regression: at $HOME the ~-relative and cwd-relative entries collapse
+        // onto the same dir, and pi reported every file as colliding with itself.
+        const paths = buildSkillPaths(homedir());
+        expect(paths).toEqual([...new Set(paths)]);
+    });
+
+    test("omits user-scope skills dirs that pi auto-discovers unconditionally", () => {
+        // Re-passing these made loadSkills() read each SKILL.md twice and print a
+        // duplicate "(skipped)" line per name collision.
+        for (const cwd of [homedir(), makeProject()]) {
+            const paths = buildSkillPaths(cwd);
+            expect(paths).not.toContain(join(homedir(), ".pizzapi", "skills"));
+            expect(paths).not.toContain(join(homedir(), ".agents", "skills"));
+        }
+    });
+
+    test("still passes PROJECT-scope skills dirs, which pi trust-gates", () => {
+        // These must survive: pi skips project-scoped auto-discovery for
+        // untrusted projects, so dropping them would change behaviour (9py0SHJs).
+        const project = makeProject();
+        const paths = buildSkillPaths(project);
+        expect(paths).toContain(join(project, ".pizzapi", "skills"));
+        expect(paths).toContain(join(project, ".agents", "skills"));
+    });
+
     test("appends config skill paths", () => {
-        const paths = buildSkillPaths("/projects/my-app", [
-            "/extra/skills",
-            "~/my-skills",
-        ]);
+        const paths = buildSkillPaths(makeTmpDir(), ["/extra/skills", "~/my-skills"]);
         expect(paths).toContain("/extra/skills");
-        const home = require("os").homedir();
-        expect(paths).toContain(join(home, "my-skills"));
+        expect(paths).toContain(join(homedir(), "my-skills"));
+    });
+
+    test("keeps configured paths that do not exist, so the user still sees the error", () => {
+        // Unlike convention dirs, an explicitly configured path that is missing
+        // is a real mistake -- pi's diagnostic is the point.
+        const paths = buildSkillPaths(makeTmpDir(), ["/definitely/not/here"]);
+        expect(paths).toContain("/definitely/not/here");
     });
 
     test("filters out empty and whitespace-only config entries", () => {
-        const paths = buildSkillPaths("/tmp", ["", "  ", "/valid"]);
-        // 7 default paths + 1 valid config path
-        expect(paths).toHaveLength(8);
+        const paths = buildSkillPaths(makeTmpDir(), ["", "  ", "/valid"]);
         expect(paths).toContain("/valid");
+        expect(paths).not.toContain("");
+        expect(paths.some((p) => p.trim() === "")).toBe(false);
     });
 
-    test("handles undefined configSkills", () => {
-        const paths = buildSkillPaths("/tmp");
-        expect(paths).toHaveLength(7); // builtin + 6 directory paths
-    });
-
-    test("handles empty configSkills array", () => {
-        const paths = buildSkillPaths("/tmp", []);
-        expect(paths).toHaveLength(7);
+    test("handles undefined and empty configSkills", () => {
+        const project = makeProject();
+        expect(buildSkillPaths(project, [])).toEqual(buildSkillPaths(project));
     });
 });
 
 // ── buildPromptTemplatePaths ──────────────────────────────────────────────────
 
 describe("buildPromptTemplatePaths", () => {
-    test("includes all expected paths", () => {
-        const home = require("os").homedir();
-        const paths = buildPromptTemplatePaths("/projects/my-app");
-        expect(paths).toContain(join("/projects/my-app", ".pizzapi", "prompts"));
-        expect(paths).toContain(join(home, ".pizzapi", "commands"));
-        expect(paths).toContain(join("/projects/my-app", ".pizzapi", "commands"));
-        expect(paths).toContain(join("/projects/my-app", ".agents", "commands"));
+    test("includes the commands dirs that exist", () => {
+        const project = makeTmpDir();
+        mkdirSync(join(project, ".pizzapi", "commands"), { recursive: true });
+        mkdirSync(join(project, ".agents", "commands"), { recursive: true });
+        const paths = buildPromptTemplatePaths(project);
+        expect(paths).toContain(join(project, ".pizzapi", "commands"));
+        expect(paths).toContain(join(project, ".agents", "commands"));
     });
 
-    test("returns exactly 4 paths", () => {
-        const paths = buildPromptTemplatePaths("/tmp");
-        expect(paths).toHaveLength(4);
+    test("omits the prompts dir that pi auto-discovers", () => {
+        // Naming it made pi load every template twice and report each one as
+        // colliding with itself -- the startup wall of "collision" warnings.
+        const project = makeTmpDir();
+        mkdirSync(join(project, ".pizzapi", "prompts"), { recursive: true });
+        expect(buildPromptTemplatePaths(project)).not.toContain(join(project, ".pizzapi", "prompts"));
+    });
+
+    test("omits dirs that do not exist rather than making pi report an error", () => {
+        expect(buildPromptTemplatePaths(makeTmpDir())).toEqual(
+            [join(homedir(), ".pizzapi", "commands")].filter((p) => existsSync(p)),
+        );
+    });
+
+    test("never returns duplicates, even when cwd IS the home dir", () => {
+        const paths = buildPromptTemplatePaths(homedir());
+        expect(paths).toEqual([...new Set(paths)]);
     });
 });
 
