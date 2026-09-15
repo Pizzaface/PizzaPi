@@ -632,6 +632,8 @@ A GitHub integration service might define `pr` and `commit` sigil types:
 
 With these definitions registered, when an agent writes `[[pr:42]]` or `[[commit:abc1234]]` in its output, the UI renders them as interactive elements instead of plain text.
 
+A `resolve` endpoint may also return `text`, the canonical plain-text representation for copy, exports, notifications, and other integrations. `title` remains the display fallback for existing services; unresolved sigils are preserved unchanged.
+
 Sigil types are advertised to all connected viewers via the `service_announce` event, the same way trigger definitions are.
 
 ---

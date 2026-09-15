@@ -24,6 +24,7 @@ export type {
   ServiceTriggerDef,
   ServiceTriggerParamDef,
   ServiceSigilDef,
+  SigilResolveData,
   ServiceModeDef,
   ServiceModeUi,
   ServiceModeChrome,

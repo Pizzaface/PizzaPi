@@ -1005,6 +1005,10 @@ if (url.pathname.includes("/api/resolve/pr/")) {
 }
 ```
 
+Add `text` to the response when the sigil needs a canonical plain-text form
+for copy, exports, notifications, or another integration. Consumers fall back
+to `title`, then leave unresolved sigils unchanged.
+
 ### Panel HTML/CSS/JS
 
 Panels render in a sandboxed iframe (280px tall at bottom, 320px wide at side). Keep it self-contained:

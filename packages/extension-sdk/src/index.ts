@@ -25,4 +25,4 @@ export { isPizzaPiHostInfo, detectPizzaPiHost, onPizzaPiHost, sendServiceMessage
 export type { ApprovalRequest, ApprovalDecision, ApprovalField, ApprovalAction } from "@pizzapi/protocol";
 
 // Re-exported protocol declaration types required by the public service contract.
-export type { ServiceTriggerDef, ServiceSigilDef, ServicePanelInfo, ServiceTriggerParamDef } from "@pizzapi/protocol";
+export type { ServiceTriggerDef, ServiceSigilDef, ServicePanelInfo, ServiceTriggerParamDef, SigilResolveData } from "@pizzapi/protocol";

@@ -2,7 +2,7 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { useEffect } from "react";
 import {
-  SigilProvider, useSigilGeneration, useSigilResolve, useSigilTriggerResolve,
+  SigilProvider, useSigilGeneration, useSigilResolve, useSigilTextResolver, useSigilTriggerResolve,
 } from "./SigilContext";
 
 const sigilDefs = [{ type: "pr", label: "PR", serviceId: "github", resolve: "/resolve/{id}", resolvePort: 1234 }];
@@ -161,6 +161,36 @@ test("cancels pending retry timers on unmount", async () => {
     clear.mockRestore();
     timers.restore();
   }
+});
+
+test("resolves a sigil to explicit text, falling back to title", async () => {
+  globalThis.fetch = (async () => Response.json({ text: "Plain text", title: "Display title" })) as typeof fetch;
+  const { result } = renderHook(() => useSigilTextResolver(), {
+    wrapper: ({ children }) => (
+      <SigilProvider sigilDefs={sigilDefs} panels={panels} runnerId="runner-1">
+        {children}
+      </SigilProvider>
+    ),
+  });
+
+  let resolved: string | undefined;
+  await act(async () => { resolved = await result.current("pr", "1"); });
+  expect(resolved).toBe("Plain text");
+});
+
+test("falls back to resolved title when a service has no text field", async () => {
+  globalThis.fetch = (async () => Response.json({ title: "Display title" })) as typeof fetch;
+  const { result } = renderHook(() => useSigilTextResolver(), {
+    wrapper: ({ children }) => (
+      <SigilProvider sigilDefs={sigilDefs} panels={panels} runnerId="runner-1">
+        {children}
+      </SigilProvider>
+    ),
+  });
+
+  let resolved: string | undefined;
+  await act(async () => { resolved = await result.current("pr", "1"); });
+  expect(resolved).toBe("Display title");
 });
 
 test("resolves under StrictMode effect replay", async () => {

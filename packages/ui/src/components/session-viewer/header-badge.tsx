@@ -15,6 +15,8 @@ import {
 } from "@/components/ai-elements/attachments";
 import { usePromptInputAttachments } from "@/components/ai-elements/prompt-input";
 import { exportToMarkdown } from "@/lib/export-markdown";
+import { resolveSigilsToText } from "@/lib/sigils/resolve-text";
+import { useSigilTextResolver } from "@/components/sigils/SigilContext";
 import type { RelayMessage } from "./types";
 import type { TriggerCounts } from "@/hooks/useTriggerCount";
 import { formatFileSize } from "./formatters";
@@ -216,12 +218,17 @@ export function HeaderOverflowMenu({
   extraItems,
 }: HeaderOverflowMenuProps) {
   const [copyState, setCopyState] = React.useState<"idle" | "copied">("idle");
+  const resolveText = useSigilTextResolver();
+  const resolveMarkdown = React.useCallback(
+    (markdown: string) => resolveSigilsToText(markdown, (match) => resolveText(match.type, match.id, match.params)),
+    [resolveText],
+  );
   const timerRef = React.useRef<ReturnType<typeof setTimeout>>(undefined);
 
   React.useEffect(() => () => clearTimeout(timerRef.current), []);
 
   const handleCopyExport = async () => {
-    const md = exportToMarkdown(messages);
+    const md = await resolveMarkdown(exportToMarkdown(messages));
     try {
       await navigator.clipboard.writeText(md);
       setCopyState("copied");
@@ -232,8 +239,8 @@ export function HeaderOverflowMenu({
     }
   };
 
-  const handleDownloadExport = () => {
-    const md = exportToMarkdown(messages);
+  const handleDownloadExport = async () => {
+    const md = await resolveMarkdown(exportToMarkdown(messages));
     const blob = new Blob([md], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
