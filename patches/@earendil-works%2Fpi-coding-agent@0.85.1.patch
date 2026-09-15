@@ -1,5 +1,8 @@
+diff --git a/node_modules/@earendil-works/pi-coding-agent/.bun-tag-19bb5cc710612416 b/.bun-tag-19bb5cc710612416
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/config.js b/dist/config.js
-index 95fa083..263c5af 100644
+index 95fa083078b64fbfe6e2b89137ad0d866dd55d9c..263c5af78d0296cdecc0ba112fc108a9882fe63e 100644
 --- a/dist/config.js
 +++ b/dist/config.js
 @@ -359,6 +359,10 @@ export function getReadmePath() {
@@ -44,7 +47,7 @@ index 95fa083..263c5af 100644
  /** Get path to user's custom themes directory */
  export function getCustomThemesDir() {
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index 66e874e..f725f27 100644
+index 66e874efd252470d00d3cdaad2e2b4b6121de15b..f725f2701e56e000aec7c4f8d7c6b033954b286c 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
 @@ -981,29 +981,40 @@ export class AgentSession {
@@ -112,7 +115,7 @@ index 66e874e..f725f27 100644
      /**
       * Queue a steering message while the agent is running.
 diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
-index d7940e1..36a3d2b 100644
+index d7940e14deb53a3a18237c51c5afb5712686f0ba..36a3d2be5dc5ec31199601965583eed0b3bd7503 100644
 --- a/dist/core/model-resolver.js
 +++ b/dist/core/model-resolver.js
 @@ -21,6 +21,7 @@ export const defaultModelPerProvider = {
@@ -124,7 +127,7 @@ index d7940e1..36a3d2b 100644
      xai: "grok-4.6",
      groq: "openai/gpt-oss-120b",
 diff --git a/dist/core/model-runtime.js b/dist/core/model-runtime.js
-index fbcc6cb..463e277 100644
+index fbcc6cb95e08390559fd4b0a554b0c8ec37d5be5..463e2771874194a83012f27e80a12ea1e53f425c 100644
 --- a/dist/core/model-runtime.js
 +++ b/dist/core/model-runtime.js
 @@ -22,6 +22,32 @@ export class CredentialSynchronizationError extends Error {
@@ -169,8 +172,27 @@ index fbcc6cb..463e277 100644
          const extension = this.extensionProviders.get(providerId);
          if (!base && !this.config.getProvider(providerId) && !extension) {
              this.models.deleteProvider(providerId);
+diff --git a/dist/core/settings-manager.js b/dist/core/settings-manager.js
+index f0f936eb01afe5d158f1834c5e40421e36af0d24..a1ff611fbd63e652713608ae10f4f77edc6eab66 100644
+--- a/dist/core/settings-manager.js
++++ b/dist/core/settings-manager.js
+@@ -654,7 +654,13 @@ export class SettingsManager {
+         this.save();
+     }
+     getQuietStartup() {
+-        return this.settings.quietStartup ?? false;
++        // PATCH(pizzapi): default quiet ON. Upstream defaults to false, which
++        // prints the version banner, keybinding hints, the scoped-model list
++        // and a full listing of every skill/prompt/extension on every launch —
++        // dozens of lines before the composer is reachable. Real warnings (skill
++        // conflicts, path errors) still show when quiet, and an explicit
++        // `quietStartup: false` in settings.json still opts back in to verbose.
++        return this.settings.quietStartup ?? true;
+     }
+     setQuietStartup(quiet) {
+         this.globalSettings.quietStartup = quiet;
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index e2b640b..3d379dc 100644
+index e2b640b661a7712fa3f86ed5ecb494b98a6f9e4d..3d379dca186dad0c9b393c60cd91c53eb9cd9603 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -13,6 +13,7 @@ export { type ModelScopeDiagnostic, type ResolveCliModelResult, type ResolveMode
@@ -182,7 +204,7 @@ index e2b640b..3d379dc 100644
  export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
  export { AgentSessionRuntime, type AgentSessionRuntimeDiagnostic, type AgentSessionServices, type CreateAgentSessionFromServicesOptions, type CreateAgentSessionOptions, type CreateAgentSessionResult, type CreateAgentSessionRuntimeFactory, type CreateAgentSessionRuntimeResult, type CreateAgentSessionServicesOptions, createAgentSession, createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices, createBashTool, createCodingTools, createEditTool, createFindTool, createGrepTool, createLsTool, createPowerShellTool, createReadOnlyTools, createReadTool, createWriteTool, type PromptTemplate, } from "./core/sdk.ts";
 diff --git a/dist/index.js b/dist/index.js
-index 01017cd..cc39132 100644
+index 01017cdbf6a26b3d36e236c7f9e835fbf0fa5c3a..cc39132ccb28ee32498e502b21bc0b4d563a7600 100644
 --- a/dist/index.js
 +++ b/dist/index.js
 @@ -13,6 +13,7 @@ export { ModelRegistry } from "./core/model-registry.js";
@@ -194,7 +216,7 @@ index 01017cd..cc39132 100644
  // SDK for programmatic usage
  export { AgentSessionRuntime, 
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index a1e7d98..057c196 100644
+index a1e7d98551b085a62359f1b5dc2953d0878b073b..80fb3e30c5bfa77330db9095abe83f5ec873d5a2 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -38,7 +38,6 @@ import { getPiUserAgent } from "../../utils/pi-user-agent.js";
@@ -218,7 +240,7 @@ index a1e7d98..057c196 100644
          // Start package update check asynchronously
          this.checkForPackageUpdates()
              .then((updates) => {
-@@ -3527,29 +3520,6 @@ export class InteractiveMode {
+@@ -3527,31 +3520,13 @@ export class InteractiveMode {
          this.chatContainer.addChild(new Text(theme.fg("warning", `Warning: ${warningMessage}`), 1, 0));
          this.ui.requestRender();
      }
@@ -246,5 +268,30 @@ index a1e7d98..057c196 100644
 -        this.ui.requestRender();
 -    }
      showPackageUpdateNotification(packages) {
-         const action = theme.fg("accent", `${APP_NAME} update --extensions`);
+-        const action = theme.fg("accent", `${APP_NAME} update --extensions`);
++        // PATCH(pizzapi): APP_NAME resolves from pi-coding-agent's own
++        // package.json (piConfig.name), which PizzaPi cannot set, so this
++        // rendered "pi update --extensions" while the shipped binary is
++        // `pizza`. Hardcode the string rather than changing APP_NAME, which
++        // also derives ENV_AGENT_DIR/ENV_SESSION_DIR and APP_TITLE.
++        const action = theme.fg("accent", `pizza update --extensions`);
          const updateInstruction = theme.fg("muted", "Package updates are available. Run ") + action;
+         const packageLines = packages.map((pkg) => `- ${pkg}`).join("\n");
+         this.chatContainer.addChild(new Spacer(1));
+@@ -3596,6 +3571,16 @@ export class InteractiveMode {
+     }
+     updatePendingMessagesDisplay() {
+         this.pendingMessagesContainer.clear();
++        // PATCH(pizzapi): clear() also unmounts the live bash cards that
++        // handleBashCommand() adds to this same container while the agent is
++        // streaming. Without re-attaching them, any queue_update during a
++        // running bash command strands this.bashComponent off-screen and its
++        // streamed appendOutput() goes nowhere. pendingBashComponents is the
++        // authoritative list of cards that belong to this container (idle-path
++        // cards go straight to chatContainer and are unaffected).
++        for (const pendingBashComponent of this.pendingBashComponents) {
++            this.pendingMessagesContainer.addChild(pendingBashComponent);
++        }
+         const { steering: steeringMessages, followUp: followUpMessages } = this.getAllQueuedMessages();
+         if (steeringMessages.length > 0 || followUpMessages.length > 0) {
+             this.pendingMessagesContainer.addChild(new Spacer(1));
