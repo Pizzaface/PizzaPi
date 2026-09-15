@@ -150,6 +150,51 @@ describe("pi-coding-agent patch application", () => {
         expect(source).not.toContain("showNewVersionNotification");
     });
 
+    test("interactive-mode.js: package-update notice names the pizza binary, not pi", async () => {
+        const source = await Bun.file(
+            piCodingAgentPath("dist/modes/interactive/interactive-mode.js"),
+        ).text();
+
+        // APP_NAME resolves from pi-coding-agent's OWN package.json, which
+        // PizzaPi cannot set, so it rendered "pi update --extensions" while the
+        // shipped binary is `pizza`.
+        expect(source).toContain("`pizza update --extensions`");
+        expect(source).not.toContain("`${APP_NAME} update --extensions`");
+    });
+
+    test("interactive-mode.js: updatePendingMessagesDisplay re-attaches live bash cards", async () => {
+        const source = await Bun.file(
+            piCodingAgentPath("dist/modes/interactive/interactive-mode.js"),
+        ).text();
+
+        // clear() unmounts the live bash cards handleBashCommand() puts in this
+        // container, so a queue_update mid-bash stranded the component and its
+        // streamed output vanished. The re-attach loop must sit after clear().
+        const start = source.indexOf("updatePendingMessagesDisplay() {");
+        expect(start).not.toBe(-1);
+        const body = source.slice(start, start + 1200);
+        const clearAt = body.indexOf("this.pendingMessagesContainer.clear()");
+        const reattachAt = body.indexOf("of this.pendingBashComponents");
+        expect(clearAt).not.toBe(-1);
+        expect(reattachAt).toBeGreaterThan(clearAt);
+    });
+
+    test("settings-manager.js: quiet startup defaults ON, but stays overridable", async () => {
+        const source = await Bun.file(
+            piCodingAgentPath("dist/core/settings-manager.js"),
+        ).text();
+
+        // Upstream defaults to false, which dumps the banner, keybinding hints
+        // and a full skill/prompt/extension listing on every launch.
+        expect(source).toContain("quietStartup ?? true");
+        expect(source).not.toContain("quietStartup ?? false");
+
+        // `?? true` (not a hardcoded true) is what keeps an explicit
+        // `quietStartup: false` in settings.json working as an opt back in.
+        const getter = source.slice(source.indexOf("getQuietStartup()"));
+        expect(getter.slice(0, 600)).toContain("this.settings.quietStartup ??");
+    });
+
     test("config.js: CONFIG_DIR_NAME is overridden to .pizzapi", async () => {
         const source = await Bun.file(
             piCodingAgentPath("dist/config.js"),

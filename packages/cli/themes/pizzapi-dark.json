@@ -32,6 +32,9 @@
 		"thinkingText": "muted",
 
 		"selectedBg": "selectedBg",
+		"scrollbarThumb": "border",
+		"searchMatchBg": "selectedBg",
+		"searchMatchText": "borderAccent",
 		"userMessageBg": "userMsgBg",
 		"userMessageText": "",
 		"customMessageBg": "customMsgBg",
@@ -74,6 +77,7 @@
 		"thinkingMedium": "muted",
 		"thinkingHigh": "border",
 		"thinkingXhigh": "accent",
+		"thinkingMax": "borderAccent",
 
 		"bashMode": "success"
 	},
