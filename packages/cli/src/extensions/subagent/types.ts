@@ -3,6 +3,7 @@
  */
 
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import type { AgentScope } from "../subagent-agents.js";
 
@@ -45,6 +46,8 @@ export interface SingleResult {
     stopReason?: string;
     errorMessage?: string;
     step?: number;
+    /** Requested reasoning effort for this run. */
+    effort?: ThinkingLevel;
     /** True when this result is a lightweight streaming summary, not the full transcript. */
     summaryOnly?: boolean;
     /** Latest assistant text preview for summary-only updates. */

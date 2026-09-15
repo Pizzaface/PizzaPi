@@ -23,9 +23,11 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type AgentScope, discoverAgents } from "../subagent-agents.js";
 import { getPluginAgentPaths } from "../claude-plugins.js";
 import { loadGlobalConfig, resolveAgentDir, resolveExplicitProjectTrust } from "../../config.js";
+import { isThinkingLevel } from "../../effort.js";
 import { collectOverlayAgentDirs } from "../../overlay/session-packages.js";
 import {
     DEFAULT_MAX_PARALLEL_TASKS,
@@ -64,6 +66,7 @@ const TaskItemSchema = {
         task: { type: "string", description: "Task to delegate to the agent" },
         cwd: { type: "string", description: "Working directory for the agent process" },
         model: ModelSchema,
+        effort: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], description: "Reasoning effort for this task" },
     },
     required: ["agent", "task"],
 } as const;
@@ -75,6 +78,7 @@ const ChainItemSchema = {
         task: { type: "string", description: "Task with optional {previous} placeholder for prior output" },
         cwd: { type: "string", description: "Working directory for the agent process" },
         model: ModelSchema,
+        effort: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], description: "Reasoning effort for this task" },
     },
     required: ["agent", "task"],
 } as const;
@@ -107,6 +111,7 @@ const SubagentParams = {
         },
         cwd: { type: "string", description: "Working directory for the agent process (single mode)" },
         model: ModelSchema,
+        effort: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], description: "Reasoning effort for all subagent tasks unless overridden per task" },
     },
 } as const;
 
@@ -145,7 +150,7 @@ export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) =
             "Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
             'Default agent scope is "user" (from ~/.pizzapi/agents and ~/.claude/agents).',
             'To enable project-local agents in .pizzapi/agents or .claude/agents, set agentScope: "both" (or "project").',
-            "Set `model: { provider, id }` to override the model for the subagent session (recommended: use haiku for most tasks).",
+            "Set `model: { provider, id }` to override the model for the subagent session (recommended: use haiku for most tasks). Set `effort` to control provider reasoning effort; per-task effort overrides the top-level value.",
             "Compatible with Claude Code agent definition files.",
         ].join(" "),
         parameters: SubagentParams as any,
@@ -160,12 +165,13 @@ export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) =
             const params = (rawParams ?? {}) as {
                 agent?: string;
                 task?: string;
-                tasks?: Array<{ agent: string; task: string; cwd?: string; model?: { provider: string; id: string } }>;
-                chain?: Array<{ agent: string; task: string; cwd?: string; model?: { provider: string; id: string } }>;
+                tasks?: Array<{ agent: string; task: string; cwd?: string; model?: { provider: string; id: string }; effort?: ThinkingLevel }>;
+                chain?: Array<{ agent: string; task: string; cwd?: string; model?: { provider: string; id: string }; effort?: ThinkingLevel }>;
                 agentScope?: AgentScope;
                 confirmProjectAgents?: boolean;
                 cwd?: string;
                 model?: { provider: string; id: string };
+                effort?: ThinkingLevel;
             };
             const agentScope: AgentScope = params.agentScope ?? "user";
             const pluginAgentDirs = getPluginAgentPaths(ctx.cwd);
@@ -252,6 +258,18 @@ export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) =
             }
 
             const mode = hasChain ? "chain" : hasTasks ? "parallel" : "single";
+            const invalidEffort = [
+                params.effort,
+                ...(params.tasks ?? []).map((task) => task.effort),
+                ...(params.chain ?? []).map((step) => step.effort),
+            ].find((value) => value !== undefined && !isThinkingLevel(value));
+            if (invalidEffort !== undefined) {
+                return {
+                    content: [{ type: "text", text: "Invalid effort. Expected off, minimal, low, medium, high, xhigh, or max." }],
+                    details: makeDetails(mode)([]),
+                    isError: true,
+                };
+            }
             if (params.tasks && params.tasks.length > maxParallelTasks) {
                 return {
                     content: [{ type: "text", text: `Too many parallel tasks (${params.tasks.length}). Max is ${maxParallelTasks}.` }],
@@ -297,6 +315,7 @@ export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) =
                             ctx.cwd, agents, step.agent, taskWithContext,
                             step.cwd, i + 1, controller.signal, undefined, makeDetails("chain"),
                             step.model ?? params.model, ctx.modelRegistry,
+                            true, step.effort ?? params.effort,
                         );
                         results.push(result);
 
@@ -324,6 +343,7 @@ export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) =
                         undefined,
                         makeDetails("parallel"),
                         t.model ?? params.model, ctx.modelRegistry,
+                        true, t.effort ?? params.effort,
                     );
                     return result;
                 });
@@ -370,6 +390,7 @@ export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) =
                     ctx.cwd, agents, params.agent, params.task,
                     params.cwd, undefined, controller.signal, undefined, makeDetails("single"),
                     params.model, ctx.modelRegistry,
+                    true, params.effort,
                 );
                 if (isFailed(result)) {
                     const errorMsg = result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";

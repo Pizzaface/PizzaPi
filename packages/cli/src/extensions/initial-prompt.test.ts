@@ -16,6 +16,7 @@ describe("initialPromptExtension", () => {
         "PIZZAPI_WORKER_INITIAL_IMAGE_URLS",
         "PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER",
         "PIZZAPI_WORKER_INITIAL_MODEL_ID",
+        "PIZZAPI_WORKER_INITIAL_EFFORT",
         "PIZZAPI_WORKER_AGENT_NAME",
         "PIZZAPI_WORKER_AGENT_TOOLS",
         "PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS",
@@ -31,7 +32,7 @@ describe("initialPromptExtension", () => {
         mock.restore();
     });
 
-    test("registers and applies the initial model even when no prompt or agent is set", async () => {
+    test("registers and applies the initial model and effort even when no prompt or agent is set", async () => {
         mock.module("./remote.js", () => ({
             ...actualRemote,
             waitForRelayRegistration: mock(async (_timeoutMs?: number) => {}),
@@ -41,17 +42,20 @@ describe("initialPromptExtension", () => {
 
         process.env.PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER = "anthropic";
         process.env.PIZZAPI_WORKER_INITIAL_MODEL_ID = "claude-sonnet-4-20250514";
+        process.env.PIZZAPI_WORKER_INITIAL_EFFORT = "high";
 
         let sessionStartHandler:
             | ((event: unknown, ctx: { modelRegistry: { find: (provider: string, id: string) => unknown } }) => Promise<void>)
             | undefined;
 
         const setModel = mock(async (_model: unknown) => true);
+        const setThinkingLevel = mock((_level: string) => {});
         const pi = {
             on: mock((event: string, handler: typeof sessionStartHandler) => {
                 if (event === "session_start") sessionStartHandler = handler;
             }),
             setModel,
+            setThinkingLevel,
             setSessionName: mock((_name: string) => {}),
         };
 
@@ -71,6 +75,7 @@ describe("initialPromptExtension", () => {
 
         expect(find).toHaveBeenCalledWith("anthropic", "claude-sonnet-4-20250514");
         expect(setModel).toHaveBeenCalledWith(model);
+        expect(setThinkingLevel).toHaveBeenCalledWith("high");
     });
 
     test("delays sendUserMessage until worker startup gate releases", async () => {
