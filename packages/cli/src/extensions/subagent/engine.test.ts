@@ -100,6 +100,28 @@ describe("runSingleAgent model runtime reuse", () => {
         }
     });
 
+    test("passes the requested effort as the session thinking level", async () => {
+        const result = await runSingleAgent(
+            process.cwd(),
+            [noopAgent],
+            "noop",
+            "task",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            (r) => ({ mode: "single", results: r }) as any,
+            undefined,
+            undefined,
+            true,
+            "high",
+        );
+
+        expect(result.exitCode).toBe(0);
+        const options = createAgentSessionCalls[createAgentSessionCalls.length - 1] as any;
+        expect(options.thinkingLevel).toBe("high");
+    });
+
     test("passes the parent's live ModelRuntime so OAuth/subscription providers work", async () => {
         const registry: any = {
             find: () => undefined,

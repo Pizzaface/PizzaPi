@@ -8,6 +8,7 @@
 import type { AgentConfig } from "../subagent-agents.js";
 import type { Model, AssistantMessage, Message } from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import {
     createAgentSession,
     DefaultResourceLoader,
@@ -226,6 +227,7 @@ export async function runSingleAgent(
     /** Mirror the run as a relay child session. Off for bulk fan-out callers
      *  (workflows render their own progress card and can run 1000 agents). */
     mirrorToRelay = true,
+    effort?: ThinkingLevel,
 ): Promise<SingleResult> {
     const agent = agents.find((a) => a.name === agentName);
 
@@ -273,6 +275,7 @@ export async function runSingleAgent(
         stderr: "",
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
         model: undefined, // Will be set from actual assistant message model
+        effort,
         step,
     };
 
@@ -363,6 +366,7 @@ export async function runSingleAgent(
             tools,
             resourceLoader: loader,
             ...(resolvedModel && { model: resolvedModel }),
+            ...(effort && { thinkingLevel: effort }),
             // Reuse the parent's live ModelRuntime so OAuth/subscription
             // providers (which keep tokens in memory, not in auth.json) work.
             // createAgentSession reads credentials from modelRuntime; the

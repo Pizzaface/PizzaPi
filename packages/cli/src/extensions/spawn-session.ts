@@ -4,6 +4,8 @@ import { join } from "node:path";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { loadConfig } from "../config.js";
+import { EFFORT_LEVELS, isThinkingLevel } from "../effort.js";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { normalizeLoopbackHost } from "../relay-url.js";
 import { getCachedOllamaCloudModels, toOllamaCloudRuntimeModel } from "../ollama-cloud-models.js";
 import { mergeModelLists } from "../session-models-cache.js";
@@ -95,6 +97,11 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                     },
                     required: ["provider", "id"],
                 },
+                effort: {
+                    type: "string",
+                    enum: EFFORT_LEVELS,
+                    description: "Optional reasoning effort for the child session. Unsupported levels are clamped by the selected model.",
+                },
                 cwd: {
                     type: "string",
                     description:
@@ -120,6 +127,7 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
             const params = (rawParams ?? {}) as {
                 prompt: string;
                 model?: { provider: string; id: string };
+                effort?: ThinkingLevel;
                 cwd?: string;
                 runnerId?: string;
                 autoClose?: boolean;
@@ -133,6 +141,10 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
             const prompt = params.prompt?.trim();
             if (!prompt) {
                 return ok("Error: prompt is required and cannot be empty.", { error: "Missing prompt" });
+            }
+
+            if (params.effort !== undefined && !isThinkingLevel(params.effort)) {
+                return ok("Error: effort must be one of off, minimal, low, medium, high, xhigh, or max.", { error: "Invalid effort" });
             }
 
             const relayBase = getRelayHttpBaseUrl();
@@ -152,7 +164,6 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
             }
 
             const cwd = params.cwd ?? process.cwd();
-
             // Build the spawn request
             const body: Record<string, unknown> = {
                 runnerId,
@@ -177,6 +188,8 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
             // runner. Auto-close itself is guarded: it won't fire if new messages,
             // subscriptions, or linked children arrive during the idle re-check.
             body.autoClose = params.autoClose !== false;
+
+            if (params.effort) body.effort = params.effort;
 
             if (params.model) {
                 // Note: hidden-model enforcement is done server-side (runners.ts).
@@ -217,6 +230,7 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                     `  Runner: ${runnerId}`,
                     `  Working directory: ${cwd}`,
                     params.model ? `  Model: ${params.model.provider}/${params.model.id}` : null,
+                    params.effort ? `  Effort: ${params.effort}` : null,
                     pending ? `  Status: Pending (worker is starting up)` : `  Status: Ready`,
                     `  Web UI: ${shareUrl}`,
                 ].filter(Boolean).join("\n");
@@ -226,6 +240,7 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                     runnerId,
                     cwd,
                     model: params.model ?? null,
+                    effort: params.effort ?? null,
                     pending,
                     shareUrl,
                 });
@@ -237,12 +252,13 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
 
         renderCall: (args: any, theme: any) => {
             const model = args.model ? ` [${args.model.provider}/${args.model.id}]` : "";
+            const effort = args.effort ? ` [${args.effort}]` : "";
             const rawCwd = args.cwd ?? "";
             const cwdDisplay = rawCwd ? ` in ${rawCwd.split("/").slice(-2).join("/")}` : "";
             return new Text(
                 theme.fg("accent", "⟳") + " " +
                 theme.fg("muted", "spawning session") +
-                theme.fg("dim", model + cwdDisplay),
+                theme.fg("dim", model + effort + cwdDisplay),
                 0, 0
             );
         },

@@ -119,6 +119,7 @@ const RUNNER_MCP_RELOAD_RE = /^\/api\/runners\/([^/]+)\/mcp\/reload$/;
 // ponytail: in-memory idempotency memo (single relay process) — move to Redis
 // if runners/spawn is ever served from a cluster, TTLs make stale entries self-clean.
 const SPAWN_IDEMPOTENCY_TTL_MS = 10 * 60_000;
+const EFFORT_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const recentSpawnIdempotency = new Map<string, { sessionId: string; ts: number }>();
 
 export const handleRunnersRoute: RouteHandler = async (req, url) => {
@@ -174,6 +175,15 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                     requestedModel = { provider: normalizedProvider, id: normalizedId };
                 }
             }
+        }
+
+        let requestedEffort: string | undefined;
+        if (body.effort !== undefined) {
+            const effort = typeof body.effort === "string" ? body.effort.trim() : "";
+            if (!EFFORT_LEVELS.has(effort)) {
+                return Response.json({ error: "Invalid effort. Expected off, minimal, low, medium, high, xhigh, or max." }, { status: 400 });
+            }
+            requestedEffort = effort;
         }
 
         // Optional agent config — spawn the session "as" this agent.
@@ -264,6 +274,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 ...(requestedPrompt ? { prompt: requestedPrompt } : {}),
                 ...(requestedImageUrls && requestedImageUrls.length > 0 ? { imageUrls: requestedImageUrls } : {}),
                 ...(requestedModel ? { model: requestedModel } : {}),
+                ...(requestedEffort ? { effort: requestedEffort } : {}),
                 ...(hiddenModels.length > 0 ? { hiddenModels } : {}),
                 ...(requestedAgent ? { agent: requestedAgent } : {}),
                 ...(validatedParentSessionId ? { parentSessionId: validatedParentSessionId } : {}),

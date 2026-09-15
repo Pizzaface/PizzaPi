@@ -57,6 +57,20 @@ The agent can invoke the subagent tool like this:
 
 The subagent starts in its own context and the tool returns immediately. When the work finishes, the summary arrives automatically as a follow-up that resumes the parent session. Only the summary enters the parent's context window.
 
+### Reasoning effort
+
+Set `effort` to control provider reasoning effort for a subagent. Valid values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; the selected model clamps levels it does not support. A top-level value applies to every task, while `tasks` and `chain` items can override it individually:
+
+```json
+{
+  "effort": "low",
+  "tasks": [
+    { "agent": "researcher", "task": "Scan the API", "effort": "high" },
+    { "agent": "reviewer", "task": "Review the scan" }
+  ]
+}
+```
+
 ## Agent definitions
 
 <Aside>

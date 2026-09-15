@@ -148,4 +148,14 @@ describe("spawn_session tool — autoClose", () => {
         await tool.execute("call-1", { prompt: "stay up", runnerId: "r1", autoClose: false });
         expect(bodies[0].autoClose).toBe(false);
     });
+
+    test("shows supported effort levels and rejects invalid effort", async () => {
+        const { tool, bodies } = setup();
+        expect(tool.parameters.properties.effort.enum).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+        const result = await tool.execute("call-1", { prompt: "do things", effort: "turbo" });
+        expect(result.details.error).toBe("Invalid effort");
+        expect(result.content[0].text).toContain("off, minimal, low, medium, high, xhigh, or max");
+        expect(bodies).toHaveLength(0);
+    });
 });

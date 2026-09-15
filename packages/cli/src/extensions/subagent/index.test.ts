@@ -138,3 +138,67 @@ describe("subagentExtension — overlay agent wiring", () => {
         expect(text).toContain("overlay-user-special");
     });
 });
+
+describe("subagentExtension — effort wiring", () => {
+    test("passes the top-level effort to the subagent engine", async () => {
+        const calls: unknown[][] = [];
+        const tools: any[] = [];
+        const pi = {
+            registerTool: (tool: any) => tools.push(tool),
+            on: () => {},
+            sendMessage: () => {},
+        };
+        const result = {
+            agent: "task",
+            agentSource: "user" as const,
+            task: "inspect the project",
+            exitCode: 0,
+            messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }],
+            stderr: "",
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+        };
+        subagentExtension(pi as any, (async (...args: unknown[]) => {
+            calls.push(args);
+            return result as any;
+        }) as any);
+
+        const tool = tools[0];
+        await tool.execute(
+            "call-effort",
+            { agent: "task", task: "inspect the project", effort: "high" },
+            new AbortController().signal,
+            undefined,
+            { cwd: process.cwd(), hasUI: false, modelRegistry: undefined },
+        );
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0]![12]).toBe("high");
+    });
+
+    test("shows supported effort levels and rejects invalid effort", async () => {
+        const tools: any[] = [];
+        const pi = {
+            registerTool: (tool: any) => tools.push(tool),
+            on: () => {},
+            sendMessage: () => {},
+        };
+        subagentExtension(pi as any);
+
+        const tool = tools[0];
+        const expected = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+        expect(tool.parameters.properties.effort.enum).toEqual(expected);
+        expect(tool.parameters.properties.tasks.items.properties.effort.enum).toEqual(expected);
+        expect(tool.parameters.properties.chain.items.properties.effort.enum).toEqual(expected);
+
+        const result = await tool.execute(
+            "call-invalid-effort",
+            { agent: "task", task: "inspect the project", effort: "turbo" },
+            new AbortController().signal,
+            undefined,
+            { cwd: process.cwd(), hasUI: false, modelRegistry: undefined },
+        );
+        expect(result.isError).toBe(true);
+        expect(result.content[0].text).toContain("off, minimal, low, medium, high, xhigh, or max");
+    });
+});

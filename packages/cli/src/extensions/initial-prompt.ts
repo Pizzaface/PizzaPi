@@ -6,6 +6,7 @@ import { getRemoteSessionHost } from "./remote/session-host-ref.js";
 import { fetchImagePart } from "./remote/connection.js";
 import { waitForWorkerStartupComplete } from "./worker-startup-gate.js";
 import { findCachedOllamaCloudModel } from "../ollama-cloud-models.js";
+import { isThinkingLevel } from "../effort.js";
 
 const log = createLogger("worker");
 
@@ -18,6 +19,7 @@ const log = createLogger("worker");
  *   PIZZAPI_WORKER_INITIAL_IMAGE_URLS       — JSON array of image URLs to attach to the initial message
  *   PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER   — model provider override
  *   PIZZAPI_WORKER_INITIAL_MODEL_ID         — model ID override
+ *   PIZZAPI_WORKER_INITIAL_EFFORT            — reasoning effort override
  *   PIZZAPI_WORKER_AGENT_NAME               — agent name (sets session name)
  *   PIZZAPI_WORKER_AGENT_TOOLS              — comma-separated allowlist of tools
  *   PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS   — comma-separated denylist of tools
@@ -44,6 +46,8 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
     })();
     const initialModelProvider = process.env.PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER?.trim();
     const initialModelId = process.env.PIZZAPI_WORKER_INITIAL_MODEL_ID?.trim();
+    const rawInitialEffort = process.env.PIZZAPI_WORKER_INITIAL_EFFORT?.trim();
+    const initialEffort = isThinkingLevel(rawInitialEffort) ? rawInitialEffort : undefined;
     const agentName = process.env.PIZZAPI_WORKER_AGENT_NAME?.trim();
     const agentTools = process.env.PIZZAPI_WORKER_AGENT_TOOLS?.trim();
     const agentDisallowedTools = process.env.PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS?.trim();
@@ -51,7 +55,7 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
     const hasInitialContent = Boolean(initialPrompt) || initialImageUrls.length > 0;
 
     // Nothing to do if no initial prompt/images, initial model, agent, or resume path was set.
-    if (!hasInitialContent && !agentName && !resumePath && !(initialModelProvider && initialModelId)) return;
+    if (!hasInitialContent && !agentName && !resumePath && !(initialModelProvider && initialModelId) && !initialEffort) return;
 
     // Clear prompt/model/resume env vars immediately so restarts don't re-trigger.
     // Agent name is NOT cleared — it should persist across restarts.
@@ -59,6 +63,7 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
     delete process.env.PIZZAPI_WORKER_INITIAL_IMAGE_URLS;
     delete process.env.PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER;
     delete process.env.PIZZAPI_WORKER_INITIAL_MODEL_ID;
+    delete process.env.PIZZAPI_WORKER_INITIAL_EFFORT;
     delete process.env.PIZZAPI_WORKER_RESUME_PATH;
 
     let fired = false;
@@ -94,6 +99,17 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
                 log.warn(
                     `pizzapi worker: requested model ${initialModelProvider}/${initialModelId} not found in registry`,
                 );
+            }
+        }
+
+        // Set the requested reasoning effort after model selection so pi can
+        // clamp it to the selected model's supported levels.
+        if (initialEffort) {
+            try {
+                pi.setThinkingLevel(initialEffort);
+                log.info(`pizzapi worker: initial effort set to ${initialEffort}`);
+            } catch (err) {
+                log.warn(`pizzapi worker: failed to set initial effort: ${err instanceof Error ? err.message : String(err)}`);
             }
         }
 
