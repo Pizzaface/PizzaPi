@@ -27,6 +27,9 @@ const DEFAULT_TOKEN_THRESHOLD = 10_000; // chars (≈ 2500 tokens)
 const DEFAULT_MAX_RESULTS = 5;
 const DEFAULT_KEEP_LOADED = true;
 
+/** Key for the footer status item (see renderStatus). */
+const STATUS_KEY = "tool-search";
+
 // ── Types ───────────────────────────────────────────────────────────────────
 
 interface ToolInfo {
@@ -181,6 +184,32 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
     state.deferredTools.clear();
     state.loadedTools.clear();
     state.active = false;
+    renderStatus();
+  }
+
+  // ── Status UI ───────────────────────────────────────────────────────────────
+  // Tool search recomputes on every registry update and turn, so it must not
+  // report through log/notify: in the TUI stdout lands in the session
+  // transcript, which stacked several `[tool-search] ...` lines per turn. A
+  // status item is the right affordance — one always-current line in the
+  // footer, zero transcript noise. `/tool-search` still shows the detail.
+
+  /** Latest handler context, captured so recomputes triggered by non-handler
+   *  events (mcp:registry_updated) can still reach the UI. */
+  let latestCtx: any;
+
+  function renderStatus(): void {
+    const setStatus = latestCtx?.ui?.setStatus;
+    if (typeof setStatus !== "function") return;
+    if (!state.active) {
+      setStatus.call(latestCtx.ui, STATUS_KEY, undefined);
+      return;
+    }
+    const deferred = state.deferredTools.size;
+    const loaded = state.loadedTools.size;
+    const parts = [`${deferred} tool${deferred === 1 ? "" : "s"} deferred`];
+    if (loaded > 0) parts.push(`${loaded} loaded`);
+    setStatus.call(latestCtx.ui, STATUS_KEY, `⚙ ${parts.join(" · ")}`);
   }
 
   setToolSearchBridge({
@@ -212,7 +241,7 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
     } | null;
 
     if (!snapshot?.serverTools) {
-      log.info("No MCP tools found, tool search not needed");
+      log.debug("No MCP tools found, tool search not needed");
       clearState();
       return;
     }
@@ -266,7 +295,9 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
     }
 
     if (toolsToDefer.length === 0) {
-      log.info(`Tool search: no tools to defer (${totalMcpChars} chars, threshold ${threshold})`);
+      // debug, not info: this recomputes on every registry update / turn, and
+      // in the TUI stdout lands in the session transcript.
+      log.debug(`Tool search: no tools to defer (${totalMcpChars} chars, threshold ${threshold})`);
       clearState({ restoreActiveTools: mcpTools.length > 0 });
       return;
     }
@@ -312,10 +343,13 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
     pi.setActiveTools([...currentActive]);
 
     state.active = true;
-    log.info(
+    // debug, not info: see above — fires on every recompute, so at info level it
+    // stacked several lines into the user's chat on each turn.
+    log.debug(
       `Tool search active: deferred ${state.deferredTools.size} tools ` +
       `(${totalMcpChars} chars, threshold ${threshold})`
     );
+    renderStatus();
   }
 
   /**
@@ -501,15 +535,21 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
   // loaded in order (MCP is registered before tool-search in factories.ts).
   // Since session_start handlers fire in registration order, MCP tools should
   // already be available when our handler runs.
-  pi.on?.("session_start", async (_event: any, _ctx: any) => {
+  pi.on?.("session_start", async (_event: any, ctx: any) => {
+    latestCtx = ctx ?? latestCtx;
     // Small delay to ensure MCP tools are fully registered
     await new Promise((resolve) => setTimeout(resolve, 100));
     evaluateAndDefer();
+    renderStatus();
   });
 
   // If keepLoadedTools is false, deactivate on-demand tools after each turn
-  pi.on?.("turn_end", async (_event: any, _ctx: any) => {
-    if (!state.active) return;
+  pi.on?.("turn_end", async (_event: any, ctx: any) => {
+    latestCtx = ctx ?? latestCtx;
+    if (!state.active) {
+      renderStatus();
+      return;
+    }
 
     const config = loadConfig(process.cwd());
     const keepLoaded = config.toolSearch?.keepLoadedTools ?? DEFAULT_KEEP_LOADED;
@@ -524,10 +564,12 @@ export const toolSearchExtension: ExtensionFactory = (pi: any) => {
     }
     pi.setActiveTools([...currentActive]);
     state.loadedTools.clear();
+    renderStatus();
   });
 
   pi.on?.("session_shutdown", async () => {
     clearState();
     setToolSearchBridge(null);
+    latestCtx = undefined;
   });
 };

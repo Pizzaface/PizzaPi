@@ -165,6 +165,62 @@ describe("toolSearchExtension lifecycle sync", () => {
     expect(activeTools.has("mcp_github_create_issue")).toBe(false);
   });
 
+  test("reports state through a footer status item, not the transcript", async () => {
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({
+        toolSearch: { enabled: true, tokenThreshold: 999999, maxResults: 5, keepLoadedTools: true },
+        mcpServers: { github: { deferLoading: true } },
+      }),
+      "utf-8",
+    );
+
+    snapshot = { serverTools: { github: ["mcp_github_create_issue"] } };
+    const { toolSearchExtension } = await loadExtension();
+    const { pi } = createHarness();
+
+    toolSearchExtension(pi as any);
+
+    const statuses: Array<string | undefined> = [];
+    const notifications: string[] = [];
+    const ctx = {
+      ui: {
+        setStatus: (key: string, text: string | undefined) => {
+            expect(key).toBe("tool-search");
+            statuses.push(text);
+        },
+        notify: (msg: string) => notifications.push(msg),
+      },
+    };
+
+    const sessionStart = pi.on.mock.calls.find(([event]) => event === "session_start")?.[1] as EventHandler | undefined;
+    await sessionStart!(undefined, ctx);
+
+    // Deferral state is surfaced as a status line...
+    expect(statuses.at(-1)).toContain("1 tool deferred");
+    // ...and nothing is pushed into the session transcript.
+    expect(notifications).toEqual([]);
+  });
+
+  test("clears the status item when tool search goes inactive", async () => {
+    // No MCP servers => nothing to defer => the status line must be removed
+    // rather than left showing a stale count.
+    snapshot = { serverTools: {} };
+    const { toolSearchExtension } = await loadExtension();
+    const { pi } = createHarness();
+
+    toolSearchExtension(pi as any);
+
+    const statuses: Array<string | undefined> = [];
+    const ctx = { ui: { setStatus: (_k: string, text: string | undefined) => statuses.push(text) } };
+
+    const sessionStart = pi.on.mock.calls.find(([event]) => event === "session_start")?.[1] as EventHandler | undefined;
+    await sessionStart!(undefined, ctx);
+
+    expect(statuses.length).toBeGreaterThan(0);
+    expect(statuses.at(-1)).toBeUndefined();
+  });
+
   test("always-deferral also works for preferred mcp.servers config under the threshold", async () => {
     writeFileSync(
       join(projectDir, ".pizzapi", "config.json"),

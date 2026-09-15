@@ -18,15 +18,46 @@ describe("createLogger", () => {
         errorSpy.mockRestore();
     });
 
-    test("debug() writes to console.log with timestamp and tag", () => {
-        const log = createLogger("auth");
-        log.debug("existing-query ok email=x@y.z");
+    test("debug() is silent by default, so it can't pollute the TUI transcript", () => {
+        const prev = process.env.PIZZAPI_DEBUG;
+        delete process.env.PIZZAPI_DEBUG;
+        try {
+            createLogger("auth").debug("existing-query ok email=x@y.z");
+            expect(logSpy).not.toHaveBeenCalled();
+        } finally {
+            if (prev === undefined) delete process.env.PIZZAPI_DEBUG;
+            else process.env.PIZZAPI_DEBUG = prev;
+        }
+    });
 
-        expect(logSpy).toHaveBeenCalledTimes(1);
-        const [ts, tag, msg] = logSpy.mock.calls[0];
-        expect(tag).toBe("[auth]");
-        expect(msg).toBe("existing-query ok email=x@y.z");
-        expect(() => new Date(ts as string).toISOString()).not.toThrow();
+    test("debug() writes to console.log with timestamp and tag when PIZZAPI_DEBUG is set", () => {
+        const prev = process.env.PIZZAPI_DEBUG;
+        process.env.PIZZAPI_DEBUG = "1";
+        try {
+            const log = createLogger("auth");
+            log.debug("existing-query ok email=x@y.z");
+
+            expect(logSpy).toHaveBeenCalledTimes(1);
+            const [ts, tag, msg] = logSpy.mock.calls[0];
+            expect(tag).toBe("[auth]");
+            expect(msg).toBe("existing-query ok email=x@y.z");
+            expect(() => new Date(ts as string).toISOString()).not.toThrow();
+        } finally {
+            if (prev === undefined) delete process.env.PIZZAPI_DEBUG;
+            else process.env.PIZZAPI_DEBUG = prev;
+        }
+    });
+
+    test("debug() ignores non-truthy PIZZAPI_DEBUG values", () => {
+        const prev = process.env.PIZZAPI_DEBUG;
+        process.env.PIZZAPI_DEBUG = "0";
+        try {
+            createLogger("auth").debug("nope");
+            expect(logSpy).not.toHaveBeenCalled();
+        } finally {
+            if (prev === undefined) delete process.env.PIZZAPI_DEBUG;
+            else process.env.PIZZAPI_DEBUG = prev;
+        }
     });
 
     test("info() writes to console.log with timestamp and tag", () => {
