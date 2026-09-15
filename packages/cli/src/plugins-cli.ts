@@ -15,6 +15,7 @@
 import { resolve } from "node:path";
 import {
     discoverPlugins,
+    dirInstalledPluginNames,
     scanPluginsDir,
     projectPluginDirs,
     globalPluginDirs,
@@ -386,7 +387,15 @@ async function dispatchPluginsCommand(args: string[], cwd: string): Promise<void
             log.info(`Usage: pizza plugins ${subcommand} <name[@marketplace]>`);
             return;
         }
-        const key = resolvePluginKey(target);
+        // Directory-installed plugins (~/.pizzapi/plugins/<name>) are keyed by
+        // bare name — only marketplace installs carry an @marketplace suffix.
+        // Check those first: resolvePluginKey() consults marketplace catalogs
+        // only, so for a local plugin it either threw "not found in any
+        // marketplace" or resolved to a same-named marketplace entry, neither
+        // of which could disable the plugin actually installed on disk.
+        const dirInstalled = !target.includes("@")
+            && dirInstalledPluginNames(cwd, { includeProjectLocal: true }).includes(target);
+        const key = dirInstalled ? target : resolvePluginKey(target);
         setPluginEnabled(key, subcommand === "enable");
         log.info(`✓ ${subcommand === "enable" ? "Enabled" : "Disabled"} ${key}`);
         return;
