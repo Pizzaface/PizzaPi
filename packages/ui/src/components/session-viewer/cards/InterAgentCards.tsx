@@ -91,6 +91,7 @@ export function parseSpawnResult(text: string | null): {
   runnerId?: string;
   cwd?: string;
   model?: string;
+  effort?: string;
   status?: string;
   shareUrl?: string;
   error?: string;
@@ -104,6 +105,7 @@ export function parseSpawnResult(text: string | null): {
     else if (trimmed.startsWith("Runner:")) result.runnerId = trimmed.replace("Runner:", "").trim();
     else if (trimmed.startsWith("Working directory:")) result.cwd = trimmed.replace("Working directory:", "").trim();
     else if (trimmed.startsWith("Model:")) result.model = trimmed.replace("Model:", "").trim();
+    else if (trimmed.startsWith("Effort:")) result.effort = trimmed.replace("Effort:", "").trim();
     else if (trimmed.startsWith("Status:")) result.status = trimmed.replace("Status:", "").trim();
     else if (trimmed.startsWith("Web UI:")) result.shareUrl = trimmed.replace("Web UI:", "").trim();
     else if (trimmed.startsWith("Error")) result.error = trimmed;
@@ -114,12 +116,14 @@ export function parseSpawnResult(text: string | null): {
 export function SpawnSessionCard({
   prompt,
   model,
+  effort,
   cwd,
   resultText,
   isStreaming,
 }: {
   prompt: string;
   model?: { provider: string; id: string };
+  effort?: string;
   cwd?: string;
   resultText: string | null;
   isStreaming: boolean;
@@ -158,6 +162,12 @@ export function SpawnSessionCard({
           <span>
             <span className="text-zinc-600">Model:</span>{" "}
             <span className="text-zinc-400">{model.provider}/{model.id}</span>
+          </span>
+        )}
+        {(effort || parsed.effort) && (
+          <span>
+            <span className="text-zinc-600">Effort:</span>{" "}
+            <span className="text-zinc-400">{effort || parsed.effort}</span>
           </span>
         )}
         {(cwd || parsed.cwd) && (

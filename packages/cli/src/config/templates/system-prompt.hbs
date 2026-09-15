@@ -22,7 +22,7 @@ Use the `subagent` tool to delegate tasks to specialized agents with isolated co
 <important>Prefer `subagent` over `spawn_session` for delegating work. `subagent` is simpler and manages context isolation and result delivery automatically. Use `spawn_session` only when you need an independently visible session, cross-runner execution, or interactive child communication through triggers.</important>
 
 <recommendation name="subagent-model-selection">
-When calling `subagent`, the tool automatically selects the most cost-effective available model when no `model` is specified. You can override this by setting `model: { provider, id }` explicitly — either at the top level (applies to all tasks) or per-task in parallel/chain mode.
+When calling `subagent`, the tool automatically selects the most cost-effective available model when no `model` is specified. You can override this by setting `model: { provider, id }` explicitly — either at the top level (applies to all tasks) or per-task in parallel/chain mode. Set `effort` to control reasoning effort (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`); per-task effort overrides the top-level value.
 
 Use an explicit model when the task specifically requires a more capable model. Otherwise, let the auto-selection handle it.
 </recommendation>

@@ -47,6 +47,7 @@ Spawn a new independent agent session on the runner. The new session runs in par
 |-----------|------|----------|---------|-------------|
 | `prompt` | `string` | ✅ | — | Initial prompt for the new session. Must be self-contained — the child has no context from the parent. |
 | `model` | `{ provider, id }` | | Runner default | Model to use. Call `list_models` to discover available values. |
+| `effort` | `string` | | Model default | Reasoning effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Unsupported levels are clamped by the model. |
 | `cwd` | `string` | | Parent's cwd | Working directory for the new session. |
 | `runnerId` | `string` | | Current runner | Target runner ID. Usually not needed. |
 | `autoClose` | `boolean` | | `true` | Shut the child down when it completes its work (guarded — it stays up if new messages or subscriptions arrive). Set `false` to keep it alive for interactive follow-ups after completion. |
@@ -60,7 +61,8 @@ On success, returns the session ID, runner ID, working directory, status (`Pendi
 ```json
 {
   "prompt": "Refactor the auth module to use JWTs",
-  "model": { "provider": "anthropic", "id": "claude-sonnet-4-20250514" }
+  "model": { "provider": "anthropic", "id": "claude-sonnet-4-20250514" },
+  "effort": "high"
 }
 ```
 
@@ -257,7 +259,8 @@ Fire a trigger into **any** session — not just children. This enables peer-to-
 | **Context** | Isolated in-process session | Fully independent session + process |
 | **UI** | Inline card in parent session | Separate session in web UI |
 | **Overhead** | Near-zero (in-process SDK) | Higher (relay round-trip, new PTY) |
-| **Model selection** | Via agent definition `model` field | Via `model` parameter |
+| **Model selection** | Via agent definition `model` field or `model` parameter | Via `model` parameter |
+| **Reasoning effort** | Via `effort` parameter (also per task) | Via `effort` parameter |
 | **Best for** | Background tasks that only need a result | Interactive children and cross-runner work |
 | **Agent definitions** | File-based (`~/.pizzapi/agents/`) | Prompt-based (inline) |
 | **Modes** | Single, parallel, chain | One session per call |
@@ -276,7 +279,7 @@ A parent spawns multiple linked children to work in parallel, then synthesizes t
 
 ```
 // 1. Spawn workers
-spawn_session({ prompt: "Review packages/server/ for security issues" })
+spawn_session({ prompt: "Review packages/server/ for security issues", effort: "high" })
 // → sessionId: "worker-1"
 
 spawn_session({ prompt: "Review packages/ui/ for accessibility issues" })

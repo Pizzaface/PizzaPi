@@ -567,6 +567,42 @@ describe("runner trigger listener routes", () => {
     });
 });
 
+describe("runner spawn effort", () => {
+    beforeEach(() => {
+        mockRequireSession.mockReset();
+        mockRequireSession.mockReturnValue(Promise.resolve({ userId: "user-1", userName: "TestUser" } as any));
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+        mockGetLocalRunnerSocket.mockReset();
+    });
+
+    test("forwards a valid effort to the runner worker", async () => {
+        const emit = mock(() => {});
+        mockGetLocalRunnerSocket.mockReturnValue({ emit } as any);
+
+        const [req, url] = makeReq("POST", "/api/runners/spawn", {
+            runnerId: "runner-A",
+            prompt: "do the thing",
+            effort: "high",
+        });
+        const res = await handleRunnersRoute(req, url);
+
+        expect(res!.status).toBe(200);
+        expect(emit).toHaveBeenCalledWith("new_session", expect.objectContaining({ effort: "high" }));
+    });
+
+    test("rejects an unsupported effort before contacting the runner", async () => {
+        const [req, url] = makeReq("POST", "/api/runners/spawn", {
+            runnerId: "runner-A",
+            effort: "turbo",
+        });
+        const res = await handleRunnersRoute(req, url);
+
+        expect(res!.status).toBe(400);
+        expect(mockGetLocalRunnerSocket).not.toHaveBeenCalled();
+    });
+});
+
 describe("runner MCP reload route", () => {
     beforeEach(() => {
         mockRequireSession.mockReset();

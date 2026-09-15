@@ -780,6 +780,7 @@ export function renderGroupedToolExecution(
       inputArgs.model && typeof inputArgs.model === "object"
         ? (inputArgs.model as { provider: string; id: string })
         : undefined;
+    const effort = typeof inputArgs.effort === "string" ? inputArgs.effort : undefined;
     const cwd = typeof inputArgs.cwd === "string" ? inputArgs.cwd : undefined;
     const resultText = hasOutput ? extractTextFromToolContent(content) : null;
 
@@ -787,6 +788,7 @@ export function renderGroupedToolExecution(
       <SpawnSessionCard
         prompt={prompt}
         model={model}
+        effort={effort}
         cwd={cwd}
         resultText={resultText}
         isStreaming={isStreaming}
