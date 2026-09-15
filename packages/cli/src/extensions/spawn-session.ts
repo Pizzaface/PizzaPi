@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { loadConfig } from "../config.js";
-import { isThinkingLevel } from "../effort.js";
+import { EFFORT_LEVELS, isThinkingLevel } from "../effort.js";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { normalizeLoopbackHost } from "../relay-url.js";
 import { getCachedOllamaCloudModels, toOllamaCloudRuntimeModel } from "../ollama-cloud-models.js";
@@ -99,7 +99,7 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                 },
                 effort: {
                     type: "string",
-                    enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+                    enum: EFFORT_LEVELS,
                     description: "Optional reasoning effort for the child session. Unsupported levels are clamped by the selected model.",
                 },
                 cwd: {
@@ -143,6 +143,10 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                 return ok("Error: prompt is required and cannot be empty.", { error: "Missing prompt" });
             }
 
+            if (params.effort !== undefined && !isThinkingLevel(params.effort)) {
+                return ok("Error: effort must be one of off, minimal, low, medium, high, xhigh, or max.", { error: "Invalid effort" });
+            }
+
             const relayBase = getRelayHttpBaseUrl();
             if (!relayBase) {
                 return ok("Error: Relay is disabled. Cannot spawn sessions without a relay connection.", { error: "Relay disabled" });
@@ -160,10 +164,6 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
             }
 
             const cwd = params.cwd ?? process.cwd();
-            if (params.effort !== undefined && !isThinkingLevel(params.effort)) {
-                return ok("Error: effort must be one of off, minimal, low, medium, high, xhigh, or max.", { error: "Invalid effort" });
-            }
-
             // Build the spawn request
             const body: Record<string, unknown> = {
                 runnerId,
