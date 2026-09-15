@@ -1,12 +1,13 @@
 /**
  * Tests for Claude Code Plugin adapter — core parsing and discovery.
  */
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+    dirInstalledPluginNames,
     parseMarkdownFrontmatter,
     parseManifest,
     parseCommands,
@@ -916,6 +917,72 @@ describe("pluginSearchDirs security", () => {
         } finally {
             process.env.HOME = realHome;
         }
+    });
+});
+
+// ── enabledPlugins gate for directory-installed plugins ──────────────────────
+
+describe("discoverPlugins respects enabledPlugins for dir-installed plugins", () => {
+    // NOTE: do NOT try to sandbox this via process.env.HOME. Bun's os.homedir()
+    // ignores $HOME (unlike Node on POSIX), so globalPluginDirs() would still
+    // point at the real home. Instead the plugin dir is injected with
+    // `extraDirs` and the enabledPlugins map is read from <cwd>/.claude/, both
+    // of which are honoured without touching the environment.
+    let sandbox: string;
+    let pluginsDir: string;
+
+    /** Install a plugin dir that will be injected via `extraDirs`. */
+    function installDirPlugin(name: string): void {
+        const dir = join(pluginsDir, name);
+        mkdirSync(join(dir, "commands"), { recursive: true });
+        writeFileSync(join(dir, "commands", "hello.md"), "# hello");
+    }
+
+    /** Write <cwd>/.claude/settings.json with an enabledPlugins map. */
+    function writeEnabledPlugins(map: Record<string, boolean>): void {
+        const dir = join(sandbox, ".claude");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "settings.json"), JSON.stringify({ enabledPlugins: map }), "utf-8");
+    }
+
+    const discover = () => discoverPlugins(sandbox, { extraDirs: [pluginsDir] });
+
+    beforeEach(() => {
+        sandbox = mkdtempSync(join(tmpdir(), "pizzapi-plugin-gate-"));
+        pluginsDir = join(sandbox, "plugins");
+        mkdirSync(pluginsDir, { recursive: true });
+    });
+
+    afterEach(() => {
+        try { rmSync(sandbox, { recursive: true, force: true }); } catch {}
+    });
+
+    test("a dir-installed plugin is discovered when no enabledPlugins map exists", () => {
+        installDirPlugin("local-tool");
+        expect(discover().find((p) => p.name === "local-tool")).toBeDefined();
+    });
+
+    test("setting the bare name to false actually stops discovery", () => {
+        // Regression: the gate was only applied on the marketplace path, so
+        // `pizza plugins disable` could not turn off a dir-installed plugin at
+        // all -- the only remedy was deleting the directory.
+        installDirPlugin("local-tool");
+        writeEnabledPlugins({ "local-tool": false });
+        expect(discover().find((p) => p.name === "local-tool")).toBeUndefined();
+    });
+
+    test("explicit true, and unrelated keys, leave it enabled", () => {
+        installDirPlugin("local-tool");
+        writeEnabledPlugins({ "local-tool": true, "something-else": false });
+        expect(discover().find((p) => p.name === "local-tool")).toBeDefined();
+    });
+
+    test("dirInstalledPluginNames still lists disabled plugins so they can be re-enabled", () => {
+        installDirPlugin("local-tool");
+        writeEnabledPlugins({ "local-tool": false });
+        // discoverPlugins() hides it, but `pizza plugins enable` must find it.
+        expect(discover().find((p) => p.name === "local-tool")).toBeUndefined();
+        expect(dirInstalledPluginNames(sandbox, { extraDirs: [pluginsDir] })).toContain("local-tool");
     });
 });
 
