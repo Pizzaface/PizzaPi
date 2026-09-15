@@ -10,7 +10,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
-import { useSigilRegistry, useSigilResolve, useSigilTriggerResolve, useSigilGeneration } from "./SigilContext";
+import { useSigilRegistry, useSigilResolve, useSigilTextResolver, useSigilTriggerResolve, useSigilGeneration } from "./SigilContext";
 import { SigilIcon } from "./SigilIcon";
 import { ExternalLinkIcon, CheckIcon, CopyIcon } from "lucide-react";
 import { ActionSigil } from "./ActionSigil";
@@ -67,6 +67,7 @@ export function SigilPill({ type, id, params, raw }: SigilPillProps) {
   // `generation` changes on server restart/reconnect (cache invalidation),
   // ensuring the effect re-fires even when type/id/params haven't changed.
   const triggerResolve = useSigilTriggerResolve();
+  const resolveSigilText = useSigilTextResolver();
   const generation = useSigilGeneration();
   const resolved = useSigilResolve(canonicalType, id);
   useEffect(() => {
@@ -243,10 +244,13 @@ export function SigilPill({ type, id, params, raw }: SigilPillProps) {
           </button>
         )}
 
-        {/* Raw sigil syntax */}
+        {/* Sigil syntax and copy-as-text */}
         <div className="flex items-center gap-1 pt-0.5 text-[10px] text-muted-foreground/50">
           <code className="truncate font-mono">{raw}</code>
-          <CopyButton text={raw} />
+          <CopyButton
+            text={displayText}
+            resolveText={() => resolveSigilText(canonicalType, id, params)}
+          />
         </div>
       </div>
     </SigilHoverCard>
@@ -303,14 +307,15 @@ function prettifyUrl(url: string): string {
 }
 
 /** Tiny copy-to-clipboard button with check feedback. */
-function CopyButton({ text }: { text: string }) {
+function CopyButton({ text, resolveText }: { text: string; resolveText?: () => Promise<string | undefined> }) {
   const [copied, setCopied] = useState(false);
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(text).then(() => {
+  const handleCopy = useCallback(async () => {
+    const resolvedText = (await resolveText?.()) ?? text;
+    navigator.clipboard.writeText(resolvedText).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     });
-  }, [text]);
+  }, [text, resolveText]);
 
   return (
     <button

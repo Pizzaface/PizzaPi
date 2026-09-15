@@ -11,6 +11,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { RelayMessage } from "@/components/session-viewer/types";
 import { exportToMarkdown } from "@/lib/export-markdown";
+import { resolveSigilsToText } from "@/lib/sigils/resolve-text";
+import { useSigilTextResolver } from "@/components/sigils/SigilContext";
 import { cn } from "@/lib/utils";
 import { ArrowDownIcon, CheckIcon, ClipboardIcon, DownloadIcon, ShareIcon } from "lucide-react";
 import { useCallback, useEffect, useState, useRef } from "react";
@@ -212,6 +214,11 @@ export const ConversationExport = ({
   ...props
 }: ConversationExportProps) => {
   const [copied, setCopied] = useState(false);
+  const resolveText = useSigilTextResolver();
+  const resolveMarkdown = useCallback(
+    (markdown: string) => resolveSigilsToText(markdown, (match) => resolveText(match.type, match.id, match.params)),
+    [resolveText],
+  );
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
@@ -219,7 +226,7 @@ export const ConversationExport = ({
   }, []);
 
   const handleCopy = useCallback(async () => {
-    const markdown = exportToMarkdown(messages);
+    const markdown = await resolveMarkdown(exportToMarkdown(messages));
     try {
       await navigator.clipboard.writeText(markdown);
       setCopied(true);
@@ -228,10 +235,10 @@ export const ConversationExport = ({
     } catch {
       log.warn("Clipboard write failed");
     }
-  }, [messages, feedbackMs]);
+  }, [messages, feedbackMs, resolveMarkdown]);
 
-  const handleDownload = useCallback(() => {
-    const markdown = exportToMarkdown(messages);
+  const handleDownload = useCallback(async () => {
+    const markdown = await resolveMarkdown(exportToMarkdown(messages));
     const blob = new Blob([markdown], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -241,7 +248,7 @@ export const ConversationExport = ({
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-  }, [messages, filename]);
+  }, [messages, filename, resolveMarkdown]);
 
   return (
     <DropdownMenu>
@@ -300,17 +307,22 @@ export const MessageCopyButton = ({
 }: MessageCopyButtonProps) => {
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const resolveText = useSigilTextResolver();
 
   const handleCopy = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(text);
+      const resolvedText = await resolveSigilsToText(
+        text,
+        (match) => resolveText(match.type, match.id, match.params),
+      );
+      await navigator.clipboard.writeText(resolvedText);
       setCopied(true);
       clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => setCopied(false), feedbackMs);
     } catch {
       log.warn("Clipboard write failed");
     }
-  }, [text, feedbackMs]);
+  }, [text, feedbackMs, resolveText]);
 
   return (
     <Button

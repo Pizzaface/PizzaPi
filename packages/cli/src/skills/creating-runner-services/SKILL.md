@@ -387,7 +387,9 @@ recognizes them.
 To resolve sigils, expose a matching HTTP route. If the service has **no panel**,
 call `announceSigilServer(port)` (instead of `announcePanel`) so the tunnel routes
 resolve calls without listing the service in the panels grid. Sigil defs are
-advertised via `service_announce`, the same as triggers.
+advertised via `service_announce`, the same as triggers. A resolve response may
+also include `text`, the canonical plain-text value used by copy, exports, and
+integrations; `title` remains the fallback for older services.
 
 ---
 
