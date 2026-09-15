@@ -96,7 +96,15 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      # ponytail: packages: platform-tools overrides the action's default of
+      # "tools platform-tools" — Google has removed the deprecated standalone
+      # `tools` package from the SDK repo index, so the action's own install
+      # step now fails fast on `sdkmanager tools` before this job even runs.
+      # platform-tools is all we actually use; the packages we need are
+      # installed explicitly below anyway.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools"
 
       - name: Install Android SDK packages
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
