@@ -403,6 +403,20 @@ export interface ServiceModeArtifacts {
   extensions?: string[];
 }
 
+/** Data returned by a sigil resolve endpoint. */
+export interface SigilResolveData {
+  /** Canonical plain-text representation for copy and integrations. */
+  text?: string;
+  /** Human-readable UI title. Used as the text fallback for older services. */
+  title?: string;
+  status?: string;
+  author?: string;
+  url?: string;
+  description?: string;
+  icon?: string;
+  [key: string]: unknown;
+}
+
 export interface ServiceSigilDef {
   /** Sigil type name, e.g. "pr", "commit", "cost" */
   type: string;
