@@ -291,14 +291,35 @@ export function scanPluginsDir(dir: string): DiscoveredPlugin[] {
  *   (default: false — project-local plugins can run arbitrary code)
  * @param opts.extraDirs - Additional directories to scan
  */
+/**
+ * Names of every directory-installed plugin, ignoring enabled/disabled state.
+ *
+ * Deliberately unfiltered: `pizza plugins enable <name>` has to be able to find
+ * a plugin that is currently disabled, which `discoverPlugins()` hides.
+ */
+export function dirInstalledPluginNames(cwd?: string, opts?: { includeProjectLocal?: boolean; extraDirs?: string[] }): string[] {
+    const names = new Set<string>();
+    for (const dir of pluginSearchDirs(cwd, opts)) {
+        for (const plugin of scanPluginsDir(dir)) names.add(plugin.name);
+    }
+    return [...names];
+}
+
 export function discoverPlugins(cwd?: string, opts?: { includeProjectLocal?: boolean; extraDirs?: string[] }): DiscoveredPlugin[] {
     const dirs = pluginSearchDirs(cwd, opts);
     const seen = new Set<string>();
     const plugins: DiscoveredPlugin[] = [];
+    // Directory-installed plugins are keyed by bare name — they have no
+    // marketplace to qualify them. Without this gate `pizza plugins disable`
+    // could not turn them off at all (the only remedy was deleting the
+    // directory), because the enabledPlugins map was consulted solely on the
+    // marketplace path below.
+    const enabledPlugins = readEnabledPlugins(cwd);
 
     // 1. Scan PizzaPi/agents plugin dirs
     for (const dir of dirs) {
         for (const plugin of scanPluginsDir(dir)) {
+            if (!isPluginEnabled(plugin.name, enabledPlugins)) continue;
             if (!seen.has(plugin.name)) {
                 seen.add(plugin.name);
                 plugins.push(plugin);
