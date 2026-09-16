@@ -662,18 +662,20 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
       let buffer: unknown[] = [];
       let pendingThinking: PendingThinking | null = null;
 
-      const pushAssistantPart = (isBeforeTool: boolean) => {
+      const pushAssistantPart = (isBeforeTool: boolean, allowTextSteal: boolean) => {
         if (!hasVisibleContent(buffer)) {
           buffer = [];
           return;
         }
 
-        // If we are immediately followed by a tool, and the buffer is only
-        // thinking/text (no images etc.), steal it to attach to the tool card
-        // instead of spawning a separate message bubble.
+        // If we are immediately followed by a tool, steal thinking (and, for
+        // interactive prompt tools like AskUserQuestion, prose text too) to
+        // attach it to the tool card instead of spawning a separate bubble.
+        // Non-interactive tools (bash/edit/read/...) keep the old behavior:
+        // real prose still gets its own assistant bubble above the tool card.
         if (isBeforeTool) {
           const leading = splitLeadingContent(buffer);
-          if (leading) {
+          if (leading && (allowTextSteal || !leading.leadingText)) {
             pendingThinking = leading;
             buffer = [];
             return;
@@ -712,7 +714,11 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
 
           // Flush any assistant text/thinking blocks before the tool call so the
           // tool card appears *after* the assistant content that triggered it.
-          pushAssistantPart(true);
+          const normToolName = normalizeToolName(toolName);
+          const isInteractivePromptTool =
+            normToolName === "askuserquestion" || normToolName.endsWith(".askuserquestion") ||
+            normToolName === "plan_mode" || normToolName.endsWith(".plan_mode");
+          pushAssistantPart(true, isInteractivePromptTool);
 
           // ToolCall blocks use `id` (not `toolCallId`) per pi-ai types, but be
           // defensive since other relays might use toolCallId.
@@ -777,7 +783,7 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
       }
 
       // Flush remaining assistant content after the last tool call.
-      pushAssistantPart(false);
+      pushAssistantPart(false, false);
 
       // If this assistant message carries an error (e.g. model not found) but had
       // no visible content blocks, make sure it still appears in the output so the
