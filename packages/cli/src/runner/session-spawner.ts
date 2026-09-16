@@ -14,6 +14,7 @@ import { runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd, refreshAn
 import { recordTranscriptLink } from "./session-transcript-links.js";
 import { isCwdAllowed } from "./workspace.js";
 import { loadConfig } from "../config.js";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 
 export interface RunnerSession {
     sessionId: string;
@@ -183,6 +184,7 @@ export function spawnSession(
         prompt?: string;
         imageUrls?: string[];
         model?: { provider: string; id: string };
+        effort?: ThinkingLevel;
         hiddenModels?: string[];
         agent?: { name: string; systemPrompt?: string; tools?: string; disallowedTools?: string };
         parentSessionId?: string;
@@ -300,6 +302,7 @@ export function spawnSession(
             PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER: options.model.provider,
             PIZZAPI_WORKER_INITIAL_MODEL_ID: options.model.id,
         } : {}),
+        ...(options?.effort ? { PIZZAPI_WORKER_INITIAL_EFFORT: options.effort } : {}),
         // Hidden model keys (JSON array of "provider/modelId" strings).
         // The list_models tool filters these from its output.
         ...(options?.hiddenModels && options.hiddenModels.length > 0
