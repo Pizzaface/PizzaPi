@@ -146,6 +146,7 @@ export const SessionMessageItem = React.memo(
               message.details,
               onTriggerResponse,
               onActionSigilResponse,
+              message.leadingText,
             )}
           </div>
         );
@@ -171,6 +172,7 @@ export const SessionMessageItem = React.memo(
             message.details,
             onTriggerResponse,
             onActionSigilResponse,
+            message.leadingText,
           )}
         </div>
       );
@@ -277,6 +279,7 @@ export const SessionMessageItem = React.memo(
                       message.details,
                       onTriggerResponse,
                       onActionSigilResponse,
+                      message.leadingText,
                     )}
                   </div>
                 )}
@@ -303,6 +306,7 @@ export const SessionMessageItem = React.memo(
                 message.details,
                 onTriggerResponse,
                 onActionSigilResponse,
+                message.leadingText,
               )}
               {quotePopover && (
                 <div

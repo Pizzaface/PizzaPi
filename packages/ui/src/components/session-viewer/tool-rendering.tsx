@@ -578,6 +578,7 @@ export function renderGroupedToolExecution(
   thinking?: string,
   thinkingDuration?: number,
   details?: unknown,
+  leadingText?: string,
 ) {
   const hasOutput = hasVisibleContent(content);
   // Streaming takes priority: a tool with partial output is still running.
@@ -1152,15 +1153,27 @@ export function renderGroupedToolExecution(
     </ModeAwareToolCard>
   );
 
-  if (thinking) {
+  if (thinking || leadingText) {
+    // The reasoning/prose that precedes an interactive prompt (a question the
+    // user must answer, a plan they must approve) is context the user needs
+    // to decide, not incidental scratch work — show reasoning expanded, and
+    // prose always renders plainly (never collapsed).
+    const isInteractivePrompt =
+      norm === "askuserquestion" || norm.endsWith(".askuserquestion") ||
+      norm === "plan_mode" || norm.endsWith(".plan_mode");
     return (
       <div className="flex flex-col gap-2">
-         <div className="px-1">
-            <Reasoning duration={thinkingDuration}>
-               <ReasoningTrigger />
-               <ReasoningContent>{thinking}</ReasoningContent>
-            </Reasoning>
-         </div>
+         {leadingText && (
+           <div className="px-1 text-sm whitespace-pre-wrap">{leadingText}</div>
+         )}
+         {thinking && (
+           <div className="px-1">
+              <Reasoning duration={thinkingDuration} defaultOpen={isInteractivePrompt || undefined}>
+                 <ReasoningTrigger />
+                 <ReasoningContent>{thinking}</ReasoningContent>
+              </Reasoning>
+           </div>
+         )}
          {body}
       </div>
     );
