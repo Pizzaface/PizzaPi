@@ -169,7 +169,7 @@ export function renderReadToolResult(
       ? [content as Record<string, unknown>]
       : [];
 
-  const imageBlocks = blocks.filter((block) => {
+  const imageBlocksRaw = blocks.filter((block) => {
     const source = block.source && typeof block.source === "object"
       ? block.source as Record<string, unknown>
       : {};
@@ -189,6 +189,24 @@ export function renderReadToolResult(
       (block.type === "image" || mimeType.startsWith("image/")) &&
       (typeof data === "string" || (typeof url === "string" && isSafeImageUrl(url)))
     );
+  });
+
+  // Defensive dedup: a tool result's content array should never carry the same
+  // image twice, but upstream transcript writers (extensions, replayed events,
+  // hand-edited/legacy session files) aren't a guarantee we control. Collapse
+  // identical blocks (same bytes/URL) to the first occurrence so a data-level
+  // duplicate can't render as two identical cards.
+  const seenImageSignatures = new Set<string>();
+  const imageBlocks = imageBlocksRaw.filter((block) => {
+    const source = block.source && typeof block.source === "object"
+      ? block.source as Record<string, unknown>
+      : {};
+    const data = typeof block.data === "string" ? block.data : source.data;
+    const url = typeof source.url === "string" ? source.url : undefined;
+    const signature = typeof data === "string" ? `data:${data}` : `url:${url ?? ""}`;
+    if (seenImageSignatures.has(signature)) return false;
+    seenImageSignatures.add(signature);
+    return true;
   });
 
   const resolvedPath = (() => {

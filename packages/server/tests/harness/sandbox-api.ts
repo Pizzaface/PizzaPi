@@ -362,7 +362,8 @@ curl -X POST ${apiBaseUrl}/chat -H 'Content-Type: application/json' -d '{"sessio
                 if (!sess) return errorResponse(`No session at index ${idx}`, 404);
                 if (!event || typeof event !== "object") return errorResponse("Missing 'event' object in body");
 
-                sess.relay.emitEvent(sess.sessionId, sess.token, event);
+                const seq = typeof body.seq === "number" ? body.seq : undefined;
+                sess.relay.emitEvent(sess.sessionId, sess.token, event, seq);
                 return jsonResponse({ session: idx, emitted: true });
             }
 
