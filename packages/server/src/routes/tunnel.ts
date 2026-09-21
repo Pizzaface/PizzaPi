@@ -16,7 +16,7 @@ import { assertTunnelTokenStillValid, createTunnelToken, getAuthTunnelBasePath, 
 import { getTunnelRelay } from "../tunnel-relay.js";
 import { getSession } from "../ws/sio-state/index.js";
 import { getRunnerData } from "../ws/sio-registry.js";
-import { mintTunnelLabel } from "./tunnel-host.js";
+import { LABEL_MAX_TTL_HOURS, mintTunnelLabel } from "./tunnel-host.js";
 import type { RouteHandler } from "./types.js";
 
 const TUNNEL_MAX_BUFFERED_BYTES = 25 * 1024 * 1024; // ponytail: fixed ceiling, raise if legit large HTML responses appear
@@ -697,10 +697,14 @@ async function handleTunnelTokenMint(req: Request): Promise<Response> {
         return Response.json({ error: "Invalid JSON" }, { status: 400 });
     }
 
-    const data = body as { sessionId?: unknown; runnerId?: unknown; port?: unknown };
+    const data = body as { sessionId?: unknown; runnerId?: unknown; port?: unknown; ttlHours?: unknown };
     const sessionId = typeof data.sessionId === "string" ? data.sessionId : "";
     const runnerId = typeof data.runnerId === "string" ? data.runnerId : "";
     const port = typeof data.port === "number" ? data.port : Number(data.port);
+    const ttlHours = data.ttlHours === undefined ? undefined : Number(data.ttlHours);
+    if (ttlHours !== undefined && (!Number.isFinite(ttlHours) || ttlHours < 1 || ttlHours > LABEL_MAX_TTL_HOURS)) {
+        return Response.json({ error: `Invalid ttlHours (1–${LABEL_MAX_TTL_HOURS})` }, { status: 400 });
+    }
     if (!sessionId && !runnerId) return Response.json({ error: "Missing session or runner ID" }, { status: 400 });
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
         return Response.json({ error: "Invalid port" }, { status: 400 });
@@ -716,7 +720,7 @@ async function handleTunnelTokenMint(req: Request): Promise<Response> {
         }
         const scoped = `runner:${runnerId}`;
         const { token, expiresAt } = createTunnelToken({ userId: identity.userId, sessionId: scoped, port });
-        const hostTunnel = await mintTunnelLabel({ userId: identity.userId, scope: scoped, port });
+        const hostTunnel = await mintTunnelLabel({ userId: identity.userId, scope: scoped, port }, ttlHours);
         return Response.json({ token, expiresAt, url: `${getAuthTunnelBasePath(token, scoped, port)}/`, ...(hostTunnel ? { hostUrl: hostTunnel.url } : {}) });
     }
 
@@ -728,7 +732,7 @@ async function handleTunnelTokenMint(req: Request): Promise<Response> {
     if (!sessionData.runnerId) return Response.json({ error: "Session has no runner" }, { status: 503 });
 
     const { token, expiresAt } = createTunnelToken({ userId: identity.userId, sessionId, port });
-    const hostTunnel = await mintTunnelLabel({ userId: identity.userId, scope: sessionId, port });
+    const hostTunnel = await mintTunnelLabel({ userId: identity.userId, scope: sessionId, port }, ttlHours);
     return Response.json({ token, expiresAt, url: `${getAuthTunnelBasePath(token, sessionId, port)}/`, ...(hostTunnel ? { hostUrl: hostTunnel.url } : {}) });
 }
 

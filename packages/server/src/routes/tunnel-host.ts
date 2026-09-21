@@ -28,9 +28,12 @@ import { buildForwardHeaders, proxyTunnelRequestViaRelay, tunnelErrorResponse } 
 
 const log = createLogger("tunnel-host");
 
-const LABEL_TTL_SECONDS = 60 * 60;
-/** Absolute cap — sliding refresh never extends a label beyond this. */
-const LABEL_MAX_LIFETIME_SECONDS = 12 * 60 * 60;
+/** Idle TTL — refreshed on each authorized use. */
+const LABEL_TTL_SECONDS = 6 * 60 * 60;
+/** Default absolute cap — sliding refresh never extends a label beyond this. */
+const LABEL_MAX_LIFETIME_SECONDS = 24 * 60 * 60;
+/** Hard ceiling for caller-requested lifetimes (ttlHours). */
+export const LABEL_MAX_TTL_HOURS = 168;
 const LABEL_KEY_PREFIX = "tunnel-host-label:";
 /** Minted labels are 32 lowercase hex chars; accept a small range for future-proofing. */
 const LABEL_RE = /^[a-z0-9]{16,64}$/;
@@ -52,6 +55,8 @@ export interface TunnelLabelRecord {
     port: number;
     /** Absolute expiry (epoch seconds) — sliding TTL refresh stops here. */
     maxExp?: number;
+    /** Idle TTL in seconds used on refresh (defaults to LABEL_TTL_SECONDS). */
+    idleTtl?: number;
 }
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -160,19 +165,26 @@ async function getRedis(): Promise<RedisClient | null> {
  * Mint an opaque tunnel label and return its absolute URL, or null when
  * host-based tunnels are unconfigured or Redis is unavailable.
  */
-export async function mintTunnelLabel(record: TunnelLabelRecord): Promise<{ label: string; url: string } | null> {
+export async function mintTunnelLabel(
+    record: TunnelLabelRecord,
+    ttlHours?: number,
+): Promise<{ label: string; url: string } | null> {
     const config = getTunnelHostConfig();
     if (!config) return null;
     const client = await getRedis();
     if (!client) return null;
 
     const label = randomBytes(16).toString("hex");
+    const maxLifetime = ttlHours ? Math.min(ttlHours, LABEL_MAX_TTL_HOURS) * 3600 : LABEL_MAX_LIFETIME_SECONDS;
+    // Explicit ttlHours means "keep it alive that long" — idle == max so it never lapses early.
+    const idleTtl = ttlHours ? maxLifetime : LABEL_TTL_SECONDS;
     const stored: TunnelLabelRecord = {
         ...record,
-        maxExp: Math.floor(Date.now() / 1000) + LABEL_MAX_LIFETIME_SECONDS,
+        maxExp: Math.floor(Date.now() / 1000) + maxLifetime,
+        idleTtl,
     };
     try {
-        await client.set(`${LABEL_KEY_PREFIX}${label}`, JSON.stringify(stored), { EX: LABEL_TTL_SECONDS });
+        await client.set(`${LABEL_KEY_PREFIX}${label}`, JSON.stringify(stored), { EX: idleTtl });
     } catch (err) {
         log.warn("Failed to store tunnel label:", err);
         return null;
@@ -239,7 +251,7 @@ export async function authorizeTunnelLabel(label: string): Promise<
 
     // Sliding expiry — refreshed only for authorized traffic, capped by maxExp.
     getRedis()
-        .then((client) => client?.expire(`${LABEL_KEY_PREFIX}${label}`, LABEL_TTL_SECONDS))
+        .then((client) => client?.expire(`${LABEL_KEY_PREFIX}${label}`, record.idleTtl ?? LABEL_TTL_SECONDS))
         .catch(() => undefined);
 
     return { ok: true, record, runnerId };
