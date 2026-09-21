@@ -153,7 +153,7 @@ function buildPublicTunnelUrl(deps: TunnelToolsDeps, port: number): string | nul
  * ponytail: mints on every call, no cache — tokens are short-lived and
  * create/list are rare. Add a TTL cache if tunnel listing ever gets hot.
  */
-async function buildShareableTunnelUrl(deps: TunnelToolsDeps, port: number): Promise<string | null> {
+async function buildShareableTunnelUrl(deps: TunnelToolsDeps, port: number, ttlHours?: number): Promise<string | null> {
     const fallback = buildPublicTunnelUrl(deps, port);
     const base = getRelayHttpBaseUrl(deps);
     const apiKey = process.env.PIZZAPI_API_KEY;
@@ -167,7 +167,7 @@ async function buildShareableTunnelUrl(deps: TunnelToolsDeps, port: number): Pro
         const res = await fetch(`${base}/api/tunnel-token`, {
             method: "POST",
             headers: { "content-type": "application/json", "x-api-key": apiKey },
-            body: JSON.stringify(runnerId ? { runnerId, port } : { sessionId, port }),
+            body: JSON.stringify({ ...(runnerId ? { runnerId } : { sessionId }), port, ...(ttlHours ? { ttlHours } : {}) }),
             signal: AbortSignal.timeout(SERVICE_TIMEOUT_MS),
         });
         if (!res.ok) return fallback;
@@ -208,12 +208,16 @@ export function createTunnelToolsExtension(deps: TunnelToolsDeps = defaultDeps):
                     type: "string",
                     description: "Optional human-readable name for the tunnel (e.g. 'dev-server', 'storybook').",
                 },
+                ttlHours: {
+                    type: "number",
+                    description: "Optional lifetime of the returned public URL in hours (1–168). Default: 24h max, expires after 6h idle.",
+                },
             },
             required: ["port"],
         } as any,
 
         async execute(_toolCallId, rawParams) {
-            const params = (rawParams ?? {}) as { port: number; name?: string };
+            const params = (rawParams ?? {}) as { port: number; name?: string; ttlHours?: number };
             const port = params.port;
 
             if (!port || !Number.isFinite(port) || port < 1 || port > 65535) {
@@ -233,7 +237,7 @@ export function createTunnelToolsExtension(deps: TunnelToolsDeps = defaultDeps):
 
                 if (response.type === "tunnel_registered") {
                     const info = response.payload as TunnelInfo;
-                    const publicUrl = await buildShareableTunnelUrl(deps, info.port);
+                    const publicUrl = await buildShareableTunnelUrl(deps, info.port, params.ttlHours);
 
                     const lines = [
                         `Tunnel created successfully.`,
@@ -299,10 +303,16 @@ export function createTunnelToolsExtension(deps: TunnelToolsDeps = defaultDeps):
             "port, name, and public URL.",
         parameters: {
             type: "object",
-            properties: {},
+            properties: {
+                ttlHours: {
+                    type: "number",
+                    description: "Optional lifetime of the returned public URLs in hours (1–168). Default: 24h max, expires after 6h idle.",
+                },
+            },
         } as any,
 
-        async execute() {
+        async execute(_toolCallId, rawParams) {
+            const ttlHours = (rawParams as { ttlHours?: number } | undefined)?.ttlHours;
             try {
                 const response = await sendTunnelServiceMessage(deps, "tunnel_list", {});
 
@@ -312,7 +322,7 @@ export function createTunnelToolsExtension(deps: TunnelToolsDeps = defaultDeps):
                             port: t.port,
                             name: t.name ?? null,
                             url: t.url,
-                            publicUrl: (await buildShareableTunnelUrl(deps, t.port)) ?? null,
+                            publicUrl: (await buildShareableTunnelUrl(deps, t.port, ttlHours)) ?? null,
                             pinned: t.pinned ?? false,
                         })),
                     );
