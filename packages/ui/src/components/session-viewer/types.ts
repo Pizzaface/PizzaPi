@@ -13,6 +13,8 @@ export interface RelayMessage {
   isError?: boolean;
   thinking?: string;
   thinkingDuration?: number;
+  /** Plain assistant prose that immediately preceded a grouped tool call (e.g. AskUserQuestion). */
+  leadingText?: string;
   /** Populated when role === "subAgentConversation" */
   subAgentTurns?: SubAgentTurn[];
   /** For assistant messages: reason the message stopped (e.g. "error", "stop", "aborted") */

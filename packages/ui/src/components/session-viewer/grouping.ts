@@ -12,7 +12,7 @@ interface PendingToolCall {
   args: unknown;
 }
 
-type PendingThinking = { thinking: string; duration: number };
+type PendingThinking = { thinking: string; duration: number; leadingText: string };
 
 function parseToolArguments(argumentsValue: unknown): unknown {
   if (argumentsValue && typeof argumentsValue === "object") {
@@ -600,9 +600,18 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
   return result;
 }
 
-function getThinkingContent(buf: unknown[]): { thinking: string; duration: number } | null {
+/**
+ * Splits an assistant buffer that immediately precedes a grouped tool call
+ * into its thinking (collapsible) and plain-text (prose) parts, so both can
+ * be attached to the tool card instead of spawning a separate message bubble.
+ *
+ * Bails (returns null) on any block type other than thinking/text (e.g.
+ * images) — those keep the old behavior of a standalone assistant bubble.
+ */
+function splitLeadingContent(buf: unknown[]): { thinking: string; duration: number; leadingText: string } | null {
   let thinking = "";
   let duration = 0;
+  let leadingText = "";
   let hasThinking = false;
 
   for (const block of buf) {
@@ -616,15 +625,14 @@ function getThinkingContent(buf: unknown[]): { thinking: string; duration: numbe
       if (typeof b.durationSeconds === "number") duration += b.durationSeconds;
     } else if (b.type === "text") {
       const text = typeof b.text === "string" ? b.text : "";
-      // If there is any visible text, it's not a pure thinking block
-      if (text.trim()) return null;
+      if (text) leadingText += (leadingText ? "\n\n" : "") + text;
     } else {
-      // Any other block type (e.g. image) means it's not pure thinking
+      // Any other block type (e.g. image) means we can't cleanly steal this buffer.
       return null;
     }
   }
 
-  return hasThinking ? { thinking, duration } : null;
+  return hasThinking || leadingText ? { thinking, duration, leadingText } : null;
 }
 
 export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessage[] {
@@ -654,18 +662,21 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
       let buffer: unknown[] = [];
       let pendingThinking: PendingThinking | null = null;
 
-      const pushAssistantPart = (isBeforeTool: boolean) => {
+      const pushAssistantPart = (isBeforeTool: boolean, allowTextSteal: boolean) => {
         if (!hasVisibleContent(buffer)) {
           buffer = [];
           return;
         }
 
-        // If we are immediately followed by a tool, and the buffer is PURELY thinking,
-        // steal the thinking content to attach to the tool card.
+        // If we are immediately followed by a tool, steal thinking (and, for
+        // interactive prompt tools like AskUserQuestion, prose text too) to
+        // attach it to the tool card instead of spawning a separate bubble.
+        // Non-interactive tools (bash/edit/read/...) keep the old behavior:
+        // real prose still gets its own assistant bubble above the tool card.
         if (isBeforeTool) {
-          const thought = getThinkingContent(buffer);
-          if (thought) {
-            pendingThinking = thought;
+          const leading = splitLeadingContent(buffer);
+          if (leading && (allowTextSteal || !leading.leadingText)) {
+            pendingThinking = leading;
             buffer = [];
             return;
           }
@@ -703,7 +714,11 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
 
           // Flush any assistant text/thinking blocks before the tool call so the
           // tool card appears *after* the assistant content that triggered it.
-          pushAssistantPart(true);
+          const normToolName = normalizeToolName(toolName);
+          const isInteractivePromptTool =
+            normToolName === "askuserquestion" || normToolName.endsWith(".askuserquestion") ||
+            normToolName === "plan_mode" || normToolName.endsWith(".plan_mode");
+          pushAssistantPart(true, isInteractivePromptTool);
 
           // ToolCall blocks use `id` (not `toolCallId`) per pi-ai types, but be
           // defensive since other relays might use toolCallId.
@@ -724,6 +739,7 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
           const pending = pendingThinking as PendingThinking | null;
           const pendingText = pending?.thinking;
           const pendingDuration = pending?.duration;
+          const pendingLeadingText = pending?.leadingText;
 
           if (toolCallIndexByKey.has(itemKey)) {
             const idx = toolCallIndexByKey.get(itemKey)!;
@@ -736,6 +752,7 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
               toolCallId: toolCallId || existing.toolCallId,
               thinking: pendingText ?? existing.thinking,
               thinkingDuration: pendingDuration ?? existing.thinkingDuration,
+              leadingText: pendingLeadingText ?? existing.leadingText,
             };
           } else {
             toolCallIndexByKey.set(itemKey, grouped.length);
@@ -753,6 +770,7 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
               timestamp: message.timestamp,
               thinking: pendingText,
               thinkingDuration: pendingDuration,
+              leadingText: pendingLeadingText,
             });
             emittedKeys.add(itemKey);
           }
@@ -765,7 +783,7 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
       }
 
       // Flush remaining assistant content after the last tool call.
-      pushAssistantPart(false);
+      pushAssistantPart(false, false);
 
       // If this assistant message carries an error (e.g. model not found) but had
       // no visible content blocks, make sure it still appears in the output so the

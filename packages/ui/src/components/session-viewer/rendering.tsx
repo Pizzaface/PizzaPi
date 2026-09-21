@@ -111,6 +111,7 @@ export function renderContent(
   details?: unknown,
   onTriggerResponse?: (triggerId: string, response: string, action?: string, sourceSessionId?: string) => boolean | void | Promise<boolean>,
   onActionSigilResponse?: (text: string) => Promise<boolean>,
+  leadingText?: string,
 ) {
   // Structured command result cards (MCP, plugins, skills)
   if (role === "system" && isCommandResult(content)) {
@@ -139,6 +140,7 @@ export function renderContent(
         thinking,
         thinkingDuration,
         details,
+        leadingText,
       );
     }
     return renderToolResult(content, toolName, isError);

@@ -55,6 +55,25 @@ describe("groupToolExecutionMessages", () => {
         expect(result[1].toolName).toBe("bash");
     });
 
+    test("attaches prose text before AskUserQuestion to the tool card's leadingText", () => {
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1",
+                role: "assistant",
+                content: [
+                    { type: "text", text: "Does this match your understanding?" },
+                    { type: "toolCall", name: "AskUserQuestion", id: "tc1",
+                      arguments: { questions: [{ question: "OK?", options: ["Yes", "No"] }] } },
+                ],
+            }),
+        ];
+        const result = groupToolExecutionMessages(messages);
+        // No separate assistant bubble: the prose is merged into the tool card.
+        expect(result).toHaveLength(1);
+        expect(result[0].role).toBe("tool");
+        expect(result[0].leadingText).toBe("Does this match your understanding?");
+    });
+
     test("merges toolResult into matching tool call by toolCallId", () => {
         const messages: RelayMessage[] = [
             msg({
@@ -232,18 +251,13 @@ describe("groupToolExecutionMessages", () => {
         expect(tools).toHaveLength(1);
         expect(tools[0].content).toBeTruthy();
         // No error banner: the errored message was dropped in favour of the
-        // non-errored partial, so no assistant part inherits stopReason "error".
-        const errorParts = result.filter(
-            (m) => m.role === "assistant" && m.stopReason === "error",
-        );
-        expect(errorParts).toHaveLength(0);
-        // The assistant text bubble should come from the non-errored partial
+        // non-errored partial, so the tool item doesn't inherit stopReason "error".
+        expect(tools[0].stopReason).not.toBe("error");
+        // The leading prose is an interactive prompt (AskUserQuestion) so it's
+        // attached to the tool card's leadingText instead of a separate bubble.
+        expect(tools[0].leadingText).toBe("Let me ask you something");
         const textParts = result.filter((m) => m.role === "assistant");
-        expect(textParts).toHaveLength(1);
-        expect(textParts[0].stopReason).toBeUndefined();
-        // Preserve the newer (timestamped) snapshot's timestamp so the assistant
-        // text doesn't sort to the end of the transcript.
-        expect(textParts[0].timestamp).toBe(12345);
+        expect(textParts).toHaveLength(0);
     });
 
     test("P2: preserves assistant blocks that only exist in the newer errored snapshot", () => {
@@ -289,17 +303,20 @@ describe("groupToolExecutionMessages", () => {
         expect(tools).toHaveLength(1);
         expect(tools[0].content).toBeTruthy();
 
-        // One assistant part before the tool call, one after it (trailing text)
-        const assistantParts = result.filter((m) => m.role === "assistant");
-        expect(assistantParts).toHaveLength(2);
-        expect(assistantParts[0].stopReason).toBeUndefined();
-        expect(assistantParts[1].stopReason).toBeUndefined();
+        // Leading text before the tool call is attached to the tool card
+        // (AskUserQuestion is an interactive prompt tool).
+        expect(tools[0].leadingText).toBe("Let me ask you something");
 
-        expect(assistantParts[1].content).toEqual([
+        // Only the trailing text (after the tool call) becomes its own assistant part.
+        const assistantParts = result.filter((m) => m.role === "assistant");
+        expect(assistantParts).toHaveLength(1);
+        expect(assistantParts[0].stopReason).toBeUndefined();
+
+        expect(assistantParts[0].content).toEqual([
             { type: "text", text: "Trailing text that should not be lost" },
         ]);
         // Timestamp should come from the newer snapshot so sorting stays correct.
-        expect(assistantParts[1].timestamp).toBe(12345);
+        expect(assistantParts[0].timestamp).toBe(12345);
     });
 
     test("P1: keeps errored snapshot when no tool result follows (no non-errored partial)", () => {

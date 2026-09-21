@@ -3,18 +3,19 @@ import React from "react";
 import { renderReadToolResult } from "./tool-rendering";
 
 function findImage(node: React.ReactNode): React.ReactElement<React.ImgHTMLAttributes<HTMLImageElement>> | null {
+  const all = findAllImages(node);
+  return all[0] ?? null;
+}
+
+function findAllImages(node: React.ReactNode): React.ReactElement<React.ImgHTMLAttributes<HTMLImageElement>>[] {
   if (Array.isArray(node)) {
-    for (const child of node) {
-      const image = findImage(child);
-      if (image) return image;
-    }
-    return null;
+    return node.flatMap((child) => findAllImages(child));
   }
-  if (!React.isValidElement(node)) return null;
+  if (!React.isValidElement(node)) return [];
   if (node.type === "img") {
-    return node as React.ReactElement<React.ImgHTMLAttributes<HTMLImageElement>>;
+    return [node as React.ReactElement<React.ImgHTMLAttributes<HTMLImageElement>>];
   }
-  return findImage((node.props as { children?: React.ReactNode }).children);
+  return findAllImages((node.props as { children?: React.ReactNode }).children);
 }
 
 describe("renderReadToolResult", () => {
@@ -46,5 +47,32 @@ describe("renderReadToolResult", () => {
     ]));
 
     expect(image).toBeNull();
+  });
+
+  test("collapses a duplicate inline-data image block to a single render", () => {
+    const images = findAllImages(renderReadToolResult([
+      { type: "image", mimeType: "image/png", data: "AAAA" },
+      { type: "image", mimeType: "image/png", data: "AAAA" },
+    ]));
+
+    expect(images).toHaveLength(1);
+  });
+
+  test("collapses a duplicate extracted-URL image block to a single render", () => {
+    const images = findAllImages(renderReadToolResult([
+      { type: "image", mimeType: "image/png", source: { type: "url", url: "/api/attachments/dup-id" } },
+      { type: "image", mimeType: "image/png", source: { type: "url", url: "/api/attachments/dup-id" } },
+    ]));
+
+    expect(images).toHaveLength(1);
+  });
+
+  test("renders genuinely distinct images separately", () => {
+    const images = findAllImages(renderReadToolResult([
+      { type: "image", mimeType: "image/png", data: "AAAA" },
+      { type: "image", mimeType: "image/png", data: "BBBB" },
+    ]));
+
+    expect(images).toHaveLength(2);
   });
 });
