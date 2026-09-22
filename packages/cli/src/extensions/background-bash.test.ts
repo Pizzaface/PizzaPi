@@ -187,6 +187,56 @@ describe("bash override with backgrounding", () => {
         expect(again.content[0].text).toContain("already");
     });
 
+    test("stdin is /dev/null — stdin readers (bare rg, cat) don't hang", async () => {
+        const { tool } = getTool();
+        const started = Date.now();
+        const res = await run(tool, { command: "cat; echo after", title: "cat" });
+        expect(res.content[0].text).toContain("after");
+        expect(Date.now() - started).toBeLessThan(2000);
+    });
+
+    test("a backgrounded descendant holding stdout doesn't block completion", async () => {
+        const { tool } = getTool();
+        const started = Date.now();
+        const res = await run(tool, { command: "(sleep 5 &); echo done", title: "daemon" });
+        expect(res.content[0].text).toContain("done");
+        expect(res.content[0].text).not.toContain("Still running");
+        expect(Date.now() - started).toBeLessThan(2000);
+    });
+
+    test("timeout escalates to SIGKILL for commands that ignore SIGTERM", async () => {
+        const { tool } = getTool();
+        const started = Date.now();
+        await expect(run(tool, { command: "trap '' TERM; sleep 20", title: "stubborn", timeout: 0.3 })).rejects.toThrow(/timed out/);
+        expect(Date.now() - started).toBeLessThan(5000);
+    });
+
+    test("abort while a stubborn command runs rejects instead of backgrounding", async () => {
+        const { tool } = getTool();
+        const ac = new AbortController();
+        setTimeout(() => ac.abort(), 200);
+        await expect(tool.execute("id", { command: "trap '' TERM; sleep 20", title: "stubborn" }, ac.signal, undefined, undefined)).rejects.toThrow(/aborted/);
+    });
+
+    test("background timeout is reported as a timeout", async () => {
+        const { pi, tool } = getTool();
+        await run(tool, { command: "sleep 20", title: "slow", timeout: 0.3, run_in_background: true });
+        await Bun.sleep(800);
+        expect(pi.messages.length).toBe(1);
+        expect(pi.messages[0].msg.content).toContain("timed out");
+    });
+
+    test("bash_output caps huge output", async () => {
+        const { pi, tool } = getTool();
+        const res = await run(tool, { command: "seq 1 5000", title: "big", run_in_background: true });
+        const pid = Number(res.content[0].text.match(/pid (\d+)/)![1]);
+        await Bun.sleep(400);
+        const out = await pi.tools.get("bash_output")!.execute("id", { pid });
+        expect(out.content[0].text).toContain("Showing last");
+        expect(out.content[0].text).toContain("\n5000");
+        expect(out.content[0].text).not.toContain("\n1\n");
+    });
+
     test("shortcut, /background, and /shells commands are registered", () => {
         const { pi } = getTool();
         expect(pi.shortcuts.has("ctrl+shift+b")).toBe(true);

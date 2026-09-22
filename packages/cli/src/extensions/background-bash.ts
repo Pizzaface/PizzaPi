@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createBashToolDefinition, truncateTail } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "../config.js";
 import { SHELL_PROC_CAPTURE_PREFIX, sessionJobsFilePath, readSessionJobs } from "../runner/session-procs.js";
 export { tailFile } from "../runner/session-procs.js";
@@ -16,7 +16,7 @@ export { tailFile } from "../runner/session-procs.js";
  * via createBashToolDefinition and swaps only the exec layer. Behavior:
  *
  * - Every call takes a `title` (its purpose), used in status/completion messages.
- * - Output streams normally for the first N seconds (default 15, configurable via
+ * - Output streams normally for the first N seconds (default 300, configurable via
  *   `bash.backgroundAfterSeconds` or PIZZAPI_BASH_BACKGROUND_SECONDS).
  * - Past that the call returns: output keeps flowing to a tmp log file and the
  *   model is told the command is still running (and told not to sleep/poll).
@@ -32,6 +32,10 @@ export { tailFile } from "../runner/session-procs.js";
 const DEFAULT_BACKGROUND_AFTER_SECONDS = 300;
 const DELIVERY_RETRY_MS = 10_000;
 const MAX_DELIVERY_ATTEMPTS = 3;
+/** SIGTERM → SIGKILL escalation delay. */
+const KILL_GRACE_MS = 2_000;
+/** After the shell exits, stop reading once its pipes are idle this long (a `cmd &` descendant may hold them open forever). */
+const EXIT_STDIO_GRACE_MS = 100;
 
 /** Seconds a bash call streams in the foreground before it auto-backgrounds. 0 = immediate. */
 export function backgroundAfterSeconds(): number {
@@ -68,6 +72,8 @@ interface BackgroundJob {
     /** Set once the process exits. null = killed by signal. */
     exitCode?: number | null;
     signal?: string | null;
+    /** Killed by its own `timeout`. */
+    timedOut?: boolean;
     endedAt?: number;
     /** Byte offset of the last bash_output read — next read returns only new output. */
     readOffset: number;
@@ -151,8 +157,15 @@ export function readFrom(path: string, offset: number): { text: string; newOffse
 }
 
 function jobStatus(job: BackgroundJob): string {
+    // Recovered jobs have no exit listener — re-check liveness on every read.
+    if (job.endedAt === undefined && job.recovered && !isAlive(job.pid)) {
+        job.endedAt = Date.now();
+        job.lost = true;
+        saveJobs();
+    }
     if (job.endedAt === undefined) return job.recovered ? "running (recovered — no exit notification, poll bash_output)" : "running";
     if (job.lost) return "ended (exit status lost to a worker restart)";
+    if (job.timedOut) return `timed out (killed by ${job.signal ?? "signal"})`;
     if (job.signal) return `killed by ${job.signal}`;
     return `exited ${job.exitCode}`;
 }
@@ -189,21 +202,66 @@ export function formatCompletion(
     signalName: string | null,
     ms: number,
     logPath: string,
+    timedOut = false,
 ): string {
-    const status = signalName ? `was killed by ${signalName}` : `exited with code ${code}`;
+    const status = timedOut
+        ? `timed out and was killed${signalName ? ` by ${signalName}` : ""}`
+        : signalName ? `was killed by ${signalName}` : `exited with code ${code}`;
     return `${title} ${status} after ${Math.round(ms / 1000)}s\n\nSee full stdout/stderr in ${logPath}`;
 }
 
 function killTree(pid: number): void {
     // pid <= 0 would signal init's group (-pid) or every user process (kill(-1)).
     if (!Number.isInteger(pid) || pid <= 0) return;
-    try {
-        // Detached on POSIX → child is its own group leader; kill the group.
-        if (process.platform === "win32") process.kill(pid);
-        else process.kill(-pid);
-    } catch {
-        try { process.kill(pid); } catch { /* already gone */ }
-    }
+    const signalTree = (sig: NodeJS.Signals) => {
+        try {
+            // Detached on POSIX → child is its own group leader; kill the group.
+            if (process.platform === "win32") process.kill(pid, sig);
+            else process.kill(-pid, sig);
+            return true;
+        } catch {
+            try { process.kill(pid, sig); return true; } catch { return false; /* already gone */ }
+        }
+    };
+    // SIGTERM first; SIGKILL whatever ignored it (trap '' TERM, some watchers).
+    if (signalTree("SIGTERM")) setTimeout(() => signalTree("SIGKILL"), KILL_GRACE_MS).unref?.();
+}
+
+/**
+ * Resolve when the shell exits and its pipes drain. Don't wait for "close":
+ * a backgrounded descendant (`server &`) inherits stdout and keeps it open
+ * forever. After exit, finish once output has been idle EXIT_STDIO_GRACE_MS.
+ * Mirrors pi's (unexported) waitForChildProcess.
+ */
+function waitForExit(child: ReturnType<typeof spawn>): Promise<{ code: number | null; sig: string | null }> {
+    return new Promise((resolve) => {
+        let done = false;
+        let exit: { code: number | null; sig: string | null } | undefined;
+        let idle: ReturnType<typeof setTimeout> | undefined;
+        let outEnded = !child.stdout;
+        let errEnded = !child.stderr;
+        const finish = (r: { code: number | null; sig: string | null }) => {
+            if (done) return;
+            done = true;
+            if (idle) clearTimeout(idle);
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            resolve(r);
+        };
+        const armIdle = () => {
+            if (!exit) return;
+            if (outEnded && errEnded) return finish(exit);
+            if (idle) clearTimeout(idle);
+            idle = setTimeout(() => finish(exit!), EXIT_STDIO_GRACE_MS);
+        };
+        child.stdout?.on("data", armIdle);
+        child.stderr?.on("data", armIdle);
+        child.stdout?.once("end", () => { outEnded = true; armIdle(); });
+        child.stderr?.once("end", () => { errEnded = true; armIdle(); });
+        child.once("exit", (code, sig) => { exit = { code, sig }; armIdle(); });
+        child.once("close", (code, sig) => finish({ code, sig }));
+        child.once("error", () => finish({ code: 127, sig: null }));
+    });
 }
 
 // title / run_in_background handoff from the execute wrapper to ops.exec. Safe
@@ -293,15 +351,15 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
         if (event?.reason === "new") cleanupJobs();
     });
 
-    const notifyExit = (title: string, command: string, code: number | null, sig: string | null, ms: number, logPath: string, pid: number | undefined) => {
+    const notifyExit = (title: string, command: string, code: number | null, sig: string | null, ms: number, logPath: string, pid: number | undefined, timedOut: boolean) => {
         const deliveryId = `bg-${pid}-${Date.now()}`;
         send(deliveryId, {
             attempts: 0,
             message: {
                 customType: "background-bash",
-                content: formatCompletion(title, code, sig, ms, logPath),
+                content: formatCompletion(title, code, sig, ms, logPath, timedOut),
                 display: true,
-                details: { title, command, pid, exitCode: code, signal: sig, logPath, deliveryId },
+                details: { title, command, pid, exitCode: code, signal: sig, timedOut, logPath, deliveryId },
             },
         });
     };
@@ -337,6 +395,9 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
             env,
             detached: process.platform !== "win32",
             windowsHide: true,
+            // stdin=/dev/null: a never-closed pipe makes stdin readers (bare `rg`,
+            // `cat`, prompts) hang until the turn is aborted.
+            stdio: ["ignore", "pipe", "pipe"],
         });
         const pid = child.pid ?? -1;
 
@@ -348,18 +409,14 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
         child.stdout?.on("data", tee);
         child.stderr?.on("data", tee);
 
-        const exited = new Promise<{ code: number | null; sig: string | null }>((resolve) => {
-            child.on("close", (code, sig) => resolve({ code, sig }));
-            child.on("error", (err) => {
-                log.write(`spawn error: ${err.message}\n`);
-                resolve({ code: 127, sig: null });
-            });
-        }).then(async (r) => {
+        child.on("error", (err) => log.write(`spawn error: ${err.message}\n`));
+        const exited = waitForExit(child).then(async (r) => {
             waiting.delete(pid);
             const job = jobs.get(pid);
             if (job) {
                 job.exitCode = r.code;
                 job.signal = r.sig;
+                job.timedOut = timedOut;
                 job.endedAt = Date.now();
                 saveJobs();
                 updateStatus();
@@ -384,6 +441,8 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
 
         try {
             const bg = new Promise<"bg">((resolve) => {
+                // Spawn failed (no pid) → nothing to background; let the error exit win.
+                if (pid <= 0) return;
                 if (runInBackground) return resolve("bg");
                 if (pid > 0) waiting.set(pid, { command, backgroundNow: () => resolve("bg") });
                 // Auto-background once the foreground streaming window elapses.
@@ -401,6 +460,11 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
                 try { unlinkSync(logPath); } catch { /* best effort */ }
                 return { exitCode: raced.code };
             }
+
+            // Stopped/timed out before the backgrounding kicked in — report that,
+            // don't hand back a zombie "background shell" with exit 0.
+            if (signal?.aborted) throw new Error("aborted");
+            if (timedOut) throw new Error(`timeout:${timeout}`);
 
             // Backgrounded: stop streaming, let it run, notify on exit.
             backgrounded = true;
@@ -420,7 +484,7 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
                 // Cleaned up in the meantime (shutdown or /new)? Stay quiet — the
                 // conversation this shell belonged to is gone.
                 if (pid > 0 && !jobs.has(pid)) return;
-                notifyExit(title, command, code, sig, Date.now() - startedAt, logPath, child.pid);
+                notifyExit(title, command, code, sig, Date.now() - startedAt, logPath, child.pid, timedOut);
             });
             return { exitCode: 0 };
         } finally {
@@ -489,7 +553,12 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
                     details: undefined,
                 };
             }
-            const { text, newOffset } = readFrom(job.logPath, job.readOffset);
+            const { text: raw, newOffset } = readFrom(job.logPath, job.readOffset);
+            // Cap like the bash tool so a chatty log can't flood context.
+            const t = truncateTail(raw);
+            const text = t.truncated
+                ? `[Showing last ${t.outputLines} of ${t.totalLines} new lines. Full log: ${job.logPath}]\n${t.content}`
+                : raw;
             if (newOffset !== job.readOffset) {
                 job.readOffset = newOffset;
                 saveJobs();
