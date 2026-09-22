@@ -425,8 +425,8 @@ export function useSlashCommands(
           action();
           return;
         }
-        const data = (await res.json()) as { triggers: TriggerHistoryEntry[] };
-        const incomplete = getIncompleteTriggers(data.triggers ?? []);
+        const data = (await res.json()) as { triggers: TriggerHistoryEntry[]; childSessionIds?: string[] };
+        const incomplete = getIncompleteTriggers(data.triggers ?? [], data.childSessionIds);
         if (incomplete.length > 0) {
           onIncompleteTriggers(incomplete, action);
         } else {

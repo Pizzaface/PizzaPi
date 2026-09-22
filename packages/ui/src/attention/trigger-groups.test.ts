@@ -220,3 +220,14 @@ describe("getIncompleteTriggers", () => {
     expect(result[0].source).toBe("child-1");
   });
 });
+describe("getIncompleteTriggers childSessionIds filter", () => {
+  test("ignores inbound sources that aren't linked children (parent/peer messages)", () => {
+    const triggers = [
+      makeTrigger({ triggerId: "a", source: "parent-session", type: "session_trigger" }),
+      makeTrigger({ triggerId: "b", source: "child-1", type: "session_linked" }),
+    ];
+    expect(getIncompleteTriggers(triggers, ["child-1"]).map((i) => i.source)).toEqual(["child-1"]);
+    expect(getIncompleteTriggers(triggers, [])).toEqual([]);
+    expect(getIncompleteTriggers(triggers)).toHaveLength(2);
+  });
+});
