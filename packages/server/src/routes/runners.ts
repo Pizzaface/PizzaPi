@@ -142,23 +142,31 @@ async function listListeners(runnerId: string, userId?: string): Promise<Listene
         }));
     }
     type RuntimeStatus = NonNullable<ListenerInfo["runtime"]>;
-    let statuses = new Map<string, RuntimeStatus>();
-    try {
-        const result = await sendRunnerServiceRequest(runnerId, "time", "time_status_request", {});
-        const rows = Array.isArray(result.schedules) ? result.schedules : [];
-        statuses = new Map(rows.flatMap((row) => {
-            if (!row || typeof row !== "object") return [];
-            const item = row as Record<string, unknown>;
-            return typeof item.subscriptionId === "string" ? [[item.subscriptionId, {
-                state: item.state === "armed" ? "confirmed" : item.state === "delivering" ? "delivering" : item.state === "retrying" ? "retrying" : "unknown",
-                ...(typeof item.nextFireAt === "string" ? { nextFireAt: item.nextFireAt } : {}),
-                ...(typeof item.timezone === "string" ? { timezone: item.timezone } : {}),
-                ...(typeof item.error === "string" ? { error: item.error } : {}),
-            }]] as const : [];
-        }));
-    } catch {
-        // Offline/unsupported runners are explicitly unknown, never active.
-    }
+    const statuses = new Map<string, RuntimeStatus>();
+    // Ask every service that owns a listed route: `trigger_status_request` →
+    // `trigger_status_result` { subscriptions: [{ subscriptionId, state, nextFireAt?, timezone?, error? }] }.
+    // ponytail: services without a handler cost one short timeout per listing; add a
+    // declared capability to skip them if that latency matters.
+    const serviceIds = [...new Set(listeners.map((l) => l.triggerType.split(":")[0]).filter(Boolean))];
+    await Promise.all(serviceIds.map(async (serviceId) => {
+        try {
+            const result = await sendRunnerServiceRequest(runnerId, serviceId, "trigger_status_request", {}, 1_500);
+            const rows = Array.isArray(result.subscriptions) ? result.subscriptions : [];
+            for (const row of rows) {
+                if (!row || typeof row !== "object") continue;
+                const item = row as Record<string, unknown>;
+                if (typeof item.subscriptionId !== "string") continue;
+                statuses.set(item.subscriptionId, {
+                    state: item.state === "armed" ? "confirmed" : item.state === "delivering" ? "delivering" : item.state === "retrying" ? "retrying" : "unknown",
+                    ...(typeof item.nextFireAt === "string" ? { nextFireAt: item.nextFireAt } : {}),
+                    ...(typeof item.timezone === "string" ? { timezone: item.timezone } : {}),
+                    ...(typeof item.error === "string" ? { error: item.error } : {}),
+                });
+            }
+        } catch {
+            // Offline/unsupported services are explicitly unknown, never active.
+        }
+    }));
     return listeners.map((listener) => ({
         ...listener,
         runtime: statuses.get(listener.listenerId) ?? { state: "unknown" },

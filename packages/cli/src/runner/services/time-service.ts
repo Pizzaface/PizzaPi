@@ -451,12 +451,12 @@ export class TimeService implements ServiceHandler {
         this.#disposed = false;
         this.#socket = socket;
         this.#serviceMessageHandler = (envelope: { serviceId?: string; type?: string; requestId?: string }) => {
-            if (envelope.serviceId !== "time" || envelope.type !== "time_status_request" || !envelope.requestId) return;
+            if (envelope.serviceId !== "time" || envelope.type !== "trigger_status_request" || !envelope.requestId) return;
             socket.emit("service_message", {
                 serviceId: "time",
-                type: "time_status_result",
+                type: "trigger_status_result",
                 requestId: envelope.requestId,
-                payload: { generatedAt: new Date().toISOString(), schedules: this.#runtimeStatuses() },
+                payload: { generatedAt: new Date().toISOString(), subscriptions: this.#runtimeStatuses() },
             });
         };
         socket.on("service_message", this.#serviceMessageHandler);

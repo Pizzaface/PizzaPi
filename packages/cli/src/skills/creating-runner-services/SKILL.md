@@ -372,15 +372,26 @@ The Triggers panel separates **saved** (Route exists) from **runtime** state
 (the service confirmed it). Runtime is `unknown` unless the service answers a
 status request — never infer "active" from saved config.
 
-Reference implementation: `TimeService` (`packages/cli/src/runner/services/time-service.ts`)
-answers a `service_message` `{ serviceId: "time", type: "time_status_request", requestId }`
-with `time_status_result` → `payload.schedules[]` of
-`{ subscriptionId, state: "armed"|"delivering"|"retrying"|..., nextFireAt?, timezone, error? }`,
-built from **live** timers, not persisted config. Remove the `service_message`
-listener in `dispose()` or reloads answer twice.
+To report it, answer a `service_message` from the server:
 
-> Today the server (`listListeners` in `routes/runners.ts`) only queries the
-> `time` service. Other services show `unknown` until that lookup is generalized.
+```ts
+// in: { serviceId: "<your-id>", type: "trigger_status_request", requestId }
+socket.emit("service_message", {
+  serviceId: "<your-id>",
+  type: "trigger_status_result",
+  requestId,                       // echo it back
+  payload: { subscriptions: [
+    { subscriptionId, state: "armed" | "delivering" | "retrying" | "unknown",
+      nextFireAt?, timezone?, error? },   // subscriptionId = the Route id
+  ] },
+});
+```
+
+Build it from **live** runtime state (timers, watchers, webhooks), never from
+persisted config. The server asks every service that owns a listed Route
+(1.5s timeout); no reply = `unknown`. Remove the `service_message` listener in
+`dispose()` or reloads answer twice. Reference: `TimeService`
+(`packages/cli/src/runner/services/time-service.ts`).
 
 ### Manual fire and history
 

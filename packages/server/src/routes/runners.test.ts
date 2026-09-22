@@ -644,6 +644,18 @@ describe("runner trigger fire route", () => {
         expect(mockPublishEvent).toHaveBeenCalled();
     });
 
+    test("asks the route's owning service (not just time) for runtime status", async () => {
+        seedOwnedRoute("rt_1");
+        mockSendRunnerServiceRequest.mockImplementation(((_runner: string, serviceId: string, type: string) =>
+            serviceId === "svc" && type === "trigger_status_request"
+                ? Promise.resolve({ subscriptions: [{ subscriptionId: "rt_1", state: "armed" }] })
+                : Promise.reject(new Error("unsupported"))) as any);
+
+        const [req, url] = makeReq("GET", "/api/runners/runner-A/trigger-listeners");
+        const body = await (await handleRunnersRoute(req, url))!.json();
+        expect(body.listeners[0].runtime.state).toBe("confirmed");
+    });
+
     test("blocks firing a disabled route (409)", async () => {
         seedOwnedRoute("rt_1", "user-1", { disabled: true });
 
