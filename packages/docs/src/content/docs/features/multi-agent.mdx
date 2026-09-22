@@ -200,7 +200,7 @@ The trigger is re-emitted as an `escalate` type trigger targeting the parent's o
 
 ## `tell_child`
 
-Proactively send a message to a linked child session. Unlike `respond_to_trigger` (which responds to a child's request), `tell_child` initiates a new turn in the child's conversation — the message is delivered as agent input.
+Proactively send a message to a linked child session. Unlike `respond_to_trigger` (which responds to a child's request), `tell_child` always delivers a steering message: an active child receives it at the next agent boundary rather than after finishing its turn. An idle child starts a new turn.
 
 ### Parameters
 

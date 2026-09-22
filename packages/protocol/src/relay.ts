@@ -57,8 +57,8 @@ export interface RelayClientToServerEvents {
     token: string;
     targetSessionId: string;
     message: string;
-    /** When "input", deliver as agent input (starts a new turn). Otherwise, deliver to message bus. */
-    deliverAs?: "input";
+    /** "steer" interrupts at the next agent boundary; "input" queues a follow-up. Omitted delivers to the message bus. */
+    deliverAs?: "input" | "steer";
   }) => void;
 
   /** Child session fires a trigger destined for its parent */

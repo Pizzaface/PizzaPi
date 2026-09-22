@@ -297,7 +297,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
     pi.registerTool({
         name: "tell_child",
         label: "Tell Child",
-        description: "Send a message to a linked child session.",
+        description: "Send a steering message to a linked child session, interrupting active work at the next agent boundary.",
         parameters: {
             type: "object",
             properties: {
@@ -313,8 +313,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 return { content: [{ type: "text" as const, text: "Error: Not connected to relay. Cannot send message to child." }], details: null as any };
             }
 
-            // Deliver as agent input so it starts a new turn in the child session
-            // (not into the passive message bus which requires wait_for_message).
+            // Always steer active work rather than queueing behind the child's turn.
             const result = await new Promise<string>((resolve) => {
                 const timeout = setTimeout(() => {
                     conn.socket.off("session_message_error", onError);
@@ -334,7 +333,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                     token: conn.token,
                     targetSessionId: params.sessionId,
                     message: params.message,
-                    deliverAs: "input",
+                    deliverAs: "steer",
                 });
             });
 
