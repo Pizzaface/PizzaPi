@@ -76,6 +76,31 @@ describe("registerMessagingHandlers session_trigger acking", () => {
         mockRecordTriggerResponse.mockResolvedValue(undefined);
     });
 
+    for (const local of [true, false]) {
+        for (const deliverAs of ["steer", "input"] as const) {
+            test(`delivers ${deliverAs} input ${local ? "locally" : "across nodes"}`, async () => {
+                const socket = createMockSocket("parent-1");
+                const emit = mock((_event: string, _data: any) => {});
+                mockGetSharedSession.mockResolvedValue({ userId: "u1" });
+                mockGetLocalTuiSocket.mockReturnValue(local ? { connected: true, emit } : undefined);
+                mockEmitToRelaySessionVerified.mockResolvedValue(true);
+                registerMessagingHandlers(socket as any);
+
+                await socket.fireEvent("session_message", {
+                    token: "relay-token", targetSessionId: "child-1", message: "Change direction", deliverAs,
+                });
+
+                const payload = {
+                    text: "Change direction", attachments: [], client: "agent",
+                    deliverAs: deliverAs === "steer" ? "steer" : "followUp",
+                };
+                expect(mockIsChildOfParent).toHaveBeenCalledWith("parent-1", "child-1");
+                if (local) expect(emit).toHaveBeenCalledWith("input", payload);
+                else expect(mockEmitToRelaySessionVerified).toHaveBeenCalledWith("child-1", "input", payload);
+            });
+        }
+    }
+
     test("acks success after delivering a child trigger to the parent", async () => {
         const socket = createMockSocket("child-1");
         const parentSocketEmit = mock((_event: string, _data: any) => {});

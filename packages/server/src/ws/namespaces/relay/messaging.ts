@@ -70,14 +70,17 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
             }
         }
 
-        // Block stale parent→child traffic. deliverAs:"input" always
+        const isInput = data.deliverAs === "input" || data.deliverAs === "steer";
+        const inputDelivery = data.deliverAs === "steer" ? "steer" : "followUp";
+
+        // Block stale parent→child traffic. Agent input always
         // requires a live parent→child link (used by tell_child and
         // session_complete follow-up). Plain session_message (used by
         // send_message) is also blocked when the target's parentSessionId
         // still names the sender — the parent may have run /new and
         // delinked this child, so the old parent's plain messages must not
         // reach the child's brand-new conversation either.
-        const isParentToChildTraffic = data.deliverAs === "input" || targetSession.parentSessionId === sessionId;
+        const isParentToChildTraffic = isInput || targetSession.parentSessionId === sessionId;
         if (isParentToChildTraffic) {
             const targetIsChild = await isChildOfParent(sessionId, targetSessionId);
             if (!targetIsChild) {
@@ -92,14 +95,14 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
         const targetSocket = getLocalTuiSocket(targetSessionId);
         if (targetSocket?.connected) {
             try {
-                if (data.deliverAs === "input") {
-                    // Deliver as agent input — starts a new turn (used by tell_child).
+                if (isInput) {
+                    // Tell Child steers active work; completion follow-ups remain queued.
                     // Mirrors the viewer namespace "input" handler behavior.
                     targetSocket.emit("input" as string, {
                         text: messageText,
                         attachments: [],
                         client: "agent",
-                        deliverAs: "followUp",
+                        deliverAs: inputDelivery,
                     });
                 } else {
                     // Deliver to message bus (used by send_message / wait_for_message).
@@ -118,9 +121,9 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
         } else {
             // Cross-node fallback: target TUI socket is on a different server node.
             // Try to deliver via the relay room using verified cross-node emit.
-            const eventName = data.deliverAs === "input" ? "input" : "session_message";
-            const payload = data.deliverAs === "input"
-                ? { text: messageText, attachments: [], client: "agent", deliverAs: "followUp" }
+            const eventName = isInput ? "input" : "session_message";
+            const payload = isInput
+                ? { text: messageText, attachments: [], client: "agent", deliverAs: inputDelivery }
                 : { fromSessionId: sessionId, message: messageText, ts: new Date().toISOString() };
             if (!await emitToRelaySessionVerified(targetSessionId, eventName, payload)) {
                 socket.emit("session_message_error", {
