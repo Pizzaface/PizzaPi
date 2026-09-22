@@ -94,11 +94,17 @@ export interface IncompleteTriggerItem {
  * Sessions that have sent session_complete are considered done once the child
  * actually stopped. A followUp response resumes the child, so it remains incomplete.
  */
-export function getIncompleteTriggers(triggers: TriggerHistoryEntry[]): IncompleteTriggerItem[] {
+export function getIncompleteTriggers(
+  triggers: TriggerHistoryEntry[],
+  /** Sources that are real linked children; others (parent, peers) are ignored. Undefined = no filter. */
+  childSessionIds?: readonly string[],
+): IncompleteTriggerItem[] {
   const { sessionGroups } = groupByLinkedSession(triggers);
   const items: IncompleteTriggerItem[] = [];
+  const children = childSessionIds ? new Set(childSessionIds) : null;
 
   for (const group of sessionGroups) {
+    if (children && !children.has(group.source)) continue;
     const label = group.lastSummary || group.source.slice(0, 12);
 
     // Has a pending interactive trigger (needs a response)

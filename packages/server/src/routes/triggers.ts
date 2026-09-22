@@ -39,6 +39,7 @@ import {
     emitToRelaySessionVerified,
 } from "../ws/sio-registry.js";
 import { getRunnerServices } from "../ws/sio-registry/runners.js";
+import { isChildOfParent } from "../ws/sio-state.js";
 import { triggerAllowedForCwd } from "./mode-scope.js";
 import type { RouteHandler } from "./types.js";
 import { randomUUID } from "crypto";
@@ -231,7 +232,19 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         const limit = parseInt(url.searchParams.get("limit") ?? "50", 10);
         const history = await getTriggerHistory(sessionId, Math.min(limit, 200));
 
-        return Response.json({ triggers: history });
+        // Inbound triggers also come from parents/peers (tell_child, publish_event),
+        // so tell the UI which sources are actually this session's linked children.
+        // Omitted on lookup failure — the UI then falls back to treating all sources as children.
+        let childSessionIds: string[] | undefined;
+        try {
+            const sources = [...new Set(history.filter((t) => t.direction === "inbound").map((t) => t.source))];
+            const flags = await Promise.all(sources.map((s) => isChildOfParent(sessionId, s)));
+            childSessionIds = sources.filter((_, i) => flags[i]);
+        } catch {
+            childSessionIds = undefined;
+        }
+
+        return Response.json({ triggers: history, childSessionIds });
     }
 
     // ── DELETE /api/sessions/:id/triggers ─────────────────────────────

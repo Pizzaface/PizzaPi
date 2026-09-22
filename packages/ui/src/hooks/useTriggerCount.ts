@@ -47,8 +47,9 @@ export function useTriggerCount(
       try {
         const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/triggers?limit=50`, { credentials: "include" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const triggerHistory = ((await res.json()) as { triggers?: TriggerHistoryEntry[] }).triggers ?? [];
-        const pending = getIncompleteTriggers(triggerHistory).length;
+        const data = (await res.json()) as { triggers?: TriggerHistoryEntry[]; childSessionIds?: string[] };
+        const triggerHistory = data.triggers ?? [];
+        const pending = getIncompleteTriggers(triggerHistory, data.childSessionIds).length;
         if (current === generation.current) {
           setCounts((previous) => ({
             ...previous,
