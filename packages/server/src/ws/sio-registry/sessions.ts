@@ -987,6 +987,8 @@ export async function endSharedSession(
     reason: string = "Session ended",
     opts: {
         confirmedTerminal?: boolean;
+        /** Keep subscriptions during orphan/process-disconnect cleanup. */
+        preserveSubscriptions?: boolean;
         expectedOwnerToken?: string;
         onOwnerConfirmed?: () => void | Promise<void>;
     } = {},
@@ -1005,6 +1007,8 @@ async function endSharedSessionUnlocked(
     reason: string = "Session ended",
     opts: {
         confirmedTerminal?: boolean;
+        /** Keep subscriptions during orphan/process-disconnect cleanup. */
+        preserveSubscriptions?: boolean;
         expectedOwnerToken?: string;
         onOwnerConfirmed?: () => void | Promise<void>;
     } = {},
@@ -1081,13 +1085,13 @@ async function endSharedSessionUnlocked(
         });
     }
 
-    // True termination removes non-durable session routes. Keep time:* routes:
-    // a standing schedule outlives its worker and can wake/resume it later.
-    // Reconnect teardown preserves everything because the same session is
-    // immediately registering again.
-    if (reason !== "Session reconnected") {
+    // Ordinary disconnects are transient: session-owned subscriptions must
+    // survive until an explicit terminal close. Standalone time:* schedules
+    // also survive terminal close only when they are not session-owned; the
+    // route store's durable flag preserves those when requested.
+    if (reason !== "Session reconnected" && opts.confirmedTerminal && !opts.preserveSubscriptions) {
         try {
-            const deletedRoutes = await deleteSessionRoutes(sessionId, { preserveDurable: true });
+            const deletedRoutes = await deleteSessionRoutes(sessionId, { preserveDurable: false });
             if (deletedRoutes.length > 0) {
                 // Dynamic import avoids runner.ts → sio-registry → sessions.ts
                 // initialization cycles. Reconcile is best-effort on teardown.
@@ -1226,7 +1230,12 @@ export async function sweepOrphanedSessions(nowMs: number): Promise<void> {
             `Sweeping orphaned session ${candidate.sessionId} ` +
             `(last activity: ${new Date(candidate.lastActivity).toISOString()})`,
         );
-        await endSharedSession(candidate.sessionId, "Session orphaned (no active relay connection)", { confirmedTerminal: true });
+        // An orphan proves only that the relay process/socket disappeared; it
+        // is not an explicit session close, so subscriptions survive restart.
+        await endSharedSession(candidate.sessionId, "Session orphaned (no active relay connection)", {
+            confirmedTerminal: true,
+            preserveSubscriptions: true,
+        });
     }
 }
 

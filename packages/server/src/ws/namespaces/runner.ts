@@ -289,6 +289,63 @@ interface PendingRunnerCommand {
 }
 
 const pendingRunnerCommands = new Map<string, PendingRunnerCommand>();
+export function serviceResponseMatches<P extends { socketId: string; runnerId: string; userId?: string; responseType: string; serviceId: string }>(
+    pending: P | undefined,
+    response: { socketId: string; runnerId: string; userId?: string; type: string; serviceId: string },
+): pending is P {
+    return !!pending && pending.socketId === response.socketId && pending.runnerId === response.runnerId
+        && pending.userId === response.userId && pending.responseType === response.type
+        && pending.serviceId === response.serviceId;
+}
+
+const pendingServiceRequests = new Map<string, {
+    resolve: (value: Record<string, unknown>) => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+    socketId: string;
+    runnerId: string;
+    userId?: string;
+    responseType: string;
+    serviceId: string;
+}>();
+
+/** Request a runner service through the existing service_message channel. */
+export async function sendRunnerServiceRequest(
+    runnerId: string,
+    serviceId: string,
+    type: string,
+    payload: Record<string, unknown> = {},
+    timeoutMs = 5_000,
+): Promise<Record<string, unknown>> {
+    const socket = getLocalRunnerSocket(runnerId);
+    if (!socket) throw new Error("Runner not found");
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 60_000) {
+        throw new Error("Invalid runner service request timeout");
+    }
+    if (isPendingRequestCapReached(pendingServiceRequests.size)) {
+        throw new Error(`Too many pending service requests (max ${MAX_PENDING_REQUESTS})`);
+    }
+    const requestId = randomUUID();
+    const runnerSocket = socket as Socket & { data: RunnerSocketData & { userId?: string } };
+    const userId = runnerSocket.data.userId;
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            pendingServiceRequests.delete(requestId);
+            reject(new Error("Runner service request timed out"));
+        }, timeoutMs);
+        pendingServiceRequests.set(requestId, {
+            resolve, reject, timer, socketId: socket.id, runnerId, userId,
+            responseType: `${type}_result`, serviceId,
+        });
+        try {
+            socket.emit("service_message" as any, { serviceId, type, requestId, payload });
+        } catch (err) {
+            clearTimeout(timer);
+            pendingServiceRequests.delete(requestId);
+            reject(err instanceof Error ? err : new Error(String(err)));
+        }
+    });
+}
 
 export function cancelRunnerFileRead(socket: Socket, eventName: string, requestId: string): void {
     if (eventName === "read_file") socket.emit("cancel_file_request" as any, { requestId });
@@ -1177,6 +1234,23 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
         socket.on("service_message", async (envelope: ServiceMessageEnvelope) => {
             const runnerId = socket.data.runnerId;
             if (!runnerId) return;
+            if (envelope.requestId && envelope.type.endsWith("_result")) {
+                const pending = pendingServiceRequests.get(envelope.requestId);
+                const socketUserId = (socket.data as RunnerSocketData & { userId?: string }).userId;
+                if (serviceResponseMatches(pending, {
+                    socketId: socket.id,
+                    runnerId,
+                    userId: socketUserId,
+                    type: envelope.type,
+                    serviceId: envelope.serviceId,
+                })) {
+                    clearTimeout(pending.timer);
+                    pendingServiceRequests.delete(envelope.requestId);
+                    pending.resolve(envelope.payload && typeof envelope.payload === "object" && !Array.isArray(envelope.payload)
+                        ? envelope.payload as Record<string, unknown> : {});
+                    return;
+                }
+            }
             // If envelope carries a sessionId, route only to that session's viewers.
             // Otherwise broadcast to all sessions on this runner (e.g. push announcements).
             const targetSessionId = (envelope as ServiceEnvelope & { sessionId?: string }).sessionId;
@@ -1351,6 +1425,15 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
                         + `socket ${socket.id} is no longer the registered connection`,
                     );
                     return;
+                }
+
+                // Reject service requests tied to this runner connection.
+                for (const [requestId, pending] of pendingServiceRequests) {
+                    if (pending.socketId === socket.id || pending.runnerId === runnerId) {
+                        clearTimeout(pending.timer);
+                        pending.reject(new Error("Runner disconnected"));
+                        pendingServiceRequests.delete(requestId);
+                    }
                 }
 
                 // Clean up local session and terminal tracking

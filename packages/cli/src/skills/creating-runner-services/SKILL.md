@@ -183,7 +183,9 @@ interface ServiceInitOptions {
   buffers, bindings, temp files).
 - `reconcileSubscriptions` — implement if you hold per-subscription runtime state
   (timers, watchers). Called after runner reconnect with a `snapshot`, and on
-  individual `delta` changes.
+  individual `delta` changes. Count a subscription in `applied` **only if it is
+  actually armed**; invalid params go in `errors`. Logging a warning and
+  returning makes a broken subscription look scheduled.
 
 > `@pizzapi/extension-sdk` is the authoring contract. It's **not published to npm
 > yet** — this doesn't block you: the overlay is plain JSON and the handler only
@@ -352,11 +354,56 @@ subscribe_trigger("orders:status_changed", {
 
 Subscribed triggers arrive as injected messages in the agent's conversation.
 
-> **Advanced (see runner-services.mdx):** *Runner trigger listeners*
-> (`POST /api/runners/{id}/trigger-listeners`) spawn a fresh session per matching
-> trigger instead of delivering into an existing one. *Trigger history* is a
-> per-session Redis log (`GET /api/sessions/{id}/triggers`, 200 entries, 24h TTL)
-> shown live in the UI Triggers panel.
+### Lifetimes
+
+| Kind | Created by | Ends when |
+|------|-----------|-----------|
+| **Trigger** (spawn Route) | Runner Triggers panel / `trigger-listeners` API | Deleted. Usually spawns a **new** session per firing (~90% of use). |
+| **Session subscription** (session Route) | `subscribe_trigger` in a session | That session is **explicitly closed**, or unsubscribed. |
+
+A session subscription must survive disconnects, idle time, turn completion,
+runner restart, and orphan sweeps — including `time:*`. Your service sees the
+subscription again via the reconnect `snapshot`; don't drop state just because
+the session went quiet.
+
+### Runtime status ("is it actually armed?")
+
+The Triggers panel separates **saved** (Route exists) from **runtime** state
+(the service confirmed it). Runtime is `unknown` unless the service answers a
+status request — never infer "active" from saved config.
+
+To report it, answer a `service_message` from the server:
+
+```ts
+// in: { serviceId: "<your-id>", type: "trigger_status_request", requestId }
+socket.emit("service_message", {
+  serviceId: "<your-id>",
+  type: "trigger_status_result",
+  requestId,                       // echo it back
+  payload: { subscriptions: [
+    { subscriptionId, state: "armed" | "delivering" | "retrying" | "unknown",
+      nextFireAt?, timezone?, error? },   // subscriptionId = the Route id
+  ] },
+});
+```
+
+Build it from **live** runtime state (timers, watchers, webhooks), never from
+persisted config. The server asks every service that owns a listed Route
+(1.5s timeout); no reply = `unknown`. Remove the `service_message` listener in
+`dispose()` or reloads answer twice. Reference: `TimeService`
+(`packages/cli/src/runner/services/time-service.ts`).
+
+### Manual fire and history
+
+- **Fire now** (`POST /api/runners/{id}/trigger-listeners/{routeId}/fire`) fires
+  exactly one owned, enabled Route with a user payload (required keys + top-level
+  types checked). It works when runtime is `unknown`, and doesn't move the next
+  scheduled run. Internally it uses `publishEvent({ routeIds: [id] })`; generic
+  `POST /api/events` does **not** accept `routeIds`.
+- **Per-route history** comes from durable Deliveries matched by `routeId`
+  (spawn deliveries keep `routeId` after the spawn resolves), with links to the
+  resulting session. The per-session Redis log (`GET /api/sessions/{id}/triggers`,
+  200 entries, 24h TTL) still exists for session views.
 
 ---
 

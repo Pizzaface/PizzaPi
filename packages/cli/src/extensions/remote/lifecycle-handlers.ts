@@ -232,6 +232,11 @@ export function performSessionTransitionCleanup({
     state.lastSessionCompletePayload = null;
 }
 
+/** session_shutdown reasons that mean the session is actually ending (missing = legacy quit). */
+export function shouldReportCompleteOnShutdown(reason: string | undefined): boolean {
+    return reason === undefined || reason === "quit";
+}
+
 export interface LifecycleHandlersDeps {
     /** PiInstance (factory argument) — typed as any since the type is not publicly exported. */
     pi: any;
@@ -400,15 +405,20 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         rctx.forwardEvent(event);
     });
 
-    pi.on("session_shutdown", async () => {
+    pi.on("session_shutdown", async (event?: { reason?: string }) => {
         rctx.shuttingDown = true;
         followUpGrace.clearFollowUpGrace();
         stopHeartbeat();
         stopSessionNameSync();
         stopWatchingSubagents();
         clearCtx();
-        const shutdownExitReason = rctx.wasAborted ? "killed" : rctx.lastRetryableError ? "error" : "completed";
-        await followUpGrace.fireSessionComplete(undefined, undefined, shutdownExitReason);
+        // Only a real quit ends the session. reload/new/resume/fork restart the
+        // runtime (e.g. runner hot-reload after a rebuild); reporting those as
+        // session_complete made parents ack — and SIGTERM — children mid-task.
+        if (shouldReportCompleteOnShutdown(event?.reason)) {
+            const shutdownExitReason = rctx.wasAborted ? "killed" : rctx.lastRetryableError ? "error" : "completed";
+            await followUpGrace.fireSessionComplete(undefined, undefined, shutdownExitReason);
+        }
         doDisconnect();
     });
 

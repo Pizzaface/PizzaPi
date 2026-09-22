@@ -29,14 +29,17 @@ import {
   Filter,
   RefreshCw,
   ArrowRight,
-  ArrowLeft
+  ArrowLeft,
+  Power,
+  PowerOff
 } from "lucide-react";
 import { useRunnerModels, type RunnerModel } from "@/hooks/useRunnerModels";
 import { formatPathTail } from "@/lib/path";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import type { JsonValue, ServiceTriggerDef, ServiceTriggerParamDef } from "@pizzapi/protocol";
+import { DELIVERY_STATUS_META, timeAgo } from "@/components/events/events-format";
+import type { DeliveryStatus, JsonValue, ServiceTriggerDef, ServiceTriggerParamDef, TriggerRuntimeStatus } from "@pizzapi/protocol";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -48,6 +51,30 @@ function servicePrefix(type: string): string {
 function formatParamValue(value: JsonValue): string {
   if (typeof value === "string") return value;
   return JSON.stringify(value);
+}
+
+/** Prefill for the manual-fire payload editor: "{}", or the schema's
+ * required keys with type-appropriate placeholders so the user has a
+ * scaffold to edit. */
+function firePayloadPrefill(schema?: Record<string, unknown>): string {
+  const props = schema && typeof schema.properties === "object" && !Array.isArray(schema.properties)
+    ? schema.properties as Record<string, { type?: unknown }>
+    : {};
+  const required = Array.isArray(schema?.required)
+    ? (schema.required as unknown[]).filter((k): k is string => typeof k === "string")
+    : [];
+  if (required.length === 0) return "{}";
+  const prefill: Record<string, JsonValue> = {};
+  for (const key of required) {
+    const t = typeof props[key]?.type === "string" ? props[key].type : undefined;
+    prefill[key] = t === "number" || t === "integer" ? 0
+      : t === "boolean" ? false
+      : t === "array" ? []
+      : t === "object" ? {}
+      : t === "null" ? null
+      : "";
+  }
+  return JSON.stringify(prefill, null, 2);
 }
 
 function renderParamValueBadges(
@@ -553,6 +580,265 @@ function CollapsibleParams({ params }: { params: ServiceTriggerParamDef[] }) {
   );
 }
 
+// ── Listener Card (one saved route) ──────────────────────────────────────
+
+interface ListenerCardProps {
+  listener: ListenerInfo;
+  def: ServiceTriggerDef;
+  runnerId: string;
+  index: number;
+  isPendingListener: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+  /** Resolves with an error message, or null on success. */
+  onDisabledToggle: (listener: ListenerInfo) => Promise<string | null>;
+}
+
+function ListenerCard({
+  listener, def, runnerId, index, isPendingListener, onEdit, onDelete, onDisabledToggle,
+}: ListenerCardProps) {
+  const [firing, setFiring] = React.useState(false);
+  const [fireOpen, setFireOpen] = React.useState(false);
+  const [firePayload, setFirePayload] = React.useState("{}");
+  const [fireError, setFireError] = React.useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = React.useState(false);
+
+  // Session-owned routes are only manageable by the user who owns them;
+  // spawn listeners by the runner's owner (server stamps owned: true).
+  const canManage = listener.owned !== false;
+  const isSessionRoute = !!listener.ownerSessionId;
+  const fireable = !listener.disabled && !!listener.listenerId && canManage;
+
+  const sendFire = async () => {
+    setFiring(true);
+    setFireError(null);
+    try {
+      let payload: unknown;
+      try {
+        payload = JSON.parse(firePayload);
+      } catch {
+        throw new Error("Payload is not valid JSON");
+      }
+      if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+        throw new Error("Payload must be a JSON object");
+      }
+      const res = await fetch(
+        `/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners/${encodeURIComponent(listener.listenerId!)}/fire`,
+        { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ payload }) },
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+      setFireOpen(false);
+    } catch (error) {
+      setFireError(error instanceof Error ? error.message : "Fire failed");
+    } finally {
+      setFiring(false);
+    }
+  };
+
+  const paramBadges = listener.params
+    ? Object.entries(listener.params).flatMap(([k, v]) => {
+        const badges = renderParamValueBadges(k, v, "px-1.5 py-0 text-[10px] h-4 border-emerald-500/30 text-emerald-400/90 bg-emerald-500/5 font-mono");
+        return Array.isArray(badges) ? badges : [badges];
+      })
+    : [];
+
+  return (
+    <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 hover:border-zinc-700 transition-all space-y-2" data-listener-id={listener.listenerId}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex-1 min-w-0 space-y-1">
+          {listener.prompt ? (
+            <p className="text-xs font-medium text-foreground leading-snug" title={listener.prompt}>
+              "{listener.prompt.length > 80 ? listener.prompt.slice(0, 80) + "…" : listener.prompt}"
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground/60 italic">No custom prompt</p>
+          )}
+
+          {/* Metadata Pills */}
+          <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+            {listener.cwd && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-zinc-800/80 text-zinc-300 border border-zinc-700 font-mono text-[10px]">
+                <FolderOpen className="size-3 text-muted-foreground" />
+                {formatPathTail(listener.cwd, 1)}
+              </span>
+            )}
+            {listener.model && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-zinc-800/80 text-zinc-300 border border-zinc-700 font-mono text-[10px]">
+                <Bot className="size-3 text-muted-foreground" />
+                {listener.model.id}
+              </span>
+            )}
+            {listener.autoClose && (
+              <span className="px-1.5 py-0.5 rounded-md bg-zinc-800/50 text-zinc-400 text-[10px] border border-border/40">
+                auto-close
+              </span>
+            )}
+            {listener.ownerSessionId && (
+              <span className="text-[10px] text-muted-foreground" title={listener.ownerSessionId}>
+                session: {listener.ownerSessionName ?? listener.ownerSessionId}
+              </span>
+            )}
+            {listener.disabled && (
+              <span className="px-1.5 py-0.5 rounded-md bg-zinc-800/50 text-amber-400/90 text-[10px] border border-amber-500/30">
+                disabled
+              </span>
+            )}
+            <span className={cn(
+              "px-1.5 py-0.5 rounded-md text-[10px] border",
+              (listener.runtime?.state === "confirmed" || listener.runtime?.state === "delivering" || listener.runtime?.state === "retrying")
+                ? "border-emerald-500/30 text-emerald-400 bg-emerald-500/5"
+                : "border-amber-500/30 text-amber-400 bg-amber-500/5",
+            )}>
+              runtime: {listener.runtime?.state ?? "unknown"}
+            </span>
+            {listener.runtime?.nextFireAt && (
+              <span className="text-[10px] text-muted-foreground" title={listener.runtime.timezone ? `Timezone: ${listener.runtime.timezone}` : undefined}>
+                next {new Date(listener.runtime.nextFireAt).toLocaleString()}{listener.runtime.timezone ? ` (${listener.runtime.timezone})` : ""}
+              </span>
+            )}
+            {listener.history && listener.history.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setHistoryOpen((v) => !v)}
+                className="text-[10px] text-muted-foreground hover:text-foreground underline decoration-dotted underline-offset-2"
+                title={listener.history.map((h) => `${h.status}: ${h.eventId}`).join("\n")}
+                aria-label={`Toggle run history for listener ${listener.listenerId ?? index + 1}`}
+                aria-expanded={historyOpen}
+              >
+                history: {listener.history.length} runs {historyOpen ? <ChevronDown className="inline size-2.5" /> : <ChevronRight className="inline size-2.5" />}
+              </button>
+            )}
+          </div>
+
+          {paramBadges.length > 0 && (
+            <div className="flex items-center gap-1 flex-wrap pt-1">
+              {paramBadges}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1 shrink-0">
+          {fireable ? (
+            <button type="button" disabled={firing} onClick={() => {
+              setFirePayload(firePayloadPrefill(def.schema));
+              setFireError(null);
+              setFireOpen((v) => !v);
+            }} className="p-1.5 rounded-lg border border-border/40 bg-zinc-900 text-muted-foreground hover:text-amber-400" title="Fire this saved route only" aria-label={`Fire listener ${listener.listenerId} for ${def.type}`}><Zap className="size-3.5" /></button>
+          ) : !canManage ? (
+            <span className="text-[10px] text-muted-foreground" title="This session route belongs to another user">read-only</span>
+          ) : (
+            <span className="text-[10px] text-muted-foreground" title={listener.disabled ? "This saved route is disabled" : "This route's runtime status is unknown; manual dispatch is still available when enabled"}>{listener.disabled ? "Disabled" : "Runtime unknown"}</span>
+          )}
+          {canManage && listener.listenerId && (
+            <button
+              type="button"
+              onClick={() => { void onDisabledToggle(listener).then(setFireError); }}
+              disabled={isPendingListener}
+              className={cn(
+                "p-1.5 rounded-lg border border-border/40 bg-zinc-900 transition-colors",
+                listener.disabled ? "text-emerald-400 hover:bg-emerald-500/10" : "text-muted-foreground hover:text-amber-400 hover:bg-amber-500/10",
+                isPendingListener && "opacity-50 cursor-not-allowed",
+              )}
+              title={listener.disabled ? "Re-enable this saved route" : "Disable this saved route"}
+              aria-label={`${listener.disabled ? "Enable" : "Disable"} listener ${listener.listenerId} for ${def.type}`}
+            >
+              {isPendingListener ? <Loader2 className="size-3.5 animate-spin" /> : listener.disabled ? <Power className="size-3.5" /> : <PowerOff className="size-3.5" />}
+            </button>
+          )}
+          {!isSessionRoute && (
+            <button
+              type="button"
+              onClick={onEdit}
+              disabled={isPendingListener}
+              className={cn(
+                "p-1.5 rounded-lg border border-border/40 bg-zinc-900 text-muted-foreground hover:text-blue-400 hover:bg-blue-500/10 transition-colors",
+                isPendingListener && "opacity-50 cursor-not-allowed",
+              )}
+              title="Edit listener"
+              aria-label={`Edit listener ${listener.listenerId ?? index + 1} for ${def.type}`}
+            >
+              <Pencil className="size-3.5" />
+            </button>
+          )}
+          {canManage && (
+            <button
+              type="button"
+              onClick={onDelete}
+              disabled={isPendingListener}
+              className={cn(
+                "p-1.5 rounded-lg border border-border/40 bg-zinc-900 text-muted-foreground hover:text-rose-400 hover:bg-rose-500/10 transition-colors",
+                isPendingListener && "opacity-50 cursor-not-allowed",
+              )}
+              title="Remove listener"
+              aria-label={`Delete listener ${listener.listenerId ?? index + 1} for ${def.type}`}
+            >
+              {isPendingListener ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {fireError && <span className="text-[10px] text-rose-400" role="alert">{fireError}</span>}
+
+      {/* Manual fire payload editor */}
+      {fireOpen && fireable && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-2.5 space-y-2">
+          <label className="text-[10px] font-semibold text-amber-400/90 uppercase tracking-wider" htmlFor={`fire-payload-${listener.listenerId}`}>
+            Payload for {def.type}
+          </label>
+          <textarea
+            id={`fire-payload-${listener.listenerId}`}
+            aria-label={`Fire payload for listener ${listener.listenerId}`}
+            rows={4}
+            value={firePayload}
+            onChange={(e) => { setFirePayload(e.target.value); setFireError(null); }}
+            className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary resize-y"
+          />
+          <div className="flex items-center gap-2">
+            <Button size="sm" className="h-7 text-xs px-3 gap-1" disabled={firing} onClick={() => { void sendFire(); }}>
+              {firing ? <Loader2 className="size-3 animate-spin" /> : <Zap className="size-3" />}
+              Fire
+            </Button>
+            <Button size="sm" variant="outline" className="h-7 text-xs px-2.5" onClick={() => { setFireOpen(false); setFireError(null); }}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Delivery history rows */}
+      {historyOpen && listener.history && listener.history.length > 0 && (
+        <div className="border-t border-zinc-800 pt-2 space-y-1">
+          {listener.history.map((h) => {
+            const meta = DELIVERY_STATUS_META[h.status as DeliveryStatus];
+            return (
+              <div key={h.deliveryId} className="flex items-center gap-2 text-[10px] text-muted-foreground" title={`event ${h.eventId}`}>
+                <span className={cn("inline-flex shrink-0 rounded-full border px-1.5 py-0 font-medium", meta?.className ?? "bg-muted text-muted-foreground border-border")}>
+                  {meta?.label ?? h.status}
+                </span>
+                <span className="shrink-0">{h.createdAt ? timeAgo(h.createdAt) : ""}</span>
+                <span className="font-mono truncate">{h.eventType}</span>
+                {h.sessionId && (
+                  <a
+                    href={`/session/${encodeURIComponent(h.sessionId)}`}
+                    className="underline decoration-dotted underline-offset-2 hover:text-foreground truncate"
+                    title={`Open session ${h.sessionId}`}
+                  >
+                    → {h.sessionId.slice(0, 8)}
+                  </a>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Trigger Item ───────────────────────────────────────────────────────────
 
 interface TriggerItemProps {
@@ -573,13 +859,15 @@ interface TriggerItemProps {
   onParamCancel: () => void;
   models: RunnerModel[];
   recentFolders: string[];
+  runnerId: string;
+  onDisabledToggle: (listener: ListenerInfo) => Promise<string | null>;
 }
 
 function TriggerItem({
   def, listeners, isPending, pendingTypes,
   paramFormOpen, editMode, paramValues, paramError, sessionConfig,
   onToggle, onEdit, onParamValuesChange, onSessionConfigChange, onParamSubmit, onParamCancel,
-  models, recentFolders,
+  models, recentFolders, runnerId, onDisabledToggle,
 }: TriggerItemProps) {
   const hasParams = def.params && def.params.length > 0;
   const isListening = listeners.length > 0;
@@ -595,7 +883,7 @@ function TriggerItem({
             </span>
             {isListening && (
               <Badge variant="outline" className="px-1.5 py-0 text-[10px] h-4 border-emerald-500/40 text-emerald-400 bg-emerald-500/5 shrink-0 font-medium">
-                {listeners.length} active
+                {listeners.length} saved
               </Badge>
             )}
             {hasParams && !isListening && (
@@ -641,97 +929,19 @@ function TriggerItem({
       {/* Existing listeners */}
       {isListening && (
         <div className="mt-2 space-y-2">
-          {listeners.map((listener, index) => {
-            const listenerKey = listener.listenerId ?? `${def.type}-${index}`;
-            const isPendingListener = pendingTypes.has(listener.listenerId ?? "") || isPending;
-            const details: string[] = [];
-            if (listener.cwd) details.push(listener.cwd);
-            if (listener.model) details.push(`${listener.model.provider}/${listener.model.id}`);
-            if (listener.autoClose) details.push("auto-close");
-            const paramBadges = listener.params
-              ? Object.entries(listener.params).flatMap(([k, v]) => {
-                  const badges = renderParamValueBadges(k, v, "px-1.5 py-0 text-[10px] h-4 border-emerald-500/30 text-emerald-400/90 bg-emerald-500/5 font-mono");
-                  return Array.isArray(badges) ? badges : [badges];
-                })
-              : [];
-            if (listener.params) {
-              for (const [k, v] of Object.entries(listener.params)) {
-                details.push(`${k}=${formatParamValue(v)}`);
-              }
-            }
-
-            return (
-              <div key={listenerKey} className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 hover:border-zinc-700 transition-all space-y-2">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0 space-y-1">
-                    {listener.prompt ? (
-                      <p className="text-xs font-medium text-foreground leading-snug" title={listener.prompt}>
-                        "{listener.prompt.length > 80 ? listener.prompt.slice(0, 80) + "…" : listener.prompt}"
-                      </p>
-                    ) : (
-                      <p className="text-xs text-muted-foreground/60 italic">No custom prompt</p>
-                    )}
-
-                    {/* Metadata Pills */}
-                    <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
-                      {listener.cwd && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-zinc-800/80 text-zinc-300 border border-zinc-700 font-mono text-[10px]">
-                          <FolderOpen className="size-3 text-muted-foreground" />
-                          {formatPathTail(listener.cwd, 1)}
-                        </span>
-                      )}
-                      {listener.model && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-zinc-800/80 text-zinc-300 border border-zinc-700 font-mono text-[10px]">
-                          <Bot className="size-3 text-muted-foreground" />
-                          {listener.model.id}
-                        </span>
-                      )}
-                      {listener.autoClose && (
-                        <span className="px-1.5 py-0.5 rounded-md bg-zinc-800/50 text-zinc-400 text-[10px] border border-border/40">
-                          auto-close
-                        </span>
-                      )}
-                    </div>
-
-                    {paramBadges.length > 0 && (
-                      <div className="flex items-center gap-1 flex-wrap pt-1">
-                        {paramBadges}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => onEdit(def, listener)}
-                      disabled={isPendingListener}
-                      className={cn(
-                        "p-1.5 rounded-lg border border-border/40 bg-zinc-900 text-muted-foreground hover:text-blue-400 hover:bg-blue-500/10 transition-colors",
-                        isPendingListener && "opacity-50 cursor-not-allowed",
-                      )}
-                      title="Edit listener"
-                      aria-label={`Edit listener ${listener.listenerId ?? index + 1} for ${def.type}`}
-                    >
-                      <Pencil className="size-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onToggle(def, true, listener.listenerId)}
-                      disabled={isPendingListener}
-                      className={cn(
-                        "p-1.5 rounded-lg border border-border/40 bg-zinc-900 text-muted-foreground hover:text-rose-400 hover:bg-rose-500/10 transition-colors",
-                        isPendingListener && "opacity-50 cursor-not-allowed",
-                      )}
-                      title="Remove listener"
-                      aria-label={`Delete listener ${listener.listenerId ?? index + 1} for ${def.type}`}
-                    >
-                      {isPendingListener ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+          {listeners.map((listener, index) => (
+            <ListenerCard
+              key={listener.listenerId ?? `${def.type}-${index}`}
+              listener={listener}
+              def={def}
+              runnerId={runnerId}
+              index={index}
+              isPendingListener={pendingTypes.has(listener.listenerId ?? "") || isPending}
+              onEdit={() => onEdit(def, listener)}
+              onDelete={() => onToggle(def, true, listener.listenerId)}
+              onDisabledToggle={onDisabledToggle}
+            />
+          ))}
         </div>
       )}
 
@@ -781,13 +991,15 @@ interface ServiceAccordionProps {
   onParamCancel: () => void;
   models: RunnerModel[];
   recentFolders: string[];
+  runnerId: string;
+  onDisabledToggle: (listener: ListenerInfo) => Promise<string | null>;
 }
 
 function ServiceAccordion({
   group, listenedTypes, listenersByType, pendingTypes,
   paramFormOpen, editMode, paramValues, paramError, sessionConfigs,
   onToggle, onEdit, onParamValuesChange, onSessionConfigChange, onParamSubmit, onParamCancel,
-  models, recentFolders,
+  models, recentFolders, runnerId, onDisabledToggle,
 }: ServiceAccordionProps) {
   const [expanded, setExpanded] = React.useState(false);
   const listenedCount = group.defs.filter((d) => listenedTypes.has(d.type)).length;
@@ -843,6 +1055,8 @@ function ServiceAccordion({
               onParamCancel={onParamCancel}
               models={models}
               recentFolders={recentFolders}
+              runnerId={runnerId}
+              onDisabledToggle={onDisabledToggle}
             />
           ))}
         </div>
@@ -867,6 +1081,15 @@ interface ListenerInfo {
   params?: Record<string, JsonValue>;
   autoClose?: boolean;
   createdAt: string;
+  /** Persisted route state is not the same as runner runtime state. */
+  runtime?: TriggerRuntimeStatus;
+  ownerSessionId?: string;
+  ownerSessionName?: string | null;
+  /** False when the route belongs to another user (session routes on a
+   *  shared runner) — the card renders read-only. */
+  owned?: boolean;
+  disabled?: boolean;
+  history?: Array<{ deliveryId: string; eventId: string; status: string; sessionId: string; eventType: string; createdAt?: string }>;
 }
 
 interface SessionConfig {
@@ -1042,6 +1265,39 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
     }
   }, [runnerId]);
 
+  /** Toggle a saved route's enabled/disabled state (works for spawn and
+   *  session-owned routes; the server enforces ownership). Resolves with
+   *  an error message or null. */
+  const handleDisabledToggle = React.useCallback(async (listener: ListenerInfo): Promise<string | null> => {
+    if (!listener.listenerId) return "Listener has no saved route id";
+    setPendingTypes((prev) => new Set([...prev, listener.listenerId!]));
+    try {
+      const res = await fetch(
+        `/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners/${encodeURIComponent(listener.listenerId)}`,
+        {
+          method: "PUT",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ disabled: !listener.disabled }),
+        },
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        return body.error ?? `HTTP ${res.status}`;
+      }
+      await fetchData();
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : "Failed to toggle listener";
+    } finally {
+      setPendingTypes((prev) => {
+        const next = new Set(prev);
+        next.delete(listener.listenerId!);
+        return next;
+      });
+    }
+  }, [runnerId, fetchData]);
+
   const handleParamSubmit = React.useCallback((def: ServiceTriggerDef) => {
     const vals = paramValues[def.type] ?? {};
     const params: Record<string, JsonValue> = {};
@@ -1152,6 +1408,14 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
             const data = await res.json() as { listener?: ListenerInfo };
             if (data.listener) {
               setListeners((prev) => [...prev, data.listener!]);
+            } else {
+              // The create endpoint intentionally returns only the route id;
+              // reload instead of inventing runtime/next-fire state locally.
+              const list = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners`, { credentials: "include" });
+              if (list.ok) {
+                const body = await list.json() as { listeners?: ListenerInfo[] };
+                setListeners(body.listeners ?? []);
+              }
             }
             setParamFormOpen(null);
             setEditingListenerId(null);
@@ -1252,6 +1516,8 @@ export function RunnerTriggersPanel({ runnerId, triggerDefs: propDefs }: RunnerT
               }}
               models={models}
               recentFolders={recentFolders}
+              runnerId={runnerId}
+              onDisabledToggle={handleDisabledToggle}
             />
           ))}
         </div>

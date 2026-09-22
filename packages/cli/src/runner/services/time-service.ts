@@ -342,6 +342,8 @@ export class TimeService implements ServiceHandler {
      *  is the route's newest server-side truth (e.g. the re-own PUT's target
      *  move) — queue the latest and replay it once delivery settles. */
     #pendingCronDeltas = new Map<string, { sub: TriggerSubscriptionEntry; action: "subscribe" | "update" | "unsubscribe" }>();
+    #serviceMessageHandler: ((envelope: { serviceId?: string; type?: string; requestId?: string }) => void) | null = null;
+    #socket: Socket | null = null;
 
     constructor(
         private readonly retryBackoffMs: readonly number[] = RETRY_BACKOFF_MS,
@@ -445,7 +447,19 @@ export class TimeService implements ServiceHandler {
         }
     }
 
-    init(_socket: Socket, { announceSigilServer }: ServiceInitOptions): void {
+    init(socket: Socket, { announceSigilServer }: ServiceInitOptions): void {
+        this.#disposed = false;
+        this.#socket = socket;
+        this.#serviceMessageHandler = (envelope: { serviceId?: string; type?: string; requestId?: string }) => {
+            if (envelope.serviceId !== "time" || envelope.type !== "trigger_status_request" || !envelope.requestId) return;
+            socket.emit("service_message", {
+                serviceId: "time",
+                type: "trigger_status_result",
+                requestId: envelope.requestId,
+                payload: { generatedAt: new Date().toISOString(), subscriptions: this.#runtimeStatuses() },
+            });
+        };
+        socket.on("service_message", this.#serviceMessageHandler);
 
         // Start HTTP server for sigil resolve endpoints
         this.#server = Bun.serve({
@@ -497,6 +511,18 @@ export class TimeService implements ServiceHandler {
         // (The legacy subscription_params_changed event has been removed from the server.)
 
         logInfo(`[time] service started, resolve server on port ${this.#server.port}`);
+    }
+
+    #runtimeStatuses(): Array<Record<string, unknown>> {
+        const schedules: Array<Record<string, unknown>> = [];
+        for (const timer of this.#timers.values()) {
+            schedules.push({ subscriptionId: timer.subscriptionId, sessionId: timer.sessionId, triggerType: timer.triggerType, state: "armed", armed: true, nextFireAt: new Date(timer.fireAt).toISOString() });
+        }
+        for (const cron of this.#crons.values()) {
+            const state = cron.delivering ? (cron.retryCount > 0 ? "retrying" : "delivering") : "armed";
+            schedules.push({ subscriptionId: cron.subscriptionId, sessionId: cron.sessionId, triggerType: "time:cron", state, armed: state !== "retrying", nextFireAt: new Date(cron.nextFireAt).toISOString() });
+        }
+        return schedules;
     }
 
     /**
@@ -584,8 +610,8 @@ export class TimeService implements ServiceHandler {
                         continue;
                     }
                 }
-                this.#applySubscription(sub, mode === "delta" ? action : "subscribe");
-                applied++;
+                if (this.#applySubscription(sub, mode === "delta" ? action : "subscribe")) applied++;
+                else errors.push(`${sub.sessionId}/${sub.triggerType}: invalid subscription parameters`);
             } catch (err) {
                 const msg = `${sub.sessionId}/${sub.triggerType}: ${err instanceof Error ? err.message : String(err)}`;
                 logWarn(`[time] reconcile error: ${msg}`);
@@ -614,7 +640,11 @@ export class TimeService implements ServiceHandler {
         this.#cronState = null;
         this.#pendingCronDeltas.clear();
 
-        // No socket listener to remove — subscription changes come via reconcileSubscriptions().
+        if (this.#socket && this.#serviceMessageHandler) {
+            this.#socket.off("service_message", this.#serviceMessageHandler);
+        }
+        this.#serviceMessageHandler = null;
+        this.#socket = null;
 
         // Stop HTTP server
         if (this.#server) {
@@ -690,7 +720,7 @@ export class TimeService implements ServiceHandler {
         return `cron:${baseId}`;
     }
 
-    #applySubscription(sub: TriggerSubscriptionEntry, action: "subscribe" | "update" | "unsubscribe"): void {
+    #applySubscription(sub: TriggerSubscriptionEntry, action: "subscribe" | "update" | "unsubscribe"): boolean {
         const { sessionId, triggerType, params } = sub;
         const subscriptionId = sub.subscriptionId ?? `${sessionId}\0${triggerType}`;
         if (action === "unsubscribe" && (subscriptionId.startsWith("legacy:all:") || subscriptionId.includes("\0"))) {
@@ -699,15 +729,16 @@ export class TimeService implements ServiceHandler {
             // holds for the trigger type, or they keep firing after the server
             // rows are gone.
             this.#clearRuntimeForSessionType(sessionId, triggerType);
-            return;
+            return true;
         }
         if (triggerType === "time:timer_fired") {
-            this.#handleTimerSubscription(subscriptionId, sessionId, params, action);
+            return this.#handleTimerSubscription(subscriptionId, sessionId, params, action);
         } else if (triggerType === "time:at") {
-            this.#handleAtSubscription(subscriptionId, sessionId, params, action);
+            return this.#handleAtSubscription(subscriptionId, sessionId, params, action);
         } else if (triggerType === "time:cron") {
-            this.#handleCronSubscription(subscriptionId, sessionId, params, action);
+            return this.#handleCronSubscription(subscriptionId, sessionId, params, action);
         }
+        return false;
     }
 
     /** Remove every timer/cron a session holds for one trigger type. */
@@ -728,7 +759,7 @@ export class TimeService implements ServiceHandler {
         }
     }
 
-    #handleTimerSubscription(subscriptionId: string, sessionId: string, params: any, action: string): void {
+    #handleTimerSubscription(subscriptionId: string, sessionId: string, params: any, action: string): boolean {
         const key = `timer:${subscriptionId}`;
 
         // Clean up any existing timer for this session
@@ -740,7 +771,7 @@ export class TimeService implements ServiceHandler {
 
         if (action === "unsubscribe") {
             this.#dropTimerState(subscriptionId);
-            return;
+            return true;
         }
 
         if (this.#inFlightOneShots.has(key)) {
@@ -748,19 +779,19 @@ export class TimeService implements ServiceHandler {
             // already consumed). Re-arming from a snapshot would fire the same
             // schedule twice.
             logInfo(`[time] timer ${subscriptionId} fire already in flight — skipping re-arm`);
-            return;
+            return true;
         }
 
         const durationStr = typeof params?.duration === "string" ? params.duration : null;
         if (!durationStr) {
             logWarn(`[time] timer subscription from ${sessionId} missing duration param`);
-            return;
+            return false;
         }
 
         const durationMs = parseDuration(durationStr);
         if (durationMs === null) {
             logWarn(`[time] invalid duration "${durationStr}" from session ${sessionId}`);
-            return;
+            return false;
         }
 
         const label = typeof params?.label === "string" ? params.label : undefined;
@@ -799,6 +830,7 @@ export class TimeService implements ServiceHandler {
             triggerType: "time:timer_fired",
             label,
         });
+        return true;
     }
 
     /**
@@ -817,7 +849,7 @@ export class TimeService implements ServiceHandler {
         }, MAX_TIMEOUT_MS);
     }
 
-    #handleAtSubscription(subscriptionId: string, sessionId: string, params: any, action: string): void {
+    #handleAtSubscription(subscriptionId: string, sessionId: string, params: any, action: string): boolean {
         const key = `at:${subscriptionId}`;
 
         const existing = this.#timers.get(key);
@@ -826,23 +858,23 @@ export class TimeService implements ServiceHandler {
             this.#timers.delete(key);
         }
 
-        if (action === "unsubscribe") return;
+        if (action === "unsubscribe") return true;
 
         if (this.#inFlightOneShots.has(key)) {
             logInfo(`[time] at ${subscriptionId} fire already in flight — skipping re-arm`);
-            return;
+            return true;
         }
 
         const atStr = typeof params?.at === "string" ? params.at : null;
         if (!atStr) {
             logWarn(`[time] at subscription from ${sessionId} missing 'at' param`);
-            return;
+            return false;
         }
 
         const targetMs = parseTimeString(atStr);
         if (targetMs === null) {
             logWarn(`[time] invalid time "${atStr}" from session ${sessionId}`);
-            return;
+            return false;
         }
 
         const label = typeof params?.label === "string" ? params.label : undefined;
@@ -865,7 +897,7 @@ export class TimeService implements ServiceHandler {
             // Already past — fire immediately
             logInfo(`[time] at target "${atStr}" already passed, firing immediately for session ${sessionId}`);
             fire();
-            return;
+            return true;
         }
 
         logInfo(`[time] scheduling at-timer for session ${sessionId}: ${atStr} (in ${formatDuration(delayMs)})${label ? ` [${label}]` : ""}`);
@@ -880,6 +912,7 @@ export class TimeService implements ServiceHandler {
             triggerType: "time:at",
             label,
         });
+        return true;
     }
 
     /** Apply the newest delta queued while a cron delivery was in flight.
@@ -898,7 +931,7 @@ export class TimeService implements ServiceHandler {
         }
     }
 
-    #handleCronSubscription(subscriptionId: string, sessionId: string, params: any, action: string): void {
+    #handleCronSubscription(subscriptionId: string, sessionId: string, params: any, action: string): boolean {
         const key = `cron:${subscriptionId}`;
 
         const existing = this.#crons.get(key);
@@ -909,7 +942,7 @@ export class TimeService implements ServiceHandler {
                 // entry would have delivering=false and the 30s checker would
                 // double-fire against the past nextFireAt.
                 logInfo(`[time] cron ${subscriptionId} delivery in flight — skipping re-arm`);
-                return;
+                return true;
             }
             clearInterval(existing.handle);
             this.#crons.delete(key);
@@ -919,19 +952,19 @@ export class TimeService implements ServiceHandler {
         if (action === "unsubscribe") {
             this.#dropCronState(subscriptionId);
             this.#pendingCronDeltas.delete(subscriptionId);
-            return;
+            return true;
         }
 
         const cronStr = typeof params?.cron === "string" ? params.cron : null;
         if (!cronStr) {
             logWarn(`[time] cron subscription from ${sessionId} missing 'cron' param`);
-            return;
+            return false;
         }
 
         const cron = parseCron(cronStr);
         if (!cron) {
             logWarn(`[time] invalid cron "${cronStr}" from session ${sessionId}`);
-            return;
+            return false;
         }
 
         const label = typeof params?.label === "string" ? params.label : undefined;
@@ -949,7 +982,7 @@ export class TimeService implements ServiceHandler {
             : nextCronTime(cron);
         if (!nextFire) {
             logWarn(`[time] cron "${cronStr}" has no next fire time`);
-            return;
+            return false;
         }
         const iteration = (persisted && typeof persisted.iteration === "number") ? persisted.iteration : 0;
 
@@ -1141,6 +1174,7 @@ export class TimeService implements ServiceHandler {
         this.#crons.set(key, entry);
 
         this.#persistCron(subscriptionId, nextFire, iteration);
+        return true;
     }
 
     // ── Trigger delivery ─────────────────────────────────────────────

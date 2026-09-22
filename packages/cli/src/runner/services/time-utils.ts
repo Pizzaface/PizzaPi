@@ -215,7 +215,8 @@ export function parseTimeString(input: string, nowMs?: number): number | null {
         if (hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60) {
             const today = new Date(now);
             today.setUTCHours(hours, minutes, 0, 0);
-            // If the time has already passed today, use it as-is (show "ago")
+            // A clock time that already passed today means the next occurrence.
+            if (today.getTime() < now) today.setUTCDate(today.getUTCDate() + 1);
             return today.getTime();
         }
     }

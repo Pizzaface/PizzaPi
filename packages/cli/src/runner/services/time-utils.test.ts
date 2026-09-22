@@ -197,6 +197,11 @@ describe("parseTimeString", () => {
         expect(date.getUTCMinutes()).toBe(30);
     });
 
+    test("moves a past HH:MMUTC occurrence to tomorrow", () => {
+        const result = parseTimeString("14:30UTC", Date.UTC(2023, 10, 14, 22, 0));
+        expect(result).toBe(Date.UTC(2023, 10, 15, 14, 30));
+    });
+
     test("parses unix timestamp (seconds)", () => {
         expect(parseTimeString("1700000000", now)).toBe(1_700_000_000_000);
     });

@@ -82,6 +82,8 @@ export interface TriggerEvent {
 /** Body of POST /api/events — everything but the server-assigned fields. */
 export interface PublishEventInput {
   type: string;
+  /** Optional durable route allowlist for instance-targeted fires. */
+  routeIds?: string[];
   payload?: Record<string, JsonValue>;
   summary?: string;
   responseContract?: ResponseContract;
