@@ -6,6 +6,7 @@ import {
     forwardServiceMessageToSession,
     isPendingRequestCapReached,
     pendingSocketMatches,
+    serviceResponseMatches,
 } from "./runner.js";
 
 // NOTE: These tests deliberately import ONLY the pure helpers and do NOT use
@@ -36,6 +37,15 @@ describe("runner namespace pending-request hardening", () => {
 
     test("missing pending entry never matches", () => {
         expect(pendingSocketMatches(undefined, "socket-a")).toBe(false);
+    });
+
+    test("service responses require runner, user, service, type, and socket binding", () => {
+        const pending = { socketId: "socket-a", runnerId: "runner-a", userId: "user-a", serviceId: "time", responseType: "time_status_result" };
+        expect(serviceResponseMatches(pending, { ...pending, type: "time_status_result" })).toBe(true);
+        for (const change of [
+            { socketId: "socket-b" }, { runnerId: "runner-b" }, { userId: "user-b" },
+            { serviceId: "other" }, { type: "other_result" },
+        ]) expect(serviceResponseMatches(pending, { ...pending, type: "time_status_result", ...change })).toBe(false);
     });
 
     test("pending map rejects new entries once at capacity", () => {

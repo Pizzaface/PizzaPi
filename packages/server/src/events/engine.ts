@@ -383,6 +383,13 @@ export async function publishEvent(
   if (!isValidEventType(input.type)) {
     throw new Error(`Invalid event type "${input.type}" — must be namespaced like "github:pr_comment"`);
   }
+  if (input.routeIds !== undefined && (
+    !Array.isArray(input.routeIds) ||
+    input.routeIds.length > 100 ||
+    input.routeIds.some((id) => typeof id !== "string" || id.length === 0 || id.length > 256)
+  )) {
+    throw new Error("routeIds must contain at most 100 non-empty strings of 256 characters or fewer");
+  }
 
   const prev = sourcePublishChains.get(source.id) ?? Promise.resolve();
   const run = prev.then(() => publishEventUnchained(input, source, deps, extraTargets));
@@ -419,7 +426,14 @@ async function publishEventUnchained(
     ...(input.summary ? { summary: input.summary } : {}),
     ...(input.responseContract ? { responseContract: input.responseContract } : {}),
   };
-  const matched = matchRoutes(provisional, await listRoutes({ eventType: input.type }));
+  const routes = await listRoutes({ eventType: input.type });
+  // Filtering is only an allowlist. matchRoutes still performs owner checks,
+  // so a caller cannot select another user's route by guessing its ID.
+  const routeIds = input.routeIds;
+  const selected = routeIds === undefined
+    ? routes
+    : routes.filter((route) => routeIds.includes(route.routeId));
+  const matched = matchRoutes(provisional, selected);
   const plan = planDeliveries(matched);
 
   const ttlMs = input.responseContract?.ttlMs;
@@ -444,7 +458,8 @@ async function publishEventUnchained(
     dispatch.set(s.sessionId, { route: s.route });
   }
   for (const sp of plan.spawns) {
-    planRows.push({ sessionId: "", spawnRouteId: sp.routeId, deliverAs: sp.deliverAs, expiresAt });
+    // routeId survives spawn resolution (spawnRouteId is cleared) so per-route history can attribute it.
+    planRows.push({ sessionId: "", routeId: sp.routeId, spawnRouteId: sp.routeId, deliverAs: sp.deliverAs, expiresAt });
     dispatch.set(sp.routeId, { route: sp });
   }
   for (const t of extraTargets ?? []) {

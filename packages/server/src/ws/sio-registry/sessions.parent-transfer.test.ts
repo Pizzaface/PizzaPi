@@ -9,6 +9,7 @@ import { afterAll, describe, it, expect, beforeEach, mock } from "bun:test";
 
 const store = new Map<string, string>();
 const setStore = new Map<string, Set<string>>();
+const deletedRouteOptions: Array<{ sessionId: string; preserveDurable?: boolean }> = [];
 
 mock.module("../../sessions/store.js", () => ({
     getEphemeralTtlMs: () => 60_000,
@@ -25,6 +26,17 @@ mock.module("../../sessions/store.js", () => ({
 
 mock.module("../../sessions/trigger-store.js", () => ({
     pushTriggerHistory: async () => {},
+}));
+
+mock.module("../../events/store.js", () => ({
+    deleteSessionRoutes: async (sessionId: string, opts?: { preserveDurable?: boolean }) => {
+        deletedRouteOptions.push({ sessionId, preserveDurable: opts?.preserveDurable });
+        return [];
+    },
+}));
+
+mock.module("../../events/reconcile.js", () => ({
+    routeToSubscription: () => null,
 }));
 
 const childrenKey = (p: string) => `children:${p}`;
@@ -192,6 +204,26 @@ describe("endSharedSession confirmedTerminal membership removal", () => {
     beforeEach(() => {
         store.clear();
         setStore.clear();
+        deletedRouteOptions.length = 0;
+    });
+
+    it("preserves routes on disconnect and deletes durable routes on terminal close", async () => {
+        await seedSession("route-session");
+
+        await endSharedSession("route-session", "Session ended");
+        expect(deletedRouteOptions).toEqual([]);
+
+        await seedSession("route-session");
+        await endSharedSession("route-session", "Session ended", { confirmedTerminal: true });
+        expect(deletedRouteOptions).toEqual([{ sessionId: "route-session", preserveDurable: false }]);
+
+        deletedRouteOptions.length = 0;
+        await seedSession("route-session");
+        await endSharedSession("route-session", "Session orphaned (no active relay connection)", {
+            confirmedTerminal: true,
+            preserveSubscriptions: true,
+        });
+        expect(deletedRouteOptions).toEqual([]);
     });
 
     it("removes the child from its parent's set on confirmed terminal end", async () => {

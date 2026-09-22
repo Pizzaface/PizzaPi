@@ -9,7 +9,7 @@ const memDb = new Kysely<any>({
 });
 
 const modsPromise = (async () => {
-  mock.module("../auth.js", () => ({ getKysely: () => memDb }));
+  mock.module("../auth.js", () => ({ getKysely: () => memDb, getTrustedOrigins: () => [] }));
   // Tenant scope for runner reconcile: runner-1 is owned by u1.
   mock.module("../runner-owner.js", () => ({
     getRunnerOwner: async (runnerId: string) => (runnerId === "runner-1" ? "u1" : null),
@@ -151,7 +151,7 @@ describe("engine", () => {
   });
 
   it("spawn routes create a session then deliver into it", async () => {
-    await store.createRoute({
+    const route = await store.createRoute({
       eventType: "webhook:deploy",
       target: { kind: "spawn", spec: { runnerId: "r1", cwd: "/tmp" } },
       deliverAs: "steer",
@@ -161,6 +161,8 @@ describe("engine", () => {
     const outcome = await engine.publishEvent({ type: "webhook:deploy" }, source, deps);
     expect(outcome.spawnedSessions).toEqual(["spawned-1"]);
     expect(delivered.map((d) => d.delivery.sessionId)).toEqual(["spawned-1"]);
+    // Resolved spawn deliveries stay attributable to their route (per-route history).
+    expect(outcome.deliveries.map((d) => d.routeId)).toEqual([route.routeId]);
   });
 
   it("extraTargets acts as the implicit direct route", async () => {
@@ -405,6 +407,20 @@ describe("engine tenant isolation", () => {
     const { deps } = makeDeps();
     const outcome = await engine.publishEvent({ type: "x:y", payload: {} }, { kind: "api", id: "a", auth: "api-key", userId: "userA" }, deps);
     expect(outcome.deliveries.map((d) => d.sessionId)).toEqual(["operator"]);
+  });
+
+  it("route allowlists still enforce tenant isolation", async () => {
+    const other = await store.createRoute({ eventType: "x:y", target: { kind: "session", sessionId: "b-session" }, deliverAs: "steer", origin: "ui", ownerUserId: "userB" });
+    const own = await store.createRoute({ eventType: "x:y", target: { kind: "session", sessionId: "a-session" }, deliverAs: "steer", origin: "ui", ownerUserId: "userA" });
+    const { deps, delivered } = makeDeps();
+    const outcome = await engine.publishEvent({ type: "x:y", routeIds: [other.routeId, own.routeId] }, { kind: "api", id: "a", auth: "cookie", userId: "userA" }, deps);
+    expect(outcome.deliveries.map((d) => d.sessionId)).toEqual(["a-session"]);
+    expect(delivered.map((d) => d.delivery.sessionId)).toEqual(["a-session"]);
+  });
+
+  it("rejects malformed or unbounded route allowlists", async () => {
+    await expect(engine.publishEvent({ type: "x:y", routeIds: [""] }, { kind: "api", id: "a", auth: "cookie", userId: "userA" }, makeDeps().deps)).rejects.toThrow("routeIds");
+    await expect(engine.publishEvent({ type: "x:y", routeIds: Array.from({ length: 101 }, (_, i) => `r-${i}`) }, { kind: "api", id: "a", auth: "cookie", userId: "userA" }, makeDeps().deps)).rejects.toThrow("routeIds");
   });
 
   it("fireId idempotency is scoped per owner", async () => {

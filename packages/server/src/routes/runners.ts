@@ -18,11 +18,13 @@ import {
 } from "../ws/sio-registry.js";
 import { getRunnerServices } from "../ws/sio-registry/runners.js";
 import { triggerAllowedForCwd } from "./mode-scope.js";
-import { createRoute, deleteRoute, listRoutes, updateRoute } from "../events/store.js";
-import type { JsonValue, Route } from "@pizzapi/protocol";
+import { createRoute, deleteRoute, listRoutes, updateRoute, listDeliveries, eventsForIds } from "../events/store.js";
+import { publishEvent } from "../events/engine.js";
+import { createEngineDeps } from "../events/transport.js";
+import type { JsonValue, Route, TriggerRuntimeStatus } from "@pizzapi/protocol";
 import { getPersistedRelaySessionOwner } from "../sessions/store.js";
 import { getSession } from "../ws/sio-state/index.js";
-import { sendSkillCommand, sendAgentCommand, sendRunnerCommand } from "../ws/namespaces/runner.js";
+import { sendSkillCommand, sendAgentCommand, sendRunnerCommand, sendRunnerServiceRequest } from "../ws/namespaces/runner.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
 import { requireSession, validateApiKey } from "../middleware.js";
 import { deleteRecentFolder, getRecentFolders, recordRecentFolder } from "../runner-recent-folders.js";
@@ -54,19 +56,35 @@ interface ListenerInfo {
     params?: Record<string, unknown>;
     autoClose?: boolean;
     createdAt: string;
+    runtime?: TriggerRuntimeStatus & { error?: string };
+    ownerSessionId?: string;
+    ownerSessionName?: string | null;
+    /** False when the route belongs to another user (session routes on a
+     *  shared runner): the UI hides mutation controls, the API rejects them. */
+    owned?: boolean;
+    history?: Array<{ deliveryId: string; eventId: string; status: string; sessionId: string; eventType: string; createdAt: string }>;
+    disabled?: boolean;
 }
 
-function routeToListener(route: Route): ListenerInfo | null {
-    if (route.target.kind !== "spawn") return null;
-    const spec = route.target.spec;
+async function routeToListener(route: Route, userId?: string): Promise<ListenerInfo | null> {
+    const spec = route.target.kind === "spawn" ? route.target.spec : undefined;
+    const sessionId = route.target.kind === "session" ? route.target.sessionId : undefined;
+    const owner = sessionId ? await getPersistedRelaySessionOwner(sessionId).catch(() => null) : null;
+    const live = sessionId ? await getSession(sessionId).catch(() => null) : null;
+    const sessionCwd = live?.cwd ?? owner?.cwd ?? undefined;
     return {
         listenerId: route.routeId,
         triggerType: route.eventType,
-        ...(spec.promptTemplate ? { prompt: spec.promptTemplate } : {}),
-        ...(spec.cwd ? { cwd: spec.cwd } : {}),
-        ...(spec.model ? { model: spec.model } : {}),
+        ...(spec?.promptTemplate ? { prompt: spec.promptTemplate } : {}),
+        ...(spec?.cwd ? { cwd: spec.cwd } : sessionCwd ? { cwd: sessionCwd } : {}),
+        ...(spec?.model ? { model: spec.model } : {}),
         ...(route.params ? { params: route.params } : {}),
-        ...(spec.autoClose ? { autoClose: true } : {}),
+        ...(spec?.autoClose ? { autoClose: true } : {}),
+        ...(sessionId ? { ownerSessionId: sessionId, ownerSessionName: live?.sessionName ?? null } : {}),
+        // Spawn listeners are managed by the runner's owner (existing
+        // semantics); session routes only by the user who owns them.
+        ...(route.target.kind === "session" ? { owned: route.ownerUserId === userId } : { owned: true }),
+        ...(route.disabled ? { disabled: true } : {}),
         createdAt: route.createdAt,
     };
 }
@@ -106,12 +124,45 @@ function listenerToRouteInput(runnerId: string, triggerType: string, fields: {
 }
 
 /** All auto-spawn listeners for a runner (spawn routes stamped with the runner). */
-async function listListeners(runnerId: string): Promise<ListenerInfo[]> {
+async function listListeners(runnerId: string, userId?: string): Promise<ListenerInfo[]> {
     const routes = await listRoutes();
-    return routes
-        .filter((r) => r.target.kind === "spawn" && r.target.spec.runnerId === runnerId)
-        .map(routeToListener)
+    const owned = routes.filter((r) => r.target.kind === "spawn"
+        ? r.target.spec.runnerId === runnerId
+        : r.target.runnerId === runnerId);
+    const listeners = (await Promise.all(owned.map((route) => routeToListener(route, userId))))
         .filter((l): l is ListenerInfo => l !== null);
+    const deliveries = await listDeliveries({ limit: 500 });
+    const events = await eventsForIds(deliveries.map((d) => d.eventId));
+    const eventById = new Map(events.map((e) => [e.eventId, e]));
+    for (const listener of listeners) {
+        listener.history = deliveries.filter((d) => d.routeId === listener.listenerId).slice(0, 10).map((d) => ({
+            deliveryId: d.deliveryId, eventId: d.eventId, status: d.status, sessionId: d.sessionId,
+            eventType: eventById.get(d.eventId)?.type ?? listener.triggerType,
+            createdAt: d.createdAt,
+        }));
+    }
+    type RuntimeStatus = NonNullable<ListenerInfo["runtime"]>;
+    let statuses = new Map<string, RuntimeStatus>();
+    try {
+        const result = await sendRunnerServiceRequest(runnerId, "time", "time_status_request", {});
+        const rows = Array.isArray(result.schedules) ? result.schedules : [];
+        statuses = new Map(rows.flatMap((row) => {
+            if (!row || typeof row !== "object") return [];
+            const item = row as Record<string, unknown>;
+            return typeof item.subscriptionId === "string" ? [[item.subscriptionId, {
+                state: item.state === "armed" ? "confirmed" : item.state === "delivering" ? "delivering" : item.state === "retrying" ? "retrying" : "unknown",
+                ...(typeof item.nextFireAt === "string" ? { nextFireAt: item.nextFireAt } : {}),
+                ...(typeof item.timezone === "string" ? { timezone: item.timezone } : {}),
+                ...(typeof item.error === "string" ? { error: item.error } : {}),
+            }]] as const : [];
+        }));
+    } catch {
+        // Offline/unsupported runners are explicitly unknown, never active.
+    }
+    return listeners.map((listener) => ({
+        ...listener,
+        runtime: statuses.get(listener.listenerId) ?? { state: "unknown" },
+    }));
 }
 
 const RUNNER_MCP_RELOAD_RE = /^\/api\/runners\/([^/]+)\/mcp\/reload$/;
@@ -654,7 +705,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         const services = await getRunnerServices(runnerId);
         return Response.json({
             triggerDefs: services?.triggerDefs ?? [],
-            listeners: await listListeners(runnerId),
+            listeners: await listListeners(runnerId, identity.userId),
         });
     }
 
@@ -678,7 +729,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
             .map((route) => ({
                 subscriptionId: route.routeId,
                 sessionId: route.target.kind === "session" ? route.target.sessionId : "",
-                runnerId: route.target.kind === "session" ? (route.target.runnerId ?? "") : "",
+                runnerId: route.target.kind === "session" ? (route.target.runnerId ?? "") : route.target.spec.runnerId,
                 triggerType: route.eventType,
                 ...(route.params ? { params: route.params } : {}),
                 ...(route.filters && route.filters.length > 0 ? { filters: route.filters } : {}),
@@ -706,6 +757,59 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         return Response.json({ schedules });
     }
 
+    // ── Instance-targeted Fire Now ─────────────────────────────────────
+    const fireMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/trigger-listeners\/([^/]+)\/fire$/);
+    if (fireMatch && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+        const runnerId = decodeURIComponent(fireMatch[1]);
+        const routeId = decodeURIComponent(fireMatch[2]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+        const route = (await listRoutes()).find((candidate) => candidate.routeId === routeId) ?? null;
+        const routeRunnerId = route?.target.kind === "spawn" ? route.target.spec.runnerId : route?.target.runnerId;
+        if (!route || routeRunnerId !== runnerId || route.ownerUserId !== identity.userId) return Response.json({ error: "Listener not found" }, { status: 404 });
+        if (route.disabled) return Response.json({ error: "Listener is disabled" }, { status: 409 });
+        const body = await req.json().catch(() => ({})) as Record<string, unknown>;
+        const payload = body.payload;
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) return Response.json({ error: "payload must be an object" }, { status: 400 });
+        const catalog = await getRunnerServices(runnerId);
+        const def = catalog?.triggerDefs?.find((candidate) => candidate.type === route.eventType);
+        const schema = def?.schema;
+        if (schema && schema.type && schema.type !== "object") return Response.json({ error: "Trigger payload schema is not an object" }, { status: 400 });
+        // No JSON-schema validator exists in this repo (no ajv, no schema
+        // util), so validate what manual dispatch actually needs: required
+        // keys present + declared TOP-LEVEL property types. Nested schemas,
+        // enum/pattern constraints are intentionally not enforced.
+        const payloadObj = payload as Record<string, unknown>;
+        const required = Array.isArray(schema?.required) ? schema.required : [];
+        for (const key of required) if (typeof key === "string" && !(key in payloadObj)) return Response.json({ error: `Missing required payload field '${key}'` }, { status: 400 });
+        const properties = schema && typeof schema.properties === "object" && !Array.isArray(schema.properties)
+            ? schema.properties as Record<string, unknown>
+            : {};
+        for (const [key, decl] of Object.entries(properties)) {
+            if (!(key in payloadObj) || !decl || typeof decl !== "object" || typeof (decl as Record<string, unknown>).type !== "string") continue;
+            const expected = (decl as Record<string, unknown>).type as string;
+            const actual = payloadObj[key];
+            const matches = expected === "string" ? typeof actual === "string"
+                : expected === "number" ? typeof actual === "number"
+                : expected === "integer" ? typeof actual === "number" && Number.isInteger(actual)
+                : expected === "boolean" ? typeof actual === "boolean"
+                : expected === "object" ? typeof actual === "object" && actual !== null && !Array.isArray(actual)
+                : expected === "array" ? Array.isArray(actual)
+                : expected === "null" ? actual === null
+                : true; // unknown/compound schema types are not enforced here
+            if (!matches) return Response.json({ error: `Payload field '${key}' must be of type ${expected}` }, { status: 400 });
+        }
+        try {
+            const outcome = await publishEvent({ type: route.eventType, payload: payload as Record<string, JsonValue>, routeIds: [route.routeId] }, { kind: "api", id: `fire:${identity.userId}:${route.routeId}`, auth: "cookie", userId: identity.userId }, createEngineDeps());
+            return Response.json({ ok: true, eventId: outcome.event.eventId });
+        } catch (err) {
+            return Response.json({ error: err instanceof Error ? err.message : "Fire failed" }, { status: 502 });
+        }
+    }
+
     // ── Runner trigger listeners (subscribe/unsubscribe) ──────────────
     const listenerMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/trigger-listeners(?:\/([^/]+))?$/);
     if (listenerMatch) {
@@ -719,7 +823,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
         // GET /api/runners/:id/trigger-listeners — list
         if (req.method === "GET" && !listenerMatch[2]) {
-            return Response.json({ listeners: await listListeners(runnerId) });
+            return Response.json({ listeners: await listListeners(runnerId, identity.userId) });
         }
 
         // POST /api/runners/:id/trigger-listeners — add
@@ -803,15 +907,45 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
             // A cwd change on a listener for a mode-scoped trigger must stay
             // inside a matching mode workspace.
-            // Target is a routeId or (legacy UI) an event type — same
-            // resolution as DELETE below; the type form picks the first
-            // spawn listener of that type on this runner.
-            const existingRoute = (await listRoutes().catch(() => []))
-                .find((r) => r.target.kind === "spawn"
-                    && r.target.spec.runnerId === runnerId
-                    && (r.routeId === target || r.eventType === target)) ?? null;
-            const existingListener = existingRoute ? routeToListener(existingRoute) : null;
-            if (existingRoute) target = existingRoute.routeId;
+            // Target is a routeId or (legacy UI) an event type — the type form
+            // picks the first spawn listener of that type on this runner.
+            // Session-owned routes are addressable by routeId only, and only
+            // by the user who owns them.
+            const routes = await listRoutes().catch(() => []);
+            let existingRoute = routes.find((r) => r.target.kind === "spawn"
+                && r.target.spec.runnerId === runnerId
+                && (r.routeId === target || r.eventType === target)) ?? null;
+            if (!existingRoute) {
+                const sessionRoute = routes.find((r) => r.target.kind === "session"
+                    && r.target.runnerId === runnerId
+                    && r.routeId === target) ?? null;
+                if (sessionRoute && sessionRoute.ownerUserId !== identity.userId) {
+                    return Response.json({ error: "Forbidden" }, { status: 403 });
+                }
+                existingRoute = sessionRoute;
+            }
+            if (!existingRoute) {
+                return Response.json({ error: `No listener for target '${target}'` }, { status: 404 });
+            }
+            target = existingRoute.routeId;
+
+            // A session route's target is the owning session itself — only its
+            // enabled/disabled state is editable from the listener surface.
+            if (existingRoute.target.kind === "session") {
+                if (params !== undefined || model !== undefined || typeof body.cwd === "string" || autoClose !== undefined || typeof body.prompt === "string") {
+                    return Response.json({ error: "Only the enabled/disabled state of a session-owned route can be edited here" }, { status: 400 });
+                }
+                if (typeof body.disabled !== "boolean") {
+                    return Response.json({ error: "Missing 'disabled' for a session-owned route" }, { status: 400 });
+                }
+                const updated = await updateRoute(target, { disabled: body.disabled });
+                if (!updated) {
+                    return Response.json({ error: `No listener for target '${target}'` }, { status: 404 });
+                }
+                return Response.json({ ok: true, listenerId: target, triggerType: updated.eventType, disabled: updated.disabled === true });
+            }
+
+            const existingListener = await routeToListener(existingRoute, identity.userId);
             if (typeof body.cwd === "string") {
                 const existingType = existingListener?.triggerType ?? (target.includes(":") ? target : undefined);
                 if (existingType) {
@@ -831,6 +965,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
             }
             const updated = await updateRoute(target, {
                 ownerUserId: identity.userId,
+                ...(typeof body.disabled === "boolean" ? { disabled: body.disabled } : {}),
                 ...(params !== undefined || model !== undefined || typeof body.cwd === "string" || autoClose !== undefined || typeof body.prompt === "string"
                     ? {
                         target: {
@@ -873,12 +1008,21 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
         if (req.method === "DELETE" && listenerMatch[2]) {
             const target = decodeURIComponent(listenerMatch[2]);
+            const routes = await listRoutes();
             // Target is a routeId → delete that route; otherwise treat it as an
             // event type and delete every spawn listener of that type.
-            const candidates = (await listRoutes()).filter((r) =>
+            const candidates = routes.filter((r) =>
                 r.target.kind === "spawn"
                 && r.target.spec.runnerId === runnerId
                 && (r.routeId === target || r.eventType === target));
+            // Session-owned routes are deletable by routeId, by their owner only.
+            const sessionRoute = routes.find((r) => r.target.kind === "session"
+                && r.target.runnerId === runnerId
+                && r.routeId === target) ?? null;
+            if (sessionRoute && sessionRoute.ownerUserId !== identity.userId) {
+                return Response.json({ error: "Forbidden" }, { status: 403 });
+            }
+            if (sessionRoute) candidates.push(sessionRoute);
             // Only true listeners may be deleted here: webhook routes
             // (rt_wh_*) belong to the webhooks surface and config routes are
             // read-only (deleteRoute THROWS on them, which would abort a

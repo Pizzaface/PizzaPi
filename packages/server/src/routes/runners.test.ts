@@ -37,6 +37,8 @@ const mockGetRunnerServices = mock((_runnerId: string) => Promise.resolve(null a
 
 // In-memory routes store (listeners are spawn routes since Phase 6).
 const mockRoutes = new Map<string, any>();
+const mockListDeliveries = mock(async () => [] as any[]);
+const mockEventsForIds = mock(async () => [] as any[]);
 mock.module("../events/store.js", () => ({
     createRoute: mock(async (input: any, opts?: { routeId?: string }) => {
         const route = { ...input, routeId: opts?.routeId ?? `rt_${mockRoutes.size + 1}`, createdAt: new Date().toISOString() };
@@ -59,6 +61,8 @@ mock.module("../events/store.js", () => ({
         if (route?.origin === "config") throw new Error("Config-origin routes are read-only; edit the config file");
         return mockRoutes.delete(id);
     }),
+    listDeliveries: mockListDeliveries,
+    eventsForIds: mockEventsForIds,
 }));
 
 const mockGetSession = mock(() => Promise.resolve(null));
@@ -68,13 +72,18 @@ mock.module("../sessions/store.js", () => ({
 }));
 const mockEmitTriggerSubscriptionDelta = mock((_runnerId: string, _delta: any) => Promise.resolve());
 const mockSendRunnerCommand = mock(() => Promise.resolve({ ok: true }));
+const mockSendRunnerServiceRequest = mock(() => Promise.reject(new Error("unsupported")));
 mock.module("../ws/namespaces/runner.js", () => ({
     sendSkillCommand: mock(() => Promise.resolve({ ok: true })),
     sendAgentCommand: mock(() => Promise.resolve({ ok: true })),
     sendRunnerCommand: mockSendRunnerCommand,
+    sendRunnerServiceRequest: mockSendRunnerServiceRequest,
     emitTriggerSubscriptionDelta: mockEmitTriggerSubscriptionDelta,
 }));
 mock.module("../ws/runner-control.js", () => ({ waitForSpawnAck: mock(() => Promise.resolve({ ok: true })) }));
+mock.module("../events/transport.js", () => ({ createEngineDeps: mock(() => ({}) ) }));
+const mockPublishEvent = mock(() => Promise.resolve({ event: { eventId: "event-test" } }));
+mock.module("../events/engine.js", () => ({ publishEvent: mockPublishEvent }));
 mock.module("../runner-recent-folders.js", () => ({
     deleteRecentFolder: mock(() => Promise.resolve(false)),
     getRecentFolders: mock(() => Promise.resolve([])),
@@ -564,6 +573,324 @@ describe("runner trigger listener routes", () => {
         const body = await res!.json();
         expect(body.removed).toBe(0);
         expect(mockRoutes.has("rt_wh_wh-1")).toBe(true);
+    });
+});
+
+describe("runner trigger fire route", () => {
+    const seedOwnedRoute = (routeId: string, ownerUserId = "user-1", extra: Record<string, unknown> = {}) => {
+        mockRoutes.set(routeId, {
+            routeId,
+            eventType: "svc:event",
+            target: { kind: "spawn", spec: { runnerId: "runner-A", ownerUserId } },
+            deliverAs: "followUp",
+            origin: "ui",
+            ownerUserId,
+            createdAt: new Date().toISOString(),
+            ...extra,
+        });
+    };
+    const seedSchema = (schema: Record<string, unknown>) => {
+        mockGetRunnerServices.mockReturnValue(Promise.resolve({
+            serviceIds: ["svc"],
+            triggerDefs: [{ type: "svc:event", label: "Event", schema }],
+        } as any));
+    };
+
+    beforeEach(() => {
+        mockRoutes.clear();
+        mockRequireSession.mockReset();
+        mockRequireSession.mockReturnValue(Promise.resolve({ userId: "user-1", userName: "TestUser" } as any));
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+        mockGetRunnerServices.mockReset();
+        mockGetRunnerServices.mockReturnValue(Promise.resolve(null));
+        mockPublishEvent.mockReset();
+        mockPublishEvent.mockReturnValue(Promise.resolve({ event: { eventId: "event-test" } }));
+        mockSendRunnerServiceRequest.mockReset();
+        mockSendRunnerServiceRequest.mockImplementation(() => Promise.reject(new Error("unsupported")));
+    });
+
+    test("fires a persisted route by id, passing the payload and targeting only that route", async () => {
+        seedOwnedRoute("rt_1");
+        seedSchema({ type: "object", required: ["repo"], properties: { repo: { type: "string" }, count: { type: "integer" } } });
+
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/trigger-listeners/rt_1/fire", {
+            payload: { repo: "org/repo", count: 3 },
+        });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        expect(await res!.json()).toEqual({ ok: true, eventId: "event-test" });
+        expect(mockPublishEvent).toHaveBeenCalledWith(
+            { type: "svc:event", payload: { repo: "org/repo", count: 3 }, routeIds: ["rt_1"] },
+            expect.objectContaining({ kind: "api", userId: "user-1" }),
+            expect.anything(),
+        );
+    });
+
+    test("fire stays available for persisted routes when the runner runtime is unreachable (state unknown)", async () => {
+        seedOwnedRoute("rt_1");
+        // Runtime status lookup rejects (offline/unsupported runner) — the
+        // saved route is still persisted and fireable.
+        mockSendRunnerServiceRequest.mockImplementation(() => Promise.reject(new Error("offline")));
+
+        const [listReq, listUrl] = makeReq("GET", "/api/runners/runner-A/trigger-listeners");
+        const listRes = await handleRunnersRoute(listReq, listUrl);
+        const listBody = await listRes!.json();
+        expect(listBody.listeners[0].runtime.state).toBe("unknown");
+
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/trigger-listeners/rt_1/fire", { payload: {} });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        expect(mockPublishEvent).toHaveBeenCalled();
+    });
+
+    test("blocks firing a disabled route (409)", async () => {
+        seedOwnedRoute("rt_1", "user-1", { disabled: true });
+
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/trigger-listeners/rt_1/fire", { payload: {} });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(409);
+        expect(mockPublishEvent).not.toHaveBeenCalled();
+    });
+
+    test("rejects a payload that is not an object (400)", async () => {
+        seedOwnedRoute("rt_1");
+
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/trigger-listeners/rt_1/fire", { payload: [1, 2] });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(400);
+        expect(mockPublishEvent).not.toHaveBeenCalled();
+    });
+
+    test("rejects a payload missing a required field (400)", async () => {
+        seedOwnedRoute("rt_1");
+        seedSchema({ type: "object", required: ["repo"], properties: { repo: { type: "string" } } });
+
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/trigger-listeners/rt_1/fire", { payload: {} });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(400);
+        expect((await res!.json()).error).toContain("repo");
+        expect(mockPublishEvent).not.toHaveBeenCalled();
+    });
+
+    test("rejects a payload whose declared top-level field type mismatches (400)", async () => {
+        seedOwnedRoute("rt_1");
+        seedSchema({ type: "object", properties: { repo: { type: "string" }, count: { type: "integer" } } });
+
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/trigger-listeners/rt_1/fire", { payload: { repo: 42 } });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(400);
+        expect((await res!.json()).error).toContain("repo");
+
+        const [req2, url2] = makeReq("POST", "/api/runners/runner-A/trigger-listeners/rt_1/fire", { payload: { count: 1.5 } });
+        const res2 = await handleRunnersRoute(req2, url2);
+        expect(res2!.status).toBe(400);
+        expect((await res2!.json()).error).toContain("count");
+        expect(mockPublishEvent).not.toHaveBeenCalled();
+    });
+
+    test("fires with no registered trigger schema (unknown payloads pass)", async () => {
+        seedOwnedRoute("rt_1");
+        // catalog null → no schema → only the object-shape check applies
+
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/trigger-listeners/rt_1/fire", { payload: { anything: true } });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        expect(mockPublishEvent).toHaveBeenCalledWith(
+            expect.objectContaining({ payload: { anything: true } }),
+            expect.anything(),
+            expect.anything(),
+        );
+    });
+
+    test("ownership rejection: another user's route is not fireable (404)", async () => {
+        seedOwnedRoute("rt_1", "user-2");
+
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/trigger-listeners/rt_1/fire", { payload: {} });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(404);
+        expect(mockPublishEvent).not.toHaveBeenCalled();
+    });
+});
+
+describe("session-owned routes on the listener surface", () => {
+    const seedSessionRoute = (routeId: string, ownerUserId = "user-1", extra: Record<string, unknown> = {}) => {
+        mockRoutes.set(routeId, {
+            routeId,
+            eventType: "svc:event",
+            target: { kind: "session", sessionId: "sess-1", runnerId: "runner-A" },
+            deliverAs: "followUp",
+            origin: "agent",
+            ownerUserId,
+            createdAt: new Date().toISOString(),
+            ...extra,
+        });
+    };
+
+    beforeEach(() => {
+        mockRoutes.clear();
+        mockRequireSession.mockReset();
+        mockRequireSession.mockReturnValue(Promise.resolve({ userId: "user-1", userName: "TestUser" } as any));
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+        mockGetRunnerServices.mockReset();
+        mockGetRunnerServices.mockReturnValue(Promise.resolve(null));
+        mockGetSession.mockReset();
+        mockGetSession.mockReturnValue(Promise.resolve(null));
+        mockGetPersistedRelaySessionOwner.mockReset();
+        mockGetPersistedRelaySessionOwner.mockReturnValue(Promise.resolve(null));
+        mockPublishEvent.mockReset();
+        mockPublishEvent.mockReturnValue(Promise.resolve({ event: { eventId: "event-test" } }));
+    });
+
+    test("GET lists session routes with their owning session and owned flag", async () => {
+        seedSessionRoute("rt_mine", "user-1");
+        seedSessionRoute("rt_theirs", "user-2");
+
+        const [req, url] = makeReq("GET", "/api/runners/runner-A/trigger-listeners");
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.listeners).toHaveLength(2);
+        const mine = body.listeners.find((l: any) => l.listenerId === "rt_mine");
+        const theirs = body.listeners.find((l: any) => l.listenerId === "rt_theirs");
+        expect(mine.ownerSessionId).toBe("sess-1");
+        expect(mine.owned).toBe(true);
+        expect(theirs.owned).toBe(false);
+    });
+
+    test("PUT disables an owned session route by route id", async () => {
+        seedSessionRoute("rt_mine");
+
+        const [req, url] = makeReq("PUT", "/api/runners/runner-A/trigger-listeners/rt_mine", { disabled: true });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.ok).toBe(true);
+        expect(body.disabled).toBe(true);
+        expect(mockRoutes.get("rt_mine").disabled).toBe(true);
+        expect(mockRoutes.get("rt_mine").target.kind).toBe("session");
+    });
+
+    test("PUT re-enables a disabled session route", async () => {
+        seedSessionRoute("rt_mine", "user-1", { disabled: true });
+
+        const [req, url] = makeReq("PUT", "/api/runners/runner-A/trigger-listeners/rt_mine", { disabled: false });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        expect((await res!.json()).disabled).toBe(false);
+        expect(mockRoutes.get("rt_mine").disabled).toBe(false);
+    });
+
+    test("PUT on another user's session route is rejected (403) and the route is untouched", async () => {
+        seedSessionRoute("rt_theirs", "user-2");
+
+        const [req, url] = makeReq("PUT", "/api/runners/runner-A/trigger-listeners/rt_theirs", { disabled: true });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(403);
+        expect(mockRoutes.get("rt_theirs").disabled).toBeUndefined();
+    });
+
+    test("PUT rejects spawn-only field edits on a session route (400)", async () => {
+        seedSessionRoute("rt_mine");
+
+        const [req, url] = makeReq("PUT", "/api/runners/runner-A/trigger-listeners/rt_mine", { prompt: "rewrite history" });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(400);
+        expect(mockRoutes.get("rt_mine").target.spec).toBeUndefined();
+    });
+
+    test("PUT without a disabled field on a session route is rejected (400)", async () => {
+        seedSessionRoute("rt_mine");
+
+        const [req, url] = makeReq("PUT", "/api/runners/runner-A/trigger-listeners/rt_mine", {});
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(400);
+    });
+
+    test("DELETE removes an owned session route by id", async () => {
+        seedSessionRoute("rt_mine");
+
+        const [req, url] = makeReq("DELETE", "/api/runners/runner-A/trigger-listeners/rt_mine");
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.removed).toBe(1);
+        expect(mockRoutes.size).toBe(0);
+    });
+
+    test("DELETE on another user's session route is rejected (403)", async () => {
+        seedSessionRoute("rt_theirs", "user-2");
+
+        const [req, url] = makeReq("DELETE", "/api/runners/runner-A/trigger-listeners/rt_theirs");
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(403);
+        expect(mockRoutes.has("rt_theirs")).toBe(true);
+    });
+
+    test("PUT disables a spawn listener too (same toggle for both kinds)", async () => {
+        mockRoutes.set("rt_spawn", {
+            routeId: "rt_spawn",
+            eventType: "svc:event",
+            target: { kind: "spawn", spec: { runnerId: "runner-A", promptTemplate: "keep" } },
+            deliverAs: "followUp",
+            origin: "ui",
+            createdAt: new Date().toISOString(),
+        });
+
+        const [req, url] = makeReq("PUT", "/api/runners/runner-A/trigger-listeners/rt_spawn", { disabled: true });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const route = mockRoutes.get("rt_spawn");
+        expect(route.disabled).toBe(true);
+        // A disable-only PUT must not rewrite the spawn spec.
+        expect(route.target.spec.promptTemplate).toBe("keep");
+    });
+});
+
+describe("listener delivery history", () => {
+    beforeEach(() => {
+        mockRoutes.clear();
+        mockRequireSession.mockReset();
+        mockRequireSession.mockReturnValue(Promise.resolve({ userId: "user-1", userName: "TestUser" } as any));
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+        mockGetRunnerServices.mockReset();
+        mockGetRunnerServices.mockReturnValue(Promise.resolve(null));
+        mockListDeliveries.mockReset();
+        mockListDeliveries.mockReturnValue(Promise.resolve([]));
+        mockEventsForIds.mockReset();
+        mockEventsForIds.mockReturnValue(Promise.resolve([]));
+    });
+
+    test("GET attaches recent deliveries per listener with outcome, time, and session", async () => {
+        mockRoutes.set("rt_1", {
+            routeId: "rt_1",
+            eventType: "svc:event",
+            target: { kind: "spawn", spec: { runnerId: "runner-A" } },
+            deliverAs: "followUp",
+            origin: "ui",
+            createdAt: new Date().toISOString(),
+        });
+        mockListDeliveries.mockReturnValue(Promise.resolve([
+            { deliveryId: "d2", eventId: "e2", routeId: "rt_1", status: "pending", sessionId: "sess-b", createdAt: "2026-04-03T00:02:00.000Z" },
+            { deliveryId: "d1", eventId: "e1", routeId: "rt_1", status: "delivered", sessionId: "sess-a", createdAt: "2026-04-03T00:01:00.000Z" },
+            { deliveryId: "d_other", eventId: "e3", routeId: "rt_x", status: "delivered", sessionId: "sess-c", createdAt: "2026-04-03T00:03:00.000Z" },
+        ]));
+        mockEventsForIds.mockReturnValue(Promise.resolve([{ eventId: "e1", type: "svc:event" }, { eventId: "e2", type: "svc:event" }] as any));
+
+        const [req, url] = makeReq("GET", "/api/runners/runner-A/trigger-listeners");
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.listeners).toHaveLength(1);
+        const history = body.listeners[0].history;
+        expect(history).toHaveLength(2);
+        expect(history[0]).toEqual({
+            deliveryId: "d2", eventId: "e2", status: "pending", sessionId: "sess-b",
+            eventType: "svc:event", createdAt: "2026-04-03T00:02:00.000Z",
+        });
+        expect(history[1].deliveryId).toBe("d1");
     });
 });
 

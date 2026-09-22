@@ -23,6 +23,7 @@ export type {
   ServicePanelPlacement,
   ServiceTriggerDef,
   ServiceTriggerParamDef,
+  TriggerRuntimeStatus,
   ServiceSigilDef,
   SigilResolveData,
   ServiceModeDef,

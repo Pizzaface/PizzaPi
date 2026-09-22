@@ -205,6 +205,16 @@ export interface ServicePanelInfo {
 
 // ── Service trigger types ─────────────────────────────────────────────────────
 
+/** Runtime acknowledgement for a persisted runner-owned trigger instance.
+ * `unknown` is deliberately distinct from armed: the relay must not infer
+ * runtime state from a saved route alone. */
+export interface TriggerRuntimeStatus {
+  state: "confirmed" | "pending" | "stale" | "unknown" | "delivering" | "retrying";
+  lastAckAt?: string;
+  nextFireAt?: string;
+  timezone?: string;
+}
+
 /**
  * A trigger type that a service can emit.
  * Declared in a service's manifest.json and forwarded via service_announce

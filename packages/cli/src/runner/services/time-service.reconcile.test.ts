@@ -115,16 +115,14 @@ describe("TimeService.reconcileSubscriptions()", () => {
             expect(result.applied).toBe(1);
         });
 
-        test("counts missing duration as applied (handler warns, does not throw)", () => {
+        test("does not count missing duration as applied", () => {
             service = new TimeService();
-            // duration param is required by the trigger def but the handler just
-            // logs a warning and returns rather than throwing — so it still counts.
+            // Missing required duration is rejected and reported as an error.
             const result = service.reconcileSubscriptions([
                 entry("sess-1", "time:timer_fired", {}),
             ]);
-            // No throw → applied still incremented
-            expect(result.applied).toBe(1);
-            expect(result.errors).toBeUndefined();
+            expect(result.applied).toBe(0);
+            expect(result.errors).toEqual(["sess-1/time:timer_fired: invalid subscription parameters"]);
         });
 
         test("handles multiple sessions with timer_fired", () => {
@@ -160,12 +158,13 @@ describe("TimeService.reconcileSubscriptions()", () => {
             expect(result.applied).toBe(1);
         });
 
-        test("counts missing 'at' param as applied (handler warns, does not throw)", () => {
+        test("does not count missing 'at' param as applied", () => {
             service = new TimeService();
             const result = service.reconcileSubscriptions([
                 entry("sess-1", "time:at", {}),
             ]);
-            expect(result.applied).toBe(1);
+            expect(result.applied).toBe(0);
+            expect(result.errors).toEqual(["sess-1/time:at: invalid subscription parameters"]);
         });
     });
 
@@ -178,12 +177,13 @@ describe("TimeService.reconcileSubscriptions()", () => {
             expect(result.applied).toBe(1);
         });
 
-        test("counts an invalid cron expression as applied (handler warns, does not throw)", () => {
+        test("does not count an invalid cron expression as applied", () => {
             service = new TimeService();
             const result = service.reconcileSubscriptions([
                 entry("sess-1", "time:cron", { cron: "not-a-cron" }),
             ]);
-            expect(result.applied).toBe(1);
+            expect(result.applied).toBe(0);
+            expect(result.errors).toEqual(["sess-1/time:cron: invalid subscription parameters"]);
         });
     });
 

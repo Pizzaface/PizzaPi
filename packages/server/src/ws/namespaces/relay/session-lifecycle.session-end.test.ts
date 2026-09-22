@@ -128,5 +128,6 @@ describe("session_end handler", () => {
         expect(endedSessions.length).toBe(1);
         expect(endedSessions[0].sessionId).toBe("child-mirror");
         expect(endedSessions[0].opts).toEqual(expect.objectContaining({ expectedOwnerToken: "tok" }));
+        expect(endedSessions[0].opts).not.toHaveProperty("confirmedTerminal", true);
     });
 });
