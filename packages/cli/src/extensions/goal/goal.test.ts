@@ -1081,7 +1081,7 @@ describe("goalExtension event wiring", () => {
                 turnIndex: 1,
                 message: makeAssistantMessage("All tests pass"),
                 toolResults: [],
-            } as TurnEndEvent, ctx);
+            } as unknown as TurnEndEvent, ctx);
         }
 
         expect(getGoal("session-1")?.status).toBe("met");
@@ -1110,7 +1110,7 @@ describe("goalExtension event wiring", () => {
                 turnIndex: 1,
                 message: makeAssistantMessage("Still failing"),
                 toolResults: [],
-            } as TurnEndEvent, ctx);
+            } as unknown as TurnEndEvent, ctx);
         }
 
         expect(getGoal("session-1")?.status).toBe("active");
@@ -1138,7 +1138,7 @@ describe("goalExtension event wiring", () => {
                 turnIndex: 1,
                 message: { ...makeAssistantMessage(""), stopReason: "error", errorMessage: "rate limit exceeded" },
                 toolResults: [],
-            } as TurnEndEvent, ctx);
+            } as unknown as TurnEndEvent, ctx);
         }
 
         expect(getGoal("session-1")?.status).toBe("active");
@@ -1167,7 +1167,7 @@ describe("goalExtension event wiring", () => {
                 turnIndex: 1,
                 message: makeAssistantMessage("Still failing"),
                 toolResults: [],
-            } as TurnEndEvent, ctx);
+            } as unknown as TurnEndEvent, ctx);
         }
 
         expect(getGoal("session-1")?.status).toBe("active");
@@ -1200,7 +1200,7 @@ describe("goalExtension event wiring", () => {
                 turnIndex: 1,
                 message: makeAssistantMessage("All tests pass"),
                 toolResults: [],
-            } as TurnEndEvent, ctx);
+            } as unknown as TurnEndEvent, ctx);
         }
 
         expect(getGoal("session-1")?.status).toBe("met");
@@ -1246,7 +1246,7 @@ describe("goalExtension event wiring", () => {
                 turnIndex: 1,
                 message: makeAssistantMessage("Still failing"),
                 toolResults: [],
-            } as TurnEndEvent, ctx);
+            } as unknown as TurnEndEvent, ctx);
         }
 
         expect(getPendingGuidance("session-1")).toContain("pass");
@@ -1275,7 +1275,7 @@ describe("goalExtension event wiring", () => {
                     turnIndex: i + 1,
                     message: makeToolUseMessage("running a command"),
                     toolResults: [],
-                } as TurnEndEvent, ctx);
+                } as unknown as TurnEndEvent, ctx);
             }
         }
 
@@ -1296,7 +1296,7 @@ describe("goalExtension event wiring", () => {
                 turnIndex: 4,
                 message: makeAssistantMessage("Still failing"),
                 toolResults: [],
-            } as TurnEndEvent, ctx);
+            } as unknown as TurnEndEvent, ctx);
         }
 
         const afterRun = getGoal("session-1")!;
@@ -1326,7 +1326,7 @@ describe("goalExtension event wiring", () => {
                     turnIndex: i + 1,
                     message: makeToolUseMessage("running a command"),
                     toolResults: [],
-                } as TurnEndEvent, ctx);
+                } as unknown as TurnEndEvent, ctx);
             }
         }
 
@@ -1359,7 +1359,7 @@ describe("goalExtension event wiring", () => {
                     turnIndex: 1,
                     message: makeAssistantMessage(text),
                     toolResults: [],
-                } as TurnEndEvent, ctx);
+                } as unknown as TurnEndEvent, ctx);
             }
         }
 
@@ -1407,7 +1407,7 @@ describe("goalExtension event wiring", () => {
                 turnIndex: 1,
                 message: makeAssistantMessage("All tests pass"),
                 toolResults: [],
-            } as TurnEndEvent, ctx);
+            } as unknown as TurnEndEvent, ctx);
         }
 
         expect(getGoal("session-1")?.evaluations.length).toBe(1);
@@ -1435,7 +1435,7 @@ describe("goalExtension event wiring", () => {
                     turnIndex: i + 1,
                     message: makeAssistantMessage("All tests pass"),
                     toolResults: [],
-                } as TurnEndEvent, ctx);
+                } as unknown as TurnEndEvent, ctx);
             }
         }
 
@@ -1451,7 +1451,7 @@ describe("goalExtension event wiring", () => {
                 turnIndex: 3,
                 message: makeAssistantMessage("All tests pass"),
                 toolResults: [],
-            } as TurnEndEvent, ctx);
+            } as unknown as TurnEndEvent, ctx);
         }
 
         expect(getGoal("session-1")?.status).toBe("met");
@@ -1475,7 +1475,7 @@ describe("goalExtension event wiring", () => {
                 turnIndex: 1,
                 message: makeAssistantMessage("working on it"),
                 toolResults: [],
-            } as TurnEndEvent, ctx);
+            } as unknown as TurnEndEvent, ctx);
         }
 
         expect(getGoal("session-1")?.evaluations.at(-1)?.verdict).toBe("uncertain");
@@ -1502,7 +1502,7 @@ describe("goalExtension event wiring", () => {
                 turnIndex: 1,
                 message: makeAssistantMessage("turn 1"),
                 toolResults: [],
-            } as TurnEndEvent, ctx);
+            } as unknown as TurnEndEvent, ctx);
         }
         // Turn 2 is throttled (rate 5) but still hits the maxTurns: 2 budget.
         for (const handler of turnHandlers) {
@@ -1511,7 +1511,7 @@ describe("goalExtension event wiring", () => {
                 turnIndex: 1,
                 message: makeAssistantMessage("turn 2"),
                 toolResults: [],
-            } as TurnEndEvent, ctx);
+            } as unknown as TurnEndEvent, ctx);
         }
 
         expect(getGoal("session-1")?.status).toBe("failed");
@@ -1544,7 +1544,7 @@ describe("goalExtension event wiring", () => {
                 turnIndex: 1,
                 message: makeAssistantMessage("Still failing"),
                 toolResults: [],
-            } as TurnEndEvent, ctx);
+            } as unknown as TurnEndEvent, ctx);
         }
 
         expect(userMessages.length).toBe(1);
@@ -1571,7 +1571,7 @@ describe("goalExtension event wiring", () => {
                 turnIndex: 1,
                 message: makeAssistantMessage("All tests pass"),
                 toolResults: [],
-            } as TurnEndEvent, ctx);
+            } as unknown as TurnEndEvent, ctx);
         }
 
         expect(getGoal("session-1")?.status).toBe("met");
@@ -1603,7 +1603,7 @@ describe("goalExtension event wiring", () => {
                     turnIndex: i + 1,
                     message: makeAssistantMessage("working"),
                     toolResults: [],
-                } as TurnEndEvent, ctx);
+                } as unknown as TurnEndEvent, ctx);
             }
         }
 
@@ -1641,7 +1641,7 @@ describe("goalExtension event wiring", () => {
                 turnIndex: 1,
                 message: makeAssistantMessage("Still failing"),
                 toolResults: [],
-            } as TurnEndEvent, ctx);
+            } as unknown as TurnEndEvent, ctx);
         }
 
         emitted = events.get("goal:state_changed") ?? [];
