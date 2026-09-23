@@ -686,6 +686,12 @@ function ListenerCard({
                 disabled
               </span>
             )}
+            {!listener.ownerSessionId && (listener.runtime?.state ?? "unknown") === "unknown" ? (
+            // Spawn routes are matched server-side; no runner service tracks them.
+            <span className="px-1.5 py-0.5 rounded-md text-[10px] border border-border/40 text-muted-foreground" title="Matched by the server when events publish; no runner-side state">
+              server-routed
+            </span>
+            ) : (
             <span className={cn(
               "px-1.5 py-0.5 rounded-md text-[10px] border",
               (listener.runtime?.state === "confirmed" || listener.runtime?.state === "delivering" || listener.runtime?.state === "retrying")
@@ -694,6 +700,7 @@ function ListenerCard({
             )}>
               runtime: {listener.runtime?.state ?? "unknown"}
             </span>
+            )}
             {listener.runtime?.nextFireAt && (
               <span className="text-[10px] text-muted-foreground" title={listener.runtime.timezone ? `Timezone: ${listener.runtime.timezone}` : undefined}>
                 next {new Date(listener.runtime.nextFireAt).toLocaleString()}{listener.runtime.timezone ? ` (${listener.runtime.timezone})` : ""}
@@ -730,7 +737,7 @@ function ListenerCard({
           ) : !canManage ? (
             <span className="text-[10px] text-muted-foreground" title="This session route belongs to another user">read-only</span>
           ) : (
-            <span className="text-[10px] text-muted-foreground" title={listener.disabled ? "This saved route is disabled" : "This route's runtime status is unknown; manual dispatch is still available when enabled"}>{listener.disabled ? "Disabled" : "Runtime unknown"}</span>
+            <span className="text-[10px] text-muted-foreground" title={listener.disabled ? "This saved route is disabled" : "This route's runtime status is unknown; manual dispatch is still available when enabled"}>{listener.disabled ? "Disabled" : listener.ownerSessionId ? "Runtime unknown" : "Server-routed"}</span>
           )}
           {canManage && listener.listenerId && (
             <button
