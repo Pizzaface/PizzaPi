@@ -1,8 +1,5 @@
-diff --git a/node_modules/@earendil-works/pi-coding-agent/.bun-tag-19bb5cc710612416 b/.bun-tag-19bb5cc710612416
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/config.js b/dist/config.js
-index 95fa083078b64fbfe6e2b89137ad0d866dd55d9c..263c5af78d0296cdecc0ba112fc108a9882fe63e 100644
+index 872dd55..a580a87 100644
 --- a/dist/config.js
 +++ b/dist/config.js
 @@ -359,6 +359,10 @@ export function getReadmePath() {
@@ -47,10 +44,10 @@ index 95fa083078b64fbfe6e2b89137ad0d866dd55d9c..263c5af78d0296cdecc0ba112fc108a9
  /** Get path to user's custom themes directory */
  export function getCustomThemesDir() {
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index 66e874efd252470d00d3cdaad2e2b4b6121de15b..f725f2701e56e000aec7c4f8d7c6b033954b286c 100644
+index 36fdb31..fe1454a 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
-@@ -981,29 +981,40 @@ export class AgentSession {
+@@ -1363,29 +1363,40 @@ export class AgentSession {
       * Emits errors via extension runner if file read fails.
       */
      _expandSkillCommand(text) {
@@ -112,10 +109,10 @@ index 66e874efd252470d00d3cdaad2e2b4b6121de15b..f725f2701e56e000aec7c4f8d7c6b033
 +            return sep + expandOne(token.slice(7), "", token);
 +        });
      }
-     /**
-      * Queue a steering message while the agent is running.
+     async _queueUserInput(text, images, behavior, source) {
+         if (text.startsWith("/")) {
 diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
-index d7940e14deb53a3a18237c51c5afb5712686f0ba..36a3d2be5dc5ec31199601965583eed0b3bd7503 100644
+index 4977814..d73c5d0 100644
 --- a/dist/core/model-resolver.js
 +++ b/dist/core/model-resolver.js
 @@ -21,6 +21,7 @@ export const defaultModelPerProvider = {
@@ -124,10 +121,10 @@ index d7940e14deb53a3a18237c51c5afb5712686f0ba..36a3d2be5dc5ec31199601965583eed0
      openrouter: "moonshotai/kimi-k2.6",
 +    "ollama-cloud": "glm-5.1",
      "vercel-ai-gateway": "zai/glm-5.1",
-     xai: "grok-4.6",
+     xai: "grok-4.7",
      groq: "openai/gpt-oss-120b",
 diff --git a/dist/core/model-runtime.js b/dist/core/model-runtime.js
-index fbcc6cb95e08390559fd4b0a554b0c8ec37d5be5..463e2771874194a83012f27e80a12ea1e53f425c 100644
+index 81bf752..dbf7eae 100644
 --- a/dist/core/model-runtime.js
 +++ b/dist/core/model-runtime.js
 @@ -22,6 +22,32 @@ export class CredentialSynchronizationError extends Error {
@@ -173,10 +170,10 @@ index fbcc6cb95e08390559fd4b0a554b0c8ec37d5be5..463e2771874194a83012f27e80a12ea1
          if (!base && !this.config.getProvider(providerId) && !extension) {
              this.models.deleteProvider(providerId);
 diff --git a/dist/core/settings-manager.js b/dist/core/settings-manager.js
-index f0f936eb01afe5d158f1834c5e40421e36af0d24..a1ff611fbd63e652713608ae10f4f77edc6eab66 100644
+index ed9d8d2..222e731 100644
 --- a/dist/core/settings-manager.js
 +++ b/dist/core/settings-manager.js
-@@ -654,7 +654,13 @@ export class SettingsManager {
+@@ -690,7 +690,13 @@ export class SettingsManager {
          this.save();
      }
      getQuietStartup() {
@@ -192,10 +189,10 @@ index f0f936eb01afe5d158f1834c5e40421e36af0d24..a1ff611fbd63e652713608ae10f4f77e
      setQuietStartup(quiet) {
          this.globalSettings.quietStartup = quiet;
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index e2b640b661a7712fa3f86ed5ecb494b98a6f9e4d..3d379dca186dad0c9b393c60cd91c53eb9cd9603 100644
+index 52dcaaf..aed9535 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
-@@ -13,6 +13,7 @@ export { type ModelScopeDiagnostic, type ResolveCliModelResult, type ResolveMode
+@@ -14,6 +14,7 @@ export { type ModelScopeDiagnostic, type ResolveCliModelResult, type ResolveMode
  export { type CreateModelRuntimeOptions, CredentialSynchronizationError, type CredentialSynchronizationOperation, ModelRuntime, type ModelRuntimeAuthOverrides, } from "./core/model-runtime.ts";
  export type { PackageManager, PathMetadata, ProgressCallback, ProgressEvent, ResolvedPaths, ResolvedResource, } from "./core/package-manager.ts";
  export { DefaultPackageManager } from "./core/package-manager.ts";
@@ -204,7 +201,7 @@ index e2b640b661a7712fa3f86ed5ecb494b98a6f9e4d..3d379dca186dad0c9b393c60cd91c53e
  export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
  export { AgentSessionRuntime, type AgentSessionRuntimeDiagnostic, type AgentSessionServices, type CreateAgentSessionFromServicesOptions, type CreateAgentSessionOptions, type CreateAgentSessionResult, type CreateAgentSessionRuntimeFactory, type CreateAgentSessionRuntimeResult, type CreateAgentSessionServicesOptions, createAgentSession, createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices, createBashTool, createCodingTools, createEditTool, createFindTool, createGrepTool, createLsTool, createPowerShellTool, createReadOnlyTools, createReadTool, createWriteTool, type PromptTemplate, } from "./core/sdk.ts";
 diff --git a/dist/index.js b/dist/index.js
-index 01017cdbf6a26b3d36e236c7f9e835fbf0fa5c3a..cc39132ccb28ee32498e502b21bc0b4d563a7600 100644
+index d833966..6ae246e 100644
 --- a/dist/index.js
 +++ b/dist/index.js
 @@ -13,6 +13,7 @@ export { ModelRegistry } from "./core/model-registry.js";
@@ -216,18 +213,10 @@ index 01017cdbf6a26b3d36e236c7f9e835fbf0fa5c3a..cc39132ccb28ee32498e502b21bc0b4d
  // SDK for programmatic usage
  export { AgentSessionRuntime, 
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index a1e7d98551b085a62359f1b5dc2953d0878b073b..80fb3e30c5bfa77330db9095abe83f5ec873d5a2 100644
+index 2c17c2f..421fe9d 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -38,7 +38,6 @@ import { getPiUserAgent } from "../../utils/pi-user-agent.js";
- import { killTrackedDetachedChildren } from "../../utils/shell.js";
- import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.js";
- import { ensureTool } from "../../utils/tools-manager.js";
--import { checkForNewPiVersion } from "../../utils/version-check.js";
- import { createChatViewport } from "./chat-viewport.js";
- import { ArminComponent } from "./components/armin.js";
- import { AssistantMessageComponent } from "./components/assistant-message.js";
-@@ -760,12 +759,6 @@ export class InteractiveMode {
+@@ -787,12 +787,6 @@ export class InteractiveMode {
                  .catch(() => { })
                  .finally(() => clearTimeout(timeout));
          }
@@ -240,7 +229,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..80fb3e30c5bfa77330db9095abe83f5e
          // Start package update check asynchronously
          this.checkForPackageUpdates()
              .then((updates) => {
-@@ -3527,31 +3520,13 @@ export class InteractiveMode {
+@@ -3673,31 +3667,13 @@ export class InteractiveMode {
          this.chatContainer.addChild(new Text(theme.fg("warning", `Warning: ${warningMessage}`), 1, 0));
          this.ui.requestRender();
      }
@@ -278,7 +267,7 @@ index a1e7d98551b085a62359f1b5dc2953d0878b073b..80fb3e30c5bfa77330db9095abe83f5e
          const updateInstruction = theme.fg("muted", "Package updates are available. Run ") + action;
          const packageLines = packages.map((pkg) => `- ${pkg}`).join("\n");
          this.chatContainer.addChild(new Spacer(1));
-@@ -3596,6 +3571,16 @@ export class InteractiveMode {
+@@ -3742,6 +3718,16 @@ export class InteractiveMode {
      }
      updatePendingMessagesDisplay() {
          this.pendingMessagesContainer.clear();

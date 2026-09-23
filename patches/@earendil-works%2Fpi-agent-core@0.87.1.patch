@@ -1,10 +1,10 @@
 diff --git a/dist/agent-loop.js b/dist/agent-loop.js
-index ca1186c..d9888be 100644
+index 4bbd0ce..ca54985 100644
 --- a/dist/agent-loop.js
 +++ b/dist/agent-loop.js
-@@ -118,6 +118,9 @@ async function runLoop(initialContext, newMessages, initialConfig, signal, emit,
-                 }
-                 pendingMessages = [];
+@@ -137,6 +137,9 @@ async function runLoop(initialContext, newMessages, initialConfig, signal, emit,
+                             : requestUpdate.thinkingLevel,
+                 };
              }
 +            // PATCH(pizzapi): refresh dynamic tool/prompt state before each assistant response
 +            currentContext.systemPrompt = currentContext.__getLatestSystemPrompt?.() ?? currentContext.systemPrompt;
@@ -12,14 +12,22 @@ index ca1186c..d9888be 100644
              // Stream assistant response
              const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFunction);
              newMessages.push(message);
+@@ -266,6 +269,7 @@ async function streamAssistantResponse(context, config, signal, emit, streamFunc
+     // Convert to LLM-compatible messages (AgentMessage[] → Message[])
+     const llmMessages = await config.convertToLlm(messages);
+     const llmContext = normalizeContext({ messages: llmMessages });
++    llmContext.tools = context.tools;
+     // Resolve API key (important for expiring tokens)
+     const resolvedApiKey = (config.getApiKey ? await config.getApiKey(config.model.provider) : undefined) || config.apiKey;
+     const response = await streamFunction(config.model, llmContext, {
 diff --git a/dist/agent.js b/dist/agent.js
-index ee4f225..d22f019 100644
+index a2f462f..706b27d 100644
 --- a/dist/agent.js
 +++ b/dist/agent.js
-@@ -280,6 +280,9 @@ export class Agent {
+@@ -294,6 +294,9 @@ export class Agent {
+     }
      createContextSnapshot() {
          return {
-             systemPrompt: this._state.systemPrompt,
 +            // PATCH(pizzapi): allow the agent loop to refresh dynamic tool/prompt state
 +            __getLatestSystemPrompt: () => this._state.systemPrompt,
 +            __getLatestTools: () => this._state.tools.slice(),

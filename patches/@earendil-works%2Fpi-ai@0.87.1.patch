@@ -1,8 +1,8 @@
 diff --git a/dist/api/anthropic-messages.js b/dist/api/anthropic-messages.js
-index e1538a5..a995a15 100644
+index 5dd85f1..7e332db 100644
 --- a/dist/api/anthropic-messages.js
 +++ b/dist/api/anthropic-messages.js
-@@ -467,6 +467,29 @@ export const stream = (model, context, options) => {
+@@ -474,6 +474,29 @@ export const stream = (model, context, options) => {
                          output.content.push(block);
                          stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
                      }
@@ -32,7 +32,7 @@ index e1538a5..a995a15 100644
                  }
                  else if (event.type === "content_block_delta") {
                      if (event.delta.type === "text_delta") {
-@@ -508,6 +531,10 @@ export const stream = (model, context, options) => {
+@@ -515,6 +538,10 @@ export const stream = (model, context, options) => {
                                  partial: output,
                              });
                          }
@@ -43,7 +43,7 @@ index e1538a5..a995a15 100644
                      }
                      else if (event.delta.type === "signature_delta") {
                          const index = blocks.findIndex((b) => b.index === event.index);
-@@ -524,6 +551,16 @@ export const stream = (model, context, options) => {
+@@ -531,6 +558,16 @@ export const stream = (model, context, options) => {
                      if (block) {
                          delete block.index;
                          if (block.type === "text") {
@@ -60,9 +60,9 @@ index e1538a5..a995a15 100644
                              stream.push({
                                  type: "text_end",
                                  contentIndex: index,
-@@ -838,6 +875,22 @@ function buildParams(model, context, isOAuthToken, options) {
-             ...convertTools(deferredTools, isOAuthToken, compat.supportsEagerToolInputStreaming, compat.supportsStrictTools, undefined, true),
-         ];
+@@ -868,6 +905,22 @@ function buildParams(model, context, isOAuthToken, options) {
+             params.tools = convertTools(tools, isOAuthToken, compat.supportsEagerToolInputStreaming, compat.supportsStrictTools, toolCacheControl);
+         }
      }
 +    // PATCH(pizzapi): inject Anthropic web search tool when PIZZAPI_WEB_SEARCH is set
 +    if (typeof process !== "undefined" && process.env.PIZZAPI_WEB_SEARCH && !["0", "false", "no", "off"].includes(process.env.PIZZAPI_WEB_SEARCH.toLowerCase())) {
@@ -83,8 +83,8 @@ index e1538a5..a995a15 100644
      // Managed effort models always use adaptive thinking so prefix mismatches can
      // be dropped instead of surfacing as persistent 400 responses.
      if (model.compat?.supportsMidConvoEffort === true) {
-@@ -976,7 +1029,23 @@ function convertMessages(transformedMessages, isOAuthToken, cacheControl, allowE
-         else if (msg.role === "assistant") {
+@@ -1020,7 +1073,23 @@ function convertMessages(transformedMessages, isOAuthToken, cacheControl, allowE
+             flushPendingSystemMessages();
              const blocks = [];
              for (const block of msg.content) {
 -                if (block.type === "text") {
@@ -108,7 +108,7 @@ index e1538a5..a995a15 100644
                      if (block.text.trim().length === 0)
                          continue;
                      blocks.push({
-@@ -1109,6 +1178,10 @@ function convertTools(tools, isOAuthToken, supportsEagerToolInputStreaming, supp
+@@ -1154,6 +1223,10 @@ function convertTools(tools, isOAuthToken, supportsEagerToolInputStreaming, supp
      if (!tools)
          return [];
      return tools.map((tool, index) => {
@@ -175,10 +175,10 @@ index 8692e90..815bf6f 100644
          return { apiKey: credential.access };
      },
 diff --git a/dist/utils/retry.js b/dist/utils/retry.js
-index ce8c4cb..1925393 100644
+index 6538c63..40e856b 100644
 --- a/dist/utils/retry.js
 +++ b/dist/utils/retry.js
-@@ -64,6 +64,9 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
+@@ -66,6 +66,9 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
      "stream ended before message_stop",
      "stream ended before a terminal response event",
      "http2 request did not get a response",

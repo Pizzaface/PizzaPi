@@ -1,0 +1,76 @@
+diff --git a/dist/terminal.js b/dist/terminal.js
+index 0cd6ea7..2fb8a60 100644
+--- a/dist/terminal.js
++++ b/dist/terminal.js
+@@ -4,6 +4,15 @@ import { setKittyProtocolActive } from "./keys.js";
+ import { isNativeModifierPressed } from "./native-modifiers.js";
+ import { getNativePlatformHelper } from "./native-platform.js";
+ import { StdinBuffer } from "./stdin-buffer.js";
++// PATCH(pizzapi): Windows console output lifecycle
++export function createWindowsConsoleLifecycle() {
++    return {
++        activate() {
++            return { stdoutMode: "unknown", stderrMode: "unknown", source: "pi-tui" };
++        },
++        restore() {},
++    };
++}
+ const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
+ const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
+ const TERMINAL_PROGRESS_CLEAR_SEQUENCE = "\x1b]9;4;0\x07";
+@@ -82,6 +91,7 @@ export class ProcessTerminal {
+     stdinBuffer;
+     stdinDataHandler;
+     progressInterval;
++    windowsConsoleLifecycle;
+     writeLogPath = (() => {
+         const env = process.env.PI_TUI_WRITE_LOG || "";
+         if (!env)
+@@ -126,10 +136,29 @@ export class ProcessTerminal {
+         // events that lose modifier information. Must run AFTER setRawMode(true)
+         // since that resets console mode flags.
+         this.enableWindowsVTInput();
++        // PATCH(pizzapi): Windows console output lifecycle
++        this.setupWindowsConsole();
+         // Query Kitty keyboard protocol and fall back to modifyOtherKeys when DA confirms no Kitty response.
+         // See: https://sw.kovidgoyal.net/kitty/keyboard-protocol/
+         this.queryAndEnableKittyProtocol();
+     }
++    /**
++     * On Windows, set up VT output and UTF-8 code page for Unicode rendering,
++     * and publish a capability signal for downstream renderers.
++     */
++    setupWindowsConsole() {
++        if (process.platform !== "win32")
++            return;
++        try {
++            this.windowsConsoleLifecycle = createWindowsConsoleLifecycle();
++            const result = this.windowsConsoleLifecycle.activate();
++            const globalObj = globalThis;
++            globalObj.__PI_WINDOWS_CONSOLE_CAPS__ = result;
++        }
++        catch {
++            // Best-effort: if console API setup fails, leave it alone
++        }
++    }
+     /**
+      * Set up StdinBuffer to split batched input into individual sequences.
+      * This ensures components receive single events, making matchesKey/isKeyRelease work correctly.
+@@ -359,6 +388,17 @@ export class ProcessTerminal {
+             process.stdout.removeListener("resize", this.resizeHandler);
+             this.resizeHandler = undefined;
+         }
++        // PATCH(pizzapi): restore Windows console state
++        if (this.windowsConsoleLifecycle) {
++            try {
++                this.windowsConsoleLifecycle.restore();
++            }
++            catch {
++                // Best-effort restore
++            }
++            this.windowsConsoleLifecycle = undefined;
++            delete globalThis.__PI_WINDOWS_CONSOLE_CAPS__;
++        }
+         // Pause stdin to prevent any buffered input (e.g., Ctrl+D) from being
+         // re-interpreted after raw mode is disabled. This fixes a race condition
+         // where Ctrl+D could close the parent shell over SSH.
