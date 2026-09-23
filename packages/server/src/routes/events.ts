@@ -92,6 +92,12 @@ function validatePublishFields(body: Record<string, unknown>): string | null {
   if (body.fireId !== undefined && (typeof body.fireId !== "string" || body.fireId.length === 0)) {
     return "fireId must be a non-empty string";
   }
+  if (body.routeIds !== undefined && (
+    !Array.isArray(body.routeIds) || body.routeIds.length > 100
+    || body.routeIds.some((id) => typeof id !== "string" || id.length === 0 || id.length > 256)
+  )) {
+    return "routeIds must contain at most 100 non-empty strings of 256 characters or fewer";
+  }
 
   if (body.responseContract !== undefined) {
     if (!isPlainObject(body.responseContract)) return "responseContract must be an object";
@@ -166,6 +172,11 @@ export function validateRouteFields(patch: unknown): string | null {
   }
   if (patch.filterMode !== undefined && patch.filterMode !== "and" && patch.filterMode !== "or") {
     return "filterMode must be and | or";
+  }
+  if (patch.target !== undefined && isPlainObject(patch.target) && patch.target.kind === "session"
+    && patch.target.offlinePolicy !== undefined
+    && patch.target.offlinePolicy !== "wait" && patch.target.offlinePolicy !== "wake" && patch.target.offlinePolicy !== "fail") {
+    return "target.offlinePolicy must be wait | wake | fail";
   }
   if (patch.params !== undefined && !isPlainObject(patch.params)) return "params must be a plain object";
   if (patch.promptTemplate !== undefined && typeof patch.promptTemplate !== "string") {
@@ -294,7 +305,13 @@ function routeRunnerId(route: Route): string | undefined {
   return route.target.kind === "spawn" ? route.target.spec.runnerId : route.target.runnerId;
 }
 
-/** Whether an active subscription must be removed from its old target first. */
+/** Whether reconciliation must retire the old subscription before re-adding it. */
+function subscriptionContextChanged(existing: Route, updated: Route): boolean {
+  return routeRunnerId(existing) !== routeRunnerId(updated)
+    || existing.eventType.split(":", 1)[0] !== updated.eventType.split(":", 1)[0];
+}
+
+/** Whether a session-scoped service needs the prior destination cleared first. */
 function sessionTargetChanged(existing: Route, updated: Route): boolean {
   if (existing.target.kind !== "session") return false;
   return updated.target.kind !== "session"
@@ -389,7 +406,7 @@ export const handleEventsRoute: RouteHandler = async (req, url) => {
 
     try {
       const outcome = await publishEvent(
-        { type: body.type, payload: body.payload, summary: body.summary, responseContract: body.responseContract, fireId: body.fireId },
+        { type: body.type, routeIds: body.routeIds, payload: body.payload, summary: body.summary, responseContract: body.responseContract, fireId: body.fireId },
         source,
         createEngineDeps(),
         extraTargets,
@@ -737,10 +754,15 @@ export const handleEventsRoute: RouteHandler = async (req, url) => {
         } else if (wasDisabled && !isDisabled) {
           await notifyRouteChange("subscribe", updated);
         } else if (!isDisabled) {
-          if (sessionTargetChanged(existing, updated)) {
+          if (subscriptionContextChanged(existing, updated)) {
             await notifyRouteChange("unsubscribe", existing);
+            await notifyRouteChange("subscribe", updated);
+          } else {
+            if (sessionTargetChanged(existing, updated)) {
+              await notifyRouteChange("unsubscribe", existing);
+            }
+            await notifyRouteChange("update", updated);
           }
-          await notifyRouteChange("update", updated);
         }
       }
       return Response.json({ ok: true, route: updated });

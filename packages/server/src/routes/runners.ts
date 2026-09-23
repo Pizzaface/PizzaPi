@@ -21,6 +21,7 @@ import { triggerAllowedForCwd } from "./mode-scope.js";
 import { createRoute, deleteRoute, listRoutes, updateRoute, listDeliveries, eventsForIds } from "../events/store.js";
 import { publishEvent } from "../events/engine.js";
 import { createEngineDeps } from "../events/transport.js";
+import { routeMatchesOwner } from "@pizzapi/protocol";
 import type { JsonValue, Route, TriggerRuntimeStatus } from "@pizzapi/protocol";
 import { getPersistedRelaySessionOwner } from "../sessions/store.js";
 import { getSession } from "../ws/sio-state/index.js";
@@ -62,7 +63,7 @@ interface ListenerInfo {
     /** False when the route belongs to another user (session routes on a
      *  shared runner): the UI hides mutation controls, the API rejects them. */
     owned?: boolean;
-    history?: Array<{ deliveryId: string; eventId: string; status: string; sessionId: string; eventType: string; createdAt: string }>;
+    history?: Array<{ deliveryId: string; eventId: string; status: string; sessionId: string; spawnRouteId?: string; eventType: string; createdAt: string }>;
     disabled?: boolean;
 }
 
@@ -137,6 +138,7 @@ async function listListeners(runnerId: string, userId?: string): Promise<Listene
     for (const listener of listeners) {
         listener.history = deliveries.filter((d) => d.routeId === listener.listenerId).slice(0, 10).map((d) => ({
             deliveryId: d.deliveryId, eventId: d.eventId, status: d.status, sessionId: d.sessionId,
+            ...(d.spawnRouteId ? { spawnRouteId: d.spawnRouteId } : {}),
             eventType: eventById.get(d.eventId)?.type ?? listener.triggerType,
             createdAt: d.createdAt,
         }));
@@ -734,8 +736,10 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
 
         const entries = (await listRoutes())
+            .filter((route) => routeMatchesOwner(route, identity.userId))
             .map((route) => ({
                 subscriptionId: route.routeId,
+                target: route.target,
                 sessionId: route.target.kind === "session" ? route.target.sessionId : "",
                 runnerId: route.target.kind === "session" ? (route.target.runnerId ?? "") : route.target.spec.runnerId,
                 triggerType: route.eventType,
@@ -749,6 +753,14 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         // Label each schedule with its owning session so the UI can show where
         // it runs and filter by workspace, without a per-session round trip.
         const schedules = await Promise.all(entries.map(async (entry) => {
+            if (entry.target.kind === "spawn") {
+                return {
+                    ...entry,
+                    sessionName: null,
+                    cwd: entry.target.spec.cwd ?? null,
+                    sessionLive: false,
+                };
+            }
             const owner = await getPersistedRelaySessionOwner(entry.sessionId).catch(() => null);
             const live = await getSession(entry.sessionId).catch(() => null);
             const cwd = live?.cwd ?? owner?.cwd ?? null;

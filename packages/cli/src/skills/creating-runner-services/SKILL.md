@@ -34,7 +34,7 @@ pi package (package.json → pi.pizzapi.services[])
             ├─ panel HTTP server        → announcePanel(port)   → UI iframe
             ├─ sigil-only HTTP server   → announceSigilServer(port)
             ├─ triggers[] + sigils[]    → service_announce → agents/UI discover
-            └─ fires triggers           → POST /api/runners/{id}/trigger-broadcast
+            └─ publishes events         → POST /api/events
 ```
 
 Rules the loader enforces:
@@ -202,13 +202,6 @@ import { fileURLToPath } from "node:url";
 import type { Server } from "bun";
 
 // ── Relay helpers (needed only to FIRE triggers) ─────────────────────────
-function readRunnerId(): string | null {
-    try {
-        const home = process.env.HOME || homedir();
-        const raw = JSON.parse(readFileSync(join(home, ".pizzapi", "runner.json"), "utf-8"));
-        return typeof raw?.runnerId === "string" ? raw.runnerId : null;
-    } catch { return null; }
-}
 function resolveRelayUrl(): string {
     const home = process.env.HOME || homedir();
     let raw = process.env.PIZZAPI_RELAY_URL?.trim();
@@ -226,19 +219,23 @@ function resolveRelayUrl(): string {
 function getApiKey(): string | null {
     return process.env.PIZZAPI_RUNNER_API_KEY ?? process.env.PIZZAPI_API_KEY ?? null;
 }
-async function broadcastTrigger(
+async function publishEvent(
     type: string,
     payload: Record<string, unknown>,
-    opts?: { deliverAs?: "steer" | "followUp"; summary?: string; expectsResponse?: boolean },
+    opts?: { summary?: string },
 ): Promise<void> {
-    const runnerId = readRunnerId();
     const apiKey = getApiKey();
-    if (!runnerId || !apiKey) return;
-    await fetch(`${resolveRelayUrl()}/api/runners/${runnerId}/trigger-broadcast`, {
+    if (!apiKey) return;
+    await fetch(`${resolveRelayUrl()}/api/events`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-api-key": apiKey },
-        body: JSON.stringify({ type, payload, source: "my-service", deliverAs: opts?.deliverAs ?? "followUp", summary: opts?.summary, expectsResponse: opts?.expectsResponse }),
-    }).catch((err) => console.error("[my-service] trigger broadcast failed:", err));
+        body: JSON.stringify({
+            type,
+            payload,
+            source: { kind: "service", id: "my-service", name: "my-service" },
+            summary: opts?.summary,
+        }),
+    }).catch((err) => console.error("[my-service] event publish failed:", err));
 }
 
 // ── Service ──────────────────────────────────────────────────────────────
@@ -266,7 +263,7 @@ class MyService {
                     return Response.json({ id, title: "Example Item", href: `https://example.com/${id}`, subtitle: "Open" }, { headers: cors });
                 }
                 if (url.pathname.endsWith("/api/do-thing") && req.method === "POST") {
-                    void broadcastTrigger("my-service:something_happened", { itemId: "abc-123", timestamp: Date.now() }, { summary: "A thing happened" });
+                    void publishEvent("my-service:something_happened", { itemId: "abc-123", timestamp: Date.now() }, { summary: "A thing happened" });
                     return Response.json({ ok: true }, { headers: cors });
                 }
                 return new Response(indexHtml, { headers: { "Content-Type": "text/html; charset=utf-8" } });
@@ -297,26 +294,29 @@ subscribe; the service fires; the relay fans out to subscribers.
 | `type` | Yes | Namespaced, `"my-service:event_name"` |
 | `label` | Yes | Human-readable, for UI and agent tools |
 | `description` | No | When/why it fires |
-| `schema` | No | JSON Schema of the payload. **Its properties are the filterable fields** subscribers can target with `filters` |
+| `schema` | No | Describes the payload to agents/UI; manual fire checks required keys and declared top-level types. It does not restrict which payload fields Routes can filter on. |
 | `params` | No | Subscription params **forwarded to the service** (e.g. "which repo to watch"). See the params-vs-filters note below |
 
 ### Fire
 
 ```
-POST /api/runners/{runnerId}/trigger-broadcast     (header: x-api-key)
+POST /api/events     (header: x-api-key)
 ```
 
 | Body field | Required | Description |
 |------------|----------|-------------|
-| `type` | Yes | Must match a declared trigger type |
-| `payload` | Yes | Arbitrary JSON delivered to subscribers |
-| `source` | No | Label in trigger history (usually the service name) |
-| `deliverAs` | No | `"followUp"` (default, queues after the turn) or `"steer"` (interrupts now) |
-| `summary` | No | One-liner for trigger history |
-| `expectsResponse` | No | Whether the delivery expects a reply |
+| `type` | Yes | Must be a valid namespaced event type (e.g. `my-service:event_name`). A declaration advertises the type; publishing does not check registration. |
+| `payload` | No | JSON object delivered to matching Routes; omitted payload defaults to `{}` |
+| `source` | No | Optional `{ kind, id, name }` attribution metadata. Tenant ownership comes from the authenticated caller, not this field. |
+| `routeIds` | No | Explicit allowlist of at most 100 route IDs; selected routes still must match the event type and filters and pass ownership checks |
+| `fireId` | No | Stable idempotency key; reuse it when retrying the same publish |
+| `summary` | No | One-liner for event history |
+| `responseContract` | No | Optional `{ actions, ttlMs, escalate }` declaration for deliveries that need a reply |
 
-Read `runnerId`/`apiKey`/`relayUrl` **at call time**, not in `init()` — they can
-change on daemon reconnect (see the helpers in the template).
+Delivery mode is configured on each matching Route as `route.deliverAs` (`"followUp"` queues after the turn; `"steer"` interrupts now). A publisher cannot override a Route's delivery mode.
+
+Read `apiKey`/`relayUrl` **at call time**, not in `init()` — they can change on
+daemon reconnect (see the helpers in the template).
 
 ### params vs filters — get this right
 
@@ -324,12 +324,21 @@ These are two different mechanisms. The old model conflated them.
 
 | Concept | Where it runs | What it's for |
 |---------|---------------|---------------|
-| `params` | Forwarded **to the service** | Tell the service *what to emit* (which repo, which channel). **Not** a delivery filter in the modern model. |
-| `filters` | **Server-side, on delivery** | Tell the relay *what to deliver* — matched against the trigger payload before it reaches the agent. |
+| `params` | Stored on the Route and forwarded **to the service** | Tell the service how to configure its subscription (e.g. which repo to watch); they do not filter deliveries in the unified route model. |
+| `filters` | **Server-side, on delivery** | Tell the relay what to deliver — matched against the trigger payload before it reaches the agent. Set these explicitly for new unified Routes. |
+
+The legacy `POST /api/runners/{id}/trigger-listeners` compatibility wrapper
+converts its `params` to filters for older listener behavior (except `time:*`
+schedule params) and creates spawn Routes with `deliverAs: "followUp"`. The
+unified management API is `GET/POST /api/routes` and
+`PUT/DELETE /api/routes/{routeId}`; `POST /api/routes` requires an explicit
+`deliverAs`. Prefer it for route CRUD.
 
 A subscriber sets `filters: [{ field, value, op? }]` (`op` = `"eq"` default or
-`"contains"` substring) plus `filterMode` (`"and"` default / `"or"`). `field` is a
-dot-path into the payload; array payload fields match by set membership.
+`"contains"` substring) plus `filterMode` (`"and"` default / `"or"`). `field`
+looks up one top-level payload property (dot paths are literal property names).
+`value` may be a scalar or an array of candidate values; `contains` matches
+string substrings. Filter fields need not appear in the trigger's declared schema.
 
 ```
 subscribe_trigger("orders:status_changed", {
@@ -338,10 +347,11 @@ subscribe_trigger("orders:status_changed", {
 })
 ```
 
-> **Legacy compat:** a subscription that has `params` but **no** `filters` still
-> gets its params converted to filters at delivery time (exact match; a
-> `...Contains` param name → substring; AND semantics). Prefer `filters` for new
-> code; reserve `params` for values the service actually consumes.
+> On the legacy listener wrapper, params are translated to filters when the
+> listener is created or updated (exact match; a `...Contains` param name →
+> substring; AND semantics). This conversion is compatibility behavior, not the
+> semantics of unified Routes; `time:*` params configure schedules and are not
+> converted.
 
 ### Agent tools
 
@@ -395,11 +405,14 @@ persisted config. The server asks every service that owns a listed Route
 
 ### Manual fire and history
 
-- **Fire now** (`POST /api/runners/{id}/trigger-listeners/{routeId}/fire`) fires
-  exactly one owned, enabled Route with a user payload (required keys + top-level
-  types checked). It works when runtime is `unknown`, and doesn't move the next
-  scheduled run. Internally it uses `publishEvent({ routeIds: [id] })`; generic
-  `POST /api/events` does **not** accept `routeIds`.
+- **Fire now** (`POST /api/runners/{id}/trigger-listeners/{routeId}/fire`)
+  publishes to exactly one owned, enabled Route with a user payload (required
+  keys + top-level types checked). The Route's filters still apply, so a publish
+  can yield no delivery. It works when runtime is `unknown`, and doesn't move
+  the next scheduled run. It is a compatibility wrapper around the unified
+  event engine.
+  Generic `POST /api/events` also accepts optional `routeIds` as an explicit
+  delivery allowlist; event type, route filters, and ownership checks still apply.
 - **Per-route history** comes from durable Deliveries matched by `routeId`
   (spawn deliveries keep `routeId` after the spawn resolves), with links to the
   resulting session. The per-session Redis log (`GET /api/sessions/{id}/triggers`,
@@ -543,18 +556,28 @@ routing authority.
 Two directions, two transports:
 
 **Inbound (outside → session).** The service owns the session↔conversation
-mapping, so deliver straight to the one session over HTTP:
+mapping. Publish through `POST /api/events`, using `target` for a direct,
+ownership-checked delivery to that one session:
 
 ```typescript
-await fetch(`${relayUrl}/api/sessions/${sessionId}/trigger`, {
+await fetch(`${relayUrl}/api/events`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-api-key": apiKey },
-    body: JSON.stringify({ type: "discord:message", payload: { threadId, text }, source: "discord", deliverAs: "steer" }),
+    body: JSON.stringify({
+        type: "discord:message",
+        payload: { threadId, text },
+        source: { kind: "service", id: "discord" },
+        target: { sessionId, deliverAs: "steer" },
+    }),
 });
 ```
 
-Use `trigger-broadcast` only when an event has **no** single owner (a CI result, a
-repo push) and any subscriber should hear it.
+For fan-out events without a direct target (a CI result, a repo push), omit
+`target` and let matching Routes determine the recipients. The server stamps
+`ownerUserId` from the authenticated caller; ordinary Routes only match events
+from that owner, regardless of the client-provided `source`. Manage Routes through
+`/api/routes`; the older `/api/runners/{id}/trigger-listeners` endpoints remain
+compatibility wrappers.
 
 **Outbound (session → outside).** The service can't see a session's in-process
 events, so the package ships a **session-side extension** that observes them and
@@ -593,12 +616,14 @@ on the host-stamped `env.id`:
 ```
 
 Mapping lifecycle the service owns: persist bindings (write-temp-then-rename) so a
-restart doesn't orphan conversations; index both ways; drop the binding in
-`handleSessionEnded(sessionId)` and on a `404` from the trigger endpoint (session
-gone). To *drive* a session, most controls already exist over HTTP with API-key
-auth: spawn `POST /api/runners/:id/spawn`, input `POST /api/sessions/:id/trigger`,
-switch model `POST /api/sessions/:id/model`, stop `POST /api/sessions/:id/abort`,
-list `GET /api/sessions`.
+restart doesn't orphan conversations; index both ways; drop the binding on
+`handleSessionEnded(sessionId)`. A direct `POST /api/events` may return 404 when
+the target is disconnected, gone, or not owned by the caller; that alone is not
+proof the binding should be deleted. To *drive* a session, most controls already
+exist over HTTP with API-key auth: spawn `POST /api/runners/:id/spawn`, send a
+direct event with `POST /api/events` and `target.sessionId`, switch model
+`POST /api/sessions/:id/model`, stop `POST /api/sessions/:id/abort`, list
+`GET /api/sessions`.
 
 Worked example: the Discord bridge —
 `packages/cli/src/extensions/discord-mirror.ts` (session-side) plus its service.
@@ -654,9 +679,10 @@ package can be reinstalled, moved, or resolved from a different checkout.
 | Ship a service | Declare it in `package.json` → `pi.pizzapi.services[]`, `pizza install --allow-daemon-services`, restart runner |
 | Grant / revoke | `pizza config grant\|revoke <pkg> [serviceId]` (recorded in `overlayServiceGrants`) |
 | Declare triggers/sigils | Inline array or a path to `triggers.json` / `sigils.json` |
-| Fire a trigger | `POST /api/runners/{runnerId}/trigger-broadcast` with `x-api-key` |
+| Publish an event | `POST /api/events` with `x-api-key`; `routeIds` is an optional allowlist, still subject to event type, filters, and ownership |
+| Manage routes | `GET/POST /api/routes`, `PUT/DELETE /api/routes/{routeId}`; runner `trigger-listeners` is compatibility API |
 | Filter delivery | Subscriber sets `filters` + `filterMode`, not `params` |
-| Deliver to one session | `POST /api/sessions/{sessionId}/trigger` |
+| Deliver to one session | `POST /api/events` with `target: { sessionId, deliverAs }` |
 | Session → service | `sendServiceMessage(pi, id, type, payload)` + `socket.on("service_message")` |
 | Resolve sigils w/o panel | `announceSigilServer(port)` instead of `announcePanel` |
 | Random port | `Bun.serve({ port: 0 })` then read `.port` |
@@ -672,8 +698,8 @@ package can be reinstalled, moved, or resolved from a different checkout.
 | Handler id ≠ declared id | Loader rejects it — they must match exactly |
 | Unnamespaced trigger type | Route is `type.split(":")[0]`; use `my-service:event` |
 | Filtering via `params` | Modern delivery filtering is `filters`; params go to the service |
-| Reading runnerId/apiKey in `init()` | Read at call time — they change on reconnect |
-| Triggers declared but not delivered | Declaring only advertises; you must fire via broadcast |
+| Reading apiKey/relayUrl in `init()` | Read at call time — they can change on reconnect |
+| Triggers declared but not delivered | Declaring only advertises; publish an event with the declared type to `POST /api/events` |
 | Missing CORS on panel API | Add `Access-Control-Allow-Origin: *` |
 | No dedupe on side effects | `service_message` is at-least-once — dedupe on `env.id` |
 | Not cleaning up in `dispose()` | `server.stop(true)`; release listeners/timers/processes |

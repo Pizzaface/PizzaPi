@@ -16,6 +16,7 @@ import {
   type JsonValue,
   type Route,
   type RouteInput,
+  type RouteTarget,
   type ServiceTriggerDef,
   type ServiceTriggerParamDef,
 } from "@pizzapi/protocol";
@@ -42,10 +43,12 @@ interface FilterRow {
 }
 
 interface RouteFormProps {
-  /** Trigger defs from the session's runner catalog (empty = free-text only). */
+  /** Trigger defs advertised by runner services. */
   catalog: ServiceTriggerDef[];
   /** Session-scoped mode: the route targets this session (locked). */
   targetSessionId?: string;
+  sessions?: Array<{ sessionId: string; sessionName?: string | null; runnerId?: string | null }>;
+  runners?: Array<{ runnerId: string; name?: string | null }>;
   /** Route being edited; null = create. */
   editing?: Route | null;
   onDone: () => void;
@@ -84,18 +87,26 @@ function initialFilterRows(route: Route | null): FilterRow[] {
   }));
 }
 
-export function RouteForm({ catalog, targetSessionId, editing = null, onDone, onCancel }: RouteFormProps) {
+export function RouteForm({ catalog, targetSessionId, sessions = [], runners = [], editing = null, onDone, onCancel }: RouteFormProps) {
   const [eventType, setEventType] = React.useState(editing?.eventType ?? "");
   const [params, setParams] = React.useState<Record<string, string | string[]>>({});
+  const [targetKind, setTargetKind] = React.useState<"session" | "spawn">(editing?.target.kind ?? "session");
+  const [targetSession, setTargetSession] = React.useState(editing?.target.kind === "session" ? editing.target.sessionId : targetSessionId ?? "");
+  const [offlinePolicy, setOfflinePolicy] = React.useState<"wait" | "wake" | "fail">(editing?.target.kind === "session" ? editing.target.offlinePolicy ?? (editing.target.wake ? "wake" : "wait") : "wait");
+  const [spawnRunnerId, setSpawnRunnerId] = React.useState(editing?.target.kind === "spawn" ? editing.target.spec.runnerId : runners[0]?.runnerId ?? "");
+  const [spawnCwd, setSpawnCwd] = React.useState(editing?.target.kind === "spawn" ? editing.target.spec.cwd ?? "" : "");
+  const [spawnPrompt, setSpawnPrompt] = React.useState(editing?.target.kind === "spawn" ? editing.target.spec.promptTemplate ?? "" : "");
+  const [spawnModel, setSpawnModel] = React.useState(editing?.target.kind === "spawn" && editing.target.spec.model ? `${editing.target.spec.model.provider}/${editing.target.spec.model.id}` : "");
+  const [spawnAutoClose, setSpawnAutoClose] = React.useState(editing?.target.kind === "spawn" ? editing.target.spec.autoClose ?? false : false);
   const [filters, setFilters] = React.useState<FilterRow[]>([]);
   const [filterMode, setFilterMode] = React.useState<Route["filterMode"]>(editing?.filterMode ?? "and");
   const [deliverAs, setDeliverAs] = React.useState<RouteInput["deliverAs"]>(editing?.deliverAs ?? "followUp");
-  const [sessionIdInput, setSessionIdInput] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   const def = React.useMemo(() => catalog.find((d) => d.type === eventType), [catalog, eventType]);
   const typeInCatalog = def !== undefined || eventType === "";
+  const defaultRunnerId = runners[0]?.runnerId ?? "";
   const schemaProps = (def?.schema as { properties?: Record<string, { type?: string; enum?: unknown[] }> } | undefined)
     ?.properties ?? {};
 
@@ -118,12 +129,31 @@ export function RouteForm({ catalog, targetSessionId, editing = null, onDone, on
       setEventType(editing.eventType);
       setDeliverAs(editing.deliverAs);
       setFilterMode(editing.filterMode ?? "and");
+      setTargetKind(editing.target.kind);
+      if (editing.target.kind === "session") {
+        setTargetSession(editing.target.sessionId);
+        setOfflinePolicy(editing.target.offlinePolicy ?? (editing.target.wake ? "wake" : "wait"));
+      } else {
+        setSpawnRunnerId(editing.target.spec.runnerId);
+        setSpawnCwd(editing.target.spec.cwd ?? "");
+        setSpawnPrompt(editing.target.spec.promptTemplate ?? "");
+        setSpawnModel(editing.target.spec.model ? `${editing.target.spec.model.provider}/${editing.target.spec.model.id}` : "");
+        setSpawnAutoClose(editing.target.spec.autoClose ?? false);
+      }
     } else {
       setEventType("");
       setDeliverAs("followUp");
       setFilterMode("and");
+      setTargetKind("session");
+      setTargetSession(targetSessionId ?? "");
+      setOfflinePolicy("wait");
+      setSpawnRunnerId(defaultRunnerId);
+      setSpawnCwd("");
+      setSpawnPrompt("");
+      setSpawnModel("");
+      setSpawnAutoClose(false);
     }
-  }, [editing]);
+  }, [editing, targetSessionId, defaultRunnerId]);
 
   const submit = async () => {
     setError(null);
@@ -131,13 +161,31 @@ export function RouteForm({ catalog, targetSessionId, editing = null, onDone, on
       setError("Event type must be lowercase and namespaced (e.g. github:pr_comment).");
       return;
     }
-    const targetSession = editing
-      ? editing.target.kind === "session" ? editing.target.sessionId : undefined
-      : targetSessionId ?? sessionIdInput.trim();
-    if (!editing && !targetSession) {
-      setError("A target session id is required.");
+    const selectedSession = targetSessionId ?? targetSession.trim();
+    if (targetKind === "session" && !selectedSession) {
+      setError("Select an existing session.");
       return;
     }
+    if (targetKind === "spawn" && !spawnRunnerId) {
+      setError("Select a runner for the spawned session.");
+      return;
+    }
+    if (targetKind === "spawn" && spawnModel.trim() && !/^[^/]+\/.+$/.test(spawnModel.trim())) {
+      setError("Model must use provider/id format.");
+      return;
+    }
+    const target: RouteTarget = targetKind === "session"
+      ? { kind: "session", sessionId: selectedSession, offlinePolicy, wake: offlinePolicy === "wake" }
+      : {
+          kind: "spawn",
+          spec: {
+            runnerId: spawnRunnerId,
+            ...(spawnCwd.trim() ? { cwd: spawnCwd.trim() } : {}),
+            ...(spawnPrompt.trim() ? { promptTemplate: spawnPrompt.trim() } : {}),
+            ...(spawnModel.includes("/") ? { model: { provider: spawnModel.slice(0, spawnModel.indexOf("/")), id: spawnModel.slice(spawnModel.indexOf("/") + 1) } } : {}),
+            ...(spawnAutoClose ? { autoClose: true } : {}),
+          },
+        };
 
     const parsedParams: Record<string, JsonValue> = {};
     const defNames = new Set((def?.params ?? []).map((p) => p.name));
@@ -171,6 +219,7 @@ export function RouteForm({ catalog, targetSessionId, editing = null, onDone, on
       if (editing) {
         const body: Record<string, unknown> = {
           eventType,
+          target,
           deliverAs,
           filters: parsedFilters,
           filterMode: parsedFilters.length > 1 ? filterMode : undefined,
@@ -189,7 +238,7 @@ export function RouteForm({ catalog, targetSessionId, editing = null, onDone, on
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             eventType,
-            target: { kind: "session", sessionId: targetSession },
+            target,
             deliverAs,
             ...(Object.keys(parsedParams).length > 0 ? { params: parsedParams } : {}),
             ...(parsedFilters.length > 0 ? { filters: parsedFilters } : {}),
@@ -198,7 +247,6 @@ export function RouteForm({ catalog, targetSessionId, editing = null, onDone, on
           }),
         });
         setEventType("");
-        setSessionIdInput("");
       }
       onDone();
     } catch (err) {
@@ -216,7 +264,7 @@ export function RouteForm({ catalog, targetSessionId, editing = null, onDone, on
   return (
     <div className="rounded-md border border-border/60 px-3 py-2.5 space-y-2.5">
       <div className="flex items-center justify-between">
-        <h4 className="text-xs font-semibold">{editing ? "Edit route" : "New route"}</h4>
+        <h4 className="text-xs font-semibold">{editing ? "Edit trigger" : "New trigger"}</h4>
         {editing && (
           <span className="truncate text-[11px] text-muted-foreground">{summarizeRouteTarget(editing.target)}</span>
         )}
@@ -224,7 +272,7 @@ export function RouteForm({ catalog, targetSessionId, editing = null, onDone, on
 
       <div className="flex flex-wrap items-end gap-2">
         <div className="min-w-44 flex-1">
-          <Label htmlFor={eventTypeId} className="text-[11px] text-muted-foreground">Event type</Label>
+          <Label htmlFor={eventTypeId} className="text-[11px] text-muted-foreground">Source / event</Label>
           {catalog.length > 0 ? (
             <select
               id={eventTypeId}
@@ -275,26 +323,43 @@ export function RouteForm({ catalog, targetSessionId, editing = null, onDone, on
           )}
         </div>
 
-        {!editing && (
+        {!targetSessionId && (
           <div className="min-w-44 flex-1">
-            {targetSessionId ? (
-              <>
-                <Label htmlFor={targetId} className="text-[11px] text-muted-foreground">Target session</Label>
-                <Input id={targetId} value={targetSessionId} readOnly disabled className="mt-0 h-8 font-mono text-[11px]" />
-              </>
-            ) : (
-              <>
-                <Label htmlFor={targetId} className="text-[11px] text-muted-foreground">Target session id</Label>
-                <Input
-                  id={targetId}
-                  value={sessionIdInput}
-                  onChange={(e) => setSessionIdInput(e.target.value)}
-                  placeholder="a1b2c3d4-…"
-                  className="mt-0 h-8 text-xs"
-                />
-              </>
-            )}
+            <Label htmlFor={targetId} className="text-[11px] text-muted-foreground">Destination</Label>
+            <select id={targetId} value={targetKind} onChange={(e) => setTargetKind(e.target.value as "session" | "spawn")} className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs">
+              <option value="session">Existing session</option>
+              <option value="spawn">Spawn a new session</option>
+            </select>
           </div>
+        )}
+        {targetKind === "session" ? (
+          <div className="min-w-48 flex-1">
+            <Label htmlFor={`${targetId}-session`} className="text-[11px] text-muted-foreground">Target session</Label>
+            {targetSessionId ? (
+              <Input id={`${targetId}-session`} value={targetSessionId} readOnly disabled className="h-8 font-mono text-[11px]" />
+            ) : (
+              <select id={`${targetId}-session`} value={targetSession} onChange={(e) => setTargetSession(e.target.value)} className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs">
+                <option value="">Select session…</option>
+                {sessions.map((session) => <option key={session.sessionId} value={session.sessionId}>{session.sessionName || session.sessionId.slice(0, 12)}</option>)}
+              </select>
+            )}
+            <Label htmlFor={`${targetId}-offline`} className="mt-2 block text-[11px] text-muted-foreground">If it’s offline</Label>
+            <select id={`${targetId}-offline`} value={offlinePolicy} onChange={(e) => setOfflinePolicy(e.target.value as typeof offlinePolicy)} className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs">
+              <option value="wait">Wait without waking</option><option value="wake">Wake / resume session</option><option value="fail">Fail immediately</option>
+            </select>
+          </div>
+        ) : (
+          <fieldset className="min-w-64 flex-1 space-y-2 rounded-md border border-border/60 p-2">
+            <legend className="px-1 text-[11px] font-medium text-muted-foreground">Spawn destination</legend>
+            <Label htmlFor={`${targetId}-runner`} className="text-[11px] text-muted-foreground">Runner</Label>
+            <select id={`${targetId}-runner`} value={spawnRunnerId} onChange={(e) => setSpawnRunnerId(e.target.value)} className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs">
+              <option value="">Select runner…</option>{runners.map((runner) => <option key={runner.runnerId} value={runner.runnerId}>{runner.name || runner.runnerId}</option>)}
+            </select>
+            <Label htmlFor={`${targetId}-cwd`} className="text-[11px] text-muted-foreground">Working directory</Label><Input id={`${targetId}-cwd`} value={spawnCwd} onChange={(e) => setSpawnCwd(e.target.value)} className="h-8 text-xs" />
+            <Label htmlFor={`${targetId}-prompt`} className="text-[11px] text-muted-foreground">Prompt / instructions</Label><textarea id={`${targetId}-prompt`} value={spawnPrompt} onChange={(e) => setSpawnPrompt(e.target.value)} rows={2} className="w-full rounded-md border border-border bg-background px-2 py-1 text-xs" />
+            <Label htmlFor={`${targetId}-model`} className="text-[11px] text-muted-foreground">Model (provider/id)</Label><Input id={`${targetId}-model`} value={spawnModel} onChange={(e) => setSpawnModel(e.target.value)} placeholder="openai/gpt-…" className="h-8 text-xs" />
+            <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={spawnAutoClose} onChange={(e) => setSpawnAutoClose(e.target.checked)} /> Close spawned session when complete</label>
+          </fieldset>
         )}
 
         <div className="flex flex-col">
@@ -315,7 +380,7 @@ export function RouteForm({ catalog, targetSessionId, editing = null, onDone, on
         <div className="flex gap-1.5">
           <Button size="sm" className="h-8 gap-1 px-2 text-xs" disabled={busy} onClick={() => void submit()}>
             {busy ? <Spinner className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
-            {editing ? "Save" : "Add route"}
+            {editing ? "Save trigger" : "Add trigger"}
           </Button>
           {editing && (
             <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={onCancel}>

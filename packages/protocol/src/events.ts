@@ -160,6 +160,8 @@ export type RouteTarget =
        * exited. Direct publishes set this via the target's wake flag.
        */
       wake?: boolean;
+      /** What to do when this existing session is offline; legacy `wake: true` means `wake`. */
+      offlinePolicy?: "wait" | "wake" | "fail";
     }
   | { kind: "spawn"; spec: SpawnSpec };
 
@@ -205,7 +207,8 @@ export type DeliveryStatus =
   | "delivered" // handed to the session (ack-confirmed, or legacy handoff)
   | "responded" // response contract answered
   | "escalated" // unanswered, re-routed up the escalation chain
-  | "expired"; // TTL hit with no answer / no recipient
+  | "expired" // TTL hit with no answer / no recipient
+  | "failed"; // terminal delivery failure (e.g. route offline policy)
 
 /**
  * One per-session attempt to hand an Event to a recipient. Durable:
@@ -242,6 +245,8 @@ export interface Delivery {
   /** Last time a wake was attempted (initial or retry) — bounds retries to
    *  one re-attempt per delivery per 5 minutes. */
   lastWakeAttemptAt?: string;
+  /** Stable machine-readable cause when status is failed. */
+  failureReason?: "offline_policy";
   /** When the response contract TTL lapses. */
   expiresAt?: string;
 }
@@ -262,7 +267,7 @@ export interface DeliveryView extends Delivery {
 
 const SOURCE_KINDS: readonly string[] = ["session", "service", "webhook", "api", "scheduler"];
 const SOURCE_AUTHS: readonly string[] = ["socket", "api-key", "cookie", "hmac", "internal"];
-const DELIVERY_STATUSES: readonly string[] = ["pending", "inflight", "delivered", "responded", "escalated", "expired"];
+const DELIVERY_STATUSES: readonly string[] = ["pending", "inflight", "delivered", "responded", "escalated", "expired", "failed"];
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -313,7 +318,8 @@ export function isRouteTarget(v: unknown): v is RouteTarget {
     return typeof v.sessionId === "string"
       && v.sessionId.length > 0
       && (v.runnerId === undefined || typeof v.runnerId === "string")
-      && (v.wake === undefined || typeof v.wake === "boolean");
+      && (v.wake === undefined || typeof v.wake === "boolean")
+      && (v.offlinePolicy === undefined || v.offlinePolicy === "wait" || v.offlinePolicy === "wake" || v.offlinePolicy === "fail");
   }
   if (v.kind === "spawn") {
     if (!isRecord(v.spec)) return false;

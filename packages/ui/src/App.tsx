@@ -499,6 +499,7 @@ export function App() {
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const historyMounted = useMountOnFirstOpen(historyOpen);
   const [selectedRunnerId, setSelectedRunnerId] = React.useState<string | null>(null);
+  const [runnerManagerInitialTab, setRunnerManagerInitialTab] = React.useState<"sessions" | "triggers">("sessions");
   const [runnersForSidebar, setRunnersForSidebar] = React.useState<Array<{
     runnerId: string;
     name: string | null;
@@ -4734,22 +4735,6 @@ export function App() {
     return () => controller.abort();
   }, [reloadScheduled]);
 
-  const handleCancelScheduled = React.useCallback(async (instruction: ScheduledInstruction) => {
-    if (!instruction.subscriptionId) return;
-    try {
-      const res = await fetch(
-        `/api/routes/${encodeURIComponent(instruction.subscriptionId)}`,
-        { method: "DELETE", credentials: "include" },
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      // Drop it locally so the row goes away even if a refetch is slow.
-      setScheduledInstructions((prev) => prev.filter((entry) => entry !== instruction));
-    } catch (err) {
-      console.error("Failed to cancel scheduled work:", err);
-      setLifecycleStatus("Could not cancel that scheduled item");
-    }
-  }, [setLifecycleStatus]);
-
   /** Start a task in the selected mode's workspace with the composed prompt. */
   // `startingTask` state lands a render too late to stop a double submit, so a
   // ref gates the second caller synchronously.
@@ -5121,10 +5106,19 @@ export function App() {
     onDragStart: (e) => startPanelDragWith(e, handleTriggersPositionChange),
     content: (
       <Suspense fallback={<PanelFallback label="Triggers" />}>
-        <LazyEventsRoutesPanel sessionId={activeSessionId} viewerSocket={viewerSocket} onBadgeRefresh={triggerCounts.refresh} />
+        <LazyEventsRoutesPanel
+          sessionId={activeSessionId}
+          viewerSocket={viewerSocket}
+          onBadgeRefresh={triggerCounts.refresh}
+          onOpenManager={() => {
+            if (activeSessionInfo?.runnerId) setSelectedRunnerId(activeSessionInfo.runnerId);
+            setRunnerManagerInitialTab("triggers");
+            setShowRunners(true);
+          }}
+        />
       </Suspense>
     ),
-  } : null, [showTriggers, activeSessionId, viewerSocket, triggerCounts.refresh, startPanelDragWith, handleTriggersPositionChange, setShowTriggers]);
+  } : null, [showTriggers, activeSessionId, activeSessionInfo?.runnerId, viewerSocket, triggerCounts.refresh, startPanelDragWith, handleTriggersPositionChange, setShowTriggers]);
 
   const analyzerPanelTab = React.useMemo<CombinedPanelTab | null>(() => {
     if (!showAnalyzer || !activeSessionId) return null;
@@ -5756,6 +5750,7 @@ export function App() {
                           onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }}
                           selectedRunnerId={selectedRunnerId}
                           onSelectRunner={setSelectedRunnerId}
+                          initialTab={runnerManagerInitialTab}
                         />
                       </Suspense>
                     </ErrorBoundary>
@@ -5833,11 +5828,15 @@ export function App() {
                           busy: startingTask,
                           onStartTask: (prompt: string) => { void handleStartModeTask(prompt); },
                           onOpenSession: handleOpenSession,
+                          onOpenTriggerManager: () => {
+                            if (scheduleRunnerId) setSelectedRunnerId(scheduleRunnerId);
+                            setRunnerManagerInitialTab("triggers");
+                            setShowRunners(true);
+                          },
                           scheduled: selectedModeUi.scheduled ? {
                             instructions: visibleScheduledInstructions,
                             loading: scheduledLoading,
                             failed: scheduledFailed,
-                            onCancel: handleCancelScheduled,
                           } : undefined,
                         } : undefined}
                         onToggleTriggers={() => setShowTriggers((v) => !v)}

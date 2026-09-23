@@ -365,7 +365,7 @@ await fetch(`${relayUrl}/api/events`, {
 Delivery urgency is decided by each subscriber's route (`deliverAs` on the
 route: `"steer"` interrupts, `"followUp"` queues), not by the publisher.
 
-Subscription params are matched against the trigger payload at delivery time. Scalar params use loose equality, array payload fields match if they contain the subscriber's value, and param names ending in `Contains` do substring matching against string payload fields.
+Subscription `params` are forwarded to the source service; they are not matched against event payloads by the relay. Use route `filters` for server-side payload matching. See [Trigger Subscription Filters](#trigger-subscription-filters).
 
 <Aside type="tip">
   Use `"followUp"` (default) for non-urgent events. Use `"steer"` only when the trigger needs to interrupt whatever the agent is currently doing.
@@ -461,72 +461,14 @@ Passing only a trigger type remains supported as a legacy bulk operation, but it
 
 ---
 
-### Runner Trigger Listeners
+### Auto-spawn routes
 
-Trigger listeners are **persistent configurations** on a runner that automatically spawn a new agent session when a matching trigger fires. Unlike regular subscriptions (which deliver events into an existing session), listeners create a fresh session for each event.
-
-#### Use cases
-
-- **Auto-review:** Spawn a code review session whenever a `git:push` trigger fires
-- **Scheduled runs:** Pair with a cron service to auto-spawn sessions on a schedule
-- **Reactive automation:** Kick off deployment, test, or analysis sessions in response to service events
-
-#### Listeners vs Webhooks
-
-| | Trigger Listeners | Webhooks |
-|--|-------------------|----------|
-| **Input** | Internal PizzaPi triggers | External HTTP POST requests |
-| **Scope** | Bound to a runner | Bound to a user/org |
-| **Action** | Spawns a new agent session on the runner | Fires a trigger into existing subscribed sessions |
-
-#### CRUD API
-
-All endpoints require runner authentication (`x-api-key` header).
-
-**List listeners:**
-```
-GET /api/runners/{runnerId}/trigger-listeners
-```
-
-**Add a listener:**
-```
-POST /api/runners/{runnerId}/trigger-listeners
-Content-Type: application/json
-
-{
-  "triggerType": "my-service:deploy_requested",
-  "prompt": "Run the deploy checklist for the provided payload.",
-  "cwd": "/home/user/project",
-  "model": { "provider": "anthropic", "id": "claude-sonnet-4-20250514" },
-  "params": { "environment": "production" }
-}
-```
-
-**Update a listener:**
-```
-PUT /api/runners/{runnerId}/trigger-listeners/{listenerId}
-```
-
-**Remove a listener:**
-```
-DELETE /api/runners/{runnerId}/trigger-listeners/{listenerId}
-```
-
-When multiple listeners share the same trigger type, use `listenerId` for edit/delete operations so you only affect the intended listener. Trigger-type targets are legacy behavior.
-
-#### `RunnerTriggerListener` fields
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `listenerId` | Auto | Stable listener identity returned by the API; use it for precise update/delete operations |
-| `triggerType` | Yes | The trigger type to listen for (e.g. `"my-service:event_name"`) |
-| `prompt` | No | Initial prompt for the spawned session |
-| `cwd` | No | Working directory for the spawned session |
-| `model` | No | Model override (`{ provider, id }`) |
-| `params` | No | Subscription params — only triggers matching these params will spawn a session |
-| `createdAt` | Auto | ISO timestamp set when the listener is created |
-
-Listeners are stored durably in both SQLite and Redis, so they survive runner restarts.
+Use a unified **spawn Route** when an event should start a fresh agent session;
+regular session Routes deliver into an existing conversation. Create, update, and
+delete both kinds through `/api/routes` (see the [API reference](/PizzaPi/reference/api/#post-apiroutes--create-a-route)).
+The runner trigger-listener endpoints remain available only as compatibility
+wrappers over Routes. The API reference also documents the runner's schedule
+list and route-specific test delivery.
 
 ---
 
@@ -804,14 +746,14 @@ session over HTTP:
 
 ```typescript
 // Targeted: this session only. No subscription required.
-await fetch(`${relayUrl}/api/sessions/${sessionId}/trigger`, {
+await fetch(`${relayUrl}/api/events`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-api-key": apiKey },
     body: JSON.stringify({
         type: "discord:message",
         payload: { threadId, text },
-        source: "discord",
-        deliverAs: "steer",
+        target: { sessionId, deliverAs: "steer" },
+        source: { kind: "service", id: "discord" },
     }),
 });
 ```
@@ -899,9 +841,9 @@ The service owns the mapping and is responsible for its whole lifecycle:
   routing; the persisted map is keyed by conversation for inbound.
 - **Clean up on session end.** Implement `handleSessionEnded(sessionId)` to drop
   the binding, and tell the remote side the conversation is over.
-- **Unbind on delivery failure.** A `404` from the trigger endpoint means the
-  session is gone. Drop the binding rather than silently swallowing every
-  subsequent message.
+- **Unbind on delivery failure.** A `404` from a direct-target `POST /api/events`
+  means the session is gone (or not owned by the caller). Drop the binding rather
+  than silently swallowing every subsequent message.
 
 ### Driving the session from the far side
 
@@ -911,7 +853,7 @@ text. Most of that already exists over HTTP with API-key auth:
 | Action | Endpoint |
 |--------|----------|
 | Spawn a session | `POST /api/runners/:runnerId/spawn` |
-| Send input to a session | `POST /api/sessions/:id/trigger` |
+| Send a trigger event to a session | `POST /api/events` with `target.sessionId` |
 | List sessions | `GET /api/sessions` |
 | List models | `GET /api/runners/:runnerId/models` |
 | Switch a session's model | `POST /api/sessions/:id/model` |

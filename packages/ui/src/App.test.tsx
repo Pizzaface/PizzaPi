@@ -13,6 +13,16 @@ describe("App session switching", () => {
   });
 });
 
+describe("schedule manager navigation", () => {
+  test("opens the trigger manager for the runner whose schedules are shown", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const modeHome = source.slice(source.indexOf("modeHome={selectedMode ?"), source.indexOf("scheduled: selectedModeUi.scheduled ?"));
+
+    expect(modeHome).toContain("setSelectedRunnerId(scheduleRunnerId)");
+    expect(modeHome).not.toContain("activeRunnerInfo?.runnerId");
+  });
+});
+
 describe("Tunnel service-message viewer switch guard", () => {
   const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 

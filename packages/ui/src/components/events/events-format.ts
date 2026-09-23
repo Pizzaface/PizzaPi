@@ -4,7 +4,7 @@
  * free of React imports so it stays unit-testable without component mocks.
  */
 
-import type { Delivery, DeliveryStatus, JsonValue, Route, RouteTarget, ServiceTriggerParamDef, SourceIdentity, TriggerEvent } from "@pizzapi/protocol";
+import type { Delivery, DeliveryStatus, JsonValue, Route, RouteTarget, ServiceTriggerParamDef, SourceIdentity, TriggerEvent, TriggerFilter } from "@pizzapi/protocol";
 
 /** Shared fetch helper: JSON in/out, throws Error(message) on !ok. */
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -22,6 +22,7 @@ export const DELIVERY_STATUS_META: Record<DeliveryStatus, { label: string; class
   responded: { label: "Responded", className: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30" },
   escalated: { label: "Escalated", className: "bg-orange-500/15 text-orange-600 dark:text-orange-400 border-orange-500/30" },
   expired: { label: "Expired", className: "bg-muted text-muted-foreground border-border" },
+  failed: { label: "Failed", className: "bg-destructive/10 text-destructive border-destructive/30" },
 };
 
 /** Human label for a route target. */
@@ -138,4 +139,51 @@ export function parseFilterValue(raw: string, propType?: string): string | numbe
   }
   if (propType === "boolean") return str === "true";
   return str;
+}
+
+/** Build a test payload matching persisted filters and required event fields. */
+export function payloadForRouteFilters(
+  filters: TriggerFilter[] = [],
+  mode: Route["filterMode"] = "and",
+  schema?: Record<string, unknown>,
+): { ok: true; payload: Record<string, JsonValue> } | { ok: false; error: string } {
+  const payload = Object.create(null) as Record<string, JsonValue>;
+  const selected = mode === "or" ? filters.slice(0, 1) : filters;
+  for (const filter of selected) {
+    const parts = filter.field.split(".").filter(Boolean);
+    if (parts.length === 0) return { ok: false, error: "Cannot test a route with an empty filter field." };
+    if (Array.isArray(filter.value) && filter.value.length === 0) return { ok: false, error: `Cannot create a matching test value for filter “${filter.field}”.` };
+    const value = Array.isArray(filter.value) ? filter.value[0] : filter.value;
+    let target = payload;
+    for (const part of parts.slice(0, -1)) {
+      const current = Object.hasOwn(target, part) ? target[part] : undefined;
+      if (current !== undefined && (typeof current !== "object" || current === null || Array.isArray(current))) {
+        return { ok: false, error: `Conflicting filters prevent a matching test payload at “${filter.field}”.` };
+      }
+      if (!current) target[part] = Object.create(null) as JsonValue;
+      target = target[part] as Record<string, JsonValue>;
+    }
+    const key = parts[parts.length - 1]!;
+    if (Object.hasOwn(target, key) && JSON.stringify(target[key]) !== JSON.stringify(value)) {
+      return { ok: false, error: `Conflicting filters prevent a matching test payload at “${filter.field}”.` };
+    }
+    target[key] = value;
+  }
+  const required = Array.isArray(schema?.required) ? schema.required : [];
+  const properties = schema?.properties && typeof schema.properties === "object" ? schema.properties as Record<string, unknown> : {};
+  for (const key of required) {
+    if (typeof key !== "string" || Object.hasOwn(payload, key)) continue;
+    const property = properties[key] && typeof properties[key] === "object" ? properties[key] as Record<string, unknown> : {};
+    if (property.default !== undefined) payload[key] = property.default as JsonValue;
+    else if (Array.isArray(property.enum) && property.enum.length > 0) payload[key] = property.enum[0] as JsonValue;
+    else {
+      const type = Array.isArray(property.type) ? property.type[0] : property.type;
+      payload[key] = type === "number" || type === "integer" ? 0
+        : type === "boolean" ? false
+          : type === "object" ? {}
+            : type === "array" ? []
+              : type === "null" ? null : "";
+    }
+  }
+  return { ok: true, payload };
 }

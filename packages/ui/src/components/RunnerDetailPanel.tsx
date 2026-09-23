@@ -91,6 +91,9 @@ export interface RunnerDetailPanelProps {
     onSkillsChange?: (runnerId: string, skills: SkillInfo[]) => void;
     onAgentsChange?: (runnerId: string, agents: AgentInfo[]) => void;
     onPluginsChange?: (runnerId: string, plugins: PluginInfo[]) => void;
+    initialTab?: RunnerTab;
+    runners?: Array<{ runnerId: string; name?: string | null }>;
+    allSessions?: Array<{ sessionId: string; sessionName?: string | null; runnerId?: string | null }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -338,15 +341,18 @@ export function RunnerDetailPanel({
     onSkillsChange,
     onAgentsChange,
     onPluginsChange,
+    initialTab = "sessions",
+    runners = [],
+    allSessions = sessions,
 }: RunnerDetailPanelProps) {
-    const [activeTab, setActiveTab] = useState<RunnerTab>("sessions");
+    const [activeTab, setActiveTab] = useState<RunnerTab>(initialTab);
     const [inspectorSessionId, setInspectorSessionId] = React.useState<string | null>(null);
 
     // Reset tab when runner changes
     useEffect(() => {
-        setActiveTab("sessions");
+        setActiveTab(initialTab);
         setInspectorSessionId(null);
-    }, [runner?.runnerId]);
+    }, [runner?.runnerId, initialTab]);
 
     // ---- Empty states ----
 
@@ -469,6 +475,9 @@ export function RunnerDetailPanel({
             tabContent = (
                 <RunnerTriggersPanel
                     runnerId={runner.runnerId}
+                    sessions={allSessions}
+                    runners={runners}
+                    onOpenSession={onOpenSession}
                 />
             );
             break;

@@ -6,7 +6,7 @@
  * `trigger_subscription_delta` events (on route changes). The reconcile
  * protocol keeps the subscription vocabulary, but since the legacy
  * subscription store is gone, the source of truth is the routes store:
- * every session-target Route IS a subscription (routeId = subscriptionId).
+ * every active Route IS a subscription (routeId = subscriptionId), including spawn targets.
  *
  * ponytail: session targets carry the owning runnerId (stamped at write
  * time), so runner-scoped queries are linear scans over a small table —
@@ -76,16 +76,17 @@ export function _resetRedisForTesting(): void {
     _lastKnownRedisRevision = 0;
 }
 
-/** Map a session-target route to the subscription shape services reconcile. */
+/** Map an active route to the subscription shape services reconcile. */
 export function routeToSubscription(route: Route): TriggerSubscriptionEntry | null {
     if (route.disabled === true) return null;
-    if (route.target.kind !== "session") return null;
-    if (!route.target.runnerId) return null; // never reachable without a runner
+    const runnerId = route.target.kind === "session" ? route.target.runnerId : route.target.spec.runnerId;
+    if (!runnerId) return null; // never reachable without a runner
     return {
         subscriptionId: route.routeId,
-        sessionId: route.target.sessionId,
+        ...(route.target.kind === "session" ? { sessionId: route.target.sessionId } : {}),
+        destination: route.target,
         triggerType: route.eventType,
-        runnerId: route.target.runnerId,
+        runnerId,
         ...(route.params ? { params: route.params as TriggerSubscriptionEntry["params"] } : {}),
         ...(route.filters && route.filters.length > 0 ? { filters: route.filters } : {}),
         ...(route.filterMode ? { filterMode: route.filterMode } : {}),
@@ -93,10 +94,8 @@ export function routeToSubscription(route: Route): TriggerSubscriptionEntry | nu
 }
 
 /**
- * Snapshot for one runner: session-target routes stamped with this runner,
- * including schedules whose owning session is offline (schedules outlive
- * sessions by design). Replaces getSubscriptionsForRunnerSessions +
- * getSessionIdsWithSubscriptionsForRunner from the legacy store.
+ * Snapshot for one runner: session and spawn routes assigned to it, including
+ * schedules whose owning session is offline (routes outlive sessions by design).
  */
 export async function subscriptionsForRunner(runnerId: string): Promise<TriggerSubscriptionEntry[]> {
     // Tenant scope: a runner only reconciles routes owned by its current owner
@@ -123,7 +122,10 @@ async function runnerOwnerFor(runnerId: string): Promise<string | null> {
 /** Session ids that hold at least one route on this runner (offline included). */
 export async function sessionIdsWithRoutesForRunner(runnerId: string): Promise<string[]> {
     const seen = new Set<string>();
-    for (const sub of await subscriptionsForRunner(runnerId)) seen.add(sub.sessionId);
+    for (const sub of await subscriptionsForRunner(runnerId)) {
+        const sessionId = sub.destination?.kind === "session" ? sub.destination.sessionId : sub.sessionId;
+        if (sessionId) seen.add(sessionId);
+    }
     return [...seen];
 }
 

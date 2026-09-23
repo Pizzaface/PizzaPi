@@ -163,7 +163,7 @@ export interface EngineDeps {
   relayResponse(delivery: Delivery, event: TriggerEvent): Promise<boolean>;
 }
 
-export type DeliverOutcome = "delivered" | "inflight" | "unreachable";
+export type DeliverOutcome = "delivered" | "inflight" | "unreachable" | "failed";
 
 export interface PublishOutcome {
   event: TriggerEvent;
@@ -186,6 +186,14 @@ async function claimAndDeliver(
 
   try {
     const outcome = await deps.deliver(claimed, event, route);
+    if (outcome === "failed") {
+      const failed = await updateDelivery(
+        delivery.deliveryId,
+        { status: "failed", failureReason: "offline_policy" },
+        { guard: ["inflight"] },
+      );
+      return { claimed: true, handedOff: false, delivery: failed ?? claimed };
+    }
     if (outcome === "inflight") {
       // Ack-capable recipient: the transport's ack/timeout callback settles
       // inflight → delivered / pending via settleDeliveryAck.

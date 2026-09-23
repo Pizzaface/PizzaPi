@@ -9,7 +9,12 @@ const memDb = new Kysely<any>({
 });
 
 const modsPromise = (async () => {
-  mock.module("../auth.js", () => ({ getKysely: () => memDb, getTrustedOrigins: () => [] }));
+  mock.module("../auth.js", () => ({
+    getKysely: () => memDb,
+    getTrustedOrigins: () => [],
+    getAuthContext: () => ({ db: "test" }),
+    runWithAuthContext: <T,>(_ctx: unknown, fn: () => T) => fn(),
+  }));
   // Tenant scope for runner reconcile: runner-1 is owned by u1.
   mock.module("../runner-owner.js", () => ({
     getRunnerOwner: async (runnerId: string) => (runnerId === "runner-1" ? "u1" : null),
@@ -277,6 +282,27 @@ describe("engine", () => {
     expect((await store.getDelivery(second.deliveries[0].deliveryId))?.status).toBe("pending");
     const pending = await store.pendingDeliveriesFor("s-offline");
     expect(pending.map((delivery) => delivery.deliveryId)).toEqual([second.deliveries[0].deliveryId]);
+  });
+
+  it("reconciles spawn routes without inventing a session id", async () => {
+    const route = await store.createRoute({
+      eventType: "github:pr_comment",
+      target: { kind: "spawn", spec: { runnerId: "runner-1", cwd: "/work" } },
+      deliverAs: "followUp",
+      origin: "agent", ownerUserId: "u1",
+      params: { repo: "org/project", branch: "main" },
+    });
+
+    expect(await reconcile.subscriptionsForRunner("runner-1")).toEqual([
+      expect.objectContaining({
+        subscriptionId: route.routeId,
+        destination: route.target,
+        triggerType: "github:pr_comment",
+        runnerId: "runner-1",
+        params: { repo: "org/project", branch: "main" },
+      }),
+    ]);
+    expect((await reconcile.subscriptionsForRunner("runner-1"))[0]?.sessionId).toBeUndefined();
   });
 
   it("does not reconcile disabled routes as active runner subscriptions", async () => {

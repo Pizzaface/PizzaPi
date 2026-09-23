@@ -45,6 +45,7 @@ const fetchSpy = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
           { ...baseDelivery, deliveryId: "dlv_plain", status: "delivered", respondable: true },
           { ...baseDelivery, deliveryId: "dlv_nocontract", status: "pending", respondable: false },
           { ...baseDelivery, deliveryId: "dlv_answered", status: "responded", respondable: false, response: { action: "approve", text: "ok" } },
+          { ...baseDelivery, deliveryId: "dlv_failed", status: "failed", failureReason: "offline_policy", respondable: false },
         ],
       }),
     } as unknown as Response;
@@ -110,6 +111,8 @@ describe("DeliveryRow respond controls", () => {
     // Non-respondable and already-answered deliveries render no respond input.
     expect(labels).not.toContain("Response to delivery dlv_nocontract");
     expect(labels).not.toContain("Response to delivery dlv_answered");
+    expect(container.textContent).toContain("Failed");
+    expect(container.textContent).toContain("Offline policy rejected delivery");
 
     // Contract delivery: one button per declared action.
     const contractRow = rowOf(container, "dlv_contract");
@@ -191,6 +194,16 @@ describe("DeliveryRow respond controls", () => {
 
     // The response changes pending trigger counts — the badge hook must refetch.
     await waitFor(() => expect(onBadgeRefresh).toHaveBeenCalledTimes(1));
+  });
+
+  test("links session deliveries to the shared runner-wide trigger manager", async () => {
+    const openManager = mock(() => {});
+    let container!: HTMLElement;
+    await act(async () => { ({ container } = render(<EventsRoutesPanel sessionId="s-1" onOpenManager={openManager} />)); });
+    const link = container.querySelector("button") as HTMLButtonElement;
+    expect(link.textContent).toContain("Open runner-wide trigger manager");
+    await act(async () => { fireEvent.click(link); });
+    expect(openManager).toHaveBeenCalledTimes(1);
   });
 
   test("shows an inline error when the server rejects the response", async () => {

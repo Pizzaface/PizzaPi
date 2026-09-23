@@ -149,13 +149,19 @@ describe("TimeService.reconcileSubscriptions()", () => {
             expect(result.applied).toBe(1);
         });
 
-        test("counts a past time:at subscription as applied (fires immediately via async)", () => {
+        test("counts a past time:at subscription as applied while retiring it", async () => {
+            setupBroadcastEnv();
+            const fetchCalls = mockFetch();
             service = new TimeService();
-            // Past date — the handler fires immediately (void async) but doesn't throw
             const result = service.reconcileSubscriptions([
-                entry("sess-1", "time:at", { at: "2020-01-01T00:00:00Z" }),
+                entry("sess-1", "time:at", { at: "2020-01-01T00:00:00Z" }, "sub-past"),
             ]);
+            await new Promise((resolve) => setTimeout(resolve, 0));
             expect(result.applied).toBe(1);
+            expect(posts(fetchCalls)).toHaveLength(0);
+            expect(deletes(fetchCalls).map((call) => call.url)).toEqual([
+                "http://relay.test/api/routes/sub-past",
+            ]);
         });
 
         test("does not count missing 'at' param as applied", () => {
@@ -206,6 +212,34 @@ describe("TimeService.reconcileSubscriptions()", () => {
                 entry("sess-2", "custom:event"),
             ]);
             expect(result.applied).toBe(0);
+        });
+
+        test("arms and reports a spawn-target time route without a synthetic session", () => {
+            service = new TimeService();
+            let onMessage: ((data: any) => void) | undefined;
+            const emitted: Array<{ event: string; data: any }> = [];
+            service.init({
+                on: (_event: string, handler: (data: any) => void) => { onMessage = handler; },
+                off: () => {},
+                emit: (event: string, data: any) => emitted.push({ event, data }),
+            } as any, { isShuttingDown: () => false });
+            const destination = { kind: "spawn" as const, spec: { runnerId: "runner-test", cwd: "/work" } };
+            const result = service.reconcileSubscriptions([{
+                subscriptionId: "spawn-time-route",
+                destination,
+                triggerType: "time:at",
+                runnerId: "runner-test",
+                params: { at: new Date(Date.now() + 60_000).toISOString() },
+            }]);
+            onMessage?.({ serviceId: "time", type: "trigger_status_request", requestId: "status-1" });
+            expect(result.applied).toBe(1);
+            expect(emitted[0]?.data.payload.subscriptions[0]).toMatchObject({
+                subscriptionId: "spawn-time-route",
+                destination,
+                triggerType: "time:at",
+                state: "armed",
+            });
+            expect(emitted[0]?.data.payload.subscriptions[0].sessionId).toBeUndefined();
         });
     });
 
@@ -385,9 +419,8 @@ describe("TimeService.reconcileSubscriptions()", () => {
             const body = JSON.parse(fires[0]!.body);
             expect(body.payload.message).toBe("Check the build");
             expect(body.summary).toBe("Check the build");
-            expect(body.target.sessionId).toBe("sess-1");
-            expect(body.target.deliverAs).toBe("followUp");
-            expect(body.target.wake).toBe(true);
+            expect(body.routeIds).toEqual(["sub-1"]);
+            expect(body.target).toBeUndefined();
             expect(body.source.kind).toBe("scheduler");
         });
 
@@ -406,21 +439,22 @@ describe("TimeService.reconcileSubscriptions()", () => {
             expect(cleanup[0]?.url).toBe("http://relay.test/api/routes/sub-1");
         });
 
-        test("past time:at fires immediately and removes its subscription", async () => {
+        test("resubscribing after a time:at target retires the route without publishing", async () => {
             setupBroadcastEnv();
             const fetchCalls = mockFetch();
 
             service = new TimeService();
-            service.reconcileSubscriptions([
-                entry("sess-1", "time:at", { at: "2020-01-01T00:00:00Z", message: "Morning check-in" }, "sub-at"),
-            ]);
+            const sub = entry("sess-1", "time:at", { at: new Date(Date.now() + 100).toISOString(), message: "Morning check-in" }, "sub-at");
+            service.reconcileSubscriptions([sub], { mode: "delta", action: "subscribe" });
+            service.reconcileSubscriptions([sub], { mode: "delta", action: "unsubscribe" });
+            await new Promise((resolve) => setTimeout(resolve, 120));
+            service.reconcileSubscriptions([sub], { mode: "delta", action: "subscribe" });
 
-            await new Promise((resolve) => setTimeout(resolve, 30));
-            const fires = posts(fetchCalls);
-            expect(fires).toHaveLength(1);
-            expect(fires[0]?.url).toBe("http://relay.test/api/events");
-            expect(JSON.parse(fires[0]!.body).payload.message).toBe("Morning check-in");
-            expect(deletes(fetchCalls)).toHaveLength(1);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(posts(fetchCalls)).toHaveLength(0);
+            expect(deletes(fetchCalls).map((call) => call.url)).toEqual([
+                "http://relay.test/api/routes/sub-at",
+            ]);
         });
 
         test("failed delivery keeps the subscription (no DELETE)", async () => {

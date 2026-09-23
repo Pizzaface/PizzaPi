@@ -27,6 +27,7 @@ export interface RunnerManagerProps {
     onOpenSession?: (sessionId: string) => void;
     selectedRunnerId: string | null;
     onSelectRunner?: (runnerId: string) => void;
+    initialTab?: import("@/components/RunnerDetailPanel").RunnerTab;
 }
 
 export function RunnerManager({
@@ -36,6 +37,7 @@ export function RunnerManager({
     onOpenSession,
     selectedRunnerId,
     onSelectRunner,
+    initialTab = "sessions",
 }: RunnerManagerProps) {
     const loading = runnersStatus === "connecting" && runners.length === 0;
 
@@ -303,6 +305,9 @@ export function RunnerManager({
                 onSkillsChange={() => {}}
                 onAgentsChange={() => {}}
                 onPluginsChange={() => {}}
+                initialTab={initialTab}
+                runners={runners.map((r) => ({ runnerId: r.runnerId, name: r.name }))}
+                allSessions={sessions.map((s) => ({ sessionId: s.sessionId, sessionName: s.sessionName, runnerId: s.runnerId }))}
             />
 
             {/* New session dialog */}

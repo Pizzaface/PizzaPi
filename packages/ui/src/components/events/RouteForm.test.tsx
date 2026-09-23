@@ -119,7 +119,7 @@ describe("RouteForm (create)", () => {
     });
 
     const submit = Array.from(container.querySelectorAll("button")).find(
-      (b) => b.textContent?.includes("Add route"),
+      (b) => b.textContent?.includes("Add trigger"),
     ) as HTMLElement;
     await act(async () => {
       fireEvent.click(submit);
@@ -144,14 +144,13 @@ describe("RouteForm (create)", () => {
       ({ container } = render(<RouteForm catalog={[]} onDone={() => {}} onCancel={() => {}} />));
     });
 
-    // No catalog: straight to the free-text input.
-    expect(container.querySelector("select")).toBeNull();
+    // No catalog: straight to the free-text input (destination controls may still use selects).
     const typeInput = container.querySelector('input[placeholder="github:pr_comment"]') as HTMLInputElement;
     await act(async () => {
       fireEvent.change(typeInput, { target: { value: "NotNamespaced" } });
     });
     const submit = Array.from(container.querySelectorAll("button")).find(
-      (b) => b.textContent?.includes("Add route"),
+      (b) => b.textContent?.includes("Add trigger"),
     ) as HTMLElement;
     await act(async () => {
       fireEvent.click(submit);
@@ -181,14 +180,14 @@ describe("RouteForm (edit)", () => {
     });
     // Create mode: no params section until a type is picked.
     expect(view.container.textContent).not.toContain("Parameters");
-    expect(view.container.textContent).toContain("New route");
+    expect(view.container.textContent).toContain("New trigger");
 
     await act(async () => {
       view.rerender(<RouteForm catalog={catalog} editing={route} onDone={() => {}} onCancel={() => {}} />);
     });
 
     // Edit mode: type synced from the route, params section rendered + pre-filled.
-    await waitFor(() => expect(view.container.textContent).toContain("Edit route"));
+    await waitFor(() => expect(view.container.textContent).toContain("Edit trigger"));
     await waitFor(() => expect(view.container.textContent).toContain("Parameters"));
     const numberInput = view.container.querySelector('input[type="number"]') as HTMLInputElement;
     expect(numberInput.value).toBe("12");
@@ -197,7 +196,7 @@ describe("RouteForm (edit)", () => {
     await act(async () => {
       view.rerender(<RouteForm catalog={catalog} onDone={() => {}} onCancel={() => {}} />);
     });
-    await waitFor(() => expect(view.container.textContent).toContain("New route"));
+    await waitFor(() => expect(view.container.textContent).toContain("New trigger"));
     expect(view.container.textContent).not.toContain("Parameters");
   });
 
@@ -222,7 +221,7 @@ describe("RouteForm (edit)", () => {
     });
 
     // Editing header + target summary.
-    expect(container.textContent).toContain("Edit route");
+    expect(container.textContent).toContain("Edit trigger");
     expect(container.textContent).toContain("Session sess-9");
 
     // Prefilled: duration param from the route, filter row from the route.

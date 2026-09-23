@@ -2,6 +2,7 @@
 // /runner namespace — Runner daemon ↔ Server
 // ============================================================================
 
+import type { RouteTarget } from "./events.js";
 import type { JsonValue, RunnerSkill, RunnerAgent, RunnerPlugin, RunnerHook, ServiceAnnounceData, ServiceEnvelope, SocketClientMetadata, TriggerFilter, TriggerFilterMode } from "./shared.js";
 
 // ---------------------------------------------------------------------------
@@ -15,7 +16,10 @@ import type { JsonValue, RunnerSkill, RunnerAgent, RunnerPlugin, RunnerHook, Ser
  */
 export interface TriggerSubscriptionEntry {
   subscriptionId: string;
-  sessionId: string;
+  /** Retained for existing session-target consumers; absent for spawn destinations. */
+  sessionId?: string;
+  /** Full route destination. Older session-only peers may omit this and use sessionId. */
+  destination?: RouteTarget;
   triggerType: string;
   runnerId: string;
   params?: Record<string, JsonValue>;

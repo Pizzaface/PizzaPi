@@ -488,11 +488,13 @@ best-effort and MUST NOT block or fail a turn. Hosts supporting this advertise
 the `serviceMessages` capability; without a host the emit is inert, satisfying
 §10.1.
 
-The inbound direction is unchanged: services post to
-`/api/sessions/:id/trigger`. Connector-specific interpretation of a reply (for
-example mapping "lgtm" to a `plan_mode` approval) belongs in the package, which
-sends a structured field on the trigger payload rather than relying on the host
-to parse its vocabulary.
+The inbound direction uses the unified event API: services publish with
+`POST /api/events`, using `target.sessionId` for a connector-mapped conversation
+or `routeIds` to select matching routes. Direct-target delivery needs no
+subscription. Connector-specific interpretation of a reply (for example mapping
+"lgtm" to a `plan_mode` approval) belongs in the package, which sends a
+structured field on the event payload rather than relying on the host to parse
+its vocabulary.
 
 ## 10. Graceful degradation contract
 

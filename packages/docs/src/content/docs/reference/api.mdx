@@ -566,7 +566,7 @@ Get token/cost usage statistics from the runner.
 
 ### `GET /api/runners/{runnerId}/triggers`
 
-List trigger definitions and active listeners for a runner.
+List trigger definitions and a legacy listener projection. Use `/api/routes` to query and manage active routes.
 
 **Auth:** Session cookie.
 
@@ -575,33 +575,40 @@ List trigger definitions and active listeners for a runner.
 ```json
 {
   "triggerDefs": [
-    { "type": "github_push", "description": "Fires on git push" }
+    { "type": "github:push", "description": "Fires on git push" }
   ],
   "listeners": [
-    { "triggerType": "github_push", "prompt": "Review the push", "cwd": "/project" }
+    { "triggerType": "github:push", "prompt": "Review the push", "cwd": "/project" }
   ]
 }
 ```
 
 ---
 
-### `GET /api/runners/{runnerId}/trigger-listeners`
+### Legacy trigger-listener compatibility endpoints
 
-List active trigger listeners (auto-spawn subscriptions) for a runner.
+The `GET/POST /api/runners/{runnerId}/trigger-listeners` and
+`PUT/DELETE /api/runners/{runnerId}/trigger-listeners/{target}` endpoints are
+compatibility wrappers over unified Routes. Use [`/api/routes`](#get-apiroutes--list-routes)
+for route management; route IDs are the stable subscription identifiers.
+
+`GET /api/runners/{runnerId}/trigger-listeners`
+
+List the runner's session and spawn routes in the legacy listener shape.
 
 **Auth:** Session cookie.
 
 **Response:**
 
 ```json
-{ "listeners": [{ "listenerId": "listener_abc123", "triggerType": "github_push", "prompt": "...", "cwd": "..." }] }
+{ "listeners": [{ "listenerId": "rt_abc123", "triggerType": "github:push", "prompt": "...", "cwd": "..." }] }
 ```
 
 ---
 
-### `POST /api/runners/{runnerId}/trigger-listeners`
+`POST /api/runners/{runnerId}/trigger-listeners`
 
-Add a trigger listener that auto-spawns sessions when a trigger fires.
+Create a spawn route through the compatibility interface. New clients should use `POST /api/routes`.
 
 **Auth:** Session cookie.
 
@@ -609,11 +616,11 @@ Add a trigger listener that auto-spawns sessions when a trigger fires.
 
 ```json
 {
-  "triggerType": "github_push",
+  "triggerType": "github:push",
   "prompt": "Review the changes",     // optional
   "cwd": "/path/to/project",          // optional
   "model": { "provider": "anthropic", "id": "claude-sonnet-4-20250514" },  // optional
-  "params": { "branch": "main" },     // optional filter params
+  "params": { "branch": "main" },     // optional params forwarded to the source service
   "autoClose": true                   // optional
 }
 ```
@@ -621,14 +628,14 @@ Add a trigger listener that auto-spawns sessions when a trigger fires.
 **Response:**
 
 ```json
-{ "ok": true, "listenerId": "listener_abc123", "triggerType": "github_push" }
+{ "ok": true, "listenerId": "rt_abc123", "triggerType": "github:push" }
 ```
 
 ---
 
-### `PUT /api/runners/{runnerId}/trigger-listeners/{target}`
+`PUT /api/runners/{runnerId}/trigger-listeners/{target}`
 
-Update an existing trigger listener's configuration. Prefer passing a `listenerId` as `{target}` when multiple listeners share the same trigger type. Passing a trigger type is legacy behavior.
+Update a route through the compatibility interface. It supports pause/resume for session routes and legacy listener edits for spawn routes. `{target}` may be a route/listener ID; trigger-type targets retain legacy behavior. New clients should use `PUT /api/routes/{routeId}`.
 
 **Auth:** Session cookie.
 
@@ -637,21 +644,21 @@ Update an existing trigger listener's configuration. Prefer passing a `listenerI
 **Response:**
 
 ```json
-{ "ok": true, "listenerId": "listener_abc123", "triggerType": "github_push" }
+{ "ok": true, "listenerId": "rt_abc123", "triggerType": "github:push" }
 ```
 
 ---
 
-### `DELETE /api/runners/{runnerId}/trigger-listeners/{target}`
+`DELETE /api/runners/{runnerId}/trigger-listeners/{target}`
 
-Remove a trigger listener. Prefer passing a `listenerId` as `{target}` when deleting one specific listener. Passing a trigger type is legacy bulk-style behavior.
+Delete a route through the compatibility interface. `{target}` may be a route/listener ID; trigger-type targets retain legacy bulk-delete behavior for spawn routes. New clients should use `DELETE /api/routes/{routeId}`.
 
 **Auth:** Session cookie.
 
 **Response:**
 
 ```json
-{ "ok": true, "listenerId": "listener_abc123", "triggerType": "github_push", "removed": 1 }
+{ "ok": true, "listenerId": "rt_abc123", "triggerType": "github:push", "removed": 1 }
 ```
 
 ---
@@ -932,14 +939,22 @@ receive it. A `target.sessionId` makes an implicit single-session route
   "payload": { "repo": "my/repo" },      // arbitrary payload object
   "summary": "PR #12 opened",            // optional human-readable summary
   "fireId": "unique-if-retried",         // optional: idempotency + response correlation
+  "routeIds": ["rt_abc123"],             // optional: deliver only through these routes
   "target": {                            // optional: direct one-session delivery
     "sessionId": "sess_abc",
     "deliverAs": "steer",                // "steer" (default, interrupts) or "followUp" (queues)
-    "wake": true                         // resume an offline target session
+    "wake": true                         // legacy direct-target wake behavior
   },
   "source": { "kind": "service", "id": "github" }  // optional; defaults from auth
 }
 ```
+
+`routeIds` is an explicit delivery allowlist: only those route IDs are considered.
+Each selected route still passes the normal enabled-state, owner, event-type,
+and filter checks. Omit it to deliver through all matching routes. Direct
+`target.sessionId` delivery is separate from route delivery.
+
+For a direct `target.sessionId`, `target.wake: true` asks to resume an offline session.
 
 **Response:**
 
@@ -1080,7 +1095,7 @@ any authenticated user.
 
 ### `POST /api/routes` — create a route
 
-Subscribe a session to an event type (or register an auto-spawn listener).
+Subscribe a session to an event type or register an auto-spawn route. Routes are the unified API for both session subscriptions and auto-spawn listeners.
 
 **Auth:** API key or session cookie.
 
@@ -1089,7 +1104,7 @@ Subscribe a session to an event type (or register an auto-spawn listener).
 ```json
 {
   "eventType": "github:pr_opened",
-  "target": { "kind": "session", "sessionId": "sess_abc" },
+  "target": { "kind": "session", "sessionId": "sess_abc", "offlinePolicy": "wait" },
   "deliverAs": "followUp",               // "steer" or "followUp"
   "params": { "branch": "main" },        // optional, forwarded to the emitting service
   "filters": [                            // optional payload filters
@@ -1099,6 +1114,15 @@ Subscribe a session to an event type (or register an auto-spawn listener).
   "origin": "agent"                      // optional: "agent" or "ui"
 }
 ```
+
+For a session route target, `offlinePolicy` is `wait` (default; leave delivery
+pending), `wake` (attempt to resume the session), or `fail` (fail terminally).
+The legacy `wake: true` field remains accepted and means `offlinePolicy: "wake"`.
+
+The legacy `POST /api/runners/{runnerId}/trigger-listeners` wrapper also
+converts `params` to filters for spawn listeners (except `time:*` schedules)
+and defaults `deliverAs` to `followUp`. New clients should specify `filters`
+and `deliverAs` explicitly.
 
 **Request body (auto-spawn listener):**
 
@@ -1123,8 +1147,11 @@ The `routeId` doubles as the subscription id: pass it to
 
 ### `PUT /api/routes/{routeId}` — update a route
 
-Update params/filters, or re-own a schedule by changing `target.sessionId`
-(the route keeps its id, so durable schedule state survives the move).
+Update params/filters, or re-own a schedule by changing `target.sessionId` on
+the same runner (the route keeps its id, so that runner's durable schedule state
+survives). Moving a schedule to another runner preserves the route and history,
+but runtime progress is local to the scheduler and is not transferred; the new
+runner initializes from the route parameters.
 
 Target changes are re-validated like `POST`: a spawn target must reference a
 runner owned by the caller (the fail-closed owner stamp is re-applied), and a
@@ -1147,6 +1174,28 @@ always cancellable.
 ```json
 { "ok": true }
 ```
+
+---
+
+### `POST /api/runners/{runnerId}/trigger-listeners/{routeId}/fire` — test a route
+
+**Auth:** Session cookie.
+
+Publish a test Event through only this route. The body must contain a `payload`
+object; the endpoint checks required fields and top-level property types when a
+schema is advertised. It returns `{ "ok": true, "eventId": "..." }`. This
+compatibility URL accepts a route ID for route-specific test delivery.
+
+### `GET /api/runners/{runnerId}/schedules` — list schedules
+
+**Auth:** Session cookie.
+
+List the caller-visible `time:*` routes associated with this runner, including
+session-targeted and spawn-target schedules. The response includes `schedules`
+with each route's `subscriptionId`, `target`, `sessionId`, `runnerId`,
+`triggerType`, `sessionName`, `cwd`, and `sessionLive`; configured `params`,
+`filters`, and `filterMode` are also included. Spawn-target schedules have
+`sessionId: ""`, `sessionName: null`, and `sessionLive: false`.
 
 ---
 
@@ -1209,7 +1258,7 @@ List trigger types available on the session's runner (from runner service catalo
 {
   "triggerDefs": [
     {
-      "type": "github_push",
+      "type": "github:push",
       "description": "Fires on git push events",
       "params": [{ "name": "branch", "type": "string" }],
       "schema": {}

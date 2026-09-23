@@ -85,7 +85,7 @@ const modsPromise = (async () => {
         routeId: delta.subscription.subscriptionId,
         triggerType: delta.subscription.triggerType,
         runnerId,
-        sessionId: delta.subscription.sessionId,
+        sessionId: delta.subscription.sessionId ?? "",
       });
       return undefined;
     },
@@ -145,6 +145,31 @@ describe("events HTTP surface", () => {
     expect(delivered).toEqual(["owned"]);
   });
 
+  it("publishes a scheduled fire only through its selected route", async () => {
+    const selected = await store.createRoute({
+      eventType: "time:cron",
+      target: { kind: "session", sessionId: "owned" },
+      deliverAs: "followUp",
+      origin: "agent",
+      ownerUserId: "u1",
+    });
+    await store.createRoute({
+      eventType: "time:cron",
+      target: { kind: "session", sessionId: "owned-2" },
+      deliverAs: "followUp",
+      origin: "agent",
+      ownerUserId: "u1",
+    });
+
+    const res = await call(routes, "POST", "/api/events", {
+      type: "time:cron",
+      routeIds: [selected.routeId],
+      payload: { iteration: 1 },
+    });
+    expect(res!.status).toBe(200);
+    expect(((await res!.json()) as any).deliveries.map((d: any) => d.sessionId)).toEqual(["owned"]);
+  });
+
   it("rejects direct targets the caller does not own (404 shape)", async () => {
     const res = await call(routes, "POST", "/api/events", {
       type: "test:fired",
@@ -166,6 +191,8 @@ describe("events HTTP surface", () => {
       { type: "test:event", payload: "nope" },
       { type: "test:event", summary: 1 },
       { type: "test:event", fireId: "" },
+      { type: "test:event", routeIds: [""] },
+      { type: "test:event", routeIds: Array.from({ length: 101 }, (_, i) => `r-${i}`) },
       { type: "test:event", responseContract: [] },
       { type: "test:event", responseContract: { ttlMs: 0 } },
       { type: "test:event", responseContract: { ttlMs: -1 } },
@@ -393,8 +420,15 @@ describe("events HTTP surface", () => {
       origin: "ui",
     });
     expect(spawn!.status).toBe(200);
+    const { route: spawnRoute } = (await spawn!.json()) as any;
     await flush();
-    expect(mirrored).toEqual([]);
+    expect(mirrored).toEqual([{
+      action: "subscribe",
+      routeId: spawnRoute.routeId,
+      triggerType: "t:spawn",
+      runnerId: "runner-1",
+      sessionId: "",
+    }]);
   });
 
   it("reconciles route target moves and disabled transitions", async () => {
@@ -412,7 +446,7 @@ describe("events HTTP surface", () => {
     });
     expect(mirrored.map(({ action, runnerId, sessionId }) => ({ action, runnerId, sessionId }))).toEqual([
       { action: "unsubscribe", runnerId: "runner-1", sessionId: "owned" },
-      { action: "update", runnerId: "runner-2", sessionId: "owned-2" },
+      { action: "subscribe", runnerId: "runner-2", sessionId: "owned-2" },
     ]);
 
     mirrored.length = 0;
@@ -429,6 +463,33 @@ describe("events HTTP surface", () => {
     });
     expect(mirrored.map(({ action, runnerId, sessionId }) => ({ action, runnerId, sessionId }))).toEqual([
       { action: "unsubscribe", runnerId: "runner-2", sessionId: "owned-2" },
+      { action: "subscribe", runnerId: "runner-1", sessionId: "" },
+    ]);
+  });
+
+  it("retires old subscriptions when a spawn route moves runners or changes service prefix", async () => {
+    const created = await call(routes, "POST", "/api/routes", {
+      eventType: "alpha:scheduled",
+      target: { kind: "spawn", spec: { runnerId: "runner-1" } },
+      deliverAs: "followUp",
+      origin: "ui",
+    });
+    const { route } = (await created!.json()) as any;
+
+    mirrored.length = 0;
+    await call(routes, "PUT", `/api/routes/${route.routeId}`, {
+      target: { kind: "spawn", spec: { runnerId: "runner-2" } },
+    });
+    expect(mirrored.map(({ action, runnerId, triggerType }) => ({ action, runnerId, triggerType }))).toEqual([
+      { action: "unsubscribe", runnerId: "runner-1", triggerType: "alpha:scheduled" },
+      { action: "subscribe", runnerId: "runner-2", triggerType: "alpha:scheduled" },
+    ]);
+
+    mirrored.length = 0;
+    await call(routes, "PUT", `/api/routes/${route.routeId}`, { eventType: "beta:scheduled" });
+    expect(mirrored.map(({ action, runnerId, triggerType }) => ({ action, runnerId, triggerType }))).toEqual([
+      { action: "unsubscribe", runnerId: "runner-2", triggerType: "alpha:scheduled" },
+      { action: "subscribe", runnerId: "runner-2", triggerType: "beta:scheduled" },
     ]);
   });
 
@@ -849,8 +910,8 @@ describe("dead-runner route cleanup", () => {
     expect(remaining).toContain("rt_wh_1");
     expect(remaining.some((id) => id.startsWith("rt_cfg_"))).toBe(true);
     expect(remaining).toHaveLength(3);
-    // Only session targets reconcile (spawn routes have no subscription entry).
     expect(mirrored).toEqual([
+      expect.objectContaining({ action: "unsubscribe", routeId: expect.stringMatching(/^rt_/), runnerId: "runner-dead", sessionId: "" }),
       expect.objectContaining({ action: "unsubscribe", routeId: sched.routeId, runnerId: "runner-dead", sessionId: "gone" }),
     ]);
   });

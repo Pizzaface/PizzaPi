@@ -30,6 +30,7 @@ export function ModeHome({
   recentSessions,
   onStartTask,
   onOpenSession,
+  onOpenTriggerManager,
   busy,
   scheduled,
 }: {
@@ -40,6 +41,7 @@ export function ModeHome({
   /** Start a task in this mode with the given prompt (may be empty). */
   onStartTask: (prompt: string) => void | Promise<void>;
   onOpenSession: (sessionId: string) => void;
+  onOpenTriggerManager?: () => void;
   /** A task is being started — the composer is locked until it resolves. */
   busy?: boolean;
   /** Standing scheduled work, when the mode declares `scheduled`. */
@@ -47,7 +49,6 @@ export function ModeHome({
     instructions: ScheduledInstruction[];
     loading?: boolean;
     failed?: number;
-    onCancel: (instruction: ScheduledInstruction) => void;
   };
 }) {
   const [draft, setDraft] = React.useState("");
@@ -150,7 +151,7 @@ export function ModeHome({
             failed={scheduled.failed}
             sessionNoun={modeUi.sessionNoun}
             onOpenSession={onOpenSession}
-            onCancel={scheduled.onCancel}
+            onOpenTriggerManager={onOpenTriggerManager}
           />
         )}
 
