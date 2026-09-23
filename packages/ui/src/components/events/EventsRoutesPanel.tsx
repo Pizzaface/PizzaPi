@@ -613,14 +613,16 @@ export function EventsRoutesPanel({
     <div className="space-y-3">
       <div role="tablist" aria-label="Runner triggers and events" className="flex items-center gap-1 rounded-lg bg-muted p-1 w-fit">
         {([["triggers", "Triggers"], ["events", "Events"]] as const).map(([tabId, label]) => (
-          <button key={tabId} type="button" role="tab" aria-selected={runnerTab === tabId} onClick={() => setRunnerTab(tabId)} className={cn("rounded-md px-3 py-1 text-xs font-medium transition-colors", runnerTab === tabId ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>
+          <button key={tabId} type="button" role="tab" id={`runner-trigger-tab-${tabId}`} aria-selected={runnerTab === tabId} aria-controls={`runner-trigger-panel-${tabId}`} onClick={() => setRunnerTab(tabId)} className={cn("rounded-md px-3 py-1 text-xs font-medium transition-colors", runnerTab === tabId ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>
             {label}
           </button>
         ))}
       </div>
-      {runnerTab === "triggers"
-        ? <RoutesTab runnerId={runnerId} sessions={sessions} runners={runners} onMutated={onBadgeRefresh} onOpenSession={onOpenSession} />
-        : <EventsTab key={runnerId} runnerId={runnerId} onResponded={onBadgeRefresh} />}
+      <div id={`runner-trigger-panel-${runnerTab}`} role="tabpanel" aria-labelledby={`runner-trigger-tab-${runnerTab}`}>
+        {runnerTab === "triggers"
+          ? <RoutesTab runnerId={runnerId} sessions={sessions} runners={runners} onMutated={onBadgeRefresh} onOpenSession={onOpenSession} />
+          : <EventsTab key={runnerId} runnerId={runnerId} onResponded={onBadgeRefresh} />}
+      </div>
     </div>
   ) : (
     <div className="space-y-4">
