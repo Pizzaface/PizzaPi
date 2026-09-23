@@ -144,7 +144,7 @@ function DeliveryRow({ delivery, onResponded }: { delivery: DeliveryView; onResp
   );
 }
 
-function EventRow({ event, onResponded }: { event: TriggerEvent; onResponded?: () => void }) {
+function EventRow({ event, runnerId, onResponded }: { event: TriggerEvent; runnerId?: string; onResponded?: () => void }) {
   const [open, setOpen] = React.useState(false);
   const [deliveries, setDeliveries] = React.useState<DeliveryView[] | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -155,7 +155,8 @@ function EventRow({ event, onResponded }: { event: TriggerEvent; onResponded?: (
     if (next && deliveries === null) {
       setError(null);
       try {
-        const data = await api<{ deliveries: DeliveryView[] }>(`/api/events/${encodeURIComponent(event.eventId)}/deliveries`);
+        const query = runnerId ? `?runnerId=${encodeURIComponent(runnerId)}` : "";
+        const data = await api<{ deliveries: DeliveryView[] }>(`/api/events/${encodeURIComponent(event.eventId)}/deliveries${query}`);
         setDeliveries(data.deliveries ?? []);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load deliveries");
@@ -280,7 +281,7 @@ function DeliveriesTab({ sessionId, viewerSocket, onResponded }: { sessionId: st
   );
 }
 
-function EventsTab({ onResponded }: { onResponded?: () => void }) {
+function EventsTab({ runnerId, onResponded }: { runnerId?: string; onResponded?: () => void }) {
   const [events, setEvents] = React.useState<TriggerEvent[] | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const generation = React.useRef(0);
@@ -293,14 +294,16 @@ function EventsTab({ onResponded }: { onResponded?: () => void }) {
     request.current = controller;
     setError(null);
     try {
-      const data = await api<{ events: TriggerEvent[] }>("/api/events?limit=100", { signal: controller.signal });
+      const params = new URLSearchParams({ limit: "100" });
+      if (runnerId) params.set("runnerId", runnerId);
+      const data = await api<{ events: TriggerEvent[] }>(`/api/events?${params}`, { signal: controller.signal });
       if (current === generation.current) setEvents(data.events ?? []);
     } catch (err) {
       if (current === generation.current && !controller.signal.aborted) {
         setError(err instanceof Error ? err.message : "Failed to load events");
       }
     }
-  }, []);
+  }, [runnerId]);
 
   React.useEffect(() => {
     setEvents(null);
@@ -315,7 +318,7 @@ function EventsTab({ onResponded }: { onResponded?: () => void }) {
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
-        <h3 className="text-sm font-semibold">Event feed</h3>
+        <h3 className="text-sm font-semibold">{runnerId ? "Runner events" : "Event feed"}</h3>
         <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => void load()} title="Refresh" aria-label="Refresh event feed">
           <RefreshCw className="h-3.5 w-3.5" />
         </Button>
@@ -323,11 +326,11 @@ function EventsTab({ onResponded }: { onResponded?: () => void }) {
       {error && <ErrorNote message={error} />}
       {events === null && !error && <Spinner className="h-4 w-4" />}
       {events?.length === 0 && (
-        <p className="text-sm text-muted-foreground">No events yet. Published events appear here for 30 days.</p>
+        <p className="text-sm text-muted-foreground">{runnerId ? "No events delivered to this runner yet." : "No events yet. Published events appear here for 30 days."}</p>
       )}
       <ScrollArea className="max-h-[60vh] pr-2">
         <div className="space-y-1.5">
-          {events?.map((e) => <EventRow key={e.eventId} event={e} onResponded={onResponded} />)}
+          {events?.map((e) => <EventRow key={e.eventId} event={e} runnerId={runnerId} onResponded={onResponded} />)}
         </div>
       </ScrollArea>
     </div>
@@ -530,6 +533,7 @@ function RoutesTab({ sessionId, runnerId, sessions = [], runners = [], onMutated
         targetSessionId={sessionId}
         sessions={sessions}
         runners={runners}
+        fixedRunnerId={runnerId}
         editing={editing}
         onDone={afterMutation}
         onCancel={() => { setEditing(null); setFormOpen(false); }}
@@ -603,8 +607,21 @@ export function EventsRoutesPanel({
   const [tab, setTab] = React.useState<"events" | "deliveries">(sessionId ? "deliveries" : "events");
   const tabs = sessionId ? ([["deliveries", "Deliveries"]] as const) : ([["events", "Event feed"]] as const);
 
+  const [runnerTab, setRunnerTab] = React.useState<"triggers" | "events">("triggers");
+
   const body = runnerId ? (
-    <RoutesTab runnerId={runnerId} sessions={sessions} runners={runners} onMutated={onBadgeRefresh} onOpenSession={onOpenSession} />
+    <div className="space-y-3">
+      <div role="tablist" aria-label="Runner triggers and events" className="flex items-center gap-1 rounded-lg bg-muted p-1 w-fit">
+        {([["triggers", "Triggers"], ["events", "Events"]] as const).map(([tabId, label]) => (
+          <button key={tabId} type="button" role="tab" aria-selected={runnerTab === tabId} onClick={() => setRunnerTab(tabId)} className={cn("rounded-md px-3 py-1 text-xs font-medium transition-colors", runnerTab === tabId ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {runnerTab === "triggers"
+        ? <RoutesTab runnerId={runnerId} sessions={sessions} runners={runners} onMutated={onBadgeRefresh} onOpenSession={onOpenSession} />
+        : <EventsTab key={runnerId} runnerId={runnerId} onResponded={onBadgeRefresh} />}
+    </div>
   ) : (
     <div className="space-y-4">
       {sessionId && onOpenManager && <Button variant="outline" size="sm" onClick={onOpenManager}>Open runner-wide trigger manager</Button>}

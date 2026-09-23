@@ -49,6 +49,8 @@ interface RouteFormProps {
   targetSessionId?: string;
   sessions?: Array<{ sessionId: string; sessionName?: string | null; runnerId?: string | null }>;
   runners?: Array<{ runnerId: string; name?: string | null }>;
+  /** Lock spawn destinations to the runner whose manager is open. */
+  fixedRunnerId?: string;
   /** Route being edited; null = create. */
   editing?: Route | null;
   onDone: () => void;
@@ -87,13 +89,13 @@ function initialFilterRows(route: Route | null): FilterRow[] {
   }));
 }
 
-export function RouteForm({ catalog, targetSessionId, sessions = [], runners = [], editing = null, onDone, onCancel }: RouteFormProps) {
+export function RouteForm({ catalog, targetSessionId, sessions = [], runners = [], fixedRunnerId, editing = null, onDone, onCancel }: RouteFormProps) {
   const [eventType, setEventType] = React.useState(editing?.eventType ?? "");
   const [params, setParams] = React.useState<Record<string, string | string[]>>({});
   const [targetKind, setTargetKind] = React.useState<"session" | "spawn">(editing?.target.kind ?? "session");
   const [targetSession, setTargetSession] = React.useState(editing?.target.kind === "session" ? editing.target.sessionId : targetSessionId ?? "");
   const [offlinePolicy, setOfflinePolicy] = React.useState<"wait" | "wake" | "fail">(editing?.target.kind === "session" ? editing.target.offlinePolicy ?? (editing.target.wake ? "wake" : "wait") : "wait");
-  const [spawnRunnerId, setSpawnRunnerId] = React.useState(editing?.target.kind === "spawn" ? editing.target.spec.runnerId : runners[0]?.runnerId ?? "");
+  const [spawnRunnerId, setSpawnRunnerId] = React.useState(editing?.target.kind === "spawn" ? editing.target.spec.runnerId : fixedRunnerId ?? runners[0]?.runnerId ?? "");
   const [spawnCwd, setSpawnCwd] = React.useState(editing?.target.kind === "spawn" ? editing.target.spec.cwd ?? "" : "");
   const [spawnPrompt, setSpawnPrompt] = React.useState(editing?.target.kind === "spawn" ? editing.target.spec.promptTemplate ?? "" : "");
   const [spawnModel, setSpawnModel] = React.useState(editing?.target.kind === "spawn" && editing.target.spec.model ? `${editing.target.spec.model.provider}/${editing.target.spec.model.id}` : "");
@@ -106,7 +108,7 @@ export function RouteForm({ catalog, targetSessionId, sessions = [], runners = [
 
   const def = React.useMemo(() => catalog.find((d) => d.type === eventType), [catalog, eventType]);
   const typeInCatalog = def !== undefined || eventType === "";
-  const defaultRunnerId = runners[0]?.runnerId ?? "";
+  const defaultRunnerId = fixedRunnerId ?? runners[0]?.runnerId ?? "";
   const schemaProps = (def?.schema as { properties?: Record<string, { type?: string; enum?: unknown[] }> } | undefined)
     ?.properties ?? {};
 
@@ -179,7 +181,7 @@ export function RouteForm({ catalog, targetSessionId, sessions = [], runners = [
       : {
           kind: "spawn",
           spec: {
-            runnerId: spawnRunnerId,
+            runnerId: fixedRunnerId ?? spawnRunnerId,
             ...(spawnCwd.trim() ? { cwd: spawnCwd.trim() } : {}),
             ...(spawnPrompt.trim() ? { promptTemplate: spawnPrompt.trim() } : {}),
             ...(spawnModel.includes("/") ? { model: { provider: spawnModel.slice(0, spawnModel.indexOf("/")), id: spawnModel.slice(spawnModel.indexOf("/") + 1) } } : {}),
@@ -352,8 +354,10 @@ export function RouteForm({ catalog, targetSessionId, sessions = [], runners = [
           <fieldset className="min-w-64 flex-1 space-y-2 rounded-md border border-border/60 p-2">
             <legend className="px-1 text-[11px] font-medium text-muted-foreground">Spawn destination</legend>
             <Label htmlFor={`${targetId}-runner`} className="text-[11px] text-muted-foreground">Runner</Label>
-            <select id={`${targetId}-runner`} value={spawnRunnerId} onChange={(e) => setSpawnRunnerId(e.target.value)} className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs">
-              <option value="">Select runner…</option>{runners.map((runner) => <option key={runner.runnerId} value={runner.runnerId}>{runner.name || runner.runnerId}</option>)}
+            <select id={`${targetId}-runner`} value={fixedRunnerId ?? spawnRunnerId} onChange={(e) => setSpawnRunnerId(e.target.value)} disabled={!!fixedRunnerId} className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs disabled:opacity-70">
+              {(fixedRunnerId ? runners.filter((runner) => runner.runnerId === fixedRunnerId) : runners).map((runner) => <option key={runner.runnerId} value={runner.runnerId}>{runner.name || runner.runnerId}</option>)}
+              {fixedRunnerId && !runners.some((runner) => runner.runnerId === fixedRunnerId) && <option value={fixedRunnerId}>{fixedRunnerId}</option>}
+              {!fixedRunnerId && <option value="">Select runner…</option>}
             </select>
             <Label htmlFor={`${targetId}-cwd`} className="text-[11px] text-muted-foreground">Working directory</Label><Input id={`${targetId}-cwd`} value={spawnCwd} onChange={(e) => setSpawnCwd(e.target.value)} className="h-8 text-xs" />
             <Label htmlFor={`${targetId}-prompt`} className="text-[11px] text-muted-foreground">Prompt / instructions</Label><textarea id={`${targetId}-prompt`} value={spawnPrompt} onChange={(e) => setSpawnPrompt(e.target.value)} rows={2} className="w-full rounded-md border border-border bg-background px-2 py-1 text-xs" />

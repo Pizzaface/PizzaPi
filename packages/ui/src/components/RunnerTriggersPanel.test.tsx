@@ -41,7 +41,7 @@ describe("RunnerTriggersPanel", () => {
     expect(fetchSpy.mock.calls.some(([url]) => String(url) === "/api/routes")).toBe(true);
   });
 
-  test("defaults Spawn to the selected runner while keeping other runners available", async () => {
+  test("locks Spawn to the selected runner", async () => {
     let container!: HTMLElement;
     await act(async () => {
       ({ container } = render(
@@ -65,7 +65,8 @@ describe("RunnerTriggersPanel", () => {
     await act(async () => { fireEvent.change(destination!, { target: { value: "spawn" } }); });
     const runnerSelect = container.querySelector<HTMLSelectElement>('select[id$="-runner"]');
     expect(runnerSelect?.value).toBe("runner-1");
-    expect(Array.from(runnerSelect!.options).map((option) => option.value)).toEqual(["", "runner-1", "runner-2"]);
+    expect(runnerSelect?.disabled).toBe(true);
+    expect(Array.from(runnerSelect!.options).map((option) => option.value)).toEqual(["runner-1"]);
   });
 
   test("offers only sessions owned by this runner as route targets", async () => {

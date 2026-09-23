@@ -236,6 +236,26 @@ describe("events HTTP surface", () => {
     expect(json.events[0].source.auth).toBe("cookie");
   });
 
+  it("scopes event feeds and delivery details to the selected runner", async () => {
+    const local = await store.createRoute({ eventType: "runner:scoped", target: { kind: "session", sessionId: "owned", runnerId: "runner-1" }, deliverAs: "followUp", origin: "ui", ownerUserId: "u1" });
+    await store.createRoute({ eventType: "runner:scoped", target: { kind: "session", sessionId: "owned-2", runnerId: "runner-2" }, deliverAs: "followUp", origin: "ui", ownerUserId: "u1" });
+    const published = await call(routes, "POST", "/api/events", { type: "runner:scoped" });
+    const eventId = ((await published!.json()) as any).eventId as string;
+    await call(routes, "POST", "/api/events", { type: "runner:unscoped" });
+
+    const localFeed = await call(routes, "GET", "/api/events?runnerId=runner-1");
+    expect(((await localFeed!.json()) as any).events.map((event: any) => event.eventId)).toEqual([eventId]);
+    const localDetails = await call(routes, "GET", `/api/events/${eventId}/deliveries?runnerId=runner-1`);
+    expect(((await localDetails!.json()) as any).deliveries.map((delivery: any) => delivery.routeId)).toEqual([local.routeId]);
+    const remoteDetails = await call(routes, "GET", `/api/events/${eventId}/deliveries?runnerId=runner-2`);
+    expect(((await remoteDetails!.json()) as any).deliveries).toHaveLength(1);
+  });
+
+  it("does not expose runner-scoped feeds for another user's runner", async () => {
+    const res = await call(routes, "GET", "/api/events?runnerId=runner-other");
+    expect(res!.status).toBe(404);
+  });
+
   it("clamps event feed limits to positive integers", async () => {
     for (let i = 0; i < 3; i++) {
       await call(routes, "POST", "/api/events", { type: "feed:limited", payload: { i } });
