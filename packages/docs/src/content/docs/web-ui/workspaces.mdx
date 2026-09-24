@@ -1,0 +1,24 @@
+---
+title: Workspace Panels
+description: Browse files, review Git changes, and understand the workspace boundaries in PizzaPi.
+---
+
+The file explorer and Git panel operate on the workspace selected for the session. Open either from the workspace panels in the session UI. Paths are relative to the runner's workspace; a browser does not read files directly from your device.
+
+## Browse and preview files
+
+Use the file explorer to navigate directories and preview supported text files. File search and `@` mentions help attach project files to a chat message. The runner enforces workspace-root boundaries; paths outside allowed workspace roots are not available through the panel. Large or unsupported files may not preview. See the [file explorer implementation](https://github.com/Pizzaface/PizzaPi/tree/main/packages/cli/src/runner/services) and [file explorer UI](https://github.com/Pizzaface/PizzaPi/tree/main/packages/ui/src).
+
+## Review Git changes
+
+The Git panel shows repository status, diffs, branches, and staged changes. Use it to stage or unstage files and create commits; remote operations such as push, pull, merge, and rebase are available where configured. Review the diff before committing. The runner must have Git installed and repository credentials configured for remote operations.
+
+Git operations are carried over the runner service channel, not REST. See [Protocol](/PizzaPi/reference/architecture/#client-and-runner-communication) and the [Git service source](https://github.com/Pizzaface/PizzaPi/tree/main/packages/cli/src/runner/services).
+
+## Web terminal
+
+The Web Terminal opens an independent PTY on the runner (Ctrl+backtick or the panel control). It is not the agent's shell, does not appear in the transcript, and has the same OS-user permissions as the runner—with no agent sandbox. Any authenticated user who can reach that runner can execute shell commands. Terminals require a connected runner and are lost on page reload or runner restart; use `tmux` for persistent processes. All terminal I/O passes through the relay, so use HTTPS when the relay is remote. See the [terminal implementation](https://github.com/Pizzaface/PizzaPi/tree/main/packages/cli/src/runner/services).
+
+## Security and limits
+
+Workspace visibility is not a substitute for the operating-system sandbox. The sandbox governs agent tool access; service panels have their own runner-side path checks. Do not expose a runner to untrusted users, and review [sandbox behavior](/PizzaPi/security/sandbox/) before using shared or remote runners.

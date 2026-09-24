@@ -5,7 +5,7 @@ description: Read-only exploration and structured plan review for careful, step-
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-Plan mode puts the agent into a **read-only exploration state** where file writes and destructive commands are blocked at the tool level (and at the OS level when [sandbox](/security/sandbox/) is active). The agent can freely read code, search, and analyze — but cannot modify anything until a plan is reviewed and approved.
+Plan mode puts the agent into a **read-only exploration state** where file writes and destructive commands are blocked at the tool level (and at the OS level when [sandbox](/PizzaPi/security/sandbox/) is active). The agent can freely read code, search, and analyze — but cannot modify anything until a plan is reviewed and approved.
 
 This is useful when you want the agent to **think before it acts**: explore a complex codebase, identify the right files, and present a structured plan for your approval before any changes are made.
 
@@ -58,7 +58,7 @@ Bash commands go through a destructive-command detector that blocks:
 - **Git mutations**: only read-only git subcommands are allowed (`status`, `log`, `diff`, `show`, `blame`, `grep`, `branch` (listing), `ls-files`, etc.). Mutating operations like `git commit`, `git push`, `git checkout`, `git stash push` are blocked.
 
 <Aside type="tip" title="Sandbox enforcement">
-  When the [sandbox](/security/sandbox/) is active, plan mode activates an **OS-level read-only overlay** via `setReadOnlyOverlay()`. This means the filesystem itself is write-protected — even if a command somehow bypasses the regex checks, the OS blocks the write. Without sandbox, the regex-based command detection is the only line of defense.
+  When the [sandbox](/PizzaPi/security/sandbox/) is active, plan mode activates an **OS-level read-only overlay** via `setReadOnlyOverlay()`. This means the filesystem itself is write-protected — even if a command somehow bypasses the regex checks, the OS blocks the write. Without sandbox, tool-level restrictions apply, but they do not provide equivalent OS enforcement.
 </Aside>
 
 ### What the agent _can_ do
@@ -153,7 +153,7 @@ In the TUI, after the agent finishes exploring (if it hasn't used the `plan_mode
 
 ## Multi-Agent Plan Review
 
-In multi-agent setups where a parent agent spawns child sessions, plan review integrates with the [trigger system](/customization/subagents/).
+In multi-agent setups where a parent agent spawns child sessions, plan review integrates with the [trigger system](/PizzaPi/customization/subagents/).
 
 When a **child session** calls `plan_mode`, it fires a `plan_review` trigger to the parent session instead of waiting for a human response. The parent sees:
 

@@ -69,7 +69,7 @@ Everything PizzaPi-specific lives under `pi.pizzapi` in `package.json`:
 |-------|------|---------|
 | `schemaVersion` | `1` | Required. Pins the overlay schema. |
 | `services` | `PizzaPiServiceDeclaration[]` | Runner services. Require a **separate trust grant** — see [Trust](#trust-and-grants). |
-| `agents` | `string[]` | Directories of [agent definitions](/PizzaPi/customization/agent-definitions/). |
+| `agents` | `string[]` | Directories of [agent definitions](/PizzaPi/customization/subagents/#agent-definitions). |
 | `rules` | `string[]` | Directories of rules injected into session context. |
 | `mcp` | `string` | Path to an [MCP server](/PizzaPi/customization/mcp-servers/) definition file. |
 
@@ -317,4 +317,4 @@ grep "loaded package service" ~/.pizzapi/logs/runner.log
 - [Runner Services](/PizzaPi/customization/runner-services/) — service internals, panels, triggers, sigils
 - [Connectivity Services](/PizzaPi/customization/runner-services/#connectivity-services) — packaging a service that owns a connection to Discord, Slack, MQTT, or any other external network
 - [MCP Servers](/PizzaPi/customization/mcp-servers/) — MCP configuration format
-- [Agent Definitions](/PizzaPi/customization/agent-definitions/) — authoring agents
+- [Agent Definitions](/PizzaPi/customization/subagents/#agent-definitions) — authoring agents

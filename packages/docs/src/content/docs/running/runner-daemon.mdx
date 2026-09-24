@@ -180,11 +180,7 @@ The generated LaunchAgent includes the install-time PATH and working directory:
 </dict>
 ```
 
-See the dedicated [macOS Setup](/PizzaPi/deployment/mac-setup/) guide for a full walkthrough, including the LaunchAgent plist and load/unload commands. The key points:
-
-- Use a **LaunchAgent** (`~/Library/LaunchAgents/`), not a LaunchDaemon
-- LaunchAgents run inside your login session with **keychain access**
-- LaunchDaemons cannot access the keychain (`gh`, SSH keys, etc. will fail)
+Use a **LaunchAgent** (`~/Library/LaunchAgents/`), not a LaunchDaemon: it runs in your login session and can access your keychain and SSH credentials. Manage it with `launchctl` for your user; see [Apple's launchd documentation](https://support.apple.com/guide/terminal/use-launchd-to-manage-daemons-and-agents-trmlb7a3c61f/mac).
 
 ### pm2
 
@@ -206,7 +202,7 @@ To run the runner as a container instead of a host process, see the dedicated [R
 pizzapi runner stop
 ```
 
-This sends SIGTERM to the supervisor and polls for up to 10 seconds, then force-kills with SIGKILL if it has not exited. The daemon disconnects from the relay and releases its lock immediately; workers are independent processes that may continue running or be reaped by the system.
+This requests a graceful supervisor shutdown, then force-kills if it does not exit within its timeout. The daemon disconnects and releases its lock; session workers receive shutdown handling from the daemon. To restart the runner, stop and start it with `pizzapi runner stop` followed by `pizzapi runner` (or restart its service/container). A daemon restart can re-adopt eligible live sessions; it is not equivalent to ending every session.
 
 ---
 
@@ -234,4 +230,4 @@ Runs the same headless device-claim flow the daemon runs automatically on a cred
 
 ## Session Linking & Triggers
 
-When sessions are spawned via `spawn_session`, the runner daemon automatically **links them as parent-child**. This enables the conversation trigger system. See the [Multi-Agent Sessions](/PizzaPi/features/multi-agent/) guide for the full list of trigger types, response actions, and delivery semantics.
+When sessions are spawned via `spawn_session`, the runner daemon automatically **links them as parent-child**. This enables the conversation trigger system. See the [Subagents and linked sessions](/PizzaPi/customization/subagents/) guide for the full list of trigger types, response actions, and delivery semantics.

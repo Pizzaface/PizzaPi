@@ -1,145 +1,43 @@
 ---
 title: PizzaPi
-description: A self-hosted web interface and relay server for the pi coding agent. Stream live AI coding sessions to any browser and interact remotely from mobile or desktop.
+description: Run the pi coding agent locally and optionally stream sessions through a PizzaPi relay.
 template: splash
 hero:
-  tagline: Watch your AI coding agent live — from any device, anywhere.
+  tagline: Run the agent locally. Connect a relay when you need the browser.
   image:
     file: ../../assets/logo.svg
   actions:
-    - text: Get Started
-      link: /PizzaPi/start-here/getting-started/
+    - text: Install PizzaPi
+      link: /PizzaPi/start-here/installation/
       icon: right-arrow
       variant: primary
-    - text: View on GitHub
-      link: https://github.com/Pizzaface/PizzaPi
-      icon: external
+    - text: First working session
+      link: /PizzaPi/start-here/getting-started/
       variant: minimal
 ---
 
-import { Card, CardGrid, LinkButton, Aside, Steps } from "@astrojs/starlight/components";
+PizzaPi packages the `pi` coding agent with a relay-connected web interface. The agent runs on your machine; the relay streams session events to a browser and supports remote session management. A relay is optional for terminal-only use.
 
-## What is PizzaPi?
+## Choose a path
 
-**PizzaPi** is a self-hosted relay server and web UI that wraps the [`pi` coding agent](https://pi.dev/). It streams every event from your local agent session to a browser in real time — so you can monitor, interact, and review code changes from your phone, tablet, or another computer.
+- **New install:** [Install PizzaPi](/PizzaPi/start-here/installation/), then follow [Your first working session](/PizzaPi/start-here/getting-started/).
+- **Use an existing relay:** run `pizzapi setup`, connect to the relay address, then launch `pizzapi` in a project directory.
+- **Local relay:** with Docker available, run `pizzapi local` to start the relay and foreground runner.
+- **Terminal only:** run `PIZZAPI_RELAY_URL=off pizzapi` without setting up a relay.
 
-<svg viewBox="0 0 600 350" xmlns="http://www.w3.org/2000/svg">
-  <rect width="600" height="350" fill="#1e1e1e" rx="8"/>
+## Understand the components
 
-  <defs>
-    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="0" refY="3.5" orient="auto">
-      <polygon points="0 0, 10 3.5, 0 7" fill="#4a9eff" />
-    </marker>
-  </defs>
+| Component | Runs where | Role |
+|---|---|---|
+| `pizzapi` CLI / runner | Your development machine or container | Runs the agent and its tools. |
+| Relay server | Local or hosted machine | Authenticates clients and relays session events. |
+| Web UI | Browser, served by relay | Views sessions, sends messages, manages runners. |
 
-  <rect x="40" y="50" width="180" height="80" fill="#2d2d2d" stroke="#4a9eff" stroke-width="2" rx="6" />
-  <text x="130" y="85" text-anchor="middle" fill="#ffffff" font-family="'Segoe UI', Roboto, sans-serif" font-size="14" font-weight="bold">pizzapi CLI</text>
-  <text x="130" y="105" text-anchor="middle" fill="#aaaaaa" font-family="'Segoe UI', Roboto, sans-serif" font-size="12">(your dev machine)</text>
+The runner connects outward to the relay; the relay does not need an inbound connection to your development machine. See [Architecture](/PizzaPi/reference/architecture/) for communication details.
 
-  <rect x="360" y="50" width="200" height="80" fill="#2d2d2d" stroke="#4a9eff" stroke-width="2" rx="6" />
-  <text x="460" y="85" text-anchor="middle" fill="#ffffff" font-family="'Segoe UI', Roboto, sans-serif" font-size="14" font-weight="bold">PizzaPi Relay Server</text>
-  <text x="460" y="105" text-anchor="middle" fill="#aaaaaa" font-family="'Segoe UI', Roboto, sans-serif" font-size="12">(self-hosted / cloud)</text>
+## Common next steps
 
-  <rect x="360" y="220" width="200" height="80" fill="#2d2d2d" stroke="#4a9eff" stroke-width="2" rx="6" />
-  <text x="460" y="255" text-anchor="middle" fill="#ffffff" font-family="'Segoe UI', Roboto, sans-serif" font-size="14" font-weight="bold">Browser / Mobile</text>
-  <text x="460" y="275" text-anchor="middle" fill="#aaaaaa" font-family="'Segoe UI', Roboto, sans-serif" font-size="12">Web UI</text>
-
-  <line x1="220" y1="90" x2="350" y2="90" stroke="#4a9eff" stroke-width="2" marker-end="url(#arrowhead)" />
-  <text x="285" y="80" text-anchor="middle" fill="#4a9eff" font-family="'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="bold">WebSocket</text>
-
-  <line x1="460" y1="130" x2="460" y2="210" stroke="#4a9eff" stroke-width="2" marker-end="url(#arrowhead)" />
-  <text x="470" y="175" text-anchor="start" fill="#4a9eff" font-family="'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="bold">HTTP / WS</text>
-</svg>
-
-<CardGrid stagger>
-  <Card title="Stream live sessions" icon="laptop">
-    Every token, tool call, and file change streams to your browser in real time. No polling, no refresh.
-  </Card>
-  <Card title="Control from anywhere" icon="rocket">
-    Send messages to the agent, manage runners, and spawn new sessions from mobile or desktop — no terminal required.
-  </Card>
-  <Card title="Self-hosted & private" icon="shield">
-    Deploy your own relay with Docker Compose. Your code and API keys stay on your infrastructure.
-  </Card>
-  <Card title="Headless runner daemon" icon="setting">
-    Spawn agent sessions on demand from the web UI or via the `spawn_session` tool — no terminal session needed.
-  </Card>
-</CardGrid>
-
----
-
-## Why PizzaPi?
-
-PizzaPi goes beyond basic terminal access to give you a full remote development experience:
-
-<CardGrid>
-  <Card title="📱 Installable PWA" icon="document">
-    Install PizzaPi as a Progressive Web App on your phone or tablet. Get a native app experience with a cached app shell and home screen access.
-  </Card>
-  <Card title="📱 Native Android & iOS apps" icon="setting">
-    Build native mobile apps from the same codebase with Capacitor. Android background push is available via ntfy; iOS keeps in-app notifications.
-  </Card>
-  <Card title="🔔 Push Notifications" icon="approve-check">
-    Get notified when sessions complete, agents need input, or errors occur — even when the browser tab is closed.
-  </Card>
-  <Card title="💬 Linked Child Orchestration" icon="comment">
-    Spawn linked child sessions that report back through triggers and can be steered with `respond_to_trigger` and `tell_child`.
-  </Card>
-  <Card title="🖥️ Multi-Runner Support" icon="list-format">
-    Connect multiple dev machines (runners) to a single relay. Switch between them from the web UI and manage all your projects in one place.
-  </Card>
-</CardGrid>
-
----
-
-## How It Works
-
-<Steps>
-1. **Install the CLI on your dev machine**
-
-   Run `npx @pizzapi/pizza` (or install globally). The CLI wraps the `pi` coding agent and adds relay streaming.
-
-2. **Connect to a relay server**
-
-   On first run, the setup wizard asks for your relay URL and credentials (or scans a QR code). The CLI opens a persistent WebSocket connection and streams all session events.
-
-3. **Open the web UI in any browser**
-
-   Navigate to your relay's URL. You'll see live token streaming, tool call results, file diffs, and a chat input — all in real time. Works on desktop and mobile.
-</Steps>
-
----
-
-## Quick Install
-
-```bash
-# Run without installing (npx)
-npx @pizzapi/pizza
-
-# — or — install globally
-npm install -g @pizzapi/pizza
-pizzapi
-```
-
-<Aside type="tip" title="First run?">
-  The first time you run `pizzapi` (or `pizza` — the two names are aliases for the same binary), a setup wizard walks you through connecting to a relay server and signing in. It takes about 30 seconds — see the [Getting Started](/PizzaPi/start-here/getting-started/) guide for details.
-</Aside>
-
-<div style="margin-top: 2rem; display: flex; gap: 1rem; flex-wrap: wrap;">
-  <LinkButton href="/PizzaPi/start-here/getting-started/" variant="primary" icon="right-arrow">Get Started</LinkButton>
-  <LinkButton href="/PizzaPi/start-here/installation/" variant="secondary">Full Installation Guide</LinkButton>
-  <LinkButton href="/PizzaPi/deployment/self-hosting/" variant="minimal" icon="external">Self-Host with Docker</LinkButton>
-</div>
-
----
-
-## Built With
-
-| Layer | Technology |
-|-------|------------|
-| Agent Core | [`pi` coding agent](https://pi.dev/) / `@earendil-works/pi-coding-agent` |
-| Runtime | [Bun](https://bun.sh) |
-| Server | Bun.serve, [better-auth](https://www.better-auth.com/), Kysely + SQLite, Redis |
-| Web UI | React 19, Vite 6, TailwindCSS v4, Radix UI / shadcn/ui |
-| Notifications | Web Push (VAPID) |
-| Deployment | Docker Compose |
+- [Provider authentication and model selection](/PizzaPi/features/providers-and-models/)
+- [Configuration and environment variables](/PizzaPi/customization/configuration/)
+- [Self-host the relay and configure HTTPS](/PizzaPi/deployment/self-hosting/)
+- [Sandbox behavior and limitations](/PizzaPi/security/sandbox/)

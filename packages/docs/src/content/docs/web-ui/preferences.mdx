@@ -84,25 +84,23 @@ All non-system fonts are bundled with PizzaPi (self-hosted woff2 files, ~500KB t
 
 ## Notifications
 
-### Push notifications
+### Browser push notifications
 
-Enable browser push notifications to get alerted when sessions need your attention — for example, when an agent asks a question or completes a task.
+On the web, enable push from the notification settings and grant browser permission. Browser push uses the service worker and requires HTTPS (localhost is treated as secure by browsers). The relay must have stable VAPID keys; `pizzapi web` generates and persists these. If you self-host manually, configure `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and `VAPID_SUBJECT` consistently across restarts. See [self-hosting](/PizzaPi/deployment/self-hosting/#web-push-notifications).
 
-<Aside type="note">
-Push notifications require HTTPS and a compatible browser. The toggle won't appear if your browser doesn't support the Push API.
-</Aside>
+When the web app is open, in-app attention indicators work without browser push permission. Notification preferences apply separately from native Android push.
 
-### Suppress child session notifications
+### Native Android push
 
-When enabled, notifications from child sessions (spawned by a parent agent) are suppressed. Only the parent session's events trigger notifications. This is useful when orchestrating multiple sub-agents to avoid notification spam.
+The Android app uses the relay's optional ntfy integration for background push; it is not the browser Web Push path and is not available in ordinary desktop browsers. The server must be configured for ntfy. See [mobile push setup in the self-hosting guide](/PizzaPi/deployment/self-hosting/#web-push-notifications) and the [native notification implementation](https://github.com/Pizzaface/PizzaPi/tree/main/packages/ui/src/lib).
+
+### Child-session notifications
+
+The child-session suppression preference affects notifications from spawned child sessions. The available controls differ between browser and native push.
 
 ### Haptic feedback
 
-On devices that support the [Vibration API](https://developer.mozilla.org/en-US/docs/Web/API/Vibration_API) (primarily Android), PizzaPi can provide haptic feedback as agent text streams in. The vibration pulse scales with the length of each text chunk.
-
-<Aside type="note">
-iOS Safari ignores `navigator.vibrate()` silently, so the haptics toggle won't appear on iPhones or iPads.
-</Aside>
+On devices that support the Vibration API (primarily Android), PizzaPi can provide haptic feedback as agent text streams in. iOS Safari ignores `navigator.vibrate()`; haptics are not available there.
 
 ## Models
 

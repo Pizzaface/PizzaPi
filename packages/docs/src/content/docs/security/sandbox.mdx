@@ -5,7 +5,7 @@ description: OS-level sandboxing for agent tool execution, filesystem and networ
 
 import { Aside, Badge } from "@astrojs/starlight/components";
 
-PizzaPi can enforce OS-level sandboxing around agent tool execution — bash commands, file reads/writes, and MCP server network access (domain-filtered). This prevents prompt injections or model hallucinations from accessing sensitive files, exfiltrating data, or damaging your system.
+PizzaPi can enforce OS-level sandboxing around the agent worker's shell and file-tool processes. The policy limits filesystem access and, in `full` mode, outbound network access. It does not constrain browser sessions, standalone service panels, or necessarily every external MCP server's own effects; treat connected integrations as separately trusted capabilities. Sandboxing reduces risk but is not a security boundary for untrusted workloads.
 
 The sandbox is powered by [Anthropic's `sandbox-runtime`](https://github.com/anthropic-experimental/sandbox-runtime), which uses **macOS `sandbox-exec`** and **Linux `bubblewrap` + seccomp** to enforce restrictions at the kernel level.
 

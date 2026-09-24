@@ -12,14 +12,14 @@ PizzaPi loads configuration from two JSON files merged together — project-loca
 | `~/.pizzapi/config.json` | Global — applies to all projects |
 | `.pizzapi/config.json` | Project-local — overrides global for this project |
 
-You can also override any setting with **environment variables**.
+A documented subset of settings can also be overridden with **environment variables** (see the list below). Environment variables take precedence for the current process but do not rewrite JSON files.
 
 <Aside type="tip" title="Dedicated guides">
   For in-depth setup of specific features, see:
   - [MCP Servers](/PizzaPi/customization/mcp-servers/) — connecting external tool servers
   - [Hooks](/PizzaPi/customization/hooks/) — lifecycle scripts that observe or block agent actions
   - [Skills](/PizzaPi/customization/skills/) — extending the agent with domain knowledge
-  - [Agent Definitions](/PizzaPi/customization/agent-definitions/) — creating reusable specialized agents
+  - [Agent Definitions & Subagents](/PizzaPi/customization/subagents/#agent-definitions) — creating reusable specialized agents
 </Aside>
 
 ---
@@ -152,7 +152,7 @@ You can also override any setting with **environment variables**.
 | `oauthClientSecret` | `string` | — | Global default pre-registered OAuth `client_secret` for MCP servers. Per-server values take precedence. |
 | `oauthCallbackPort` | `number` | `0` | Global default local callback port for MCP OAuth redirect URI. A single OAuth server honors this port; multiple OAuth servers without per-server ports use OS-assigned ephemeral ports to avoid collisions. `0` means OS-assigned ephemeral port. Per-server values take precedence. |
 | `mcpTimeout` | `number` | `30000` | Timeout (ms) for each MCP server's `tools/list` call during startup. Set to `0` to disable. |
-| `toolSearch` | `object` | — | Dynamic MCP tool discovery config. See [Tool Search](/PizzaPi/customization/tool-search/). |
+| `toolSearch` | `object` | — | Dynamic MCP tool discovery config. See [MCP tool search](/PizzaPi/customization/mcp-servers/#tool-search-and-deferred-loading). |
 | `bash.backgroundAfterSeconds` | `number` | `15` | Seconds a `bash` command streams output in the foreground before it auto-backgrounds. `0` = background immediately. See [Bash auto-backgrounding](#bash-auto-backgrounding). |
 | `sandbox` | `object` | *(see below)* | OS-level sandbox config. See [Agent Sandbox](/PizzaPi/security/sandbox/). |
 | `sandbox.mode` | `string` | `"basic"` | Preset: `"none"`, `"basic"`, or `"full"`. |
@@ -334,7 +334,7 @@ You can also enable web search via environment variables (environment variables 
 
 ## Environment Variables
 
-Every config option can also be set as an environment variable. Environment variables take effect for the current process only and do **not** rewrite the JSON file, but they do take precedence at runtime.
+Only the settings listed here have environment-variable overrides. Overrides apply to the current process and do **not** rewrite the JSON file.
 
 | Variable | Equivalent config key | Notes |
 |----------|-----------------------|-------|
@@ -377,16 +377,8 @@ PIZZAPI_RELAY_URL=off pizzapi
   Environment variables are useful in CI/CD pipelines or when you want to avoid storing credentials in a file.
 </Aside>
 
-<Aside type="note" title="Relay URL is not saved by pizzapi setup">
-  `pizzapi setup` saves your **API key** to `~/.pizzapi/config.json` but does **not** persist the relay URL. If you connect to a non-default relay (anything other than `localhost:7492`), manually add `"relayUrl"` to your config after setup:
-
-  ```jsonc
-  // ~/.pizzapi/config.json
-  {
-    "apiKey": "pk_live_...",
-    "relayUrl": "wss://your-relay.example.com"
-  }
-  ```
+<Aside type="note">
+  `pizzapi setup` persists both the API key and the selected relay URL in `~/.pizzapi/config.json`. Environment overrides apply only to that process and do not rewrite the file.
 </Aside>
 
 ---
