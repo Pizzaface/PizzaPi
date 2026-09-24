@@ -7,7 +7,7 @@ import { Aside } from "@astrojs/starlight/components";
 
 Plan mode is a two-phase agent workflow: **exploration** (read-only) followed by **review** (approve, edit, or reject a plan). When plan mode is active, the agent is blocked from writing files, editing files, running destructive bash commands, and spawning sessions — enforced at the OS sandbox level when a sandbox is active, and at the tool level otherwise.
 
-Use plan mode when you want the agent to **think before it acts** — explore an unfamiliar codebase, plan multi-step changes, or gate the agent before it modifies anything.
+Use plan mode to explore an unfamiliar codebase, plan multi-step changes, or gate the agent before it modifies anything.
 
 <Aside type="tip">
 For the full technical details on how plan mode works (tool blocking, bash restrictions, sandbox enforcement), see the [Plan Mode](/features/plan-mode/) feature doc. This page covers how to use plan mode from the PizzaPi web UI.
