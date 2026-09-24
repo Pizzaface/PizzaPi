@@ -82,5 +82,5 @@ function wrapFetch(): void {
 }
 
 export function providerRequestLogExtension(_pi: ExtensionAPI): void {
-    wrapFetch();
+    if (process.env.PIZZAPI_LOG_PROVIDER_REQUEST === "1") wrapFetch();
 }

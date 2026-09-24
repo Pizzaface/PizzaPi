@@ -2,9 +2,24 @@ import { describe, test, expect } from "bun:test";
 import { providerRequestLogExtension, isAnthropicMessagesUrl } from "./provider-request-log.js";
 
 describe("providerRequestLogExtension", () => {
+    test("does not wrap fetch unless explicitly enabled", () => {
+        const original = globalThis.fetch;
+        const previous = process.env.PIZZAPI_LOG_PROVIDER_REQUEST;
+        try {
+            delete process.env.PIZZAPI_LOG_PROVIDER_REQUEST;
+            providerRequestLogExtension({} as any);
+            expect(globalThis.fetch).toBe(original);
+        } finally {
+            if (previous === undefined) delete process.env.PIZZAPI_LOG_PROVIDER_REQUEST;
+            else process.env.PIZZAPI_LOG_PROVIDER_REQUEST = previous;
+        }
+    });
+
     test("wraps global fetch and passes through non-anthropic calls unchanged", async () => {
         const original = globalThis.fetch;
+        const previous = process.env.PIZZAPI_LOG_PROVIDER_REQUEST;
         try {
+            process.env.PIZZAPI_LOG_PROVIDER_REQUEST = "1";
             let seen: any;
             globalThis.fetch = (async (input: any, init?: any) => {
                 seen = { input, init };
@@ -20,12 +35,16 @@ describe("providerRequestLogExtension", () => {
             expect(seen.input).toBe("https://example.com/health");
         } finally {
             globalThis.fetch = original;
+            if (previous === undefined) delete process.env.PIZZAPI_LOG_PROVIDER_REQUEST;
+            else process.env.PIZZAPI_LOG_PROVIDER_REQUEST = previous;
         }
     });
 
     test("does not throw when logging an anthropic /v1/messages request", async () => {
         const original = globalThis.fetch;
+        const previous = process.env.PIZZAPI_LOG_PROVIDER_REQUEST;
         try {
+            process.env.PIZZAPI_LOG_PROVIDER_REQUEST = "1";
             globalThis.fetch = (async () => new Response("{}")) as unknown as typeof fetch;
             providerRequestLogExtension({} as any);
             const body = JSON.stringify({
@@ -44,6 +63,8 @@ describe("providerRequestLogExtension", () => {
             expect(res.status).toBe(200);
         } finally {
             globalThis.fetch = original;
+            if (previous === undefined) delete process.env.PIZZAPI_LOG_PROVIDER_REQUEST;
+            else process.env.PIZZAPI_LOG_PROVIDER_REQUEST = previous;
         }
     });
 });
