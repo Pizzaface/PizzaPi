@@ -103,6 +103,22 @@ describe("createSubagentMirror", () => {
         ).toBeNull();
     });
 
+    test("uses the active local TUI relay session as the child parent", () => {
+        const fake = makeFakeSocket();
+        const mirror = createSubagentMirror({
+            agentName: "researcher",
+            task: "look into the thing",
+            cwd: "/repo",
+            parentSessionId: "active-tui-session",
+            env: { ...ENV, parentSessionId: undefined },
+            socketFactory: () => fake.socket,
+        })!;
+
+        fake.fire("connect");
+        expect(fake.emitted.find((e) => e.event === "register")?.payload.parentSessionId).toBe("active-tui-session");
+        mirror.finish(result());
+    });
+
     test("registers as a child session with parentSessionId on connect", () => {
         const fake = makeFakeSocket();
         const mirror = createSubagentMirror({
