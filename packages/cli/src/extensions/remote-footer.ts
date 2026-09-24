@@ -9,6 +9,7 @@ import { homedir } from "node:os";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { RelayContext } from "./remote-types.js";
 import { getAuthSource, authSourceLabel } from "./remote-auth-source.js";
+import { getActiveSubagentCount } from "./subagent/background-state.js";
 
 // ── Pure utilities ───────────────────────────────────────────────────────────
 
@@ -19,6 +20,11 @@ export function sanitizeStatusText(text: string): string {
         .replace(/[\r\n\t]/g, " ")
         .replace(/ +/g, " ")
         .trim();
+}
+
+export function formatRelayStatus(text: string, activeSubagents: number): string {
+    const suffix = activeSubagents ? ` · ${activeSubagents} active subagent${activeSubagents === 1 ? "" : "s"}` : "";
+    return sanitizeStatusText(`${text}${suffix}`);
 }
 
 export function formatTokens(count: number): string {
@@ -159,7 +165,8 @@ export function installFooter(rctx: RelayContext, ctx: ExtensionContext) {
                 const modelBadge = `• ${modelTextPlain}${authSuffix}`;
 
                 // Read relay status directly from the context object.
-                const relayStatus = sanitizeStatusText(rctx.relayStatusText);
+                const activeSubagents = getActiveSubagentCount();
+                const relayStatus = formatRelayStatus(rctx.relayStatusText, activeSubagents);
                 const statusLower = relayStatus.toLowerCase();
                 const relayStatusColor: "success" | "warning" | "error" =
                     statusLower.includes("disconnected") ||

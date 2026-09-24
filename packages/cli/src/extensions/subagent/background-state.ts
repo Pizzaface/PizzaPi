@@ -17,6 +17,10 @@ export function hasActiveSubagents(): boolean {
     return activeSlots > 0;
 }
 
+export function getActiveSubagentCount(): number {
+    return activeSlots;
+}
+
 export function onSubagentsIdle(listener: (followUpStarted: boolean) => void): () => void {
     idleListeners.add(listener);
     return () => idleListeners.delete(listener);
