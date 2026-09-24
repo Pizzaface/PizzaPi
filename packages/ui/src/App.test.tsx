@@ -13,6 +13,16 @@ describe("App session switching", () => {
   });
 });
 
+describe("runner event navigation", () => {
+  test("does not expose the obsolete account-wide Events tab in runner detail", () => {
+    const source = readFileSync(new URL("./components/RunnerDetailPanel.tsx", import.meta.url), "utf8");
+    const tabs = source.slice(source.indexOf("const TABS:"), source.indexOf("function TabBar"));
+
+    expect(tabs).not.toContain('key: "events"');
+    expect(tabs).not.toContain("Events (account-wide)");
+  });
+});
+
 describe("schedule manager navigation", () => {
   test("opens the trigger manager for the runner whose schedules are shown", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
