@@ -290,7 +290,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
     }
 
     const sioUrl = socketIoUrl(rctx);
-    log.info(`pizzapi: connecting to relay at ${sioUrl}/relay…`);
+    log.debug(`pizzapi: connecting to relay at ${sioUrl}/relay…`);
 
     const sock: Socket<RelayServerToClientEvents, RelayClientToServerEvents> = io(
         sioUrl + "/relay",
@@ -409,7 +409,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         };
         connectFailureNotified = false;
         rctx.setRelayStatus("Connected to Relay");
-        log.info(
+        log.debug(
             wasReconnect
                 ? `pizzapi: relay reconnected — session ${data.sessionId} (${data.shareUrl})`
                 : `pizzapi: relay connected — session ${data.sessionId} (${data.shareUrl})`,

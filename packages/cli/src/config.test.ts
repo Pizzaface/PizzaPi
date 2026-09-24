@@ -996,19 +996,27 @@ describe("loadConfig transport field blocking", () => {
     );
 
     const originalWarn = console.warn;
+    const originalLog = console.log;
+    const previousDebug = process.env.PIZZAPI_DEBUG;
     const warn = mock((..._args: unknown[]) => undefined);
+    const debug = mock((..._args: unknown[]) => undefined);
     console.warn = warn as unknown as typeof console.warn;
+    console.log = debug as unknown as typeof console.log;
+    process.env.PIZZAPI_DEBUG = "1";
     try {
       loadConfig(projectDir);
       loadConfig(projectDir);
     } finally {
       console.warn = originalWarn;
+      console.log = originalLog;
+      if (previousDebug === undefined) delete process.env.PIZZAPI_DEBUG;
+      else process.env.PIZZAPI_DEBUG = previousDebug;
     }
 
-    expect(warn).toHaveBeenCalledTimes(2);
-    const messages = warn.mock.calls.map((call) => String(call[2]));
-    expect(messages).toContain("Project config .pizzapi/config.json contains 'apiKey' — global config value will be used instead. Set it in ~/.pizzapi/config.json only.");
-    expect(messages).toContain('Project MCP servers found in .pizzapi/config.json. Set "allowProjectMcp": true in ~/.pizzapi/config.json or PIZZAPI_ALLOW_PROJECT_MCP=1 to enable loading.');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(debug).toHaveBeenCalledTimes(1);
+    expect(String(debug.mock.calls[0][2])).toContain("Project config .pizzapi/config.json contains 'apiKey'");
+    expect(String(warn.mock.calls[0][2])).toContain("Project MCP servers found in .pizzapi/config.json");
   });
 
   test("global relayUrl is preserved when project also sets relayUrl", () => {

@@ -17,11 +17,11 @@ import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 const log = createLogger("hooks");
 const emittedLoadConfigWarnings = new Set<string>();
 
-function warnLoadConfigOnce(projectPath: string, code: string, message: string): void {
+function warnLoadConfigOnce(projectPath: string, code: string, message: string, level: "warn" | "debug" = "warn"): void {
     const key = `${projectPath}:${code}:${message}`;
     if (emittedLoadConfigWarnings.has(key)) return;
     emittedLoadConfigWarnings.add(key);
-    log.warn(message);
+    log[level](message);
 }
 
 /**
@@ -207,6 +207,7 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
                 "Project config .pizzapi/config.json contains 'apiKey' — " +
                     "global config value will be used instead. " +
                     "Set it in ~/.pizzapi/config.json only.",
+                "debug",
             );
             config.apiKey = global.apiKey;
         } else {
