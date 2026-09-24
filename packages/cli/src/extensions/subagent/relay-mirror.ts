@@ -146,6 +146,8 @@ export interface MirrorOptions {
     cwd: string;
     /** Step index for chained runs — appended to the session name. */
     step?: number;
+    /** Current relay parent ID, which is in-memory for local TUI sessions. */
+    parentSessionId?: string;
     env?: MirrorEnv;
     socketFactory?: SocketFactory;
     now?: () => number;
@@ -165,7 +167,7 @@ function sessionNameFor(agentName: string, task: string, step?: number): string 
  */
 export function createSubagentMirror(opts: MirrorOptions): SubagentMirror | null {
     const env = opts.env ?? readMirrorEnv();
-    const parentSessionId = env.parentSessionId?.trim();
+    const parentSessionId = (opts.parentSessionId ?? env.parentSessionId)?.trim();
     const apiKey = env.apiKey?.trim();
     const url = resolveSocketIoUrl(env);
     if (!parentSessionId || !apiKey || !url) return null;

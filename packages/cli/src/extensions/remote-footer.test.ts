@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { formatTokens, truncateEnd, truncateMiddle, layoutLeftRight, sanitizeStatusText } from "./remote-footer.js";
+import { formatTokens, truncateEnd, truncateMiddle, layoutLeftRight, sanitizeStatusText, formatRelayStatus } from "./remote-footer.js";
 
 describe("remote-footer utilities", () => {
     describe("formatTokens", () => {
@@ -67,6 +67,14 @@ describe("remote-footer utilities", () => {
             const result = layoutLeftRight("a very long left string", "right", 15, truncateEnd);
             expect(result.right).toBe("right");
             expect(result.left.length + result.pad.length + result.right.length).toBe(15);
+        });
+    });
+
+    describe("formatRelayStatus", () => {
+        test("appends active subagent count and handles singular/plural", () => {
+            expect(formatRelayStatus("Connected to Relay", 1)).toBe("Connected to Relay · 1 active subagent");
+            expect(formatRelayStatus("Connected to Relay", 2)).toBe("Connected to Relay · 2 active subagents");
+            expect(formatRelayStatus("Connected to Relay", 0)).toBe("Connected to Relay");
         });
     });
 

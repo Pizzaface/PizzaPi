@@ -1,9 +1,24 @@
 let activeSlots = 0;
 let followUpStarted = false;
+const statusListeners = new Set<(activeSlots: number) => void>();
+
+function emitStatus(): void {
+    for (const listener of statusListeners) listener(activeSlots);
+}
+
+export function onSubagentStatus(listener: (activeSlots: number) => void): () => void {
+    statusListeners.add(listener);
+    listener(activeSlots);
+    return () => statusListeners.delete(listener);
+}
 const idleListeners = new Set<(followUpStarted: boolean) => void>();
 
 export function hasActiveSubagents(): boolean {
     return activeSlots > 0;
+}
+
+export function getActiveSubagentCount(): number {
+    return activeSlots;
 }
 
 export function onSubagentsIdle(listener: (followUpStarted: boolean) => void): () => void {
@@ -18,12 +33,14 @@ export function noteSubagentSettlementDeferred(): void {
 export function reserveSubagentSlots(count: number, max: number): ((startedFollowUp?: boolean) => void) | undefined {
     if (activeSlots + count > max) return undefined;
     activeSlots += count;
+    emitStatus();
     let released = false;
     return (startedFollowUp = false) => {
         if (released) return;
         released = true;
         followUpStarted ||= startedFollowUp;
         activeSlots -= count;
+        emitStatus();
         if (activeSlots !== 0) return;
 
         const didStartFollowUp = followUpStarted;
@@ -42,6 +59,7 @@ export function resetSubagentState(): void {
     activeSlots = 0;
     followUpStarted = false;
     idleListeners.clear();
+    statusListeners.clear();
 }
 
 /**
@@ -54,4 +72,5 @@ export function resetSubagentState(): void {
 export function resetSubagentCounters(): void {
     activeSlots = 0;
     followUpStarted = false;
+    emitStatus();
 }

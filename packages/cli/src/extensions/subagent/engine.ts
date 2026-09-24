@@ -19,6 +19,7 @@ import { defaultAgentDir } from "../../config.js";
 import { findCachedOllamaCloudModel } from "../../ollama-cloud-models.js";
 import { isModelHidden } from "../../hidden-models.js";
 import { getSubagentDefaultModelKey } from "../../subagent-default-model.js";
+import { getRelaySessionId } from "../remote.js";
 import type { SingleResult, SubagentDetails, OnUpdateCallback } from "./types.js";
 import { summarizeResultForStreaming } from "./types.js";
 import { createSubagentMirror, type SubagentMirror } from "./relay-mirror.js";
@@ -228,6 +229,7 @@ export async function runSingleAgent(
      *  (workflows render their own progress card and can run 1000 agents). */
     mirrorToRelay = true,
     effort?: ThinkingLevel,
+    parentSessionId?: string | null,
 ): Promise<SingleResult> {
     const agent = agents.find((a) => a.name === agentName);
 
@@ -303,7 +305,13 @@ export async function runSingleAgent(
 
         // Build session options — resolve tools fail-closed
         const sessionCwd = cwd ?? defaultCwd;
-        if (mirrorToRelay) mirror = createSubagentMirror({ agentName, task, cwd: sessionCwd, step });
+        if (mirrorToRelay) mirror = createSubagentMirror({
+            agentName,
+            task,
+            cwd: sessionCwd,
+            step,
+            parentSessionId: parentSessionId ?? getRelaySessionId() ?? undefined,
+        });
         let tools: string[];
         if (isPlanMode) {
             // Plan mode: restrict to read-only tools regardless of agent config
