@@ -212,6 +212,8 @@ describe("runner-wide trigger manager", () => {
     const sourceLabel = Array.from(container.querySelectorAll("label")).find((label) => label.textContent?.includes("Source / event"))!;
     const sourceSelect = container.querySelector(`#${sourceLabel.htmlFor}`) as HTMLSelectElement;
     await act(async () => { fireEvent.change(sourceSelect, { target: { value: "github:pr_comment" } }); });
+    const destLabel = Array.from(container.querySelectorAll("label")).find((label) => label.textContent?.trim() === "Destination")!;
+    await act(async () => { fireEvent.change(container.querySelector(`#${destLabel.htmlFor}`)!, { target: { value: "session" } }); });
     const sessionLabel = Array.from(container.querySelectorAll("label")).find((label) => label.textContent?.includes("Target session"))!;
     const sessionSelect = container.querySelector(`#${sessionLabel.htmlFor}`) as HTMLSelectElement;
     await act(async () => { fireEvent.change(sessionSelect, { target: { value: "s-1" } }); });

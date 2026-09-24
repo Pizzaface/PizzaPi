@@ -93,7 +93,7 @@ function initialFilterRows(route: Route | null): FilterRow[] {
 export function RouteForm({ catalog, targetSessionId, sessions = [], runners = [], fixedRunnerId, editing = null, onDone, onCancel }: RouteFormProps) {
   const [eventType, setEventType] = React.useState(editing?.eventType ?? "");
   const [params, setParams] = React.useState<Record<string, string | string[]>>({});
-  const [targetKind, setTargetKind] = React.useState<"session" | "spawn">(editing?.target.kind ?? "session");
+  const [targetKind, setTargetKind] = React.useState<"session" | "spawn">(editing?.target.kind ?? (targetSessionId ? "session" : "spawn"));
   const [targetSession, setTargetSession] = React.useState(editing?.target.kind === "session" ? editing.target.sessionId : targetSessionId ?? "");
   const [offlinePolicy, setOfflinePolicy] = React.useState<"wait" | "wake" | "fail">(editing?.target.kind === "session" ? editing.target.offlinePolicy ?? (editing.target.wake ? "wake" : "wait") : "wait");
   const [spawnRunnerId, setSpawnRunnerId] = React.useState(editing?.target.kind === "spawn" ? editing.target.spec.runnerId : fixedRunnerId ?? runners[0]?.runnerId ?? "");
@@ -103,7 +103,7 @@ export function RouteForm({ catalog, targetSessionId, sessions = [], runners = [
   const [spawnAutoClose, setSpawnAutoClose] = React.useState(editing?.target.kind === "spawn" ? editing.target.spec.autoClose ?? false : false);
   const [filters, setFilters] = React.useState<FilterRow[]>([]);
   const [filterMode, setFilterMode] = React.useState<Route["filterMode"]>(editing?.filterMode ?? "and");
-  const [deliverAs, setDeliverAs] = React.useState<RouteInput["deliverAs"]>(editing?.deliverAs ?? "followUp");
+  const [deliverAs, setDeliverAs] = React.useState<RouteInput["deliverAs"]>(editing?.deliverAs ?? "steer");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
@@ -149,9 +149,9 @@ export function RouteForm({ catalog, targetSessionId, sessions = [], runners = [
       }
     } else {
       setEventType("");
-      setDeliverAs("followUp");
+      setDeliverAs("steer");
       setFilterMode("and");
-      setTargetKind("session");
+      setTargetKind(targetSessionId ? "session" : "spawn");
       setTargetSession(targetSessionId ?? "");
       setOfflinePolicy("wait");
       setSpawnRunnerId(defaultRunnerId);

@@ -131,7 +131,7 @@ describe("RouteForm (create)", () => {
     expect(calls[0].body).toMatchObject({
       eventType: "time:timer_fired",
       target: { kind: "session", sessionId: "sess-1" },
-      deliverAs: "followUp",
+      deliverAs: "steer",
       params: { duration: 45 },
       filters: [{ field: "repo", op: "eq", value: "PizzaPi/PizzaPi" }],
     });
