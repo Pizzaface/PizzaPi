@@ -18,9 +18,6 @@ import { WebhooksManager } from "@/components/WebhooksManager";
 import { HooksManager } from "@/components/HooksManager";
 import { AgentRulesEditor } from "@/components/AgentRulesEditor";
 import { TrustedPluginsEditor } from "@/components/TrustedPluginsEditor";
-const LazyEventsRoutesPanel = React.lazy(() =>
-    import("@/components/events/EventsRoutesPanel").then((m) => ({ default: m.EventsRoutesPanel }))
-);
 const UsageDashboard = React.lazy(() =>
     import("@/components/usage-dashboard/UsageDashboard").then((m) => ({
         default: m.UsageDashboard,
@@ -45,7 +42,7 @@ import { McpServersManager } from "@/components/McpServersManager";
 // Types
 // ---------------------------------------------------------------------------
 
-export type RunnerTab = "sessions" | "skills" | "agents" | "plugins" | "sandbox" | "hooks" | "mcp" | "webhooks" | "services" | "triggers" | "events" | "usage" | "settings";
+export type RunnerTab = "sessions" | "skills" | "agents" | "plugins" | "sandbox" | "hooks" | "mcp" | "webhooks" | "services" | "triggers" | "usage" | "settings";
 
 interface RunnerHook {
     type: string;
@@ -91,6 +88,9 @@ export interface RunnerDetailPanelProps {
     onSkillsChange?: (runnerId: string, skills: SkillInfo[]) => void;
     onAgentsChange?: (runnerId: string, agents: AgentInfo[]) => void;
     onPluginsChange?: (runnerId: string, plugins: PluginInfo[]) => void;
+    initialTab?: RunnerTab;
+    runners?: Array<{ runnerId: string; name?: string | null }>;
+    allSessions?: Array<{ sessionId: string; sessionName?: string | null; runnerId?: string | null }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +264,6 @@ const TABS: { key: RunnerTab; label: string; countKey?: "skills" | "agents" | "p
     { key: "webhooks", label: "Webhooks" },
     { key: "services", label: "Services" },
     { key: "triggers", label: "Triggers" },
-    { key: "events", label: "Events (account-wide)" },
     { key: "usage", label: "Usage" },
     { key: "sandbox", label: "Sandbox" },
     { key: "settings", label: "Settings" },
@@ -338,15 +337,18 @@ export function RunnerDetailPanel({
     onSkillsChange,
     onAgentsChange,
     onPluginsChange,
+    initialTab = "sessions",
+    runners = [],
+    allSessions = sessions,
 }: RunnerDetailPanelProps) {
-    const [activeTab, setActiveTab] = useState<RunnerTab>("sessions");
+    const [activeTab, setActiveTab] = useState<RunnerTab>(initialTab);
     const [inspectorSessionId, setInspectorSessionId] = React.useState<string | null>(null);
 
     // Reset tab when runner changes
     useEffect(() => {
-        setActiveTab("sessions");
+        setActiveTab(initialTab);
         setInspectorSessionId(null);
-    }, [runner?.runnerId]);
+    }, [runner?.runnerId, initialTab]);
 
     // ---- Empty states ----
 
@@ -469,25 +471,10 @@ export function RunnerDetailPanel({
             tabContent = (
                 <RunnerTriggersPanel
                     runnerId={runner.runnerId}
+                    sessions={allSessions}
+                    runners={runners}
+                    onOpenSession={onOpenSession}
                 />
-            );
-            break;
-        case "events":
-            tabContent = (
-                <div className="space-y-3">
-                    <p className="text-xs text-muted-foreground">
-                        Account-wide event feed and routes. This view is not scoped to the selected runner.
-                    </p>
-                    <Suspense
-                        fallback={
-                            <div className="flex items-center justify-center p-8">
-                                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                            </div>
-                        }
-                    >
-                        <LazyEventsRoutesPanel bare />
-                    </Suspense>
-                </div>
             );
             break;
         case "usage":

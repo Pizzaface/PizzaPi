@@ -26,9 +26,10 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
-import { Trash2, RefreshCw, Lock, ChevronRight, ChevronDown, Zap, Pencil, WifiOff } from "lucide-react";
+import { Trash2, RefreshCw, Lock, ChevronRight, ChevronDown, Zap, Pencil, Play, Pause, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { RouteForm } from "./RouteForm";
+import type { TriggerRuntimeStatus } from "@pizzapi/protocol";
 import {
   api,
   canRespond,
@@ -36,7 +37,7 @@ import {
   eventSourceLabel,
   eventTitle,
   isReadOnlyRoute,
-  summarizeRouteTarget,
+  payloadForRouteFilters,
   timeAgo,
 } from "./events-format";
 
@@ -102,6 +103,7 @@ function DeliveryRow({ delivery, onResponded }: { delivery: DeliveryView; onResp
         <span className="font-mono text-[11px] text-muted-foreground shrink-0">→ {delivery.sessionId.slice(0, 8)}</span>
         <span className="text-[11px] text-muted-foreground shrink-0">{timeAgo(delivery.createdAt)}</span>
         <span className="text-[11px] text-muted-foreground shrink-0">{delivery.deliverAs}</span>
+        {delivery.failureReason && <span className="text-[11px] text-destructive">{delivery.failureReason === "offline_policy" ? "Offline policy rejected delivery" : delivery.failureReason}</span>}
         {delivery.response && (
           <span className="text-[11px] text-muted-foreground truncate">
             {delivery.response.action ? `[${delivery.response.action}] ` : ""}{delivery.response.text}
@@ -142,7 +144,7 @@ function DeliveryRow({ delivery, onResponded }: { delivery: DeliveryView; onResp
   );
 }
 
-function EventRow({ event, onResponded }: { event: TriggerEvent; onResponded?: () => void }) {
+function EventRow({ event, runnerId, onResponded }: { event: TriggerEvent; runnerId?: string; onResponded?: () => void }) {
   const [open, setOpen] = React.useState(false);
   const [deliveries, setDeliveries] = React.useState<DeliveryView[] | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -153,7 +155,8 @@ function EventRow({ event, onResponded }: { event: TriggerEvent; onResponded?: (
     if (next && deliveries === null) {
       setError(null);
       try {
-        const data = await api<{ deliveries: DeliveryView[] }>(`/api/events/${encodeURIComponent(event.eventId)}/deliveries`);
+        const query = runnerId ? `?runnerId=${encodeURIComponent(runnerId)}` : "";
+        const data = await api<{ deliveries: DeliveryView[] }>(`/api/events/${encodeURIComponent(event.eventId)}/deliveries${query}`);
         setDeliveries(data.deliveries ?? []);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load deliveries");
@@ -278,7 +281,7 @@ function DeliveriesTab({ sessionId, viewerSocket, onResponded }: { sessionId: st
   );
 }
 
-function EventsTab({ onResponded }: { onResponded?: () => void }) {
+function EventsTab({ runnerId, onResponded }: { runnerId?: string; onResponded?: () => void }) {
   const [events, setEvents] = React.useState<TriggerEvent[] | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const generation = React.useRef(0);
@@ -291,14 +294,16 @@ function EventsTab({ onResponded }: { onResponded?: () => void }) {
     request.current = controller;
     setError(null);
     try {
-      const data = await api<{ events: TriggerEvent[] }>("/api/events?limit=100", { signal: controller.signal });
+      const params = new URLSearchParams({ limit: "100" });
+      if (runnerId) params.set("runnerId", runnerId);
+      const data = await api<{ events: TriggerEvent[] }>(`/api/events?${params}`, { signal: controller.signal });
       if (current === generation.current) setEvents(data.events ?? []);
     } catch (err) {
       if (current === generation.current && !controller.signal.aborted) {
         setError(err instanceof Error ? err.message : "Failed to load events");
       }
     }
-  }, []);
+  }, [runnerId]);
 
   React.useEffect(() => {
     setEvents(null);
@@ -313,7 +318,7 @@ function EventsTab({ onResponded }: { onResponded?: () => void }) {
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
-        <h3 className="text-sm font-semibold">Event feed</h3>
+        <h3 className="text-sm font-semibold">{runnerId ? "Runner events" : "Event feed"}</h3>
         <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => void load()} title="Refresh" aria-label="Refresh event feed">
           <RefreshCw className="h-3.5 w-3.5" />
         </Button>
@@ -321,11 +326,11 @@ function EventsTab({ onResponded }: { onResponded?: () => void }) {
       {error && <ErrorNote message={error} />}
       {events === null && !error && <Spinner className="h-4 w-4" />}
       {events?.length === 0 && (
-        <p className="text-sm text-muted-foreground">No events yet. Published events appear here for 30 days.</p>
+        <p className="text-sm text-muted-foreground">{runnerId ? "No events delivered to this runner yet." : "No events yet. Published events appear here for 30 days."}</p>
       )}
       <ScrollArea className="max-h-[60vh] pr-2">
         <div className="space-y-1.5">
-          {events?.map((e) => <EventRow key={e.eventId} event={e} onResponded={onResponded} />)}
+          {events?.map((e) => <EventRow key={e.eventId} event={e} runnerId={runnerId} onResponded={onResponded} />)}
         </div>
       </ScrollArea>
     </div>
@@ -335,193 +340,239 @@ function EventsTab({ onResponded }: { onResponded?: () => void }) {
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 /** GET /api/routes decorates routes whose runner the server has declared dead. */
-type ListedRoute = Route & { runnerDead?: boolean; runnerDeadSince?: string };
+type ListedRoute = Route & {
+  runnerDead?: boolean;
+  runnerDeadSince?: string;
+  runtime?: TriggerRuntimeStatus;
+  history?: Array<{ deliveryId: string; eventId: string; status: string; sessionId: string; spawnRouteId?: string; eventType: string; createdAt?: string; failureReason?: string }>;
+};
 
-function RouteRow({ route, onDeleted, onChanged, onEdit }: { route: ListedRoute; onDeleted: (id: string) => void; onChanged: () => void; onEdit: (route: Route) => void }) {
+function routeTargetLabel(target: Route["target"], sessions: Array<{ sessionId: string; sessionName?: string | null }>, runners: Array<{ runnerId: string; name?: string | null }>): string {
+  if (target.kind === "session") {
+    const name = sessions.find((session) => session.sessionId === target.sessionId)?.sessionName?.trim();
+    return name || `Session ${target.sessionId.slice(0, 8)}`;
+  }
+  const runner = runners.find((item) => item.runnerId === target.spec.runnerId);
+  const parts = [`Spawn on ${runner?.name?.trim() || target.spec.runnerId.slice(0, 8)}`];
+  if (target.spec.cwd) parts.push(`cwd ${target.spec.cwd}`);
+  if (target.spec.model) parts.push(`${target.spec.model.provider}/${target.spec.model.id}`);
+  if (target.spec.autoClose) parts.push("auto-close");
+  return parts.join(" · ");
+}
+
+function ManagedRouteRow({ route, schema, sessions, runners, onDeleted, onChanged, onEdit, onOpenSession }: { route: ListedRoute; schema?: Record<string, unknown>; sessions: Array<{ sessionId: string; sessionName?: string | null }>; runners: Array<{ runnerId: string; name?: string | null }>; onDeleted: (id: string) => void; onChanged: () => void; onEdit: (route: Route) => void; onOpenSession?: (sessionId: string) => void }) {
+  const [open, setOpen] = React.useState(false);
   const [confirming, setConfirming] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const readOnly = isReadOnlyRoute(route);
-  // Config routes are owned by the config file; spawn routes are managed by
-  // their runner's trigger listeners panel. Only session routes are editable here.
-  const editable = !readOnly && route.target.kind === "session";
-
+  const [history, setHistory] = React.useState(route.history ?? null);
   React.useEffect(() => {
-    if (!confirming) return;
-    const t = setTimeout(() => setConfirming(false), 5000);
-    return () => clearTimeout(t);
-  }, [confirming]);
-
-  const remove = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      await api(`/api/routes/${encodeURIComponent(route.routeId)}`, { method: "DELETE" });
-      onDeleted(route.routeId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Delete failed");
-      setConfirming(false);
-    } finally {
-      setBusy(false);
-    }
+    if (route.history !== undefined) setHistory(route.history);
+  }, [route.history]);
+  const [historyLoading, setHistoryLoading] = React.useState(false);
+  const [historyUnavailable, setHistoryUnavailable] = React.useState(false);
+  const readOnly = isReadOnlyRoute(route);
+  const sessionLabel = (sessionId: string) => sessions.find((session) => session.sessionId === sessionId)?.sessionName?.trim() || `Session ${sessionId.slice(0, 8)}`;
+  const schedule = /(^|:)schedule|time:/i.test(route.eventType) || Boolean(route.runtime?.nextFireAt);
+  const runtimeLabel: Record<TriggerRuntimeStatus["state"], string> = { confirmed: "Active", delivering: "Delivering", retrying: "Retrying", pending: "Starting", stale: "Stale", unknown: "Unknown" };
+  const runtimeState = schedule && route.runtime ? runtimeLabel[route.runtime.state] : undefined;
+  const state = route.disabled ? "Paused" : route.runnerDead ? "Runner offline" : runtimeState ?? (schedule ? "Awaiting runner acknowledgement" : "Enabled · waiting for event");
+  React.useEffect(() => {
+    if (!open || route.target.kind !== "session" || history !== null) return;
+    let current = true;
+    setHistoryLoading(true);
+    api<{ deliveries?: DeliveryView[] }>(`/api/sessions/${encodeURIComponent(route.target.sessionId)}/deliveries`)
+      .then((data) => {
+        if (current) setHistory((data.deliveries ?? []).filter((item) => item.routeId === route.routeId).map((item) => ({ deliveryId: item.deliveryId, eventId: item.eventId, status: item.status, sessionId: item.sessionId, eventType: item.eventType, createdAt: item.createdAt, failureReason: item.failureReason })));
+      })
+      .catch(() => { if (current) { setHistory([]); setHistoryUnavailable(true); } })
+      .finally(() => { if (current) setHistoryLoading(false); });
+    return () => { current = false; };
+  }, [open, route.target, route.routeId, history]);
+  const mutate = async (path: string, init: RequestInit, done: () => void = onChanged) => {
+    setBusy(true); setError(null);
+    try { await api(path, init); done(); }
+    catch (err) { setError(err instanceof Error ? err.message : "Request failed"); }
+    finally { setBusy(false); }
   };
-
-  const toggleDeliverAs = async () => {
-    setBusy(true);
-    setError(null);
+  const update = (body: Record<string, unknown>) => mutate(`/api/routes/${encodeURIComponent(route.routeId)}`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const test = async () => {
+    const result = payloadForRouteFilters(route.filters, route.filterMode, schema);
+    if (!result.ok) { setError(result.error); return; }
+    setBusy(true); setError(null);
     try {
-      await api(`/api/routes/${encodeURIComponent(route.routeId)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ deliverAs: route.deliverAs === "steer" ? "followUp" : "steer" }),
+      const response = await api<{ deliveries?: Array<{ status?: string }> }>("/api/events", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: route.eventType, routeIds: [route.routeId], payload: result.payload, summary: "Test trigger" }),
       });
-      onChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Update failed");
-    } finally {
-      setBusy(false);
-    }
+      if (!response.deliveries?.length) setError("Test published, but no delivery matched this trigger.");
+      else if (response.deliveries.every((delivery) => delivery.status === "failed")) setError("Test matched this trigger, but delivery failed.");
+      else onChanged();
+    } catch (err) { setError(err instanceof Error ? err.message : "Test failed"); }
+    finally { setBusy(false); }
   };
-
-  return (
-    <div className="flex items-center gap-2 rounded-md border border-border/60 px-3 py-2">
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-mono text-xs">{route.eventType}</span>
-          <OriginBadge origin={route.origin} />
-          <Badge variant="outline" className="text-[10px]">{route.deliverAs}</Badge>
-          {route.filters && route.filters.length > 0 && (
-            <Badge variant="outline" className="text-[10px]" title={route.filters.map((f) => `${f.field} ${f.op ?? "eq"} ${JSON.stringify(f.value)}`).join(route.filterMode === "or" ? " OR " : ", ")}>
-              {route.filters.length} filter{route.filters.length === 1 ? "" : "s"}{route.filterMode === "or" ? " (or)" : ""}
-            </Badge>
-          )}
-          {route.params && Object.keys(route.params).length > 0 && (
-            <Badge variant="outline" className="text-[10px]" title={Object.entries(route.params).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ")}>
-              {Object.keys(route.params).length} param{Object.keys(route.params).length === 1 ? "" : "s"}
-            </Badge>
-          )}
-          {route.runnerDead && (
-            <Badge variant="outline" className="gap-1 text-[10px] border-amber-500/40 text-amber-600 dark:text-amber-400" title="No runner has registered under this id for over 7 days — this route can no longer fire. Delete it, or reinstall the runner.">
-              <WifiOff className="h-3 w-3" />
-              runner offline{route.runnerDeadSince ? ` since ${new Date(route.runnerDeadSince).toLocaleDateString()}` : ""}
-            </Badge>
-          )}
-        </div>
-        <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{summarizeRouteTarget(route.target)}</p>
-        {error && <p className="mt-0.5 text-[11px] text-destructive" role="alert">{error}</p>}
+  const remove = () => mutate(`/api/routes/${encodeURIComponent(route.routeId)}`, { method: "DELETE" }, () => onDeleted(route.routeId));
+  const routeTargetSessionId = route.target.kind === "session" ? route.target.sessionId : undefined;
+  return <article className="rounded-md border border-border/60">
+    <div className="flex flex-wrap items-center gap-2 px-3 py-2">
+      <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        {open ? <ChevronDown className="size-3.5 shrink-0" /> : <ChevronRight className="size-3.5 shrink-0" />}
+        <span className="min-w-0 flex-1 truncate font-mono text-xs">{route.eventType}</span>
+        <Badge variant={route.disabled ? "outline" : "secondary"} className="text-[10px]">{state}</Badge>
+      </button>
+      {routeTargetSessionId && onOpenSession ? <button type="button" className="text-[11px] text-muted-foreground hover:underline" onClick={() => onOpenSession(routeTargetSessionId)}>{sessionLabel(routeTargetSessionId)}</button> : <span className="text-[11px] text-muted-foreground">{routeTargetLabel(route.target, sessions, runners)}</span>}
+      <Badge variant="outline" className="text-[10px]">{route.deliverAs}</Badge><OriginBadge origin={route.origin} />
+      <div className="flex items-center gap-1">
+        <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={readOnly || route.disabled || busy} onClick={() => void test()} title="Publish a matching test event to this trigger only">Test</Button>
+        <Button size="icon" variant="ghost" className="size-7" disabled={readOnly || busy} onClick={() => void update({ disabled: !route.disabled })} aria-label={route.disabled ? "Resume route" : "Pause route"} title={route.disabled ? "Resume route" : "Pause route"}>{route.disabled ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}</Button>
+        <Button size="icon" variant="ghost" className="size-7" disabled={readOnly || busy} onClick={() => onEdit(route)} aria-label="Edit route" title="Edit route"><Pencil className="size-3.5" /></Button>
+        {confirming ? <Button size="sm" variant="destructive" className="h-7 px-2 text-xs" disabled={busy} onClick={() => void remove()}>Delete?</Button> : <Button size="icon" variant="ghost" className="size-7 text-muted-foreground hover:text-destructive" disabled={readOnly || busy} onClick={() => setConfirming(true)} aria-label="Delete route" title="Delete route"><Trash2 className="size-3.5" /></Button>}
       </div>
-      <Button
-        variant="outline"
-        size="sm"
-        className="h-7 px-2 text-[11px]"
-        disabled={readOnly || busy}
-        onClick={() => void toggleDeliverAs()}
-        title={readOnly ? "Config routes are read-only — edit the config file instead" : `Switch to ${route.deliverAs === "steer" ? "followUp" : "steer"}`}
-      >
-        {route.deliverAs === "steer" ? "→ followUp" : "→ steer"}
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-7 w-7 text-muted-foreground hover:text-foreground"
-        disabled={!editable || busy}
-        onClick={() => onEdit(route)}
-        title={!editable
-          ? (readOnly ? "Config routes are read-only — edit the config file instead" : "Spawn-target routes are managed by their runner panel")
-          : "Edit route (params, filters, delivery)"}
-        aria-label={editable ? "Edit route" : "Route editing unavailable"}
-      >
-        <Pencil className="h-3.5 w-3.5" />
-      </Button>
-      {busy ? (
-        <Spinner className="h-3.5 w-3.5 text-destructive" />
-      ) : confirming ? (
-        <Button variant="destructive" size="sm" className="h-7 px-2 text-xs" onClick={() => void remove()}>Sure?</Button>
-      ) : (
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7 text-muted-foreground hover:text-destructive"
-          disabled={readOnly}
-          onClick={() => setConfirming(true)}
-          title={readOnly ? "Config routes are read-only — edit the config file instead" : "Delete route"}
-          aria-label="Delete route"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </Button>
-      )}
     </div>
-  );
+    {open && <div className="space-y-2 border-t border-border/60 px-3 py-2 text-xs">
+      <div className="grid gap-x-4 gap-y-1 sm:grid-cols-2">
+        <p><span className="text-muted-foreground">Destination: </span>{routeTargetLabel(route.target, sessions, runners)}</p>
+        <p><span className="text-muted-foreground">Delivery: </span>{route.deliverAs === "steer" ? "Interrupt current turn" : "Queue after current turn"}</p>
+        {route.target.kind === "session" && <p><span className="text-muted-foreground">If it’s offline: </span>{{ wait: "Wait without waking", wake: "Wake / resume session", fail: "Fail immediately" }[route.target.offlinePolicy ?? (route.target.wake ? "wake" : "wait")]}</p>}
+        {route.runtime?.nextFireAt && <p><span className="text-muted-foreground">Next fire: </span>{new Date(route.runtime.nextFireAt).toLocaleString()}{route.runtime.timezone ? ` (${route.runtime.timezone})` : ""}</p>}
+        {route.runtime?.lastAckAt && <p><span className="text-muted-foreground">Last acknowledgement: </span>{timeAgo(route.runtime.lastAckAt)}</p>}
+        <p><span className="text-muted-foreground">State: </span>{route.disabled ? "Paused" : route.runnerDead ? "Runner offline" : runtimeState ?? (schedule ? "No acknowledgement reported" : "Enabled · waiting for event")}</p>
+      </div>
+      {route.filters?.length ? <p><span className="text-muted-foreground">Filters ({route.filterMode ?? "and"}): </span>{route.filters.map((f) => `${f.field} ${f.op ?? "eq"} ${JSON.stringify(f.value)}`).join(` ${route.filterMode === "or" ? "OR" : "AND"} `)}</p> : null}
+      {route.params && Object.keys(route.params).length > 0 && <p><span className="text-muted-foreground">Parameters: </span><code className="break-all">{JSON.stringify(route.params)}</code></p>}
+      {(history !== null || historyLoading || route.target.kind === "session" || route.target.kind === "spawn") && <div><p className="mb-1 text-muted-foreground">Recent deliveries</p>{historyLoading ? <Spinner className="size-3.5" /> : history?.length ? history.map((item) => <div key={item.deliveryId} className="flex flex-wrap gap-x-3 border-t border-border/40 py-1"><span>{item.status === "failed" ? `Failed${item.failureReason === "offline_policy" ? " · offline policy" : ""}` : item.status}</span><span className="font-mono">{item.eventType}</span><span>{timeAgo(item.createdAt ?? "")}</span>{onOpenSession && !item.spawnRouteId && !item.sessionId.startsWith("spawn:") ? <button type="button" className="font-mono text-muted-foreground hover:underline" onClick={() => onOpenSession(item.sessionId)}>{sessionLabel(item.sessionId)}</button> : <span className="font-mono text-muted-foreground">{sessionLabel(item.sessionId)}</span>}</div>) : <p>{historyUnavailable ? "Delivery history unavailable." : history === null ? "No delivery history reported." : "No delivery history."}</p>}</div>}
+    </div>}
+    {error && <p className="px-3 pb-2 text-xs text-destructive" role="alert">{error}</p>}
+  </article>;
 }
 
-function RoutesTab({ sessionId, onMutated }: { sessionId?: string; onMutated?: () => void }) {
-  const [routes, setRoutes] = React.useState<Route[] | null>(null);
+function RoutesTab({ sessionId, runnerId, sessions = [], runners = [], onMutated, onOpenSession }: { sessionId?: string; runnerId?: string; sessions?: Array<{ sessionId: string; sessionName?: string | null; runnerId?: string | null }>; runners?: Array<{ runnerId: string; name?: string | null }>; onMutated?: () => void; onOpenSession?: (sessionId: string) => void }) {
+  const [routes, setRoutes] = React.useState<ListedRoute[] | null>(null);
   const [catalog, setCatalog] = React.useState<ServiceTriggerDef[]>([]);
   const [editing, setEditing] = React.useState<Route | null>(null);
+  const [formOpen, setFormOpen] = React.useState(false);
+  const [query, setQuery] = React.useState("");
+  const [eventFilter, setEventFilter] = React.useState("");
+  const [stateFilter, setStateFilter] = React.useState("");
+  const [destinationFilter, setDestinationFilter] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
 
   const load = React.useCallback(async () => {
     setError(null);
     try {
       const data = await api<{ routes: ListedRoute[] }>("/api/routes");
-      setRoutes(data.routes ?? []);
+      let listed = data.routes ?? [];
+      if (runnerId) {
+        listed = listed.filter((route) => route.target.kind === "session"
+          ? route.target.runnerId === runnerId
+          : route.target.spec.runnerId === runnerId);
+        try {
+          const listeners = await api<{ listeners?: Array<{ listenerId?: string; runtime?: TriggerRuntimeStatus; history?: ListedRoute["history"] }> }>(`/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners`);
+          const byId = new Map((listeners.listeners ?? []).filter((item) => item.listenerId).map((item) => [item.listenerId!, item]));
+          listed = listed.map((route) => {
+            const listener = byId.get(route.routeId);
+            return listener ? { ...route, runtime: listener.runtime ?? route.runtime, history: listener.history ?? route.history } : route;
+          });
+        } catch { /* The unified route list still works if legacy listener metadata is unavailable. */ }
+      }
+      setRoutes(listed);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load routes");
     }
-  }, []);
+  }, [runnerId]);
 
   React.useEffect(() => { void load(); }, [load]);
 
-  // Runner service catalog: params/schemas for the type picker. Session-scoped
-  // only — the catalog endpoint resolves through the session's runner. Without
-  // a session (or on failure) the form falls back to free-text types.
   React.useEffect(() => {
-    if (!sessionId) return;
+    if (!runnerId) return;
     let cancelled = false;
-    api<{ triggerDefs: ServiceTriggerDef[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/available-triggers`)
-      .then((data) => { if (!cancelled) setCatalog(data.triggerDefs ?? []); })
+    api<{ triggerDefs: ServiceTriggerDef[] }>(`/api/runners/${encodeURIComponent(runnerId)}/triggers`)
+      .then((data) => {
+        if (cancelled) return;
+        const schedules: ServiceTriggerDef[] = [
+          { type: "time:cron", label: "Cron schedule", params: [{ name: "cron", label: "Cron expression", type: "string", required: true }, { name: "message", label: "Prompt", type: "string" }] },
+          { type: "time:at", label: "Scheduled time", params: [{ name: "at", label: "Date/time", type: "string", required: true }, { name: "message", label: "Prompt", type: "string" }] },
+          { type: "time:timer_fired", label: "Timer", params: [{ name: "duration", label: "Duration", type: "string", required: true }, { name: "message", label: "Prompt", type: "string" }] },
+        ];
+        const defs = data.triggerDefs ?? [];
+        setCatalog([...defs, ...schedules.filter((schedule) => !defs.some((def) => def.type === schedule.type))]);
+      })
       .catch(() => { /* free-text fallback */ });
     return () => { cancelled = true; };
-  }, [sessionId]);
+  }, [runnerId]);
 
   const afterMutation = () => {
     setEditing(null);
+    setFormOpen(false);
     void load();
     onMutated?.();
   };
+  const destinationOptions = React.useMemo(() => {
+    const options = new Map<string, string>();
+    for (const route of routes ?? []) {
+      const target = route.target;
+      const id = target.kind === "session" ? target.sessionId : target.spec.runnerId;
+      options.set(`${target.kind}:${id}`, routeTargetLabel(target, sessions ?? [], runners ?? []));
+    }
+    return [...options.entries()];
+  }, [routes, sessions, runners]);
 
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
-        <h3 className="text-sm font-semibold">Routes</h3>
-        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => void load()} title="Refresh" aria-label="Refresh routes">
+        <h3 className="text-sm font-semibold">Triggers</h3>
+        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => void load()} title="Refresh triggers" aria-label="Refresh triggers">
           <RefreshCw className="h-3.5 w-3.5" />
         </Button>
+        {!formOpen && <Button size="sm" className="ml-auto h-8" onClick={() => { setEditing(null); setFormOpen(true); }}>New trigger</Button>}
       </div>
-      <RouteForm
+      {formOpen && <RouteForm
         catalog={catalog}
         targetSessionId={sessionId}
+        sessions={sessions}
+        runners={runners}
+        fixedRunnerId={runnerId}
         editing={editing}
         onDone={afterMutation}
-        onCancel={() => setEditing(null)}
-      />
+        onCancel={() => { setEditing(null); setFormOpen(false); }}
+      />}
       {editing && (
         <p className="text-[11px] text-muted-foreground">Editing <span className="font-mono">{editing.eventType}</span> — save or cancel to add a new route.</p>
       )}
       {error && <ErrorNote message={error} />}
       {routes === null && !error && <Spinner className="h-4 w-4" />}
       {routes?.length === 0 && (
-        <p className="text-sm text-muted-foreground">No routes yet. Create one above, or subscribe from a session's trigger catalog.</p>
+        <p className="text-sm text-muted-foreground">No triggers yet. Select New trigger to create one.</p>
       )}
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="relative"><Search className="pointer-events-none absolute left-2.5 top-2 size-3.5 text-muted-foreground" /><Input aria-label="Search triggers" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search triggers…" className="h-8 pl-8 text-xs" /></div>
+        <select aria-label="Filter by source or event" value={eventFilter} onChange={(e) => setEventFilter(e.target.value)} className="h-8 rounded-md border border-border bg-background px-2 text-xs"><option value="">All events</option>{Array.from(new Set((routes ?? []).map((r) => r.eventType))).sort().map((type) => <option key={type} value={type}>{type}</option>)}</select>
+        <select aria-label="Filter by runtime state" value={stateFilter} onChange={(e) => setStateFilter(e.target.value)} className="h-8 rounded-md border border-border bg-background px-2 text-xs"><option value="">All states</option><option value="enabled">Enabled</option><option value="paused">Paused</option><option value="waiting">Waiting / unacknowledged</option><option value="offline">Runner offline</option></select>
+        <select aria-label="Filter by destination" value={destinationFilter} onChange={(e) => setDestinationFilter(e.target.value)} className="h-8 rounded-md border border-border bg-background px-2 text-xs"><option value="">All destinations</option><option value="session">Existing sessions</option><option value="spawn">Spawn sessions</option>{destinationOptions.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select>
+      </div>
       <ScrollArea className="max-h-[55vh] pr-2">
         <div className="space-y-1.5">
-          {routes?.map((r) => (
-            <RouteRow
+          {routes?.filter((r) => {
+            const destination = r.target.kind === "session" ? r.target.sessionId : r.target.spec.runnerId;
+            const targetLabel = routeTargetLabel(r.target, sessions ?? [], runners ?? []);
+            const label = `${r.eventType} ${targetLabel} ${r.origin} ${r.disabled ? "paused" : "enabled"}`.toLowerCase();
+            const destinationKey = `${r.target.kind}:${destination}`;
+            return label.includes(query.toLowerCase()) && (!eventFilter || r.eventType === eventFilter)
+              && (!destinationFilter || destinationFilter === r.target.kind || destinationKey === destinationFilter)
+              && (!stateFilter || (stateFilter === "enabled" ? !r.disabled && !r.runnerDead : stateFilter === "paused" ? !!r.disabled : stateFilter === "offline" ? !!r.runnerDead : !r.disabled && !r.runnerDead && (!r.runtime || r.runtime.state === "unknown" || r.runtime.state === "pending")));
+          }).map((r) => (
+            <ManagedRouteRow
               key={r.routeId}
               route={r}
+              schema={catalog.find((def) => def.type === r.eventType)?.schema}
+              sessions={sessions ?? []}
+              runners={runners ?? []}
               onDeleted={(id) => { setRoutes((prev) => prev?.filter((x) => x.routeId !== id) ?? prev); onMutated?.(); }}
               onChanged={afterMutation}
-              onEdit={setEditing}
+              onEdit={(route) => { setEditing(route); setFormOpen(true); }}
+              onOpenSession={onOpenSession}
             />
           ))}
         </div>
@@ -536,31 +587,47 @@ export function EventsRoutesPanel({
   sessionId,
   viewerSocket,
   onBadgeRefresh,
+  runnerId,
+  sessions,
+  runners,
+  onOpenManager,
+  onOpenSession,
 }: {
   bare?: boolean;
   sessionId?: string;
+  runnerId?: string;
+  sessions?: Array<{ sessionId: string; sessionName?: string | null; runnerId?: string | null }>;
+  runners?: Array<{ runnerId: string; name?: string | null }>;
   viewerSocket?: unknown;
+  onOpenManager?: () => void;
+  onOpenSession?: (sessionId: string) => void;
   /** useTriggerCount().refresh — called after every mutation so badges update. */
   onBadgeRefresh?: () => void;
 }) {
-  const [tab, setTab] = React.useState<"events" | "routes" | "deliveries">(sessionId ? "deliveries" : "events");
+  const [tab, setTab] = React.useState<"events" | "deliveries">(sessionId ? "deliveries" : "events");
+  const tabs = sessionId ? ([["deliveries", "Deliveries"]] as const) : ([["events", "Event feed"]] as const);
 
-  // Session-scoped mode: deliveries to this session plus its route management
-  // (the catalog-driven form targets the session). Global mode: event feed + routes.
-  const tabs = (sessionId
-    ? ([
-        ["deliveries", "Deliveries"],
-        ["routes", "Routes"],
-      ] as const)
-    : ([
-        ["events", "Event feed"],
-        ["routes", "Routes"],
-      ] as const)
-  );
+  const [runnerTab, setRunnerTab] = React.useState<"triggers" | "events">("triggers");
 
-  const body = (
+  const body = runnerId ? (
+    <div className="space-y-3">
+      <div role="tablist" aria-label="Runner triggers and events" className="flex items-center gap-1 rounded-lg bg-muted p-1 w-fit">
+        {([["triggers", "Triggers"], ["events", "Events"]] as const).map(([tabId, label]) => (
+          <button key={tabId} type="button" role="tab" id={`runner-trigger-tab-${tabId}`} aria-selected={runnerTab === tabId} aria-controls={`runner-trigger-panel-${tabId}`} onClick={() => setRunnerTab(tabId)} className={cn("rounded-md px-3 py-1 text-xs font-medium transition-colors", runnerTab === tabId ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>
+            {label}
+          </button>
+        ))}
+      </div>
+      <div id={`runner-trigger-panel-${runnerTab}`} role="tabpanel" aria-labelledby={`runner-trigger-tab-${runnerTab}`}>
+        {runnerTab === "triggers"
+          ? <RoutesTab runnerId={runnerId} sessions={sessions} runners={runners} onMutated={onBadgeRefresh} onOpenSession={onOpenSession} />
+          : <EventsTab key={runnerId} runnerId={runnerId} onResponded={onBadgeRefresh} />}
+      </div>
+    </div>
+  ) : (
     <div className="space-y-4">
-      <div role="tablist" aria-label="Events and routes views" className="flex items-center gap-1 rounded-lg bg-muted p-1 w-fit">
+      {sessionId && onOpenManager && <Button variant="outline" size="sm" onClick={onOpenManager}>Open runner-wide trigger manager</Button>}
+      <div role="tablist" aria-label="Events and deliveries views" className="flex items-center gap-1 rounded-lg bg-muted p-1 w-fit">
         {tabs.map(([t, label]) => (
           <button
             key={t}
@@ -580,15 +647,9 @@ export function EventsRoutesPanel({
       </div>
       <div id={`events-routes-panel-${tab}`} role="tabpanel" aria-labelledby={`events-routes-tab-${tab}`}>
         {sessionId ? (
-          tab === "deliveries" ? (
-            <DeliveriesTab key={sessionId} sessionId={sessionId} viewerSocket={viewerSocket} onResponded={onBadgeRefresh} />
-          ) : (
-            <RoutesTab sessionId={sessionId} onMutated={onBadgeRefresh} />
-          )
-        ) : tab === "events" ? (
-          <EventsTab onResponded={onBadgeRefresh} />
+          <DeliveriesTab key={sessionId} sessionId={sessionId} viewerSocket={viewerSocket} onResponded={onBadgeRefresh} />
         ) : (
-          <RoutesTab onMutated={onBadgeRefresh} />
+          <EventsTab onResponded={onBadgeRefresh} />
         )}
       </div>
     </div>

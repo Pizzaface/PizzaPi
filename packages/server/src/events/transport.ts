@@ -351,21 +351,22 @@ export function createEngineDeps(): EngineDeps {
         ).catch(() => {});
         broadcastToSessionViewers(delivery.sessionId, "trigger_delivered", { triggerId: delivery.deliveryId });
         return acks ? "inflight" : "delivered";
-      } else if (route && route.target.kind === "session" && route.target.wake) {
-        // Schedule wake: ask the runner to resume the session; the Delivery
-        // stays pending and drains when the worker registers. Ownership was
-        // checked at publish time — resolve the runner across live/persisted/
-        // durable states since schedule targets are usually offline.
-        const runner = await resolveSessionRunner(delivery.sessionId).catch(() => null);
-        if (runner) {
-          // Mark the row wake-eligible so the failed-wake retry sweep (a wake
-          // whose worker never registered) and the dead-runner expiry can find
-          // it; lastWakeAttemptAt bounds retries to 1 per 5 minutes.
-          await updateDelivery(
-            delivery.deliveryId,
-            { wakeRequested: true, lastWakeAttemptAt: new Date().toISOString() },
-          ).catch((err) => log.warn(`wake: failed to mark delivery ${delivery.deliveryId}:`, err));
-          void wakeOfflineSession(delivery.sessionId, runner);
+      } else if (route?.target.kind === "session") {
+        // Legacy wake=true routes retain wake behavior; missing policy is wait.
+        const policy = route.target.offlinePolicy ?? (route.target.wake ? "wake" : "wait");
+        if (policy === "fail") return "failed";
+        if (policy === "wake") {
+          // Ownership was checked at publish time — resolve the runner across
+          // live/persisted/durable states since scheduled targets can be offline.
+          const runner = await resolveSessionRunner(delivery.sessionId).catch(() => null);
+          if (runner) {
+            // Mark wake-eligible so retry/dead-runner sweeps can find it.
+            await updateDelivery(
+              delivery.deliveryId,
+              { wakeRequested: true, lastWakeAttemptAt: new Date().toISOString() },
+            ).catch((err) => log.warn(`wake: failed to mark delivery ${delivery.deliveryId}:`, err));
+            void wakeOfflineSession(delivery.sessionId, runner);
+          }
         }
       }
       return "unreachable";

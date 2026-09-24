@@ -283,6 +283,44 @@ describe("runner trigger listener routes", () => {
         mockEmitTriggerSubscriptionDelta.mockReturnValue(Promise.resolve());
     });
 
+    test("GET /schedules includes spawn target and cwd", async () => {
+        seedSpawnRoute("rt_spawn_schedule", "time:cron", { cwd: "/workspace/project" });
+        mockRoutes.get("rt_spawn_schedule")!.ownerUserId = "user-1";
+
+        const [req, url] = makeReq("GET", "/api/runners/runner-A/schedules");
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const schedules = ((await res!.json()) as any).schedules;
+        expect(schedules).toHaveLength(1);
+        expect(schedules[0].target).toEqual({ kind: "spawn", spec: { runnerId: "runner-A", cwd: "/workspace/project" } });
+        expect(schedules[0].cwd).toBe("/workspace/project");
+    });
+
+    test("GET /schedules hides routes owned by a previous runner owner", async () => {
+        mockRoutes.set("rt_current", {
+            routeId: "rt_current",
+            eventType: "time:cron",
+            target: { kind: "session", sessionId: "current-session", runnerId: "runner-A" },
+            params: { cron: "0 9 * * *" },
+            origin: "agent",
+            ownerUserId: "user-1",
+        });
+        mockRoutes.set("rt_previous", {
+            routeId: "rt_previous",
+            eventType: "time:cron",
+            target: { kind: "session", sessionId: "previous-session", runnerId: "runner-A" },
+            params: { cron: "0 10 * * *" },
+            filters: [{ field: "private", value: "old-owner" }],
+            origin: "agent",
+            ownerUserId: "user-2",
+        });
+
+        const [req, url] = makeReq("GET", "/api/runners/runner-A/schedules");
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        expect(((await res!.json()) as any).schedules.map((entry: any) => entry.subscriptionId)).toEqual(["rt_current"]);
+    });
+
     test("GET returns listeners mapped from spawn routes", async () => {
         seedSpawnRoute("rt_1", "svc:event", { promptTemplate: "one" });
         seedSpawnRoute("rt_2", "svc:event", { promptTemplate: "two" });
@@ -885,7 +923,7 @@ describe("listener delivery history", () => {
             createdAt: new Date().toISOString(),
         });
         mockListDeliveries.mockReturnValue(Promise.resolve([
-            { deliveryId: "d2", eventId: "e2", routeId: "rt_1", status: "pending", sessionId: "sess-b", createdAt: "2026-04-03T00:02:00.000Z" },
+            { deliveryId: "d2", eventId: "e2", routeId: "rt_1", spawnRouteId: "rt_1", status: "pending", sessionId: "spawn:rt_1:e2", createdAt: "2026-04-03T00:02:00.000Z" },
             { deliveryId: "d1", eventId: "e1", routeId: "rt_1", status: "delivered", sessionId: "sess-a", createdAt: "2026-04-03T00:01:00.000Z" },
             { deliveryId: "d_other", eventId: "e3", routeId: "rt_x", status: "delivered", sessionId: "sess-c", createdAt: "2026-04-03T00:03:00.000Z" },
         ]));
@@ -899,7 +937,7 @@ describe("listener delivery history", () => {
         const history = body.listeners[0].history;
         expect(history).toHaveLength(2);
         expect(history[0]).toEqual({
-            deliveryId: "d2", eventId: "e2", status: "pending", sessionId: "sess-b",
+            deliveryId: "d2", eventId: "e2", status: "pending", sessionId: "spawn:rt_1:e2", spawnRouteId: "rt_1",
             eventType: "svc:event", createdAt: "2026-04-03T00:02:00.000Z",
         });
         expect(history[1].deliveryId).toBe("d1");

@@ -176,6 +176,8 @@ export function createTriggerClient(deps: Partial<TriggerClientDeps> = {}) {
 export interface PublishEventParams {
     /** Registered namespaced Event Type, e.g. "lifecycle:plan_review". */
     type: string;
+    /** Optional route allowlist for route-specific event fires. */
+    routeIds?: string[];
     payload?: Record<string, unknown>;
     summary?: string;
     /** Publisher's idempotency key + response-correlation id. */
@@ -382,7 +384,13 @@ export async function subscribeTrigger(
             headers: { "Content-Type": "application/json", "x-api-key": apiKey },
             body: JSON.stringify({
                 eventType: triggerType,
-                target: { kind: "session", sessionId },
+                target: {
+                    kind: "session",
+                    sessionId,
+                    ...(triggerType === "time:timer_fired" || triggerType === "time:at" || triggerType === "time:cron"
+                        ? { offlinePolicy: "wake" as const }
+                        : {}),
+                },
                 // Subscription semantics: a schedule or service event must not
                 // interrupt an active turn unless it opts in — followUp default
                 // (matches the runner-broadcast contract).

@@ -5,6 +5,7 @@ import {
   formatParamValue,
   parseFilterValue,
   parseParamInput,
+  payloadForRouteFilters,
   DELIVERY_STATUS_META,
   eventSourceLabel,
   eventTitle,
@@ -61,7 +62,7 @@ describe("route read-only + status meta", () => {
   });
 
   test("every delivery status has chip metadata", () => {
-    for (const status of ["pending", "delivered", "responded", "escalated", "expired"] as const) {
+    for (const status of ["pending", "delivered", "responded", "escalated", "expired", "failed"] as const) {
       expect(DELIVERY_STATUS_META[status].label.length).toBeGreaterThan(0);
       expect(DELIVERY_STATUS_META[status].className.length).toBeGreaterThan(0);
     }
@@ -165,5 +166,32 @@ describe("route form helpers", () => {
     expect(parseFilterValue("true", "boolean")).toBe(true);
     expect(parseFilterValue("true")).toBe("true");
     expect(parseFilterValue("42")).toBe("42");
+  });
+
+  test("builds a test payload with schema-required defaults and route-filter values", () => {
+    const schema = {
+      type: "object",
+      required: ["action", "repo", "count", "enabled", "metadata", "tags"],
+      properties: {
+        action: { type: "string", enum: ["opened", "closed"] },
+        repo: { type: "string", default: "default/repo" },
+        count: { type: "integer" },
+        enabled: { type: "boolean" },
+        metadata: { type: "object" },
+        tags: { type: "array" },
+      },
+    };
+    expect(payloadForRouteFilters([{ field: "action", value: "reopened" }, { field: "label", value: "bug" }], "and", schema))
+      .toEqual({ ok: true, payload: { action: "reopened", label: "bug", repo: "default/repo", count: 0, enabled: false, metadata: {}, tags: [] } });
+    expect(payloadForRouteFilters([
+      { field: "repo.name", value: "pizzapi" },
+      { field: "stars", value: 3 },
+    ])).toEqual({ ok: true, payload: { repo: { name: "pizzapi" }, stars: 3 } });
+    expect(payloadForRouteFilters([
+      { field: "state", value: "open" },
+      { field: "state", value: "closed" },
+    ])).toMatchObject({ ok: false });
+    expect(payloadForRouteFilters([{ field: "label", value: ["bug", "help wanted"] }], "or"))
+      .toEqual({ ok: true, payload: { label: "bug" } });
   });
 });

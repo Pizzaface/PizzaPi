@@ -882,7 +882,7 @@ class MyService implements ServiceHandler {
 
         // Trigger an event
         if (url.pathname.endsWith("/api/do-thing") && req.method === "POST") {
-          await broadcastTrigger(socket, "my-service:event_happened", {
+          await publishEvent("my-service:event_happened", {
             event_id: "abc123",
             timestamp: Date.now(),
           });
@@ -922,21 +922,28 @@ class MyService implements ServiceHandler {
 export default new MyService();
 ```
 
-### Trigger broadcasting
+### Publishing events
 
-From the service, fire triggers into agent sessions:
+From the service, publish events; matching Routes deliver them to their targets.
+`POST /api/events` accepts optional `routeIds` as an allowlist (maximum 100 IDs).
+Selected Routes still need to match the event type and payload filters and pass
+route ownership checks.
+
+Manage Routes through the unified `GET/POST /api/routes` and
+`PUT/DELETE /api/routes/{routeId}` API (there is no route-detail `GET`).
+`POST /api/routes` requires an explicit `deliverAs`. The older
+`/api/runners/{id}/trigger-listeners` endpoints remain compatibility wrappers for
+runner spawn-listener workflows; creating a listener sets `deliverAs: "followUp"`.
+
+Set delivery behavior on each Route's `deliverAs` field (`"steer"` or
+`"followUp"`); the event publisher does not override it.
+
+From the service, publish events into the matching Routes:
 
 ```typescript
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-
-function readRunnerId(): string | null {
-  try {
-    const raw = JSON.parse(readFileSync(join(homedir(), ".pizzapi", "runner.json"), "utf-8"));
-    return typeof raw?.runnerId === "string" ? raw.runnerId : null;
-  } catch { return null; }
-}
 
 function getRelayUrl(): string {
   try {
@@ -950,26 +957,24 @@ function getApiKey(): string | null {
   return process.env.PIZZAPI_RUNNER_API_KEY ?? process.env.PIZZAPI_API_KEY ?? null;
 }
 
-async function broadcastTrigger(
+async function publishEvent(
   type: string,
   payload: Record<string, unknown>,
-  opts?: { deliverAs?: "steer" | "followUp"; summary?: string }
+  opts?: { summary?: string }
 ): Promise<void> {
-  const runnerId = readRunnerId();
   const apiKey = getApiKey();
-  if (!runnerId || !apiKey) return;
+  if (!apiKey) return;
 
-  await fetch(`${getRelayUrl()}/api/runners/${runnerId}/trigger-broadcast`, {
+  await fetch(`${getRelayUrl()}/api/events`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-api-key": apiKey },
     body: JSON.stringify({
       type,
       payload,
-      source: "my-service",
-      deliverAs: opts?.deliverAs ?? "followUp",
+      source: { kind: "service", id: "my-service", name: "my-service" },
       summary: opts?.summary,
     }),
-  }).catch(err => console.error("Trigger broadcast failed:", err));
+  }).catch(err => console.error("Event publish failed:", err));
 }
 ```
 
@@ -1241,7 +1246,7 @@ class DiscordService implements ServiceHandler {
       const sessionId = this.#sessionThreads.entries()
         .find(([, tid]) => tid === msg.threadId)?.[0];
       if (sessionId) {
-        await broadcastTrigger("discord:message", {
+        await publishEvent("discord:message", {
           content: msg.content,
           author: msg.author.name,
           timestamp: Date.now(),
@@ -1300,7 +1305,7 @@ export default (pi) => {
 | Detect PizzaPi | `detectPizzaPiHost(pi.events)` or `onPizzaPiHost(pi.events, callback)` |
 | Request approval | `await requestApproval(pi.events, request)` |
 | Send to service | `sendServiceMessage(pi.events, serviceId, type, payload)` |
-| Broadcast trigger | `fetch(.../trigger-broadcast, POST)` with runnerId + apiKey |
+| Publish event | `POST /api/events` with `x-api-key`; optional `routeIds` allowlist |
 | Register provider | `pi.registerProvider("name", { baseUrl, apiKey, models })` |
 | Create runner service | Package + `pi.pizzapi.services` declaration + `ServiceHandler` + install + grant + restart |
 

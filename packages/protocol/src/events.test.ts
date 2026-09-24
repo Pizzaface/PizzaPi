@@ -56,6 +56,7 @@ describe("guards", () => {
   test("isRouteTarget accepts well-formed session and spawn targets", () => {
     expect(isRouteTarget({ kind: "session", sessionId: "s1" })).toBe(true);
     expect(isRouteTarget({ kind: "session", sessionId: "s1", runnerId: "runner-1", wake: true })).toBe(true);
+    expect(isRouteTarget({ kind: "session", sessionId: "s1", offlinePolicy: "fail" })).toBe(true);
     expect(isRouteTarget({
       kind: "spawn",
       spec: {
@@ -74,6 +75,7 @@ describe("guards", () => {
     expect(isRouteTarget({ kind: "session", sessionId: 1 })).toBe(false);
     expect(isRouteTarget({ kind: "session", sessionId: "s1", runnerId: 1 })).toBe(false);
     expect(isRouteTarget({ kind: "session", sessionId: "s1", wake: "yes" })).toBe(false);
+    expect(isRouteTarget({ kind: "session", sessionId: "s1", offlinePolicy: "retry" })).toBe(false);
   });
 
   test("isRouteTarget rejects malformed spawn targets", () => {

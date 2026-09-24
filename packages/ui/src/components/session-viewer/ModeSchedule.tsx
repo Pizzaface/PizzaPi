@@ -1,13 +1,16 @@
-import * as React from "react";
-import { CalendarClockIcon, Loader2Icon, XIcon } from "lucide-react";
+import { CalendarClockIcon, Loader2Icon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { describeSchedule, isScheduledTrigger, scheduleMessage } from "@/components/session-viewer/schedule-summary";
 
 export interface ScheduledInstruction {
-  sessionId: string;
+  sessionId?: string;
   sessionName: string | null;
+  target?:
+    | { kind: "session"; sessionId: string; runnerId?: string }
+    | { kind: "spawn"; spec: { runnerId: string; cwd?: string } };
+  runnerId?: string;
   subscriptionId?: string;
   triggerType: string;
   params?: Record<string, unknown>;
@@ -24,7 +27,7 @@ export interface ScheduledInstruction {
  * they are fetched by runner rather than by fanning out over sessions. The old
  * fan-out could only see a schedule whose owning session happened to be in the
  * page of sessions being listed, so old and ownerless schedules silently
- * disappeared from the surface meant to cancel them.
+ * disappeared from the mode preview.
  */
 export async function fetchScheduledInstructions(
   runnerId: string | null | undefined,
@@ -39,8 +42,12 @@ export async function fetchScheduledInstructions(
     if (!res.ok) return { instructions: [], failed: 1 };
     const data = (await res.json()) as {
       schedules?: Array<{
-        sessionId: string;
+        sessionId?: string;
         sessionName?: string | null;
+        target?:
+          | { kind: "session"; sessionId: string; runnerId?: string }
+          | { kind: "spawn"; spec: { runnerId: string; cwd?: string } };
+        runnerId?: string;
         subscriptionId?: string;
         triggerType: string;
         params?: Record<string, unknown>;
@@ -50,15 +57,21 @@ export async function fetchScheduledInstructions(
     };
     const instructions = (data.schedules ?? [])
       .filter((row) => isScheduledTrigger(row.triggerType))
-      .map((row) => ({
-        sessionId: row.sessionId,
-        sessionName: row.sessionName ?? null,
-        subscriptionId: row.subscriptionId,
-        triggerType: row.triggerType,
-        params: row.params,
-        cwd: row.cwd ?? null,
-        sessionLive: row.sessionLive,
-      }));
+      .map((row) => {
+        const sessionId = row.sessionId || (row.target?.kind === "session" ? row.target.sessionId : undefined);
+        const runnerId = row.runnerId ?? (row.target?.kind === "spawn" ? row.target.spec.runnerId : row.target?.runnerId);
+        return {
+          ...(sessionId ? { sessionId } : {}),
+          sessionName: row.sessionName ?? null,
+          ...(row.target ? { target: row.target } : {}),
+          ...(runnerId ? { runnerId } : {}),
+          subscriptionId: row.subscriptionId,
+          triggerType: row.triggerType,
+          params: row.params,
+          cwd: row.target?.kind === "spawn" ? row.target.spec.cwd ?? row.cwd ?? null : row.cwd ?? null,
+          sessionLive: row.sessionLive,
+        };
+      });
     return { instructions, failed: 0 };
   } catch {
     // A failed load is reported rather than passed off as "nothing scheduled".
@@ -71,18 +84,11 @@ export async function fetchScheduledInstructions(
  * Standing instructions for a mode: what runs on a schedule, and where.
  *
  * Scheduled work is invisible in a chat transcript — it fires into a session
- * you are not looking at — so a mode that uses it needs somewhere to see and
- * cancel it.
+ * you are not looking at — so a mode that uses it needs somewhere to see it.
  */
-/**
- * Stable identity for a scheduled row.
- *
- * One function so the row key, the in-flight marker and the disabled check
- * cannot disagree — they did, which left legacy entries (no subscriptionId)
- * clickable while a DELETE was already in flight.
- */
+/** Stable identity for a scheduled row, including legacy entries without subscription ids. */
 function instructionKey(instruction: ScheduledInstruction, index: number): string {
-  return instruction.subscriptionId ?? `${instruction.sessionId}:${instruction.triggerType}:${index}`;
+  return instruction.subscriptionId ?? `${instruction.sessionId ?? instruction.runnerId ?? instruction.target?.kind}:${instruction.triggerType}:${index}`;
 }
 
 export function ModeSchedule({
@@ -91,7 +97,7 @@ export function ModeSchedule({
   failed = 0,
   sessionNoun,
   onOpenSession,
-  onCancel,
+  onOpenTriggerManager,
 }: {
   instructions: ScheduledInstruction[];
   loading?: boolean;
@@ -99,23 +105,8 @@ export function ModeSchedule({
   failed?: number;
   sessionNoun: string;
   onOpenSession: (sessionId: string) => void;
-  onCancel: (instruction: ScheduledInstruction) => void;
+  onOpenTriggerManager?: () => void;
 }) {
-  const [cancelling, setCancelling] = React.useState<Set<string>>(new Set());
-
-  const cancel = async (instruction: ScheduledInstruction, index: number) => {
-    const key = instructionKey(instruction, index);
-    setCancelling((prev) => new Set(prev).add(key));
-    try {
-      await onCancel(instruction);
-    } finally {
-      setCancelling((prev) => {
-        const next = new Set(prev);
-        next.delete(key);
-        return next;
-      });
-    }
-  };
 
   if (loading) {
     return (
@@ -137,9 +128,12 @@ export function ModeSchedule({
 
   return (
     <div className="mt-8">
-      <h3 className="mb-2 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        <CalendarClockIcon className="size-3.5" /> Scheduled
-      </h3>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h3 className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <CalendarClockIcon className="size-3.5" /> Scheduled
+        </h3>
+        {onOpenTriggerManager && <Button variant="link" size="sm" className="h-auto p-0 text-xs" onClick={onOpenTriggerManager}>Manage triggers</Button>}
+      </div>
       <div className="overflow-hidden rounded-lg border border-border">
         {instructions.map((instruction, i) => {
           const key = instructionKey(instruction, i);
@@ -151,25 +145,21 @@ export function ModeSchedule({
                 <div className="mt-0.5 flex items-center gap-1.5 text-[0.65rem] text-muted-foreground">
                   <span>{describeSchedule(instruction.triggerType, instruction.params)}</span>
                   <span aria-hidden="true">·</span>
-                  <button
-                    type="button"
-                    onClick={() => onOpenSession(instruction.sessionId)}
-                    className="truncate underline-offset-2 hover:underline"
-                  >
-                    {instruction.sessionName?.trim() || `Untitled ${sessionNoun}`}
-                  </button>
+                  {instruction.target?.kind === "spawn" ? (
+                    <span>Spawns on {instruction.target.spec.runnerId}</span>
+                  ) : instruction.sessionId ? (
+                    <button
+                      type="button"
+                      onClick={() => onOpenSession(instruction.sessionId!)}
+                      className="truncate underline-offset-2 hover:underline"
+                    >
+                      {instruction.sessionName?.trim() || `Untitled ${sessionNoun}`}
+                    </button>
+                  ) : instruction.runnerId ? (
+                    <span>Spawns on {instruction.runnerId}</span>
+                  ) : null}
                 </div>
               </div>
-              <Button
-                size="icon"
-                variant="ghost"
-                className="size-7 shrink-0"
-                disabled={cancelling.has(key)}
-                onClick={() => void cancel(instruction, i)}
-                aria-label={`Cancel ${describeSchedule(instruction.triggerType, instruction.params)}`}
-              >
-                {cancelling.has(key) ? <Loader2Icon className="size-3.5 animate-spin" /> : <XIcon className="size-3.5" />}
-              </Button>
             </div>
           );
         })}

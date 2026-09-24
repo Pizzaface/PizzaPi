@@ -120,11 +120,11 @@ export interface SessionViewerProps {
     busy?: boolean;
     onStartTask: (prompt: string) => void;
     onOpenSession: (sessionId: string) => void;
+    onOpenTriggerManager?: () => void;
     scheduled?: {
       instructions: ScheduledInstruction[];
       loading?: boolean;
       failed?: number;
-      onCancel: (instruction: ScheduledInstruction) => void;
     };
   };
   /** Toggle the triggers panel */

@@ -129,6 +129,7 @@ describe("trigger transport delivery receipt", () => {
   afterEach(async () => {
     resetFakes();
     await memDb.deleteFrom("trigger_delivery").execute();
+    await memDb.deleteFrom("trigger_route").execute();
     await memDb.deleteFrom("trigger_event").execute();
   });
 
@@ -205,12 +206,53 @@ describe("trigger transport delivery receipt", () => {
     expect((await store.getDelivery(fresh.deliveryId))?.status).toBe("delivered");
   });
 
-  it("no recipient anywhere: row reverts to pending", async () => {
+  it("no recipient anywhere: default wait policy keeps the delivery pending", async () => {
     localSocket = null;
     relayVerified = false;
     sharedSession = null;
     const { deliveryId } = await publishTo("s-gone");
     expect((await store.getDelivery(deliveryId))?.status).toBe("pending");
+  });
+
+  it("wake offline policy preserves the pending delivery and resumes its route session", async () => {
+    sharedSession = { sessionId: "s-offline-wake", userId: "u1", runnerId: "runner-1" };
+    const route = await store.createRoute({
+      eventType: "t:offline-wake",
+      target: { kind: "session", sessionId: "s-offline-wake", runnerId: "runner-1", offlinePolicy: "wake" },
+      deliverAs: "followUp",
+      origin: "agent",
+      ownerUserId: "u1",
+    });
+    const source = { kind: "api" as const, id: "hook", auth: "api-key" as const, userId: "u1" };
+    const outcome = await authStorage.run(authCtx, () => engine.publishEvent(
+      { type: "t:offline-wake", routeIds: [route.routeId] }, source, transport.createEngineDeps(),
+    ));
+    const saved = await store.getDelivery(outcome.deliveries[0]!.deliveryId);
+    expect(saved).toMatchObject({ status: "pending", wakeRequested: true, routeId: route.routeId });
+    expect(runnerEmits).toContainEqual(expect.objectContaining({
+      runnerId: "runner-1",
+      event: "new_session",
+      data: expect.objectContaining({ sessionId: "s-offline-wake", resumeId: "s-offline-wake" }),
+    }));
+  });
+
+  it("fail offline policy records a distinct terminal delivery failure", async () => {
+    localSocket = null;
+    relayVerified = false;
+    sharedSession = null;
+    const route = await store.createRoute({
+      eventType: "t:offline-fail",
+      target: { kind: "session", sessionId: "s-offline-fail", offlinePolicy: "fail" },
+      deliverAs: "followUp",
+      origin: "agent",
+      ownerUserId: "u1",
+    });
+    const source = { kind: "api" as const, id: "hook", auth: "api-key" as const, userId: "u1" };
+    const outcome = await authStorage.run(authCtx, () => engine.publishEvent(
+      { type: "t:offline-fail", routeIds: [route.routeId] }, source, transport.createEngineDeps(),
+    ));
+    const saved = await store.getDelivery(outcome.deliveries[0]!.deliveryId);
+    expect(saved).toMatchObject({ status: "failed", failureReason: "offline_policy", routeId: route.routeId });
   });
 
   it("emitDeliveryResponseRelay correlates on fireId for session sources", async () => {

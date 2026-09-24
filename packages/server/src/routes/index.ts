@@ -48,7 +48,7 @@ const routers: RouteHandler[] = [
     handlePackagesRoute,
     handleSessionsRoute,
     handleEventsRoute,      // Unified trigger system (ADR-0002) — /api/events, /api/routes
-    handleTriggersRoute,    // Before attachments — /api/sessions/:id/trigger
+    handleTriggersRoute,    // Session control, trigger history, and trigger metadata
     handleWebhooksRoute,    // Webhook CRUD + fire endpoint
     handleAttachmentsRoute,
     handlePushRoute,

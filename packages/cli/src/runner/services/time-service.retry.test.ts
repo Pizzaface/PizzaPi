@@ -109,7 +109,7 @@ describe("one-shot delivery retry", () => {
         expect(deletes(calls)).toHaveLength(1); // removed only after success
     });
 
-    test("delivery asks the relay to wake an offline session (wakeSession flag)", async () => {
+    test("schedule fire targets its route so its destination policy is applied", async () => {
         setupEnv();
         const calls = mockFetch([200]);
         service = new TimeService([10, 20]);
@@ -121,7 +121,40 @@ describe("one-shot delivery retry", () => {
         await new Promise((resolve) => setTimeout(resolve, 40));
         const fire = posts(calls)[0];
         expect(fire).toBeDefined();
-        expect(JSON.parse(fire!.body).target.wake).toBe(true);
+        expect(JSON.parse(fire!.body).routeIds).toEqual(["sub-1"]);
+        expect(JSON.parse(fire!.body).target).toBeUndefined();
+    });
+
+    test("spawn route retries an unresolved intent without spawning or re-owning a session", async () => {
+        setupEnv();
+        const eventBodies: Array<Record<string, unknown>> = [];
+        const calls = routedFetch((url, init) => {
+            if (url.endsWith("/api/events")) {
+                eventBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+                return eventBodies.length === 1
+                    ? { status: 200, body: { ok: true, created: true, deliveries: [] } }
+                    : { status: 200, body: { ok: true, created: true, deliveries: [{ status: "delivered" }] } };
+            }
+            return { status: 200, body: { ok: true } };
+        });
+        service = new TimeService([10, 20]);
+        const destination = { kind: "spawn" as const, spec: { runnerId: "runner-test", cwd: "/tmp/proj" } };
+
+        service.reconcileSubscriptions([{
+            subscriptionId: "sub-spawn-at",
+            destination,
+            triggerType: "time:timer_fired",
+            runnerId: "runner-test",
+            params: { duration: "0.01s", message: "Run the check" },
+        }]);
+
+        await new Promise((resolve) => setTimeout(resolve, 90));
+        const events = posts(calls).filter((call) => call.url.endsWith("/api/events"));
+        expect(events).toHaveLength(2);
+        expect(JSON.parse(events[0]!.body)).toMatchObject({ routeIds: ["sub-spawn-at"], fireId: JSON.parse(events[1]!.body).fireId });
+        expect(toUrl(posts(calls), "/api/runners/spawn")).toHaveLength(0);
+        expect(calls.filter((call) => call.method === "PUT" && call.url.includes("/api/routes/")).length).toBe(0);
+        expect(deletes(calls).map((call) => call.url)).toEqual(["http://relay.test/api/routes/sub-spawn-at"]);
     });
 
     test("session gone (404): starts a replacement session with the instruction as prompt and settles", async () => {
@@ -306,6 +339,39 @@ describe("cron delivery retry and durable state", () => {
         expect(JSON.parse(readFileSync(join(home, ".pizzapi", "time-service-state.json"), "utf-8"))).toEqual({});
     });
 
+    test("spawn cron retries a pending spawn intent without migrating its destination", async () => {
+        const home = setupEnv();
+        const eventBodies: Array<Record<string, unknown>> = [];
+        const calls = routedFetch((url, init) => {
+            if (url.endsWith("/api/events")) {
+                eventBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+                return eventBodies.length === 1
+                    ? { status: 200, body: { ok: true, created: true, deliveries: [] } }
+                    : { status: 200, body: { ok: true, created: true, deliveries: [{ status: "delivered" }] } };
+            }
+            return { status: 200, body: { ok: true } };
+        });
+        writeFileSync(join(home, ".pizzapi", "time-service-state.json"), JSON.stringify({ "sub-spawn-cron": { nextFireAt: Date.now() - 1000, iteration: 0 } }), "utf-8");
+        service = new TimeService([5, 5], 10);
+        const destination = { kind: "spawn" as const, spec: { runnerId: "runner-test", cwd: "/tmp/proj" } };
+
+        service.reconcileSubscriptions([{
+            subscriptionId: "sub-spawn-cron",
+            destination,
+            triggerType: "time:cron",
+            runnerId: "runner-test",
+            params: { cron: "0 0 * * *", message: "Run the check" },
+        }]);
+
+        await new Promise((resolve) => setTimeout(resolve, 90));
+        const events = posts(calls).filter((call) => call.url.endsWith("/api/events"));
+        expect(events).toHaveLength(2);
+        expect(JSON.parse(events[0]!.body)).toMatchObject({ routeIds: ["sub-spawn-cron"], fireId: JSON.parse(events[1]!.body).fireId });
+        expect(toUrl(posts(calls), "/api/runners/spawn")).toHaveLength(0);
+        expect(calls.filter((call) => call.method === "PUT" && call.url.includes("/api/routes/")).length).toBe(0);
+        expect(deletes(calls)).toHaveLength(0);
+    });
+
     test("cron owner gone: spawns a replacement session, re-owns the cron under it, and stops the old cron", async () => {
         const home = setupEnv();
         const calls = routedFetch((url) => {
@@ -349,6 +415,70 @@ describe("cron delivery retry and durable state", () => {
         expect(deletes(calls)).toHaveLength(0);
     });
 
+    test("an authoritative snapshot arriving mid-delivery replaces an edited cron after transient failure", async () => {
+        const home = setupEnv();
+        let firstDeliveryStarted = false;
+        let eventCount = 0;
+        routedFetch((url) => {
+            if (url.endsWith("/api/events")) {
+                eventCount++;
+                if (!firstDeliveryStarted) {
+                    firstDeliveryStarted = true;
+                    // Reconcile while the fire is still in flight. A snapshot
+                    // supersedes the existing schedule even though delivery fails.
+                    service!.reconcileSubscriptions([
+                        entry("sess-1", "time:cron", { cron: "0 0 1 1 *", message: "updated" }, "sub-cron"),
+                    ]);
+                    return { status: 503 };
+                }
+                return { status: 200, body: { ok: true, created: true } };
+            }
+            return { status: 200 };
+        });
+        writeFileSync(
+            join(home, ".pizzapi", "time-service-state.json"),
+            JSON.stringify({ "sub-cron": { cron: "* * * * *", nextFireAt: Date.now() - 1000, iteration: 7 } }),
+            "utf-8",
+        );
+        service = new TimeService([5, 5], 10); // 5ms backoff/check: stale cron would rapidly retry
+
+        service.reconcileSubscriptions([
+            entry("sess-1", "time:cron", { cron: "* * * * *", message: "original" }, "sub-cron"),
+        ]);
+
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const state = JSON.parse(readFileSync(join(home, ".pizzapi", "time-service-state.json"), "utf-8"))["sub-cron"];
+        expect(eventCount).toBe(1); // updated annual cron isn't immediately re-fired
+        expect(state.cron).toBe("0 0 1 1 *");
+        expect(state.iteration).toBe(0);
+        expect(state.nextFireAt).toBeGreaterThan(Date.now());
+    });
+
+    test("snapshot omission during cron delivery prevents a queued subscription from resurrecting", async () => {
+        setupEnv();
+        let eventCount = 0;
+        routedFetch((url) => {
+            if (url.endsWith("/api/events")) {
+                eventCount++;
+                service!.reconcileSubscriptions([]); // authoritative removal while delivering
+                return { status: 503 };
+            }
+            return { status: 200 };
+        });
+        writeFileSync(
+            join(process.env.HOME!, ".pizzapi", "time-service-state.json"),
+            JSON.stringify({ "sub-cron": { cron: "* * * * *", nextFireAt: Date.now() - 1000, iteration: 0 } }),
+            "utf-8",
+        );
+        service = new TimeService([5, 5], 10);
+        service.reconcileSubscriptions([
+            entry("sess-1", "time:cron", { cron: "* * * * *" }, "sub-cron"),
+        ]);
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        expect(eventCount).toBe(1);
+        expect(readFileSync(join(process.env.HOME!, ".pizzapi", "time-service-state.json"), "utf-8")).toBe("{}");
+    });
+
     test("an update delta arriving mid-delivery re-arms the cron under the delta's new owner once delivery settles", async () => {
         const home = setupEnv();
         let deltaSent = false;
@@ -384,11 +514,11 @@ describe("cron delivery retry and durable state", () => {
         const fires = posts(calls).filter((c) => c.url.endsWith("/api/events"));
         expect(fires).toHaveLength(2);
         // First fire went to the original owner and failed transiently.
-        expect(JSON.parse(fires[0]!.body).target.sessionId).toBe("sess-1");
+        expect(JSON.parse(fires[0]!.body).routeIds).toEqual(["sub-cron"]);
         // After the delivery settled, the queued delta replayed — the cron is
         // re-armed under the NEW owner (its catch-up fire delivers there).
         const refire = JSON.parse(fires[1]!.body);
-        expect(refire.target.sessionId).toBe("sess-new");
+        expect(refire.routeIds).toEqual(["sub-cron"]);
         expect(refire.payload.message).toBe("moved");
     });
 
@@ -463,6 +593,67 @@ describe("cron delivery retry and durable state", () => {
         const state = JSON.parse(readFileSync(join(home, ".pizzapi", "time-service-state.json"), "utf-8"));
         expect(state.hasOwnProperty("sub-cron")).toBe(true);
         expect(state["sub-cron"].nextFireAt).toBeGreaterThan(Date.now());
+    });
+
+    test("changed cron expression recalculates next fire and resets iteration", () => {
+        const home = setupEnv();
+        const staleNextFireAt = Date.now() + 60 * 60 * 1000;
+        writeFileSync(
+            join(home, ".pizzapi", "time-service-state.json"),
+            JSON.stringify({ "sub-cron": { cron: "0 0 * * *", nextFireAt: staleNextFireAt, iteration: 7 } }),
+            "utf-8",
+        );
+        service = new TimeService();
+
+        service.reconcileSubscriptions([
+            entry("sess-1", "time:cron", { cron: "* * * * *" }, "sub-cron"),
+        ], { mode: "delta", action: "update" });
+
+        const state = JSON.parse(readFileSync(join(home, ".pizzapi", "time-service-state.json"), "utf-8"))["sub-cron"];
+        expect(state.cron).toBe("* * * * *");
+        expect(state.nextFireAt).toBeGreaterThan(Date.now());
+        expect(state.nextFireAt).toBeLessThan(staleNextFireAt);
+        expect(state.iteration).toBe(0);
+    });
+
+    test("same cron expression preserves durable next fire and iteration", () => {
+        const home = setupEnv();
+        const nextFireAt = Date.now() + 60 * 60 * 1000;
+        writeFileSync(
+            join(home, ".pizzapi", "time-service-state.json"),
+            JSON.stringify({ "sub-cron": { cron: "0 0 * * *", nextFireAt, iteration: 7 } }),
+            "utf-8",
+        );
+        service = new TimeService();
+
+        service.reconcileSubscriptions([
+            entry("sess-1", "time:cron", { cron: "0 0 * * *" }, "sub-cron"),
+        ], { mode: "delta", action: "update" });
+
+        const state = JSON.parse(readFileSync(join(home, ".pizzapi", "time-service-state.json"), "utf-8"))["sub-cron"];
+        expect(state.cron).toBe("0 0 * * *");
+        expect(state.nextFireAt).toBe(nextFireAt);
+        expect(state.iteration).toBe(7);
+    });
+
+    test("legacy cron state preserves progress and adopts the current expression", () => {
+        const home = setupEnv();
+        const nextFireAt = Date.now() + 60 * 60 * 1000;
+        writeFileSync(
+            join(home, ".pizzapi", "time-service-state.json"),
+            JSON.stringify({ "sub-cron": { nextFireAt, iteration: 7 } }),
+            "utf-8",
+        );
+        service = new TimeService();
+
+        service.reconcileSubscriptions([
+            entry("sess-1", "time:cron", { cron: "0 0 * * *" }, "sub-cron"),
+        ], { mode: "delta", action: "update" });
+
+        const state = JSON.parse(readFileSync(join(home, ".pizzapi", "time-service-state.json"), "utf-8"))["sub-cron"];
+        expect(state.cron).toBe("0 0 * * *");
+        expect(state.nextFireAt).toBe(nextFireAt);
+        expect(state.iteration).toBe(7);
     });
 
     test("persists cron state on subscribe and drops it on unsubscribe", () => {

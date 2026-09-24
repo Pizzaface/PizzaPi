@@ -92,6 +92,12 @@ function validatePublishFields(body: Record<string, unknown>): string | null {
   if (body.fireId !== undefined && (typeof body.fireId !== "string" || body.fireId.length === 0)) {
     return "fireId must be a non-empty string";
   }
+  if (body.routeIds !== undefined && (
+    !Array.isArray(body.routeIds) || body.routeIds.length > 100
+    || body.routeIds.some((id) => typeof id !== "string" || id.length === 0 || id.length > 256)
+  )) {
+    return "routeIds must contain at most 100 non-empty strings of 256 characters or fewer";
+  }
 
   if (body.responseContract !== undefined) {
     if (!isPlainObject(body.responseContract)) return "responseContract must be an object";
@@ -166,6 +172,11 @@ export function validateRouteFields(patch: unknown): string | null {
   }
   if (patch.filterMode !== undefined && patch.filterMode !== "and" && patch.filterMode !== "or") {
     return "filterMode must be and | or";
+  }
+  if (patch.target !== undefined && isPlainObject(patch.target) && patch.target.kind === "session"
+    && patch.target.offlinePolicy !== undefined
+    && patch.target.offlinePolicy !== "wait" && patch.target.offlinePolicy !== "wake" && patch.target.offlinePolicy !== "fail") {
+    return "target.offlinePolicy must be wait | wake | fail";
   }
   if (patch.params !== undefined && !isPlainObject(patch.params)) return "params must be a plain object";
   if (patch.promptTemplate !== undefined && typeof patch.promptTemplate !== "string") {
@@ -294,7 +305,13 @@ function routeRunnerId(route: Route): string | undefined {
   return route.target.kind === "spawn" ? route.target.spec.runnerId : route.target.runnerId;
 }
 
-/** Whether an active subscription must be removed from its old target first. */
+/** Whether reconciliation must retire the old subscription before re-adding it. */
+function subscriptionContextChanged(existing: Route, updated: Route): boolean {
+  return routeRunnerId(existing) !== routeRunnerId(updated)
+    || existing.eventType.split(":", 1)[0] !== updated.eventType.split(":", 1)[0];
+}
+
+/** Whether a session-scoped service needs the prior destination cleared first. */
 function sessionTargetChanged(existing: Route, updated: Route): boolean {
   if (existing.target.kind !== "session") return false;
   return updated.target.kind !== "session"
@@ -327,6 +344,27 @@ async function canManageRoute(route: Route, userId: string): Promise<boolean> {
   }
   if ((await resolveSessionOwner(route.target.sessionId, userId)) !== null) return true;
   return sessionOwnerUnresolvable(route.target.sessionId);
+}
+
+async function runnerBelongsToUser(runnerId: string, userId: string): Promise<boolean> {
+  const live = await getRunnerData(runnerId).catch(() => null);
+  const owner = live?.userId ?? await getRunnerOwner(runnerId);
+  return owner === userId;
+}
+
+async function routeIdsForRunner(runnerId: string, userId: string): Promise<Set<string>> {
+  const routes = await listRoutes();
+  const ids = new Set<string>();
+  for (const route of routes) {
+    if (routeRunnerId(route) === runnerId && await canManageRoute(route, userId)) ids.add(route.routeId);
+  }
+  return ids;
+}
+
+async function deliveryBelongsToRunner(delivery: Delivery, runnerId: string, routeIds: Set<string>): Promise<boolean> {
+  if (routeIds.has(delivery.routeId ?? delivery.spawnRouteId ?? "")) return true;
+  const session = await resolveSessionRunner(delivery.sessionId).catch(() => null);
+  return session?.runnerId === runnerId;
 }
 
 export const handleEventsRoute: RouteHandler = async (req, url) => {
@@ -389,7 +427,7 @@ export const handleEventsRoute: RouteHandler = async (req, url) => {
 
     try {
       const outcome = await publishEvent(
-        { type: body.type, payload: body.payload, summary: body.summary, responseContract: body.responseContract, fireId: body.fireId },
+        { type: body.type, routeIds: body.routeIds, payload: body.payload, summary: body.summary, responseContract: body.responseContract, fireId: body.fireId },
         source,
         createEngineDeps(),
         extraTargets,
@@ -418,10 +456,17 @@ export const handleEventsRoute: RouteHandler = async (req, url) => {
     const limit = Number.isFinite(parsedLimit)
       ? Math.min(500, Math.max(1, Math.trunc(parsedLimit)))
       : undefined;
+    const runnerId = url.searchParams.get("runnerId") ?? undefined;
+    if (runnerId && !(await runnerBelongsToUser(runnerId, identity.userId))) {
+      return Response.json({ error: "Runner not found or not owned by you" }, { status: 404 });
+    }
+    const runnerRouteIds = runnerId ? await routeIdsForRunner(runnerId, identity.userId) : undefined;
+    // Runner feeds filter deliveries after loading a bounded recent window.
+    // ponytail: scan at most 500 events; use a delivery→route SQL join if feed volume makes this visible.
     const events = await listEvents({
       type: url.searchParams.get("type") ?? undefined,
       before: url.searchParams.get("before") ?? undefined,
-      limit,
+      limit: runnerId ? 500 : limit,
     });
     // Scope the feed: events the caller sourced, plus events with a delivery
     // into a session they own. Cross-user payloads never leave the server.
@@ -443,6 +488,13 @@ export const handleEventsRoute: RouteHandler = async (req, url) => {
       const owned = await hasOwnedSession(targets, identity.userId, ownership);
       if (owned) visible.push(event);
     }
+    if (runnerId && runnerRouteIds) {
+      const runnerEvents = new Set<string>();
+      for (const delivery of deliveries) {
+        if (await deliveryBelongsToRunner(delivery, runnerId, runnerRouteIds)) runnerEvents.add(delivery.eventId);
+      }
+      return Response.json({ events: visible.filter((event) => runnerEvents.has(event.eventId)).slice(0, limit ?? 100) });
+    }
     return Response.json({ events: visible });
   }
 
@@ -455,6 +507,14 @@ export const handleEventsRoute: RouteHandler = async (req, url) => {
     const event = await getEvent(eventId);
     if (!event) return Response.json({ error: "Event not found" }, { status: 404 });
     const allForVisibility = await deliveriesForEvents([eventId]);
+    const runnerId = url.searchParams.get("runnerId") ?? undefined;
+    let runnerRouteIds: Set<string> | undefined;
+    if (runnerId) {
+      if (!(await runnerBelongsToUser(runnerId, identity.userId))) {
+        return Response.json({ error: "Runner not found or not owned by you" }, { status: 404 });
+      }
+      runnerRouteIds = await routeIdsForRunner(runnerId, identity.userId);
+    }
     const ownership = new Map<string, boolean>();
     const canSee = await userCanSeeEvent(event, identity, ownership)
       || await hasOwnedSession(allForVisibility.map((delivery) => delivery.sessionId), identity.userId, ownership);
@@ -465,6 +525,7 @@ export const handleEventsRoute: RouteHandler = async (req, url) => {
     // user's session ids over.
     const visible: typeof all = [];
     for (const d of all) {
+      if (runnerId && runnerRouteIds && !(await deliveryBelongsToRunner(d, runnerId, runnerRouteIds))) continue;
       if (await hasOwnedSession([d.sessionId], identity.userId, ownership)) visible.push(d);
     }
     return Response.json({ deliveries: annotateDeliveries(visible, new Map([[eventId, event.responseContract]])) });
@@ -737,10 +798,15 @@ export const handleEventsRoute: RouteHandler = async (req, url) => {
         } else if (wasDisabled && !isDisabled) {
           await notifyRouteChange("subscribe", updated);
         } else if (!isDisabled) {
-          if (sessionTargetChanged(existing, updated)) {
+          if (subscriptionContextChanged(existing, updated)) {
             await notifyRouteChange("unsubscribe", existing);
+            await notifyRouteChange("subscribe", updated);
+          } else {
+            if (sessionTargetChanged(existing, updated)) {
+              await notifyRouteChange("unsubscribe", existing);
+            }
+            await notifyRouteChange("update", updated);
           }
-          await notifyRouteChange("update", updated);
         }
       }
       return Response.json({ ok: true, route: updated });

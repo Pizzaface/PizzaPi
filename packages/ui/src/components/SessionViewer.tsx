@@ -939,6 +939,7 @@ export function SessionViewer({
                 busy={modeHome.busy}
                 onStartTask={modeHome.onStartTask}
                 onOpenSession={modeHome.onOpenSession}
+                onOpenTriggerManager={modeHome.onOpenTriggerManager}
                 scheduled={modeHome.scheduled}
               />
             ) : !sessionId ? (

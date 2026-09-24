@@ -33,6 +33,7 @@ describe("fetchScheduledInstructions", () => {
                     schedules: [
                         { subscriptionId: "a", sessionId: "sess-1", sessionName: "One", triggerType: "time:cron", params: { cron: "0 8 * * *" }, cwd: "/work/a", sessionLive: true },
                         { subscriptionId: "c", sessionId: "sess-2", sessionName: null, triggerType: "time:at", params: { at: "9:00" }, cwd: "/work/b", sessionLive: false },
+                        { subscriptionId: "d", triggerType: "time:cron", params: { cron: "0 9 * * *" }, target: { kind: "spawn", spec: { runnerId: "runner-A", cwd: "/work/spawn" } } },
                         // Not a schedule — must not appear on the schedule surface.
                         { subscriptionId: "b", sessionId: "sess-1", triggerType: "github:pr_comment" },
                     ],
@@ -44,9 +45,11 @@ describe("fetchScheduledInstructions", () => {
 
     test("lists a runner's schedules and drops non-schedule subscriptions", async () => {
         const { instructions, failed } = await fetchScheduledInstructions("runner-A");
-        expect(instructions.map((f) => f.subscriptionId)).toEqual(["a", "c"]);
+        expect(instructions.map((f) => f.subscriptionId)).toEqual(["a", "c", "d"]);
         expect(instructions[0]!.sessionName).toBe("One");
         expect(instructions[0]!.cwd).toBe("/work/a");
+        expect(instructions[2]!.target).toEqual({ kind: "spawn", spec: { runnerId: "runner-A", cwd: "/work/spawn" } });
+        expect(instructions[2]!.cwd).toBe("/work/spawn");
         expect(failed).toBe(0);
     });
 
@@ -86,7 +89,7 @@ describe("ModeSchedule", () => {
 
     test("describes what runs and when", () => {
         const { getByText } = render(
-            <ModeSchedule instructions={[instruction]} sessionNoun="task" onOpenSession={noop} onCancel={noop} />,
+            <ModeSchedule instructions={[instruction]} sessionNoun="task" onOpenSession={noop} />,
         );
         expect(getByText("Write my daily report")).toBeDefined();
         expect(getByText("Every day at 08:00 UTC")).toBeDefined();
@@ -94,61 +97,59 @@ describe("ModeSchedule", () => {
 
     test("renders nothing when there is no scheduled work", () => {
         const { container } = render(
-            <ModeSchedule instructions={[]} sessionNoun="task" onOpenSession={noop} onCancel={noop} />,
+            <ModeSchedule instructions={[]} sessionNoun="task" onOpenSession={noop} />,
         );
         expect(container.textContent).toBe("");
     });
 
     test("an all-failed check is not shown as an empty schedule", () => {
         const { getByText } = render(
-            <ModeSchedule instructions={[]} failed={2} sessionNoun="task" onOpenSession={noop} onCancel={noop} />,
+            <ModeSchedule instructions={[]} failed={2} sessionNoun="task" onOpenSession={noop} />,
         );
         expect(getByText(/Could not check scheduled work for 2 tasks/i)).toBeDefined();
     });
 
     test("a partial failure warns that the list may be incomplete", () => {
         const { getByText } = render(
-            <ModeSchedule instructions={[instruction]} failed={1} sessionNoun="task" onOpenSession={noop} onCancel={noop} />,
+            <ModeSchedule instructions={[instruction]} failed={1} sessionNoun="task" onOpenSession={noop} />,
         );
         expect(getByText(/list may be incomplete/i)).toBeDefined();
     });
 
     test("shows a loading state instead of an empty list", () => {
         const { getByText } = render(
-            <ModeSchedule instructions={[]} loading sessionNoun="task" onOpenSession={noop} onCancel={noop} />,
+            <ModeSchedule instructions={[]} loading sessionNoun="task" onOpenSession={noop} />,
         );
         expect(getByText(/Checking scheduled work/i)).toBeDefined();
     });
 
-    test("opens the owning session and cancels the instruction", () => {
+    test("opens the owning session and links to the runner-wide trigger manager", () => {
         const opened: string[] = [];
-        const cancelled: unknown[] = [];
-        const { getByText, getByLabelText } = render(
+        const managed: boolean[] = [];
+        const { getByText } = render(
             <ModeSchedule
                 instructions={[instruction]}
                 sessionNoun="task"
                 onOpenSession={(id) => opened.push(id)}
-                onCancel={(i) => cancelled.push(i)}
+                onOpenTriggerManager={() => managed.push(true)}
             />,
         );
         fireEvent.click(getByText("Daily report"));
         expect(opened).toEqual(["s1"]);
-        fireEvent.click(getByLabelText(/Cancel Every day at 08:00 UTC/i));
-        expect(cancelled).toEqual([instruction]);
+        fireEvent.click(getByText("Manage triggers"));
+        expect(managed).toEqual([true]);
+        expect(document.querySelector('[aria-label^="Cancel "]')).toBeNull();
     });
 
-    test("guards against concurrent cancellation while the request is pending", async () => {
-        let resolveCancel!: () => void;
-        const onCancel = () => new Promise<void>((resolve) => { resolveCancel = resolve; });
-        const { getByLabelText } = render(
-            <ModeSchedule instructions={[instruction]} sessionNoun="task" onOpenSession={noop} onCancel={onCancel} />,
+    test("spawn-target schedules show their runner without an empty session link", () => {
+        const opened: string[] = [];
+        const spawn = { subscriptionId: "spawn-1", target: { kind: "spawn" as const, spec: { runnerId: "runner-A", cwd: "/work" } }, runnerId: "runner-A", sessionName: null, triggerType: "time:cron", params: { cron: "0 9 * * *" } };
+        const { getByText, container } = render(
+            <ModeSchedule instructions={[spawn]} sessionNoun="task" onOpenSession={(id) => opened.push(id)} />,
         );
-        const button = getByLabelText(/Cancel Every day at 08:00/i) as HTMLButtonElement;
-        fireEvent.click(button);
-        fireEvent.click(button);
-        expect(button.disabled).toBe(true);
-        resolveCancel();
-        await new Promise((resolve) => queueMicrotask(resolve));
+        expect(getByText("Spawns on runner-A")).toBeDefined();
+        expect(container.querySelector("button")).toBeNull();
+        expect(opened).toEqual([]);
     });
 
     test("an instruction with no message still says what it does", () => {
@@ -157,7 +158,6 @@ describe("ModeSchedule", () => {
                 instructions={[{ ...instruction, params: { cron: "0 8 * * *" } }]}
                 sessionNoun="task"
                 onOpenSession={noop}
-                onCancel={noop}
             />,
         );
         expect(getByText("Wakes this task")).toBeDefined();

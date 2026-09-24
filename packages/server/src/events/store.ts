@@ -576,7 +576,7 @@ export async function createDelivery(
 
 export async function updateDelivery(
   deliveryId: string,
-  patch: Partial<Pick<Delivery, "status" | "deliveredAt" | "respondedAt" | "response" | "expiresAt" | "responseRelayPending" | "sessionId" | "spawnRouteId" | "wakeRequested" | "lastWakeAttemptAt">>,
+  patch: Partial<Pick<Delivery, "status" | "deliveredAt" | "respondedAt" | "response" | "expiresAt" | "responseRelayPending" | "sessionId" | "spawnRouteId" | "wakeRequested" | "lastWakeAttemptAt" | "failureReason">>,
   opts?: { guard?: DeliveryStatus[] },
 ): Promise<Delivery | null> {
   const row = await getKysely()
