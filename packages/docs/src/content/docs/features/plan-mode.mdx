@@ -5,9 +5,7 @@ description: Read-only exploration and structured plan review for careful, step-
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-Plan mode puts the agent into a **read-only exploration state** where file writes and destructive commands are blocked at the tool level (and at the OS level when [sandbox](/PizzaPi/security/sandbox/) is active). The agent can freely read code, search, and analyze — but cannot modify anything until a plan is reviewed and approved.
-
-This is useful when you want the agent to **think before it acts**: explore a complex codebase, identify the right files, and present a structured plan for your approval before any changes are made.
+Plan mode puts the agent into a **read-only exploration state** where file writes and destructive commands are blocked at the tool level (and at the OS level when [sandbox](/PizzaPi/security/sandbox/) is active). The agent can read code, search, and analyze — but cannot modify anything until a plan is reviewed and approved.
 
 ---
 
