@@ -25,6 +25,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import { Plus, Trash2 } from "lucide-react";
+import { useRunnerModels } from "@/hooks/useRunnerModels";
 import {
   api,
   formatParamValue,
@@ -105,6 +106,10 @@ export function RouteForm({ catalog, targetSessionId, sessions = [], runners = [
   const [deliverAs, setDeliverAs] = React.useState<RouteInput["deliverAs"]>(editing?.deliverAs ?? "followUp");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+
+  const effectiveRunnerId = fixedRunnerId ?? spawnRunnerId;
+  const { models: runnerModels, loading: modelsLoading } = useRunnerModels(effectiveRunnerId, targetKind === "spawn");
+  const modelKeys = React.useMemo(() => new Set(runnerModels.map((m) => `${m.provider}/${m.id}`)), [runnerModels]);
 
   const def = React.useMemo(() => catalog.find((d) => d.type === eventType), [catalog, eventType]);
   const typeInCatalog = def !== undefined || eventType === "";
@@ -361,7 +366,16 @@ export function RouteForm({ catalog, targetSessionId, sessions = [], runners = [
             </select>
             <Label htmlFor={`${targetId}-cwd`} className="text-[11px] text-muted-foreground">Working directory</Label><Input id={`${targetId}-cwd`} value={spawnCwd} onChange={(e) => setSpawnCwd(e.target.value)} className="h-8 text-xs" />
             <Label htmlFor={`${targetId}-prompt`} className="text-[11px] text-muted-foreground">Prompt / instructions</Label><textarea id={`${targetId}-prompt`} value={spawnPrompt} onChange={(e) => setSpawnPrompt(e.target.value)} rows={2} className="w-full rounded-md border border-border bg-background px-2 py-1 text-xs" />
-            <Label htmlFor={`${targetId}-model`} className="text-[11px] text-muted-foreground">Model (provider/id)</Label><Input id={`${targetId}-model`} value={spawnModel} onChange={(e) => setSpawnModel(e.target.value)} placeholder="openai/gpt-…" className="h-8 text-xs" />
+            <Label htmlFor={`${targetId}-model`} className="text-[11px] text-muted-foreground">Model</Label>
+            {runnerModels.length > 0 ? (
+              <select id={`${targetId}-model`} value={spawnModel} onChange={(e) => setSpawnModel(e.target.value)} className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs">
+                <option value="">Runner default</option>
+                {spawnModel && !modelKeys.has(spawnModel) && <option value={spawnModel}>{spawnModel} (not available)</option>}
+                {runnerModels.map((m) => <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>{m.name ? `${m.name} (${m.provider}/${m.id})` : `${m.provider}/${m.id}`}</option>)}
+              </select>
+            ) : (
+              <Input id={`${targetId}-model`} value={spawnModel} onChange={(e) => setSpawnModel(e.target.value)} placeholder={modelsLoading ? "Loading models…" : "provider/id (runner offline)"} className="h-8 text-xs" />
+            )}
             <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={spawnAutoClose} onChange={(e) => setSpawnAutoClose(e.target.checked)} /> Close spawned session when complete</label>
           </fieldset>
         )}
