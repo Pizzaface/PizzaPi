@@ -25,7 +25,9 @@ function harness(runAgent: (...args: any[]) => Promise<SingleResult>) {
     let shutdown: (() => void | Promise<void>) | undefined;
     let switchTo: ((event: any) => void | Promise<void>) | undefined;
     const sent: Array<{ content: string; details?: unknown; options?: { deliverAs?: string; triggerTurn?: boolean } }> = [];
+    const statuses: Array<{ key: string; text?: string }> = [];
     const pi = {
+        setStatus(key: string, text?: string) { statuses.push({ key, text }); },
         registerTool(value: any) { tool = value; },
         on(event: string, handler: (event?: any) => void) {
             if (event === "session_shutdown") shutdown = handler;
@@ -39,6 +41,7 @@ function harness(runAgent: (...args: any[]) => Promise<SingleResult>) {
     return {
         tool,
         sent,
+        statuses,
         shutdown: async () => { await shutdown?.(); },
         newConversation: async () => { await switchTo?.({ reason: "new" }); },
     };
@@ -48,7 +51,8 @@ const nextTask = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 const ctx = {
     cwd: process.cwd(),
-    hasUI: false,
+    hasUI: true,
+    ui: { setStatus() {} },
     modelRegistry: { find: () => undefined, getAvailable: () => [] },
 };
 
@@ -67,12 +71,14 @@ describe("background subagents", () => {
     test("returns immediately and injects the result as a follow-up when done", async () => {
         let finish!: (value: SingleResult) => void;
         const runAgent = mock(() => new Promise<SingleResult>((resolve) => { finish = resolve; }));
-        const { tool, sent } = harness(runAgent);
+        const { tool, sent, statuses } = harness(runAgent);
+        const ui = { setStatus: (key: string, text?: string) => statuses.push({ key, text }) };
 
-        const launched = await tool.execute("call-1", { agent: "task", task: "Investigate" }, undefined, undefined, ctx);
+        const launched = await tool.execute("call-1", { agent: "task", task: "Investigate" }, undefined, undefined, { ...ctx, ui });
 
         expect(launched.content[0].text).toContain("running in the background");
         expect(sent).toEqual([]);
+        expect(statuses).toContainEqual({ key: "subagents", text: "⏳ 1 active subagent" });
 
         finish(result);
         await nextTask();
@@ -81,6 +87,7 @@ describe("background subagents", () => {
         expect(sent[0].content).toContain("Finished investigation");
         expect(sent[0].options).toEqual({ deliverAs: "followUp", triggerTurn: true });
         expect(sent[0].details).toMatchObject({ taskId: expect.any(String), mode: "single" });
+        expect(statuses.at(-1)).toEqual({ key: "subagents", text: undefined });
     });
 
     test("delivers chain and parallel results after returning", async () => {

@@ -45,7 +45,7 @@ import {
 } from "./types.js";
 import { runSingleAgent, mapWithConcurrencyLimit } from "./engine.js";
 import { renderSubagentCall, renderSubagentResult } from "./render.js";
-import { reserveSubagentSlots, resetSubagentState, resetSubagentCounters } from "./background-state.js";
+import { onSubagentStatus, reserveSubagentSlots, resetSubagentState, resetSubagentCounters } from "./background-state.js";
 
 // ── Tool parameter schemas (JSON Schema) ───────────────────────────────
 
@@ -119,6 +119,8 @@ const SubagentParams = {
 
 export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) => {
     const backgroundTasks = new Map<AbortController, Promise<void>>();
+    let updateStatus: ((count: number) => void) | undefined;
+    let stopStatusUpdates: (() => void) | undefined;
 
     // Abort every in-flight background subagent and wait for their finally
     // blocks to release slots + end their relay mirror. `preserveListeners`
@@ -131,7 +133,10 @@ export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) =
         else resetSubagentState();
     };
 
-    pi.on("session_shutdown", async () => { await abortAll(false); });
+    pi.on("session_shutdown", async () => {
+        await abortAll(false);
+        stopStatusUpdates?.();
+    });
 
     // `/new` resets the conversation in place: an aborted subagent's result
     // (and its lingering mirror session) must not bleed into the new one, and a
@@ -156,6 +161,11 @@ export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) =
         parameters: SubagentParams as any,
 
         async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
+            if (ctx.hasUI && ctx.ui) {
+                updateStatus = (count) => ctx.ui.setStatus("subagents", count ? `⏳ ${count} active subagent${count === 1 ? "" : "s"}` : undefined);
+                stopStatusUpdates ??= onSubagentStatus((count) => updateStatus?.(count));
+            }
+
             // Read concurrency limits from global config only — project-local
             // config must not be able to raise fan-out limits for untrusted repos.
             const globalConfig = loadGlobalConfig();
