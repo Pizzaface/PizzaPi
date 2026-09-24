@@ -90,6 +90,8 @@ describe("RunnerTriggersPanel", () => {
     await act(async () => {
       Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.includes("New trigger"))?.click();
     });
+    const destLabel = Array.from(container.querySelectorAll("label")).find((label) => label.textContent?.trim() === "Destination")!;
+    await act(async () => { fireEvent.change(container.querySelector(`#${destLabel.htmlFor}`)!, { target: { value: "session" } }); });
     const targetSelect = container.querySelector<HTMLSelectElement>('select[id$="-session"]');
     expect(targetSelect).toBeTruthy();
     expect(Array.from(targetSelect!.options).map((option) => option.textContent)).toContain("Runner One Session");
