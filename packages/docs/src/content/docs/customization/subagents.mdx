@@ -74,7 +74,7 @@ Set `effort` to control provider reasoning effort for a subagent. Valid values a
 ## Agent definitions
 
 <Aside>
-  For a complete guide to writing agent definitions — frontmatter fields, discovery paths, tool restrictions — see [Agent Definitions](/PizzaPi/customization/agent-definitions/).
+  This page includes the agent file format, discovery paths, and tool restrictions below; see [Agent definitions](#agent-definitions).
 </Aside>
 
 Agent definitions are markdown files with YAML frontmatter. PizzaPi is compatible with [Claude Code agent files](https://code.claude.com/docs/en/sub-agents).
@@ -272,6 +272,10 @@ When a child calls `plan_mode` or `AskUserQuestion`, a trigger appears in the pa
 
 Linked child sessions (spawned via `spawn_session`) can trigger push notifications by default. Child-session push suppression is opt-in per subscription (`suppressChildNotifications`), and the ntfy/native push path currently delivers all events regardless of `isChildSession`. If you are orchestrating many children and want fewer notifications, enable `suppressChildNotifications` on the relevant push subscriptions.
 
+## When to use workflows
+
+For large fan-out work where intermediate subagent results should stay out of the parent context, a dynamic workflow can orchestrate `agent()` and `pipeline()` calls in a JavaScript script via `run_workflow`. Use a single or parallel subagent for a few tasks, chain mode when each step needs the prior result, and workflows for orchestration with custom logic or many tasks. Workflow scripts run with configured limits; only the final return value is delivered to the parent. See the [workflow implementation](https://github.com/Pizzaface/PizzaPi/tree/main/packages/cli/src/extensions).
+
 ## Claude Code compatibility
 
 PizzaPi subagents are designed to be compatible with [Claude Code agent files](https://code.claude.com/docs/en/sub-agents):
@@ -297,4 +301,4 @@ PizzaPi subagents are designed to be compatible with [Claude Code agent files](h
 
 To use Claude Code agents with PizzaPi, simply ensure the agent `.md` files are in a directory PizzaPi scans. If you already have agents in `.claude/agents/`, they'll be discovered automatically.
 
-See also: [Dynamic Workflows](/PizzaPi/customization/workflows/) for large fan-out subagent orchestration that keeps intermediate output out of your context.
+For large fan-out orchestration that keeps intermediate output out of context, see [When to use workflows](#when-to-use-workflows).

@@ -264,6 +264,10 @@ The API writes directly to `~/.pizzapi/skills/` only. Project-local, plugin, con
 
 ---
 
+## Prompt templates
+
+Prompt templates are Markdown files exposed as slash commands; they are distinct from skills but use the same project/global customization workflow. Put a `.md` file directly in `<cwd>/.pizzapi/prompts/`, `~/.pizzapi/commands/`, `<cwd>/.pizzapi/commands/`, or `<cwd>/.agents/commands/`. Discovery is non-recursive. A filename such as `review.md` creates `/review`; optional YAML frontmatter can provide a `description` shown in the command picker. The Markdown body is expanded as the prompt, with `$1`, `$2`, `$@`/`$ARGUMENTS` and `${@:N}` argument substitutions. See [slash commands](/PizzaPi/features/slash-commands/) for the picker and built-in commands.
+
 ## Agent Skills Standard
 
 PizzaPi's skill format is compatible with the [Agent Skills](https://agentskills.io) open standard. Skills written for other compatible tools (like Claude Code) work in PizzaPi without modification, and vice versa.

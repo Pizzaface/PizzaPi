@@ -40,8 +40,8 @@ Two config formats are supported:
     }
     ```
   </TabItem>
-  <TabItem label="mcp.servers (preferred)">
-    The `mcp.servers` format uses an array of server objects, each with explicit `name` and `transport` fields. PizzaPi treats this as the preferred format internally. Use `stdio` with `command`, or `http`/`streamable` with `url`; do not mix command and URL fields.
+  <TabItem label="mcp.servers (also supported)">
+    The `mcp.servers` format uses an array of server objects, each with explicit `name` and `transport` fields. It is supported for compatibility; prefer `mcpServers` for new configurations. Use `stdio` with `command`, or `http`/`streamable` with `url`; do not mix command and URL fields.
 
     ```jsonc
     // ~/.pizzapi/config.json
@@ -235,6 +235,23 @@ pizza --no-mcp
 <Aside type="caution">
   MCP servers launched via `npx` (e.g. `npx -y @tavily/mcp-server`) download the package on first run. This initial download can take 30+ seconds and is a common cause of timeout errors. Run the `npx` command manually once before adding it to your config, or increase `mcpTimeout` for the first session.
 </Aside>
+
+## Tool search and deferred loading
+
+When many MCP tools consume too much model context, enable deferred loading in global `~/.pizzapi/config.json`:
+
+```json
+{
+  "toolSearch": {
+    "enabled": true,
+    "tokenThreshold": 10000,
+    "maxResults": 5,
+    "keepLoadedTools": true
+  }
+}
+```
+
+If the combined MCP tool definitions exceed the threshold, PizzaPi defers tools and the agent can discover them through `search_tools`. Matched tools are added to the active tool set for subsequent responses. `deferLoading: true` or `false` on an individual `mcpServers` entry forces deferral on or off for that server. This keeps servers connected; it is different from `PIZZAPI_NO_MCP=1`, which skips MCP entirely. Use `/tool-search status` to inspect state and `/tool-search reset` to re-evaluate deferral. Settings can also be managed from Runner Settings in the web UI.
 
 ## Examples
 

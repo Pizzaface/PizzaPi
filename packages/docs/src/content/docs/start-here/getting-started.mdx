@@ -1,287 +1,69 @@
 ---
-title: Getting Started
-description: Install PizzaPi and run your first AI coding session in under 5 minutes.
+title: Your First Working Session
+description: Connect PizzaPi to a relay, run a real model response, and stop cleanly.
 ---
 
-import { Tabs, TabItem, Steps, Aside, Card, CardGrid } from "@astrojs/starlight/components";
+Choose one of these paths. A relay is needed to view sessions in a browser; the terminal-only path works without one.
 
-PizzaPi has two parts:
+## Path 1: Local relay (Docker)
 
-| Part | What it does |
-|------|-------------|
-| **CLI** (`pizzapi`) | Wraps `pi` on your dev machine and streams session events to the relay |
-| **Relay Server** | Buffers and broadcasts events; hosts the web UI |
-
-You always need the CLI. The relay can be **hosted by someone else** (quickest) or **run yourself** with Docker.
-
-<Aside type="tip" title="Don't need a relay?">
-  Want to use PizzaPi locally with no server setup? See [Standalone &amp; Relay-Free Mode](/PizzaPi/running/standalone-mode/) — you can skip the relay steps and run `PIZZAPI_RELAY_URL=off pizzapi`.
-</Aside>
-
----
-
-## Prerequisites
-
-Before you start, make sure you have:
-
-- **Node.js 18+** (or Bun) installed
-- **An AI provider API key** — PizzaPi uses the `pi` coding agent under the hood, which needs an API key from at least one provider (Anthropic, OpenAI, Google, Ollama Cloud, etc.). Alternatively, a [Claude Pro/Max subscription](https://claude.ai) works via the Claude Code OAuth flow.
-- **A relay server URL** — either a hosted relay someone has shared with you, or you'll self-host one below.
-- **Docker + Docker Compose** — only if you self-host (via `pizza web` or the manual Docker path)
-
-<Aside type="note">
-  Don't have an API key yet? [Anthropic](https://console.anthropic.com/), [OpenAI](https://platform.openai.com/), [Google AI Studio](https://aistudio.google.com/), and [Ollama Cloud](https://ollama.com/settings/keys) all offer starter tiers or credits to get started.
-</Aside>
-
-<Aside type="note">
-  Commands below use <code>pizzapi</code>. The <code>pizza</code> alias works too. If you prefer not to install globally, replace each <code>pizzapi ...</code> command with <code>npx @pizzapi/pizza ...</code>.
-</Aside>
-
----
-
-## Option A — Use a Hosted Relay (Quickest)
-
-<Steps>
-1. **Install the CLI**
-
-   <Tabs>
-     <TabItem label="npx (no install)">
-     ```bash
-     npx @pizzapi/pizza
-     ```
-     </TabItem>
-     <TabItem label="npm (global)">
-     ```bash
-     npm install -g @pizzapi/pizza
-     pizzapi
-     ```
-     </TabItem>
-     <TabItem label="Bun (global)">
-     ```bash
-     bun install -g @pizzapi/pizza
-     pizzapi
-     ```
-     </TabItem>
-   </Tabs>
-
-2. **Run first-time setup**
-
-   The first time you run `pizzapi` without a saved config it launches the setup wizard automatically:
-
-   ```
-   ┌───────────────────────────────────────────┐
-   │     🍕 PizzaPi — first-run setup     │
-   └───────────────────────────────────────────┘
-
-   Connect this node to a PizzaPi relay server so your sessions
-   can be monitored from the web UI.
-
-   Skip setup and continue without relay? [y/N] n
-   Relay server URL [http://localhost:7492]: https://relay.example.com
-   Your name (leave blank if account exists): Jordan
-   Email: you@example.com
-   Password: ••••••••
-
-   Connecting to relay server… ✓
-   ✓ API key saved to ~/.pizzapi/config.json
-   ✓ Relay: wss://relay.example.com
-   ✓ Theme set to pizzapi-dark
-   ```
-
-   You can re-run setup at any time:
-
-   ```bash
-   pizzapi setup
-   ```
-
-   **Prefer a QR code?** Run `pizzapi setup --scan` to print a terminal QR code. Scan it from an already-authenticated PizzaPi browser to approve the device without typing your password on the new machine.
-
-3. **Start a session**
-
-   ```bash
-   pizzapi
-   ```
-
-   Open the relay's web UI in your browser — your session is streaming live!
-</Steps>
-
----
-
-## Option B — Self-Host the Relay
-
-Want complete control? Run the relay + web UI yourself.
-
-### The Easy Way: `pizza web`
-
-If you have Docker installed, one command does everything:
+With Docker running, start the local relay and runner:
 
 ```bash
-pizzapi web
+pizzapi local
 ```
 
-This clones the repo, builds the containers, and starts the relay at **http://localhost:7492**. See the [Self-Hosting guide](/PizzaPi/deployment/self-hosting/) for details.
+On first use, the command starts the web hub on port 7492, opens setup if no local credentials exist, then runs the agent in the foreground. Sign up at `http://localhost:7492` if needed. Setup stores `apiKey` and `relayUrl` in `~/.pizzapi/config.json`. The relay remains running after Ctrl+C; stop it with `pizzapi web stop`.
 
-### Manual Setup
+Use `pizzapi local --port 8080` for another port or `--no-browser` to suppress browser launch. It reuses a healthy local relay. If your saved credentials point to a remote relay, it refuses to switch automatically; run `pizzapi setup` first and choose the local relay URL. See [CLI reference](/PizzaPi/running/cli-reference/#pizzapi-local).
 
-<Steps>
-1. **Clone the repository**
+## Path 2: Existing relay
 
-   ```bash
-   git clone https://github.com/Pizzaface/PizzaPi.git
-   cd PizzaPi
-   ```
+If you already have a PizzaPi relay, connect the CLI to it:
 
-2. **Generate required secrets**
-
-   The manual `docker/compose.yml` does not include `BETTER_AUTH_SECRET` or VAPID keys. Without them, sessions and push subscriptions are invalidated on every restart. Generate them first:
-
-   ```bash
-   export BETTER_AUTH_SECRET=$(openssl rand -hex 32)
-   # Optional: provide VAPID keys if you use Web Push (pizza web generates these automatically)
-   export VAPID_PUBLIC_KEY=...
-   export VAPID_PRIVATE_KEY=...
-   export VAPID_SUBJECT=mailto:you@example.com
-   ```
-
-   Or use [`pizza web`](#the-easy-way-pizza-web) for a turnkey setup that generates and persists these secrets for you.
-
-3. **Start the server stack**
-
-   ```bash
-   docker compose -f docker/compose.yml up -d
-   ```
-
-   This starts:
-
-   | Service | Port | Description |
-   |---------|------|-------------|
-   | `redis` | — (internal) | Session state / pub-sub (host port 6379 is commented out) |
-   | `ui` | — | Sidecar that copies the GHCR web UI assets into a shared volume |
-   | `ntfy` | — | Self-hosted push relay; optional, configured in [Mobile Push](/PizzaPi/deployment/mobile-push/) |
-   | `server` | 7492 | Relay API + Web UI |
-
-   The web UI is now live at **http://localhost:7492**.
-
-4. **Open the web UI and sign in**
-
-   - Open `http://localhost:7492` in your browser
-   - Sign in or create an account from the **Sign up** tab
-
-5. **Install the CLI & connect**
-
-   ```bash
-   npm install -g @pizzapi/pizza
-   pizzapi setup
-   # Relay server URL: http://localhost:7492
-   # Email: you@example.com
-   # Password: your-password
-   ```
-
-6. **Start your first session**
-
-   ```bash
-   cd /your/project
-   pizzapi
-   ```
-
-   Then open **http://localhost:7492** to watch it live.
-</Steps>
-
-<Aside type="tip" title="No Docker?">
-  You can run the server directly with Bun for local development. See the [Development guide](/PizzaPi/reference/development/) for instructions.
-</Aside>
-
----
-
-## What You'll See
-
-Once your session is running, open the web UI. Here's what to expect:
-
-<CardGrid>
-  <Card title="Live Token Stream" icon="document">
-    The agent's response streams in token-by-token — just like watching it type. Markdown is rendered inline with syntax highlighting.
-  </Card>
-  <Card title="Tool Calls & Results" icon="setting">
-    Every file read, bash command, and edit appears as a collapsible tool call with full input/output. You can see exactly what the agent is doing.
-  </Card>
-  <Card title="File Diffs" icon="list-format">
-    File edits show as syntax-highlighted diffs so you can review changes at a glance before the agent moves on.
-  </Card>
-  <Card title="Todo List" icon="approve-check">
-    If the agent creates a task plan, it appears as a live-updating todo card in the session stream — items move from pending → in progress → done.
-  </Card>
-</CardGrid>
-
-You can type messages in the chat input at the bottom to ask questions, give corrections, or steer the agent — all without touching the terminal.
-
----
-
-## Verification Checklist
-
-Run these checks after setup to make sure everything is working:
-
-| Check | Command / Action | Expected |
-|---|---|---|
-| CLI works | `pizzapi --version` | Prints PizzaPi CLI version |
-| Relay configured | `cat ~/.pizzapi/config.json` | Shows saved API key (run `pizzapi setup` to re-run the wizard) |
-| Web hub healthy (if self-hosted) | `pizzapi web status` | Docker services listed |
-| Session visible in UI | Start `pizzapi` session | Session appears in browser |
-| Models available | `pizzapi models` | At least one model listed (after `/login`) |
-
----
-
-## Troubleshooting
-
-| Problem | Fix |
-|---|---|
-| `pizzapi web` fails immediately | Make sure Docker Desktop/Engine is running and `docker compose version` works. |
-| Setup says `Could not register with the relay server` | Verify URL, email/password, and that relay is reachable in browser. |
-| Setup asks for a name but account already exists | Leave **Your name** blank for existing accounts. |
-| Session not visible in web UI | Re-run `pizzapi setup`, then start a fresh session. |
-| No model available in session | Run `/login`, then `/model` inside the session. |
-
-### Escape Hatches
-
-**Skip relay setup entirely** — If you run `pizzapi` without any saved config, the setup wizard asks "Skip setup and continue without relay?" Type `y` to start with no relay for this run only. To skip permanently, see [Standalone Mode](/PizzaPi/running/standalone-mode/).
-
-**Re-run setup** — Run `pizzapi setup` at any time to re-configure or switch relay servers.
-
-**Full reset** — To wipe all PizzaPi state and start fresh:
 ```bash
-rm -rf ~/.pizzapi
 pizzapi setup
 ```
 
-See the [Installation guide](/PizzaPi/start-here/installation/#resetting-configuration) for partial reset options.
+Enter the relay address and your relay account credentials, or run `pizzapi setup --scan` and approve the device from an authenticated browser. Setup persists the API key and normalized relay URL to `~/.pizzapi/config.json`. Then open a project directory and start:
 
----
+```bash
+cd /path/to/project
+pizzapi
+```
 
-## What's Next?
+Open the relay's web UI in a browser to see the session stream.
 
-<CardGrid>
-  <Card title="Installation Details" icon="document">
-    Platform-specific notes, binary downloads, and alternative install methods.
+## Path 3: Terminal only
 
-    [Installation guide →](/PizzaPi/start-here/installation/)
-  </Card>
-  <Card title="CLI Reference" icon="list-format">
-    All `pizzapi` commands and flags — setup, session management, config overrides.
+To use the CLI without connecting to a relay, run:
 
-    [CLI reference →](/PizzaPi/running/cli-reference/)
-  </Card>
-  <Card title="Configuration" icon="setting">
-    Customize config files, environment variables, model defaults, and relay settings.
+```bash
+PIZZAPI_RELAY_URL=off pizzapi
+```
 
-    [Configuration →](/PizzaPi/customization/configuration/)
-  </Card>
-  <Card title="Runner Daemon" icon="rocket">
-    Run a headless daemon that lets you spawn and manage agent sessions entirely from the web UI.
+This disables relay connection for that invocation; the agent still runs in the terminal. For persistent relay-free use, set `"relayUrl": "off"` in `~/.pizzapi/config.json`; see [installation notes](/PizzaPi/start-here/installation/#relay-free-and-interactive-use).
 
-    [Runner daemon →](/PizzaPi/running/runner-daemon/)
-  </Card>
-  <Card title="Self-Hosting Guide" icon="shield">
-    Production Docker setup with HTTPS, custom domains, backups, and scaling.
+## Authenticate and select a model
 
-    [Self-hosting →](/PizzaPi/deployment/self-hosting/)
-  </Card>
-</CardGrid>
+Relay sign-in and AI provider sign-in are separate. At the PizzaPi prompt, run `/login` and complete an available provider OAuth flow, or set the provider's API key in the environment before starting (for example `ANTHROPIC_API_KEY`). Then run `/model` and select a model shown as available. See [Providers & Models](/PizzaPi/features/providers-and-models/) for credential priority, supported providers, and custom models.
+
+## Verify a real response
+
+From the session prompt, send a harmless request such as:
+
+```text
+Reply with exactly: PizzaPi is connected.
+```
+
+A successful response in the terminal confirms provider access. For relay paths, also confirm the session and response appear in the browser. If no model is available, complete `/login` or provide an API key, then reopen `/model`.
+
+## Stop
+
+Press **Ctrl+C** to stop the foreground agent/runner. With `pizzapi local`, the relay stays up; stop it separately with:
+
+```bash
+pizzapi web stop
+```
+
+With the standalone `pizzapi` runner daemon, use `pizzapi runner stop` to stop it. See [Runner Daemon](/PizzaPi/running/runner-daemon/) for managed/background operation.

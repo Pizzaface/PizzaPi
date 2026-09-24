@@ -87,7 +87,8 @@ The monorepo is organized into focused packages:
 
 ---
 
-## Event Flow
+## Client and runner communication
+
 
 When you run `pizzapi`:
 
@@ -233,4 +234,6 @@ See the [Subagents guide](/PizzaPi/customization/subagents/) for full details.
 
 ## Development
 
-For a complete guide to setting up a local development environment, running tests, and contributing, see the [Development guide](/PizzaPi/reference/development/).
+Use Bun from the repository root. The root `build` script builds `protocol` → `extension-sdk` → `tunnel` → `tools` → `server` → `ui` → `cli`; the docs site builds separately with `bun run build:docs`. Run the test suite with `bun run test` (it includes isolated package checks). The docs build does not require a full application build.
+
+CI runs these checks from [`.github/workflows/ci.yml`](https://github.com/Pizzaface/PizzaPi/blob/main/.github/workflows/ci.yml); workflow concurrency cancels superseded CI runs, while release runs are not canceled. Source of truth: root [`package.json`](https://github.com/Pizzaface/PizzaPi/blob/main/package.json) and docs [`package.json`](https://github.com/Pizzaface/PizzaPi/blob/main/packages/docs/package.json).

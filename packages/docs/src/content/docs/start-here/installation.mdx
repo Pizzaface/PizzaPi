@@ -1,289 +1,47 @@
 ---
-title: Installation
-description: Install the PizzaPi CLI on Linux, macOS, or Windows using npm, Bun, or a pre-built binary. Includes full reset and uninstall instructions.
+title: Install PizzaPi
+description: Install the PizzaPi CLI and prepare an AI provider for your first session.
 ---
 
-import { Tabs, TabItem, Aside } from "@astrojs/starlight/components";
+PizzaPi runs the pi coding agent on your computer. The CLI is available as `pizzapi` and `pizza`.
 
 ## Requirements
 
-| Requirement | Minimum |
-|-------------|---------|
-| Node.js or Bun | Node 18+ **or** Bun 1.x |
-| OS | Linux, macOS, Windows |
-| For self-hosting | Docker + Docker Compose |
+- Node.js 18+ or Bun 1.x (the package is distributed through npm).
+- An AI provider account, subscription, or API key. See [Providers & Models](/PizzaPi/features/providers-and-models/).
+- Docker is only needed if you use `pizzapi local` to start a local relay, or self-host the relay separately.
 
----
-
-## Install the CLI
-
-<Tabs>
-  <TabItem label="npm (recommended)">
-  ```bash
-  npm install -g @pizzapi/pizza
-  pizzapi --version
-  ```
-  </TabItem>
-  <TabItem label="Bun">
-  ```bash
-  bun install -g @pizzapi/pizza
-  pizzapi --version
-  ```
-  </TabItem>
-  <TabItem label="npx (no install)">
-  ```bash
-  # Run without installing — always uses the latest version
-  npx @pizzapi/pizza
-  ```
-  </TabItem>
-</Tabs>
-
----
-
-## First-Run Setup
-
-Connect the CLI to your relay server:
+## Install
 
 ```bash
-pizzapi setup
-```
-
-You'll be prompted for:
-
-| Prompt | Default | Description |
-|--------|---------|-------------|
-| Relay server URL | `http://localhost:7492` | HTTP(S) address of the relay server |
-| Your name | — | Optional; only used when creating a new account |
-| Email | — | Account email |
-| Password | — | Account password |
-
-On success the CLI saves your API key to `~/.pizzapi/config.json` and prints the derived WebSocket URL used for streaming.
-
-<Aside type="tip">
-  **Set up by QR code:** On a machine where you’re already logged into the web UI, run `pizzapi setup --scan`. The CLI prints a terminal QR code; scan it from the browser to approve the device without typing your password.
-</Aside>
-
-<Aside type="note">
-  Already have an account? Leave **Your name** blank and just provide email + password.
-</Aside>
-
----
-
-## Verify the Installation
-
-```bash
-# Show the installed version
+npm install -g @pizzapi/pizza
 pizzapi --version
-
-# List available AI models
-pizzapi models
-
-# Show API usage
-pizzapi usage
 ```
 
-### Quick start with Ollama Cloud
-
-PizzaPi now recognizes **Ollama Cloud** as a built-in API-key provider. Set `OLLAMA_API_KEY`, then open PizzaPi and select an Ollama Cloud model from `/model` (provider ID: `ollama-cloud`):
+Or run without installing:
 
 ```bash
-export OLLAMA_API_KEY=your_ollama_api_key
-pizzapi
+npx @pizzapi/pizza --help
 ```
 
-The built-in provider targets the OpenAI-compatible Ollama Cloud endpoint at `https://ollama.com/v1`.
+## Prepare provider access
 
-If you already use local or self-hosted Ollama via `~/.pizzapi/models.json` under provider ID `ollama`, keep that config as-is — the built-in cloud provider is separate and shows up as `ollama-cloud`.
+PizzaPi needs provider credentials independently of your relay login. Start `pizzapi`, then use `/login` to authenticate through a provider's supported OAuth flow, or export its API key before starting the CLI (for example `ANTHROPIC_API_KEY`). Use `/model` to select an available model. Credentials are stored in `~/.pizzapi/auth.json`; see [authentication and model selection](/PizzaPi/features/providers-and-models/).
 
----
+## Where data is stored
 
-## Updating
+PizzaPi stores global settings and provider credentials under `~/.pizzapi/`. The relay API key and relay URL are in `~/.pizzapi/config.json`; provider auth is in `~/.pizzapi/auth.json`; sessions and logs are also kept under this directory. Project-specific configuration lives in `.pizzapi/` in the project. Back up files before resetting or uninstalling.
 
-```bash
-npm update -g @pizzapi/pizza
-# — or —
-bun update -g @pizzapi/pizza
-```
+To remove provider credentials, delete `~/.pizzapi/auth.json`. To remove all PizzaPi local data, stop its processes and remove `~/.pizzapi/`.
 
----
+## Relay-free and interactive use
 
-## Files & Directories Created by PizzaPi
+An interactive `pizzapi` session does not require the background runner daemon. To work without a relay for one run, use `PIZZAPI_RELAY_URL=off pizzapi` (or `pizzapi --no-relay`). The agent and local session history still work, but browser streaming and remote spawning do not. Set `"relayUrl": "off"` in config to disable it persistently. Use `pizzapi runner` only when you want headless sessions spawned from the web UI.
 
-PizzaPi stores all its data under `~/.pizzapi/`. Here's what each file is for:
+## Troubleshooting
 
-| Path | Created by | Purpose |
-|------|-----------|---------|
-| `~/.pizzapi/config.json` | `pizzapi setup` / manual | CLI config: API key, relay URL, skills, hooks |
-| `~/.pizzapi/auth.json` | `/login` inside a session | AI provider credentials (OAuth tokens, API keys) |
-| `~/.pizzapi/models.json` | manual / custom setup | Optional custom model + provider config (for local Ollama, proxies, vLLM, etc.). Built-in providers still work without this file. |
-| `~/.pizzapi/runner.json` | `pizzapi runner` (first start) | Runner identity, lock/PID tracking, and runner secret (auto-generated) |
-| `~/.pizzapi/usage-cache.json` | `pizzapi runner` | Shared provider quota cache (written by daemon, read by workers) |
-| `~/.pizzapi/logs/` | manual ([LaunchAgent plist](/PizzaPi/deployment/mac-setup/)) | Log files for runner stdout/stderr |
-| `~/.pizzapi/web/config.json` | `pizzapi web` | Web hub settings (port, VAPID keys, origins) |
-| `~/.pizzapi/web/compose.yml` | `pizzapi web` | Auto-generated Docker Compose file (regenerated each run) |
-| `~/.pizzapi/web/data/` | `pizzapi web` | Persistent SQLite database for user accounts |
-| `~/.pizzapi/web/repo/` | `pizzapi web` | Cloned PizzaPi source repo |
-| `~/.pizzapi/skills/` | manual | Global personal skills |
-| `~/.pizzapi/usage.db` | first session | SQLite database tracking token consumption, costs, and session analytics. Safe to delete (loses analytics history). |
-| `~/.pizzapi/session-list-cache.json` | `pizzapi runner` | Cache of session metadata with mtime-based invalidation. Safe to delete (rebuilds automatically on next session list). |
+If the runner repeatedly crashes on Windows, try running it inside WSL2, which uses the Linux runtime. Capture the runner logs and check the current release notes before switching versions; older reports about specific crash addresses and version ranges may no longer apply.
 
-Project-local config (`.pizzapi/config.json`) is stored in each project's directory and is not part of the global `~/.pizzapi/` tree.
+## Next: run a working session
 
----
-
-## Upgrading from pi
-
-If you previously used the raw [`pi` coding agent](https://pi.dev/), PizzaPi automatically migrates your existing data on first startup. No manual steps are required.
-
-The migration runs in two phases:
-
-1. **Phase 1 — `~/.pi/agent/` → `~/.pizzapi/`**: Moves (merges) sessions, auth, and other data from a legacy `pi` install into the PizzaPi config directory. Individual files are moved out of `~/.pi/agent/`, so the legacy directory is left empty.
-2. **Phase 2 — `~/.pizzapi/agent/` → `~/.pizzapi/`**: Flattens an older PizzaPi layout where data was nested under `~/.pizzapi/agent/` (caused by an earlier upstream `getAgentDir()` path). Files are merged into the flat `~/.pizzapi/` structure.
-
-Both phases are **idempotent** — they skip files that already exist at the destination and write a `.migrated` marker so they don't re-scan on subsequent startups. It's safe to re-run (e.g., if you reinstall).
-
-<Aside type="tip">
-  If something looks wrong after migration, you can safely delete `~/.pizzapi/agent/.migrated` and restart PizzaPi to re-run Phase 2. Phase 1 re-runs automatically if `~/.pizzapi/sessions/` doesn't exist yet.
-</Aside>
-
----
-
-## Resetting Configuration
-
-### Re-run setup (switch relay or update credentials)
-
-To switch to a different relay server or update your credentials at any time:
-
-```bash
-pizzapi setup
-```
-
-This overwrites the `apiKey` in `~/.pizzapi/config.json` and prints the WebSocket URL. **Note:** `pizzapi setup` only persists the API key; it does not write `relayUrl`. After setup, manually add the relay URL if it's not the default:
-
-```jsonc
-// ~/.pizzapi/config.json
-{
-  "apiKey": "pk_live_...",
-  "relayUrl": "wss://your-relay.example.com"
-}
-```
-
-### Disconnect from the relay (relay-free mode)
-
-To stop connecting to a relay without uninstalling:
-
-```bash
-# Add to ~/.pizzapi/config.json:
-# "relayUrl": "off"
-
-# — or — use an environment variable:
-PIZZAPI_RELAY_URL=off pizzapi
-```
-
-See the [Standalone Mode guide](/PizzaPi/running/standalone-mode/) for details.
-
-### Reset AI provider credentials
-
-To log out of all AI providers and start fresh with `/login`:
-
-```bash
-rm ~/.pizzapi/auth.json
-```
-
-If you also use custom model/provider definitions in `~/.pizzapi/models.json` (for example local Ollama, LM Studio, or proxy endpoints), **do not delete that file** unless you intentionally want to remove those custom models too.
-
-Next time you start `pizzapi`, built-in providers will still be available via environment variables or `/login`, and any custom providers in `models.json` will remain intact.
-
-### Reset runner identity
-
-The runner identity is auto-generated on first start. To assign a new identity (useful if you've cloned a machine or want a fresh runner registration):
-
-```bash
-# Stop the runner first
-pizzapi runner stop
-
-# Remove the identity file
-rm ~/.pizzapi/runner.json
-
-# Restart — a new ID is generated automatically
-pizzapi runner
-```
-
-### Reset the web hub
-
-To wipe the relay server's database and start fresh (all user accounts and session metadata will be lost):
-
-```bash
-# Stop the web hub first
-pizzapi web stop
-
-# Remove only the database (preserves config, VAPID keys, etc.)
-rm -rf ~/.pizzapi/web/data/
-
-# Restart — a fresh database is created on next start
-pizzapi web
-```
-
-To also reset the web hub configuration (port, VAPID keys, origins):
-
-```bash
-pizzapi web stop
-rm -rf ~/.pizzapi/web/
-pizzapi web   # all defaults restored; new VAPID keys generated
-```
-
-<Aside type="caution">
-  Deleting `~/.pizzapi/web/data/` removes all user accounts. Everyone will need to re-register. Push notification subscriptions are also lost (VAPID keys are in `web/config.json`).
-</Aside>
-
----
-
-## Uninstalling
-
-### 1. Stop any running processes
-
-```bash
-# Stop the runner daemon (if running)
-pizzapi runner stop
-
-# Stop the web hub (if running)
-pizzapi web stop
-```
-
-### 2. Remove the CLI
-
-<Tabs>
-  <TabItem label="npm">
-  ```bash
-  npm uninstall -g @pizzapi/pizza
-  ```
-  </TabItem>
-  <TabItem label="Bun">
-  ```bash
-  bun remove -g @pizzapi/pizza
-  ```
-  </TabItem>
-</Tabs>
-
-### 3. Remove all PizzaPi data
-
-```bash
-# Removes config, credentials, sessions, web hub data — everything
-rm -rf ~/.pizzapi
-```
-
-Or remove selectively:
-
-```bash
-rm ~/.pizzapi/config.json      # relay credentials only
-rm ~/.pizzapi/auth.json        # AI provider credentials only
-rm -rf ~/.pizzapi/web/         # web hub only
-```
-
-### 4. Remove macOS LaunchAgent (if installed)
-
-If you set up the runner as a macOS LaunchAgent, see the uninstall steps in the [Runner Daemon guide](/PizzaPi/running/runner-daemon/) and [macOS Setup guide](/PizzaPi/deployment/mac-setup/).
-
-### 5. Remove systemd service (Linux, if installed)
-
-If you created a systemd unit for the runner, see the [Runner Daemon guide](/PizzaPi/running/runner-daemon/) for the stop/disable commands.
+Follow [Your first working session](/PizzaPi/start-here/getting-started/). Choose local relay, an existing relay, or terminal-only mode; authenticate a model, verify a real response, then stop the processes you started.
