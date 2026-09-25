@@ -24,7 +24,7 @@ import { emitApprovalPending, emitApprovalCleared } from "./remote-meta-events.j
 // worker.ts builds the uiContext during boot, before RelayContext exists, so it
 // reads the handler lazily at call time.
 
-type ApprovalHandler = (request: ApprovalRequest) => Promise<ApprovalDecision>;
+type ApprovalHandler = (request: ApprovalRequest, signal?: AbortSignal) => Promise<ApprovalDecision>;
 let currentHandler: ApprovalHandler | null = null;
 
 export function setApprovalHandler(handler: ApprovalHandler): void {
@@ -88,6 +88,8 @@ export async function requestApprovalViaWeb(
   signal?: AbortSignal,
 ): Promise<ApprovalDecision | null> {
   if (!rctx.isConnected()) return null;
+  // There is one approval slot. Never orphan a prompt from a parallel tool.
+  if (rctx.pendingApproval) return UNAVAILABLE;
 
   const promptId = randomUUID();
 
@@ -191,8 +193,8 @@ export function cancelPendingApproval(rctx: RelayContext): void {
  * Returns a disposer that removes both.
  */
 export function registerApprovalBridge(rctx: RelayContext): () => void {
-  const handler: ApprovalHandler = async (request) => {
-    const decision = await requestApprovalViaWeb(rctx, request);
+  const handler: ApprovalHandler = async (request, signal) => {
+    const decision = await requestApprovalViaWeb(rctx, request, signal);
     return decision ?? UNAVAILABLE;
   };
   setApprovalHandler(handler);

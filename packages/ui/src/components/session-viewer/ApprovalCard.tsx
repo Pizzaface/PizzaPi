@@ -25,6 +25,7 @@ export function ApprovalCard({
   /** Send the decision back to the worker. Return false if delivery failed. */
   onDecision: (decision: ApprovalDecision) => boolean | void | Promise<boolean | void>;
 }) {
+  const formId = React.useId();
   const editableKeys = React.useMemo(
     () => (approval.fields ?? []).filter((f) => f.editable).map((f) => f.key),
     [approval.fields],
@@ -42,12 +43,9 @@ export function ApprovalCard({
   }, [approval.promptId, approval.fields]);
 
   const edits = React.useMemo(() => {
-    const out: Record<string, string> = {};
-    for (const key of editableKeys) {
-      const original = approval.fields?.find((f) => f.key === key)?.value ?? "";
-      if (values[key] !== original) out[key] = values[key] ?? "";
-    }
-    return out;
+    return Object.fromEntries(editableKeys
+      .filter(key => values[key] !== (approval.fields?.find(f => f.key === key)?.value ?? ""))
+      .map(key => [key, values[key] ?? ""]));
   }, [editableKeys, values, approval.fields]);
 
   const decide = async (action: string, approved: boolean) => {
@@ -92,12 +90,13 @@ export function ApprovalCard({
           </div>
         )}
 
-        {(approval.fields ?? []).map((field) => (
+        {(approval.fields ?? []).map((field, index) => (
           <div key={field.key} className="space-y-1">
-            <Label className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">{field.label}</Label>
+            <Label htmlFor={field.editable ? `${formId}-${index}` : undefined} className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">{field.label}</Label>
             {field.editable ? (
               field.multiline ? (
                 <Textarea
+                  id={`${formId}-${index}`}
                   value={values[field.key] ?? ""}
                   onChange={(e) => setValues((v) => ({ ...v, [field.key]: e.target.value }))}
                   className="min-h-[6rem] text-sm"
@@ -105,6 +104,7 @@ export function ApprovalCard({
                 />
               ) : (
                 <Input
+                  id={`${formId}-${index}`}
                   value={values[field.key] ?? ""}
                   onChange={(e) => setValues((v) => ({ ...v, [field.key]: e.target.value }))}
                   className="text-sm"

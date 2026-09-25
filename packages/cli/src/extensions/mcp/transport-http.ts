@@ -10,88 +10,36 @@
 import { type PizzaPiOAuthProvider } from "../mcp-oauth.js";
 import {
   MCP_PROTOCOL_VERSION,
+  MCP_MODERN_PROTOCOL_VERSION,
+  MCP_MODERN_ERROR_CODES,
   MCP_SUPPORTED_VERSIONS,
   MCP_CLIENT_INFO,
+  modernRequestMeta,
   isRecord,
   type McpClient,
   type McpListToolsResult,
   type McpCallToolResult,
+  type McpElicitationHandler,
 } from "./types.js";
+import { requestWithMrtr } from "./mrtr.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HTTP client (plain JSON POST — legacy / simple servers)
 // ─────────────────────────────────────────────────────────────────────────────
 
+function hasHeaderAnnotation(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(value).some(([key, child]) => key === "x-mcp-header" || hasHeaderAnnotation(child));
+}
+
+function encodeHeaderValue(value: string): string {
+  return /^[\x20-\x7e\t]*$/.test(value) && value.trim() === value && !(value.startsWith("=?base64?") && value.endsWith("?="))
+    ? value : `=?base64?${Buffer.from(value, "utf8").toString("base64")}?=`;
+}
+
 export function createHttpMcpClient(opts: { name: string; url: string; headers?: Record<string, string> }): McpClient {
-  let nextId = 1;
-
-  async function request(method: string, params?: any, signal?: AbortSignal): Promise<any> {
-    const id = nextId++;
-    const payload = { jsonrpc: "2.0", id, method, params };
-
-    const res = await fetch(opts.url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(opts.headers) },
-      body: JSON.stringify(payload),
-      signal,
-    });
-
-    const json = (await res.json().catch(() => null)) as any;
-    if (!res.ok) throw new Error(`MCP HTTP ${res.status}`);
-    if (!json || typeof json !== "object") throw new Error("Invalid MCP response");
-    if (json.error) throw new Error(String(json.error?.message ?? "MCP error"));
-    return json.result;
-  }
-
-  async function notify(method: string, params?: any): Promise<void> {
-    // Notifications have no id and expect no response body.
-    const payload: any = { jsonrpc: "2.0", method };
-    if (params !== undefined) payload.params = params;
-
-    await fetch(opts.url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(opts.headers) },
-      body: JSON.stringify(payload),
-    }).catch(() => {}); // best-effort
-  }
-
-  // ── Lazy MCP initialize handshake ──────────────────────────────────────
-  let initPromise: Promise<void> | null = null;
-
-  function ensureInitialized(signal?: AbortSignal): Promise<void> {
-    if (!initPromise) {
-      initPromise = (async () => {
-        const result = await request("initialize", {
-          protocolVersion: MCP_PROTOCOL_VERSION,
-          capabilities: {},
-          clientInfo: MCP_CLIENT_INFO,
-        }, signal);
-
-        if (result?.protocolVersion && !MCP_SUPPORTED_VERSIONS.has(result.protocolVersion)) {
-          throw new Error(`MCP server "${opts.name}" returned unsupported protocol version: ${result.protocolVersion}`);
-        }
-
-        await notify("notifications/initialized");
-      })();
-    }
-    return initPromise;
-  }
-
-  return {
-    name: opts.name,
-    initialize: (signal?: AbortSignal) => ensureInitialized(signal),
-    async listTools() {
-      await ensureInitialized();
-      const res = (await request("tools/list")) as McpListToolsResult;
-      return Array.isArray(res?.tools) ? res.tools : [];
-    },
-    async callTool(toolName: string, args: unknown, signal?: AbortSignal) {
-      await ensureInitialized();
-      const res = await request("tools/call", { name: toolName, arguments: args ?? {} }, signal);
-      return (res ?? {}) as McpCallToolResult;
-    },
-    close() {},
-  };
+  // Modern MCP requires both JSON and SSE, even for "http" configurations.
+  return createStreamableMcpClient(opts);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -188,6 +136,8 @@ export function createStreamableMcpClient(opts: {
   let nextId = 1;
   let sessionId: string | undefined;
   let closed = false;
+  let modern = false;
+  const lifetime = new AbortController();
   const oauthProvider = opts.oauthProvider;
 
   function buildHeaders(extra?: Record<string, string>): Record<string, string> {
@@ -247,11 +197,12 @@ export function createStreamableMcpClient(opts: {
 
           if (!isRecord(msg)) continue;
 
-          // Ignore notifications / requests that have no id
+          // A server request is never a response, even if its id collides.
+          if ("id" in msg && typeof msg.method === "string") throw new Error("MCP server-initiated requests are not supported");
           if (!("id" in msg)) continue;
 
           if (msg.id === targetId || msg.id === String(targetId)) {
-            if (msg.error) throw new Error(String((msg.error as any)?.message ?? "MCP error"));
+            if (msg.error) throw Object.assign(new Error(String((msg.error as any)?.message ?? "MCP error")), msg.error);
             return (msg as any).result;
           }
         }
@@ -264,13 +215,31 @@ export function createStreamableMcpClient(opts: {
     throw new Error("MCP streamable: SSE stream ended without a matching response");
   }
 
-  async function rawRequest(method: string, params?: any, signal?: AbortSignal): Promise<{ result: any; status: number; response: Response }> {
+  async function rawRequest(method: string, params?: any, signal?: AbortSignal, modernRequest = modern) {
+    if (method !== "server/discover") return rawRequestImpl(method, params, signal, modernRequest);
+    const probe = new AbortController();
+    const timer = setTimeout(() => probe.abort(new DOMException("MCP discovery timed out", "TimeoutError")), 1000);
+    try {
+      return await rawRequestImpl(method, params, signal ? AbortSignal.any([signal, probe.signal]) : probe.signal, modernRequest);
+    } catch (err) {
+      if (probe.signal.aborted && !signal?.aborted) throw probe.signal.reason;
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function rawRequestImpl(method: string, params?: any, signal?: AbortSignal, modernRequest = modern): Promise<{ result: any; status: number; response: Response; rpcError?: any }> {
     const id = nextId++;
     const payload = { jsonrpc: "2.0", id, method, params };
 
     const res = await fetch(opts.url, {
       method: "POST",
-      headers: buildHeaders(),
+      headers: buildHeaders(modernRequest ? {
+        "MCP-Protocol-Version": MCP_MODERN_PROTOCOL_VERSION,
+        "Mcp-Method": method,
+        ...(typeof params?.name === "string" ? { "Mcp-Name": encodeHeaderValue(params.name) } : {}),
+      } : undefined),
       body: JSON.stringify(payload),
       signal,
     });
@@ -280,7 +249,7 @@ export function createStreamableMcpClient(opts: {
     // request was in flight), don't adopt the session — send DELETE immediately
     // to prevent an orphaned remote session.
     const sid = res.headers.get("mcp-session-id");
-    if (sid) {
+    if (sid && !modernRequest) {
       if (closed) {
         fetch(opts.url, {
           method: "DELETE",
@@ -291,7 +260,10 @@ export function createStreamableMcpClient(opts: {
       }
     }
 
-    if (!res.ok) return { result: null, status: res.status, response: res };
+    if (!res.ok) {
+      const json = (await res.clone().json().catch(() => null)) as any;
+      return { result: null, status: res.status, response: res, rpcError: json?.error };
+    }
 
     const ct = res.headers.get("content-type") ?? "";
 
@@ -302,16 +274,19 @@ export function createStreamableMcpClient(opts: {
 
     // Fallback: plain JSON
     const json = (await res.json().catch(() => null)) as any;
-    if (!json || typeof json !== "object") throw new Error("MCP streamable: invalid JSON response");
-    if (json.error) throw new Error(String(json.error?.message ?? "MCP error"));
-    return { result: json.result, status: res.status, response: res };
+    if (!json || typeof json !== "object" || json.method) throw new Error("MCP streamable: invalid response (server requests are not supported)");
+    if (json.id !== id && json.id !== String(id)) throw new Error("MCP response id mismatch");
+    return { result: json.result, status: res.status, response: res, rpcError: json.error };
   }
 
   /** Guard to prevent infinite OAuth loops within a single request. */
   let oauthInProgress = false;
 
-  async function request(method: string, params?: any, signal?: AbortSignal): Promise<any> {
-    const { result, status, response } = await rawRequest(method, params, signal);
+  async function request(method: string, params?: any, signal?: AbortSignal, modernRequest = modern): Promise<any> {
+    signal = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal;
+    signal.throwIfAborted();
+    const { result, status, response, rpcError } = await rawRequest(method, params, signal, modernRequest);
+    signal.throwIfAborted();
 
     // ── OAuth 401 handling ──────────────────────────────────────────────────
     // Use a per-request guard instead of a permanent flag so that token
@@ -327,8 +302,9 @@ export function createStreamableMcpClient(opts: {
         if (envToken) {
           oauthProvider.saveTokens({ access_token: envToken.token, token_type: "bearer" });
 
-          const retry = await rawRequest(method, params, signal);
-          if (retry.response.ok) {
+          const retry = await rawRequest(method, params, signal, modernRequest);
+          if (retry.status !== 401) {
+            if (!retry.response.ok || retry.rpcError) throw Object.assign(new Error(retry.rpcError?.message ?? `MCP HTTP ${retry.status}`), { status: retry.status, code: retry.rpcError?.code });
             return retry.result;
           }
           // Token didn't work — fall through to OAuth
@@ -411,15 +387,15 @@ export function createStreamableMcpClient(opts: {
         }
 
         // Retry the original request with the new token
-        const retry = await rawRequest(method, params, signal);
-        if (!retry.response.ok) {
-          throw new Error(`MCP streamable HTTP ${retry.status} (after OAuth)`);
+        const retry = await rawRequest(method, params, signal, modernRequest);
+        if (!retry.response.ok || retry.rpcError) {
+          throw Object.assign(new Error(retry.rpcError?.message ?? `MCP streamable HTTP ${retry.status} (after OAuth)`), { status: retry.status, code: retry.rpcError?.code });
         }
         return retry.result;
       } catch (err) {
         // Re-throw abort errors directly so callers can detect cancellation
         // without parsing the wrapped message.
-        if (err instanceof DOMException && err.name === "AbortError") throw err;
+        if ((err instanceof DOMException && err.name === "AbortError") || typeof (err as { status?: number }).status === "number") throw err;
         const errName = err instanceof Error ? err.constructor?.name : "";
         const errMsg = err instanceof Error ? err.message : String(err);
         const errDetail = errMsg || errName || "unknown error";
@@ -437,8 +413,10 @@ export function createStreamableMcpClient(opts: {
       }
     }
 
-    if (status !== 200 && result === null) {
-      throw new Error(`MCP streamable HTTP ${status}`);
+    if (rpcError || (status !== 200 && result === null)) {
+      const e = new Error(String(rpcError?.message ?? `MCP streamable HTTP ${status}`)) as Error & { status?: number; code?: number; data?: unknown };
+      e.status = status; e.code = rpcError?.code; e.data = rpcError?.data;
+      throw e;
     }
 
     return result;
@@ -453,47 +431,64 @@ export function createStreamableMcpClient(opts: {
       method: "POST",
       headers: buildHeaders(),
       body: JSON.stringify(payload),
+      signal: lifetime.signal,
     }).catch(() => {}); // best-effort
   }
 
-  // ── Lazy MCP initialize handshake ──────────────────────────────────────
+  const modernParams = (params: Record<string, unknown> = {}, capabilities: Record<string, unknown> = {}) =>
+    ({ ...params, _meta: modernRequestMeta(capabilities) });
   let initPromise: Promise<void> | null = null;
 
   function ensureInitialized(signal?: AbortSignal): Promise<void> {
-    if (!initPromise) {
-      initPromise = (async () => {
-        const result = await request("initialize", {
-          protocolVersion: MCP_PROTOCOL_VERSION,
-          capabilities: {},
-          clientInfo: MCP_CLIENT_INFO,
-        }, signal);
-
-        if (result?.protocolVersion && !MCP_SUPPORTED_VERSIONS.has(result.protocolVersion)) {
-          throw new Error(`MCP server "${opts.name}" returned unsupported protocol version: ${result.protocolVersion}`);
+    if (!initPromise) initPromise = (async () => {
+      try {
+        const discovered = await request("server/discover", modernParams(), signal, true);
+        if (isRecord(discovered) && Array.isArray(discovered.supportedVersions)) {
+          if (!discovered.supportedVersions.includes(MCP_MODERN_PROTOCOL_VERSION)) throw new Error(`MCP server "${opts.name}" does not support ${MCP_MODERN_PROTOCOL_VERSION}`);
+          modern = true;
+          return;
         }
-
-        await notify("notifications/initialized");
-      })();
-    }
+        // Some legacy servers return an empty result for unknown methods.
+      } catch (err) {
+        const e = err as { status?: number; code?: number };
+        const probeTimedOut = err instanceof DOMException && err.name === "TimeoutError";
+        if (signal?.aborted || lifetime.signal.aborted || (typeof e.code === "number" && MCP_MODERN_ERROR_CODES.has(e.code)) ||
+            (!probeTimedOut && e.code !== -32601 && ![400, 404, 405].includes(e.status ?? 0))) throw err;
+      }
+      const result = await request("initialize", { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: MCP_CLIENT_INFO }, signal, false);
+      if (result?.protocolVersion && !MCP_SUPPORTED_VERSIONS.has(result.protocolVersion)) throw new Error(`MCP server "${opts.name}" returned unsupported protocol version: ${result.protocolVersion}`);
+      await notify("notifications/initialized");
+    })();
     return initPromise;
   }
 
   return {
     name: opts.name,
-    initialize: (signal?: AbortSignal) => ensureInitialized(signal),
+    initialize: ensureInitialized,
     async listTools() {
       await ensureInitialized();
-      const res = (await request("tools/list")) as McpListToolsResult;
-      return Array.isArray(res?.tools) ? res.tools : [];
+      const res = (await request("tools/list", modern ? modernParams() : undefined)) as McpListToolsResult;
+      return (Array.isArray(res?.tools) ? res.tools : []).filter(tool => {
+        if (!modern || !hasHeaderAnnotation(tool.inputSchema)) return true;
+        // ponytail: header mirroring is outside form elicitation; fail visibly
+        // rather than expose tools whose required routing headers we'd omit.
+        console.warn(`MCP server "${opts.name}": tool "${tool.name}" unavailable: modern x-mcp-header annotations are not supported`);
+        return false;
+      });
     },
-    async callTool(toolName: string, args: unknown, signal?: AbortSignal) {
-      await ensureInitialized();
-      const res = await request("tools/call", { name: toolName, arguments: args ?? {} }, signal);
-      return (res ?? {}) as McpCallToolResult;
+    async callTool(toolName: string, args: unknown, signal?: AbortSignal, onElicitation?: McpElicitationHandler) {
+      signal = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal;
+      await ensureInitialized(signal);
+      const base = { name: toolName, arguments: args ?? {} };
+      const result = modern
+        ? await requestWithMrtr((params, s) => request("tools/call", modernParams(params, onElicitation ? { elicitation: { form: {} } } : {}), s), base, onElicitation, signal)
+        : await request("tools/call", base, signal);
+      return (result ?? {}) as McpCallToolResult;
     },
     close() {
       // Mark as closed so late-arriving responses don't adopt a session ID.
       closed = true;
+      lifetime.abort();
       // Best-effort session teardown
       if (sessionId) {
         const sid = sessionId;

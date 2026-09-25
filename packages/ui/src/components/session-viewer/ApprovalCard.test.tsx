@@ -33,6 +33,29 @@ const approval: MetaPendingApproval = {
 };
 
 describe("ApprovalCard", () => {
+  test("MCP form uses labeled inputs and leaves server URLs as non-clickable text", () => {
+    let decision: ApprovalDecision | undefined;
+    const form: MetaPendingApproval = {
+      promptId: "mcp-1",
+      title: "MCP server: contacts",
+      fields: [
+        { key: "message", label: "Information requested", value: "See https://example.com" },
+        { key: "name", label: "Name (required)", value: "Alice", editable: true },
+      ],
+      actions: [
+        { id: "approve", label: "Accept" },
+        { id: "decline", label: "Decline" },
+        { id: "cancel", label: "Cancel" },
+      ],
+    };
+    const { getByLabelText, getByText, container } = render(<ApprovalCard approval={form} onDecision={d => { decision = d; }} />);
+    expect((getByLabelText("Name (required)") as HTMLInputElement).value).toBe("Alice");
+    expect(container.querySelector("a")).toBeNull();
+    fireEvent.change(getByLabelText("Name (required)"), { target: { value: "Bob" } });
+    fireEvent.click(getByText("Accept"));
+    expect(decision).toEqual({ action: "approve", approved: true, edits: { name: "Bob" } });
+  });
+
   test("shows the title, tool name, and field values", () => {
     const { getByText } = render(<ApprovalCard approval={approval} onDecision={() => {}} />);
     expect(getByText("Send this email?")).toBeDefined();

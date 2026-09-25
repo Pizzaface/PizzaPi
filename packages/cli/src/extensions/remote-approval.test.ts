@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { consumePendingApprovalFromWeb, cancelPendingApproval } from "./remote-approval.js";
+import { consumePendingApprovalFromWeb, cancelPendingApproval, requestApprovalViaWeb, registerApprovalBridge, getApprovalHandler } from "./remote-approval.js";
 import type { RelayContext } from "./remote-types.js";
 import type { ApprovalDecision } from "@pizzapi/protocol";
 
@@ -8,6 +8,8 @@ function makeRctx(): { rctx: RelayContext; events: unknown[] } {
   const events: unknown[] = [];
   const rctx = {
     pendingApproval: null,
+    isConnected: () => true,
+    pi: {},
     relay: {},
     forwardEvent: (e: unknown) => events.push(e),
     setRelayStatus: () => {},
@@ -68,6 +70,25 @@ describe("consumePendingApprovalFromWeb", () => {
     expect(consumePendingApprovalFromWeb(rctx, JSON.stringify({ action: "approve", promptId: "OTHER" }))).toBe(false);
     expect(resolved).toBeUndefined();
     expect(rctx.pendingApproval).not.toBeNull();
+  });
+});
+
+describe("approval bridge for MCP forms", () => {
+  test("passes cancellation through and does not overwrite an existing prompt", async () => {
+    const { rctx } = makeRctx();
+    const dispose = registerApprovalBridge(rctx);
+    const ac = new AbortController();
+    try {
+      const first = getApprovalHandler()!({ title: "MCP server: contacts" }, ac.signal);
+      const id = rctx.pendingApproval?.promptId;
+      expect(await requestApprovalViaWeb(rctx, { title: "Second" })).toMatchObject({ unavailable: true });
+      expect(rctx.pendingApproval?.promptId).toBe(id);
+      ac.abort();
+      expect(await first).toEqual({ action: "reject", approved: false });
+      expect(rctx.pendingApproval).toBeNull();
+    } finally {
+      dispose();
+    }
   });
 });
 

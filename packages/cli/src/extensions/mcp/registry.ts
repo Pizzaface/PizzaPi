@@ -17,6 +17,8 @@ import { createStdioMcpClient } from "./transport-stdio.js";
 import { createHttpMcpClient, createStreamableMcpClient } from "./transport-http.js";
 import { allocateProviderSafeToolName } from "./tool-naming.js";
 import { type McpClient, type McpTool } from "./types.js";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createElicitationHandler } from "./elicitation.js";
 
 const log = createLogger("MCP");
 const sandboxLog = createLogger("sandbox/mcp");
@@ -605,8 +607,9 @@ export async function registerMcpTools(
                 ? `${tool.description} (source: ${sourceName})`
                 : `MCP tool from ${client.name} (source: ${sourceName})`,
               parameters,
-              async execute(_toolCallId: string, rawParams: unknown, signal: AbortSignal | undefined) {
-                const result = await client.callTool(tool.name, rawParams ?? {}, signal);
+              async execute(_toolCallId: string, rawParams: unknown, toolSignal: AbortSignal | undefined, _onUpdate: unknown, ctx?: ExtensionContext) {
+                const callSignal = signal && toolSignal ? AbortSignal.any([signal, toolSignal]) : signal ?? toolSignal;
+                const result = await client.callTool(tool.name, rawParams ?? {}, callSignal, createElicitationHandler(client.name, ctx));
                 if (result && typeof result === "object" && "content" in result) {
                   return (result as any);
                 }
