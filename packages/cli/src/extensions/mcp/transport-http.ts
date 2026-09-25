@@ -15,6 +15,7 @@ import {
   MCP_SUPPORTED_VERSIONS,
   MCP_CLIENT_INFO,
   modernRequestMeta,
+  MCP_ELICITATION_CAPABILITY,
   isRecord,
   type McpClient,
   type McpListToolsResult,
@@ -481,7 +482,7 @@ export function createStreamableMcpClient(opts: {
       await ensureInitialized(signal);
       const base = { name: toolName, arguments: args ?? {} };
       const result = modern
-        ? await requestWithMrtr((params, s) => request("tools/call", modernParams(params, onElicitation ? { elicitation: { form: {} } } : {}), s), base, onElicitation, signal)
+        ? await requestWithMrtr((params, s) => request("tools/call", modernParams(params, onElicitation ? MCP_ELICITATION_CAPABILITY : {}), s), base, onElicitation, signal)
         : await request("tools/call", base, signal);
       return (result ?? {}) as McpCallToolResult;
     },

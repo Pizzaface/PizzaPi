@@ -92,6 +92,44 @@ describe("approval bridge for MCP forms", () => {
   });
 });
 
+describe("approval bridge for MCP URL consent", () => {
+  test("forwards only http(s) hrefs, requires a matching promptId, and fails closed on disconnect", async () => {
+    const { rctx, events } = makeRctx();
+    const dispose = registerApprovalBridge(rctx);
+    try {
+      const request = {
+        title: "MCP server: payments",
+        actions: [
+          { id: "open", label: "Open in browser", href: "https://mcp.example.com/ui" },
+          { id: "evil", label: "Nope", href: "javascript:alert(1)" },
+          { id: "cancel", label: "Cancel" },
+        ],
+      };
+      const first = getApprovalHandler()!(request);
+      const pending = events.find(e => (e as { type: string }).type === "approval_pending") as { approval: { promptId: string; actions: Array<{ id: string; href?: string }> } };
+      expect(pending.approval.actions.map(a => a.href)).toEqual(["https://mcp.example.com/ui", undefined, undefined]);
+      // A decision without the promptId cannot consent to opening a URL.
+      expect(consumePendingApprovalFromWeb(rctx, JSON.stringify({ action: "open" }))).toBe(false);
+      expect(consumePendingApprovalFromWeb(rctx, JSON.stringify({ action: "open", promptId: "other" }))).toBe(false);
+      expect(rctx.pendingApproval?.promptId).toBe(pending.approval.promptId);
+      expect(consumePendingApprovalFromWeb(rctx, JSON.stringify({ action: "open", promptId: pending.approval.promptId }))).toBe(true);
+      expect(await first).toEqual({ action: "open", approved: false });
+
+      // Reconnect/cancel path: a pending consent is rejected, never accepted.
+      const second = getApprovalHandler()!(request);
+      cancelPendingApproval(rctx);
+      expect(await second).toEqual({ action: "reject", approved: false });
+
+      // Plain approvals keep accepting id-less decisions.
+      const third = getApprovalHandler()!({ title: "Plain" });
+      expect(consumePendingApprovalFromWeb(rctx, JSON.stringify({ action: "approve" }))).toBe(true);
+      expect(await third).toMatchObject({ action: "approve", approved: true });
+    } finally {
+      dispose();
+    }
+  });
+});
+
 describe("cancelPendingApproval", () => {
   test("fails closed (rejects) and clears", () => {
     const { rctx, events } = makeRctx();

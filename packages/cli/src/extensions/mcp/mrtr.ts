@@ -36,13 +36,20 @@ export async function requestWithMrtr(
       }
     }
 
-    const inputResponses: Record<string, unknown> = Object.create(null);
-    for (const [key, value] of entries) {
-      signal?.throwIfAborted();
-      inputResponses[key] = await onElicitation!((value as Record<string, unknown>).params, signal);
+    params = { ...initialParams };
+    if (entries.length > 0) {
+      const inputResponses: Record<string, unknown> = Object.create(null);
+      for (const [key, value] of entries) {
+        signal?.throwIfAborted();
+        inputResponses[key] = await onElicitation!((value as Record<string, unknown>).params, signal);
+      }
+      params.inputResponses = inputResponses;
+    } else {
+      // State-only round: the server is waiting out of band (e.g. a URL flow).
+      // Retrying is a human decision, never an automatic loop.
+      if (!onElicitation?.resume) throw new Error("MCP server is waiting for an out-of-band step and no user surface can retry it");
+      if (await onElicitation.resume(signal) !== "retry") throw new Error("MCP request cancelled by the user while the server waited for an out-of-band step");
     }
-
-    params = { ...initialParams, inputResponses };
     // Opaque state is copied by reference/value exactly, and omitted when absent.
     if ("requestState" in result) params.requestState = result.requestState;
   }

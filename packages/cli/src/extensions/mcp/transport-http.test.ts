@@ -133,7 +133,7 @@ describe("HTTP MCP protocol eras", () => {
     expect(calls[0].headers.get("mcp-protocol-version")).toBe("2026-07-28");
     expect(calls[0].headers.get("mcp-method")).toBe("tools/call");
     expect(calls[0].headers.get("mcp-name")).toBe("ask");
-    expect(calls[0].body.params._meta["io.modelcontextprotocol/clientCapabilities"]).toEqual({ elicitation: { form: {} } });
+    expect(calls[0].body.params._meta["io.modelcontextprotocol/clientCapabilities"]).toEqual({ elicitation: { form: {}, url: {} } });
     expect(calls[1].body.params.requestState).toBe("opaque");
   });
 

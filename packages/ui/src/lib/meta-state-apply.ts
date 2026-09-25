@@ -111,3 +111,12 @@ export function metaEventToStatePatch(event: MetaRelayEvent): MetaStatePatch {
       return {};
   }
 }
+
+/**
+ * After the worker acks a decision for `answeredPromptId`, clear the card only
+ * if it still shows that prompt. A replacement prompt (e.g. an MCP URL
+ * retry/resume card) can arrive before the ack and must survive.
+ */
+export function clearAnsweredApproval<T extends { promptId: string }>(current: T | null | undefined, answeredPromptId: string | undefined): T | null {
+  return current && current.promptId === answeredPromptId ? null : current ?? null;
+}

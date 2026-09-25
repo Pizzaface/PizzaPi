@@ -24,7 +24,13 @@ export type McpElicitationResult = {
   content?: Record<string, unknown>;
 };
 
-export type McpElicitationHandler = (params: unknown, signal?: AbortSignal) => Promise<McpElicitationResult>;
+export type McpElicitationHandler = ((params: unknown, signal?: AbortSignal) => Promise<McpElicitationResult>) & {
+  /** Manual control for state-only MRTR rounds (server waiting out of band). Absent = fail closed. */
+  resume?: (signal?: AbortSignal) => Promise<"retry" | "cancel">;
+};
+
+/** Advertised only when a handler exists; both modes need a human surface. */
+export const MCP_ELICITATION_CAPABILITY = { elicitation: { form: {}, url: {} } };
 
 export type McpClient = {
   name: string;

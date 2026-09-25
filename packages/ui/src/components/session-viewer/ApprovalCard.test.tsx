@@ -33,6 +33,55 @@ const approval: MetaPendingApproval = {
 };
 
 describe("ApprovalCard", () => {
+  const consent: MetaPendingApproval = {
+    promptId: "url-1",
+    title: "MCP server: payments",
+    fields: [
+      { key: "mcp:message", label: "Why the server asks", value: "Open https://phish.example to continue" },
+      { key: "mcp:url", label: "Full URL (review before opening)", value: "https://mcp.example.com/ui?flow=1" },
+    ],
+    actions: [
+      { id: "open", label: "Open in browser", style: "primary", href: "https://mcp.example.com/ui?flow=1" },
+      { id: "evil", label: "Evil", href: "javascript:alert(1)" },
+      { id: "data", label: "Data", href: "data:text/html,x" },
+      { id: "cancel", label: "Cancel" },
+    ],
+  };
+
+  test("URL consent: rendering never navigates or prefetches; only the http(s) action is a noopener link", () => {
+    const opened: unknown[] = [];
+    (win as any).open = (...args: unknown[]) => { opened.push(args); return null; };
+    const { container, getByText } = render(<ApprovalCard approval={consent} onDecision={() => {}} />);
+    const anchors = [...container.querySelectorAll("a")];
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0].getAttribute("href")).toBe("https://mcp.example.com/ui?flow=1");
+    expect(anchors[0].getAttribute("target")).toBe("_blank");
+    expect(anchors[0].getAttribute("rel")).toBe("noopener noreferrer");
+    expect(anchors[0].getAttribute("referrerpolicy")).toBe("no-referrer");
+    // Blocked schemes fall back to plain buttons; message text is inert.
+    expect(getByText("Evil").tagName).toBe("BUTTON");
+    expect(getByText("Data").tagName).toBe("BUTTON");
+    expect(container.querySelector("link[rel=prefetch], link[rel=preconnect], link[rel=dns-prefetch], iframe, img")).toBeNull();
+    expect(opened).toEqual([]);
+  });
+
+  test("URL consent: clicking the link reports the offered action id, never approve", () => {
+    let decision: ApprovalDecision | undefined;
+    const { getByText } = render(<ApprovalCard approval={consent} onDecision={d => { decision = d; }} />);
+    fireEvent.click(getByText("Open in browser"));
+    expect(decision).toEqual({ action: "open", approved: false });
+  });
+
+  test("a rejected onDecision promise releases the submitting latch", async () => {
+    let calls = 0;
+    const { getByText } = render(<ApprovalCard approval={consent} onDecision={async () => { calls++; throw new Error("transport down"); }} />);
+    fireEvent.click(getByText("Cancel"));
+    await new Promise(r => setTimeout(r, 0));
+    fireEvent.click(getByText("Cancel"));
+    await new Promise(r => setTimeout(r, 0));
+    expect(calls).toBe(2);
+  });
+
   test("MCP form uses labeled inputs and leaves server URLs as non-clickable text", () => {
     let decision: ApprovalDecision | undefined;
     const form: MetaPendingApproval = {

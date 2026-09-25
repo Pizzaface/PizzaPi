@@ -75,6 +75,11 @@ export interface ApprovalAction {
   id: string;
   label: string;
   style?: "primary" | "danger" | "default";
+  /**
+   * http(s) URL the browser opens in a new tab (noopener) when the user picks
+   * this action. The click is the consent; the decision still reports `id`.
+   */
+  href?: string;
 }
 
 /** What an extension asks the user to decide on. */

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { requestWithMrtr } from "./mrtr.js";
+import type { McpElicitationHandler } from "./types.js";
 
 describe("requestWithMrtr", () => {
   test("retries with current responses, fresh request calls, and exact current state", async () => {
@@ -58,8 +59,35 @@ describe("requestWithMrtr", () => {
       await expect(requestWithMrtr(async () => result, {})).rejects.toThrow();
     }
     let rounds = 0;
-    await expect(requestWithMrtr(async () => { rounds++; return { resultType: "input_required", requestState: "opaque" }; }, {}, undefined, undefined, 2)).rejects.toThrow("exceeded");
-    expect(rounds).toBe(3);
+    // State-only rounds never spin: no resume surface fails closed after ONE request.
+    await expect(requestWithMrtr(async () => { rounds++; return { resultType: "input_required", requestState: "opaque" }; }, {}, undefined, undefined, 2)).rejects.toThrow("out-of-band");
+    expect(rounds).toBe(1);
+  });
+
+  test("state-only rounds are driven by manual retry/cancel, echo exact state, and omit inputResponses", async () => {
+    const calls: Record<string, unknown>[] = [];
+    const answers: ("retry" | "cancel")[] = ["retry", "retry", "cancel"];
+    const handler: McpElicitationHandler = async () => ({ action: "accept" });
+    handler.resume = async () => answers.shift()!;
+    const state = "opaque \u0000 state";
+    await expect(requestWithMrtr(async params => { calls.push(params); return { resultType: "input_required", requestState: state }; }, { name: "t" }, handler)).rejects.toThrow("cancelled");
+    expect(calls).toHaveLength(3); // initial + two manual retries, then cancel stops it
+    expect(calls[1]).toEqual({ name: "t", requestState: state });
+    expect("inputResponses" in calls[1]).toBe(false);
+    // Resume answers stop at the first non-retry; nothing spins after cancel.
+    expect(answers).toEqual([]);
+  });
+
+  test("URL consent then completion: accept has no content, second round resolves", async () => {
+    let round = 0;
+    const result = await requestWithMrtr(
+      async params => (round++ === 0
+        ? { resultType: "input_required", requestState: "s1", inputRequests: { link: { method: "elicitation/create", params: { mode: "url", url: "https://example.com/x", message: "m" } } } }
+        : { content: [{ type: "text", text: JSON.stringify(params) }] }),
+      { name: "t" },
+      async () => ({ action: "accept" }),
+    );
+    expect(result).toEqual({ content: [{ type: "text", text: JSON.stringify({ name: "t", inputResponses: { link: { action: "accept" } }, requestState: "s1" }) }] });
   });
 
   test("threads cancellation to the elicitation callback", async () => {

@@ -45,6 +45,17 @@ function stripAnsi(s: string): string {
     return s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
 }
 
+/** Only http(s) links may reach the browser as clickable actions. */
+function isHttpUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const { protocol } = new URL(value);
+    return protocol === "https:" || protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
 /** Strip a request down to the fields the web card needs, with sane defaults. */
 function toMetaApproval(promptId: string, request: ApprovalRequest): MetaPendingApproval {
   const fields = Array.isArray(request.fields)
@@ -61,7 +72,7 @@ function toMetaApproval(promptId: string, request: ApprovalRequest): MetaPending
   const actions = Array.isArray(request.actions) && request.actions.length > 0
     ? request.actions
         .filter((a) => a && typeof a.id === "string" && typeof a.label === "string")
-        .map((a) => ({ id: a.id, label: a.label, style: a.style }))
+        .map((a) => ({ id: a.id, label: a.label, style: a.style, ...(isHttpUrl(a.href) ? { href: a.href } : {}) }))
     : undefined;
   return {
     promptId,
@@ -120,6 +131,8 @@ export async function requestApprovalViaWeb(
 
     rctx.pendingApproval = {
       promptId,
+      // Consent to open a URL must be bound to the exact prompt that showed it.
+      requirePromptId: (request.actions ?? []).some((a) => a && typeof a.href === "string"),
       resolve: (decision) => finish(decision ?? { action: "reject", approved: false }),
     };
     emitApprovalPending(rctx, toMetaApproval(promptId, request));
@@ -145,6 +158,9 @@ export function consumePendingApprovalFromWeb(rctx: RelayContext, text: string):
     if (parsed && typeof parsed === "object" && typeof parsed.action === "string") {
       // Optional promptId guard: ignore a stale decision for a different prompt.
       if (typeof parsed.promptId === "string" && parsed.promptId !== rctx.pendingApproval.promptId) {
+        return false;
+      }
+      if (rctx.pendingApproval.requirePromptId && parsed.promptId !== rctx.pendingApproval.promptId) {
         return false;
       }
       const edits =

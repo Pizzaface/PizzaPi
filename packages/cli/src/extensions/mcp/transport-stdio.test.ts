@@ -42,7 +42,7 @@ test.each(["", "yes", "ignore"])("stdio discovers modern or falls back to legacy
       expect(calls[0].id).not.toBe(calls[1].id);
       expect(calls[1].params.inputResponses).toEqual({ question: { action: "decline" } });
       expect(calls[1].params.requestState).toBe("opaque");
-      expect(calls[0].params._meta["io.modelcontextprotocol/clientCapabilities"]).toEqual({ elicitation: { form: {} } });
+      expect(calls[0].params._meta["io.modelcontextprotocol/clientCapabilities"]).toEqual({ elicitation: { form: {}, url: {} } });
     }
   } finally { client.close(); }
 });

@@ -15,6 +15,7 @@ import {
   MCP_SUPPORTED_VERSIONS,
   MCP_CLIENT_INFO,
   modernRequestMeta,
+  MCP_ELICITATION_CAPABILITY,
   isRecord,
   type McpClient,
   type McpListToolsResult,
@@ -196,7 +197,7 @@ export async function createStdioMcpClient(opts: {
       const base = { name: toolName, arguments: args ?? {} };
       const res = modern
         ? await requestWithMrtr(
-            (params, requestSignal) => request("tools/call", modernParams(params, onElicitation ? { elicitation: { form: {} } } : {}), requestSignal),
+            (params, requestSignal) => request("tools/call", modernParams(params, onElicitation ? MCP_ELICITATION_CAPABILITY : {}), requestSignal),
             base,
             onElicitation,
             signal,

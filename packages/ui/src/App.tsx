@@ -92,7 +92,7 @@ import {
 import { parsePendingQuestionDisplayMode, parsePendingQuestions, type QuestionDisplayMode, type QuestionType } from "@/lib/ask-user-questions";
 import type { TodoItem, TokenUsage, ConfiguredModelInfo, ResumeSessionOption, ForkMessageOption, QueuedMessage, SessionUiCacheEntry } from "@/lib/types";
 import type { MetaGoalStatus } from "@pizzapi/protocol";
-import { metaEventToStatePatch, type MetaStatePatch } from "@/lib/meta-state-apply";
+import { metaEventToStatePatch, clearAnsweredApproval, type MetaStatePatch } from "@/lib/meta-state-apply";
 import { deriveSessionMetadataUpdatePatch } from "@/lib/session-metadata-update";
 import { reconcileMessageQueue } from "@/lib/message-queue";
 import { usePanelLayout } from "@/hooks/usePanelLayout";
@@ -5774,7 +5774,9 @@ export function App() {
                           const promptId = pendingApproval?.promptId;
                           const payload = JSON.stringify({ ...decision, ...(promptId ? { promptId } : {}) });
                           const ok = await sendSessionInput(payload);
-                          if (ok !== false) setPendingApproval(null);
+                          // Only clear the prompt we answered; a follow-up prompt
+                          // (e.g. MCP URL resume) may already have replaced it.
+                          if (ok !== false) setPendingApproval((current) => clearAnsweredApproval(current, promptId));
                           return ok;
                         }}
                         availableCommands={availableCommands}

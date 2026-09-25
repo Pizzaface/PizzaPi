@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { metaEventToStatePatch } from "./meta-state-apply.js";
+import { metaEventToStatePatch, clearAnsweredApproval } from "./meta-state-apply.js";
 
 describe("metaEventToStatePatch", () => {
   test("todo_updated returns todoList patch", () => {
@@ -61,5 +61,21 @@ describe("metaEventToStatePatch", () => {
   });
   test("goal_updated null clears goal", () => {
     expect(metaEventToStatePatch({ type: "goal_updated", goal: null }).goal).toBeNull();
+  });
+});
+
+describe("clearAnsweredApproval", () => {
+  test("a replacement prompt that arrives before the old ack survives; stale ack clears only its own prompt", () => {
+    let pending: { promptId: string; title: string } | null = { promptId: "p1", title: "Open URL?" };
+    const answered = pending.promptId; // user clicked; decision in flight
+    // Worker emits the follow-up prompt before the input ack lands.
+    pending = metaEventToStatePatch({ type: "approval_pending", approval: { promptId: "p2", title: "Retry?" } }).pendingApproval as typeof pending;
+    pending = clearAnsweredApproval(pending, answered);
+    expect(pending?.promptId).toBe("p2");
+    // The ack for p2 clears p2.
+    expect(clearAnsweredApproval(pending, "p2")).toBeNull();
+    // Unconditional-clear regression: the same prompt is cleared normally.
+    expect(clearAnsweredApproval({ promptId: "p1", title: "x" }, "p1")).toBeNull();
+    expect(clearAnsweredApproval(null, "p1")).toBeNull();
   });
 });

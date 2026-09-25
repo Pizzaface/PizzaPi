@@ -1,5 +1,5 @@
 import * as React from "react";
-import { CheckIcon, XIcon } from "lucide-react";
+import { CheckIcon, ExternalLinkIcon, XIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,17 @@ import { Label } from "@/components/ui/label";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
 import type { MetaPendingApproval, ApprovalDecision } from "@pizzapi/protocol";
+
+/** Defense in depth: only http(s) may become a clickable action, never javascript:/data:. */
+function safeHttpUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * An extension's request for the user to approve a gated action before it runs.
@@ -56,7 +67,12 @@ export function ApprovalCard({
       approved,
       ...(approved && Object.keys(edits).length > 0 ? { edits } : {}),
     };
-    const result = await onDecision(decision);
+    let result: boolean | void;
+    try {
+      result = await onDecision(decision);
+    } catch {
+      result = false;
+    }
     if (result === false) setSubmitting(null);
   };
 
@@ -123,11 +139,33 @@ export function ApprovalCard({
           {actions.map((action) => {
             const approved = action.id === "approve";
             const danger = action.style === "danger" || action.id === "reject";
+            const href = safeHttpUrl(action.href);
+            const variant = action.style === "primary" || approved ? "default" : danger ? "destructive" : "outline";
+            if (href) {
+              // The user's click on the link IS the consent: the browser opens the
+              // URL in a new tab (noopener, no prefetch, nothing inspected here)
+              // and the decision rides back at the same time.
+              return (
+                <Button key={action.id} asChild size="sm" variant={variant} disabled={!!submitting} className="gap-1">
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    referrerPolicy="no-referrer"
+                    aria-disabled={!!submitting}
+                    onClick={(e) => { if (submitting) { e.preventDefault(); return; } void decide(action.id, approved); }}
+                  >
+                    <ExternalLinkIcon className="size-3.5" />
+                    {action.label}
+                  </a>
+                </Button>
+              );
+            }
             return (
               <Button
                 key={action.id}
                 size="sm"
-                variant={action.style === "primary" || approved ? "default" : danger ? "destructive" : "outline"}
+                variant={variant}
                 disabled={!!submitting}
                 onClick={() => void decide(action.id, approved)}
                 className={cn(approved && "gap-1")}

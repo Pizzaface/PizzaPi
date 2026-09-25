@@ -102,6 +102,8 @@ export interface PendingPlanMode {
 
 export interface PendingApproval {
     promptId: string;
+    /** Decisions must carry this promptId (set for prompts that open external URLs). */
+    requirePromptId?: boolean;
     resolve: (decision: import("@pizzapi/protocol").ApprovalDecision | null) => void;
 }
 
