@@ -84,8 +84,8 @@ A documented subset of settings can also be overridden with **environment variab
   "slowStartupWarning": true,
 
   // Runner service IDs to skip loading.
-  // Built-in services: "terminal", "file-explorer", "git", "tunnel", "time".
-  // Plugin-provided services use the id declared in their manifest.
+  // Built-in services: "terminal", "file-explorer", "git", "memory", "process", "time", "tunnel".
+  // Package services use the id declared under pi.pizzapi.services.
   "disabledRunnerServices": ["git", "time"],
 
   // OS-level sandbox configuration.
@@ -162,7 +162,7 @@ A documented subset of settings can also be overridden with **environment variab
 | `sandbox.filesystem.allowWrite` | `string[]` | `[".", "/tmp"]` | Paths allowed for writing (replaces preset when set). |
 | `sandbox.filesystem.denyWrite` | `string[]` | *merged with preset* | Additional paths blocked from writing. |
 | `slowStartupWarning` | `boolean` | `true` | Show warnings when startup takes longer than expected (slow MCP servers, etc.). |
-| `disabledRunnerServices` | `string[]` | `[]` | Runner service IDs to skip. Built-in services: `"terminal"`, `"file-explorer"`, `"git"`, `"tunnel"`, `"time"`. Plugin services use the id declared in their manifest. |
+| `disabledRunnerServices` | `string[]` | `[]` | Runner service IDs to skip. Built-in: `"terminal"`, `"file-explorer"`, `"git"`, `"memory"`, `"process"`, `"time"`, `"tunnel"` (`terminal`, `file-explorer`, `git`, `time`, `tunnel` cannot be disabled at runtime). Package services use the id declared under `pi.pizzapi.services` — see [Runner Services](/PizzaPi/customization/runner-services/). |
 | `subagent.maxParallelTasks` | `number` | `8` | Max parallel tasks per call and active agent slots across background calls. **Global config only.** |
 | `subagent.maxConcurrency` | `number` | `4` | Max concurrent agent sessions within one parallel call. **Global config only.** |
 | `goal.evaluatorModel` | `string` | the session's own model | Advanced: pin a model (`provider:modelId` or `modelId`) for the `/goal` LLM evaluator. Opts out of session-context cache reuse; falls back to the cheapest authenticated text model if the pinned model has no credentials. |

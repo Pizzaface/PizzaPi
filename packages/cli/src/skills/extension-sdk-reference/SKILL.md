@@ -764,6 +764,8 @@ type ApprovalAction = "approve" | "reject" | string;  // Custom action names
 
 A **runner service** is a daemon-side process that ships inside a pi package. It exposes UI panels, fires triggers (events into agent sessions), and resolves sigils (`[[type:id]]` tokens).
 
+"Overlay package" and "runner service" are one feature at two layers, not two features: the `pi.pizzapi` overlay is the packaging/trust container (it can also carry agents, rules, MCP); a runner service is one capability declared inside it. Every service comes from an overlay package; not every overlay package has a service.
+
 ### Package structure
 
 ```
@@ -832,7 +834,7 @@ Declaration fields:
 | `id` | Yes | — | Must match `ServiceHandler.id` and be unique (no collisions with built-in) |
 | `label` | Yes | — | Button text in header |
 | `icon` | No | `"square"` | Lucide icon name, kebab-case |
-| `entry` | No | `"./index.ts"` | Service module path (relative to package root) |
+| `entry` | Yes | — | Service module path (relative to package root; `.ts`/`.js`/`.mts`/`.mjs`, confined to the package) |
 | `panel.dir` | No | — | Panel HTML directory (omit for no panel) |
 | `panel.requires` | No | `[]` | Variables to pass to panel as query params: `PWD`, `SESSION_ID`, `HOME`, `USER`, `PROJECT_DIR` |
 | `triggers` | No | `[]` | Inline array or path to JSON file |
