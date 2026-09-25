@@ -5,6 +5,7 @@ import { loadConfig, resolveAgentDir, resolveExplicitProjectTrust, toggleMcpServ
 import { mergeOverlayMcpServers, inferMcpCompatTransport, type OverlayMcpServerProvenance } from "./mcp-overlay.js";
 import {
   registerMcpTools,
+  collectDisabledMcpServers,
   type McpConfig,
   type McpServerInitResult,
   type McpRegistrationResult,
@@ -424,7 +425,7 @@ export function inspectMcpConfig(cwd: string, overlayProvenance: OverlayMcpServe
 
   // Collect disabled server names from merged config
   const mergedConfig = loadConfig(cwd);
-  const disabledServers = mergedConfig.disabledMcpServers ?? [];
+  const disabledServers = [...collectDisabledMcpServers(mergedConfig)];
 
   return {
     global,

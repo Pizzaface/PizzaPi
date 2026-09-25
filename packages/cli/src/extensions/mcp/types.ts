@@ -19,6 +19,19 @@ export type McpCallToolResult = {
   // We'll just forward as-is.
 };
 
+export type McpElicitationResult = {
+  action: "accept" | "decline" | "cancel";
+  content?: Record<string, unknown>;
+};
+
+export type McpElicitationHandler = ((params: unknown, signal?: AbortSignal) => Promise<McpElicitationResult>) & {
+  /** Manual control for state-only MRTR rounds (server waiting out of band). Absent = fail closed. */
+  resume?: (signal?: AbortSignal) => Promise<"retry" | "cancel">;
+};
+
+/** Advertised only when a handler exists; both modes need a human surface. */
+export const MCP_ELICITATION_CAPABILITY = { elicitation: { form: {}, url: {} } };
+
 export type McpClient = {
   name: string;
   /**
@@ -31,18 +44,26 @@ export type McpClient = {
    */
   initialize(signal?: AbortSignal): Promise<void>;
   listTools(): Promise<McpTool[]>;
-  callTool(toolName: string, args: unknown, signal?: AbortSignal): Promise<McpCallToolResult>;
+  callTool(toolName: string, args: unknown, signal?: AbortSignal, onElicitation?: McpElicitationHandler): Promise<McpCallToolResult>;
   close(): void;
 };
 
-/**
- * Protocol version we advertise during the MCP initialize handshake.
- * Using the 2025-03-26 spec (widely supported); servers may negotiate down.
- */
+/** Preferred modern version and the unchanged legacy handshake version. */
+export const MCP_MODERN_PROTOCOL_VERSION = "2026-07-28";
 export const MCP_PROTOCOL_VERSION = "2025-03-26";
 
-/** Versions we accept from the server in its InitializeResult. */
+/** Versions we accept from a legacy server in its InitializeResult. */
 export const MCP_SUPPORTED_VERSIONS = new Set(["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"]);
+
+export const MCP_MODERN_ERROR_CODES = new Set([-32022, -32021, -32020]);
+
+export function modernRequestMeta(capabilities: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    "io.modelcontextprotocol/protocolVersion": MCP_MODERN_PROTOCOL_VERSION,
+    "io.modelcontextprotocol/clientInfo": MCP_CLIENT_INFO,
+    "io.modelcontextprotocol/clientCapabilities": capabilities,
+  };
+}
 
 /** Client info sent during the initialize handshake. */
 export const MCP_CLIENT_INFO = { name: "pizzapi", version: "1.0.0" };

@@ -135,6 +135,26 @@ For remote MCP servers, use URL-based configuration instead of spawning a local 
 | `headers` | `Record<string, string>` | — | Custom HTTP headers sent with every request (e.g. API keys, auth tokens). |
 | `type` | `"http"` | — | Setting `type` to `"http"` selects Streamable HTTP transport. This matches the Claude Code / VS Code format. |
 
+## Elicitation (user input during a tool call)
+
+For servers using MCP `2026-07-28`, PizzaPi supports **form-mode and URL-mode elicitation** during `tools/call`. The existing web approval card displays the requesting server, its message, editable schema fields and defaults, and **Accept / Decline / Cancel**. The TUI offers a review/edit loop. Validation failures keep the answers local and reopen the form for correction.
+
+Fields support strings (including email, URI, date and date-time), numbers/integers, booleans, and single- or multi-select enums. This initial interface uses text fields: enter `true`/`false` for booleans and a JSON array of enum values for multi-select. Optional blank fields are omitted. Enum titles, allowed values, and constraints appear beside each field.
+
+### URL mode
+
+URL mode is for sensitive interactions (credentials, payments, third-party OAuth) that must not pass through PizzaPi. The consent card shows the requesting server, its message as plain text, the site hostname, and the **full URL**. Nothing is fetched, opened, or inspected until you choose **Open in browser**; that click opens the URL in a new browser tab with `noopener`/`noreferrer` and reports `accept` (with no content) to the server. Accepting means you consented, not that the flow finished. If the server then answers with a state-only `InputRequiredResult`, PizzaPi shows a **Retry / Cancel** card and waits for you; it never retries on its own. If the server re-sends the same URL, the card offers **Retry / Open again / Decline / Cancel** instead of asking for consent again.
+
+URLs must be `https`; `http` is accepted only for `localhost`, `127.0.0.1` or `[::1]` (development). URLs with embedded credentials, control, whitespace, bidi or backslash characters, or other schemes are rejected before any card is shown. Punycode (`xn--`) hostnames and plain `http` links show a warning. The TUI shows the same information but never opens links: copy the URL into your browser yourself, then choose the matching option. Headless sessions have no elicitation surface, so neither mode is advertised and nothing is ever auto-consented.
+
+URL elicitation is separate from [MCP OAuth](#oauth-for-http-servers): it does not change the client's own bearer token for the server.
+
+PizzaPi handles `InputRequiredResult` internally: each retry carries the current round's keyed `inputResponses` and the exact opaque `requestState`, if supplied. Answers are not emitted as chat/tool updates, though the MCP server may include them in its final tool result. Cancelling the running tool stops retries; declining or cancelling a form sends the corresponding action to the server.
+
+The client probes `server/discover` before falling back to legacy initialization. `elicitation: { form: {}, url: {} }` is declared per modern tool request only when a user-input handler is available. Modern HTTP requests accept JSON or SSE responses in either HTTP configuration mode.
+
+**Limitations:** This is form/MRTR support, not full implementation of every 2026 feature. Modern HTTP tools with `x-mcp-header` annotations are excluded with a warning because parameter-header mirroring is not implemented. The deprecated standalone HTTP+SSE transport is not supported. Retry rounds (form, URL and state-only) are bounded at 8 per tool call. Legacy server-initiated `elicitation/create` requests are unsupported; form support uses the 2026 multi-round-trip result flow rather than a background request channel. No roots or sampling support is advertised. A reachable user interface is required; a busy or unavailable approval surface fails closed. Do not enter passwords, API keys, access tokens, or payment credentials in forms; servers should use URL mode for those.
+
 ## OAuth for HTTP Servers
 
 Some HTTP MCP servers require OAuth authentication. PizzaPi handles the OAuth flow automatically — when a server requires auth, it opens a browser window for the OAuth consent flow and stores the resulting token for future sessions. When connected to a relay server (e.g. via `pizza web`), the OAuth callback routes through the relay so the flow works for remote sessions too.
