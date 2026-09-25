@@ -231,7 +231,7 @@ Defines sigil types this service teaches the UI to render. Can be a bare array o
 | `label` | Yes | Human-readable label |
 | `description` | No | What this sigil represents |
 | `resolve` | No | API endpoint path for resolving sigil IDs to display data |
-| `schema` | No | JSON Schema for sigil params |
+| `example` | No | Canonical emit form shown to agents, e.g. `"[[pr:123]]"` |
 | `aliases` | No | Alternative type names that resolve to this sigil |
 
 <Aside type="tip">
@@ -306,6 +306,7 @@ Add a `triggers` array to the service declaration. Each entry describes a trigge
 | `description` | No | When/why this trigger fires |
 | `schema` | No | JSON Schema describing the trigger payload |
 | `params` | No | Array of subscription params the service accepts. Each: `name`, `label`, `type` (`string`/`number`/`boolean`/`json`), `description`, `required`, `default`, `enum`, `multiselect` |
+| `modes` | No | Session mode IDs this trigger is scoped to (see [Session Modes](#session-modes)). Listeners for a mode-scoped trigger must spawn inside that mode's workspace |
 
 ```json
 "triggers": [
@@ -368,7 +369,7 @@ route: `"steer"` interrupts, `"followUp"` queues), not by the publisher.
 Subscription `params` are forwarded to the source service; they are not matched against event payloads by the relay. Use route `filters` for server-side payload matching. See [Trigger Subscription Filters](#trigger-subscription-filters).
 
 <Aside type="tip">
-  Use `"followUp"` (default) for non-urgent events. Use `"steer"` only when the trigger needs to interrupt whatever the agent is currently doing.
+  `subscribe_trigger` defaults to `"steer"`. Use `"followUp"` for non-urgent events so the trigger queues instead of interrupting the agent's current turn.
 </Aside>
 
 ### Relay Connection Details
@@ -518,8 +519,6 @@ The **Triggers panel** in the session viewer shows the live trigger history for 
 
 ---
 
----
-
 ## Custom Sigils
 
 Sigils are `[[type:id]]` tokens in agent output that render as interactive UI elements — clickable chips, status badges, or rich previews. Services define sigil types so the UI knows how to recognise and render them.
@@ -540,7 +539,7 @@ Each entry describes a sigil type using the `ServiceSigilDef` schema:
 | `label` | Yes | Human-readable label shown in the UI, e.g. `"Pull Request"` |
 | `description` | No | What this sigil represents |
 | `resolve` | No | API endpoint path to resolve a sigil ID to display data (e.g. PR number → title/status) |
-| `schema` | No | JSON Schema for sigil params (`[[type:id key=val]]`) |
+| `example` | No | Canonical emit form shown to agents by `list_available_sigils`, e.g. `"[[pr:123]]"` — agents copy it instead of inventing syntax |
 | `aliases` | No | Alternative type names that resolve to this sigil (e.g. `["pull-request", "mr"]`) |
 | `icon` | No | Lucide icon name rendered with the sigil |
 
@@ -857,6 +856,8 @@ text. Most of that already exists over HTTP with API-key auth:
 | List sessions | `GET /api/sessions` |
 | List models | `GET /api/runners/:runnerId/models` |
 | Switch a session's model | `POST /api/sessions/:id/model` |
+| Abort a session's current turn | `POST /api/sessions/:id/abort` |
+| Set thinking level | `POST /api/sessions/:id/thinking` |
 
 <Aside type="note" title="requireSession() accepts API keys">
 Despite the name, `requireSession()` falls back to `validateApiKey()`, so routes
@@ -867,8 +868,8 @@ auth shim — the endpoint you want probably works with `x-api-key` today.
 Anything a *viewer* drives over a socket event has no HTTP equivalent unless one
 is added. `POST /api/sessions/:id/model` exists precisely because switching a
 live model was viewer-only (`model_set`), and a runner service is not a viewer.
-There is still no HTTP route to stop a session — `kill_session` is
-server→runner only.
+There is still no HTTP route to kill a session — `abort` only stops the
+current turn; `kill_session` is server→runner only.
 
 ### Worked example
 
@@ -973,8 +974,8 @@ class MyService {
                 }
 
                 if (url.pathname.endsWith("/api/do-thing") && req.method === "POST") {
-                    // Fire a trigger to all subscribed agent sessions
-                    void broadcastTrigger("my-service:something_happened", {
+                    // Publish an event; routes decide which sessions receive it
+                    void publishTrigger("my-service:something_happened", {
                         itemId: "abc-123",
                         timestamp: Date.now(),
                     }, { summary: "A thing happened" });
@@ -1009,9 +1010,11 @@ class MyService {
 export default MyService;
 ```
 
-**Lifecycle:**
-- **`init(socket, context)`** — called when the runner starts. Start your HTTP server, call `announcePanel(port)` to register a panel or `announceSigilServer(port)` to register a sigil-resolve server, and set up any trigger-firing logic.
+**Lifecycle** (`ServiceHandler` in `@pizzapi/extension-sdk`):
+- **`init(socket, options)`** — called once when the runner starts; the same socket instance survives reconnects. `options` carries `isShuttingDown()`, plus `announcePanel(port)` (only if the manifest declares a panel) and `announceSigilServer(port)` (for panel-less sigil resolvers).
 - **`dispose()`** — called on shutdown. Must clean up the HTTP server to avoid port leaks.
+- **`handleSessionEnded?(sessionId)`** — optional; drop per-session state (bindings, watchers) when a session ends.
+- **`reconcileSubscriptions?(subscriptions, options)`** — optional; called after runner reconnect with the current subscriptions for your trigger types. Implement it if you keep per-subscription runtime state (timers, watchers) and return `{ applied, errors? }`.
 
 <Aside type="caution">
   Always call `announcePanel(port)` after starting your server — without it, the panel won't appear in the UI. If your service declares sigils but no panel, call `announceSigilServer(port)` so the tunnel can route resolve requests. If your service has neither, skip both calls.
@@ -1070,7 +1073,7 @@ Panels render inside an iframe in the PizzaPi web interface. The bottom dock is 
 
 | Problem | Fix |
 |---------|-----|
-| Triggers declared but not delivered | You must fire them via the relay broadcast API — declaring them in the manifest only advertises them |
+| Triggers declared but not delivered | You must publish them via `POST /api/events` — declaring them in the manifest only advertises them |
 | Missing runnerId or apiKey | Read from `~/.pizzapi/runner.json` and env vars at call time, not init time |
 | Panel doesn't appear in UI | Check that `announcePanel()` is called after the server starts |
 | Blank panel iframe | Tunnel proxy can't reach local server — check the service is still running |
