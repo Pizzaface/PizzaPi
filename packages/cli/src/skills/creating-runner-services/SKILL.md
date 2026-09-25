@@ -19,6 +19,10 @@ discovery — no `~/.pizzapi/services/` directory, no `manifest.json`, and the o
 the daemon, outside any session sandbox, so it needs an explicit trust grant that
 a package install can carry and a loose file cannot.
 
+"Overlay package" and "runner service" are one feature at two layers: the
+`pi.pizzapi` overlay is the packaging/trust container (it can also carry agents,
+rules, MCP); a runner service is one capability declared inside it.
+
 > **Authoritative docs** (keep in sync when you change behavior):
 > `packages/docs/src/content/docs/customization/runner-services.mdx` and
 > `.../overlay-packages.mdx`. This skill is the practical distillation.
@@ -134,7 +138,7 @@ are confined to the package root.
 | `id` | Yes | — | Unique id; must match `ServiceHandler.id`; cannot collide with a built-in |
 | `label` | Yes | — | Button label in the header bar |
 | `icon` | No | `"square"` | [Lucide](https://lucide.dev/icons) icon name, kebab-case |
-| `entry` | No | `"./index.ts"` | Service module path, relative to package root |
+| `entry` | Yes | — | Service module path, relative to package root (`.ts`/`.js`/`.mts`/`.mjs`, confined to the package) |
 | `panel.dir` | No | — | Panel static-files directory (omit for no panel) |
 | `panel.requires` | No | `[]` | Vars resolved and passed to the panel iframe as query params. One or more of `PWD`, `SESSION_ID`, `HOME`, `USER`, `PROJECT_DIR` |
 | `triggers` | No | `[]` | Inline `ServiceTriggerDef[]` **or** a path to a JSON file |

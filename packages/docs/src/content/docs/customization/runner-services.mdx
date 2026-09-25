@@ -7,7 +7,9 @@ import { Aside, FileTree, Steps } from "@astrojs/starlight/components";
 
 Runner services are background processes on the runner daemon. They can expose interactive **UI panels** in the PizzaPi web interface and advertise **custom triggers** that agent sessions can subscribe to.
 
-A service ships inside a **[pi package](/PizzaPi/customization/overlay-packages/)** that declares it under `pi.pizzapi.services`. That is the only way to load one — a service runs on the daemon, outside any session sandbox, so it needs an explicit trust grant that a package install can carry and a loose file cannot.
+A service ships inside an **[overlay package](/PizzaPi/customization/overlay-packages/)** that declares it under `pi.pizzapi.services`. That is the only way to load one — a service runs on the daemon, outside any session sandbox, so it needs an explicit trust grant that a package install can carry and a loose file cannot.
+
+The two pages divide cleanly: the overlay page is about **packaging and trust** (manifest layout, install scope, grants, the SDK); this page is about **what a service does once loaded** (handler lifecycle, panels, triggers, sigils, connectivity). There is no separate "overlay service" concept — a runner service is simply one capability an overlay package can declare.
 
 ![Service panel showing a System Monitor with CPU, memory, disk, and process information](../../../assets/service-panel-screenshot.png)
 
@@ -135,8 +137,9 @@ Each entry in `pi.pizzapi.services` describes one service:
 | `id` | Yes | — | Unique service ID (must match `ServiceHandler.id`) |
 | `label` | Yes | — | Button label shown in the PizzaPi header bar |
 | `icon` | No | `"square"` | [Lucide](https://lucide.dev/icons) icon name (kebab-case) |
-| `entry` | No | `"./index.ts"` | Service module path, relative to the package root |
+| `entry` | Yes | — | Service module path, relative to the package root (`.ts`/`.js`/`.mts`/`.mjs`, confined to the package) |
 | `panel.dir` | No | — | Panel static files directory (omit if no panel) |
+| `panel.requires` | No | `[]` | Variables the panel needs: any of `PWD`, `SESSION_ID`, `HOME`, `USER`, `PROJECT_DIR` |
 | `triggers` | No | `[]` | Inline definitions, or a path to a JSON file (see [Custom Triggers](#custom-triggers)) |
 | `sigils` | No | `[]` | Inline definitions, or a path to a JSON file (see [Custom Sigils](#custom-sigils)) |
 
@@ -1009,6 +1012,8 @@ class MyService {
 
 export default MyService;
 ```
+
+The default export may be a handler **instance**, a **class** (the loader calls `new`), or a **factory function** returning a handler. Whichever shape you use, its `id` must equal the declared `id`.
 
 **Lifecycle** (`ServiceHandler` in `@pizzapi/extension-sdk`):
 - **`init(socket, options)`** — called once when the runner starts; the same socket instance survives reconnects. `options` carries `isShuttingDown()`, plus `announcePanel(port)` (only if the manifest declares a panel) and `announceSigilServer(port)` (for panel-less sigil resolvers).

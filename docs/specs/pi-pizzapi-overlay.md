@@ -248,7 +248,7 @@ Implementation SHOULD reuse upstream settings and package-manager APIs. If an up
 
 Daemon-side resolution MUST pass a non-interactive `onMissing` callback to pi's package manager. A configured-but-missing source is skipped with one provenance-rich warning; the daemon MUST NOT install packages or prompt.
 
-Version-1 overlay mounting is independent of pi's native resource filters (`extensions`, `skills`, `prompts`, and `themes`, including `!pattern`, `+path`, and `-path`). Filtering every native extension does not disable a package's overlay. Overlay services use grants and `disabledRunnerServices`; MCP uses `disabledMcpServers`; agents/rules remain enabled while the package is configured.
+Version-1 overlay mounting is independent of pi's native resource filters (`extensions`, `skills`, `prompts`, and `themes`, including `!pattern`, `+path`, and `-path`). Filtering every native extension does not disable a package's overlay. Runner services declared by the overlay use grants and `disabledRunnerServices`; MCP uses `disabledMcpServers`; agents/rules remain enabled while the package is configured.
 
 ### 6.2 User scope
 

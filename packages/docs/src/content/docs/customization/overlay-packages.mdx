@@ -9,6 +9,8 @@ A **pi package** is the standard unit of distribution for pi extensions, skills,
 
 The point of the overlay is that it is **additive**. One package installs cleanly in vanilla pi *and* in PizzaPi; vanilla pi simply ignores the `pi.pizzapi` block, and PizzaPi mounts the extra capabilities on top.
 
+**Overlay packages and runner services are not two features.** The overlay is the *packaging and trust* layer — how capabilities are declared, installed, scoped, and granted. A [runner service](/PizzaPi/customization/runner-services/) is one *kind of capability* the overlay can carry: the daemon-side process that ships handlers, panels, triggers, and sigils. This page covers the manifest, trust, and SDK; the runner services page covers what a service does once it is loaded.
+
 <Aside type="note">
 This page covers the PizzaPi overlay. For pi package basics — installing from npm/git/local paths, package filtering, and publishing — see [Pi Packages](/PizzaPi/features/pi-packages/). The normative specification is `docs/specs/pi-pizzapi-overlay.md` in the repository.
 </Aside>
@@ -75,18 +77,7 @@ Everything PizzaPi-specific lives under `pi.pizzapi` in `package.json`:
 
 ### Service declaration
 
-| Field | Type | Purpose |
-|-------|------|---------|
-| `id` | `string` | Unique service ID. Cannot collide with a built-in (`terminal`, `file-explorer`, `git`, `memory`, `process`, `time`, `tunnel`). |
-| `label` | `string` | Display name in the web UI. |
-| `entry` | `string` | Module exporting the service handler. |
-| `icon` | `string` | Optional Lucide icon name. |
-| `panel.dir` | `string` | Optional directory of static panel assets. |
-| `panel.requires` | `PanelVariable[]` | Optional. One or more of `PWD`, `SESSION_ID`, `HOME`, `USER`, `PROJECT_DIR`. |
-| `triggers` | `string \| ServiceTriggerDef[]` | Path to a JSON file **or** an inline array. |
-| `sigils` | `string \| ServiceSigilDef[]` | Path to a JSON file **or** an inline array. |
-
-`triggers` and `sigils` accept either form, so you can keep large definitions in their own file or inline a short list directly.
+Each entry in `services` needs `id`, `label`, and `entry`; `icon`, `panel`, `triggers`, and `sigils` are optional. The full field reference, handler contract, and lifecycle live on the [Runner Services](/PizzaPi/customization/runner-services/#service-declaration) page — this page only covers how the declaration is packaged and trusted.
 
 ### Path placeholders
 
@@ -152,64 +143,7 @@ import {
 } from "@pizzapi/extension-sdk";
 ```
 
-Types are erased at build time; only the three host-detection helpers are runtime code.
-
----
-
-## Writing a service handler
-
-A service handler registers socket listeners in `init()` and tears them down in `dispose()`:
-
-```ts title="service/index.ts"
-import type { ServiceHandler, ServiceInitOptions, PizzaPiSocket } from "@pizzapi/extension-sdk";
-
-export default function createService(): ServiceHandler {
-  let server: ReturnType<typeof Bun.serve> | null = null;
-  let onMessage: ((envelope: unknown) => void) | null = null;
-
-  return {
-    id: "my-service",
-
-    init(socket: PizzaPiSocket, options: ServiceInitOptions) {
-      onMessage = (envelope: any) => {
-        if (options.isShuttingDown()) return;
-        if (envelope.serviceId !== "my-service") return;
-        // handle envelope.type / envelope.payload
-      };
-      socket.on("service_message", onMessage);
-
-      // Port 0 lets the OS pick a free port; announce it so the UI can reach the panel.
-      server = Bun.serve({ port: 0, fetch: () => new Response("ok") });
-      options.announcePanel?.(server.port);
-    },
-
-    dispose() {
-      server?.stop();
-      server = null;
-      onMessage = null;
-    },
-  };
-}
-```
-
-### `ServiceInitOptions`
-
-| Member | Purpose |
-|--------|---------|
-| `isShuttingDown()` | Returns `true` once the daemon is tearing down. Check it before doing work. |
-| `announcePanel(port)` | Announce a panel HTTP server. Only provided to services declaring a `panel`. |
-| `announceSigilServer(port)` | Announce a sigil-resolve HTTP server for services with **no** UI panel. |
-
-### Optional lifecycle hooks
-
-| Hook | When to implement |
-|------|-------------------|
-| `handleSessionEnded(sessionId)` | You hold per-session state (processes, buffers, temp files). |
-| `reconcileSubscriptions(subs, opts)` | You hold per-subscription runtime state such as timers or watchers. Called after runner reconnect with a `snapshot`, and on individual `delta` changes. |
-
-<Aside type="caution" title="Clean up on every path">
-`dispose()` must release everything the service owns — HTTP servers, listeners, child processes, timers. A handler that leaves a server running keeps its port bound after the service is disabled or its package is removed.
-</Aside>
+Types are erased at build time; only the three host-detection helpers are runtime code. The `ServiceHandler` contract itself — `init`/`dispose`, `ServiceInitOptions`, and the optional lifecycle hooks — is documented under [ServiceHandler API](/PizzaPi/customization/runner-services/#servicehandler-api).
 
 ---
 
