@@ -144,6 +144,17 @@ function normalizeMcpReport(value: unknown): MetaMcpReport | null {
   return isPlainObject(value) ? (value as MetaMcpReport) : null;
 }
 
+/** Only http(s) action links survive the wire; anything else is a plain button. */
+function isHttpUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const { protocol } = new URL(value);
+    return protocol === "https:" || protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
 function normalizePendingApproval(value: unknown): MetaPendingApproval | null {
   if (!isPlainObject(value)) return null;
   const promptId = typeof value.promptId === "string" ? value.promptId : "";
@@ -164,13 +175,14 @@ function normalizePendingApproval(value: unknown): MetaPendingApproval | null {
   const validStyles = new Set(["primary", "danger", "default"]);
   const actions = Array.isArray(value.actions)
     ? value.actions.filter(
-        (a): a is { id: string; label: string; style?: unknown } =>
+        (a): a is { id: string; label: string; style?: unknown; href?: unknown } =>
           isPlainObject(a) && typeof a.id === "string" && typeof a.label === "string",
       ).map((a) => {
         const style = typeof a.style === "string" && validStyles.has(a.style)
           ? (a.style as "primary" | "danger" | "default")
           : undefined;
-        return { id: a.id, label: a.label, ...(style ? { style } : {}) };
+        const href = isHttpUrl(a.href) ? a.href : undefined;
+        return { id: a.id, label: a.label, ...(style ? { style } : {}), ...(href ? { href } : {}) };
       })
     : undefined;
   return {
@@ -387,6 +399,14 @@ export function parseMetaRelayEvent(raw: unknown): MetaRelayEvent | null {
     }
 
     case "plugin_trust_resolved":
+      return typeof raw.promptId === "string" ? { type, promptId: raw.promptId } : null;
+
+    case "approval_pending": {
+      const approval = normalizePendingApproval(raw.approval);
+      return approval ? { type, approval } : null;
+    }
+
+    case "approval_cleared":
       return typeof raw.promptId === "string" ? { type, promptId: raw.promptId } : null;
 
     case "mcp_startup_report": {
