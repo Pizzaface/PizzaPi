@@ -23,6 +23,21 @@ describe("toggleMcpServer", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
+  test("enable clears per-entry disabled:true in global config; disable is a no-op", () => {
+    const projectDir = join(tempDir, "project");
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      join(globalDir, "config.json"),
+      JSON.stringify({ mcpServers: { jules: { command: "x", disabled: true } } }),
+    );
+    expect(toggleMcpServer("jules", true, projectDir)).toEqual({ changed: false, globallyDisabled: false });
+    expect(toggleMcpServer("jules", false, projectDir)).toEqual({ changed: true, globallyDisabled: false });
+    const global = JSON.parse(readFileSync(join(globalDir, "config.json"), "utf-8"));
+    expect(global.mcpServers.jules.disabled).toBeUndefined();
+    expect(global.mcpServers.jules.command).toBe("x");
+    expect((loadConfig(projectDir) as any).mcpServers?.jules?.disabled).toBeUndefined();
+  });
+
   test("disabling a server adds it to project config", () => {
     const projectDir = join(tempDir, "project");
     mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });

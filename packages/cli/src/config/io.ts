@@ -718,6 +718,27 @@ export function toggleMcpServer(
 
     const projectPath = join(cwd, ".pizzapi", "config.json");
     const projectConfig = readJsonSafe(projectPath);
+
+    // Per-entry `disabled: true` (Claude Code format) on the server definition
+    // itself, in either scope. Enable clears the flag in-place; disable is a
+    // no-op because it is already effective.
+    const entryDisabled = (cfg: Partial<PizzaPiConfig>): boolean => {
+        const raw = cfg as { mcpServers?: Record<string, { disabled?: boolean }>; mcp?: { servers?: Array<{ name: string; disabled?: boolean }> } };
+        const compat = raw.mcpServers?.[name];
+        const pref = raw.mcp?.servers?.find((s) => s?.name === name);
+        let hit = false;
+        if (compat?.disabled === true) { delete compat.disabled; hit = true; }
+        if (pref?.disabled === true) { delete pref.disabled; hit = true; }
+        return hit;
+    };
+    const globalEntryDisabled = entryDisabled(globalConfig);
+    const projectEntryDisabled = entryDisabled(projectConfig);
+    const entryCleared = globalEntryDisabled || projectEntryDisabled;
+    if (entryCleared) {
+        if (disable) return { changed: false, globallyDisabled: false };
+        if (globalEntryDisabled) saveConfigAt(globalConfigDir(), globalConfig);
+        if (projectEntryDisabled) saveProjectConfig(projectConfig, cwd);
+    }
     const current = new Set(
         (Array.isArray(projectConfig.disabledMcpServers) ? projectConfig.disabledMcpServers : [])
             .filter((s): s is string => typeof s === "string"),
@@ -731,7 +752,7 @@ export function toggleMcpServer(
     }
 
     if (disable === hadIt) {
-        return { changed: false, globallyDisabled: false };
+        return { changed: entryCleared, globallyDisabled: false };
     }
 
     const updated: Partial<PizzaPiConfig> = {};
