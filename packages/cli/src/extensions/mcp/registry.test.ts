@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { countOAuthServers, resolveOAuthCallbackPort, type McpConfig } from "./registry.js";
+import { collectDisabledMcpServers, countOAuthServers, resolveOAuthCallbackPort, type McpConfig } from "./registry.js";
 
 describe("OAuth callback port allocation", () => {
   test("single OAuth server honors the configured global port", () => {
@@ -34,5 +34,16 @@ describe("OAuth callback port allocation", () => {
     };
     expect(countOAuthServers(config, new Set())).toBe(1);
     expect(resolveOAuthCallbackPort(undefined, 4567, countOAuthServers(config, new Set()))).toBe(4567);
+  });
+});
+
+describe("collectDisabledMcpServers", () => {
+  test("merges disabledMcpServers list with per-server disabled: true", () => {
+    const set = collectDisabledMcpServers({
+      disabledMcpServers: ["a"],
+      mcp: { servers: [{ name: "b", transport: "stdio", command: "x", disabled: true } as any, { name: "c", transport: "stdio", command: "x" }] },
+      mcpServers: { d: { url: "https://x", disabled: true } as any, e: { url: "https://x" } },
+    } as McpConfig);
+    expect([...set].sort()).toEqual(["a", "b", "d"]);
   });
 });

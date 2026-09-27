@@ -309,6 +309,33 @@ describe("parseMetaRelayEvent", () => {
   });
 });
 
+describe("approval events over the hub meta path", () => {
+  const approval = {
+    promptId: "p1",
+    title: "MCP server: payments",
+    actions: [
+      { id: "open", label: "Open in browser", style: "primary", href: "https://mcp.example.com/ui" },
+      { id: "evil", label: "Evil", href: "javascript:alert(1)" },
+      { id: "cancel", label: "Cancel" },
+    ],
+  };
+
+  test("approval_pending / approval_cleared decode instead of being dropped", () => {
+    const pending = parseMetaRelayEvent({ type: "approval_pending", approval });
+    expect(pending?.type).toBe("approval_pending");
+    expect(parseMetaRelayEvent({ type: "approval_pending", approval: { title: "no id" } })).toBeNull();
+    expect(parseMetaRelayEvent({ type: "approval_cleared", promptId: "p1" })).toEqual({ type: "approval_cleared", promptId: "p1" });
+    expect(parseMetaRelayEvent({ type: "approval_cleared" })).toBeNull();
+  });
+
+  test("http(s) action hrefs survive events and snapshots; other schemes are stripped", () => {
+    const fromEvent = parseMetaRelayEvent({ type: "approval_pending", approval }) as { approval: { actions: Array<{ href?: string }> } };
+    expect(fromEvent.approval.actions.map(a => a.href)).toEqual(["https://mcp.example.com/ui", undefined, undefined]);
+    const snapshot = normalizeSessionMetaState({ version: 1, pendingApproval: approval });
+    expect(snapshot?.pendingApproval?.actions?.map(a => a.href)).toEqual(["https://mcp.example.com/ui", undefined, undefined]);
+  });
+});
+
 describe("parseHubMetaEvent", () => {
   test("accepts valid meta event envelope", () => {
     const result = parseHubMetaEvent({

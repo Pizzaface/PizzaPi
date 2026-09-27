@@ -17,6 +17,8 @@ import { createStdioMcpClient } from "./transport-stdio.js";
 import { createHttpMcpClient, createStreamableMcpClient } from "./transport-http.js";
 import { allocateProviderSafeToolName } from "./tool-naming.js";
 import { type McpClient, type McpTool } from "./types.js";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createElicitationHandler } from "./elicitation.js";
 
 const log = createLogger("MCP");
 const sandboxLog = createLogger("sandbox/mcp");
@@ -163,6 +165,18 @@ export function resolveOAuthCallbackPort(
   return perServerPort ?? (oauthServerCount > 1 ? 0 : (globalPort ?? 0));
 }
 
+/** `disabledMcpServers` list plus any server with a per-entry `disabled: true` (Claude Code format). */
+export function collectDisabledMcpServers(config: PizzaPiConfig & McpConfig): Set<string> {
+  const disabled = new Set(config.disabledMcpServers ?? []);
+  for (const s of config.mcp?.servers ?? []) {
+    if (s && typeof s === "object" && (s as { disabled?: boolean }).disabled === true) disabled.add(s.name);
+  }
+  for (const [name, def] of Object.entries(config.mcpServers ?? {})) {
+    if (def && typeof def === "object" && (def as { disabled?: boolean }).disabled === true) disabled.add(name);
+  }
+  return disabled;
+}
+
 export function countOAuthServers(config: PizzaPiConfig & McpConfig, disabled: Set<string>): number {
   const globalOAuthConfigured = Boolean(config.oauthClientName || config.oauthClientId || config.oauthClientSecret);
   const requiresOAuth = (server: { oauthClientName?: string; oauthClientId?: string; oauthClientSecret?: string }): boolean =>
@@ -186,7 +200,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
   }
   activeOAuthProviders.length = 0;
 
-  const disabled = new Set(config.disabledMcpServers ?? []);
+  const disabled = collectDisabledMcpServers(config);
   const oauthClientName = config.oauthClientName;
   const oauthClientId = config.oauthClientId;
   const oauthClientSecret = config.oauthClientSecret;
@@ -605,8 +619,9 @@ export async function registerMcpTools(
                 ? `${tool.description} (source: ${sourceName})`
                 : `MCP tool from ${client.name} (source: ${sourceName})`,
               parameters,
-              async execute(_toolCallId: string, rawParams: unknown, signal: AbortSignal | undefined) {
-                const result = await client.callTool(tool.name, rawParams ?? {}, signal);
+              async execute(_toolCallId: string, rawParams: unknown, toolSignal: AbortSignal | undefined, _onUpdate: unknown, ctx?: ExtensionContext) {
+                const callSignal = signal && toolSignal ? AbortSignal.any([signal, toolSignal]) : signal ?? toolSignal;
+                const result = await client.callTool(tool.name, rawParams ?? {}, callSignal, createElicitationHandler(client.name, ctx));
                 if (result && typeof result === "object" && "content" in result) {
                   return (result as any);
                 }

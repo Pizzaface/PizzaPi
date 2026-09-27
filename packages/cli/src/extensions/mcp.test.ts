@@ -156,13 +156,14 @@ describe("MCP HTTP smoke test", () => {
             expect(clients).toHaveLength(1);
             const tools = await clients[0].listTools();
 
-            // Verify handshake order: initialize → notifications/initialized → tools/list
-            expect(receivedRequests.length).toBeGreaterThanOrEqual(3);
-            expect(receivedRequests[0].method).toBe("initialize");
-            expect(receivedRequests[0].params.protocolVersion).toBe(MCP_PROTOCOL_VERSION);
-            expect(receivedRequests[0].params.clientInfo.name).toBe("pizzapi");
-            expect(receivedRequests[1].method).toBe("notifications/initialized");
-            expect(receivedRequests[2].method).toBe("tools/list");
+            // Modern probe falls back to the unchanged legacy handshake.
+            expect(receivedRequests.length).toBeGreaterThanOrEqual(4);
+            expect(receivedRequests[0].method).toBe("server/discover");
+            expect(receivedRequests[1].method).toBe("initialize");
+            expect(receivedRequests[1].params.protocolVersion).toBe(MCP_PROTOCOL_VERSION);
+            expect(receivedRequests[1].params.clientInfo.name).toBe("pizzapi");
+            expect(receivedRequests[2].method).toBe("notifications/initialized");
+            expect(receivedRequests[3].method).toBe("tools/list");
             expect(tools).toHaveLength(1);
             expect(tools[0].name).toBe("test_tool");
 
@@ -537,12 +538,13 @@ describe("MCP streamable HTTP smoke test", () => {
 
             const tools = await clients[0].listTools();
 
-            // Verify handshake order: initialize → notifications/initialized → tools/list
-            expect(receivedRequests[0].method).toBe("initialize");
-            expect(receivedRequests[0].hasId).toBe(true);
-            expect(receivedRequests[1].method).toBe("notifications/initialized");
-            expect(receivedRequests[1].hasId).toBe(false);
-            expect(receivedRequests[2].method).toBe("tools/list");
+            // Discovery precedes the legacy handshake; notifications still have no id.
+            expect(receivedRequests[0].method).toBe("server/discover");
+            expect(receivedRequests[1].method).toBe("initialize");
+            expect(receivedRequests[1].hasId).toBe(true);
+            expect(receivedRequests[2].method).toBe("notifications/initialized");
+            expect(receivedRequests[2].hasId).toBe(false);
+            expect(receivedRequests[3].method).toBe("tools/list");
 
             // Verify tools came back (proves session ID was forwarded)
             expect(tools).toHaveLength(1);
@@ -747,7 +749,7 @@ describe("MCP init timeout cancellation", () => {
         }
     });
 
-    test("streamable client close() prevents late sessionId adoption", async () => {
+    test("streamable client close() prevents subsequent initialization", async () => {
         let deleteReceived = false;
         let deleteSessionId = "";
         const SESSION_ID = "late-session-xyz";
@@ -807,24 +809,11 @@ describe("MCP init timeout cancellation", () => {
             expect(clients).toHaveLength(1);
             const client = clients[0];
 
-            // Close the client BEFORE initializing — simulates the race where
-            // close() is called while the init request is still in flight
+            // Closing now aborts the client lifetime: no session can be created.
             client.close();
-
-            // Now initialize — the response will set sessionId, but since
-            // closed=true, it should immediately DELETE the orphaned session
-            try {
-                await client.initialize();
-            } catch {
-                // May throw due to closed state — that's fine
-            }
-
-            // Give the DELETE request time to arrive
-            await new Promise((r) => setTimeout(r, 100));
-
-            // The client should have sent DELETE for the late session
-            expect(deleteReceived).toBe(true);
-            expect(deleteSessionId).toBe(SESSION_ID);
+            await expect(client.initialize()).rejects.toThrow();
+            expect(deleteReceived).toBe(false);
+            expect(deleteSessionId).toBe("");
 
             // Calling close() again should be safe (idempotent, no sessionId to clean)
             client.close();
