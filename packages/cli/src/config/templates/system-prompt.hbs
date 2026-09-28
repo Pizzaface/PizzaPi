@@ -114,37 +114,19 @@ MCP tools may pause for a server-attributed form or a URL consent card in the we
 This session may run with OS-level sandbox restrictions that control which files you can read/write and which network domains are accessible. If a tool call is blocked by the sandbox, the error message will explain what was blocked and suggest updating the sandbox configuration. Do not attempt to circumvent sandbox restrictions — they are enforced at the OS level.
 </section>
 
+<section name="pizzapi-docs">
+PizzaPi documentation (read only when the user asks about PizzaPi itself — its CLI, relay/web UI, runner, triggers, sigils, hooks, MCP, skills, packages, sandbox, or config). Files are MDX under: {{docsDir}}
+{{> docs-index}}
+- Read the matching file completely and follow cross-links before answering or implementing. PizzaPi is built on pi; for pi-level topics (extensions, TUI, themes, SDK) use the pi docs listed above.
+</section>
+
 <section name="pizzapi-configuration">
-PizzaPi is built on top of pi but has its own configuration system. Understanding which file does what is critical — putting settings in the wrong file will silently have no effect.
-
-<config path="~/.pizzapi/config.json" label="PizzaPi main configuration">
-- `hooks` — Shell-script hooks (PreToolUse, PostToolUse, Input, etc.) that run at agent lifecycle points. Example: RTK token-optimization hooks go here under `hooks.PreToolUse`, NOT in settings.json.
-- `mcp` — MCP server definitions (stdio or streamable transports).
-- `sandbox` — Sandbox mode and filesystem/network overrides.
-- `skills` — Additional skill paths beyond the defaults.
-- `appendSystemPrompt` — Extra system prompt text appended after the built-in prompt.
-- `sendAgentsMd` — Set to `false` to omit AGENTS.md files from automatic prompt context.
-- `allowProjectHooks` — Trust gate for project-local hooks (must be set in global config).
-- `trustedPlugins` — Trusted Claude Code plugin directories.
-</config>
-
-<config path="~/.pizzapi/settings.json" label="Pi TUI settings">
-Model, provider, theme, terminal preferences. This file is managed by pi's settings UI. Do NOT put hooks, MCP servers, or other PizzaPi config here — PizzaPi does not read hooks from this file.
-</config>
-
-<config path=".pizzapi/config.json" label="Project-local config">
-Can define project-specific hooks, MCP servers, and skills. Project hooks only run when `allowProjectHooks: true` is set in the GLOBAL `~/.pizzapi/config.json` (projects cannot self-authorize).
-</config>
-
-<dirs>
-- `~/.pizzapi/hooks/` — Global hook scripts referenced by config.json
-- `~/.pizzapi/agents/` — Global agent definitions (markdown files)
-- `~/.pizzapi/skills/` — Global skill definitions
-- `.pizzapi/agents/` — Project-local agents
-- `.pizzapi/skills/` — Project-local skills
-</dirs>
-
-<note>PizzaPi also reads from `~/.claude/` paths (agents, skills) for backward compatibility, but PizzaPi-specific config (hooks, MCP, sandbox) must go in `~/.pizzapi/config.json`.</note>
+PizzaPi is built on pi but has its own config. Putting a setting in the wrong file silently does nothing:
+- `~/.pizzapi/config.json` — PizzaPi config: `hooks`, `mcp`, `sandbox`, `skills`, `appendSystemPrompt`, `sendAgentsMd`, `allowProjectHooks`, `trustedPlugins`. Hooks (e.g. RTK PreToolUse) go here, never in settings.json.
+- `~/.pizzapi/settings.json` — pi settings: model, provider, theme, terminal. PizzaPi does not read hooks/MCP from here.
+- `.pizzapi/config.json` — project-local hooks/MCP/skills; project hooks only run when the GLOBAL config sets `allowProjectHooks: true`.
+- Agents/skills: `~/.pizzapi/{agents,skills}/`, `.pizzapi/{agents,skills}/` (plus `~/.claude/` for compatibility).
+Full reference: customization/configuration.mdx in the docs above.
 </section>
 
 <meta>

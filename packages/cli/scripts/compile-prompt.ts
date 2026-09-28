@@ -31,6 +31,19 @@ try {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 }
 
+// ── Generate docs index partial from packages/docs frontmatter ─────────────
+// One line per page: "- path: Title". Keeps the prompt's topic map
+// in sync with the docs site for free (CI already builds on packages/docs/**).
+const DOCS_DIR = join(import.meta.dir, "..", "..", "docs", "src", "content", "docs");
+const docsIndex: string[] = [];
+for (const file of readdirSync(DOCS_DIR, { recursive: true, encoding: "utf-8" }).sort()) {
+    if (!file.endsWith(".mdx") || file === "index.mdx") continue;
+    const src = readFileSync(join(DOCS_DIR, file), "utf-8");
+    const title = /^title:\s*(.+)$/m.exec(src)?.[1]?.trim().replace(/^["']|["']$/g, "");
+    docsIndex.push(`- ${file}: ${title ?? file}`);
+}
+partials["docs-index"] = docsIndex.join("\n");
+
 // ── Inline partials into main template ─────────────────────────────────────
 // Replace {{> partial-name}} with the partial content so the precompiled
 // output is self-contained — no runtime partial registration needed.
@@ -71,6 +84,8 @@ export interface SystemPromptContext {
     cwd?: string;
     /** Whether running inside a PizzaPi runner (enables runner-only sections) */
     isRunner?: boolean;
+    /** Absolute path to the bundled PizzaPi docs directory */
+    docsDir?: string;
 }
 
 /**

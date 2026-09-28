@@ -120,6 +120,14 @@ describe("buildSystemPrompt", () => {
         expect(result).toContain(".pizzapi/config.json");
     });
 
+    test("points at bundled PizzaPi docs with a generated topic index", () => {
+        const result = buildSystemPrompt({ docsDir: "/bundled/docs" });
+        expect(result).toContain('section name="pizzapi-docs"');
+        expect(result).toContain("/bundled/docs");
+        expect(result).toContain("- features/webhooks.mdx: Webhooks");
+        expect(result).toContain("customization/configuration.mdx");
+    });
+
     test("ask-user-question partial is inlined (not a separate invocation)", () => {
         const result = buildSystemPrompt();
         expect(result).toContain("AskUserQuestion");
