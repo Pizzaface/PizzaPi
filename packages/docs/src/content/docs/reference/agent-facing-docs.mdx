@@ -1,0 +1,28 @@
+---
+title: Writing Docs the Agent Reads
+description: Write PizzaPi docs so both humans and the bundled agent can use them.
+sidebar:
+  order: 5
+---
+
+PizzaPi ships this documentation tree with the CLI and points the agent at it in the built-in system prompt.
+
+| Path | Role |
+|------|------|
+| `packages/docs/src/content/docs/**/*.mdx` | Source docs used by the Starlight site. |
+| `packages/cli/scripts/compile-prompt.ts` | Builds a docs index for the prompt: one line per MDX page using the `title:` frontmatter. |
+| `packages/cli/src/config/templates/system-prompt.hbs` | Adds the `pizzapi-docs` section and tells the agent where the bundled MDX files live. |
+| `packages/cli/src/config/system-prompt.ts` | Resolves the docs directory: `dist/docs` in package builds, source docs in development, or `pizzapi-docs/` beside compiled binaries. |
+| `packages/cli/src/binary-assets.ts` | Copies `packages/docs/src/content/docs` into `pizzapi-docs/` for compiled binaries. |
+| `packages/cli/package.json` | Copies the docs into `packages/cli/dist/docs` during `bun run build`. |
+
+## Conventions
+
+- Use precise `title:` frontmatter. The title is the agent's index entry for the page.
+- Front-load the facts. Put the key command, config key, file path, or constraint before long explanation.
+- Use tables for reference material: config keys, environment variables, commands, permissions, and defaults.
+- Keep pages self-contained enough to answer the common question without requiring the rendered site navigation.
+- Cross-link related pages with relative docs paths or normal Starlight links.
+- Do not put essential information only inside Starlight-only components. The agent reads raw MDX, so the plain text inside the file must carry the answer.
+
+Before adding a new page, choose a title the agent can match from a user question, then make the first section answer that question directly.

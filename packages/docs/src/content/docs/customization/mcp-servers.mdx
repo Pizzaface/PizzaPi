@@ -155,9 +155,13 @@ The client probes `server/discover` before falling back to legacy initialization
 
 **Limitations:** This is form/MRTR support, not full implementation of every 2026 feature. Modern HTTP tools with `x-mcp-header` annotations are excluded with a warning because parameter-header mirroring is not implemented. The deprecated standalone HTTP+SSE transport is not supported. Retry rounds (form, URL and state-only) are bounded at 8 per tool call. Legacy server-initiated `elicitation/create` requests are unsupported; form support uses the 2026 multi-round-trip result flow rather than a background request channel. No roots or sampling support is advertised. A reachable user interface is required; a busy or unavailable approval surface fails closed. Do not enter passwords, API keys, access tokens, or payment credentials in forms; servers should use URL mode for those.
 
+For local URL-elicitation fixture testing, `packages/cli/src/extensions/mcp/elicitation-url-test-server.mjs` binds a random port unless `PIZZAPI_ELICITATION_URL_PORT` is set.
+
 ## OAuth for HTTP Servers
 
-Some HTTP MCP servers require OAuth authentication. PizzaPi handles the OAuth flow automatically — when a server requires auth, it opens a browser window for the OAuth consent flow and stores the resulting token for future sessions. When connected to a relay server (e.g. via `pizza web`), the OAuth callback routes through the relay so the flow works for remote sessions too.
+Some HTTP MCP servers require OAuth authentication. PizzaPi handles the OAuth flow automatically — when a streamable HTTP server returns `401`, it starts the MCP OAuth flow, opens or presents the authorization URL, exchanges the callback code, and retries the request with a bearer token. When connected to a relay server (e.g. via `pizza web`), the OAuth callback routes through the relay so the flow works for remote sessions too.
+
+Tokens, PKCE state, and dynamic client registration data persist in `~/.pizzapi/mcp-auth/`. Set `PIZZAPI_MCP_AUTH_DIR` to use a different directory, which is useful for tests or isolated runners. Files are keyed by a hash of the MCP server URL, so changing the server URL creates a separate credential record.
 
 <Aside type="caution">
   OAuth support for MCP servers is somewhat experimental. If you encounter issues with token refresh or callback URLs, try disconnecting and re-authenticating by removing the stored token and reloading the server with `/mcp reload`.
@@ -213,6 +217,28 @@ This flow activates automatically when the runner detects it can't open a local 
 <Aside type="tip">
   If you're connecting to MCP servers that need OAuth from a headless runner (e.g., via the runner daemon), the paste fallback is the expected flow — no local browser is needed.
 </Aside>
+
+## Disabling servers
+
+There are two persistent ways to skip an MCP server during initialization:
+
+```jsonc
+{
+  "disabledMcpServers": ["slow-server"],
+  "mcpServers": {
+    "experimental-server": {
+      "url": "https://mcp.example.com/mcp",
+      "transport": "streamable",
+      "disabled": true
+    }
+  }
+}
+```
+
+| Method | Scope | Notes |
+|--------|-------|-------|
+| `disabledMcpServers` | Global or project config | Lists server names to skip. Global and project lists are merged. |
+| Per-entry `"disabled": true` | The server definition itself | Works in both `mcpServers` and `mcp.servers[]`, matching Claude Code-style config. |
 
 ## Managing Servers at Runtime
 
@@ -271,7 +297,18 @@ When many MCP tools consume too much model context, enable deferred loading in g
 }
 ```
 
-If the combined MCP tool definitions exceed the threshold, PizzaPi defers tools and the agent can discover them through `search_tools`. Matched tools are added to the active tool set for subsequent responses. `deferLoading: true` or `false` on an individual `mcpServers` entry forces deferral on or off for that server. This keeps servers connected; it is different from `PIZZAPI_NO_MCP=1`, which skips MCP entirely. Use `/tool-search status` to inspect state and `/tool-search reset` to re-evaluate deferral. Settings can also be managed from Runner Settings in the web UI.
+If the combined MCP tool definitions exceed the threshold, PizzaPi defers MCP tools and keeps `search_tools` active. The agent calls `search_tools` with a plain-language query; PizzaPi matches against deferred tool names, descriptions, and parameter names, returns up to `maxResults`, and loads matched tools into the active tool set for subsequent responses.
+
+`deferLoading: true` or `false` on an individual MCP server entry forces deferral on or off for that server. Built-in tools are never deferred, and the MCP server process or HTTP client stays connected; this is different from `PIZZAPI_NO_MCP=1`, which skips MCP entirely.
+
+`keepLoadedTools` controls what happens after discovery:
+
+| Value | Behavior |
+|-------|----------|
+| `true` (default) | Discovered tools stay active for the rest of the session. |
+| `false` | On-demand tools are deactivated after each turn and can be found again with `search_tools`. |
+
+Use `/tool-search status` to inspect state and `/tool-search reset` to re-evaluate deferral. Settings can also be managed from Runner Settings in the web UI.
 
 ## Examples
 

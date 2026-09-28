@@ -936,7 +936,7 @@ receive it. A `target.sessionId` makes an implicit single-session route
 ```json
 {
   "type": "github:pr_opened",           // namespaced event type
-  "payload": { "repo": "my/repo" },      // arbitrary payload object
+  "payload": { "repo": "my/repo" },      // optional; defaults to {}
   "summary": "PR #12 opened",            // optional human-readable summary
   "fireId": "unique-if-retried",         // optional: idempotency + response correlation
   "routeIds": ["rt_abc123"],             // optional: deliver only through these routes
@@ -949,7 +949,7 @@ receive it. A `target.sessionId` makes an implicit single-session route
 }
 ```
 
-`routeIds` is an explicit delivery allowlist: only those route IDs are considered.
+`payload` is optional and defaults to `{}`. `routeIds` is an explicit delivery allowlist: only those route IDs are considered.
 Each selected route still passes the normal enabled-state, owner, event-type,
 and filter checks. Omit it to deliver through all matching routes. Direct
 `target.sessionId` delivery is separate from route delivery.
@@ -1062,7 +1062,9 @@ The `action` must be one of the event's declared contract actions, when any.
 
 Routes are subscriptions (ADR-0002): an event type + a target (a session, or a
 spawn spec for auto-spawn listeners). Query: `eventType`. Only routes the caller
-owns (or ownerless config/legacy routes they can manage) are returned.
+owns (or ownerless config/legacy routes they can manage) are returned. There is
+no `GET /api/routes/{routeId}` endpoint; list routes and filter client-side when
+you need one route by id.
 
 Routes whose runner is dead — no registration for 7+ days and no live socket on
 any relay node — carry `runnerDead: true` and `runnerDeadSince` (ISO date of

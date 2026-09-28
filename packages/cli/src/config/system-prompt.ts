@@ -1,6 +1,9 @@
 import { execSync } from "node:child_process";
 import { renderSystemPrompt } from "./system-prompt.precompiled.js";
 import type { SystemPromptContext } from "./system-prompt.precompiled.js";
+import { existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export type { SystemPromptContext };
 
@@ -16,6 +19,16 @@ export function runGit(args: string, cwd?: string): string | undefined {
     } catch {
         return undefined;
     }
+}
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const isCompiledBinary = import.meta.url.includes("$bunfs") || import.meta.url.includes("~BUN") || import.meta.url.includes("%7EBUN");
+
+/** Bundled PizzaPi docs (mdx). Source is packages/docs; copied to dist/docs at build, pizzapi-docs/ beside a compiled binary. */
+export function builtinDocsDir(): string {
+    if (isCompiledBinary) return join(dirname(process.execPath), "pizzapi-docs");
+    const dist = resolve(__dirname, "..", "docs");
+    return existsSync(dist) ? dist : resolve(__dirname, "..", "..", "..", "docs", "src", "content", "docs");
 }
 
 /**
@@ -59,6 +72,7 @@ export function buildSystemPrompt(ctx?: Partial<SystemPromptContext>): string {
         gitWorktree: ctx?.gitWorktree ?? gitCtx.gitWorktree,
         cwd: ctx?.cwd,
         isRunner: ctx?.isRunner,
+        docsDir: ctx?.docsDir ?? builtinDocsDir(),
     });
 }
 

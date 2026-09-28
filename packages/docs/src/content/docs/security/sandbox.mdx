@@ -39,7 +39,7 @@ pizza --sandbox basic
 pizza --sandbox none
 ```
 
-`pizza --help` advertises the aliases `enforce`, `audit`, and `off`, which map to `full`, `basic`, and `none`. All six names are accepted.
+`pizza --help` advertises the aliases `enforce`, `audit`, and `off`, which map to `full`, `basic`, and `none`. The aliases are accepted by the CLI flag and `PIZZAPI_SANDBOX`; in JSON config, use canonical `none`, `basic`, or `full`.
 
 Or environment variable:
 
@@ -58,7 +58,7 @@ The `basic` preset blocks the most common exfiltration targets:
 |----------|----------------|
 | **Read blocked** | `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gcloud`, `~/.docker/config.json`, browser data dirs |
 | **Write blocked** | `.env`, `.env.local`, `~/.ssh` |
-| **Write allowed** | Current working directory (`.`), `/tmp` |
+| **Write allowed** | Current working directory (`.`), OS temp directory (`os.tmpdir()`) |
 
 Network access is **unrestricted** in `basic` mode — the agent can connect to any host.
 
@@ -90,74 +90,116 @@ To open specific domains in `full` mode, add overrides:
 
 ---
 
-## Overrides
+## Preset defaults
 
-Any field you add under `sandbox` is a **srt-native override** merged on top of the preset. The format matches [`~/.srt-settings.json`](https://github.com/anthropic-experimental/sandbox-runtime) exactly.
+| Preset | Default value |
+|--------|---------------|
+| `mode` | `basic` |
+| `basic.filesystem.denyRead` | `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gcloud`, `~/.docker/config.json`, Chrome/Firefox profile paths on macOS, Linux, and Windows |
+| `basic.filesystem.allowWrite` | `.`, OS temp directory (`os.tmpdir()`) |
+| `basic.filesystem.denyWrite` | `.env`, `.env.local`, `~/.ssh` |
+| `basic.network` | No network key is emitted by config resolution; the tools layer supplies permissive runtime defaults. |
+| `full.network.allowedDomains` | `[]` (deny all outbound domains) |
+| `full.network.deniedDomains` | `[]` |
+| `full.network.allowLocalBinding` | `true` |
+| `full.filesystem.*` | Same as `basic` |
 
-### Filesystem overrides
+Relative filesystem paths are resolved against the session `cwd`; `~` expands to the user's home directory.
 
-```json
+---
+
+## Config reference
+
+All keys under `sandbox` other than `mode` are overrides passed through to the resolved sandbox-runtime config when `mode` is not `none`.
+
+### Top-level keys
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `mode` | `"none" \| "basic" \| "full"` | `"basic"` | Selects the preset. Unknown modes fail startup config resolution instead of silently weakening protection. |
+| `filesystem` | object | preset filesystem config | Filesystem read/write policy. |
+| `network` | object | `full`: deny-all; `basic`: unrestricted unless `allowedDomains` is set | Network and Unix-socket policy. |
+| `ignoreViolations` | `Record<string, string[]>` | unset | Passed through to sandbox-runtime. In global+project merging, only the global value is used. |
+| `enableWeakerNetworkIsolation` | `boolean` | unset / false behavior | Passed through to sandbox-runtime. Project config cannot turn this on unless global config already did. |
+| `enableWeakerNestedSandbox` | `boolean` | unset / false behavior | Allows nested sandbox execution with a weaker profile. Project config cannot turn this on unless global config already did. |
+| `mandatoryDenySearchDepth` | `number` | sandbox-runtime default; PizzaPi comments document `3` | Linux mandatory-deny path scanning depth. In global+project merging, only the global value is used. |
+| `allowPty` | `boolean` | unset / false behavior | Allows pseudo-terminal allocation inside the sandbox. Project config cannot turn this on unless global config already did. |
+
+### `filesystem`
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `denyRead` | `string[]` | sensitive-path preset | Additional paths the agent cannot read. User values are unioned with the preset. |
+| `allowWrite` | `string[]` | `[".", os.tmpdir()]` | Paths the agent may write to. In a single config, specifying this replaces the preset allow list. |
+| `denyWrite` | `string[]` | `.env`, `.env.local`, `~/.ssh` | Additional paths the agent cannot write. Deny rules take precedence over `allowWrite`. |
+| `allowGitConfig` | `boolean` | unset / false behavior | Passed to sandbox-runtime to allow writes to `.gitconfig`. Project config cannot turn this on unless global config already did. |
+
+PizzaPi also performs pre-call path validation for file tools. Reads fail if the normalized path is under `denyRead`. Writes fail if the path is under `denyWrite` or not under any `allowWrite` entry.
+
+### `network`
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `allowedDomains` | `string[]` | `full`: `[]`; `basic`: unset | Domains allowed by the network sandbox. In `full`, `[]` means deny all. In `basic`, setting this key opts into network sandboxing. |
+| `deniedDomains` | `string[]` | `[]` | Domains explicitly denied. |
+| `allowLocalBinding` | `boolean` | `true` when PizzaPi creates a network config | Allows the process to bind local ports. Project config cannot turn this on unless global config already did. |
+| `allowUnixSockets` | `string[]` | unset | Unix socket paths allowed by sandbox-runtime. PizzaPi also appends `$SSH_AUTH_SOCK` when detected. |
+| `allowAllUnixSockets` | `boolean` | `basic` permissive runtime fallback: `true`; otherwise unset | Allows all Unix sockets. On Linux this disables sandbox-runtime's AF_UNIX blocking. Project config cannot turn this on unless global config already did. |
+| `httpProxyPort` | `number` | sandbox-runtime default | HTTP proxy port override. |
+| `socksProxyPort` | `number` | sandbox-runtime default | SOCKS proxy port override. |
+| `enableWeakerNetworkIsolation` | — | — | Not a `network` child key in PizzaPi config; use top-level `sandbox.enableWeakerNetworkIsolation`. |
+
+When the network proxy is active, PizzaPi exposes proxy environment variables to sandboxed child processes: `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `https_proxy`, `ALL_PROXY`, and `all_proxy` as applicable.
+
+<Aside type="tip">
+  Setting `network.allowedDomains` in `basic` mode **opts in to network sandboxing** for that session — you don't need to use `full` mode if you just want to restrict one session's network access.
+</Aside>
+
+---
+
+## Example policies
+
+### Full mode with selected network access
+
+```jsonc
+{
+  "sandbox": {
+    "mode": "full",
+    "network": {
+      "allowedDomains": ["*.github.com", "api.anthropic.com", "registry.npmjs.org"]
+    }
+  }
+}
+```
+
+### Basic mode with narrower write access
+
+```jsonc
 {
   "sandbox": {
     "mode": "basic",
     "filesystem": {
+      "allowWrite": [".", "/tmp/pizzapi-output"],
       "denyRead": ["~/.kube", "~/.terraform"],
-      "allowWrite": [".", "/tmp", "~/my-project"],
       "denyWrite": [".env.production"]
     }
   }
 }
 ```
 
-- **`denyRead`** — additional paths to block from reading (merged with preset)
-- **`allowWrite`** — paths the agent may write to (replaces preset when specified)
-- **`denyWrite`** — additional paths to block from writing (merged with preset)
+### Basic mode with network sandboxing enabled
 
-### Network overrides
-
-```json
-{
-  "sandbox": {
-    "mode": "full",
-    "network": {
-      "allowedDomains": ["*.github.com", "api.example.com"],
-      "deniedDomains": ["ads.example.com"],
-      "allowLocalBinding": true,
-      "allowUnixSockets": ["/var/run/docker.sock"]
-    }
-  }
-}
-```
-
-- **`allowedDomains`** — domains the agent can reach (allow-only; `[]` = deny all)
-- **`deniedDomains`** — domains to explicitly block
-- **`allowLocalBinding`** — allow the process to bind local ports (default: `true`)
-- **`allowUnixSockets`** — Unix socket paths to allow (blocked by default)
-- **`allowAllUnixSockets`** — disable Unix socket blocking entirely
-
-<Aside type="tip">
-  Setting `network.allowedDomains` in `basic` mode **opts in to network sandboxing** for that session — you don't need to use `full` mode if you just want to restrict one session's network access.
-</Aside>
-
-### Other srt options
-
-These pass through directly to `sandbox-runtime`:
-
-```json
+```jsonc
 {
   "sandbox": {
     "mode": "basic",
-    "mandatoryDenySearchDepth": 5,
-    "enableWeakerNetworkIsolation": true,
-    "allowPty": true,
-    "ignoreViolations": {
-      "jest": ["/tmp"]
+    "network": {
+      "allowedDomains": ["api.example.com"],
+      "deniedDomains": ["telemetry.example.com"]
     }
   }
 }
 ```
-
-See the [srt documentation](https://github.com/anthropic-experimental/sandbox-runtime#configuration) for details on each option.
 
 ---
 
@@ -176,9 +218,15 @@ When both global (`~/.pizzapi/config.json`) and project (`.pizzapi/config.json`)
 | `mode` | Project can only escalate (`none → basic → full`), never weaken |
 | `filesystem.denyRead` | Union — project adds more denials, never removes global ones |
 | `filesystem.denyWrite` | Union — same |
-| `filesystem.allowWrite` | Intersection — project can only narrow, never widen |
-| `network.allowedDomains` | Intersection — project can only narrow |
+| `filesystem.allowWrite` | Intersection when both configs specify it; if global omits it, the project value is ignored so the project cannot widen the preset |
+| `filesystem.allowGitConfig` | Global wins; if global omits it, project can only set `false` |
+| `network.allowedDomains` | Intersection when both configs specify it; if global omits it, the project value is ignored so the project cannot widen access |
 | `network.deniedDomains` | Union — project adds more denials |
+| `network.allowUnixSockets` | Intersection when both configs specify it |
+| `network.allowAllUnixSockets`, `network.allowLocalBinding` | Global wins; if global omits it, project can only set `false` |
+| `network.httpProxyPort`, `network.socksProxyPort` | Global wins when set |
+| `ignoreViolations`, `mandatoryDenySearchDepth` | Global-only |
+| `enableWeakerNetworkIsolation`, `enableWeakerNestedSandbox`, `allowPty` | Global wins; if global omits them, project can only set `false` |
 
 <Aside type="caution">
   Project-local configs **cannot weaken** the global sandbox. A malicious repo cannot disable your protections.

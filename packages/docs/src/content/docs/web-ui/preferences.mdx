@@ -92,11 +92,34 @@ When the web app is open, in-app attention indicators work without browser push 
 
 ### Native Android push
 
-The Android app uses the relay's optional ntfy integration for background push; it is not the browser Web Push path and is not available in ordinary desktop browsers. The server must be configured for ntfy. See [mobile push setup in the self-hosting guide](/PizzaPi/deployment/self-hosting/#web-push-notifications) and the [native notification implementation](https://github.com/Pizzaface/PizzaPi/tree/main/packages/ui/src/lib).
+The Android app uses the relay's optional ntfy integration for background push; it is not the browser Web Push path and is not available in ordinary desktop browsers. The server publishes through `PIZZAPI_NTFY_URL`; if that variable is unset, `/api/push/register-native` returns `503` and the Android UI reports the native push path as unconfigured.
+
+`PIZZAPI_NTFY_PUBLIC_URL` can be set separately when devices need a public subscribe URL that differs from the server's internal publish URL. Registration returns a per-device ntfy topic, optional future `ntfyUser`/`ntfyPass` fields, and the current child-session suppression preference.
+
+Native push is started only in the bundled Android app. The UI preference stores two local flags:
+
+| Preference | Local key | Server sync |
+|------------|-----------|-------------|
+| Native push disabled | `pizzapi.ntfyPushDisabled` | Registration/unregistration calls `/api/push/register-native` and `/api/push/unregister-native`. |
+| Suppress child session notifications | `pizzapi.ntfySuppressChild` | `PUT /api/push/child-notifications-native` updates native registrations for the user. |
+
+Native ntfy notifications are sent for the same server push events as browser push:
+
+| Event | Notification |
+|-------|--------------|
+| `agent_end` | “Agent finished”, with the last assistant reply when available. |
+| `AskUserQuestion` tool start | “Input needed”; single-question collab prompts may include quick-reply actions. |
+| `plan_mode` tool start | “Input needed” with “Plan ready for review”. |
+| `cli_error` | “Agent error”. |
+| Trigger escalation to a human viewer | “Trigger awaiting your response”. |
+
+Native push is suppressed only when a viewer for that session has explicitly reported its tab as visible. A connected but hidden tab still allows native push, so the Android device can alert you while the browser is in the background. Child-session notifications are suppressed by default for native registrations unless you turn off **Suppress child session notifications**.
+
+See [mobile push setup in the self-hosting guide](/PizzaPi/deployment/self-hosting/#web-push-notifications) and the [native notification implementation](https://github.com/Pizzaface/PizzaPi/tree/main/packages/ui/src/lib).
 
 ### Child-session notifications
 
-The child-session suppression preference affects notifications from spawned child sessions. The available controls differ between browser and native push.
+The child-session suppression preference affects notifications from spawned child sessions. It appears when push is supported and currently subscribed. For native Android push, the preference is cached in `localStorage` and written to the server so ntfy fan-out can skip or deliver child-session notifications per registration.
 
 ### Haptic feedback
 

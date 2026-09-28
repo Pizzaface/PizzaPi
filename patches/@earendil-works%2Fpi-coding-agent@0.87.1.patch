@@ -2,18 +2,7 @@ diff --git a/dist/config.js b/dist/config.js
 index 872dd55..a580a87 100644
 --- a/dist/config.js
 +++ b/dist/config.js
-@@ -359,6 +359,10 @@ export function getReadmePath() {
- }
- /** Get path to docs directory */
- export function getDocsPath() {
-+    // PATCH(pizzapi): allow PizzaPi to display its wrapper changelog.
-+    if (process.env.PIZZAPI_CHANGELOG_PATH) {
-+        return resolve(process.env.PIZZAPI_CHANGELOG_PATH);
-+    }
-     return resolve(join(getPackageDir(), "docs"));
- }
- /** Get path to examples directory */
-@@ -367,6 +371,10 @@ export function getExamplesPath() {
+@@ -367,6 +367,10 @@ export function getExamplesPath() {
  }
  /** Get path to CHANGELOG.md */
  export function getChangelogPath() {
@@ -24,7 +13,7 @@ index 872dd55..a580a87 100644
      return resolve(join(getPackageDir(), "CHANGELOG.md"));
  }
  /**
-@@ -400,7 +408,7 @@ const piConfigName = pkg.piConfig?.name;
+@@ -400,7 +404,7 @@ const piConfigName = pkg.piConfig?.name;
  export const PACKAGE_NAME = pkg.name || "@earendil-works/pi-coding-agent";
  export const APP_NAME = piConfigName || "pi";
  export const APP_TITLE = piConfigName ? APP_NAME : "π";
@@ -33,7 +22,7 @@ index 872dd55..a580a87 100644
  export const VERSION = pkg.version || "0.0.0";
  // e.g., PI_CODING_AGENT_DIR or TAU_CODING_AGENT_DIR
  export const ENV_AGENT_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;
-@@ -423,7 +431,8 @@ export function getAgentDir() {
+@@ -423,7 +427,8 @@ export function getAgentDir() {
      if (envDir) {
          return expandTildePath(envDir);
      }

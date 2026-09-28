@@ -1,0 +1,110 @@
+---
+title: Project Memory
+description: Persist durable project facts and one-line recaps across PizzaPi sessions.
+---
+
+Project Memory is a machine-local, per-project notes store. The agent can save durable facts with memory tools, and PizzaPi loads the project's memory index into future sessions automatically.
+
+Use it for facts the agent would otherwise rediscover: build gotchas, conventions, architecture notes, and corrections.
+
+## Agent tools
+
+| Tool | Description |
+|------|-------------|
+| `memory_save` | Append a one-line summary to the always-loaded memory index. With `detail` and `topic`, also appends the detail to a topic file and links it from the index. |
+| `memory_append` | Append text to a topic file. |
+| `memory_edit` | Replace a unique snippet in `MEMORY.md` or a topic file. |
+| `memory_read` | Read `MEMORY.md` or a topic file in full. |
+| `memory_list` | List project memory files and return the loaded index. |
+| `recap` | Save a one-line "where you left off" recap. |
+
+`memory_save` parameters:
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `summary` | Yes | One-line fact for the always-loaded index. Newlines are collapsed. |
+| `detail` | No | Longer note to store in a topic file. |
+| `topic` | No | Topic file name for `detail`, for example `auth` or `build`. |
+
+## Slash commands
+
+| Command | Description |
+|---------|-------------|
+| `/memory` | Show this project's memory directory, files, and loaded index. |
+| `/recap` | Ask the model to produce a one-line recap and save it with the `recap` tool. |
+| `/recap last` | Show the latest saved recap. |
+| `/recap show` | Alias for `/recap last`. |
+
+When a session is resumed, PizzaPi surfaces the latest saved recap once as a visible message.
+
+## Files on disk
+
+Memory is stored outside the project tree under the user's PizzaPi directory:
+
+```text
+~/.pizzapi/memory/<project-key>/
+  MEMORY.md
+  <topic>.md
+  recaps.md
+```
+
+`<project-key>` is based on the git root when available, otherwise the current working directory. The key is:
+
+```text
+<basename>-<first 8 chars of sha256(abs path)>
+```
+
+Examples of files:
+
+| File | Purpose |
+|------|---------|
+| `MEMORY.md` | Always-loaded index of one-line project facts. |
+| `<topic>.md` | Detail notes. Topic names are sanitized and stored with a `.md` suffix. |
+| `recaps.md` | Timestamped one-line recaps saved by the `recap` tool. |
+
+## Automatic context loading
+
+Before each agent start, PizzaPi reads `MEMORY.md` and appends it to the system prompt inside:
+
+```xml
+<project-memory>
+...
+</project-memory>
+```
+
+PizzaPi also appends an instruction telling the agent to call `memory_save` when it learns a durable project fact.
+
+Only `MEMORY.md` auto-loads. Topic files are available through `memory_read` but are not loaded into every session.
+
+## Size caps
+
+The loaded index is capped at:
+
+| Cap | Value |
+|-----|-------|
+| Lines | `200` |
+| Bytes | `25 KiB` |
+
+If `MEMORY.md` exceeds either cap, PizzaPi truncates the loaded index and adds a note that the index was truncated. `memory_save` returns:
+
+| State | Condition | Warning |
+|-------|-----------|---------|
+| Near limit | More than 90% of either cap | Keep entries to one line. |
+| Over limit | More than 200 lines or 25 KiB | Content past the limit will not load next session; trim the index or move detail into topic files. |
+
+## Conventions
+
+- Keep each `MEMORY.md` entry to one line.
+- Put long notes in topic files with `detail` + `topic` or `memory_append`.
+- Use `memory_edit` to remove stale facts; the text being replaced must occur exactly once.
+- Use `recap` for session state and next steps, not permanent project facts.
+
+Example tool intent:
+
+```json
+{
+  "summary": "Use bun for package scripts; do not use npm or yarn.",
+  "detail": "AGENTS.md says Bun is required across this repo. Common commands are bun run build, bun run test, and bun run typecheck.",
+  "topic": "tooling"
+}
+```

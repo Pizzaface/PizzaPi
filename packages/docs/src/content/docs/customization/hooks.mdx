@@ -3,7 +3,7 @@ title: Hooks
 description: Write lifecycle hooks that observe, transform, or block agent actions — lint on save, guard inputs, inject context, and more.
 ---
 
-import { Aside, Tabs, TabItem } from "@astrojs/starlight/components";
+import { Aside } from "@astrojs/starlight/components";
 
 Hooks are **shell scripts or commands** that run at specific points in the agent's lifecycle. They let you:
 
@@ -25,7 +25,7 @@ Hooks live in your PizzaPi config files under the `hooks` key:
 | `.pizzapi/config.json` | Project-local — only this repo | ⚠️ Requires `allowProjectHooks` |
 
 <Aside type="caution" title="Project hooks require explicit trust">
-  Project-local hooks (`.pizzapi/config.json`) are **ignored** unless you set `allowProjectHooks: true` in your **global** `~/.pizzapi/config.json`. A one-time warning is emitted when project hooks are present but untrusted. Projects cannot self-authorize — the trust gate lives in global config only.
+  Project-local hooks (`.pizzapi/config.json`) are **ignored** unless you set `allowProjectHooks: true` in your **global** `~/.pizzapi/config.json`, or set `PIZZAPI_ALLOW_PROJECT_HOOKS=1` in the environment. A one-time warning is emitted when project hooks are present but untrusted. Projects cannot self-authorize — the trust gate lives in global config only.
 
   This prevents a malicious repository from running arbitrary code on your machine via hooks.
 
@@ -43,21 +43,21 @@ Hooks live in your PizzaPi config files under the `hooks` key:
 
 Every event fires at a specific lifecycle point. Some can block the action, and tool hooks support matchers to target specific tools.
 
-| Event | When it fires | Can block? | Uses matchers? |
-|-------|--------------|------------|----------------|
-| `PreToolUse` | Before any tool call | Yes (exit 2) | Yes |
-| `PostToolUse` | After a tool completes | No (can inject context) | Yes |
-| `Input` | When user sends input | Yes (exit 2), can transform | No |
-| `BeforeAgentStart` | Before agent turn begins | No (can override system prompt) | No |
-| `UserBash` | User runs `!` or `!!` shell command | Yes (exit 2) | No |
-| `SessionBeforeSwitch` | Before switching sessions | Yes (exit 2) | No |
-| `SessionBeforeFork` | Before forking a session | Yes (exit 2) | No |
-| `SessionShutdown` | On process exit | No (best-effort) | No |
-| `SessionBeforeCompact` | Before context compaction | Yes (exit 2) | No |
-| `SessionBeforeTree` | Before session tree navigation | Yes (exit 2) | No |
-| `ModelSelect` | When model is selected | No (observability only) | No |
-| `TurnEnd` | After each agent turn completes | No (fire-and-forget) | No |
-| `SessionStart` | On session start/reload/new/resume/fork | No (fire-and-forget) | No |
+| Event | When it runs | Config shape | Exit code can block? | Stdout can change behavior? |
+|-------|--------------|--------------|----------------------|-----------------------------|
+| `PreToolUse` | Before a tool executes | `HookMatcher[]` | Yes | Block, rewrite tool input, inject context |
+| `PostToolUse` | After a tool result is available | `HookMatcher[]` | No | Inject context into the tool result |
+| `Input` | When user text is received, before expansion | `HookEntry[]` | Yes | Transform or consume input |
+| `UserBash` | When the user runs a `!` / `!!` shell command | `HookEntry[]` | Yes | No |
+| `BeforeAgentStart` | After user prompt handling, before the agent loop starts | `HookEntry[]` | No | Inject context or override the system prompt |
+| `ModelSelect` | When a model is selected | `HookEntry[]` | No | No |
+| `SessionStart` | On startup, reload, new session, resume, or fork | `HookEntry[]` | No | No |
+| `SessionShutdown` | On session shutdown | `HookEntry[]` | No | No |
+| `SessionBeforeCompact` | Before context compaction | `HookEntry[]` | Yes | No |
+| `SessionBeforeFork` | Before a session fork | `HookEntry[]` | Yes | No |
+| `SessionBeforeSwitch` | Before switching sessions | `HookEntry[]` | Yes | No |
+| `SessionBeforeTree` | Before session-tree navigation | `HookEntry[]` | Yes | No |
+| `TurnEnd` | After each agent turn | `HookEntry[]` | No | No |
 
 ---
 
@@ -67,55 +67,80 @@ A hook is any executable that reads JSON from **stdin** and communicates its dec
 
 ### Exit codes
 
-| Exit code | Meaning |
-|-----------|---------|
-| `0` | **Allow** — action proceeds normally |
-| `2` | **Block** — action is cancelled (stderr is shown as the reason) |
-| Other non-zero | **Error** — treated as a block (fail-closed for `PreToolUse` and cancelable event hooks only; `PostToolUse`, `BeforeAgentStart`, and fire-and-forget events do not fail-closed) |
+| Event group | `0` | `2` | Other non-zero / timeout |
+|-------------|-----|-----|--------------------------|
+| `PreToolUse` | Continue; parse stdout JSON if present | Block tool call; stderr is the reason | Block tool call; stderr or exit code is the reason |
+| `Input`, `UserBash`, `SessionBeforeCompact`, `SessionBeforeFork`, `SessionBeforeSwitch`, `SessionBeforeTree` | Continue; parse stdout JSON where supported | Block/cancel; stderr is the reason | Block/cancel; stderr or exit code is the reason |
+| `BeforeAgentStart` | Continue; parse stdout JSON if present | Logged as non-fatal | Logged as non-fatal |
+| `PostToolUse` | Parse stdout JSON if present | Ignored | Ignored |
+| `ModelSelect`, `SessionStart`, `SessionShutdown`, `TurnEnd` | Ignored | Ignored | Ignored |
 
 ### Stdout JSON fields
 
-Hooks can return JSON on stdout to influence the agent:
+Stdout must be a single JSON object. PizzaPi also accepts Claude Code-style nested output under `hookSpecificOutput`.
 
 | Field | Used by | Purpose |
 |-------|---------|---------|
-| `additionalContext` | PreToolUse, PostToolUse, BeforeAgentStart | Text injected into the agent's context window |
-| `permissionDecision` | PreToolUse | `"deny"` blocks the tool call. `"allow"` and `"ask"` are reserved/future. |
-| `updatedInput` | PreToolUse | Object replacing tool input fields (rewrites tool args before execution) |
-| `text` | Input | Transformed input text to replace the original |
-| `action` | Input | `"continue"`, `"transform"`, or `"handled"` |
-| `systemPrompt` | BeforeAgentStart | Override the system prompt for this turn |
+| `additionalContext` | `PreToolUse` | Queued and appended to the following tool result as `[Hook] ...`. |
+| `additionalContext` | `PostToolUse` | Appended to the tool result as `[Hook] ...`. |
+| `additionalContext` | `BeforeAgentStart` | Injected as collapsed hook context before the agent starts. |
+| `permissionDecision: "deny"` | `PreToolUse` | Blocks the tool call. The reason is `additionalContext` or `Denied by hook`. |
+| `permissionDecision: "allow"` / `"ask"` | `PreToolUse` | Parsed but not acted on. |
+| `updatedInput` | `PreToolUse` | Object merged into the tool input before execution. |
+| `text` | `Input` | Replaces the user input text. |
+| `action: "transform"` + `text` | `Input` | Replaces the user input text. |
+| `action: "handled"` | `Input` | Consumes the input; the agent does not see it. |
+| `action: "continue"` | `Input` | Parsed, but normal continuation is already the default. |
+| `systemPrompt` | `BeforeAgentStart` | Overrides the system prompt for this turn. |
+| `decision` | Any | Parsed for compatibility, but config-defined hooks do not currently act on it. |
 
 ### Stdin payload
 
-The JSON payload varies by event. Tool hooks receive:
+The JSON payload varies by event.
+
+#### Tool hooks
+
+`PreToolUse` hooks receive:
 
 ```json
 {
-  "tool_name": "Bash",
-  "tool_input": { "command": "rm -rf /tmp/build" }
+  "tool_name": "bash",
+  "tool_input": {
+    "command": "bun test"
+  }
 }
 ```
 
-PostToolUse hooks additionally receive:
+`PostToolUse` hooks additionally receive `tool_response`:
 
 ```json
 {
-  "tool_name": "Write",
-  "tool_input": { "file_path": "src/index.ts" },
+  "tool_name": "write",
+  "tool_input": {
+    "path": "src/index.ts",
+    "file_path": "src/index.ts"
+  },
   "tool_response": "File written successfully."
 }
 ```
 
-Event hooks receive an `event` field plus event-specific data:
+`tool_input` is normalized so file tools include both `path` and `file_path` when either key is present.
 
-```json
-{
-  "event": "Input",
-  "text": "refactor the auth module",
-  "source": "user"
-}
-```
+#### Event hooks
+
+| Event | Stdin JSON fields |
+|-------|-------------------|
+| `Input` | `event`, `text`, `source` |
+| `UserBash` | `event`, `command`, `exclude_from_context`, `cwd`, `tool_input: { command }` |
+| `BeforeAgentStart` | `event`, `prompt`, `system_prompt` |
+| `ModelSelect` | `event`, `model: { provider, id, name }`, `previous_model` (`null` or same shape), `source` |
+| `SessionStart` | `event`, `reason`, `previous_session_file`, `session_id`, `model` (`null` or `{ provider, id, name }`) |
+| `SessionShutdown` | `event`, `session_file` |
+| `SessionBeforeCompact` | `event`, `custom_instructions` |
+| `SessionBeforeFork` | `event`, `entry_id` |
+| `SessionBeforeSwitch` | `event`, `reason`, `target_session_file` |
+| `SessionBeforeTree` | `event`, `target_id`, `old_leaf_id`, `user_wants_summary` |
+| `TurnEnd` | `event`, `turn_index`, `stop_reason`, `session_id` |
 
 ### Simple example
 
@@ -176,8 +201,17 @@ All other events use **`HookEntry[]`** directly — no matcher needed:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `command` | `string` | Yes | — | Shell command to execute. Receives JSON on stdin. |
-| `timeout` | `number` | No | `10000` | Timeout in milliseconds. Hook is killed on expiry (fail-closed). |
+| `command` | `string` | Yes | — | Shell command to run. PizzaPi expands variables in the command string, runs it from the session `cwd`, sends the event JSON on stdin, and sets `PIZZAPI_PROJECT_DIR` to the session `cwd`. |
+| `timeout` | `number` | No | `10000` | Timeout in milliseconds. Timeout kills the hook and is fail-closed for blocking events. |
+
+Hooks run through a POSIX shell: `/bin/sh -c` on Unix/macOS; on Windows, PizzaPi resolves Git for Windows `bash.exe` or falls back to `bash` in `PATH`.
+
+### HookMatcher fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `matcher` | `string` | Yes | Tool-name pattern. Supports `|` alternation and regular expressions. Matching is case-insensitive. |
+| `hooks` | `HookEntry[]` | Yes | Hooks to run when the matcher matches. |
 
 ---
 
@@ -356,13 +390,15 @@ PizzaPi enforces a strict trust boundary for project-local hooks:
 
 1. **Global hooks** (`~/.pizzapi/config.json`) always run — you control your own machine.
 2. **Project hooks** (`.pizzapi/config.json` in a repo) are **ignored by default**.
-3. To enable project hooks, set `allowProjectHooks: true` in your **global** config.
-4. The project config **cannot** set `allowProjectHooks` — only the global config controls this gate.
+3. To enable project hooks, set `allowProjectHooks: true` in your **global** config, or set `PIZZAPI_ALLOW_PROJECT_HOOKS=1` in the environment.
+4. The project config **cannot** set `allowProjectHooks` — only the global config or environment controls this gate.
 
 <Aside type="caution" title="Why this matters">
   Without this trust gate, any repository you clone could define hooks that execute arbitrary shell commands the moment you start a PizzaPi session. The `allowProjectHooks` setting ensures you consciously opt in to running project-defined hooks.
 
   **Only enable this if you trust the repositories you work in**, or review `.pizzapi/config.json` in new repos before enabling project hooks.
 </Aside>
+
+When both trusted sources define hooks, PizzaPi concatenates their arrays. For matcher-based hooks, global matcher groups run before project matcher groups. For entry-based hooks, global entries run before project entries.
 
 The environment variable `PIZZAPI_ALLOW_PROJECT_HOOKS=1` can also enable project hooks, which is useful for CI or automated environments where you manage config externally.

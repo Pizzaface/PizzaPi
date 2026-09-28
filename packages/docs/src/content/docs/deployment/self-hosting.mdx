@@ -136,6 +136,22 @@ Configure the server by setting environment variables in Docker Compose or your 
 | `PIZZAPI_REDIS_URL` | — | Redis connection URL, e.g. `redis://localhost:6379` |
 | `PIZZAPI_BASE_URL` | `http://localhost:5173` | Public URL of the UI, added to CORS trusted origins |
 | `PIZZAPI_EXTRA_ORIGINS` | — | Comma-separated extra trusted origins (e.g. a Tailscale URL). Added to CORS and WebSocket auth without hardcoding hostnames. Example: `https://myhost.ts.net,http://myhost.ts.net:5173` |
+| `PIZZAPI_API_KEY_RATE_LIMIT_ENABLED` | `false` | Enable better-auth API-key rate limiting. |
+| `PIZZAPI_API_KEY_RATE_LIMIT_MAX_REQUESTS` | `10` | API-key requests allowed per rate-limit window when enabled. Invalid or non-positive values fall back to the default. |
+| `PIZZAPI_API_KEY_RATE_LIMIT_TIME_WINDOW_MS` | `86400000` | API-key rate-limit window in milliseconds (24 hours). Invalid or non-positive values fall back to the default. |
+| `PIZZAPI_EPHEMERAL_TTL_MS` | `600000` | Idle TTL for ephemeral relay sessions and their Redis event data (10 minutes). Invalid or non-positive values fall back to the default. |
+| `PIZZAPI_EPHEMERAL_SWEEP_MS` | `60000` | Interval for pruning expired ephemeral relay sessions (1 minute). Invalid or non-positive values fall back to the default. |
+| `PIZZAPI_RELAY_EVENT_TTL_MS` | `86400000` | Redis event TTL for non-ephemeral sessions (24 hours). Ephemeral sessions use `PIZZAPI_EPHEMERAL_TTL_MS` instead. |
+| `PIZZAPI_RELAY_SNAPSHOT_SCAN_CHUNK_SIZE` | `64` | Redis scan chunk size for relay snapshot cleanup. Invalid or non-positive values fall back to the default. |
+| `PIZZAPI_ATTACHMENT_DIR` | `<cwd>/.pizzapi/uploads` | Directory for uploaded session attachments. Resolved to an absolute path at server startup. |
+| `PIZZAPI_ATTACHMENT_TTL_MS` | `900000` | TTL for regular uploaded session attachments (15 minutes). Invalid or non-positive values fall back to the default; extracted session images use a separate 24-hour TTL. |
+| `PIZZAPI_DISABLE_SIGNUP_AFTER_FIRST_USER` | `true` | Disable new signups after the first user exists. Set to `false` to keep signups open. |
+| `PIZZAPI_TRUST_MOBILE_ORIGINS` | trusted unless set to `false` | Trust Capacitor mobile origins (`capacitor://localhost`, `https://localhost`) for auth/CORS. |
+| `PIZZAPI_MOBILE_OTA_DIR` | — | Directory containing mobile OTA `manifest.json` and `.zip` bundles. Unset or missing directory disables OTA routes with 404s. |
+| `PIZZAPI_UI_DIR` | auto-detected UI dist | Directory for the web UI static bundle and `build-info.json`. Server checks this first, then monorepo UI dist fallbacks. |
+| `PIZZAPI_PREBUILD_UI` | `true` | `pizza web` host-side setting: set to `false` to skip the local UI pre-build step before Docker build. |
+
+Ephemeral sessions are not just hidden after the idle TTL: expired, unpinned `relay_session` rows and matching `relay_session_state` rows are hard-deleted by the sweep. If you need long-lived history, use non-ephemeral sessions or pin the session before it expires.
 
 See [Configuration & Environment Variables](/PizzaPi/customization/configuration/#environment-variables) for the runner settings and [server source](https://github.com/Pizzaface/PizzaPi/tree/main/packages/server/src) for server options.
 

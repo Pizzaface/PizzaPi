@@ -48,6 +48,7 @@ If a sub-command requires an argument (like `/mcp disable`), selecting it fills 
 | `/stop` | Abort the current generation. |
 | `/background` | Send the currently running bash command to the background (also `ctrl+shift+b` in the TUI). |
 | `/shells` | List background shells with status, runtime, and log path. |
+| `/remote` | Show the relay share URL, or run `/remote stop` / `/remote reconnect` from the runner command surface. In the web UI, `/remote` is blocked because the web UI is connected through that relay. |
 | `/restart` | Restart the underlying CLI process. |
 
 ### Session history
@@ -56,6 +57,8 @@ If a sub-command requires an argument (like `/mcp disable`), selecting it fills 
 |---------|-------------|
 | `/compact [instructions]` | Compact the conversation context. Optionally pass custom instructions to guide summarization, e.g. `/compact focus on the auth module`. See [Sessions & Context](/PizzaPi/features/sessions/#compaction) for how compaction works. |
 | `/name <name>` | Set a display name for the current session, e.g. `/name auth-refactor`. |
+| `/recap` | Ask the model for a one-line recap and save it to project memory. |
+| `/recap last` | Show the latest saved recap. `/recap show` is an alias. |
 
 <Aside type="tip">
   The tree navigator and `/tree` are not available in the web UI composer — use the **Tree** view in the session UI instead.
@@ -75,6 +78,10 @@ If a sub-command requires an argument (like `/mcp disable`), selecting it fills 
 | Command | Description |
 |---------|-------------|
 | `/plan` | Toggle plan mode. In plan mode, the agent explores and plans without making changes (read-only). |
+| `/memory` | Show this project's memory files and loaded memory index. See [Project Memory](/PizzaPi/features/memory/). |
+| `/workflow` | List saved workflows. See [Workflows](/PizzaPi/features/workflows/). |
+| `/workflow new <name>` | Create a starter workflow file. |
+| `/workflow <name> [json-args]` | Run a saved workflow, optionally with JSON args. |
 
 ### Session display
 
@@ -91,7 +98,15 @@ If a sub-command requires an argument (like `/mcp disable`), selecting it fills 
 | Command | Description |
 |---------|-------------|
 | `/plugins` | List all loaded Claude Code plugins, including their commands, hooks, skills, agents, and MCP servers. |
+| `/plugin list` | List configured plugin marketplaces and installed plugins. |
+| `/plugin marketplace add/list/remove/show` | Manage Claude Code plugin marketplaces. |
+| `/plugin install <name[@marketplace]>` | Install a plugin from a marketplace. |
+| `/plugin uninstall <name>` | Remove an installed plugin. |
+| `/plugin enable <name>` | Enable an installed plugin. |
+| `/plugin disable <name>` | Disable an installed plugin. |
 | `/skills` | List all available skills from your configuration and plugins. |
+| `/skills list` | Show available skills. |
+| `/skills reload` | Reload skills and other session resources from disk. |
 | `/sandbox` | Show the current sandbox status. Sub-commands: `status` (default), `violations`, `config`. |
 
 ### MCP server management
@@ -125,9 +140,11 @@ In addition to the built-in commands above, three types of commands appear dynam
 
 Skills defined in your `~/.pizzapi/skills/` directory (or registered by plugins) appear in the **Skills** group. They are prefixed with `skill:` internally but shown by their short name in the picker. Running a skill command sends its content to the agent.
 
-### Plugin commands
+### Plugin and extension commands
 
-Claude Code plugins can register custom commands. These appear in the **Plugin Commands** group. Each shows the command name and description provided by the plugin.
+Claude Code plugins and PizzaPi extensions can register custom commands. These appear in the **Plugin Commands** group or as runner-provided commands. Each shows the command name and description provided by the plugin or extension.
+
+For example, the extension SDK reference includes a `pi.registerCommand("send-email", ...)` example. A plugin or extension that registers it appears as `/send-email`; it is not a built-in PizzaPi command unless that extension is installed and loaded.
 
 ### Prompt template commands
 
@@ -145,7 +162,13 @@ Prompt templates from your configuration appear in the **Prompt Templates** grou
 /effort                       # Cycle to the next reasoning effort level
 /plan                         # Toggle read-only plan mode
 /copy                         # Copy last response to clipboard
+/memory                       # Show project memory files and loaded index
+/recap last                   # Show the latest saved recap
+/workflow                     # List saved workflows
+/workflow audit {"files":["src/index.ts"]}
 /mcp status                   # Check MCP server health
 /mcp disable filesystem       # Disable the "filesystem" MCP server
+/skills reload                # Re-scan skills and other resources
+/plugin list                  # Show plugin marketplaces and installed plugins
 /agents reviewer              # Start a session as the "reviewer" agent
 ```

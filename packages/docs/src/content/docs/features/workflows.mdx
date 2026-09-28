@@ -1,0 +1,130 @@
+---
+title: Workflows
+description: Run large fan-out tasks with JavaScript workflows that orchestrate subagents and return only the aggregate result.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Workflows run a JavaScript script inside the runner. The script can call subagents, fan out over lists, keep intermediate results in local variables, and return one final value to the parent session.
+
+Use workflows when a task would otherwise create many `subagent` calls and flood the parent context with intermediate output: audits, migrations, cross-checks, and bulk reviews.
+
+<Aside type="caution" title="Trust model">
+  Workflow scripts run in-process with the runner's own privileges. They are not sandboxed. Only run scripts you authored or reviewed.
+</Aside>
+
+## Agent tools
+
+| Tool | Description |
+|------|-------------|
+| `run_workflow` | Execute a JavaScript workflow script. |
+| `run_saved_workflow` | Load and execute a workflow saved on disk. |
+| `list_workflows` | List saved project and user workflows. |
+
+`run_workflow` accepts:
+
+| Parameter | Description |
+|-----------|-------------|
+| `script` | JavaScript source for an async function body. |
+| `args` | Optional value exposed to the script as `args`. |
+| `name` | Optional display name for the run. |
+| `save` | Optional `{ name, scope }` object. Saves the script after a successful run. `scope` is `project` or `user`; default is `project`. |
+
+`run_saved_workflow` accepts `name` and optional `args`.
+
+## Slash command
+
+The `/workflow` command runs saved workflows without asking the agent first.
+
+| Command | Description |
+|---------|-------------|
+| `/workflow` | List saved workflows. |
+| `/workflow new <name>` | Create a starter workflow file. Edit it on disk before running it. |
+| `/workflow <name>` | Run a saved workflow with no args. |
+| `/workflow <name> <json-args>` | Run a saved workflow with JSON args, exposed to the script as `args`. |
+
+Example:
+
+```bash
+/workflow audit-files {"files":["src/auth.ts","src/api.ts"]}
+```
+
+## Script API
+
+Four names are injected into the script:
+
+| Name | Description |
+|------|-------------|
+| `agent(prompt, opts?)` | Runs one `task` subagent and returns its final text. |
+| `agent(prompt, { schema })` | Parses the agent's final text with `JSON.parse`; if parsing fails, returns the text. |
+| `agent(prompt, { model })` | Overrides the model for that subagent. `model` may be a model object or a `provider:modelId` string. |
+| `agent(prompt, { label })` | Adds a label for workflow progress display. |
+| `pipeline(list, fn)` | Runs `fn(item, index)` over every array item with bounded concurrency. It is usually used to call `agent()` for each item. |
+| `args` | The optional input passed to `run_workflow`, `run_saved_workflow`, or `/workflow <name> <json-args>`. |
+| `console` | Normal console object for debugging. Console output is not the workflow result. |
+
+Only the script's `return` value comes back to the parent session. Agent outputs and pipeline intermediates stay in script variables unless you include them in the returned value.
+
+Returned values must be JSON-serializable. Strings are returned as-is; other serializable values are formatted as JSON.
+
+## Limits
+
+| Limit | Value |
+|-------|-------|
+| Concurrent `agent()` calls per workflow | `100` |
+| Total `agent()` calls per workflow | `1000` |
+
+The concurrency cap applies to every `agent()` call in the run, including calls made inside `pipeline()` or direct `Promise.all()` fan-out.
+
+## Saved workflow files
+
+Saved workflows are JavaScript files:
+
+| Scope | Location |
+|-------|----------|
+| Project | `<cwd>/.pizzapi/workflows/<name>.js` |
+| User | `~/.pizzapi/workflows/<name>.js` |
+
+Project workflows shadow user workflows with the same name. Workflow names are sanitized before writing. Saved files may start with an `export const meta = { ... }` header containing the saved name and optional description.
+
+## Example: audit every file in a list
+
+This script asks one subagent to review each file, then returns only the audit summary array.
+
+```js
+const files = args?.files ?? [];
+if (!Array.isArray(files) || files.length === 0) {
+  throw new Error("args.files must be a non-empty array");
+}
+
+const findings = await pipeline(files, async (file) => {
+  return await agent(
+    `Read ${file} and audit it for correctness, security, and missing tests. ` +
+      `Return JSON: {"file": string, "risk": "low"|"medium"|"high", "findings": string[]}.`,
+    {
+      label: file,
+      schema: {
+        type: "object",
+        properties: {
+          file: { type: "string" },
+          risk: { type: "string" },
+          findings: { type: "array", items: { type: "string" } },
+        },
+        required: ["file", "risk", "findings"],
+      },
+    },
+  );
+});
+
+return findings;
+```
+
+Save it from the agent with `run_workflow` and `save: { "name": "audit-files", "scope": "project" }`, then run it later with:
+
+```bash
+/workflow audit-files {"files":["packages/cli/src/config.ts","packages/server/src/index.ts"]}
+```
+
+## `ultracode` opt-in
+
+The built-in agent prompt treats the literal keyword `ultracode`, or a natural-language request to use a workflow, as an opt-in signal to write and run a workflow for that task. It is not a default fallback for every multi-step task.

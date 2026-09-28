@@ -142,6 +142,81 @@ Limit which models appear when cycling:
 }
 ```
 
+### Hidden models
+
+The web UI's model-visibility preference syncs hidden models to the runner as `PIZZAPI_HIDDEN_MODELS`, a JSON array of `provider/modelId` keys:
+
+```bash
+export PIZZAPI_HIDDEN_MODELS='["openrouter/vendor/model","ollama-cloud/glm-5.2"]'
+```
+
+Workers read this list when listing, switching, cycling, and spawning model-aware helpers. Mid-session changes arrive through a relay `hidden_models_update` and refresh the worker's environment. This is a UI preference and hard block by model name; it is not a security boundary.
+
+### Fallback models
+
+`fallbackModels` is an ordered chain in `~/.pizzapi/settings.json`:
+
+```json
+{
+  "fallbackModels": [
+    "openai-codex:gpt-5.5",
+    "ollama-cloud:glm-5.2"
+  ]
+}
+```
+
+Fallback runs only when the current assistant turn ends with `stopReason: "error"` and the error text matches a usage-limit, quota, rate-limit, context-window, or provider-capacity condition. PizzaPi records the last user input for the session, switches to the next authenticated fallback model, and re-sends that input as a steer message.
+
+Cascade behavior:
+
+1. If the current model is in the fallback chain, PizzaPi starts after that entry.
+2. Otherwise it starts at the beginning of the chain.
+3. Models that cannot be resolved, have already been tried for this prompt, or lack configured auth are skipped.
+4. The process repeats until a fallback succeeds or the chain is exhausted.
+
+The UI receives a visible `fallback_status` notice such as “Primary model hit a provider limit. Retrying with …”. If no captured input exists, PizzaPi sends a generic retry instruction instead of silently doing nothing.
+
+---
+
+## Bundled provider extensions
+
+PizzaPi adds a few provider helpers on top of pi's built-in catalog.
+
+| Provider | Auth | Catalog behavior |
+|----------|------|------------------|
+| `ollama-cloud` | `OLLAMA_API_KEY` or an `ollama-cloud` API-key entry in `~/.pizzapi/auth.json` | Registered by a PizzaPi extension with a static fallback catalog; the runner/worker refreshes a live cache at `~/.pizzapi/ollama-cloud-models-cache.json`. |
+| `openrouter` | pi-ai's OpenRouter auth (`OPENROUTER_API_KEY` and supported stored auth) | Fetches `https://openrouter.ai/api/v1/models`, keeps tool-capable models, maps pricing/context/modality metadata, and caches for 24 hours at `~/.pizzapi/openrouter-models-cache.json`. |
+| `nvidia` | `NVIDIA_API_KEY` | Fetches `https://integrate.api.nvidia.com/v1/models`, filters obvious non-chat models, unions live IDs with pi-ai's static catalog, applies NVIDIA reasoning-effort constraints, and caches for 24 hours at `~/.pizzapi/nvidia-models-cache.json`. |
+
+OpenRouter and NVIDIA keep pi-ai's native auth and streaming behavior; PizzaPi swaps the model catalog used by the runtime. If a live fetch fails or no cache exists, the provider falls back to the static pi-ai catalog.
+
+---
+
+## Usage and cost tracking
+
+PizzaPi tracks two related things:
+
+| Data | Source | Where it appears |
+|------|--------|------------------|
+| Per-turn tokens and cost | Assistant message `usage` fields, including `input`, `output`, `cacheRead`, `cacheWrite`, and `usage.cost.total` | Session analysis / inspector panels and usage dashboards. |
+| Subscription quota windows | Provider usage APIs for Anthropic and OpenAI Codex | Usage indicator badges in the web UI. |
+
+`format-usage.ts` maps display providers to quota providers: `claude-subscription` uses Anthropic quota, `openai`/`openai-codex` use OpenAI Codex quota, and Google/Gemini CLI providers map to `google-gemini-cli` when usage data exists.
+
+`remote-provider-usage.ts` caches quota windows in the worker and, under the runner daemon, reads the daemon's shared usage cache file instead of every worker polling providers independently. Anthropic usage is cached for 15 minutes; other usage data uses a 5-minute cache. Forced refresh requests go through runner IPC when available.
+
+---
+
+## Provider request logging
+
+Set `PIZZAPI_LOG_PROVIDER_REQUEST=1` to log summarized outbound Anthropic `/v1/messages` requests for diagnostics:
+
+```bash
+PIZZAPI_LOG_PROVIDER_REQUEST=1 pizzapi
+```
+
+The logger wraps `globalThis.fetch` and only matches `https://api.anthropic.com/v1/messages...` by exact hostname and path prefix. It logs request URL, headers, and a summarized body: system block count/characters, message count, tool names, and other top-level fields. Authorization is not printed raw; bearer tokens are reduced to a short fingerprint.
+
 ---
 
 ## Custom Models
