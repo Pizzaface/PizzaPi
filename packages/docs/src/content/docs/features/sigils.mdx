@@ -1,0 +1,124 @@
+---
+title: Sigils
+description: Inline references that the PizzaPi web UI resolves into live pills.
+---
+
+Sigils are inline tokens in assistant output. The web UI parses them and renders compact live pills with icons, status, links, hover previews, and copy/export text.
+
+```md
+Review [[pr:123]] on [[branch:feat/triggers]] after [[time:2026-03-30T08:00Z]].
+```
+
+The parser skips sigils inside inline code and fenced code blocks.
+
+---
+
+## Syntax
+
+```text
+[[type:id key=value key="quoted value"]]
+```
+
+| Part | Rules |
+|------|-------|
+| `type` | Starts with a letter; may contain word characters and hyphens. Parsed case-insensitively and normalized to lowercase. |
+| `id` | Runs until whitespace or `]]`; cannot contain `[` or spaces. |
+| params | Optional `key=value` pairs. Values can be unquoted non-space text or double-quoted strings. |
+
+Examples:
+
+```md
+[[file:src/index.ts]]
+[[link:https://example.com label="deploy logs"]]
+[[status:ci conclusion=failure]]
+[[action:choose question="Which branch?" options="main,develop,release"]]
+```
+
+---
+
+## Built-in sigils
+
+These are always available and render client-side:
+
+| Type | Purpose |
+|------|---------|
+| `action` | Interactive human action button. Variants: `confirm`, `choose`, `input`. |
+| `file` | File path reference. Opens in the file explorer via `pizzapi://file/...`. |
+| `status` | Status indicator. |
+| `error` | Error/warning indicator. Aliases: `warn`, `notice`. |
+| `cost` | Cost/price value. Aliases: `price`, `budget`. |
+| `duration` | Time duration. Alias: `elapsed`. |
+| `session` | Agent session reference. |
+| `model` | Model reference. Alias: `llm`. |
+| `cmd` | Shell command reference. Aliases: `bash`, `shell`. |
+| `tag` | Tag or label. |
+| `test` | Test case reference. |
+| `link` | External URL. Aliases: `url`, `href`. |
+| `diff` | Diff or changeset reference. |
+| `skill` | Agent skill reference. |
+| `runner` | Runner reference. |
+| `service` | Runner service reference. Alias: `plugin`. |
+| `trigger` | Trigger/event reference. |
+| `tunnel` | Relay tunnel/local port reference. |
+| `agent` | Subagent definition reference. |
+
+Built-in Git and Time services also advertise service sigils such as `commit`, `branch`, `repo`, `stash`, `time`, and `countdown`.
+
+---
+
+## Service-provided sigils
+
+Runner services can advertise additional types. The built-in prompt names common service-provided examples: `pr`, `issue`, `branch`, `commit`, `idea`, and `epic`. The built-in Git service currently advertises `commit`, `branch`, `repo`, and `stash`.
+
+Use `list_available_sigils` before emitting service sigils. It returns built-ins plus the service-provided definitions for the current runner, including descriptions, examples, variants, aliases, resolver paths, and service IDs. In autonomous child sessions, `list_available_sigils` omits `action` and tells the agent to use `AskUserQuestion` instead.
+
+---
+
+## Action sigils
+
+`action` sigils are for human viewers in the web UI only.
+
+```md
+[[action:confirm question="Proceed to implementation?"]]
+[[action:choose question="Pick one" options="a,b,c"]]
+[[action:input question="What branch name?" placeholder="feat/..." ]]
+```
+
+If no human is watching — especially in autonomous or child sessions — do not emit action sigils. Use `AskUserQuestion`; it reaches the parent/monitor as a trigger.
+
+---
+
+## Resolve, caching, and text fallback
+
+A sigil definition may include a `resolve` path. The UI calls the service through the runner tunnel, replacing `{id}` in the path and passing params plus the session cwd when available. Resolution can return `text`, `title`, `status`, `author`, `url`, `description`, `icon`, or extra fields.
+
+The UI caches resolve results by type, id, and session cwd. Cache state is reset on runner/service metadata changes or reconnect. Failed lookups are cached after bounded retries until the cache is invalidated.
+
+For copy/export, PizzaPi resolves sigils to plain text. It uses `text`, then `title`, then `url`; if resolution fails or no text is available, the original `[[type:id ...]]` token is preserved.
+
+---
+
+## Declaring sigils in a runner service
+
+A runner service declares sigils in its package service manifest, either inline or through a sidecar file:
+
+```json
+{
+  "id": "github",
+  "label": "GitHub",
+  "entry": "./service.ts",
+  "sigils": [
+    {
+      "type": "pr",
+      "label": "Pull Request",
+      "icon": "git-pull-request",
+      "description": "GitHub pull request reference",
+      "example": "[[pr:123]]",
+      "resolve": "/api/resolve/pr/{id}",
+      "aliases": ["pull-request"]
+    }
+  ]
+}
+```
+
+Services with a panel use their panel port for resolve calls. Sigil-only services can announce a separate sigil resolve server. See [Runner Services](/PizzaPi/customization/runner-services/) for the service manifest and lifecycle details.

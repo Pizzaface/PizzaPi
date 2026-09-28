@@ -32,6 +32,101 @@ Each session is a single `.jsonl` file with a tree structure. Every entry has an
 
 ---
 
+## Session Inspector / analysis
+
+The web UI's **Analysis** panel shows context and cache telemetry for the active session. Live sessions receive analysis in session metadata; the panel can also fetch reconstructed analysis from:
+
+```
+GET /api/runners/:runnerId/analysis/:sessionId
+```
+
+The runner handles that request by parsing the saved transcript and reconstructing context growth from assistant usage records. The panel shows:
+
+| Metric | Source |
+|--------|--------|
+| Cache hit | `cacheRead / (input + cacheRead + cacheWrite)` when usage telemetry is complete. |
+| Estimated cache savings | Provider pricing applied to cache-read tokens when pricing is known. |
+| Peak context | Largest observed prompt size. |
+| Compactions | Compaction boundaries found in the transcript. |
+| Context growth | Per-turn blocks in a sparkline and treemap. |
+| Cost by model | `usage.cost.total` accumulated per provider/model. |
+
+Failed turns are counted for billed token/cost totals when usage exists, but they are treated as separators for context-growth continuity. Missing usage makes cache metrics unknown instead of guessing.
+
+---
+
+## Background shells
+
+PizzaPi replaces pi's `bash` execution layer with background-aware shell handling.
+
+| Tool / command | Purpose |
+|----------------|---------|
+| `bash` with `run_in_background: true` | Start a command, return immediately, and keep stdout/stderr in a temp log. |
+| `bash` without `run_in_background` | Streams in the foreground until the configured threshold, then auto-backgrounds if still running. |
+| `bash_output` | List background shells, or read new output for one PID since the last read. |
+| `kill_shell` | Kill a background shell and its process group. |
+| `/background` or <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>b</kbd> | Send the currently running foreground bash call to the background. |
+| `/shells` | List background shells and status. |
+
+When a background shell exits, PizzaPi sends a `background-bash` message back into the session with the exit code or signal and the log path. The agent is instructed not to `sleep`-poll; it should continue work and use `bash_output` only when it needs intermediate output.
+
+Configure the foreground window in `~/.pizzapi/config.json`:
+
+```json
+{
+  "bash": {
+    "backgroundAfterSeconds": 300
+  }
+}
+```
+
+Override for one process with `PIZZAPI_BASH_BACKGROUND_SECONDS`. `0` backgrounds immediately.
+
+---
+
+## Session attachments
+
+Remote image/file attachments sent through the web UI are downloaded by the runner and saved per session by the `session-attachments` extension. The default storage path is:
+
+```
+~/.pizzapi/session-attachments/{sessionId}/
+```
+
+Each saved file gets a `.meta.json` sidecar with the original filename, MIME type, byte size, saved timestamp, and stored filename. Filenames and session IDs are sanitized for filesystem use, and duplicate filenames are suffixed (`file-2.png`, `file-3.png`, ...).
+
+Override the root directory with:
+
+```bash
+export PIZZAPI_SESSION_ATTACHMENTS_DIR=/path/to/session-attachments
+```
+
+Attachments are session-scoped. `cleanupSessionAttachments()` removes the session directory when a session ends; `sweepOrphanedAttachments()` removes directories that no longer match active sessions after restarts or crashes.
+
+---
+
+## Automatic commit-message generation
+
+The Git panel can request a commit-message suggestion for staged changes. The runner's Git service handles `git_commit_message_suggest` by reading the staged diff and asking the model-backed generator first. If model generation fails, times out, has no auth, or returns no subject, the Git service falls back to its deterministic staged-file heuristic.
+
+The model generator:
+
+- reads auth from `~/.pizzapi/auth.json` and custom models from `~/.pizzapi/models.json` under the configured agent directory;
+- registers the Ollama Cloud provider explicitly so `ollama-cloud` can be selected outside a live extension session;
+- sends at most the first 20,000 characters of the staged diff;
+- asks for a conventional commit message only;
+- times out after 30 seconds;
+- picks a cheap/fast available model first (`mini`, `flash-lite`, or `haiku`; then `flash`/`fast`; otherwise the first available model).
+
+---
+
+## Session processes panel
+
+The runner tracks OS processes spawned by a session so the web UI can show a **Processes** panel. Background shells are listed with PID, command, title, status, runtime, and log path. The panel can tail a background shell's log and send a kill request for the shell or other listed session process.
+
+The TUI also has a lightweight session-processes widget. It polls the session's process group every five seconds using `pgrep -g 0` and `ps`, then shows a compact line such as `⚙ 2 procs vite:1234 · bun:5678`. If the platform lacks those commands, the widget stays hidden.
+
+---
+
 ## Branching with `/tree`
 
 The `/tree` command opens a tree-based navigator showing your full conversation history. Unlike linear chat, pi sessions form a tree — every time you go back and try a different approach, a new branch is created.

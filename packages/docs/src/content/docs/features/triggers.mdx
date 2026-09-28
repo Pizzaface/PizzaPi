@@ -1,0 +1,213 @@
+---
+title: Triggers & Routes
+description: Publish events into PizzaPi and route them to existing or newly spawned agent sessions.
+---
+
+PizzaPi's trigger system is a single Event → Route → Delivery pipeline.
+
+- **Events** are published facts with namespaced types such as `github:pr_comment`, `lifecycle:plan_review`, `time:at`, or `time:cron`.
+- **Routes** subscribe to an event type and decide where matching events go: an existing session, or a spawn target that creates a new session.
+- **Deliveries** are durable records for each session that received an event.
+
+Runner services advertise trigger definitions. Agents discover them with `list_available_triggers`, subscribe with routes, and receive matching deliveries as injected trigger messages.
+
+---
+
+## Event types
+
+Event types must be namespaced: `namespace:name`. Examples in the codebase include:
+
+| Type | Source |
+|------|--------|
+| `lifecycle:*` | Child-session questions, plan reviews, completion, escalation. |
+| `time:timer_fired` | Built-in delay timer. |
+| `time:at` | Built-in one-shot absolute time schedule. |
+| `time:cron` | Built-in recurring UTC cron schedule. |
+| `github:pr_comment` | Example service/webhook event type. |
+
+Use `list_available_triggers` in a session to see the trigger definitions declared by that runner's services. The output includes each trigger's type, label, description, optional schema, params, and which types the session is already subscribed to.
+
+---
+
+## Agent tools
+
+### `subscribe_trigger`
+
+Creates a Route targeting a session. The returned `subscriptionId` is the Route ID.
+
+```json
+{
+  "triggerType": "time:cron",
+  "params": { "cron": "0 9 * * *", "message": "Review overnight failures" }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `triggerType` | Event type to subscribe to. |
+| `sessionId` | Optional target session. Defaults to the current session. |
+| `params` | JSON-safe params forwarded to the service. For `time:*`, PizzaPi also stores the current `cwd` and resume path when available. |
+| `filters` | Payload filters: `{ field, value, op?, caseSensitive? }`. `op` is `eq` or `contains`; string matching is case-insensitive unless `caseSensitive` is true. |
+| `filterMode` | `and` (default) or `or` for multiple filters. |
+
+Subscriptions default to `deliverAs: "followUp"`, so service events queue behind the current turn instead of interrupting it.
+
+### `update_trigger_subscription`
+
+Updates a Route's `params`, `filters`, or `filterMode`. Prefer `subscriptionId`; `triggerType` without `subscriptionId` is a legacy bulk update for every matching route targeting the session.
+
+### `unsubscribe_trigger`
+
+Deletes a Route. Prefer `subscriptionId`; `triggerType` without `subscriptionId` is a legacy bulk unsubscribe. Unsubscribing an already-missing route is treated as success.
+
+### `publish_event`
+
+Publishes an Event through `/api/events`.
+
+```json
+{
+  "type": "github:pr_comment",
+  "payload": { "repo": "pizzaface/PizzaPi", "pr": 123 },
+  "summary": "New PR comment"
+}
+```
+
+Without `sessionId`, every matching Route receives the event. With `sessionId`, PizzaPi creates an implicit single-session route after checking ownership.
+
+| Field | Description |
+|-------|-------------|
+| `type` | Namespaced event type. |
+| `payload` | Object payload. Defaults to `{}` in the HTTP API when omitted. |
+| `summary` | Optional text shown in feeds. |
+| `sessionId` | Optional direct target session. |
+| `deliverAs` | `steer` interrupts the current turn; `followUp` queues after the current turn. Direct publishes default to `steer`. |
+
+### `respond_to_trigger`
+
+Answers a pending trigger delivery. Actions are structured:
+
+| Action | Use |
+|--------|-----|
+| `approve` | Accept a plan or approval request. |
+| `cancel` | Reject/cancel. |
+| `edit` | Send requested changes in `response`. |
+| `ack` | Acknowledge completion. For `session_complete`, this cleans up the child session. |
+| `followUp` | Send more work or instructions. For `session_complete`, this resumes the child with a new input message. |
+
+For contract-bearing events, the action must be one allowed by the event's Response Contract.
+
+### `escalate_trigger`
+
+Publishes a `lifecycle:escalation` event to the current session so the web UI surfaces it to the human viewer. The original trigger stays pending so a later `respond_to_trigger` still routes the answer back to the child/source.
+
+### `tell_child`
+
+Sends a steering message to a linked child session and interrupts active work at the next agent boundary.
+
+---
+
+## Response Contracts and escalation
+
+`lifecycle:*` events can carry a Response Contract: allowed actions, optional TTL, and whether unanswered deliveries should escalate. Contract deliveries are respondable until answered; expired or escalated deliveries can still be answered later.
+
+Escalation follows the engine chain described in code and ADR-0002: parent session first, then human viewer notification. Responses are recorded durably and relayed back to the source session when it is available; if the source is offline, the relay is retried on its next registration.
+
+---
+
+## Filters and params
+
+`params` configure the source service. `filters` decide whether a published payload reaches a Route.
+
+```json
+{
+  "triggerType": "github:pr_comment",
+  "params": { "repo": "pizzaface/PizzaPi" },
+  "filters": [
+    { "field": "author", "value": "pizzaface" },
+    { "field": "body", "op": "contains", "value": "urgent" }
+  ],
+  "filterMode": "and"
+}
+```
+
+Filter values can be strings, numbers, booleans, or arrays of those values. Arrays mean “any of these values” within one filter.
+
+---
+
+## Schedules
+
+The built-in Time service declares `time:timer_fired`, `time:at`, and `time:cron`.
+
+| Type | Semantics |
+|------|-----------|
+| `time:timer_fired` | One-shot relative delay. The service persists the absolute deadline so runner restarts do not reset the timer. |
+| `time:at` | One-shot absolute time. If a paused/offline runner reconciles the route after the target time has already passed, the schedule is retired instead of firing late. |
+| `time:cron` | Recurring 5-field cron in UTC. Progress is runner-local and persisted in `~/.pizzapi/time-service-state.json`; a missed persisted fire catches up once on the next checker tick, not once per missed interval. |
+
+Recurring schedules can outlive a session. If the owning session is gone, the Time service can spawn or re-own a replacement session using the stored cwd/resume path when available.
+
+---
+
+## HTTP API
+
+### `POST /api/events`
+
+Publishes an Event. Auth is API key or session cookie.
+
+```json
+{
+  "type": "github:pr_comment",
+  "payload": {},
+  "summary": "Test trigger",
+  "routeIds": ["rt_abc123"],
+  "target": { "sessionId": "sess_abc", "deliverAs": "steer" }
+}
+```
+
+`routeIds` is an allowlist: only those routes are considered, and each still must pass owner, type, enabled-state, and filter checks. `payload` defaults to `{}`.
+
+### `/api/routes`
+
+Routes are managed with:
+
+| Method | Endpoint | Notes |
+|--------|----------|-------|
+| `GET` | `/api/routes` | List manageable routes. Optional `eventType` query. |
+| `POST` | `/api/routes` | Create a route. |
+| `PUT` | `/api/routes/{routeId}` | Update mutable fields. |
+| `DELETE` | `/api/routes/{routeId}` | Delete/unsubscribe. |
+
+There is no `GET /api/routes/{routeId}` endpoint.
+
+Route targets are either an existing session or a spawn spec:
+
+```json
+{
+  "eventType": "github:pr_comment",
+  "target": { "kind": "session", "sessionId": "sess_abc", "offlinePolicy": "wait" },
+  "deliverAs": "followUp",
+  "filters": [{ "field": "repo", "value": "pizzaface/PizzaPi" }]
+}
+```
+
+```json
+{
+  "eventType": "github:pr_comment",
+  "target": { "kind": "spawn", "spec": { "runnerId": "runner_abc", "promptTemplate": "Review this PR", "cwd": "/work/repo" } },
+  "deliverAs": "followUp"
+}
+```
+
+---
+
+## Web UI feed
+
+The runner detail view includes an Events/Routes feed. It reads `GET /api/events`, expands deliveries with `GET /api/events/{eventId}/deliveries`, and manages routes through `/api/routes`. The same panel can publish a test Event through a selected route by sending `routeIds: [routeId]`.
+
+---
+
+## Webhooks and runner services
+
+Webhooks are HTTP adapters into this same system: a webhook fire publishes a `webhook:<slug>` Event, and Routes decide whether it reaches existing sessions or spawns new sessions.
+
+Runner services declare trigger definitions in their service manifest (inline or sidecar). Those definitions are announced by the runner, shown in the web UI, and returned by `list_available_triggers`. Services that need schedules or external integrations should publish Events and let Routes handle delivery.

@@ -116,14 +116,29 @@ A documented subset of settings can also be overridden with **environment variab
     "minTurnsBeforeEvaluate": 1
   },
 
+  // Subagent execution limits. Only these two subagent keys are supported;
+  // bash backgrounding and tool-search persistence are configured separately.
+  "subagent": {
+    "maxParallelTasks": 8,
+    "maxConcurrency": 4
+  },
+
   // Dynamic MCP tool discovery — defers MCP tools when their descriptions
   // exceed a character threshold, letting agents load them on demand.
+  // tokenThreshold belongs here, not under goal.
   "toolSearch": {
     "enabled": false,
     "tokenThreshold": 10000,
     "maxResults": 5,
     "keepLoadedTools": true
-  }
+  },
+
+  // Global trust grants for daemon services declared by installed pi.pizzapi
+  // overlay packages. Managed by `pizza install --allow-daemon-services` and
+  // `pizza config grant|revoke`; project config cannot self-grant services.
+  "overlayServiceGrants": [
+    { "package": "npm:@acme/pi-github", "services": ["github"] }
+  ]
 }
 ```
 
@@ -153,6 +168,9 @@ A documented subset of settings can also be overridden with **environment variab
 | `oauthCallbackPort` | `number` | `0` | Global default local callback port for MCP OAuth redirect URI. A single OAuth server honors this port; multiple OAuth servers without per-server ports use OS-assigned ephemeral ports to avoid collisions. `0` means OS-assigned ephemeral port. Per-server values take precedence. |
 | `mcpTimeout` | `number` | `30000` | Timeout (ms) for each MCP server's `tools/list` call during startup. Set to `0` to disable. |
 | `toolSearch` | `object` | — | Dynamic MCP tool discovery config. See [MCP tool search](/PizzaPi/customization/mcp-servers/#tool-search-and-deferred-loading). |
+| `toolSearch.tokenThreshold` | `number` | `10000` | Character threshold for total MCP tool definitions before tools are deferred. This is not a `/goal` setting. |
+| `toolSearch.maxResults` | `number` | `5` | Maximum tools returned by each `search_tools` call. |
+| `toolSearch.keepLoadedTools` | `boolean` | `true` | Keep tools loaded after on-demand discovery. Set `false` to deactivate discovered tools after each turn. |
 | `bash.backgroundAfterSeconds` | `number` | `15` | Seconds a `bash` command streams output in the foreground before it auto-backgrounds. `0` = background immediately. See [Bash auto-backgrounding](#bash-auto-backgrounding). |
 | `sandbox` | `object` | *(see below)* | OS-level sandbox config. See [Agent Sandbox](/PizzaPi/security/sandbox/). |
 | `sandbox.mode` | `string` | `"basic"` | Preset: `"none"`, `"basic"`, or `"full"`. |
@@ -161,10 +179,24 @@ A documented subset of settings can also be overridden with **environment variab
 | `sandbox.filesystem.denyRead` | `string[]` | *merged with preset* | Additional paths blocked from reading. |
 | `sandbox.filesystem.allowWrite` | `string[]` | `[".", "/tmp"]` | Paths allowed for writing (replaces preset when set). |
 | `sandbox.filesystem.denyWrite` | `string[]` | *merged with preset* | Additional paths blocked from writing. |
+| `sandbox.network.allowLocalBinding` | `boolean` | srt default | Pass-through sandbox-runtime network override. |
+| `sandbox.network.allowUnixSockets` | `string[]` | srt default | Pass-through sandbox-runtime Unix socket allowlist. |
+| `sandbox.network.allowAllUnixSockets` | `boolean` | srt default | Pass-through sandbox-runtime Unix socket override. |
+| `sandbox.network.httpProxyPort` | `number` | srt default | Pass-through sandbox-runtime HTTP proxy port override. |
+| `sandbox.network.socksProxyPort` | `number` | srt default | Pass-through sandbox-runtime SOCKS proxy port override. |
+| `sandbox.filesystem.allowGitConfig` | `boolean` | `false` | Allow writes to `.gitconfig` inside the sandbox. |
+| `sandbox.ignoreViolations` | `Record<string, string[]>` | — | Pass-through sandbox-runtime ignore rules. |
+| `sandbox.enableWeakerNetworkIsolation` | `boolean` | — | Pass-through sandbox-runtime weaker network isolation switch. |
+| `sandbox.enableWeakerNestedSandbox` | `boolean` | — | Pass-through sandbox-runtime nested sandbox switch. |
+| `sandbox.mandatoryDenySearchDepth` | `number` | `3` | Pass-through sandbox-runtime mandatory-deny path scan depth. |
+| `sandbox.allowPty` | `boolean` | — | Allow pseudo-terminal allocation inside the sandbox. |
+| `srtConfig` | — | — | Not a config-file key. PizzaPi builds this resolved sandbox-runtime object internally from `sandbox`. |
 | `slowStartupWarning` | `boolean` | `true` | Show warnings when startup takes longer than expected (slow MCP servers, etc.). |
 | `disabledRunnerServices` | `string[]` | `[]` | Runner service IDs to skip. Built-in: `"terminal"`, `"file-explorer"`, `"git"`, `"memory"`, `"process"`, `"time"`, `"tunnel"` (`terminal`, `file-explorer`, `git`, `time`, `tunnel` cannot be disabled at runtime). Package services use the id declared under `pi.pizzapi.services` — see [Runner Services](/PizzaPi/customization/runner-services/). |
 | `subagent.maxParallelTasks` | `number` | `8` | Max parallel tasks per call and active agent slots across background calls. **Global config only.** |
 | `subagent.maxConcurrency` | `number` | `4` | Max concurrent agent sessions within one parallel call. **Global config only.** |
+| `subagent.backgroundAfterSeconds` | — | — | Not supported. Use `bash.backgroundAfterSeconds` for shell auto-backgrounding. |
+| `subagent.keepLoadedTools` | — | — | Not supported. Use `toolSearch.keepLoadedTools` for deferred MCP tools. |
 | `goal.evaluatorModel` | `string` | the session's own model | Advanced: pin a model (`provider:modelId` or `modelId`) for the `/goal` LLM evaluator. Opts out of session-context cache reuse; falls back to the cheapest authenticated text model if the pinned model has no credentials. |
 | `goal.evaluatorMaxTokens` | `number` | `512` | Maximum output tokens for each `/goal` evaluator call. |
 | `goal.evaluateEveryNTurns` | `number` | `1` | Default cadence for the LLM evaluator, in completed agent runs. `1` = every run. Ignored by the keyword evaluator. |
@@ -172,6 +204,10 @@ A documented subset of settings can also be overridden with **environment variab
 | `allowProjectProviders` | `boolean` | — | **Obsolete and ignored.** Project-local `.pizzapi/providers/` is no longer loaded. PizzaPi warns if this key is still present. |
 | `providers` | `object` | — | **Obsolete and ignored.** The extension-provider layer was removed; PizzaPi warns if this key is still present. Use a [runner service](/PizzaPi/customization/runner-services/) for external integrations, or a plain pi extension for per-session behaviour. |
 | `providerSettings` | `object` | — | Provider-specific settings. See [Web Search](#web-search) and [Per-Provider Overrides](#per-provider-overrides) below. |
+| `providerSettings.<provider>.webSearch` | `object` | — | Provider web-search config. Supported by `anthropic` and `ollama-cloud` as documented below. |
+| `overlayServiceGrants` | `{ package: string; services: string[] }[]` | `[]` | Global trust grants for daemon services declared by installed pi.pizzapi overlay packages. Managed by PizzaPi package commands; project configs cannot self-authorize these grants. |
+| `overlayServiceGrants[].package` | `string` | — | Normalized package identity, e.g. `npm:@acme/pi-github` or `local:/abs/path`. |
+| `overlayServiceGrants[].services` | `string[]` | — | Exact service IDs granted for that package. New services added by a package update are not auto-granted. |
 
 ---
 
@@ -349,6 +385,20 @@ Only the settings listed here have environment-variable overrides. Overrides app
 | `PIZZAPI_DISABLED_RUNNER_SERVICES` | `disabledRunnerServices` | Comma-separated list of service IDs to skip (e.g. `git,time`) |
 | `PIZZAPI_SANDBOX` | `sandbox.mode` | Override sandbox mode: `none`, `basic`, or `full` ([Sandbox](/PizzaPi/security/sandbox/)) |
 | `PIZZAPI_NO_SANDBOX` | — | Set to `1` to disable sandbox (shorthand for `none`) ([Sandbox](/PizzaPi/security/sandbox/)) |
+| `PIZZAPI_DEBUG` | — | Set to `1` for debug-level PizzaPi CLI logging, including de-duplicated config warnings. |
+| `PIZZAPI_LOG_PROVIDER_REQUEST` | — | Set to `1` to log summarized outbound Anthropic `/v1/messages` request data for diagnostics. Authorization headers are fingerprinted, not printed raw. |
+| `PIZZAPI_HIDDEN_MODELS` | — | JSON array of `provider/modelId` keys hidden from model listing/switching in worker sessions. Usually seeded and updated by the relay from the user's web preferences. |
+| `PIZZAPI_SUBAGENT_MODEL` | — | Default subagent/workflow model as `provider/modelId`; empty/unset means auto-select. Usually managed by the web UI. |
+| `PIZZAPI_SANDBOX_MODE` | — | Internal status set after sandbox initialization to the active resolved mode (`basic` or `full`). Use `PIZZAPI_SANDBOX` to request a mode. |
+| `PIZZAPI_RUNNER_STATE_PATH` | — | Override runner daemon state/lock file. Default: `~/.pizzapi/runner.json`. |
+| `PIZZAPI_RUNNER_USAGE_CACHE_PATH` | — | Override the runner-wide provider-usage cache file inherited by workers. Normally set by the daemon. |
+| `PIZZAPI_MCP_AUTH_DIR` | — | Override MCP OAuth token/client storage directory. Default: `~/.pizzapi/mcp-auth`. Useful for tests or isolated installs. |
+| `PIZZAPI_SOCKETIO_URL` | — | Override the Socket.IO HTTP(S) base URL. Default is derived from `relayUrl` by converting `ws`/`wss` to `http`/`https`. |
+| `PIZZAPI_CHANGELOG_PATH` | — | Override the PizzaPi CLI changelog path used by the patched upstream changelog reader; normally set automatically to `packages/cli/CHANGELOG.md` when present. |
+| `PIZZAPI_NTFY_URL` | — | Internal ntfy base URL used by the `pizza web` Docker stack for native Android push; compose sets it to `http://ntfy`. |
+| `PIZZAPI_ELICITATION_URL_PORT` | — | Test-fixture port for `extensions/mcp/elicitation-url-test-server.mjs`; unset uses a random port. |
+
+`PIZZAPI_WORKER_*` and `PIZZAPI_SESSION_*` variables are internal worker-session plumbing set by the daemon, not user configuration. Current internal keys include `PIZZAPI_WORKER_CWD`, `PIZZAPI_WORKER_INITIAL_PROMPT`, `PIZZAPI_WORKER_INITIAL_IMAGE_URLS`, `PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER`, `PIZZAPI_WORKER_INITIAL_MODEL_ID`, `PIZZAPI_WORKER_INITIAL_EFFORT`, `PIZZAPI_WORKER_PARENT_SESSION_ID`, `PIZZAPI_WORKER_AGENT_NAME`, `PIZZAPI_WORKER_AGENT_SYSTEM_PROMPT`, `PIZZAPI_WORKER_AGENT_TOOLS`, `PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS`, `PIZZAPI_WORKER_RESUME_PATH`, `PIZZAPI_WORKER_AUTO_CLOSE`, `PIZZAPI_SESSION_ID`, `PIZZAPI_SESSION_PROVIDER`, `PIZZAPI_SESSION_FILE`, `PIZZAPI_SESSION_PROC_FILE`, and `PIZZAPI_SESSION_ATTACHMENTS_DIR`.
 
 **Example:**
 
@@ -420,7 +470,7 @@ Edit directly or use the `/settings` command inside a session.
 }
 ```
 
-`fallbackModels` is an ordered list of model references (`provider:modelId` or just `modelId`). When the active model returns a rate-limit, quota, or provider-capacity error (e.g. Anthropic `overloaded_error`) after exhausting its retries, PizzaPi automatically switches to the first matching fallback in the list and retries the last user prompt. It cascades through the chain until a model succeeds or the chain is exhausted. Configure it from the web UI under **Runner → Settings → Models** or by editing `~/.pizzapi/settings.json` directly.
+`fallbackModels` is an ordered list of model references (`provider:modelId` or just `modelId`). Fallback runs only when a turn ends with `stopReason: "error"` and the final error message matches a usage-limit phrase (`usage limit`, `rate limit`, `quota`, `quota exceeded`, `resource exhausted`, `tokens per minute`, `requests per minute`, `output tokens per`, `context window`) or a provider-capacity phrase (`overloaded`, HTTP `529`, `throttl...`). Agent-core retries happen first; fallback sees the terminal failed turn, switches to the next configured fallback with credentials, and sends the last user input back as a steer message. It starts after the current model's position in the chain when present, otherwise at the beginning, skips unavailable/already-tried models, and cascades until one succeeds or no configured fallback is available. Configure it from the web UI under **Runner → Settings → Models** or by editing `~/.pizzapi/settings.json` directly.
 
 <Aside type="note">
   PizzaPi config (`~/.pizzapi/config.json`) controls the relay, MCP servers, hooks, sandbox, and PizzaPi extensions. Pi settings (`~/.pizzapi/settings.json`) control model defaults, compaction, retry, and session behavior. They are independent — don't mix them up.

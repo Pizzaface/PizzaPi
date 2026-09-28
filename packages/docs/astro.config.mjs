@@ -105,6 +105,10 @@ export default defineConfig({
                     { label: "Session Goals", slug: "features/goals" },
                     { label: "Pi Packages", slug: "features/pi-packages" },
                     { label: "Webhooks", slug: "features/webhooks" },
+                    { label: "Triggers & Routes", slug: "features/triggers" },
+                    { label: "Sigils", slug: "features/sigils" },
+                    { label: "Workflows", slug: "features/workflows" },
+                    { label: "Project Memory", slug: "features/memory" },
                     { label: "Tunnel Tools", slug: "features/tunnels" },
                 ] },
                 { label: "Customization", items: [

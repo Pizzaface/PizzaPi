@@ -1,0 +1,79 @@
+---
+title: Patches to pi
+description: Contributor reference for PizzaPi's Bun patches against upstream pi packages.
+sidebar:
+  order: 4
+---
+
+PizzaPi carries a small set of Bun patches for upstream pi packages. The source of truth is:
+
+- `patches/README.md`
+- `patches/@earendil-works%2F*.patch`
+- root `package.json` `patchedDependencies`
+- `packages/cli/src/patches.test.ts`
+
+Bun applies these patches automatically from `patchedDependencies` on every `bun install`. There is no postinstall script for pi patches.
+
+## Current patched packages
+
+| Package | Patch file | Why it exists |
+|---------|------------|---------------|
+| `@earendil-works/pi-agent-core@0.87.1` | `patches/@earendil-works%2Fpi-agent-core@0.87.1.patch` | Refreshes the agent loop's latest system prompt and tool list before each assistant response. This lets `search_tools` and other dynamic tool/prompt changes take effect in the next assistant response instead of the next user turn. |
+| `@earendil-works/pi-ai@0.87.1` | `patches/@earendil-works%2Fpi-ai@0.87.1.patch` | Adds Anthropic server-side web-search passthrough, round-trips `server_tool_use` / `web_search_tool_result` blocks, retries transient JSON parse failures, and falls back to Claude Code Anthropic OAuth credentials during refresh. |
+| `@earendil-works/pi-coding-agent@0.87.1` | `patches/@earendil-works%2Fpi-coding-agent@0.87.1.patch` | Makes upstream pi behave as the PizzaPi wrapper: `.pizzapi` config directory, flat agent directory, PizzaPi changelog path, quiet startup by default, `pizza update --extensions` text, package/config command re-exports, inline `/skill:` expansion, `ollama-cloud` default model, OpenAI published context windows, removal of pi version-check UI, and a TUI live-bash-card reattach fix. |
+| `@earendil-works/pi-tui@0.87.1` | `patches/@earendil-works%2Fpi-tui@0.87.1.patch` | Adds a Windows console lifecycle that enables VT/UTF-8 console handling on start, publishes `globalThis.__PI_WINDOWS_CONSOLE_CAPS__`, and restores console state on stop. |
+
+`package.json` also contains a non-pi patch for `pptx-browser@4.1.5`; this page tracks only the upstream pi patch set.
+
+## Patch application
+
+`package.json` maps exact package versions to patch files:
+
+```json
+{
+  "patchedDependencies": {
+    "@earendil-works/pi-coding-agent@0.87.1": "patches/@earendil-works%2Fpi-coding-agent@0.87.1.patch",
+    "@earendil-works/pi-agent-core@0.87.1": "patches/@earendil-works%2Fpi-agent-core@0.87.1.patch",
+    "@earendil-works/pi-ai@0.87.1": "patches/@earendil-works%2Fpi-ai@0.87.1.patch",
+    "@earendil-works/pi-tui@0.87.1": "patches/@earendil-works%2Fpi-tui@0.87.1.patch"
+  }
+}
+```
+
+When the dependency version changes, the key and patch filename must change together. If either side is stale, Bun will not apply the intended patch to the new package version.
+
+## Regenerating patches on a pi bump
+
+Use a tarball-diff port for each patched package:
+
+1. Update the pi package versions in every relevant `package.json`.
+2. Fetch clean upstream package tarballs for the old and new versions.
+3. Extract the old clean tarball and the currently patched old package, then inspect the old patch as a tarball diff.
+4. Extract the new clean tarball, reapply each PizzaPi change by hand at the new upstream anchors, and keep only changes that are still needed.
+5. Generate a unified diff with paths rooted at the package root and `a/` / `b/` prefixes, matching the existing `patches/*.patch` format.
+6. Save it as `patches/@earendil-works%2F<package>@<new-version>.patch`.
+7. Update root `package.json` `patchedDependencies` to point at the new filename.
+8. Run `bun install` from the repo root so Bun applies the new patch set.
+9. Run the patch guard tests.
+
+The helper under `packages/cli/scripts/diff-pi-pizza.ts` is not a patch generator. It compares the live provider request shape for vanilla `pi` vs `pizza` and is useful when validating prompt/tool differences.
+
+## Tests that pin the patches
+
+Run the patch guard test after every upstream pi bump:
+
+```bash
+cd packages/cli
+bun test src/patches.test.ts
+```
+
+`packages/cli/src/patches.test.ts` checks both source markers and runtime behavior:
+
+| Area | What the test pins |
+|------|--------------------|
+| `pi-agent-core` | Dynamic tool/prompt refresh before each assistant response, including a regression where `search_tools` loads a deferred tool and the next assistant response can call it. |
+| `pi-ai` | Anthropic web-search tool injection, server-tool block streaming/round-trip handling, retryable JSON parse errors, Claude Code credential fallback, and absence of retired `ollama-cloud` hunks. |
+| `pi-coding-agent` | `.pizzapi` paths, flat agent directory, changelog override, removed pi version check, PizzaPi package-update command text, quiet startup default, OpenAI context-window override, inline skill expansion, package/config command exports, and removed legacy ExtensionAPI control-plane hunks. |
+| `pi-tui` | Windows console lifecycle wiring and safe no-op behavior off Windows. |
+
+If a test fails after a dependency bump, recreate the matching patch instead of changing PizzaPi source to depend on an unapplied upstream modification.
