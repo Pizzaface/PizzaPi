@@ -116,7 +116,7 @@ diff --git a/dist/core/model-runtime.js b/dist/core/model-runtime.js
 index 81bf752..dbf7eae 100644
 --- a/dist/core/model-runtime.js
 +++ b/dist/core/model-runtime.js
-@@ -22,6 +22,32 @@ export class CredentialSynchronizationError extends Error {
+@@ -22,6 +22,37 @@ export class CredentialSynchronizationError extends Error {
          this.credential = credential;
      }
  }
@@ -132,9 +132,14 @@ index 81bf752..dbf7eae 100644
 +    "gpt-5.6-luna": 1050000,
 +    "gpt-5.6-sol": 1050000,
 +    "gpt-5.6-terra": 1050000,
++    "gpt-6-astra": 1050000,
++    "gpt-6-luna": 1050000,
++    "gpt-6-sol": 1050000,
++    "gpt-daybreak-blue-latest": 1050000,
++    "gpt-daybreak-red-latest": 400000,
 +};
 +function withOfficialOpenAIContextWindows(provider) {
-+    if (!provider || provider.id !== "openai")
++    if (!provider || (provider.id !== "openai" && provider.id !== "openai-codex"))
 +        return provider;
 +    return {
 +        ...provider,
@@ -149,7 +154,7 @@ index 81bf752..dbf7eae 100644
  function mergeHeaders(base, override) {
      if (!base && !override)
          return undefined;
-@@ -131,7 +157,7 @@ export class ModelRuntime {
+@@ -131,7 +162,7 @@ export class ModelRuntime {
          ]);
      }
      recomposeProvider(providerId) {
