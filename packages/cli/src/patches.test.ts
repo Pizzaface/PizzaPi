@@ -233,6 +233,8 @@ describe("pi-coding-agent patch application", () => {
         expect(source).toContain("PATCH(pizzapi): Report OpenAI API's published context capacity");
         expect(source).toContain('"gpt-5.6-sol": 1050000');
         expect(source).toContain("withOfficialOpenAIContextWindows");
+        expect(source).toContain('"gpt-6-astra": 1050000');
+        expect(source).toContain('provider.id !== "openai-codex"');
     });
 
     test("config.js: getChangelogPath honors PIZZAPI_CHANGELOG_PATH", async () => {
