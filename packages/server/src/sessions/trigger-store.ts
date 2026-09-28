@@ -55,6 +55,23 @@ const TRIGGER_HISTORY_KEY = (sessionId: string) => `pizzapi:triggers:history:${s
 const MAX_HISTORY = 200;
 const HISTORY_TTL_SECONDS = 24 * 60 * 60; // 24 hours
 
+const RECORD_RESPONSE_SCRIPT = `
+local entries = redis.call('LRANGE', KEYS[1], 0, ARGV[2] - 1)
+for i, raw in ipairs(entries) do
+    local ok, entry = pcall(cjson.decode, raw)
+    if ok and type(entry) == 'table' and entry.triggerId == ARGV[1] then
+        for arg = 3, #ARGV, 2 do
+            if ARGV[arg] == raw then
+                redis.call('LSET', KEYS[1], i - 1, ARGV[arg + 1])
+                return 1
+            end
+        end
+        return 0
+    end
+end
+return 0
+`;
+
 // ── Public API ───────────────────────────────────────────────────────────
 
 /**
@@ -116,22 +133,24 @@ export async function recordTriggerResponse(
     if (!redis) return;
     const key = TRIGGER_HISTORY_KEY(sessionId);
     try {
+        const updates = [triggerId, String(MAX_HISTORY)];
+        const responseWithTimestamp = { ...response, ts: new Date().toISOString() };
         const raw = await redis.lRange(key, 0, MAX_HISTORY - 1);
-        for (let i = 0; i < raw.length; i++) {
+        for (const serialized of raw) {
             try {
-                const entry = JSON.parse(raw[i]) as TriggerHistoryEntry;
+                const entry = JSON.parse(serialized) as TriggerHistoryEntry;
                 if (entry.triggerId === triggerId) {
-                    entry.response = {
-                        ...response,
-                        ts: new Date().toISOString(),
-                    };
-                    await redis.lSet(key, i, JSON.stringify(entry));
-                    return;
+                    entry.response = responseWithTimestamp;
+                    updates.push(serialized, JSON.stringify(entry));
                 }
             } catch {
                 // skip malformed entries
             }
         }
+        await redis.eval(RECORD_RESPONSE_SCRIPT, {
+            keys: [key],
+            arguments: updates,
+        });
     } catch (err) {
         log.warn("Failed to record trigger response:", err);
     }

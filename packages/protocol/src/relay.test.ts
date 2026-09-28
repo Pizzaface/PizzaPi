@@ -70,6 +70,13 @@ describe("relay — RelayClientToServerEvents payloads", () => {
     const p: Payload = { sessionId: "sess-1", token: "tok-abc" };
     expect(typeof p.sessionId).toBe("string");
     expect(typeof p.token).toBe("string");
+
+    type Ack = NonNullable<Parameters<RelayClientToServerEvents["session_end"]>[1]>;
+    const acknowledgements: Array<{ ended: boolean }> = [];
+    const ack: Ack = (result) => acknowledgements.push(result);
+    ack({ ended: true });
+    ack({ ended: false });
+    expect(acknowledgements).toEqual([{ ended: true }, { ended: false }]);
   });
 
   test("exec_result carries id, ok, command with optional fields", () => {

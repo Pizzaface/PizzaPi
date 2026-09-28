@@ -49,6 +49,16 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             acksSessionTrigger: data.acksSessionTrigger === true,
         });
 
+        // A disconnect may run while registerTuiSession awaits its ownership
+        // lock. In that case the disconnect handler had no sessionId to clean
+        // up, so remove the just-created transient record here.
+        if (!socket.connected) {
+            await enqueueSessionEvent(sessionId, async () => {
+                await endSharedSession(sessionId, "Session ended", { expectedOwnerToken: token });
+            });
+            return;
+        }
+
         socket.data.sessionId = sessionId;
         socket.data.token = token;
         socket.data.cwd = cwd;
@@ -98,10 +108,11 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
     });
 
     // ── session_end ──────────────────────────────────────────────────────
-    socket.on("session_end", async (data) => {
+    socket.on("session_end", async (data, acknowledge?: (result: { ended: boolean }) => void) => {
         const sessionId = socket.data.sessionId;
         if (!sessionId || data.token !== socket.data.token) {
             socket.emit("error", { message: "Invalid token" });
+            if (typeof acknowledge === "function") acknowledge({ ended: false });
             return;
         }
         let sharedOwnerToken: string | null;
@@ -113,6 +124,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
         }
         if (sharedOwnerToken !== socket.data.token) {
             log.info(`session_end for ${socket.id} — stale or unknown owner, skipping teardown`);
+            if (typeof acknowledge === "function") acknowledge({ ended: false });
             return;
         }
 
@@ -136,6 +148,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
         });
         if (ended) socket.data.sessionId = undefined;
         socketAckedSeqs.delete(socket.id);
+        if (typeof acknowledge === "function") acknowledge({ ended });
     });
 
     // ── exec_result — forward to viewers ─────────────────────────────────

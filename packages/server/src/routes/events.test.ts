@@ -724,7 +724,7 @@ describe("events HTTP surface", () => {
     const relay = responses.find((r) => r.event === "trigger_response");
     expect(relay!.sessionId).toBe("owned");
     expect(relay!.sessionId).not.toBe("child");
-    expect(relay!.data.triggerId).toBe("child-complete-1");
+    expect(relay!.data.triggerId).toBe(deliveries[0].deliveryId);
   });
 
   it("responses to escalation events resolve the original and relay its trigger id", async () => {
@@ -773,7 +773,7 @@ describe("events HTTP surface", () => {
     )).toBe(true);
   });
 
-  it("escalation originalTriggerId is the parent's deliveryId: resolves fireId + parent for session_complete", async () => {
+  it("escalation originalTriggerId preserves the parent's completion delivery correlation", async () => {
     const original = await call(routes, "POST", "/api/events", {
       type: "lifecycle:session_complete",
       responseContract: { ttlMs: 1000 },
@@ -799,9 +799,9 @@ describe("events HTTP surface", () => {
     });
     expect(res!.status).toBe(200);
     const relay = responses.find((r) => r.event === "trigger_response");
-    // session_complete is handled by the PARENT (owned), correlated on the child's fireId.
+    // The parent handles completion using its original received delivery key.
     expect(relay!.sessionId).toBe("owned");
-    expect(relay!.data.triggerId).toBe("child-complete-1");
+    expect(relay!.data.triggerId).toBe(originalDeliveryId);
     const originalDelivery = await store.getDelivery(originalDeliveryId);
     expect(originalDelivery?.status).toBe("responded");
   });

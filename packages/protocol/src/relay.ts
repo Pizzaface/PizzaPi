@@ -37,11 +37,11 @@ export interface RelayClientToServerEvents {
     seq?: number;
   }) => void;
 
-  /** TUI signals a session has ended */
+  /** TUI signals a session has ended; ack reports whether terminal cleanup succeeded. */
   session_end: (data: {
     sessionId: string;
     token: string;
-  }) => void;
+  }, acknowledge?: (result: { ended: boolean }) => void) => void;
 
   /** TUI responds to a previously-received exec command */
   exec_result: (data: {

@@ -481,11 +481,10 @@ export function createEngineDeps(): EngineDeps {
 /**
  * Relay a recorded delivery response back to the event's SOURCE session over
  * the legacy trigger_response wire event, mirroring the respond route's
- * correlation rules: the source's waiter matches on its own triggerId, which
- * the publisher sent as fireId; session_complete answers route back through
- * the ORIGINAL delivery's session; escalations correlate on the child's
- * original triggerId carried in the payload. Shared by the respond route and
- * the drain-on-source-registration path so the two cannot drift.
+ * correlation rules: ordinary child waiters match the publisher's fireId;
+ * session_complete answers route to and correlate with the ORIGINAL delivery
+ * so the parent's received-trigger lookup matches. Shared by the respond
+ * route and the drain-on-source-registration path so the two cannot drift.
  */
 export async function emitDeliveryResponseRelay(delivery: Delivery, event: TriggerEvent): Promise<boolean> {
   if (event.source.kind !== "session" || !event.source.id) return false;
@@ -507,6 +506,7 @@ export async function emitDeliveryResponseRelay(delivery: Delivery, event: Trigg
   const relaySessionId = isSessionComplete
     ? (originalDelivery?.sessionId ?? delivery.sessionId)
     : event.source.id;
+  if (isSessionComplete) correlationId = originalDelivery?.deliveryId ?? delivery.deliveryId;
   return emitTriggerResponse(relaySessionId, {
     triggerId: correlationId,
     response: delivery.response?.text ?? "",

@@ -1228,9 +1228,12 @@ List recent trigger history for a session.
       "ts": "2025-01-15T12:00:00Z",
       "direction": "inbound"
     }
-  ]
+  ],
+  "childSessionIds": []
 }
 ```
+
+`childSessionIds` lists history sources whose live session metadata still links them to this parent. Retained membership alone does not count an ended child. History remains available after a child ends. If child-state lookup fails, the endpoint returns `503` rather than an unfiltered success response.
 
 ---
 

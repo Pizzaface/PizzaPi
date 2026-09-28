@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, jest } from "bun:test";
 import { createSubagentMirror, resolveSocketIoUrl, readMirrorEnv, type MirrorEnv } from "./relay-mirror.js";
 import type { SingleResult } from "./types.js";
 
@@ -7,6 +7,7 @@ import type { SingleResult } from "./types.js";
 interface Emitted {
     event: string;
     payload: any;
+    ack?: (response?: unknown) => void;
 }
 
 function makeFakeSocket() {
@@ -21,12 +22,15 @@ function makeFakeSocket() {
         fire(event: string, arg?: any) {
             handlers.get(event)?.(arg);
         },
+        acknowledge(event: string, response?: unknown) {
+            emitted.filter((entry) => entry.event === event).at(-1)?.ack?.(response);
+        },
         socket: {
             on(event: string, cb: (arg?: any) => void) {
                 handlers.set(event, cb);
             },
-            emit(event: string, payload: any) {
-                emitted.push({ event, payload });
+            emit(event: string, payload: any, ack?: (response?: unknown) => void) {
+                emitted.push({ event, payload, ack });
             },
             disconnect() {
                 disconnected = true;
@@ -271,6 +275,8 @@ describe("createSubagentMirror", () => {
         const heartbeats = fake.emitted.filter((e) => e.event === "event" && e.payload.event.type === "heartbeat");
         expect(heartbeats.at(-1)!.payload.event.active).toBe(false);
         expect(fake.emitted.some((e) => e.event === "session_end")).toBe(true);
+        expect(fake.disconnected).toBe(false);
+        fake.acknowledge("session_end", { ended: true });
         expect(fake.disconnected).toBe(true);
 
         // Post-finish calls are inert.
@@ -429,6 +435,89 @@ describe("subagent mirror reconnect", () => {
         const events = fake.emitted.filter((e) => e.event === "event");
         const last = events[events.length - 1];
         expect(last.payload.token).toBe("tok-2");
+    });
+
+    test("finish before registered waits and sends terminal snapshot after registration", () => {
+        const fake = makeFakeSocket();
+        const mirror = createSubagentMirror({
+            agentName: "a", task: "t", cwd: "/repo", env: ENV, socketFactory: () => fake.socket,
+        })!;
+        fake.fire("connect");
+        mirror.finish(result({ exitCode: 0 }));
+
+        expect(fake.emitted.some((e) => e.event === "session_end")).toBe(false);
+        expect(fake.disconnected).toBe(false);
+        fake.fire("registered", { token: "tok" });
+        expect(fake.emitted.filter((e) => e.event === "event").map((e) => e.payload.event.type)).toEqual([
+            "session_active", "heartbeat", "token_usage_updated",
+        ]);
+        expect(fake.emitted.at(-1)?.event).toBe("session_end");
+        fake.acknowledge("session_end", { ended: true });
+        expect(fake.disconnected).toBe(true);
+    });
+
+    test("finish while disconnected re-registers once and closes after terminal ack", () => {
+        const fake = makeFakeSocket();
+        const mirror = createSubagentMirror({
+            agentName: "a", task: "t", cwd: "/repo", env: ENV, socketFactory: () => fake.socket,
+        })!;
+        fake.fire("connect");
+        fake.fire("registered", { token: "tok-1" });
+        fake.fire("disconnect");
+        mirror.finish(result({ exitCode: 0 }));
+        expect(fake.emitted.some((e) => e.event === "session_end")).toBe(false);
+        mirror.forward({ type: "message_update" });
+        mirror.update(result());
+
+        fake.fire("connect");
+        fake.fire("registered", { token: "tok-2" });
+        expect(fake.emitted.filter((e) => e.event === "register")).toHaveLength(2);
+        expect(fake.emitted.filter((e) => e.event === "session_end")).toHaveLength(1);
+        expect(fake.emitted.filter((e) => e.event === "event").at(-1)?.payload.token).toBe("tok-2");
+        fake.acknowledge("session_end", { ended: true });
+        expect(fake.disconnected).toBe(true);
+        const count = fake.emitted.length;
+        fake.fire("connect");
+        mirror.forward({ type: "message_update" });
+        expect(fake.emitted.length).toBe(count);
+    });
+
+    test("bounds terminal wait when relay never reconnects", () => {
+        jest.useFakeTimers();
+        try {
+            const fake = makeFakeSocket();
+            const mirror = createSubagentMirror({
+                agentName: "a", task: "t", cwd: "/repo", env: ENV, socketFactory: () => fake.socket,
+            })!;
+            fake.fire("connect");
+            fake.fire("disconnect");
+            mirror.finish(result());
+            expect(fake.disconnected).toBe(false);
+            jest.advanceTimersByTime(30_000);
+            expect(fake.disconnected).toBe(true);
+            expect(fake.emitted.some((e) => e.event === "session_end")).toBe(false);
+        } finally {
+            jest.useRealTimers();
+        }
+    });
+
+    test("disconnects after an older server omits the terminal acknowledgement", () => {
+        jest.useFakeTimers();
+        try {
+            const fake = makeFakeSocket();
+            const mirror = createSubagentMirror({
+                agentName: "a", task: "t", cwd: "/repo", env: ENV, socketFactory: () => fake.socket,
+            })!;
+            fake.fire("connect");
+            fake.fire("registered", { token: "tok" });
+            mirror.finish(result());
+            expect(fake.emitted.some((e) => e.event === "session_end")).toBe(true);
+            expect(fake.disconnected).toBe(false);
+            jest.advanceTimersByTime(30_000);
+            expect(fake.disconnected).toBe(true);
+        } finally {
+            jest.useRealTimers();
+        }
     });
 
     test("replays last snapshot on re-register even with no pending update", () => {
