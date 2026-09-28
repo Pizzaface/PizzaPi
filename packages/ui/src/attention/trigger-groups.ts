@@ -7,7 +7,7 @@
  * the whole panel would be statically baked into the main entry chunk.
  */
 import type { TriggerHistoryEntry } from "./trigger-utils";
-import { isPendingTrigger } from "./trigger-utils";
+import { isPendingTrigger, normalizeTriggerType } from "./trigger-utils";
 
 export type { TriggerHistoryEntry } from "./trigger-utils";
 
@@ -107,11 +107,16 @@ export function getIncompleteTriggers(
     if (children && !children.has(group.source)) continue;
     const label = group.lastSummary || group.source.slice(0, 12);
 
-    // Has a pending interactive trigger (needs a response)
-    if (group.pendingTrigger) {
-      const type = group.pendingTrigger.type;
-      // session_complete means the child is done — not truly "incomplete"
-      if (type === "session_complete") continue;
+    const latestComplete = group.events.find((event) => normalizeTriggerType(event.type) === "session_complete");
+    const terminalComplete = latestComplete && latestComplete.response?.action !== "followUp"
+      ? latestComplete
+      : undefined;
+    const pendingIsNewer = group.pendingTrigger && terminalComplete
+      && group.events.indexOf(group.pendingTrigger) < group.events.indexOf(terminalComplete);
+
+    // History is newest-first: a terminal completion retires only interactions behind it.
+    if (group.pendingTrigger && (!terminalComplete || pendingIsNewer)) {
+      const type = normalizeTriggerType(group.pendingTrigger.type);
       if (type === "ask_user_question") {
         items.push({ label, reason: "Waiting for your answer", source: group.source });
       } else if (type === "plan_review") {
@@ -124,9 +129,7 @@ export function getIncompleteTriggers(
       continue;
     }
 
-    // Events are most-recent-first; find() picks the newest session_complete
-    const latestComplete = group.events.find((e) => e.type === "session_complete");
-    if (latestComplete && latestComplete.response?.action !== "followUp") continue;
+    if (terminalComplete) continue;
 
     // Still active (connected, no terminal session_complete)
     items.push({ label, reason: "Still running", source: group.source });

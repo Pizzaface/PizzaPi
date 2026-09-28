@@ -9,6 +9,19 @@ import { afterAll, describe, it, expect, beforeEach, mock } from "bun:test";
 
 const endedSessions: Array<{ sessionId: string; reason?: string; opts?: unknown }> = [];
 let sharedOwnerToken = "tok";
+let registerSession: (...args: unknown[]) => Promise<{
+    sessionId: string;
+    token: string;
+    shareUrl: string;
+    parentSessionId: string | null;
+    wasDelinked: boolean;
+}> = async () => ({
+    sessionId: "s",
+    token: "t",
+    shareUrl: "",
+    parentSessionId: null,
+    wasDelinked: false,
+});
 
 // Unified event engine — the register-drain hook is incidental to this test.
 mock.module("../../../events/engine.js", () => ({
@@ -24,7 +37,7 @@ mock.module("../../../events/transport.js", () => ({
 }));
 
 mock.module("../../sio-registry.js", () => ({
-    registerTuiSession: async () => ({ sessionId: "s", token: "t", shareUrl: "", parentSessionId: null, wasDelinked: false }),
+    registerTuiSession: (...args: unknown[]) => registerSession(...args),
     getLocalTuiSocket: () => undefined,
     broadcastToViewers: () => {},
     endSharedSession: async (
@@ -74,18 +87,21 @@ afterAll(() => mock.restore());
 
 const { registerSessionLifecycleHandlers } = await import("./session-lifecycle.js");
 
-function makeSocket(sessionId: string, token = "tok") {
-    const handlers = new Map<string, (...args: unknown[]) => unknown>();
+function makeSocket(sessionId: string | undefined, token = "tok") {
+    const handlers = new Map<string, (...args: any[]) => unknown>();
+    const socket = {
+        id: "sock-1",
+        connected: true,
+        data: { sessionId, token },
+        on(event: string, cb: (...args: any[]) => unknown) {
+            handlers.set(event, cb);
+        },
+        emit: () => {},
+    } as never;
     return {
-        socket: {
-            id: "sock-1",
-            data: { sessionId, token },
-            on(event: string, cb: (...args: unknown[]) => unknown) {
-                handlers.set(event, cb);
-            },
-            emit: () => {},
-        } as never,
-        fire: async (event: string, data?: unknown) => handlers.get(event)!(data),
+        socket,
+        fire: async (event: string, ...args: any[]) => handlers.get(event)!(...args),
+        disconnect() { (socket as unknown as { connected: boolean }).connected = false; },
     };
 }
 
@@ -93,14 +109,25 @@ describe("session_end handler", () => {
     beforeEach(() => {
         endedSessions.length = 0;
         sharedOwnerToken = "tok";
+        registerSession = async () => ({
+            sessionId: "s",
+            token: "t",
+            shareUrl: "",
+            parentSessionId: null,
+            wasDelinked: false,
+        });
     });
 
     it("ends the session with confirmedTerminal so parent membership is removed", async () => {
         const { socket, fire } = makeSocket("child-mirror");
         registerSessionLifecycleHandlers(socket);
 
-        await fire("session_end", { token: "tok" });
+        let acknowledgement: { ended: boolean } | undefined;
+        await fire("session_end", { token: "tok" }, (result: { ended: boolean }) => {
+            acknowledgement = result;
+        });
 
+        expect(acknowledgement).toEqual({ ended: true });
         expect(endedSessions).toHaveLength(1);
         expect(endedSessions[0]).toEqual({
             sessionId: "child-mirror",
@@ -109,14 +136,50 @@ describe("session_end handler", () => {
         });
     });
 
+    it("ignores non-function acknowledgement arguments", async () => {
+        const { socket, fire } = makeSocket("child-mirror");
+        registerSessionLifecycleHandlers(socket);
+        await fire("session_end", { token: "tok" }, "not-a-callback");
+        expect(endedSessions).toHaveLength(1);
+    });
+
     it("stale cross-node session_end cannot end the replacement", async () => {
         const { socket, fire } = makeSocket("child-mirror", "old-token");
         sharedOwnerToken = "new-token";
         registerSessionLifecycleHandlers(socket);
 
-        await fire("session_end", { token: "old-token" });
+        let acknowledgement: { ended: boolean } | undefined;
+        await fire("session_end", { token: "old-token" }, (result: { ended: boolean }) => {
+            acknowledgement = result;
+        });
 
+        expect(acknowledgement).toEqual({ ended: false });
         expect(endedSessions).toHaveLength(0);
+    });
+
+    it("cleans up a registration that completes after disconnect", async () => {
+        let resolveRegistration!: (value: Awaited<ReturnType<typeof registerSession>>) => void;
+        registerSession = () =>
+            new Promise((resolve) => {
+                resolveRegistration = resolve;
+            });
+        const { socket, fire, disconnect } = makeSocket(undefined);
+        registerSessionLifecycleHandlers(socket);
+
+        const registering = fire("register", { sessionId: "late-child", cwd: "/", ephemeral: true });
+        disconnect();
+        await fire("disconnect", "transport close");
+        resolveRegistration({
+            sessionId: "late-child",
+            token: "tok",
+            shareUrl: "",
+            parentSessionId: "parent",
+            wasDelinked: false,
+        });
+        await registering;
+
+        expect(endedSessions).toHaveLength(1);
+        expect(endedSessions[0]).toMatchObject({ sessionId: "late-child", opts: { expectedOwnerToken: "tok" } });
     });
 
     it("plain disconnect does NOT mark the end as confirmed terminal", async () => {

@@ -39,7 +39,7 @@ import {
     emitToRelaySessionVerified,
 } from "../ws/sio-registry.js";
 import { getRunnerServices } from "../ws/sio-registry/runners.js";
-import { isChildOfParent } from "../ws/sio-state.js";
+import { getSessionSummary, isChildOfParent } from "../ws/sio-state.js";
 import { triggerAllowedForCwd } from "./mode-scope.js";
 import type { RouteHandler } from "./types.js";
 import { randomUUID } from "crypto";
@@ -232,16 +232,21 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         const limit = parseInt(url.searchParams.get("limit") ?? "50", 10);
         const history = await getTriggerHistory(sessionId, Math.min(limit, 200));
 
-        // Inbound triggers also come from parents/peers (tell_child, publish_event),
-        // so tell the UI which sources are actually this session's linked children.
-        // Omitted on lookup failure — the UI then falls back to treating all sources as children.
-        let childSessionIds: string[] | undefined;
+        // Membership survives disconnects for authorization/delink recovery;
+        // the UI must only count children whose live metadata still links here.
+        let childSessionIds: string[];
         try {
             const sources = [...new Set(history.filter((t) => t.direction === "inbound").map((t) => t.source))];
-            const flags = await Promise.all(sources.map((s) => isChildOfParent(sessionId, s)));
+            const flags = await Promise.all(sources.map(async (source) => {
+                if (!(await isChildOfParent(sessionId, source))) return false;
+                const child = await getSessionSummary(source);
+                return child?.userId === identity.userId
+                    && (child.parentSessionId === sessionId || child.linkedParentId === sessionId);
+            }));
             childSessionIds = sources.filter((_, i) => flags[i]);
-        } catch {
-            childSessionIds = undefined;
+        } catch (err) {
+            log.warn("Failed to look up active linked children:", err);
+            return Response.json({ error: "Linked session state unavailable" }, { status: 503 });
         }
 
         return Response.json({ triggers: history, childSessionIds });

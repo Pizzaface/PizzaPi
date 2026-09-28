@@ -33,11 +33,30 @@ export const RESPONSE_TRIGGER_TYPES = new Set([
   "escalate",
 ]);
 
+const KNOWN_LIFECYCLE_TYPES = new Set([
+  ...RESPONSE_TRIGGER_TYPES,
+  "session_complete",
+  "session_connect",
+  "session_linked",
+  "session_error",
+  "session_end",
+]);
+
+/** Strip the lifecycle service prefix only for known lifecycle event names. */
+export function normalizeTriggerType(type: string): string {
+  if (type === "lifecycle:ask_question") return "ask_user_question";
+  if (type === "lifecycle:escalation") return "escalate";
+  if (KNOWN_LIFECYCLE_TYPES.has(type)) return type;
+  const prefix = "lifecycle:";
+  const unprefixed = type.startsWith(prefix) ? type.slice(prefix.length) : "";
+  return KNOWN_LIFECYCLE_TYPES.has(unprefixed) ? unprefixed : type;
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /** Whether a trigger is "pending" — inbound, requires response, and has none. */
 export function isPendingTrigger(entry: TriggerHistoryEntry): boolean {
   if (entry.direction !== "inbound") return false;
   if (entry.response) return false;
-  return RESPONSE_TRIGGER_TYPES.has(entry.type);
+  return RESPONSE_TRIGGER_TYPES.has(normalizeTriggerType(entry.type));
 }

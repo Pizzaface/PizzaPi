@@ -7,7 +7,7 @@
  */
 import type { AttentionItem } from "./types";
 import type { TriggerHistoryEntry } from "./trigger-utils";
-import { isPendingTrigger } from "./trigger-utils";
+import { isPendingTrigger, normalizeTriggerType } from "./trigger-utils";
 
 // ── Session Meta Normalization ──────────────────────────────────────────────
 
@@ -195,30 +195,35 @@ export function normalizeTriggerHistory(
     if (!isChildSessionSource(source)) continue;
 
     const pending = events.find(isPendingTrigger);
-    const hasCompleted = events.some((e) => e.type === "session_complete");
+    const completeEvent = events.find((event) => normalizeTriggerType(event.type) === "session_complete");
+    const terminalComplete = completeEvent && completeEvent.response?.action !== "followUp"
+      ? completeEvent
+      : undefined;
+    const pendingAfterCompletion = pending && (!terminalComplete || events.indexOf(pending) < events.indexOf(terminalComplete))
+      ? pending
+      : undefined;
     const summary = events[0]?.summary;
 
-    if (pending) {
+    if (pendingAfterCompletion) {
       // Pending interactive trigger from a child session
       const kindMap: Record<string, AttentionItem["kind"]> = {
         ask_user_question: "trigger_response",
         plan_review: "trigger_response",
         escalate: "trigger_response",
       };
+      const type = normalizeTriggerType(pendingAfterCompletion.type);
       items.push({
-        id: `trigger:${sessionId}:${pending.triggerId}`,
+        id: `trigger:${sessionId}:${pendingAfterCompletion.triggerId}`,
         category: "needs_response",
-        kind: kindMap[pending.type] ?? "trigger_response",
+        kind: kindMap[type] ?? "trigger_response",
         sessionId,
         sessionName: summary ?? undefined,
-        createdAt: pending.ts,
-        priority: pending.type === "escalate" ? 5 : 10,
+        createdAt: pendingAfterCompletion.ts,
+        priority: type === "escalate" ? 5 : 10,
         source: "trigger",
-        payload: { triggerId: pending.triggerId, type: pending.type, source, ...(summary !== undefined ? { summary } : {}) },
+        payload: { triggerId: pendingAfterCompletion.triggerId, type, source, ...(summary !== undefined ? { summary } : {}) },
       });
-    } else if (hasCompleted) {
-      // triggers are ordered most-recent-first from the API; find() returns the newest session_complete
-      const completeEvent = events.find((e) => e.type === "session_complete")!;
+    } else if (completeEvent) {
       const responseAction = completeEvent.response?.action;
 
       if (responseAction === "followUp") {

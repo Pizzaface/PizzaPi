@@ -78,6 +78,9 @@ mock.module("../sessions/trigger-store.js", () => ({
 // ── Mock runners registry + stores via spyOn to avoid cross-file poison ──
 import * as _runnersModule from "../ws/sio-registry/runners.js";
 import * as _sessionStoreModule from "../sessions/store.js";
+import * as _sessionStateModule from "../ws/sio-state.js";
+let spyIsChildOfParent: ReturnType<typeof spyOn>;
+let spyGetSessionSummary: ReturnType<typeof spyOn>;
 let mockGetRunnerServices: ReturnType<typeof spyOn>;
 let mockGetRunnerData: ReturnType<typeof spyOn>;
 let spyGetPersistedRelaySessionOwner: ReturnType<typeof spyOn>;
@@ -87,6 +90,8 @@ let spyGetPersistedRelaySessionOwner: ReturnType<typeof spyOn>;
 const mockGetPersistedRelaySessionOwner = mock((_sid: string) => Promise.resolve(null as any));
 
 beforeEach(() => {
+    spyIsChildOfParent = spyOn(_sessionStateModule, "isChildOfParent").mockResolvedValue(false);
+    spyGetSessionSummary = spyOn(_sessionStateModule, "getSessionSummary").mockResolvedValue(null);
     mockGetRunnerServices = spyOn(_runnersModule, "getRunnerServices")
         .mockImplementation((_rid: string) => Promise.resolve(null as any));
     mockGetRunnerData = spyOn(_runnersModule, "getRunnerData")
@@ -98,6 +103,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    spyIsChildOfParent.mockRestore();
+    spyGetSessionSummary.mockRestore();
     mockGetRunnerServices.mockRestore();
     mockGetRunnerData.mockRestore();
     spyGetPersistedRelaySessionOwner.mockRestore();
@@ -182,6 +189,58 @@ describe("GET /api/sessions/:id/triggers", () => {
         expect(res!.status).toBe(200);
         const body = await res!.json();
         expect(body.triggers).toHaveLength(0);
+    });
+});
+
+describe("trigger history active-child filter", () => {
+    const history = (sources: string[]) => sources.map((source) => ({
+        triggerId: `linked-${source}`, type: "session_linked", source,
+        payload: {}, deliverAs: "steer", direction: "inbound", ts: "2026-09-27T00:00:00Z",
+    }));
+
+    beforeEach(() => {
+        mockRequireSession.mockResolvedValue({ userId: "user-1", userName: "TestUser" });
+        mockGetSharedSession.mockResolvedValue({ userId: "user-1", sessionId: "parent" });
+    });
+
+    test("retained membership does not count ended, reassigned, or differently owned children", async () => {
+        const sources = ["idle-child", "reconnecting-child", "ended-child", "reassigned-child", "foreign-child"];
+        mockGetTriggerHistory.mockResolvedValue(history(sources));
+        spyIsChildOfParent.mockResolvedValue(true);
+        spyGetSessionSummary.mockImplementation(async (id: string) => {
+            if (id === "ended-child") return null;
+            return {
+                sessionId: id,
+                userId: id === "foreign-child" ? "user-2" : "user-1",
+                parentSessionId: id === "reassigned-child" ? "different-parent" : id === "reconnecting-child" ? null : "parent",
+                linkedParentId: id === "reconnecting-child" ? "parent" : null,
+                isActive: false,
+            };
+        });
+
+        const [req, url] = makeReq("GET", "/api/sessions/parent/triggers");
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.triggers).toHaveLength(5);
+        expect(body.childSessionIds).toEqual(["idle-child", "reconnecting-child"]);
+    });
+
+    test("does not restore a delinked child just because its summary still names the parent", async () => {
+        mockGetTriggerHistory.mockResolvedValue(history(["child"]));
+        spyIsChildOfParent.mockResolvedValue(false);
+        spyGetSessionSummary.mockResolvedValue({ sessionId: "child", userId: "user-1", parentSessionId: "parent" });
+        const [req, url] = makeReq("GET", "/api/sessions/parent/triggers");
+        const res = await handleTriggersRoute(req, url);
+        expect((await res!.json()).childSessionIds).toEqual([]);
+    });
+
+    test("lookup failure does not return an unfiltered success response", async () => {
+        mockGetTriggerHistory.mockResolvedValue(history(["child"]));
+        spyIsChildOfParent.mockRejectedValue(new Error("Redis unavailable"));
+        const [req, url] = makeReq("GET", "/api/sessions/parent/triggers");
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(503);
     });
 });
 

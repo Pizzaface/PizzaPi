@@ -49,6 +49,7 @@ const authCtx = { db: "test" };
 let strictAuth = false;
 let sharedSession: Record<string, unknown> | null = null;
 let localSocket: LocalSocket | null = null;
+let localSocketLookups: string[] = [];
 let relayAcked: { attempts: number; settle: (acked: boolean) => void } | null = null;
 let relayVerified = false;
 let runnerEmits: Array<{ runnerId: string; event: string; data: any }> = [];
@@ -88,7 +89,10 @@ const modsPromise = (async () => {
     runnerRoom: (id: string) => `runner:${id}`,
     countSocketsInRoomCluster: async () => runnerPresence,
     getLocalRunnerSocket: () => null,
-    getLocalTuiSocket: () => localSocket,
+    getLocalTuiSocket: (sessionId: string) => {
+      localSocketLookups.push(sessionId);
+      return localSocket;
+    },
     getSharedSession: async () => sharedSession,
     linkSessionToRunner: async () => {},
     recordRunnerSession: async () => {},
@@ -109,6 +113,7 @@ afterAll(() => mock.restore());
 function resetFakes() {
   sharedSession = null;
   localSocket = null;
+  localSocketLookups = [];
   relayAcked = null;
   relayVerified = false;
   runnerEmits = [];
@@ -275,10 +280,105 @@ describe("trigger transport delivery receipt", () => {
     expect(localSocket.emits.map((e) => e.event)).toEqual(["trigger_response"]);
     const data = localSocket.emits[0].data as { triggerId: string; response: string; action?: string; targetSessionId: string };
     // The child's waiter matches on its own triggerId == the publisher's fireId.
+    expect(localSocketLookups).toEqual(["child-1"]);
     expect(data.triggerId).toBe("fire-relay-9");
     expect(data.response).toBe("ship it");
     expect(data.action).toBe("approve");
     expect(data.targetSessionId).toBe("parent-9");
+  });
+
+  it("emitDeliveryResponseRelay correlates session_complete to the parent delivery", async () => {
+    const source = { kind: "session" as const, id: "child-complete", auth: "socket" as const, userId: "u1" };
+    const { event } = await store.insertEvent({
+      type: "lifecycle:session_complete",
+      source,
+      payload: {},
+      responseContract: { ttlMs: 60_000 },
+    }, "child-complete-fire-id");
+    const delivery = await store.createDelivery({
+      eventId: event.eventId,
+      eventType: event.type,
+      sessionId: "parent-complete",
+      deliverAs: "steer",
+    });
+    await store.updateDelivery(delivery!.deliveryId, {
+      status: "responded",
+      response: { action: "ack", text: "Done" },
+    });
+    localSocket = makeLocalSocket();
+
+    expect(await transport.emitDeliveryResponseRelay((await store.getDelivery(delivery!.deliveryId))!, event)).toBe(true);
+    expect(localSocketLookups).toEqual(["parent-complete"]);
+    expect(localSocket.emits[0]).toMatchObject({
+      event: "trigger_response",
+      data: { triggerId: delivery!.deliveryId, action: "ack", response: "Done" },
+    });
+  });
+
+  it("escalated completion relays to and correlates with the original parent delivery", async () => {
+    const source = { kind: "session" as const, id: "child-escalated", auth: "socket" as const, userId: "u1" };
+    const original = await store.insertEvent({
+      type: "lifecycle:session_complete",
+      source,
+      payload: {},
+      responseContract: { ttlMs: 60_000 },
+    }, "child-escalated-fire-id");
+    const originalDelivery = await store.createDelivery({
+      eventId: original.event.eventId,
+      eventType: original.event.type,
+      sessionId: "parent-original",
+      deliverAs: "steer",
+    });
+    const escalation = await store.insertEvent({
+      type: "lifecycle:escalation",
+      source,
+      payload: { originalTriggerId: originalDelivery!.deliveryId },
+      responseContract: { escalate: false },
+    }, `escalate:${originalDelivery!.deliveryId}`);
+    const escalationDelivery = await store.createDelivery({
+      eventId: escalation.event.eventId,
+      eventType: escalation.event.type,
+      sessionId: "human-response-session",
+      deliverAs: "steer",
+    });
+    localSocket = makeLocalSocket();
+
+    expect(await transport.emitDeliveryResponseRelay(escalationDelivery!, escalation.event)).toBe(true);
+    expect(localSocketLookups).toEqual(["parent-original"]);
+    expect(localSocket.emits[0]).toMatchObject({
+      event: "trigger_response",
+      data: { triggerId: originalDelivery!.deliveryId },
+    });
+  });
+
+  it("drains an offline completion response using parent delivery correlation", async () => {
+    const source = { kind: "session" as const, id: "child-completion-drain", auth: "socket" as const, userId: "u1" };
+    const { event } = await store.insertEvent({
+      type: "lifecycle:session_complete",
+      source,
+      payload: {},
+      responseContract: { ttlMs: 60_000 },
+    }, "child-completion-drain-fire-id");
+    const delivery = await store.createDelivery({
+      eventId: event.eventId,
+      eventType: event.type,
+      sessionId: "parent-completion-drain",
+      deliverAs: "followUp",
+    });
+    await store.updateDelivery(delivery!.deliveryId, {
+      status: "responded",
+      respondedAt: new Date().toISOString(),
+      response: { action: "followUp", text: "Please continue" },
+      responseRelayPending: true,
+    }, { guard: ["pending"] });
+    localSocket = makeLocalSocket();
+
+    expect(await engine.drainPendingResponseRelays(source.id, transport.createEngineDeps())).toBe(1);
+    expect(localSocketLookups).toEqual(["parent-completion-drain"]);
+    expect(localSocket.emits[0]).toMatchObject({
+      event: "trigger_response",
+      data: { triggerId: delivery!.deliveryId, action: "followUp" },
+    });
   });
 
   it("emitDeliveryResponseRelay ignores non-session sources", async () => {

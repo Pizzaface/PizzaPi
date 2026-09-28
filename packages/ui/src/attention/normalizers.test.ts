@@ -277,31 +277,83 @@ describe("normalizeTriggerHistory", () => {
     expect(item.id).toBe(`trigger:${SESSION_ID}:complete:${CHILD_UUID}`);
   });
 
-  test("produces session_complete item when it was acked", () => {
+  test("does not treat custom-prefixed session_complete as lifecycle completion", () => {
     const items = normalizeTriggerHistory(SESSION_ID, [
-      makeTrigger({ source: CHILD_UUID, type: "session_connect", direction: "inbound" }),
+      makeTrigger({ source: CHILD_UUID, type: "custom:session_complete", direction: "inbound" }),
+    ]);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: "child_running", category: "running" });
+  });
+
+  test("produces session_complete item for legacy and namespaced ack", () => {
+    for (const type of ["session_complete", "lifecycle:session_complete"]) {
+      const items = normalizeTriggerHistory(SESSION_ID, [
+        makeTrigger({ source: CHILD_UUID, type: "session_connect", direction: "inbound" }),
+        makeTrigger({
+          source: CHILD_UUID,
+          type,
+          direction: "inbound",
+          response: { action: "ack", ts: new Date().toISOString() },
+        }),
+      ]);
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({ kind: "session_complete", category: "completed" });
+    }
+  });
+
+  test("newer terminal completion supersedes an older unanswered question", () => {
+    const items = normalizeTriggerHistory(SESSION_ID, [
       makeTrigger({
         source: CHILD_UUID,
-        type: "session_complete",
+        type: "lifecycle:session_complete",
         direction: "inbound",
-        response: { action: "ack", ts: new Date().toISOString() },
+        ts: "2026-01-02T00:00:00.000Z",
+      }),
+      makeTrigger({
+        source: CHILD_UUID,
+        type: "lifecycle:ask_question",
+        direction: "inbound",
+        ts: "2026-01-02T00:00:00.000Z",
       }),
     ]);
     expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({
-      kind: "session_complete",
-      category: "completed",
-    });
+    expect(items[0]).toMatchObject({ kind: "session_complete", category: "completed" });
   });
 
-  test("treats followUp after session_complete as still running", () => {
+  test("preserves a newer unanswered question after an older completion", () => {
+    const items = normalizeTriggerHistory(SESSION_ID, [
+      makeTrigger({
+        source: CHILD_UUID,
+        type: "lifecycle:ask_question",
+        direction: "inbound",
+        ts: "2026-01-02T00:00:00.000Z",
+      }),
+      makeTrigger({
+        source: CHILD_UUID,
+        type: "lifecycle:session_complete",
+        direction: "inbound",
+        ts: "2026-01-02T00:00:00.000Z",
+      }),
+    ]);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: "trigger_response", category: "needs_response" });
+  });
+
+  test("recognizes the published lifecycle escalation type", () => {
+    const items = normalizeTriggerHistory(SESSION_ID, [
+      makeTrigger({ source: CHILD_UUID, type: "lifecycle:escalation", direction: "inbound" }),
+    ]);
+    expect(items[0]).toMatchObject({ category: "needs_response", priority: 5, payload: { type: "escalate" } });
+  });
+
+  test("treats followUp after namespaced session_complete as still running", () => {
     const responseTs = new Date().toISOString();
     const items = normalizeTriggerHistory(SESSION_ID, [
       makeTrigger({ source: CHILD_UUID, type: "session_connect", direction: "inbound" }),
       makeTrigger({
         triggerId: "trig-follow-up",
         source: CHILD_UUID,
-        type: "session_complete",
+        type: "lifecycle:session_complete",
         direction: "inbound",
         response: { action: "followUp", text: "keep going", ts: responseTs },
       }),
@@ -340,22 +392,21 @@ describe("normalizeTriggerHistory", () => {
     });
   });
 
-  test("pending trigger takes precedence over completed", () => {
-    // If a source has both a pending trigger AND a complete, the pending wins
+  test("newest pending trigger takes precedence over older completion", () => {
     const items = normalizeTriggerHistory(SESSION_ID, [
-      makeTrigger({ source: CHILD_UUID, type: "session_connect", direction: "inbound" }),
-      makeTrigger({
-        source: CHILD_UUID,
-        type: "session_complete",
-        direction: "inbound",
-        response: undefined,
-      }),
       makeTrigger({
         source: CHILD_UUID,
         type: "ask_user_question",
         direction: "inbound",
         response: undefined,
       }),
+      makeTrigger({
+        source: CHILD_UUID,
+        type: "session_complete",
+        direction: "inbound",
+        response: undefined,
+      }),
+      makeTrigger({ source: CHILD_UUID, type: "session_connect", direction: "inbound" }),
     ]);
     expect(items).toHaveLength(1);
     expect(items[0].kind).toBe("trigger_response");

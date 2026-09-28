@@ -51,8 +51,16 @@ describe("isPendingTrigger", () => {
     }))).toBe(false);
   });
 
+  test("recognizes namespaced lifecycle interactive triggers but not custom prefixes", () => {
+    for (const type of ["lifecycle:ask_question", "lifecycle:plan_review", "lifecycle:escalation"]) {
+      expect(isPendingTrigger(makeTrigger({ type, direction: "inbound" }))).toBe(true);
+    }
+    expect(isPendingTrigger(makeTrigger({ type: "custom:ask_user_question", direction: "inbound" }))).toBe(false);
+  });
+
   test("returns false for non-response trigger types", () => {
     expect(isPendingTrigger(makeTrigger({ type: "session_linked", direction: "inbound" }))).toBe(false);
+    expect(isPendingTrigger(makeTrigger({ type: "lifecycle:session_complete", direction: "inbound" }))).toBe(false);
     expect(isPendingTrigger(makeTrigger({ type: "session_complete", direction: "inbound" }))).toBe(false);
   });
 });
@@ -156,11 +164,46 @@ describe("getIncompleteTriggers", () => {
     expect(getIncompleteTriggers(triggers)).toEqual([]);
   });
 
-  test("keeps session_complete with followUp response as incomplete", () => {
+  test("recognizes legacy and namespaced acknowledged completion", () => {
+    for (const type of ["session_complete", "lifecycle:session_complete"]) {
+      expect(getIncompleteTriggers([makeTrigger({
+        source: "child-1",
+        type,
+        response: { action: "ack", ts: "2026-01-02T00:00:00.000Z" },
+        ts: "2026-01-01T00:00:00.000Z",
+      })])).toEqual([]);
+    }
+  });
+
+  test("newer terminal completion supersedes an older unanswered question", () => {
+    const triggers = [
+      makeTrigger({ source: "child-1", type: "lifecycle:session_complete", ts: "2026-01-02T00:00:00.000Z" }),
+      makeTrigger({ source: "child-1", type: "lifecycle:ask_question", ts: "2026-01-02T00:00:00.000Z" }),
+    ];
+    expect(getIncompleteTriggers(triggers)).toEqual([]);
+  });
+
+  test("preserves a genuinely newer unanswered question after completion", () => {
+    const triggers = [
+      makeTrigger({ source: "child-1", type: "lifecycle:ask_question", ts: "2026-01-02T00:00:00.000Z" }),
+      makeTrigger({ source: "child-1", type: "lifecycle:session_complete", ts: "2026-01-02T00:00:00.000Z" }),
+    ];
+    expect(getIncompleteTriggers(triggers)).toEqual([
+      { label: "child-1", reason: "Waiting for your answer", source: "child-1" },
+    ]);
+  });
+
+  test("does not treat custom-prefixed types as lifecycle completion", () => {
+    expect(getIncompleteTriggers([makeTrigger({ source: "child-1", type: "custom:session_complete" })])).toEqual([
+      { label: "child-1", reason: "Still running", source: "child-1" },
+    ]);
+  });
+
+  test("keeps namespaced session_complete with followUp response as incomplete", () => {
     const triggers = [
       makeTrigger({
         source: "child-1",
-        type: "session_complete",
+        type: "lifecycle:session_complete",
         response: { action: "followUp", text: "do more", ts: new Date().toISOString() },
       }),
     ];

@@ -36,6 +36,9 @@ const MAX_MIRRORED_MESSAGES = 200;
  *  stalled. Well under the server's 2-minute staleness sweep. */
 const HEARTBEAT_MS = 30_000;
 
+/** Keep a finished mirror alive briefly for reconnect/registration, never forever. */
+const TERMINAL_CLEANUP_MS = 30_000;
+
 /**
  * Live agent events forwarded verbatim, exactly as the remote extension
  * forwards them for a normal linked session, so the web UI streams token
@@ -118,7 +121,7 @@ export function resolveSocketIoUrl(env: MirrorEnv): string | null {
 /** The slice of a Socket.IO client this module uses. */
 export interface MirrorSocket {
     on(event: string, cb: (arg?: any) => void): unknown;
-    emit(event: string, payload: unknown): unknown;
+    emit(event: string, payload: unknown, ack?: (response?: unknown) => void): unknown;
     disconnect(): unknown;
     removeAllListeners(): unknown;
 }
@@ -187,12 +190,16 @@ export function createSubagentMirror(opts: MirrorOptions): SubagentMirror | null
     let token: string | null = null;
     let seq = 0;
     let closed = false;
+    let finished = false;
+    let terminalResult: SingleResult | null = null;
+    let terminalInFlight = false;
     let lastSnapshotAt = 0;
     /** Snapshot held back by the throttle, flushed by the next update/finish. */
     let pending: SingleResult | null = null;
     /** Last snapshot sent — replayed after a reconnect re-registration. */
     let lastResult: SingleResult | null = null;
     let throttleTimer: ReturnType<typeof setTimeout> | null = null;
+    let terminalTimer: ReturnType<typeof setTimeout> | null = null;
 
     const emit = (event: unknown) => {
         if (closed || !token) return;
@@ -278,6 +285,10 @@ export function createSubagentMirror(opts: MirrorOptions): SubagentMirror | null
     socket.on("registered", (data: { token?: string }) => {
         if (closed) return;
         token = typeof data?.token === "string" ? data.token : null;
+        if (finished) {
+            sendTerminal();
+            return;
+        }
         // Flush whatever the subagent has produced while we were connecting.
         // On a RE-registration (reconnect after a relay blip) there may be no
         // pending update for a while — replay the last snapshot so the fresh
@@ -310,13 +321,18 @@ export function createSubagentMirror(opts: MirrorOptions): SubagentMirror | null
     // Invalidate the token on disconnect — the server issues a fresh one on
     // re-registration, and emitting with the stale token would be rejected.
     socket.on("disconnect", () => {
-        if (!closed) token = null;
+        if (!closed) {
+            token = null;
+            terminalInFlight = false;
+        }
     });
 
     const teardown = () => {
         if (closed) return;
         closed = true;
         clearThrottle();
+        if (terminalTimer !== null) clearTimeout(terminalTimer);
+        terminalTimer = null;
         clearInterval(heartbeatTimer);
         pending = null;
         try {
@@ -327,19 +343,38 @@ export function createSubagentMirror(opts: MirrorOptions): SubagentMirror | null
         }
     };
 
+    const sendTerminal = () => {
+        if (closed || !finished || !terminalResult || !token || terminalInFlight) return;
+        snapshot(terminalResult, false);
+        terminalInFlight = true;
+        const sentToken = token;
+        try {
+            socket.emit("session_end", { sessionId, token: sentToken }, (ack: unknown) => {
+                if (closed || token !== sentToken) return;
+                const ended = typeof ack === "object" && ack !== null && "ended" in ack && typeof ack.ended === "boolean";
+                // False means the server handled the terminal packet but this
+                // socket no longer owns the session; retrying cannot help.
+                if (ended) teardown();
+            });
+        } catch (err) {
+            terminalInFlight = false;
+            log.warn("subagent mirror terminal event failed:", err);
+        }
+    };
+
     return {
         sessionId,
         forward(event) {
-            if (closed || !event?.type || !STREAMED_EVENTS.has(event.type)) return;
+            if (closed || finished || !event?.type || !STREAMED_EVENTS.has(event.type)) return;
             emit(event);
         },
         setModel(next) {
-            if (closed) return;
+            if (closed || finished) return;
             model = next;
             emit({ type: "model_changed", model: next });
         },
         update(result) {
-            if (closed) return;
+            if (closed || finished) return;
             pending = result;
             if (!token) return; // registration flush will pick it up
             const elapsed = now() - lastSnapshotAt;
@@ -353,18 +388,15 @@ export function createSubagentMirror(opts: MirrorOptions): SubagentMirror | null
             }
         },
         finish(result) {
-            if (closed) return;
+            if (closed || finished) return;
+            finished = true;
+            terminalResult = result;
             clearThrottle();
             pending = null;
-            snapshot(result, false);
-            if (token) {
-                try {
-                    socket.emit("session_end", { sessionId, token });
-                } catch {
-                    // Best effort — teardown below still closes the socket.
-                }
-            }
-            teardown();
+            clearInterval(heartbeatTimer);
+            terminalTimer = setTimeout(teardown, TERMINAL_CLEANUP_MS);
+            (terminalTimer as { unref?: () => void }).unref?.();
+            sendTerminal();
         },
     };
 }
