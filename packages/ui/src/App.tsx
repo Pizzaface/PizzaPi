@@ -4304,6 +4304,14 @@ export function App() {
     syncQueueToRunner(messageQueue.filter((m) => m.id !== id));
   }, [messageQueue, syncQueueToRunner]);
 
+  /** Pull a queued follow-up out of the queue and deliver it immediately as a steer. */
+  const sendQueuedMessageNow = React.useCallback((id: string) => {
+    const qm = messageQueue.find((m) => m.id === id);
+    if (!qm) return;
+    syncQueueToRunner(messageQueue.filter((m) => m.id !== id));
+    void sendSessionInputRef.current({ text: qm.text, files: [], deliverAs: "steer" });
+  }, [messageQueue, syncQueueToRunner]);
+
   const editQueuedMessage = React.useCallback((id: string, newText: string) => {
     syncQueueToRunner(messageQueue.map((m) => (m.id === id ? { ...m, text: newText } : m)));
   }, [messageQueue, syncQueueToRunner]);
@@ -5818,6 +5826,7 @@ export function App() {
                         messageQueue={messageQueue}
                         onRemoveQueuedMessage={removeQueuedMessage}
                         onEditQueuedMessage={editQueuedMessage}
+                        onSendQueuedMessageNow={sendQueuedMessageNow}
                         onClearMessageQueue={clearMessageQueue}
                         onToggleTerminal={() => setShowTerminal((v) => !v)}
                         showTerminalButton={modeUi.terminal}

@@ -26,7 +26,7 @@ export interface DraftManagementResult {
  */
 export function useDraftManagement(sessionId: string | null): DraftManagementResult {
   const [input, setInput] = React.useState("");
-  const [deliveryMode, setDeliveryMode] = React.useState<"steer" | "followUp">("followUp");
+  const [deliveryMode, setDeliveryMode] = React.useState<"steer" | "followUp">("steer");
   const draftsRef = React.useRef<Map<string, string>>(new Map());
   const deliveryModeRef = React.useRef<Map<string, "steer" | "followUp">>(new Map());
   const prevSessionIdRef = React.useRef<string | null>(null);
@@ -40,10 +40,10 @@ export function useDraftManagement(sessionId: string | null): DraftManagementRes
     }
     if (sessionId) {
       setInput(draftsRef.current.get(sessionId) ?? "");
-      setDeliveryMode(deliveryModeRef.current.get(sessionId) ?? "followUp");
+      setDeliveryMode(deliveryModeRef.current.get(sessionId) ?? "steer");
     } else {
       setInput("");
-      setDeliveryMode("followUp");
+      setDeliveryMode("steer");
     }
     prevSessionIdRef.current = sessionId ?? null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
