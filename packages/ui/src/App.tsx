@@ -115,7 +115,7 @@ import {
   normalizeCommandList,
   buildStreamingPartialMessage,
 } from "@/lib/message-helpers";
-import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "@/lib/session-ui-cache";
+import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE, resolveSnapshotMessages } from "@/lib/session-ui-cache";
 import { removeMessagesByStableKey, replaceMessageByStableKey } from "@/lib/mcp-auth-banners";
 import { useSessionLifecycle } from "@/lib/use-session-lifecycle";
 import { createWizardSpawnHandler } from "@/lib/wizard-spawn-handler";
@@ -987,6 +987,8 @@ export function App() {
 
   // Cache last-known UI state per relay session so switching sessions feels instant.
   const sessionUiCacheRef = React.useRef<Map<string, SessionUiCacheEntry>>(new Map());
+  // Pin the exact snapshot offered by this switch, even if live state changes before its reply.
+  const requestedSnapshotMessagesRef = React.useRef<SessionUiCacheEntry["snapshotMessages"]>(undefined);
 
   const patchSessionCache = React.useCallback((patch: Partial<SessionUiCacheEntry>) => {
     const sessionId = lifecycleRefs.activeSessionId.current;
@@ -994,6 +996,7 @@ export function App() {
 
     const prev = sessionUiCacheRef.current.get(sessionId);
     const next: SessionUiCacheEntry = {
+      snapshotMessages: prev?.snapshotMessages,
       messages: prev?.messages ?? [],
       activeModel: prev?.activeModel ?? null,
       sessionName: prev?.sessionName ?? null,
@@ -1924,6 +1927,15 @@ export function App() {
       const state = evt.state as Record<string, unknown> | undefined;
       const rawMessages = Array.isArray(state?.messages) ? (state?.messages as unknown[]) : [];
       const isChunked = !!state?.chunked;
+      const resolved = resolveSnapshotMessages(state, requestedSnapshotMessagesRef.current);
+      if (!resolved) {
+        // An evicted/mismatched checkpoint cannot be hydrated from omitted messages.
+        // Retry without a hash; never turn a cache miss into an empty transcript.
+        viewerWsRef.current?.emit("switch_session", {
+          sessionId: lifecycleRefs.activeSessionId.current!, generation: lifecycleRefs.generation.current,
+        });
+        return;
+      }
       const snapshotId = typeof state?.snapshotId === "string" ? state.snapshotId : "";
       const totalMessages = typeof state?.totalMessages === "number" ? state.totalMessages : rawMessages.length;
       // A newer snapshot supersedes both the old chunks and any deltas buffered
@@ -1942,7 +1954,8 @@ export function App() {
       const stateModels = Array.isArray(state?.availableModels)
         ? normalizeModelList(state.availableModels as unknown[])
         : [];
-      const normalizedMessages = normalizeMessages(rawMessages);
+      const normalizedMessages = resolved.messages;
+      if (!isChunked) patchSessionCache({ snapshotMessages: resolved.snapshot });
       const hasSessionName = !!state && Object.prototype.hasOwnProperty.call(state, "sessionName");
       const nextSessionName = hasSessionName ? normalizeSessionName(state?.sessionName) : null;
       const metaViaHub = metaSourceHubRef.current || evt._metaViaHub === true;
@@ -3341,6 +3354,7 @@ export function App() {
     setResumeSessionsNextCursor(null);
 
     const cached = sessionUiCacheRef.current.get(relaySessionId);
+    requestedSnapshotMessagesRef.current = cached?.snapshotMessages;
     touchSessionCache(sessionUiCacheRef.current, relaySessionId);
 
     // ── Session-scoped state: always reset from cache or defaults ────────
@@ -3481,6 +3495,7 @@ export function App() {
           sessionId: currentSessionId,
           generation: lifecycleRefs.generation.current,
           lastSeq: lastSeqRef.current ?? undefined,
+          messagesHash: requestedSnapshotMessagesRef.current?.hash ?? "",
         });
         nextSocket.emit("viewer_visibility", getViewerVisibilityPayload());
       });
@@ -3707,7 +3722,10 @@ export function App() {
     if (socket.connected) {
       hydrationRequestedAtRef.current = Date.now();
       hydrationRetriesRef.current = 0;
-      socket.emit("switch_session", { sessionId: relaySessionId, generation: nextGeneration });
+      socket.emit("switch_session", {
+        sessionId: relaySessionId, generation: nextGeneration,
+        messagesHash: requestedSnapshotMessagesRef.current?.hash ?? "",
+      });
       socket.emit("viewer_visibility", getViewerVisibilityPayload());
     } else {
       socket.connect();

@@ -5,6 +5,23 @@
  */
 
 import type { SessionUiCacheEntry } from "./types.js";
+import { normalizeMessages } from "./message-helpers.js";
+
+/** A hash describes this immutable snapshot, never the subsequently streamed UI state. */
+export function resolveSnapshotMessages(
+  state: Record<string, unknown> | undefined,
+  snapshot?: SessionUiCacheEntry["snapshotMessages"],
+): { messages: SessionUiCacheEntry["messages"]; snapshot: SessionUiCacheEntry["snapshotMessages"] } | null {
+  if (state?.messagesUnchanged === true) {
+    return snapshot && state.messagesHash === snapshot.hash ? { messages: snapshot.messages, snapshot } : null;
+  }
+  const messages = normalizeMessages(Array.isArray(state?.messages) ? state.messages : []);
+  return {
+    messages,
+    snapshot: typeof state?.messagesHash === "string" && /^[a-f0-9]{64}$/.test(state.messagesHash)
+      ? { hash: state.messagesHash, messages } : undefined,
+  };
+}
 
 /** Maximum number of sessions kept in the UI state cache. */
 export const MAX_SESSION_UI_CACHE_SIZE = 50;

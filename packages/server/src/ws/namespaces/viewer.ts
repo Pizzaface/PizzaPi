@@ -472,7 +472,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
         const getCurrentGeneration = (): number | undefined =>
             typeof socket.data.generation === "number" ? socket.data.generation : undefined;
 
-        const activateSession = async (nextSessionId: string, generation?: number, lastSeq?: number): Promise<void> => {
+        const activateSession = async (nextSessionId: string, generation?: number, lastSeq?: number, messagesHash?: string): Promise<void> => {
             const activationToken = ++activationCounter;
             const activationCurrent = () => activationToken === activationCounter;
             // Reset on every session switch so a prior session's signal state
@@ -625,7 +625,7 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                     // Cache hit — viewer is fully hydrated.  Suppress the
                     // runner "connected" signal so it doesn't rebuild and
                     // broadcast to all viewers in the room.
-                    snapshotResult.send(socket, generation);
+                    snapshotResult.send(socket, generation, messagesHash);
                     suppressRunnerSignal = true;
                     log.info(`snapshot-provider hydration: sessionId=${nextSessionId} viewer=${socket.id} type=${snapshotResult.snapshot.type}`);
                     if (staleChunkStream) {
@@ -741,6 +741,8 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 data.sessionId,
                 typeof data.generation === "number" ? data.generation : undefined,
                 typeof data.lastSeq === "number" ? data.lastSeq : undefined,
+                typeof data.messagesHash === "string" && (data.messagesHash === "" || /^[a-f0-9]{64}$/.test(data.messagesHash))
+                    ? data.messagesHash : undefined,
             );
         });
 

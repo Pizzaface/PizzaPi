@@ -9,6 +9,7 @@
 // Priority: delta replay > cache snapshot > in-memory state > persisted (SQLite)
 // ============================================================================
 
+import { createHash } from "node:crypto";
 import { getCachedRelayEventsAfterSeq, getLatestCachedSnapshotEvent, type LatestCachedSnapshot } from "../../sessions/redis.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
 import { applySnapshotOverlayToState } from "../sio-registry/snapshot-state.js";
@@ -42,7 +43,7 @@ export interface Snapshot {
  */
 export interface SnapshotResult {
     snapshot: Snapshot;
-    send: (socket: ViewerEventEmitter, generation?: number) => void;
+    send: (socket: ViewerEventEmitter, generation?: number, messagesHash?: string) => void;
 }
 
 type ViewerEventEmitter = {
@@ -77,6 +78,18 @@ function maybeTruncateSnapshotState(state: unknown): unknown {
 }
 
 
+
+// Opt-in conditional transfer: only messages are reusable. Metadata, pagination,
+// and trailing events are always sent. Hash after truncation, not the full history.
+function withConditionalMessages(state: unknown, knownHash?: string): unknown {
+    if (knownHash === undefined || !state || typeof state !== "object" || Array.isArray(state)) return state;
+    const snapshot = state as Record<string, unknown>;
+    if (snapshot.chunked === true || !Array.isArray(snapshot.messages)) return state;
+    const messagesHash = createHash("sha256").update(JSON.stringify(snapshot.messages)).digest("hex");
+    if (knownHash !== messagesHash) return { ...snapshot, messagesHash };
+    const { messages: _messages, ...metadata } = snapshot;
+    return { ...metadata, messagesHash, messagesUnchanged: true };
+}
 
 // ── Dependency injection for testability ─────────────────────────────────────
 
@@ -152,7 +165,7 @@ export async function tryCacheSnapshot(
             // caller must compare against a viewer's cursor.
             seq: snapshotCoverageSeq(cached) ?? undefined,
         },
-        send(socket, generation) {
+        send(socket, generation, messagesHash) {
             let eventToSend: Record<string, unknown> = snapshotEvent;
             if (snapshotEvent.type === "session_active") {
                 // The cached session_active predates later metadata changes
@@ -164,7 +177,7 @@ export async function tryCacheSnapshot(
                     shrink(snapshotEvent.state),
                     snapshotOverlay,
                 );
-                eventToSend = { ...snapshotEvent, state };
+                eventToSend = { ...snapshotEvent, state: withConditionalMessages(state, messagesHash) };
             } else if (Array.isArray(snapshotEvent.messages)) {
                 eventToSend = shrink(snapshotEvent) as Record<string, unknown>;
             }
@@ -200,11 +213,11 @@ export function tryMemoryState(
 
     return {
         snapshot: { type: "memory", source: "In-memory lastState from Redis session hash" },
-        send(socket, generation) {
+        send(socket, generation, messagesHash) {
             // Add _metaViaHub hint so the client knows metadata came from hub,
             // matching the original behavior in viewer.ts
             socket.emit("event", {
-                event: { type: "session_active", state, _metaViaHub: true },
+                event: { type: "session_active", state: withConditionalMessages(state, messagesHash), _metaViaHub: true },
                 generation,
             });
         },
@@ -231,9 +244,9 @@ export async function tryPersistedSnapshot(
 
     return {
         snapshot: { type: "persisted", source: "SQLite persisted relay session state" },
-        send(socket, generation) {
+        send(socket, generation, messagesHash) {
             socket.emit("event", {
-                event: { type: "session_active", state },
+                event: { type: "session_active", state: withConditionalMessages(state, messagesHash) },
                 generation,
             });
         },
