@@ -22,34 +22,17 @@ export function mergeConnectedSeq(
 export function shouldDeferEventForHydration(
   eventType: string,
   awaitingSnapshot: boolean,
-  chunkedDeliveryActive: boolean,
 ): boolean {
-  const deferStreamingDeltas =
+  // Deltas cannot be applied before the first snapshot has set the transcript.
+  return awaitingSnapshot && (
     eventType === "message_update" ||
     eventType === "message_start" ||
     eventType === "message_end" ||
     eventType === "turn_end" ||
     eventType === "tool_execution_start" ||
     eventType === "tool_execution_update" ||
-    eventType === "tool_execution_end";
-
-  if ((awaitingSnapshot || chunkedDeliveryActive) && deferStreamingDeltas) {
-    return true;
-  }
-
-  // Chunks arriving before their session_active chunked header must be ignored.
-  if (eventType === "session_messages_chunk" && awaitingSnapshot && !chunkedDeliveryActive) {
-    return true;
-  }
-
-  return false;
-}
-
-export function shouldRequestChunkRecovery(
-  finalChunkSeen: boolean,
-  readyToFinalize: boolean,
-): boolean {
-  return finalChunkSeen && !readyToFinalize;
+    eventType === "tool_execution_end"
+  );
 }
 
 export function shouldAllowOutOfOrderSnapshotDuringHydration(
@@ -63,32 +46,6 @@ export function shouldAllowOutOfOrderSnapshotDuringHydration(
   if (currentSeq === null) return false;
   if (!Number.isFinite(incomingSeq)) return false;
   return incomingSeq < currentSeq;
-}
-
-export function registerChunkIndex(seenChunkIndexes: Set<number>, chunkIndex: number): boolean {
-  if (seenChunkIndexes.has(chunkIndex)) {
-    return false;
-  }
-  seenChunkIndexes.add(chunkIndex);
-  return true;
-}
-
-export function canFinalizeChunkHydration(
-  finalChunkSeen: boolean,
-  seenChunkIndexes: Set<number>,
-  totalChunks: number,
-): boolean {
-  if (!finalChunkSeen || !Number.isInteger(totalChunks) || totalChunks <= 0) {
-    return false;
-  }
-
-  for (let i = 0; i < totalChunks; i++) {
-    if (!seenChunkIndexes.has(i)) {
-      return false;
-    }
-  }
-
-  return true;
 }
 
 /**

@@ -781,7 +781,11 @@ export async function broadcastSessionEventToViewers(sessionId: string, event: u
  * 2. Append to Redis event cache
  * 3. Broadcast to viewer room
  */
-export async function publishSessionEvent(sessionId: string, event: unknown): Promise<number> {
+export async function publishSessionEvent(
+    sessionId: string,
+    event: unknown,
+    opts: { truncateForViewers?: boolean } = {},
+): Promise<number> {
     const io = getIo();
     const session = await getSessionSummary(sessionId);
 
@@ -818,11 +822,14 @@ export async function publishSessionEvent(sessionId: string, event: unknown): Pr
     // older history they've loaded (the UI replaces the transcript on each
     // session_active, so truncation here would repeatedly erase paged-up
     // context).  Truncation is applied only in sendSnapshotToViewer() for
-    // the initial reconnect/hydration delivery.
+    // the initial reconnect/hydration delivery — and for server-assembled
+    // chunked snapshots (truncateForViewers), which are too large to push
+    // whole; the full state stays in the cache for load_messages/replay.
+    const viewerEvent = opts.truncateForViewers ? prepareBroadcastEvent(strippedEvent) : strippedEvent;
     try {
         io.of("/viewer")
             .to(viewerSessionRoom(sessionId))
-            .emit("event", { event: strippedEvent, seq, sessionId });
+            .emit("event", { event: viewerEvent, seq, sessionId });
     } catch (err) {
         // Redis adapter throws EPIPE when the Redis connection drops mid-broadcast.
         // Fall back to local-only delivery so viewers on this server still receive
@@ -833,7 +840,7 @@ export async function publishSessionEvent(sessionId: string, event: unknown): Pr
             io.of("/viewer")
                 .local
                 .to(viewerSessionRoom(sessionId))
-                .emit("event", { event: strippedEvent, seq, sessionId });
+                .emit("event", { event: viewerEvent, seq, sessionId });
         } catch {
             // Local delivery also failed — event may be lost for connected viewers,
             // but it's in the cache (if Redis accepted it) for future replay.

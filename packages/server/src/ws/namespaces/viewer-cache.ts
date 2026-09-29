@@ -45,8 +45,8 @@ const defaultViewerCacheDeps: ViewerCacheDeps = {
  * exactly, which is why refusing to send it whenever `snapshotSeq < lastSeq`
  * would strand viewers that are only a few deltas ahead of the last checkpoint.
  *
- * Returns null when the snapshot itself is unsequenced (finalizeChunkedSnapshot
- * writes one deliberately without a seq) or when the trailing deltas are not a
+ * Returns null when the snapshot itself is unsequenced (e.g. cache entries
+ * written before seqs were recorded) or when the trailing deltas are not a
  * contiguous run from `snapshotSeq + 1` — a hole means replacing the transcript
  * would silently drop whatever fell in it.
  */
@@ -199,9 +199,9 @@ export async function hydrateViewerFromCache(
                 if (latestSeq === opts.lastSeq) return true;
             }
 
-            // Either a genuine gap, or the only snapshot we have is the
-            // unsequenced one finalizeChunkedSnapshot() writes — whose position
-            // in the stream is unknown, so sending it could rewind the client.
+            // Either a genuine gap, or the only snapshot we have is
+            // unsequenced — its position in the stream is unknown, so sending
+            // it could rewind the client.
             return false;
         }
 

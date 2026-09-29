@@ -361,7 +361,7 @@ describe("snapshotCoverageSeq", () => {
         })).toBeNull();
     });
 
-    test("is null for an unsequenced snapshot (chunked-assembled)", () => {
+    test("is null for an unsequenced snapshot", () => {
         expect(snapshotCoverageSeq({ event: {}, eventsAfter: [{ seq: 9, event: {} }] })).toBeNull();
     });
 
