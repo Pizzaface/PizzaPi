@@ -35,6 +35,78 @@ function createDeps(overrides: Partial<SnapshotProviderDeps> = {}): SnapshotProv
     };
 }
 
+describe("conditional snapshot messages", () => {
+    test("warm switches omit identical messages but retain metadata and trailing events", async () => {
+        const messages = [{ role: "user", content: "hello" }];
+        const deps = createDeps({ getLatestCachedSnapshotEvent: mock(async () => ({
+            event: { type: "session_active", state: { messages, sessionName: "current" } },
+            snapshotSeq: 10,
+            eventsAfter: [{ seq: 11, event: { type: "message_end", message: { role: "assistant", content: "new" } } }],
+        })) });
+        const result = await tryCacheSnapshot("session", deps);
+        const cold = createMockSocket();
+        result!.send(cold, 1, "");
+        const state = (cold.calls[0].payload as any).event.state;
+        expect(state.messages).toEqual(messages);
+        expect(state.messagesHash).toMatch(/^[a-f0-9]{64}$/);
+
+        const warm = createMockSocket();
+        result!.send(warm, 2, state.messagesHash);
+        expect((warm.calls[0].payload as any).event.state).toEqual({
+            sessionName: "current", totalMessages: 1, hasMore: false, oldestLoadedIndex: 0,
+            messagesHash: state.messagesHash, messagesUnchanged: true,
+        });
+        expect(warm.calls[1].payload).toMatchObject({ seq: 11, deltaReplay: true, generation: 2 });
+
+        const changed = createMockSocket();
+        result!.send(changed, 3, "stale-hash");
+        expect((changed.calls[0].payload as any).event.state.messages).toEqual(messages);
+        const legacy = createMockSocket();
+        result!.send(legacy, 4);
+        expect((legacy.calls[0].payload as any).event.state.messagesHash).toBeUndefined();
+    });
+
+    test("memory and persisted snapshots support reuse; chunk headers never omit messages", async () => {
+        const state = { messages: [{ role: "user", content: "fallback" }] };
+        const memory = tryMemoryState(JSON.stringify(state))!;
+        const persisted = await tryPersistedSnapshot("session", "owner", createDeps({
+            getPersistedRelaySessionSnapshot: mock(async () => ({ state })),
+        }));
+        for (const result of [memory, persisted!]) {
+            const cold = createMockSocket();
+            result.send(cold, 1, "");
+            const hash = (cold.calls[0].payload as any).event.state.messagesHash;
+            expect(hash).toMatch(/^[a-f0-9]{64}$/);
+            const warm = createMockSocket();
+            result.send(warm, 2, hash);
+            expect((warm.calls[0].payload as any).event.state).toMatchObject({ messagesUnchanged: true, messagesHash: hash });
+        }
+        const chunked = createMockSocket();
+        tryMemoryState(JSON.stringify({ ...state, chunked: true }))!.send(chunked, 1, "");
+        expect((chunked.calls[0].payload as any).event.state.messages).toEqual(state.messages);
+        expect((chunked.calls[0].payload as any).event.state.messagesHash).toBeUndefined();
+    });
+
+    test("hash covers the truncated message tail, not session metadata", async () => {
+        const make = async (sessionName: string, lastContent: string) => tryCacheSnapshot("session", createDeps({
+            getLatestCachedSnapshotEvent: mock(async () => ({
+                event: { type: "session_active", state: { sessionName, messages: Array.from({ length: 60 }, (_, i) => ({ role: "user", content: i === 59 ? lastContent : String(i) })) } },
+                eventsAfter: [],
+            })),
+        }));
+        const cold = createMockSocket();
+        (await make("old name", "last"))!.send(cold, 1, "");
+        const state = (cold.calls[0].payload as any).event.state;
+        expect(state.messages).toHaveLength(50);
+        const warm = createMockSocket();
+        (await make("new name", "last"))!.send(warm, 2, state.messagesHash);
+        expect((warm.calls[0].payload as any).event.state).toMatchObject({ messagesUnchanged: true, sessionName: "new name", oldestLoadedIndex: 10, hasMore: true });
+        const changed = createMockSocket();
+        (await make("new name", "changed"))!.send(changed, 3, state.messagesHash);
+        expect((changed.calls[0].payload as any).event.state.messages).toHaveLength(50);
+    });
+});
+
 // ── truncateSnapshotMessages ────────────────────────────────────────────────
 
 describe("truncateSnapshotMessages", () => {

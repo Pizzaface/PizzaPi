@@ -64,6 +64,8 @@ export interface QueuedMessage {
 }
 
 export interface SessionUiCacheEntry {
+  /** Immutable normalized snapshot used for conditional hydration, separate from live messages. */
+  snapshotMessages?: { hash: string; messages: RelayMessage[] };
   // ── Session-scoped (always reset on session switch) ───────────────────
   messages: RelayMessage[];
   activeModel: ConfiguredModelInfo | null;

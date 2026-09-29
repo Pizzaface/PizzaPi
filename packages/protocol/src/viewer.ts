@@ -123,6 +123,8 @@ export interface ViewerClientToServerEvents {
     sessionId: string;
     generation?: number;
     lastSeq?: number;
+    /** Opt into conditional snapshot messages. Empty string requests a full hashed snapshot. */
+    messagesHash?: string;
   }) => void;
 
   /** Request a fresh snapshot resync */

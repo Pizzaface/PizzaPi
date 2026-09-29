@@ -103,6 +103,71 @@ afterAll(async () => {
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe("MockViewer", () => {
+    test("switch_session conditionally transfers snapshots on the same socket", async () => {
+        const a = await createTestSession(server);
+        const b = await createTestSession(server);
+        const viewer = await createMockViewer(server, a.sessionId);
+        type SnapshotState = { messages?: unknown[]; messagesHash?: string; messagesUnchanged?: boolean; sessionName?: string };
+        const switchTo = (sessionId: string, generation: number, messagesHash?: string) => new Promise<SnapshotState>((resolve, reject) => {
+            const timer = setTimeout(() => { viewer.socket.off("event", receive); reject(new Error("snapshot timeout")); }, 5000);
+            const receive = (payload: { event: unknown; generation?: number }) => {
+                const event = payload.event as { type?: string; state?: SnapshotState };
+                if (payload.generation !== generation || event.type !== "session_active") return;
+                clearTimeout(timer);
+                viewer.socket.off("event", receive);
+                resolve(event.state!);
+            };
+            viewer.socket.on("event", receive);
+            viewer.socket.emit("switch_session", { sessionId, generation, messagesHash });
+        });
+        // event_ack acknowledges receipt, not persistence. Observe the published
+        // snapshot before switching so this test cannot race the ingestion queue.
+        const publish = async (session: TestSession, state: SnapshotState, seq: number) => {
+            const observer = await createMockViewer(server, session.sessionId);
+            try {
+                const received = observer.waitForEvent((raw) => {
+                    const event = raw as { type?: string; state?: SnapshotState };
+                    return event.type === "session_active" && event.state?.sessionName === state.sessionName;
+                });
+                await emitRelayEvent(session, { type: "session_active", state }, seq);
+                await received;
+            } finally {
+                await observer.disconnect();
+            }
+        };
+        try {
+            const messages = [{ role: "user", content: "original transcript" }];
+            await publish(a, { messages, sessionName: "A" }, 1);
+            await publish(b, { messages: [], sessionName: "B" }, 1);
+            const cold = await switchTo(a.sessionId, 1, "");
+            expect(cold.messages).toEqual(messages);
+            expect(cold.messagesHash).toMatch(/^[a-f0-9]{64}$/);
+            await switchTo(b.sessionId, 2, "");
+            const warm = await switchTo(a.sessionId, 3, cold.messagesHash);
+            expect(warm.messagesUnchanged).toBe(true);
+            expect(warm.messages).toBeUndefined();
+            expect(warm.sessionName).toBe("A");
+
+            await switchTo(b.sessionId, 4, "");
+            const changedMessages = [...messages, { role: "assistant", content: "new reply" }];
+            await publish(a, { messages: changedMessages, sessionName: "A updated" }, 2);
+            const changed = await switchTo(a.sessionId, 5, cold.messagesHash);
+            expect(changed.messages).toEqual(changedMessages);
+            expect(changed.messagesUnchanged).not.toBe(true);
+            expect(changed.messagesHash).not.toBe(cold.messagesHash);
+            const legacy = await switchTo(a.sessionId, 6);
+            expect(legacy.messages).toEqual(changedMessages);
+            expect(legacy.messagesHash).toBeUndefined();
+            const invalid = await switchTo(a.sessionId, 7, "not-a-hash");
+            expect(invalid.messages).toEqual(changedMessages);
+            expect(invalid.messagesHash).toBeUndefined();
+        } finally {
+            await viewer.disconnect();
+            a.relaySocket.disconnect();
+            b.relaySocket.disconnect();
+        }
+    }, TEST_TIMEOUT_MS);
+
     test(
         "connects to a session and receives connected event",
         async () => {

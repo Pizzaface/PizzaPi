@@ -1,6 +1,38 @@
 import { describe, test, expect } from "bun:test";
-import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "./session-ui-cache.js";
+import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE, resolveSnapshotMessages } from "./session-ui-cache.js";
 import type { SessionUiCacheEntry } from "./types.js";
+
+describe("conditional snapshot messages", () => {
+  const hash = "a".repeat(64);
+  test("reuses normalized array identity on a matching warm snapshot", () => {
+    const cold = resolveSnapshotMessages({ messages: [{ role: "user", content: "hello" }], messagesHash: hash });
+    expect(cold).not.toBeNull();
+    const warm = resolveSnapshotMessages({ messagesUnchanged: true, messagesHash: hash }, cold!.snapshot);
+    expect(warm!.messages).toBe(cold!.messages);
+    expect(warm!.snapshot).toBe(cold!.snapshot);
+  });
+  test("retains the immutable snapshot baseline, not later streaming or optimistic messages", () => {
+    const cold = resolveSnapshotMessages({ messages: [{ role: "user", content: "hello" }], messagesHash: hash })!;
+    const currentMessages = [...cold.messages, { key: "local", role: "user" as const, content: "pending" }];
+    const warm = resolveSnapshotMessages({ messagesUnchanged: true, messagesHash: hash }, cold.snapshot)!;
+    expect(warm.messages).toBe(cold.messages);
+    expect(warm.messages).not.toBe(currentMessages);
+    expect(warm.messages).toHaveLength(1);
+  });
+  test("requests full recovery for a missing or mismatched checkpoint", () => {
+    const cold = resolveSnapshotMessages({ messages: [], messagesHash: hash })!;
+    expect(resolveSnapshotMessages({ messagesUnchanged: true, messagesHash: hash })).toBeNull();
+    expect(resolveSnapshotMessages({ messagesUnchanged: true, messagesHash: "b".repeat(64) }, cold.snapshot)).toBeNull();
+  });
+  test("accepts changed and legacy full snapshots, including empty conversations", () => {
+    const cold = resolveSnapshotMessages({ messages: [], messagesHash: hash })!;
+    const changed = resolveSnapshotMessages({ messages: [{ role: "user", content: "new" }], messagesHash: "b".repeat(64) }, cold.snapshot)!;
+    expect(changed.messages).toHaveLength(1);
+    expect(changed.snapshot?.hash).toBe("b".repeat(64));
+    expect(resolveSnapshotMessages({ messages: [] })!.snapshot).toBeUndefined();
+    expect(resolveSnapshotMessages({ messagesUnchanged: true, messagesHash: hash }, cold.snapshot)!.messages).toBe(cold.messages);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
