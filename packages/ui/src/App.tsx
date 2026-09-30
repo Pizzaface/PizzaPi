@@ -106,7 +106,6 @@ import { useBrowserNotifications } from "@/hooks/useBrowserNotifications";
 import { useMountOnFirstOpen } from "@/hooks/useMountOnFirstOpen";
 import {
   toRelayMessage,
-  deduplicateMessages,
   normalizeMessages,
   loadedPrefixBefore,
   normalizeModel,
