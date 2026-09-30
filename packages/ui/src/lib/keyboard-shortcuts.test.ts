@@ -7,6 +7,9 @@
  *
  * Relevant source: packages/ui/src/App.tsx — the `handler` function inside
  * the `useEffect` that registers `keydown` on `document`.
+ *
+ * The guard now lives in `resolveGlobalShortcut` (packages/ui/src/app/
+ * global-shortcuts.ts), tested directly in app/global-shortcuts.test.ts.
  */
 
 import { describe, expect, test } from "bun:test";
