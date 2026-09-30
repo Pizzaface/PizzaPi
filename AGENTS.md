@@ -202,6 +202,7 @@ Counts are `*.test.ts(x)` files per package (excluding `node_modules`); `mobile/
 - **Run `bun run test` before committing.** Tests are part of the quality gates in session completion.
 - **Test pure logic first.** Validation, parsing, transforms, and utility functions should have thorough unit tests.
 - **Keep tests fast.** Avoid real network/Redis/DB calls in unit tests — mock or use in-memory alternatives.
+- **Test isolation.** Bun runs every file in one process, so `mock.module` and `process.env` mutations leak across files. `bun run test` runs `packages/server/src` and `packages/cli/src` one-process-per-file via `scripts/test-isolated.ts`, but prefer designs that don't need it: read config lazily (functions reading `process.env` at call time, not module-level constants) and inject collaborators instead of `mock.module` — e.g. `packages/server/tests/helpers/runner-namespace-harness.ts` drives the real `/runner` socket handlers with an in-memory Redis and fake Socket.IO.
 - **Test lifecycle boundaries explicitly.** If a bug depends on "next turn", "after tool call", startup sequencing, reloads, or streamed state, add a regression test that crosses that boundary. Snapshot/timing bugs are easy to miss with pure unit tests.
 
 ---

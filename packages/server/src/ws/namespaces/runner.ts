@@ -120,8 +120,8 @@ export function isPendingRequestCapReached(size: number): boolean {
  * A runner response only resolves its pending request when it arrives on the
  * SAME socket the request was issued on. This prevents a malicious/buggy runner
  * from resolving another connection's in-flight request with a guessed/duplicate
- * requestId. Exported for direct unit testing (the shared-process test suite
- * cannot mock.module the namespace machinery reliably — see TODO(ltl2EKmU)).
+ * requestId. Unit-tested directly in runner.test.ts; the handler wiring is
+ * covered end to end in runner.handlers.test.ts.
  */
 export function pendingSocketMatches<T extends { socketId: string }>(
     pending: T | undefined,
@@ -143,8 +143,8 @@ export function pendingSocketMatches<T extends { socketId: string }>(
  *   - the session is active (stale/inactive association → existing semantics)
  *   - the owning runner is live (`ownerLive` — a connected socket in its
  *     runner room on some node; dead/crashed runner → allow re-adoption)
- * Exported for direct unit testing (the shared-process suite cannot mock.module
- * the namespace machinery reliably — see TODO(ltl2EKmU)).
+ * Unit-tested directly in runner.test.ts; the session_ready wiring (liveness
+ * lookup, fail-closed on adapter error) is covered in runner.handlers.test.ts.
  */
 export function shouldRejectSessionAdoption(
     session: { runnerId: string | null; isActive: boolean } | null,

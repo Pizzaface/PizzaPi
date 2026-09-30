@@ -11,8 +11,9 @@
 // This drives the REAL /runner namespace connection/disconnect handler
 // (registerRunnerNamespace) with fake sockets and the real registerRunner()
 // registry path. Redis is fully mocked via dependency injection
-// (initStateRedis + _injectRedisForTesting) — no mock.module, no real Redis,
-// no cross-file bleed (see TODO(ltl2EKmU)).
+// (initStateRedis + _injectRedisForTesting) via the shared harness in
+// tests/helpers/runner-namespace-harness.ts — no mock.module, no real Redis,
+// no cross-file bleed when bun runs every file in one process.
 // ============================================================================
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
@@ -31,155 +32,10 @@ import { initStateRedis, getRunner } from "../sio-state/index.js";
 import { registerRunner } from "../sio-registry/runners.js";
 import { registerTerminal, getTerminalIdsForRunner, getTerminalEntry } from "../sio-registry/terminals.js";
 import { registerRunnerNamespace } from "./runner.js";
+import { createFakeIo, createMemoryRedis, makeSocket } from "../../../tests/helpers/runner-namespace-harness.js";
 
-// ── In-memory Redis mock ────────────────────────────────────────────────────
-
-const hashes = new Map<string, Record<string, string>>();
-const strings = new Map<string, string>();
-const sets = new Map<string, Set<string>>();
-
-function hSetAll(key: string, fields: Record<string, string>): void {
-    hashes.set(key, { ...(hashes.get(key)), ...fields });
-}
-
-function sAddAll(key: string, members: unknown[]): void {
-    const s = sets.get(key) ?? new Set<string>();
-    for (const m of members.flat()) s.add(String(m));
-    sets.set(key, s);
-}
-
-function sRemAll(key: string, members: unknown[]): void {
-    const s = sets.get(key);
-    if (s) for (const m of members.flat()) s.delete(String(m));
-}
-
-function delKey(key: string): void {
-    hashes.delete(key);
-    strings.delete(key);
-    sets.delete(key);
-}
-
-/** Mock covering both the sio-state client surface and the redis-kv surface. */
-function makeMockRedis() {
-    const multi = () => {
-        const ops: Array<() => unknown> = [];
-        const m: Record<string, (...args: any[]) => any> = {
-            hSet: (key: string, fieldsOrField: unknown, value?: string) => {
-                ops.push(() => {
-                    if (typeof fieldsOrField === "string") hSetAll(key, { [fieldsOrField]: value ?? "" });
-                    else hSetAll(key, fieldsOrField as Record<string, string>);
-                    return 1;
-                });
-                return m;
-            },
-            hGetAll: (key: string) => {
-                ops.push(() => ({ ...(hashes.get(key)) }));
-                return m;
-            },
-            expire: () => {
-                ops.push(() => 1);
-                return m;
-            },
-            sAdd: (key: string, ...members: unknown[]) => {
-                ops.push(() => { sAddAll(key, members); return 1; });
-                return m;
-            },
-            sRem: (key: string, ...members: unknown[]) => {
-                ops.push(() => { sRemAll(key, members); return 1; });
-                return m;
-            },
-            del: (key: string) => {
-                ops.push(() => { delKey(key); return 1; });
-                return m;
-            },
-            exec: async () => ops.map((op) => op()),
-        };
-        return m;
-    };
-
-    const client: Record<string, unknown> = {
-        isOpen: true,
-        on: () => client,
-        connect: async () => {},
-        multi,
-        hGetAll: async (key: string) => ({ ...(hashes.get(key)) }),
-        hSet: async (key: string, field: string, value: string) => { hSetAll(key, { [field]: value }); return 1; },
-        exists: async (key: string) => (hashes.has(key) || strings.has(key) || sets.has(key) ? 1 : 0),
-        sMembers: async (key: string) => Array.from(sets.get(key) ?? []),
-        sAdd: async (key: string, ...members: unknown[]) => { sAddAll(key, members); return 1; },
-        sRem: async (key: string, ...members: unknown[]) => { sRemAll(key, members); return 1; },
-        expire: async () => 1,
-        set: async (key: string, value: string) => { strings.set(key, value); return "OK"; },
-        get: async (key: string) => strings.get(key) ?? null,
-        del: async (key: string) => { delKey(key); return 1; },
-    };
-    return client;
-}
-
-// ── Fake Socket.IO server / sockets ──────────────────────────────────────────
-
-function createFakeIo() {
-    let connectionHandler: ((socket: unknown) => void) | undefined;
-    const nsCache = new Map<string, Record<string, unknown>>();
-
-    const mkNs = (): Record<string, unknown> => {
-        const ns: Record<string, unknown> = {
-            emit: () => {},
-            to: () => ({ emit: () => {} }),
-            local: {
-                emit: () => {},
-                to: () => ({ emit: () => {} }),
-            },
-            use: () => {},
-            on: (event: string, cb: (socket: unknown) => void) => {
-                if (event === "connection") connectionHandler = cb;
-            },
-        };
-        return ns;
-    };
-
-    return {
-        io: {
-            of: (name: string) => {
-                if (!nsCache.has(name)) nsCache.set(name, mkNs());
-                return nsCache.get(name);
-            },
-        },
-        getConnectionHandler: () => connectionHandler,
-    };
-}
-
-// ponytail: fake socket is `any` — the real Socket interface has 70+
-// members; structural typing is pointless for a captured-handler harness.
-function makeSocket(id: string): any {
-    const handlers = new Map<string, (...args: any[]) => unknown>();
-    const socket: any = {
-        id,
-        data: {} as Record<string, unknown>,
-        connected: true,
-        handshake: { address: "127.0.0.1", headers: {}, auth: {} },
-        conn: { transport: { name: "websocket" } },
-        join: async () => {},
-        leave: async () => {},
-        emit: () => {},
-        disconnect: () => {},
-        on(event: string, cb: (...args: any[]) => unknown) {
-            handlers.set(event, cb);
-            return socket;
-        },
-        once(event: string, cb: (...args: any[]) => unknown) {
-            handlers.set(event, cb);
-            return socket;
-        },
-        /** Fire a captured event handler, awaiting async listeners. */
-        async fire(event: string, ...args: unknown[]) {
-            const cb = handlers.get(event);
-            if (!cb) throw new Error(`no '${event}' handler captured on socket ${id}`);
-            await cb(...args);
-        },
-    };
-    return socket;
-}
+const memRedis = createMemoryRedis();
+const makeMockRedis = () => memRedis.client;
 
 const REGISTRATION = {
     name: "runner-one",
@@ -200,9 +56,7 @@ const REGISTRATION = {
 
 describe("runner stale disconnect after replacement (B-014)", () => {
     beforeEach(() => {
-        hashes.clear();
-        strings.clear();
-        sets.clear();
+        memRedis.clear();
         localRunnerSockets.clear();
         _resetRunnerSecretsForTesting();
     });
