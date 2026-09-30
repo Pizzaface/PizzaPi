@@ -146,6 +146,7 @@ export function SessionViewer({
   messageQueue,
   onRemoveQueuedMessage,
   onEditQueuedMessage,
+  onSendQueuedMessageNow,
   onClearMessageQueue,
   onToggleTerminal,
   showTerminalButton,
@@ -1084,6 +1085,11 @@ export function SessionViewer({
                           <>
                             <span className="truncate flex-1 text-foreground/80 leading-relaxed">{qm.text}</span>
                             <div className="flex items-center gap-1 flex-shrink-0 mt-0.5 opacity-0 group-hover:opacity-100 transition-all">
+                              {onSendQueuedMessageNow && (
+                                <button type="button" onClick={() => onSendQueuedMessageNow(qm.id)} className="text-muted-foreground hover:text-amber-500 transition-colors" title="Send now (steer)" aria-label="Send queued message now">
+                                  <Zap className="size-3" />
+                                </button>
+                              )}
                               {onEditQueuedMessage && (
                                 <button type="button" onClick={() => { setEditingQueuedId(qm.id); setEditingQueuedText(qm.text); }} className="text-muted-foreground hover:text-foreground transition-colors" title="Edit queued message" aria-label="Edit queued message">
                                   <Pencil className="size-3" />

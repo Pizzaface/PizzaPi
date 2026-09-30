@@ -74,6 +74,8 @@ export interface SessionViewerProps {
   onRemoveQueuedMessage?: (id: string) => void;
   /** Edit the text of a queued message */
   onEditQueuedMessage?: (id: string, newText: string) => void;
+  /** Dequeue a message and deliver it now as a steer */
+  onSendQueuedMessageNow?: (id: string) => void;
   /** Clear all queued messages */
   onClearMessageQueue?: () => void;
   /** Toggle the terminal panel */
