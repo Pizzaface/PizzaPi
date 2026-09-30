@@ -9,15 +9,27 @@ import {
     validateProviderOverridesSection,
     mergeProviderOverridesSection,
 } from "../daemon-config-sanitize.js";
+import { isRecord } from "@pizzapi/protocol";
+import type { PizzaPiConfig } from "../../config.js";
+
+/**
+ * The settings API writes UI-supplied section values through to config.json
+ * as-is (shape validation happens when the config is loaded), and some keys it
+ * writes (`mcpServers`, `mcp`) are not modelled on PizzaPiConfig. This is the
+ * single place that untyped payload is asserted to the save signature.
+ */
+function asConfigFields(fields: Record<string, unknown>): Partial<PizzaPiConfig> {
+    return fields as Partial<PizzaPiConfig>;
+}
 
 export function registerSettingsHandlers(socket: Socket, isShuttingDown: () => boolean): void {
     // ── Settings ───────────────────────────────────────────────────────
 
     // sanitizeConfigForUI is imported from ./daemon-config-sanitize.js
 
-    socket.on("settings_get_config", async (data: any) => {
+    socket.on("settings_get_config", async (data: unknown) => {
         if (isShuttingDown()) return;
-        const requestId = data?.requestId;
+        const requestId = isRecord(data) ? data.requestId : undefined;
         try {
             const { loadGlobalConfig: loadGlobal } = await import("../../config.js");
             const globalConfig = loadGlobal();
@@ -64,11 +76,12 @@ export function registerSettingsHandlers(socket: Socket, isShuttingDown: () => b
         }
     });
 
-    socket.on("settings_update_section", async (data: any) => {
+    socket.on("settings_update_section", async (data: unknown) => {
         if (isShuttingDown()) return;
-        const requestId = data?.requestId;
-        const section = data?.section;
-        const value = data?.value;
+        const payload = isRecord(data) ? data : undefined;
+        const requestId = payload?.requestId;
+        const section = payload?.section;
+        const value = payload?.value;
         try {
             if (!section || typeof section !== "string") {
                 socket.emit("file_result", { requestId, ok: false, message: "Missing section name" });
@@ -141,25 +154,25 @@ export function registerSettingsHandlers(socket: Socket, isShuttingDown: () => b
                 const existing = loadGlobal();
 
                 if (section === "security") {
-                    const v = value as any;
-                    const updates: Record<string, any> = {};
+                    const v = isRecord(value) ? value : undefined;
+                    const updates: Record<string, unknown> = {};
                     if (v?.allowProjectHooks !== undefined) updates.allowProjectHooks = v.allowProjectHooks;
                     if (v?.trustedPlugins !== undefined) updates.trustedPlugins = v.trustedPlugins;
-                    saveGlobal(updates);
+                    saveGlobal(asConfigFields(updates));
                 } else if (section === "systemPrompt") {
-                    const v = value as any;
-                    const updates: Record<string, any> = {};
+                    const v = isRecord(value) ? value : undefined;
+                    const updates: Record<string, unknown> = {};
                     if (v?.appendSystemPrompt !== undefined) updates.appendSystemPrompt = v.appendSystemPrompt;
                     if (v?.builtinSystemPrompt !== undefined) updates.builtinSystemPrompt = v.builtinSystemPrompt;
                     if (v?.sendAgentsMd !== undefined) updates.sendAgentsMd = v.sendAgentsMd;
                     if (v?.skills !== undefined) updates.skills = v.skills;
-                    saveGlobal(updates);
+                    saveGlobal(asConfigFields(updates));
                 } else if (section === "envVars") {
                     // Env vars are stored in a custom key in config.json.
                     // Restore any masked ("***") sentinel values from the on-disk config
                     // so we don't overwrite real secrets with the placeholder.
                     const MASK_SENTINEL = "***";
-                    const existingOverrides = ((existing as any).envOverrides ?? {}) as Record<string, string>;
+                    const existingOverrides: Record<string, string> = existing.envOverrides ?? {};
                     const incomingOverrides = (value ?? {}) as Record<string, string>;
                     const restoredOverrides: Record<string, string> = { ...incomingOverrides };
                     for (const [k, v] of Object.entries(incomingOverrides)) {
@@ -167,8 +180,7 @@ export function registerSettingsHandlers(socket: Socket, isShuttingDown: () => b
                             restoredOverrides[k] = existingOverrides[k];
                         }
                     }
-                    const updates: Record<string, any> = { envOverrides: restoredOverrides };
-                    saveGlobal(updates);
+                    saveGlobal({ envOverrides: restoredOverrides });
                 } else if (section === "providerOverrides") {
                     // Per-provider overrides (system prompt, AGENTS.md, MCP disable
                     // list) go into providerSettings.<provider>.overrides.
@@ -182,21 +194,23 @@ export function registerSettingsHandlers(socket: Socket, isShuttingDown: () => b
                         return;
                     }
                     const ps = mergeProviderOverridesSection(
-                        (existing as any).providerSettings,
+                        existing.providerSettings,
                         (value ?? {}) as Record<string, unknown>,
                     );
-                    saveGlobal({ providerSettings: ps } as any);
+                    saveGlobal(asConfigFields({ providerSettings: ps }));
                 } else if (section === "webSearch") {
                     // Web search config goes into providerSettings
-                    const v = value as any;
-                    const ps = (existing as any).providerSettings ?? {};
-                    if (v?.anthropic?.webSearch) {
-                        ps.anthropic = { ...ps.anthropic, webSearch: v.anthropic.webSearch };
+                    const v = isRecord(value) ? value : undefined;
+                    const ps: Record<string, unknown> = existing.providerSettings ?? {};
+                    const anthropic = isRecord(v?.anthropic) ? v.anthropic : undefined;
+                    if (anthropic?.webSearch) {
+                        ps.anthropic = { ...(isRecord(ps.anthropic) ? ps.anthropic : {}), webSearch: anthropic.webSearch };
                     }
-                    if (v?.["ollama-cloud"]?.webSearch) {
-                        ps["ollama-cloud"] = { ...ps["ollama-cloud"], webSearch: v["ollama-cloud"].webSearch };
+                    const ollamaCloud = isRecord(v?.["ollama-cloud"]) ? v["ollama-cloud"] : undefined;
+                    if (ollamaCloud?.webSearch) {
+                        ps["ollama-cloud"] = { ...(isRecord(ps["ollama-cloud"]) ? ps["ollama-cloud"] : {}), webSearch: ollamaCloud.webSearch };
                     }
-                    saveGlobal({ providerSettings: ps } as any);
+                    saveGlobal(asConfigFields({ providerSettings: ps }));
                 } else if (section === "toolSearch") {
                     if (value != null && (typeof value !== "object" || Array.isArray(value))) {
                         socket.emit("file_result", {
@@ -241,7 +255,7 @@ export function registerSettingsHandlers(socket: Socket, isShuttingDown: () => b
                         return;
                     }
 
-                    saveGlobal({ toolSearch: value as any });
+                    saveGlobal(asConfigFields({ toolSearch: value }));
                 } else if (section === "mcpServers") {
                     // Validate MCP server config before saving
                     if (value != null && (typeof value !== "object" || Array.isArray(value))) {
@@ -252,10 +266,10 @@ export function registerSettingsHandlers(socket: Socket, isShuttingDown: () => b
                         });
                         return;
                     }
-                    const servers = (value ?? {}) as Record<string, any>;
+                    const servers = (value ?? {}) as Record<string, unknown>;
                     const errors: string[] = [];
                     for (const [name, entry] of Object.entries(servers)) {
-                        if (entry == null || typeof entry !== "object" || Array.isArray(entry)) {
+                        if (!isRecord(entry)) {
                             errors.push(`"${name}": must be an object`);
                             continue;
                         }
@@ -287,32 +301,33 @@ export function registerSettingsHandlers(socket: Socket, isShuttingDown: () => b
                     // sentinels.  This survives the user editing command/url/args in the same
                     // save.  Truly ambiguous cases (multiple plausible renames) still fall back
                     // to writing the sentinel — visible and recoverable.
-                    const existingMcpServers = ((existing as any).mcpServers ?? {}) as Record<string, any>;
+                    const rawMcpServers = (existing as Record<string, unknown>).mcpServers;
+                    const existingMcpServers: Record<string, unknown> = isRecord(rawMcpServers) ? rawMcpServers : {};
 
                     // Identify deleted servers to heuristically match renames
                     const incomingNames = new Set(Object.keys(servers));
                     const deletedServers = Object.entries(existingMcpServers)
                         .filter(([name]) => !incomingNames.has(name))
                         .map(([_name, srv]) => srv)
-                        .filter((srv) => srv && typeof srv === "object");
+                        .filter((srv): srv is Record<string, unknown> => !!srv && typeof srv === "object");
 
-                    const mergedServers: Record<string, any> = {};
+                    const mergedServers: Record<string, unknown> = {};
                     for (const [name, entry] of Object.entries(servers)) {
-                        if (entry && typeof entry === "object") {
-                            let existingEntry = existingMcpServers[name];
-                            if (!existingEntry) {
-                                existingEntry = findRenamedServerMatch(entry as Record<string, unknown>, deletedServers);
+                        if (isRecord(entry)) {
+                            const onDisk = existingMcpServers[name];
+                            // Any truthy on-disk value suppresses rename matching; only
+                            // objects can carry secrets to restore.
+                            let existingEntry = isRecord(onDisk) ? onDisk : undefined;
+                            if (!onDisk) {
+                                existingEntry = findRenamedServerMatch(entry, deletedServers);
                             }
 
-                            mergedServers[name] = restoreMaskedServerEntry(
-                                entry as Record<string, unknown>,
-                                existingEntry,
-                            );
+                            mergedServers[name] = restoreMaskedServerEntry(entry, existingEntry);
                         } else {
                             mergedServers[name] = entry;
                         }
                     }
-                    saveGlobal({ mcpServers: mergedServers } as any);
+                    saveGlobal(asConfigFields({ mcpServers: mergedServers }));
                 } else if (section === "mcp") {
                     // mcp.servers[] (preferred array format) — restore masked sentinel values
                     // before writing to disk.  We look up each server by its `name` field in
@@ -320,15 +335,16 @@ export function registerSettingsHandlers(socket: Socket, isShuttingDown: () => b
                     //
                     // Renames in the array format are likewise resolved via
                     // findRenamedServerMatch() against deleted entries.
-                    const incomingMcp = (value ?? {}) as { servers?: any[] };
-                    const existingMcp = ((existing as any).mcp ?? {}) as { servers?: any[] };
+                    const incomingMcp = (value ?? {}) as { servers?: unknown };
+                    const rawMcp = (existing as Record<string, unknown>).mcp;
+                    const existingMcp: { servers?: unknown } = isRecord(rawMcp) ? rawMcp : {};
 
                     // Build name → entry map for O(1) lookup against the on-disk array.
                     const existingByName = new Map<string, Record<string, unknown>>();
                     if (Array.isArray(existingMcp.servers)) {
                         for (const s of existingMcp.servers) {
-                            if (s && typeof s === "object" && typeof (s as any).name === "string") {
-                                existingByName.set((s as any).name as string, s as Record<string, unknown>);
+                            if (isRecord(s) && typeof s.name === "string") {
+                                existingByName.set(s.name, s);
                             }
                         }
                     }
@@ -337,7 +353,7 @@ export function registerSettingsHandlers(socket: Socket, isShuttingDown: () => b
                     const incomingNamesArray = new Set(
                         Array.isArray(incomingMcp.servers)
                             ? incomingMcp.servers
-                                  .map((s: any) => s && typeof s === "object" ? s.name : undefined)
+                                  .map((s: unknown) => isRecord(s) ? s.name : undefined)
                                   .filter((n): n is string => typeof n === "string")
                             : []
                     );
@@ -345,37 +361,36 @@ export function registerSettingsHandlers(socket: Socket, isShuttingDown: () => b
                     const deletedServersArray: Record<string, unknown>[] = [];
                     if (Array.isArray(existingMcp.servers)) {
                         for (const srv of existingMcp.servers) {
-                            if (srv && typeof srv === "object" && typeof (srv as any).name === "string") {
-                                if (!incomingNamesArray.has((srv as any).name)) {
-                                    deletedServersArray.push(srv as Record<string, unknown>);
+                            if (isRecord(srv) && typeof srv.name === "string") {
+                                if (!incomingNamesArray.has(srv.name)) {
+                                    deletedServersArray.push(srv);
                                 }
                             }
                         }
                     }
 
-                    const mergedMcpServers: any[] = Array.isArray(incomingMcp.servers)
-                        ? incomingMcp.servers.map((entry: any) => {
+                    const mergedMcpServers: unknown[] = Array.isArray(incomingMcp.servers)
+                        ? incomingMcp.servers.map((entry: unknown) => {
                               if (!entry || typeof entry !== "object") return entry;
+                              // Arrays pass the object check above (as before); treat them as records.
+                              const rec = entry as Record<string, unknown>;
 
                               let existingEntry: Record<string, unknown> | undefined = undefined;
-                              if (typeof entry.name === "string") {
-                                  existingEntry = existingByName.get(entry.name);
+                              if (typeof rec.name === "string") {
+                                  existingEntry = existingByName.get(rec.name);
                                   if (!existingEntry) {
-                                      existingEntry = findRenamedServerMatch(entry as Record<string, unknown>, deletedServersArray);
+                                      existingEntry = findRenamedServerMatch(rec, deletedServersArray);
                                   }
                               }
 
-                              return restoreMaskedServerEntry(
-                                  entry as Record<string, unknown>,
-                                  existingEntry,
-                              );
+                              return restoreMaskedServerEntry(rec, existingEntry);
                           })
                         : [];
 
-                    saveGlobal({ mcp: { ...incomingMcp, servers: mergedMcpServers } } as any);
+                    saveGlobal(asConfigFields({ mcp: { ...incomingMcp, servers: mergedMcpServers } }));
                 } else {
                     // Direct key mapping
-                    saveGlobal({ [configKey]: value } as any);
+                    saveGlobal(asConfigFields({ [configKey]: value }));
                 }
 
                 // Reload and return the updated config — mask secrets before sending to browser

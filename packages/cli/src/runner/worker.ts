@@ -1,4 +1,6 @@
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, readStoredCredential, SettingsManager } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, ExtensionRunner, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import type { Credential, CredentialStore } from "@earendil-works/pi-ai";
 import { SHELL_PROC_CAPTURE_PREFIX } from "./session-procs.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -18,22 +20,20 @@ import { setLogComponent, setLogSessionId, logInfo, logWarn, logError, logAuth }
 
 /**
  * Minimal in-memory credential store for the lockless fallback tier below.
- * Structurally matches pi-ai's `CredentialStore` interface (read/list/modify/
- * delete); that type isn't part of pi-ai's public export surface, so we
- * match its shape rather than importing/implementing it by name.
+ * Implements pi-ai's `CredentialStore` interface (read/list/modify/delete).
  */
-class InMemoryCredentialsFallback {
-    constructor(private data: Record<string, any>) {}
+class InMemoryCredentialsFallback implements CredentialStore {
+    constructor(private data: Record<string, Credential>) {}
     async read(providerId: string) {
         return this.data[providerId];
     }
     async list() {
         return Object.entries(this.data).map(([providerId, credential]) => ({
             providerId,
-            type: (credential as { type: string }).type,
+            type: credential.type,
         }));
     }
-    async modify(providerId: string, fn: (current: any) => Promise<any>) {
+    async modify(providerId: string, fn: (current: Credential | undefined) => Promise<Credential | undefined>) {
         const next = await fn(this.data[providerId]);
         if (next !== undefined) this.data[providerId] = next;
         return this.data[providerId];
@@ -41,6 +41,52 @@ class InMemoryCredentialsFallback {
     async delete(providerId: string) {
         delete this.data[providerId];
     }
+}
+
+type ThinkingLevel = Parameters<AgentSession["setThinkingLevel"]>[0];
+
+/**
+ * Private AgentSession members the headless worker drives directly (queue
+ * clearing on in-place session switches, raw re-enqueue without prompt
+ * expansion). They are `private` in pi's typings, so the only way to reach
+ * them is a structural view — kept in this one place.
+ */
+interface AgentSessionInternals {
+    _steeringMessages: unknown[];
+    _followUpMessages: unknown[];
+    _pendingNextTurnMessages: unknown[];
+    _lastAssistantMessage: unknown;
+    _overflowRecoveryAttempted: boolean;
+    _queueSteer(text: string): Promise<void>;
+    _queueFollowUp(text: string): Promise<void>;
+}
+
+function sessionInternals(session: AgentSession): AgentSessionInternals {
+    // Upstream declares these members `private`, so the types are not directly comparable.
+    return session as unknown as AgentSessionInternals;
+}
+
+/** Clear AgentSession's private tracking queues so stale state from the old conversation doesn't leak through. */
+function resetSessionPrivateQueues(session: AgentSession): void {
+    const internals = sessionInternals(session);
+    internals._steeringMessages = [];
+    internals._followUpMessages = [];
+    internals._pendingNextTurnMessages = [];
+    internals._lastAssistantMessage = undefined;
+    internals._overflowRecoveryAttempted = false;
+}
+
+/**
+ * Emit an extension event that is not (or no longer) part of pi's typed
+ * `ExtensionEvent` union — e.g. `session_switch` (dropped upstream in 0.66.1)
+ * and `ui_notify`, which PizzaPi's own extensions still register handlers for.
+ * emit() dispatches by the `type` string at runtime, so this is safe.
+ */
+function emitLegacyExtensionEvent(
+    runner: ExtensionRunner,
+    event: { type: "session_switch" | "ui_notify"; [key: string]: unknown },
+): Promise<unknown> {
+    return runner.emit(event as unknown as Parameters<ExtensionRunner["emit"]>[0]);
 }
 
 /**
@@ -154,7 +200,7 @@ async function createModelRuntimeWithRetry(authPath: string, modelsPath: string,
                 const runtime = await ModelRuntime.create({
                     authPath,
                     modelsPath,
-                    credentials: new InMemoryCredentialsFallback(data) as any,
+                    credentials: new InMemoryCredentialsFallback(data),
                 });
                 logWarn(
                     `pizzapi worker: lockless fallback loaded ${Object.keys(data).length} provider(s) from ${authPath} (in-memory snapshot — token refreshes will not persist)`,
@@ -484,7 +530,7 @@ async function main(): Promise<void> {
     // Without this, a default pointing at such a provider silently falls back
     // to a built-in provider default (openai/gpt-5.5). See apply-default-model.ts.
     try {
-        if (await applySettingsDefaultModel(session as any)) {
+        if (await applySettingsDefaultModel(session)) {
             logInfo(`applied settings default model ${session.model?.provider}/${session.model?.id} (provider registered by extension after initial resolution)`);
         }
     } catch (e) {
@@ -500,7 +546,7 @@ async function main(): Promise<void> {
     // Expose resolved commands (argument hints + completions) so the remote
     // extension can forward them to the web UI command popover (TUI parity).
     setRegisteredCommandsProvider(
-        () => (session.extensionRunner as any)?.getRegisteredCommands?.() ?? [],
+        () => session.extensionRunner?.getRegisteredCommands?.() ?? [],
     );
 
     // ── Inject context tracking entries ───────────────────────────────────
@@ -539,7 +585,7 @@ async function main(): Promise<void> {
                     type: "session_before_switch",
                     reason: "new",
                 });
-                if ((result as any)?.cancel) {
+                if (result?.cancel) {
                     return { cancelled: true };
                 }
             }
@@ -557,11 +603,7 @@ async function main(): Promise<void> {
 
             // Clear AgentSession's private tracking queues so stale steering/
             // follow-up messages from the old conversation don't leak through.
-            (session as any)._steeringMessages = [];
-            (session as any)._followUpMessages = [];
-            (session as any)._pendingNextTurnMessages = [];
-            (session as any)._lastAssistantMessage = undefined;
-            (session as any)._overflowRecoveryAttempted = false;
+            resetSessionPrivateQueues(session);
 
             // Persist the current thinking level in the new session header
             session.sessionManager.appendThinkingLevelChange(session.thinkingLevel);
@@ -576,10 +618,10 @@ async function main(): Promise<void> {
             // (empty) conversation to the web UI via session_active.
             // NOTE: "session_switch" was removed from the upstream type union in
             // 0.66.1, but PizzaPi's remote extension still registers a runtime
-            // handler for it. The cast is safe — emit() dispatches by string key.
+            // handler for it. See emitLegacyExtensionEvent().
             if (extensionRunner) {
-                await extensionRunner.emit({
-                    type: "session_switch" as any,
+                await emitLegacyExtensionEvent(extensionRunner, {
+                    type: "session_switch",
                     reason: "new",
                     previousSessionFile,
                 });
@@ -600,7 +642,7 @@ async function main(): Promise<void> {
                     reason: "resume",
                     targetSessionFile: sessionPath,
                 });
-                if ((result as any)?.cancel) {
+                if (result?.cancel) {
                     return { cancelled: true };
                 }
             }
@@ -608,11 +650,7 @@ async function main(): Promise<void> {
             await session.abort();
 
             // Clear AgentSession queues
-            (session as any)._steeringMessages = [];
-            (session as any)._followUpMessages = [];
-            (session as any)._pendingNextTurnMessages = [];
-            (session as any)._lastAssistantMessage = undefined;
-            (session as any)._overflowRecoveryAttempted = false;
+            resetSessionPrivateQueues(session);
 
             // Load the target session file into the existing SessionManager
             session.sessionManager.setSessionFile(sessionPath);
@@ -625,10 +663,10 @@ async function main(): Promise<void> {
             // Notify extensions before we replace messages — the remote
             // extension's session_switch handler emits session_active which
             // reads from the (now updated) sessionManager.
-            // NOTE: see newSession comment for why this uses `as any`.
+            // NOTE: see newSession comment for why this uses emitLegacyExtensionEvent.
             if (extensionRunner) {
-                await extensionRunner.emit({
-                    type: "session_switch" as any,
+                await emitLegacyExtensionEvent(extensionRunner, {
+                    type: "session_switch",
                     reason: "resume",
                     previousSessionFile,
                 });
@@ -664,7 +702,8 @@ async function main(): Promise<void> {
 
             // Restore thinking level if saved
             if (sessionContext.thinkingLevel) {
-                session.setThinkingLevel(sessionContext.thinkingLevel as any);
+                // Session files store the level as a plain string; pi wrote it from a ThinkingLevel.
+                session.setThinkingLevel(sessionContext.thinkingLevel as ThinkingLevel);
             }
 
             logInfo(`switched to session ${sessionPath}`);
@@ -708,8 +747,9 @@ async function main(): Promise<void> {
         // queue clearing) to avoid the double-expansion that steer()/followUp() cause.
         (followUp) => {
             const { steering } = session.clearQueue();
-            for (const text of steering) void (session as any)._queueSteer(text);
-            for (const text of followUp) void (session as any)._queueFollowUp(text);
+            const internals = sessionInternals(session);
+            for (const text of steering) void internals._queueSteer(text);
+            for (const text of followUp) void internals._queueFollowUp(text);
         },
     );
     setRemoteSessionHost(workerSessionHost);
@@ -772,7 +812,7 @@ async function main(): Promise<void> {
                 return decision.edits?.value ?? placeholder ?? "";
             },
             notify: (message: string, type?: "info" | "warning" | "error") => {
-                (session.extensionRunner as any).emit({
+                void emitLegacyExtensionEvent(session.extensionRunner, {
                     type: "ui_notify",
                     message,
                     notifyType: type,
@@ -794,7 +834,8 @@ async function main(): Promise<void> {
             setFooter: () => {},
             setHeader: () => {},
             setTitle: () => {},
-            custom: async () => undefined,
+            // Headless: no custom UI can run; resolve with nothing (upstream types it as Promise<T>).
+            custom: (async () => undefined) as ExtensionUIContext["custom"],
             pasteToEditor: () => {},
             setEditorText: () => {},
             getEditorText: () => "",
@@ -802,13 +843,14 @@ async function main(): Promise<void> {
             addAutocompleteProvider: () => {},
             setEditorComponent: () => {},
             getEditorComponent: () => undefined,
-            get theme() { return undefined; },
+            // Headless: there is no theme; upstream types this as always-present.
+            get theme() { return undefined as unknown as ExtensionUIContext["theme"]; },
             getAllThemes: () => [],
             getTheme: () => undefined,
-            setTheme: (_theme: any) => ({ success: false, error: "UI not available" }),
+            setTheme: (_theme: unknown) => ({ success: false, error: "UI not available" }),
             getToolsExpanded: () => false,
             setToolsExpanded: () => {},
-        } as any,
+        } satisfies ExtensionUIContext,
     });
     } finally {
         // Always release the gate — even if bindExtensions() throws — so that

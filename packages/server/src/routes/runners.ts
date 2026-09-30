@@ -21,7 +21,7 @@ import { triggerAllowedForCwd } from "./mode-scope.js";
 import { createRoute, deleteRoute, listRoutes, updateRoute, listDeliveries, eventsForIds } from "../events/store.js";
 import { publishEvent } from "../events/engine.js";
 import { createEngineDeps } from "../events/transport.js";
-import { routeMatchesOwner } from "@pizzapi/protocol";
+import { isRecord, routeMatchesOwner } from "@pizzapi/protocol";
 import type { JsonValue, Route, TriggerRuntimeStatus } from "@pizzapi/protocol";
 import { getPersistedRelaySessionOwner } from "../sessions/store.js";
 import { getSession } from "../ws/sio-state/index.js";
@@ -226,9 +226,9 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         // worker-side normalization in initial-prompt.ts (env vars are .trim()'d
         // before modelRegistry lookup).
         let requestedModel: { provider: string; id: string } | undefined;
-        if (body.model && typeof body.model === "object") {
-            const provider = (body.model as any).provider;
-            const id = (body.model as any).id;
+        if (isRecord(body.model)) {
+            const provider = body.model.provider;
+            const id = body.model.id;
             if (typeof provider === "string" && typeof id === "string") {
                 const normalizedProvider = provider.trim();
                 const normalizedId = id.trim();
@@ -251,18 +251,19 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         // Validate the agent name to prevent path traversal — only allow names
         // that match the pattern used by agent file discovery (letters, digits,
         // hyphens, underscores, dots — no path separators).
-        const rawAgentName = body.agent && typeof body.agent === "object" && typeof (body.agent as any).name === "string"
-            ? ((body.agent as any).name as string).trim()
+        const agentBody: Record<string, unknown> | undefined = isRecord(body.agent) ? body.agent : undefined;
+        const rawAgentName = agentBody && typeof agentBody.name === "string"
+            ? agentBody.name.trim()
             : undefined;
         if (rawAgentName && !isValidSkillName(rawAgentName)) {
             return Response.json({ error: "Invalid agent name" }, { status: 400 });
         }
-        const requestedAgent = rawAgentName
+        const requestedAgent = rawAgentName && agentBody
                 ? {
                     name: rawAgentName,
-                    systemPrompt: typeof (body.agent as any).systemPrompt === "string" ? (body.agent as any).systemPrompt as string : undefined,
-                    tools: typeof (body.agent as any).tools === "string" ? (body.agent as any).tools as string : undefined,
-                    disallowedTools: typeof (body.agent as any).disallowedTools === "string" ? (body.agent as any).disallowedTools as string : undefined,
+                    systemPrompt: typeof agentBody.systemPrompt === "string" ? agentBody.systemPrompt : undefined,
+                    tools: typeof agentBody.tools === "string" ? agentBody.tools : undefined,
+                    disallowedTools: typeof agentBody.disallowedTools === "string" ? agentBody.disallowedTools : undefined,
                 }
                 : undefined;
 
@@ -348,7 +349,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         }
 
         const ack = await ackPromise;
-        if (ack.ok === false && !(ack as any).timeout) {
+        if (ack.ok === false && !("timeout" in ack && ack.timeout)) {
             return Response.json({ error: ack.message }, { status: 400 });
         }
 
@@ -375,7 +376,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
             void recordRecentFolder(identity.userId, runnerId, requestedCwd).catch(() => {});
         }
 
-        return Response.json({ ok: true, runnerId, sessionId, pending: (ack as any).timeout === true });
+        return Response.json({ ok: true, runnerId, sessionId, pending: "timeout" in ack && ack.timeout === true });
     }
 
     // ── Reload MCP in active sessions for a runner ─────────────────────
@@ -563,7 +564,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
             const result = await sendRunnerCommand(runnerId, {
                 type: "browse_directory",
                 path,
-            }, 10_000) as any;
+            }, 10_000);
             if (!result.ok) {
                 return Response.json({ error: result.message || "Browse failed" }, { status: 400 });
             }
@@ -588,7 +589,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
 
         try {
-            const result = await sendRunnerCommand(runnerId, { type: "list_models" }) as any;
+            const result = await sendRunnerCommand(runnerId, { type: "list_models" });
             const models = Array.isArray(result?.models) ? result.models : [];
             // Filter out hidden models
             let hiddenModels: string[];
@@ -1322,7 +1323,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 return Response.json({ error: "cwd outside allowed workspace roots" }, { status: 403 });
             }
             try {
-                const result = await sendRunnerCommand(runnerId, { type: "list_plugins", cwd: cwdParam }) as any;
+                const result = await sendRunnerCommand(runnerId, { type: "list_plugins", cwd: cwdParam });
                 if (result?.ok === false) {
                     return Response.json({ error: result.message ?? "Plugin scan rejected" }, { status: 403 });
                 }
@@ -1349,7 +1350,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
 
         try {
-            const result = await sendRunnerCommand(runnerId, { type: "list_plugins" }) as any;
+            const result = await sendRunnerCommand(runnerId, { type: "list_plugins" });
             if (result?.ok === false) {
                 return Response.json({ error: result.message ?? "Plugin scan rejected" }, { status: 403 });
             }
@@ -1384,7 +1385,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
         try {
             const result = await sendRunnerCommand(runnerId, { type: "list_files", path });
-            if (!(result as any).ok) return Response.json({ error: (result as any).message ?? "Failed to list files" }, { status: 500 });
+            if (!result.ok) return Response.json({ error: result.message ?? "Failed to list files" }, { status: 500 });
             return Response.json(result);
         } catch (err) {
             return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
@@ -1419,7 +1420,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
         try {
             const result = await sendRunnerCommand(runnerId, { type: "search_files", cwd, query, limit });
-            if (!(result as any).ok) return Response.json({ error: (result as any).message ?? "Search failed" }, { status: 500 });
+            if (!result.ok) return Response.json({ error: result.message ?? "Search failed" }, { status: 500 });
             return Response.json(result);
         } catch (err) {
             return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
@@ -1455,7 +1456,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
         try {
             const result = await sendRunnerCommand(runnerId, { type: "read_file", path, encoding, maxBytes, rejectTruncated }, timeout, req.signal);
-            if (!(result as any).ok) return Response.json({ error: (result as any).message ?? "Failed to read file" }, { status: 500 });
+            if (!result.ok) return Response.json({ error: result.message ?? "Failed to read file" }, { status: 500 });
             if (rejectTruncated && result.truncated === true) {
                 const { content: _content, ...metadata } = result;
                 return Response.json(metadata);
@@ -1487,7 +1488,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
 
         try {
-            const result = await sendRunnerCommand(runnerId, { type: "sandbox_get_status" }) as any;
+            const result = await sendRunnerCommand(runnerId, { type: "sandbox_get_status" });
             if (result && result.ok === false) {
                 return Response.json({ error: result.message ?? "Sandbox status command failed" }, { status: 502 });
             }
@@ -1538,7 +1539,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         }
 
         try {
-            const result = await sendRunnerCommand(runnerId, { type: "sandbox_update_config", config: body }) as any;
+            const result = await sendRunnerCommand(runnerId, { type: "sandbox_update_config", config: body });
             if (result && result.ok === false) {
                 return Response.json({ error: result.message ?? "Sandbox config update failed" }, { status: 502 });
             }
@@ -1566,7 +1567,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         }
 
         try {
-            const result = await sendRunnerCommand(runnerId, { type: "get_usage", range }, 30_000) as any;
+            const result = await sendRunnerCommand(runnerId, { type: "get_usage", range }, 30_000);
             if (result && result.error) {
                 return Response.json({ error: result.error }, { status: 502 });
             }
@@ -1608,7 +1609,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         }
 
         try {
-            const result = await sendRunnerCommand(runnerId, { type: "analyze_session", sessionId }, 30_000) as any;
+            const result = await sendRunnerCommand(runnerId, { type: "analyze_session", sessionId }, 30_000);
             if (result && result.error) {
                 return Response.json({ error: result.error }, { status: 502 });
             }
