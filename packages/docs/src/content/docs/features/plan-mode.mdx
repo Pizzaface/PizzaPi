@@ -39,10 +39,21 @@ The following tools are **completely blocked** while plan mode is active:
 - `edit` — file editing
 - `write` — file creation/overwrite
 - `write_file` — custom write tool
-- `subagent` — spawns a subagent process with full write access
 - `spawn_session` — spawns an independent child session with full write access
 
 The agent can still use `read`, `bash` (with restrictions), `grep`, `find`, `ls`, and **all MCP tools**. Plan mode does not inspect MCP tools for read/write semantics, so MCP write tools are allowed.
+
+### Subagents run read-only
+
+The `subagent` tool (and `run_workflow`) **still works** in plan mode, so the agent can delegate research — e.g. `subagent(agent: "researcher", task: "...")`. Every subagent launched while plan mode is on is **automatically forced into read-only mode**; the model cannot opt out:
+
+- Its tools are limited to `read`, `grep`, `find`, `ls`, and a guarded `bash`. `edit` and `write` are not registered at all, even if the agent definition lists them (an agent that lists fewer tools keeps its narrower set).
+- Its `bash` rejects destructive commands using the same detector as the parent (always the full check, without relying on the sandbox overlay).
+- A short read-only notice is added to its system prompt.
+
+These restrictions are applied when the subagent session is created, so they hold from its first turn. Plan mode is captured when the `subagent` call is made: a subagent (or later chain step) started in plan mode stays read-only for its whole run, even if the parent exits plan mode meanwhile. Subagents don't load extensions, so they cannot spawn further subagents or sessions.
+
+`spawn_session` remains blocked because spawned sessions are separate processes that cannot inherit plan mode.
 
 ### Bash command restrictions
 
@@ -64,6 +75,7 @@ Bash commands go through a destructive-command detector that blocks:
 - Read any file (`read` tool)
 - Run read-only bash commands (`ls`, `find`, `grep`, `rg`, `cat`, `head`, `wc`, `git log`, `git diff`, etc.)
 - Use MCP tools (both read and write MCP tools are allowed)
+- Delegate to subagents with `subagent` (they run read-only — see above)
 - Call `toggle_plan_mode` to exit plan mode
 - Call `plan_mode` to submit a structured plan for review
 

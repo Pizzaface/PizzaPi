@@ -13,6 +13,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { BUILTIN_AGENTS } from "../subagent-agents.js";
+import { isPlanModeEnabled } from "../plan-mode/extension.js";
 import { runSingleAgent, parseModelString, type ModelOverride, type ModelRegistryLike } from "../subagent/engine.js";
 import { getFinalOutput, isFailed } from "../subagent/types.js";
 import type { WorkflowAgentInfo, WorkflowDetails, WorkflowPhase } from "./types.js";
@@ -43,6 +44,12 @@ export interface RunWorkflowOptions {
     };
     /** Injectable seam for tests — defaults to the real subagent engine. */
     runSingleAgentFn?: RunSingleAgentFn;
+    /**
+     * Run every agent() in read-only plan mode. Defaults to the parent
+     * session's plan-mode state, snapshotted when the workflow starts, so a
+     * workflow launched from plan mode can never spawn write-capable agents.
+     */
+    planMode?: boolean;
 }
 
 export interface RunWorkflowResult {
@@ -144,6 +151,7 @@ function ensureSerializable(value: unknown): unknown {
 export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunWorkflowResult> {
     const { script, args, name, signal, onUpdate, modelDefault, ctx } = opts;
     const runSingleAgentFn = opts.runSingleAgentFn ?? runSingleAgent;
+    const runOptions = { planMode: opts.planMode ?? isPlanModeEnabled() };
 
     const details: WorkflowDetails = {
         name,
@@ -224,6 +232,9 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<RunWorkflow
                     // No relay child session per agent — a workflow can fan out
                     // to 1000 agents and already streams its own progress card.
                     false,
+                    undefined,
+                    undefined,
+                    runOptions,
                 );
 
                 info.model = result.model;

@@ -98,7 +98,7 @@ When agents with the same name exist in multiple directories, the first-found wi
 | `disallowedTools` | | Comma-separated tools to deny (removed from inherited list) |
 | `model` | | Model override (e.g., `claude-haiku-4-5`, `haiku`, `anthropic/claude-haiku-4-5`). `inherit` or omit to auto-select the cheapest available model (not the parent's model). |
 | `maxTurns` | | Maximum agentic turns before the subagent stops |
-| `permissionMode` | | Permission mode: `default`, `acceptEdits`, `dontAsk`, `bypassPermissions`, `plan` |
+| `permissionMode` | | Permission mode: `default`, `acceptEdits`, `dontAsk`, `bypassPermissions`, `plan`. `plan` makes the agent read-only (see [Plan mode](#plan-mode-read-only-subagents)). |
 | `background` | | If `true`, hints the agent should run as a background task |
 
 The markdown body after the frontmatter becomes the agent's **system prompt**.
@@ -227,6 +227,18 @@ Project-scope agents (`.pizzapi/agents/` and `.claude/agents/`) are loaded from 
 - **Restrict tools** to the minimum needed (principle of least privilege)
 - **Keep prompts short** (< 500 words) — the agent's context should be spent on the task, not the prompt
 - **Use model routing** for simple tasks — Haiku/Flash for exploration, Sonnet/Opus for analysis
+
+## Plan mode (read-only subagents)
+
+When the parent session is in [plan mode](/PizzaPi/features/plan-mode/), `subagent` calls are allowed but **every subagent is automatically read-only** — there is no parameter to opt out. The same restrictions apply to an agent whose frontmatter sets `permissionMode: plan`:
+
+- Tools are limited to `read`, `grep`, `find`, `ls`, and a guarded `bash` (intersected with the agent's `tools` list if it has one). `edit` and `write` are never available.
+- `bash` rejects destructive commands (file mutations, redirection, package installs, git mutations, process control, …) using plan mode's detector.
+- A read-only notice is appended to the agent's system prompt.
+
+The restrictions are applied when the subagent session is created, so they hold from its first turn. Plan mode is captured at the moment `subagent` is called: all tasks of that call (parallel tasks and every chain step) stay read-only even if the parent leaves plan mode while they run. Workflow agents started via `run_workflow` in plan mode are restricted the same way. Subagents don't load extensions, so they cannot spawn nested subagents or sessions.
+
+`spawn_session` stays blocked in plan mode.
 
 ## Background execution
 

@@ -13,7 +13,6 @@ import {
     createAgentSession,
     DefaultResourceLoader,
     createCodingTools,
-    createReadOnlyTools,
 } from "@earendil-works/pi-coding-agent";
 import { defaultAgentDir } from "../../config.js";
 import { findCachedOllamaCloudModel } from "../../ollama-cloud-models.js";
@@ -23,6 +22,12 @@ import { getRelaySessionId } from "../remote.js";
 import type { SingleResult, SubagentDetails, OnUpdateCallback } from "./types.js";
 import { summarizeResultForStreaming } from "./types.js";
 import { createSubagentMirror, type SubagentMirror } from "./relay-mirror.js";
+import {
+    createPlanModeBashTool,
+    resolvePlanModeTools,
+    PLAN_MODE_SUBAGENT_PROMPT,
+    type SubagentRunOptions,
+} from "./plan-mode.js";
 
 // ── Built-in tool registry ─────────────────────────────────────────────
 
@@ -230,6 +235,8 @@ export async function runSingleAgent(
     mirrorToRelay = true,
     effort?: ThinkingLevel,
     parentSessionId?: string | null,
+    /** Invocation options — e.g. `planMode` propagated from a plan-mode parent. */
+    runOptions?: SubagentRunOptions,
 ): Promise<SingleResult> {
     const agent = agents.find((a) => a.name === agentName);
 
@@ -297,11 +304,13 @@ export async function runSingleAgent(
     };
 
     try {
-        // Honor permissionMode from agent frontmatter.
-        // "plan" → read-only tools (no writes/edits/bash)
+        // Honor permissionMode from agent frontmatter, and plan mode propagated
+        // from the parent invocation (a plan-mode parent can never launch a
+        // write-capable subagent — see ./plan-mode.ts).
+        // "plan" → read-only tools + guarded (non-mutating) bash
         // "dontAsk" / "bypassPermissions" → default (all tools, no confirmation — already the case)
         // "default" / "acceptEdits" / unset → default behavior
-        const isPlanMode = agent.permissionMode === "plan";
+        const isPlanMode = agent.permissionMode === "plan" || runOptions?.planMode === true;
 
         // Build session options — resolve tools fail-closed
         const sessionCwd = cwd ?? defaultCwd;
@@ -314,8 +323,11 @@ export async function runSingleAgent(
         });
         let tools: string[];
         if (isPlanMode) {
-            // Plan mode: restrict to read-only tools regardless of agent config
-            tools = createReadOnlyTools(sessionCwd).map((tool) => tool.name);
+            // Plan mode: restrict to read-only tools (+ guarded bash). An agent
+            // that declared fewer tools keeps its narrower set; it never gains
+            // write tools. Unknown tool names are dropped rather than failing,
+            // because nothing here can widen access.
+            tools = resolvePlanModeTools(effectiveToolNames);
         } else if (effectiveToolNames) {
             const resolved = resolveTools(effectiveToolNames);
             if ("error" in resolved) {
@@ -335,6 +347,11 @@ export async function runSingleAgent(
             tools = createCodingTools(sessionCwd).map((tool) => tool.name);
         }
 
+        const appendSystemPrompt = [
+            ...(agent.systemPrompt.trim() ? [agent.systemPrompt] : []),
+            ...(isPlanMode ? [PLAN_MODE_SUBAGENT_PROMPT] : []),
+        ];
+
         // Use a lightweight resource loader — no extensions, skills, themes, etc.
         // Just the system prompt from the agent definition.
         const loader = new DefaultResourceLoader({
@@ -344,7 +361,7 @@ export async function runSingleAgent(
             noSkills: true,
             noPromptTemplates: true,
             noThemes: true,
-            ...(agent.systemPrompt.trim() && { appendSystemPrompt: [agent.systemPrompt] }),
+            ...(appendSystemPrompt.length > 0 && { appendSystemPrompt }),
         });
         await loader.reload();
         if (signal?.aborted) throw new Error("Subagent was aborted");
@@ -372,6 +389,10 @@ export async function runSingleAgent(
             cwd: sessionCwd,
             agentDir: defaultAgentDir(),
             tools,
+            // Plan mode: replace the built-in bash (same name) with a guarded
+            // wrapper. customTools override built-ins by name at registry build
+            // time, so the guard is in place before the first turn.
+            ...(isPlanMode && tools.includes("bash") && { customTools: [createPlanModeBashTool(sessionCwd)] }),
             resourceLoader: loader,
             ...(resolvedModel && { model: resolvedModel }),
             ...(effort && { thinkingLevel: effort }),

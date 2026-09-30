@@ -45,6 +45,7 @@ import {
 } from "./types.js";
 import { runSingleAgent, mapWithConcurrencyLimit } from "./engine.js";
 import { renderSubagentCall, renderSubagentResult } from "./render.js";
+import { isPlanModeEnabled } from "../plan-mode/extension.js";
 import { onSubagentStatus, reserveSubagentSlots, resetSubagentState, resetSubagentCounters } from "./background-state.js";
 
 // ── Tool parameter schemas (JSON Schema) ───────────────────────────────
@@ -157,6 +158,7 @@ export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) =
             'To enable project-local agents in .pizzapi/agents or .claude/agents, set agentScope: "both" (or "project").',
             "Set `model: { provider, id }` to override the model for the subagent session (recommended: use haiku for most tasks). Set `effort` to control provider reasoning effort; per-task effort overrides the top-level value.",
             "Compatible with Claude Code agent definition files.",
+            "When this session is in plan mode, every subagent is automatically read-only (no edit/write, non-mutating bash only).",
         ].join(" "),
         parameters: SubagentParams as any,
 
@@ -268,6 +270,11 @@ export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) =
             }
 
             const mode = hasChain ? "chain" : hasTasks ? "parallel" : "single";
+            // Snapshot plan mode at call time: a subagent launched from plan mode
+            // stays read-only for its whole run (including later chain steps),
+            // even if the parent exits plan mode meanwhile. Not a tool param —
+            // the model cannot opt out.
+            const runOptions = { planMode: isPlanModeEnabled() };
             const invalidEffort = [
                 params.effort,
                 ...(params.tasks ?? []).map((task) => task.effort),
@@ -325,7 +332,7 @@ export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) =
                             ctx.cwd, agents, step.agent, taskWithContext,
                             step.cwd, i + 1, controller.signal, undefined, makeDetails("chain"),
                             step.model ?? params.model, ctx.modelRegistry,
-                            true, step.effort ?? params.effort,
+                            true, step.effort ?? params.effort, undefined, runOptions,
                         );
                         results.push(result);
 
@@ -353,7 +360,7 @@ export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) =
                         undefined,
                         makeDetails("parallel"),
                         t.model ?? params.model, ctx.modelRegistry,
-                        true, t.effort ?? params.effort,
+                        true, t.effort ?? params.effort, undefined, runOptions,
                     );
                     return result;
                 });
@@ -400,7 +407,7 @@ export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) =
                     ctx.cwd, agents, params.agent, params.task,
                     params.cwd, undefined, controller.signal, undefined, makeDetails("single"),
                     params.model, ctx.modelRegistry,
-                    true, params.effort,
+                    true, params.effort, undefined, runOptions,
                 );
                 if (isFailed(result)) {
                     const errorMsg = result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
@@ -465,7 +472,7 @@ export const subagentExtension = (pi: ExtensionAPI, runAgent = runSingleAgent) =
             return {
                 content: [{
                     type: "text",
-                    text: `Subagent ${taskId} is running in the background. Continue working; its result will arrive automatically when done.`,
+                    text: `Subagent ${taskId} is running in the background${runOptions.planMode ? " in read-only plan mode" : ""}. Continue working; its result will arrive automatically when done.`,
                 }],
                 details: {
                     ...makeDetails(mode)([]),
