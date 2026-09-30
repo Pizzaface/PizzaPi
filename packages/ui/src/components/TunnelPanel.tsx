@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useServiceChannel } from "@/hooks/useServiceChannel";
 import { useTunnelSrc } from "@/hooks/useTunnelSrc";
 import { reportError } from "@/lib/frontend-log";
-import { ExternalLink, Plus, X, RefreshCw, Loader2, PanelRightOpen } from "lucide-react";
+import { describeTunnelFrame, TUNNEL_IFRAME_SANDBOX } from "@/lib/tunnel-frame";
+import { ExternalLink, Plus, X, RefreshCw, Loader2, PanelRightOpen, ShieldAlert } from "lucide-react";
 import { parsePanelId, makePanelId, scopePanelIdToRunner } from "@/components/service-panels/panel-instance";
 import { runnerHue } from "@/components/service-panels/runner-scope";
 import type { ServicePanelProps } from "@/components/service-panels/registry";
@@ -125,6 +126,8 @@ export function TunnelPanel({ sessionId, runnerId, panelId, onSpawnPanel, runner
         preferHostOrigin: true,
     });
 
+    const previewFrame = previewBase ? describeTunnelFrame(previewBase, window.location.origin) : null;
+
     if (!live) return null;
 
     return (
@@ -203,6 +206,16 @@ export function TunnelPanel({ sessionId, runnerId, panelId, onSpawnPanel, runner
                         >
                             <RefreshCw size={12} />
                         </button>
+                        {previewFrame && !previewFrame.isolated && (
+                            <span
+                                className="p-1 text-amber-500"
+                                title="Shared origin: this preview runs on the PizzaPi origin and can act as you. Configure PIZZAPI_TUNNEL_DOMAIN on the relay to isolate tunnels."
+                                aria-label="Tunnel preview is not origin-isolated"
+                                data-testid="tunnel-not-isolated"
+                            >
+                                <ShieldAlert size={12} />
+                            </span>
+                        )}
                         {previewBase && (
                             <a
                                 href={previewBase}
@@ -271,10 +284,11 @@ export function TunnelPanel({ sessionId, runnerId, panelId, onSpawnPanel, runner
                             </div>
                         )}
                         {/*
-                          * allow-same-origin is required for storage/cookie-dependent dashboards
-                          * (e.g. service panels that read localStorage). The tunnel URL is served
-                          * from our own origin so same-origin grants no extra cross-origin privilege
-                          * beyond what a plain fetch would already allow. See also PR #415.
+                          * allow-same-origin is required for storage/cookie-dependent apps and
+                          * Vite-style module scripts (see lib/tunnel-frame.ts). On a dedicated
+                          * tunnel origin (PIZZAPI_TUNNEL_DOMAIN) it only grants the app its own
+                          * origin; on the path-prefix fallback the app shares the PizzaPi origin,
+                          * which the toolbar flags with a warning icon.
                           */}
                         <iframe
                             key={iframeKey}
@@ -282,8 +296,8 @@ export function TunnelPanel({ sessionId, runnerId, panelId, onSpawnPanel, runner
                             src={previewBase}
                             className="w-full h-full border-0"
                             title={`Tunnel preview — port ${activePort}`}
-                            // SECURITY: allow-same-origin is needed because tunnel content is same-origin. TODO: serve tunnel content from a separate origin to enable full sandbox isolation.
-                            sandbox="allow-scripts allow-forms allow-same-origin allow-popups"
+                            sandbox={previewFrame?.sandbox ?? TUNNEL_IFRAME_SANDBOX}
+                            data-tunnel-isolated={previewFrame?.isolated ? "true" : "false"}
                             // See IframeServicePanel: framed voice capture needs
                             // Permissions-Policy delegation or getUserMedia is blocked.
                             allow="microphone"

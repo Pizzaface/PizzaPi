@@ -10,11 +10,14 @@
  *
  * URL resolution (web vs mobile) lives in useTunnelSrc — on mobile it mints a
  * signed token so the absolute relay URL loads inside the Capacitor webview.
+ * When the relay has PIZZAPI_TUNNEL_DOMAIN configured the panel is served from
+ * its own dedicated tunnel origin instead, isolated from the PizzaPi UI.
  */
 import { useEffect, useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { useTunnelSrc } from "@/hooks/useTunnelSrc";
 import { reportError } from "@/lib/frontend-log";
+import { describeTunnelFrame } from "@/lib/tunnel-frame";
 
 interface IframeServicePanelProps {
     sessionId: string;
@@ -32,7 +35,9 @@ interface IframeServicePanelProps {
 }
 
 export function IframeServicePanel({ sessionId, port, query, fragment, panelParams, cwd, runnerId }: IframeServicePanelProps) {
-    const { base, error } = useTunnelSrc({ sessionId, port, runnerId });
+    // Prefer the dedicated tunnel origin so panel content can't reach the
+    // PizzaPi UI's origin (falls back to the same-origin path prefix).
+    const { base, error } = useTunnelSrc({ sessionId, port, runnerId, preferHostOrigin: true });
     // Heuristic: HTTP failures inside an iframe don't fire onError, so flag a
     // panel that never fires onLoad within a grace window as likely-broken.
     const [loadTimedOut, setLoadTimedOut] = useState(false);
@@ -84,6 +89,8 @@ export function IframeServicePanel({ sessionId, port, query, fragment, panelPara
         return <div className="flex h-full items-center justify-center text-xs text-muted-foreground">Opening panel…</div>;
     }
 
+    const frame = describeTunnelFrame(src, window.location.origin);
+
     return (
         <div className="relative h-full w-full">
             <button
@@ -100,8 +107,11 @@ export function IframeServicePanel({ sessionId, port, query, fragment, panelPara
                 src={src}
                 className="h-full w-full border-0"
                 title={`Service panel — port ${port}`}
-                // SECURITY: allow-same-origin is needed because tunnel content is same-origin. TODO: serve tunnel content from a separate origin to enable full sandbox isolation.
-                sandbox="allow-scripts allow-forms allow-same-origin allow-popups"
+                // SECURITY: see lib/tunnel-frame.ts. On a dedicated tunnel origin
+                // (PIZZAPI_TUNNEL_DOMAIN) allow-same-origin only grants the panel
+                // its own origin; on the path-prefix fallback it shares ours.
+                sandbox={frame.sandbox}
+                data-tunnel-isolated={frame.isolated ? "true" : "false"}
                 // Voice capture (e.g. the daily report's feedback Snippet) needs
                 // Permissions-Policy delegation; without `allow=`, getUserMedia
                 // is silently blocked in framed panels even with OS mic access.

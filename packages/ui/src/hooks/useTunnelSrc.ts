@@ -1,7 +1,10 @@
 /**
  * Resolve the iframe base URL for a tunnelled port, on both web and mobile.
  *
- * Web (same-origin): a relative `/api/tunnel/...` path works directly.
+ * Web: with `preferHostOrigin` and a relay that has PIZZAPI_TUNNEL_DOMAIN, the
+ * minted dedicated tunnel origin (`hostUrl`) is used — tunneled content is then
+ * origin-isolated from the UI (see lib/tunnel-frame.ts). Otherwise a relative
+ * same-origin `/api/tunnel/...` path works directly.
  *
  * Mobile (Capacitor): the UI is served from https://localhost, so a relative
  * path would resolve against the local bundle (blank iframe / 404) and an
@@ -15,6 +18,22 @@
 import { useEffect, useState } from "react";
 import { getMobileRuntimeConfig, resolveMobileUrl } from "@/lib/mobile-runtime";
 import { reportError } from "@/lib/frontend-log";
+import {
+    cacheHostTunnelUrl,
+    getCachedHostTunnelUrl,
+    hostTunnelsKnownUnavailable,
+    isUsableHostTunnelUrl,
+    markHostTunnelsUnavailable,
+    tunnelCacheKey,
+} from "@/lib/tunnel-frame";
+
+function currentAppUrl(): string {
+    try {
+        return window.location.href;
+    } catch {
+        return "";
+    }
+}
 
 /**
  * One-shot variant of useTunnelSrc for event handlers (e.g. "open in new tab").
@@ -47,15 +66,27 @@ export async function resolveTunnelHref(
         return (await res.json()) as { url?: string; hostUrl?: string };
     };
 
+    const cacheKey = tunnelCacheKey({ sessionId, runnerId, port });
+    if (preferHostOrigin) {
+        const cached = getCachedHostTunnelUrl(cacheKey);
+        if (cached) return cached;
+    }
+
     if (!isMobileBundled) {
-        // Web: user-app previews (preferHostOrigin) use the dedicated tunnel
-        // origin (hostUrl) when the relay has PIZZAPI_TUNNEL_DOMAIN configured —
-        // SPAs get a clean location.pathname. Service panels stay on the
-        // synchronous same-origin path prefix they are built for.
-        if (preferHostOrigin) {
+        // Web: prefer the dedicated tunnel origin (hostUrl) when the relay has
+        // PIZZAPI_TUNNEL_DOMAIN configured — tunneled content then runs in its
+        // own origin, isolated from the PizzaPi UI (and SPAs get a clean
+        // location.pathname). Otherwise use the same-origin path prefix.
+        if (preferHostOrigin && !hostTunnelsKnownUnavailable()) {
             try {
                 const data = await mint();
-                if (data.hostUrl) return data.hostUrl;
+                if (data.hostUrl && isUsableHostTunnelUrl(data.hostUrl, { appUrl: currentAppUrl(), mobile: false })) {
+                    cacheHostTunnelUrl(cacheKey, data.hostUrl);
+                    return data.hostUrl;
+                }
+                // Not configured on the relay, or unreachable from here
+                // (e.g. *.localhost while browsing from another machine).
+                markHostTunnelsUnavailable();
             } catch {
                 // fall through to relative path
             }
@@ -64,23 +95,15 @@ export async function resolveTunnelHref(
     }
 
     const data = await mint();
-    // Mobile: only user-app previews opt into the tunnel origin, and only when
-    // it can plausibly work off-machine — https and not *.localhost (which
-    // resolves to the phone itself). Everything else keeps the signed relay
-    // URL, which is always reachable.
-    if (preferHostOrigin && data.hostUrl && isMobileReachableHostUrl(data.hostUrl)) return data.hostUrl;
+    // Mobile: use the tunnel origin only when it can plausibly work off-machine
+    // — https and not *.localhost (which resolves to the phone itself).
+    // Everything else keeps the signed relay URL, which is always reachable.
+    if (preferHostOrigin && data.hostUrl && isUsableHostTunnelUrl(data.hostUrl, { appUrl: currentAppUrl(), mobile: true })) {
+        cacheHostTunnelUrl(cacheKey, data.hostUrl);
+        return data.hostUrl;
+    }
     if (!data.url) throw new Error("token response missing url");
     return resolveMobileUrl(data.url);
-}
-
-/** A tunnel-origin URL a phone can plausibly reach: https, not *.localhost. */
-function isMobileReachableHostUrl(hostUrl: string): boolean {
-    try {
-        const u = new URL(hostUrl);
-        return u.protocol === "https:" && u.hostname !== "localhost" && !u.hostname.endsWith(".localhost");
-    } catch {
-        return false;
-    }
 }
 
 export interface UseTunnelSrcResult {
@@ -96,7 +119,7 @@ export function useTunnelSrc(opts: {
     runnerId?: string;
     /** Set false to skip resolution (e.g. no active preview). */
     enabled?: boolean;
-    /** Prefer the dedicated tunnel origin (PIZZAPI_TUNNEL_DOMAIN) on web. */
+    /** Prefer the dedicated, isolated tunnel origin (PIZZAPI_TUNNEL_DOMAIN) when the relay offers one. */
     preferHostOrigin?: boolean;
 }): UseTunnelSrcResult {
     const { sessionId, port, runnerId, enabled = true, preferHostOrigin = false } = opts;
@@ -118,8 +141,20 @@ export function useTunnelSrc(opts: {
             return;
         }
 
-        // Web without host-origin preference: relative path, synchronously.
-        if (!isMobileBundled && !preferHostOrigin) {
+        // Web, dedicated tunnel origin already minted for this port: reuse it
+        // synchronously (stable origin across remounts).
+        const cachedHost = preferHostOrigin
+            ? getCachedHostTunnelUrl(tunnelCacheKey({ sessionId: routingSessionId, runnerId, port }))
+            : null;
+        if (!isMobileBundled && cachedHost) {
+            setBase(cachedHost);
+            setLoading(false);
+            setError(null);
+            return;
+        }
+
+        // Web without a usable host origin: relative path, synchronously.
+        if (!isMobileBundled && (!preferHostOrigin || hostTunnelsKnownUnavailable())) {
             setBase(runnerId
                 ? `/api/tunnel/runner/${encodeURIComponent(runnerId)}/${port}/`
                 : `/api/tunnel/${encodeURIComponent(routingSessionId ?? "")}/${port}/`);
