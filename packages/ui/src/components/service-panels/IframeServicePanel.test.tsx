@@ -23,6 +23,11 @@ const win = new Window({ url: "http://localhost/" });
 
 const { IframeServicePanel } = await import("./IframeServicePanel");
 const { _resetMobileRuntimeCache, _setMobileRuntimeCache } = await import("../../lib/mobile-runtime.js");
+const { _resetHostTunnelCache } = await import("../../lib/tunnel-frame.js");
+
+/** Web relay without PIZZAPI_TUNNEL_DOMAIN: mint succeeds but has no hostUrl. */
+const noHostOriginFetch = (async () =>
+    new Response(JSON.stringify({ url: "/api/tunnel/auth/tok/x/1/" }), { status: 200 })) as unknown as typeof fetch;
 
 function extractSrc(container: HTMLElement): string | null {
     const iframe = container.querySelector("iframe");
@@ -35,7 +40,8 @@ describe("IframeServicePanel", () => {
     beforeEach(() => {
         localStorage.clear();
         _resetMobileRuntimeCache();
-        globalThis.fetch = originalFetch;
+        _resetHostTunnelCache();
+        globalThis.fetch = noHostOriginFetch;
     });
 
     afterEach(() => {
@@ -43,28 +49,32 @@ describe("IframeServicePanel", () => {
         document.body.innerHTML = "";
         localStorage.clear();
         _resetMobileRuntimeCache();
+        _resetHostTunnelCache();
         globalThis.fetch = originalFetch;
     });
 
-    test("uses relative tunnel URL in non-mobile mode", () => {
+    test("uses relative tunnel URL in non-mobile mode when the relay has no tunnel origin", async () => {
         const { container } = render(
             React.createElement(IframeServicePanel, { sessionId: "sess-123", port: 8080 }),
         );
+        await waitFor(() => expect(extractSrc(container)).not.toBeNull());
         const src = extractSrc(container)!;
+        expect(container.querySelector("iframe")!.getAttribute("data-tunnel-isolated")).toBe("false");
         const url = new URL(src, "http://localhost");
         expect(url.pathname).toBe("/api/tunnel/sess-123/8080/");
         expect(url.searchParams.get("sessionId")).toBe("sess-123");
     });
 
-    test("escapes session id in tunnel path", () => {
+    test("escapes session id in tunnel path", async () => {
         const { container } = render(
             React.createElement(IframeServicePanel, { sessionId: "sess with spaces", port: 8080 }),
         );
+        await waitFor(() => expect(extractSrc(container)).not.toBeNull());
         const src = extractSrc(container);
         expect(src).toContain("/api/tunnel/sess%20with%20spaces/8080/");
     });
 
-    test("appends panel params, session id, project dir, deep-link query and fragment", () => {
+    test("appends panel params, session id, project dir, deep-link query and fragment", async () => {
         const { container } = render(
             React.createElement(IframeServicePanel, {
                 sessionId: "sess-123",
@@ -75,6 +85,7 @@ describe("IframeServicePanel", () => {
                 fragment: "section",
             }),
         );
+        await waitFor(() => expect(extractSrc(container)).not.toBeNull());
         const src = extractSrc(container)!;
         const url = new URL(src, "http://localhost");
         expect(url.pathname).toBe("/api/tunnel/sess-123/8080/");
@@ -85,7 +96,7 @@ describe("IframeServicePanel", () => {
         expect(url.hash).toBe("#section");
     });
 
-    test("runner-scoped tunnel with no session drops the empty sessionId param", () => {
+    test("runner-scoped tunnel with no session drops the empty sessionId param", async () => {
         const { container } = render(
             React.createElement(IframeServicePanel, {
                 sessionId: "",
@@ -94,6 +105,7 @@ describe("IframeServicePanel", () => {
                 panelParams: { sessionId: "" },
             }),
         );
+        await waitFor(() => expect(extractSrc(container)).not.toBeNull());
         const src = extractSrc(container)!;
         const url = new URL(src, "http://localhost");
         expect(url.pathname).toBe("/api/tunnel/runner/runner-abc/8080/");
@@ -129,5 +141,39 @@ describe("IframeServicePanel", () => {
         expect(src).toStartWith("https://relay.example.com/api/tunnel/auth/tok/sess-123/8080/");
         expect(src).toContain("?");
         expect(src).toContain("projectDir=%2Fproject");
+    });
+    test("after the relay reports no tunnel origin, later panels load synchronously without a probe", async () => {
+        let calls = 0;
+        globalThis.fetch = (async (...args: Parameters<typeof fetch>) => { calls++; return noHostOriginFetch(...args); }) as typeof fetch;
+        const first = render(React.createElement(IframeServicePanel, { sessionId: "sess-1", port: 8080 }));
+        await waitFor(() => expect(extractSrc(first.container)).not.toBeNull());
+        cleanup();
+        const second = render(React.createElement(IframeServicePanel, { sessionId: "sess-1", port: 9090 }));
+        expect(extractSrc(second.container)).toContain("/api/tunnel/sess-1/9090/");
+        expect(calls).toBe(1);
+    });
+
+    test("uses the dedicated tunnel origin (isolated) when the relay has PIZZAPI_TUNNEL_DOMAIN", async () => {
+        let calls = 0;
+        const hostUrl = "http://0123456789abcdef0123456789abcdef.t.localhost:7492/";
+        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+            calls++;
+            expect(String(input)).toBe("/api/tunnel-token");
+            expect(JSON.parse(String(init?.body))).toEqual({ runnerId: "runner-abc", port: 8080 });
+            return new Response(JSON.stringify({ url: "/api/tunnel/auth/tok/runner%3Arunner-abc/8080/", hostUrl }), { status: 200 });
+        }) as typeof fetch;
+
+        const first = render(React.createElement(IframeServicePanel, { sessionId: "", runnerId: "runner-abc", port: 8080 }));
+        await waitFor(() => expect(extractSrc(first.container)).not.toBeNull());
+        const iframe = first.container.querySelector("iframe")!;
+        expect(iframe.getAttribute("src")).toStartWith(hostUrl);
+        expect(iframe.getAttribute("data-tunnel-isolated")).toBe("true");
+        expect(new URL(iframe.getAttribute("src")!).searchParams.get("runnerId")).toBe("runner-abc");
+
+        // Remount reuses the same origin synchronously (stable localStorage), no re-mint.
+        cleanup();
+        const second = render(React.createElement(IframeServicePanel, { sessionId: "", runnerId: "runner-abc", port: 8080 }));
+        expect(extractSrc(second.container)).toStartWith(hostUrl);
+        expect(calls).toBe(1);
     });
 });

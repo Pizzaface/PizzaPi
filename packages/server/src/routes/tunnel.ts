@@ -11,7 +11,9 @@
  */
 
 import type { TunnelRelay } from "@pizzapi/tunnel";
+import { getTrustedOrigins } from "../auth.js";
 import { requireSession } from "../middleware.js";
+import { hardenPathTunnelResponseHeaders, rejectCrossSiteTunnelRequest } from "./tunnel-isolation.js";
 import { assertTunnelTokenStillValid, createTunnelToken, getAuthTunnelBasePath, verifyTunnelToken } from "./tunnel-token.js";
 import { getTunnelRelay } from "../tunnel-relay.js";
 import { getSession } from "../ws/sio-state/index.js";
@@ -372,6 +374,10 @@ function applyResponseHeadersByBasePath(responseHeaders: Headers, basePath: stri
                 responseHeaders.append("set-cookie", cookie.replace(/;\s*domain=[^;]*/gi, ""));
             }
         }
+    } else {
+        // Path-prefix tunnel: content shares the relay origin — pin cookies to
+        // the tunnel path and drop origin-wide headers (see tunnel-isolation.ts).
+        hardenPathTunnelResponseHeaders(responseHeaders, basePath);
     }
     responseHeaders.set("x-pizzapi-tunnel", "1");
     if (allowCrossOriginFrame) responseHeaders.set("x-pizzapi-tunnel-frame", "cross-origin");
@@ -844,6 +850,10 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
         });
     }
 
+    // ── Cross-site entry gate (content is served same-origin) ────────────────
+    const crossSite = rejectCrossSiteTunnelRequest(req, getTrustedOrigins);
+    if (crossSite) return crossSite;
+
     // ── Authenticate caller ──────────────────────────────────────────────────
     const identity = await requireSession(req);
     if (identity instanceof Response) return identity;
@@ -993,6 +1003,10 @@ async function handleRunnerTunnel(req: Request, url: URL, match: RegExpMatchArra
             headers: { Allow: "GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS" },
         });
     }
+
+    // Cookie-authenticated, same-origin content: refuse cross-site entry.
+    const crossSite = rejectCrossSiteTunnelRequest(req, getTrustedOrigins);
+    if (crossSite) return crossSite;
 
     const identity = await requireSession(req);
     if (identity instanceof Response) return identity;
