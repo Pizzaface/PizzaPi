@@ -111,9 +111,13 @@ export interface PushSubscriptionTable {
     id: string;
     userId: string;
     endpoint: string;
+    /** JSON-stringified PushSubscription.keys */
     keys: string;
     createdAt: string;
+    /** Comma-separated list of enabled event types, or "*" for all */
     enabledEvents: string;
+    /** Whether to suppress notifications from linked child sessions (0 = no, 1 = yes). Added by ensurePushSubscriptionTable(). */
+    suppressChildNotifications: number;
 }
 
 /** Durable runner ownership — runner state in Redis is TTL'd; this survives restarts. */

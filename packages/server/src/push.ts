@@ -315,7 +315,7 @@ export async function registerNativePush(input: RegisterNativeInput): Promise<Na
     void input.platform;
     // Upsert: reuse an existing registration for this user+platform if present.
     const existing = await getKysely()
-        .selectFrom("native_push_registration" as any)
+        .selectFrom("native_push_registration")
         .selectAll()
         .where("userId", "=", input.userId)
         .where("platform", "=", platform)
@@ -325,13 +325,13 @@ export async function registerNativePush(input: RegisterNativeInput): Promise<Na
         if (input.suppressChildNotifications !== undefined) {
             const val = input.suppressChildNotifications ? 1 : 0;
             await getKysely()
-                .updateTable("native_push_registration" as any)
+                .updateTable("native_push_registration")
                 .set({ suppressChildNotifications: val })
-                .where("id", "=", (existing as any).id)
+                .where("id", "=", existing.id)
                 .execute();
-            return { ...(existing as unknown as NativePushRegistrationTable), suppressChildNotifications: val };
+            return { ...existing, suppressChildNotifications: val };
         }
-        return existing as unknown as NativePushRegistrationTable;
+        return existing;
     }
 
     const row: NativePushRegistrationTable = {
@@ -345,8 +345,8 @@ export async function registerNativePush(input: RegisterNativeInput): Promise<Na
         createdAt: new Date().toISOString(),
     };
     await getKysely()
-        .insertInto("native_push_registration" as any)
-        .values(row as any)
+        .insertInto("native_push_registration")
+        .values(row)
         .execute();
     return row;
 }
@@ -361,30 +361,30 @@ export async function updateNativeSuppressChildNotifications(
     suppress: boolean,
 ): Promise<number> {
     const result = await getKysely()
-        .updateTable("native_push_registration" as any)
+        .updateTable("native_push_registration")
         .set({ suppressChildNotifications: suppress ? 1 : 0 })
         .where("userId", "=", userId)
         .where("platform", "=", platform)
         .execute();
-    return Number((result as any)[0]?.numUpdatedRows ?? 0);
+    return Number(result[0]?.numUpdatedRows ?? 0);
 }
 
 export async function unregisterNativePush(userId: string, platform: string): Promise<boolean> {
     const result = await getKysely()
-        .deleteFrom("native_push_registration" as any)
+        .deleteFrom("native_push_registration")
         .where("userId", "=", userId)
         .where("platform", "=", platform)
         .execute();
-    return Number((result as any)[0]?.numDeletedRows ?? 0) > 0;
+    return Number(result[0]?.numDeletedRows ?? 0) > 0;
 }
 
 export async function getNativeRegistrationsForUser(userId: string): Promise<NativePushRegistrationTable[]> {
     const rows = await getKysely()
-        .selectFrom("native_push_registration" as any)
+        .selectFrom("native_push_registration")
         .selectAll()
         .where("userId", "=", userId)
         .execute();
-    return rows as unknown as NativePushRegistrationTable[];
+    return rows;
 }
 
 /**
@@ -511,7 +511,7 @@ async function sendNtfyToUser(userId: string, payload: PushPayload, isChildSessi
 
     if (staleIds.length > 0) {
         await getKysely()
-            .deleteFrom("native_push_registration" as any)
+            .deleteFrom("native_push_registration")
             .where("id", "in", staleIds)
             .execute();
     }
@@ -523,13 +523,13 @@ export async function subscribePush(input: PushSubscribeInput): Promise<string> 
 
     // Upsert — if the same endpoint exists for this user, replace it.
     await getKysely()
-        .deleteFrom("push_subscription" as any)
+        .deleteFrom("push_subscription")
         .where("userId", "=", input.userId)
         .where("endpoint", "=", input.endpoint)
         .execute();
 
     await getKysely()
-        .insertInto("push_subscription" as any)
+        .insertInto("push_subscription")
         .values({
             id,
             userId: input.userId,
@@ -546,17 +546,17 @@ export async function subscribePush(input: PushSubscribeInput): Promise<string> 
 
 export async function unsubscribePush(userId: string, endpoint: string): Promise<boolean> {
     const result = await getKysely()
-        .deleteFrom("push_subscription" as any)
+        .deleteFrom("push_subscription")
         .where("userId", "=", userId)
         .where("endpoint", "=", endpoint)
         .execute();
 
-    return Number((result as any)[0]?.numDeletedRows ?? 0) > 0;
+    return Number(result[0]?.numDeletedRows ?? 0) > 0;
 }
 
 export async function unsubscribePushById(userId: string, subscriptionId: string): Promise<void> {
     await getKysely()
-        .deleteFrom("push_subscription" as any)
+        .deleteFrom("push_subscription")
         .where("userId", "=", userId)
         .where("id", "=", subscriptionId)
         .execute();
@@ -564,12 +564,12 @@ export async function unsubscribePushById(userId: string, subscriptionId: string
 
 export async function getSubscriptionsForUser(userId: string): Promise<PushSubscriptionTable[]> {
     const rows = await getKysely()
-        .selectFrom("push_subscription" as any)
+        .selectFrom("push_subscription")
         .selectAll()
         .where("userId", "=", userId)
         .execute();
 
-    return rows as unknown as PushSubscriptionTable[];
+    return rows;
 }
 
 export async function updateEnabledEvents(
@@ -578,7 +578,7 @@ export async function updateEnabledEvents(
     enabledEvents: string,
 ): Promise<void> {
     await getKysely()
-        .updateTable("push_subscription" as any)
+        .updateTable("push_subscription")
         .set({ enabledEvents })
         .where("userId", "=", userId)
         .where("endpoint", "=", endpoint)
@@ -595,12 +595,12 @@ export async function updateSuppressChildNotifications(
     suppress: boolean,
 ): Promise<number> {
     const result = await getKysely()
-        .updateTable("push_subscription" as any)
+        .updateTable("push_subscription")
         .set({ suppressChildNotifications: suppress ? 1 : 0 })
         .where("userId", "=", userId)
         .where("endpoint", "=", endpoint)
         .execute();
-    return Number((result as any)[0]?.numUpdatedRows ?? 0);
+    return Number(result[0]?.numUpdatedRows ?? 0);
 }
 
 // ── Send push notifications ─────────────────────────────────────────────────
@@ -716,7 +716,7 @@ export async function sendPushToUser(
     // Remove stale subscriptions
     if (staleIds.length > 0) {
         await getKysely()
-            .deleteFrom("push_subscription" as any)
+            .deleteFrom("push_subscription")
             .where("id", "in", staleIds)
             .execute();
     }
