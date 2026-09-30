@@ -12,9 +12,10 @@ import {
 // NOTE: These tests deliberately import ONLY the pure helpers and do NOT use
 // mock.module. Earlier this file mocked auth/sio-registry/runner-control etc.,
 // which — because bun's mock.module is a process-global singleton — clobbered
-// those modules for every other test file in the same run (see TODO(ltl2EKmU)),
-// breaking runners.broadcast/terminals suites. Testing the extracted predicates
-// covers the same security-relevant behaviour with zero cross-file bleed.
+// those modules for every other test file in the same run, breaking
+// runners.broadcast/terminals suites. The handler wiring around these
+// predicates is exercised end to end — via dependency injection, still without
+// mock.module — in runner.handlers.test.ts.
 
 describe("runner namespace pending-request hardening", () => {
     test("request IDs are crypto-random UUID v4", () => {

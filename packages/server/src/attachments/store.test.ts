@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -111,28 +111,42 @@ describe("sanitizeStoredFilename", () => {
     });
 });
 
-// Skipped: Bun runs all test files in a single process, so env-var mutations
-// from other test files (e.g. handler.test.ts setting MAX_ATTACHMENT_BODY_SIZE)
-// pollute the module-level constant. Unskip once Bun supports per-file isolation.
-describe.skip("attachmentMaxFileSizeBytes", () => {
+// attachmentMaxFileSizeBytes() reads process.env at call time (no module-level
+// constant), so each test sets exactly the env it needs and restores it after —
+// safe even when bun runs every test file in one shared process.
+describe("attachmentMaxFileSizeBytes", () => {
+    const KEY = "PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES";
+    let original: string | undefined;
+    beforeEach(() => {
+        original = process.env[KEY];
+    });
+    afterEach(() => {
+        if (original === undefined) delete process.env[KEY];
+        else process.env[KEY] = original;
+    });
+
     test("returns default when env var is not set", () => {
-        const original = process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
-        delete process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
+        delete process.env[KEY];
         expect(attachmentMaxFileSizeBytes()).toBe(30 * 1024 * 1024); // 30MB
-        if (original !== undefined) {
-            process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = original;
-        }
     });
 
     test("returns default for invalid env var", () => {
-        const original = process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
-        process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = "not-a-number";
+        process.env[KEY] = "not-a-number";
         expect(attachmentMaxFileSizeBytes()).toBe(30 * 1024 * 1024);
-        if (original !== undefined) {
-            process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = original;
-        } else {
-            delete process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
-        }
+    });
+
+    test("returns default for non-positive values", () => {
+        process.env[KEY] = "0";
+        expect(attachmentMaxFileSizeBytes()).toBe(30 * 1024 * 1024);
+        process.env[KEY] = "-5";
+        expect(attachmentMaxFileSizeBytes()).toBe(30 * 1024 * 1024);
+    });
+
+    test("honours a valid override and re-reads env on every call", () => {
+        process.env[KEY] = "1024";
+        expect(attachmentMaxFileSizeBytes()).toBe(1024);
+        process.env[KEY] = "2048";
+        expect(attachmentMaxFileSizeBytes()).toBe(2048);
     });
 });
 

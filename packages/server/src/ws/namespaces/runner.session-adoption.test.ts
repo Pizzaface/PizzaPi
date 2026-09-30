@@ -7,7 +7,9 @@ import { shouldRejectSessionAdoption } from "./runner.js";
 // here. Covering the decision matrix pins the B-015 regression: a same-user
 // second runner must not take over an active session owned by another live
 // runner, while first-claim, same-runner reclaim, and dead-runner re-adoption
-// keep working.
+// keep working. The handler wiring (liveness probe, fail-closed on adapter
+// error, cross-user rejection) is exercised end to end in
+// runner.handlers.test.ts.
 
 describe("session_ready adoption guard (B-015 same-user takeover)", () => {
     const session = (runnerId: string | null, isActive = true) => ({ runnerId, isActive });
