@@ -52,6 +52,10 @@ Full docs are at **[pizzaface.github.io/PizzaPi](https://pizzaface.github.io/Piz
 <img width="2556" height="666" alt="An image of one of the runner configuration panes" src="https://github.com/user-attachments/assets/494aad7d-9ffe-4a82-847f-c7379e4c17ce" />
 
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for code, testing, review, and verification requirements. Agent-specific repository guidance is in [AGENTS.md](AGENTS.md).
+
 ## License
 
 Apache 2.0

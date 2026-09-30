@@ -1,258 +1,137 @@
-# PizzaPi — Agent Guide
-
-PizzaPi is a self-hosted web interface and relay server for the [`pi` coding agent](https://pi.dev/). It streams live agent sessions to any browser and allows remote interaction from mobile or desktop without needing terminal access.
-
----
-
-## Repository Layout
-
-```
-packages/
-  cli/      CLI wrapper — launches pi with PizzaPi extensions and the runner daemon
-  server/   Bun HTTP + WebSocket relay server (auth, session relay, attachments)
-  ui/       React 19 PWA web interface (Vite, TailwindCSS v4, Radix UI / shadcn)
-  tools/    Shared agent tools (bash, read-file, write-file, search, toolkit)
-  docs/     Starlight (Astro) documentation site — https://pizzaface.github.io/PizzaPi/
-  npm/      npm distribution — builds & publishes `npx pizzapi` packages
-
-docker/     Docker Compose (redis + server services)
-patches/    Bun patches for upstream pi packages (auto-applied on bun install)
-```
-
-Build order: `tools` → `server` → `ui` → `cli`.
-
----
-
-## Documentation Site
-
-User-facing documentation lives in `packages/docs/` — a [Starlight](https://starlight.astro.build/) (Astro) site deployed to GitHub Pages.
-
-- **Source**: `packages/docs/src/content/docs/` (`.mdx` files)
-- **Config**: `packages/docs/astro.config.mjs`
-- **Build**: `cd packages/docs && bun run build`
-- **Dev**: `cd packages/docs && bun run dev`
-- **Live site**: https://pizzaface.github.io/PizzaPi/
-
-**When changing CLI commands, flags, config options, or self-hosting behavior, always update the corresponding docs pages:**
-
-| Topic | Doc page |
-|-------|----------|
-| CLI commands & flags | `running/cli-reference.mdx` |
-| Config, env vars | `customization/configuration.mdx` |
-| MCP servers | `customization/mcp-servers.mdx` |
-| Hooks | `customization/hooks.mdx` |
-| Skills | `customization/skills.mdx` |
-| Agent definitions | `customization/agent-definitions.mdx` |
-| Claude plugins | `customization/claude-plugins.mdx` |
-| Provider services | `customization/providers.mdx` |
-| Subagents | `customization/subagents.mdx` |
-| `pizza web`, Docker | `deployment/self-hosting.mdx` |
-| Tailscale HTTPS | `deployment/tailscale.mdx` |
-| Runner daemon | `running/runner-daemon.mdx` |
-| Installation | `start-here/installation.mdx` |
-| Sandbox & safe mode | `security/sandbox.mdx` |
-| Architecture | `reference/architecture.mdx` |
-| Server env vars | `reference/environment-variables.mdx` |
-
-The README is intentionally slim — it has a quick start and links to the docs site. **Do not duplicate detailed docs in the README.**
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|------------|
-| Runtime / package manager | **Bun** (required — not Node/npm/yarn) |
-| Language | TypeScript (strict mode, ESM throughout) |
-| Server | Bun.serve, better-auth, Kysely + SQLite, Redis, web-push |
-| UI | React 19, Vite 6, TailwindCSS v4, Radix UI, shadcn/ui, streamdown |
-| Agent core | `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui` |
-
----
-
-## Common Commands
-
-```bash
-# Install dependencies
-bun install
-
-# Build everything
-bun run build
-
-# Development (server + UI, hot-reload)
-bun run dev
-
-# Lint all packages
-bun run lint
-
-# Type-check all packages
-bun run typecheck
-
-# Run DB migrations
-bun run migrate
-
-# Clean all dist/ directories
-bun run clean
-```
-
----
-
-## Development Notes
-
-- **Always use `bun`** — no Node, npm, yarn, or pnpm.
-- **Build order**: `tools` must be built before `server` or `cli`; `ui` can be built in parallel with `server`.
-- **TypeScript**: run `bun run typecheck` to check all packages at once.
-- **Patches**: Never edit files inside `node_modules` directly — changes go in `patches/` and are applied via `bun install`.
-- **Turn/lifecycle semantics matter**: When changing tools, prompts, models, or other agent capabilities at runtime, verify exactly *when* the change becomes visible to the next assistant response. Do not assume a setter like `setActiveTools()` is immediate inside the current loop — add an integration test that crosses the boundary you are changing.
-- **Redis** is required for the server. For local dev without Docker: `redis-server` or `docker compose up redis`.
-- **Do not repoint sandbox/test harnesses at an existing user or production Redis instance** (for example `redis://127.0.0.1:6379`) without explicit user permission. Sandboxes must use their own isolated Redis and must not assume the user's local Redis is safe to reuse.
-- **Database migrations**: run `bun run migrate` after schema changes. DB file is `packages/server/auth.db`.
-- **UI + TUI for every feature**: Custom features should include both a **web UI** component (in `packages/ui`) and **TUI/CLI** support (agent tools in `packages/cli`). Backend-only features without a UI are incomplete — users interact through the web interface, not just agent tools. When adding a new capability, ask: "Can the user configure/see/use this from the web UI?" If not, add it.
-
----
-
-## Upstream Patches
-
-PizzaPi patches four upstream pi packages via `patchedDependencies` in the root `package.json`. Patches live in `patches/` and are auto-applied on `bun install`. See `patches/README.md` for full details.
-
-### @earendil-works/pi-agent-core
-
-- **Dynamic tool refresh:** When a tool changes the active tool set mid-run (for example Tool Deferral loading a deferred tool), the next assistant response now sees the refreshed tools/system prompt instead of the stale turn-start snapshot.
-
-### @earendil-works/pi-coding-agent
-
-- **Version check removal:** Disables the npm registry version check and "Update Available" notification (irrelevant for PizzaPi's headless runner).
-- **Auth path display:** Shows the actual auth file path instead of hardcoded default.
-
-**Removed in Phase 1 (SessionHost):** the patch no longer copies session-control onto `ExtensionAPI` (`newSession`/`switchSession`/`fork`, `getQueuedMessages`/`replaceQueuedMessages`). Those were surface-widening — already native on `AgentSessionRuntime`/`AgentSession`. PizzaPi's remote extension now drives control through a host-owned `SessionHost` (`packages/cli/src/runner/session-host.ts`), threaded in via `extensions/remote/session-host-ref.ts`. `patches.test.ts` guards against the hunks silently returning on a version bump.
-
-**Removed in Phase 2 (SessionHost.sendUserMessage):** the `sendUserMessage({ expandPromptTemplates })` opt-in hunk (`dist/core/agent-session.js` + both `dist/core/extensions/types.d.ts` hunks) is gone too. `connection-handlers-factory.ts`'s `ConnectionHandlers.sendUserMessage` now calls `rctx.sessionHost.sendUserMessage()` directly instead of `(pi as any).sendUserMessage()`; `SessionHost.sendUserMessage` already drove `session.prompt({ expandPromptTemplates })` via pi's native (unpatched) `PromptOptions` field, so the patched ExtensionAPI wrapper had nothing left calling it.
-
-### @earendil-works/pi-ai
-
-- **Anthropic web search:** Adds support for Anthropic's native server-side web search tool, including streaming handling and conversation round-tripping. Configured via `providerSettings.anthropic.webSearch` in `~/.pizzapi/config.json`. See `patches/README.md` for details.
-
-### Recreating patches after a version bump
-
-1. Update version specifiers in all `package.json` files
-2. `bun install` to fetch the new versions
-3. `bun patch @earendil-works/pi-coding-agent@<version>` — edit files, then `bun patch --commit 'node_modules/@earendil-works/pi-coding-agent'`
-4. `bun patch @earendil-works/pi-ai@<version>` — edit files, then `bun patch --commit 'node_modules/@earendil-works/pi-ai'`
-5. Run `cd packages/cli && bun test src/patches.test.ts` to verify
-
----
-
-## Configuration Conventions
-
-- **Environment variable prefix:** PizzaPi-specific env vars use the `PIZZAPI_` prefix (e.g., `PIZZAPI_SERVER_URL`, `PIZZAPI_AUTH_TOKEN`). Upstream pi env vars use the `PI_` prefix (e.g., `PI_WEB_SEARCH`, `PI_CACHE_RETENTION`). Never introduce a new env var without one of these prefixes.
-- **MCP config format:** Always use the `mcpServers{}` format (Claude Code compatible) as the preferred format. The `mcp.servers[]` array format is supported but not preferred. Claude Code compatibility is always the priority.
-
----
-
-## Docker & Deployment
-
-**Use `pizza web` to rebuild and redeploy the production server.** This is the preferred method — it rebuilds the Docker image from the repo source and restarts the production compose project at `~/.pizzapi/web/`. Runners and viewers reconnect automatically.
-
-```bash
-# Preferred: rebuild + redeploy production server
-pizza web
-```
-
----
-
-## Testing
-
-**Test runner**: `bun test` (built-in Bun test runner). No additional frameworks needed.
-
-```bash
-# Run all tests
-bun run test
-
-# Run tests for a specific package
-bun test packages/server
-bun test packages/tools
-bun test packages/ui
-cd packages/cli && bun test src/patches.test.ts
-```
-
-### Test file conventions
-
-- Co-locate test files next to the source: `foo.ts` → `foo.test.ts`
-- Integration / multi-module tests go in `packages/<pkg>/tests/`
-- Use `describe` / `test` / `expect` from `bun:test` — no extra imports needed
-
-### Current coverage by package
-
-| Package | Test files | What's covered |
-|---------|-----------|----------------|
-| **server** | 11 | Validation, security, sessions store, attachments store, API routes, pruning, pi-compat, SIGTERM drain upgrade guard |
-| **ui** | 3 | Message grouping, session viewer utils, path utilities |
-| **tools** | 2 | Toolkit helpers, pi-compat |
-| **cli** | 1 | Patch application and runtime behavior |
-| **protocol** | 0 | ⚠️ Needs tests |
-| **npm** | 0 | Build/publish scripts — no runtime code |
-
-### Testing standards
-
-- **All new code must include tests.** If you add or modify a module, add or update its `.test.ts` file.
-- **Run `bun run test` before committing.** Tests are part of the quality gates in session completion.
-- **Test pure logic first.** Validation, parsing, transforms, and utility functions should have thorough unit tests.
-- **Keep tests fast.** Avoid real network/Redis/DB calls in unit tests — mock or use in-memory alternatives.
-- **Test lifecycle boundaries explicitly.** If a bug depends on "next turn", "after tool call", startup sequencing, reloads, or streamed state, add a regression test that crosses that boundary. Snapshot/timing bugs are easy to miss with pure unit tests.
-
----
-
-## Built-in System Prompt
-
-The CLI appends a built-in system prompt (`BUILTIN_SYSTEM_PROMPT` in `packages/cli/src/config.ts`) to every session automatically. It covers inter-agent communication, the subagent tool, and session completion guidance. User-configured `appendSystemPrompt` in `~/.pizzapi/config.json` is concatenated **after** the built-in, so custom additions stack on top.
-
-**When adding new tools or changing agent-facing behavior**, update `BUILTIN_SYSTEM_PROMPT` in `config.ts` — not config.json. This ensures all installs get the change without any setup step.
-
----
-
-## Spawning Sub-Agents
-
-Spawned sessions are **automatically linked** — child events (questions, plans, completion) surface as trigger messages in the parent's conversation. No manual session ID plumbing needed.
-
-**Handling child triggers:**
-- Trigger messages arrive with a `<!-- trigger:ID -->` prefix and instructions — e.g. when the child calls AskUserQuestion or plan_mode, a trigger appears in your conversation.
-- Use `respond_to_trigger(triggerId, response)` to answer a child's question or approve a plan.
-- Use `escalate_trigger(triggerId)` to pass a trigger to the human viewer.
-- Use `tell_child(sessionId, message)` to proactively message a child session.
-- When the child finishes, a `session_complete` trigger arrives — acknowledge or follow up.
-
-**For non-linked sessions** (e.g., two sessions that weren't spawned by each other):
-- Use `send_message`/`wait_for_message` for manual inter-session messaging.
-- Include session IDs explicitly when coordinating.
-
-**Rules:**
-- The `subagent` tool handles its own communication — triggers only apply to `spawn_session`.
-- Sub-agents must follow the same coding standards (testing, typecheck, etc.) as the parent.
-
----
-
-## Session Completion
-
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
-
-**MANDATORY WORKFLOW:**
-
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Update issue status** - Close finished work, update in-progress items
-3. **Run quality gates** (if code changed) - Tests, linters, builds, typecheck — verify nothing is broken
-4. **Commit all changes** - clear commit message describing what changed
-5. **Push to remote** - This is MANDATORY:
-   ```bash
-   git pull --rebase
-   git push
-   git status  # must show "up to date with origin"
-   ```
-6. **Clean up** - Clear stashes, prune remote branches
-7. **Verify** - All changes committed AND pushed
-8. **Hand off** — leave a clear summary of what was done and what's next
-
-**Rules:**
-- Work is NOT complete until `git push` succeeds
-- Never stop before pushing — that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
+# PizzaPi: agent guide
+
+PizzaPi is a self-hosted browser/mobile interface and relay for the pi coding
+agent. Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing code. Its review,
+testing, security, and delivery requirements apply to agents and humans alike.
+
+## Start here
+
+1. Read the request and inspect the working tree. Preserve unrelated changes.
+2. Read the affected implementation, nearby tests, and relevant docs before
+   proposing a fix. Reproduce reported failures where practical.
+3. Trace the change across the runner, relay, protocol, and UI when applicable.
+   State the expected behavior and how it will be verified.
+4. Make the smallest complete change. Do not mix unrelated refactors or silently
+   broaden the task. Follow explicit user constraints on tools and delegation.
+5. Verify the final diff and report results using the completion checklist in
+   [CONTRIBUTING.md](CONTRIBUTING.md#definition-of-done).
+
+## Repository map
+
+| Location | Responsibility |
+| --- | --- |
+| `packages/protocol` | Shared wire types and contracts |
+| `packages/extension-sdk` | Public overlay-package authoring and host/service contracts |
+| `packages/tunnel` | Streaming HTTP/WebSocket transport between runner and relay |
+| `packages/tools` | Shared tools, sandbox enforcement, and utilities |
+| `packages/server` | Authentication, HTTP/Socket.IO relay, persistence, events, attachments |
+| `packages/ui` | React web UI/PWA, session state, settings, and service panels |
+| `packages/cli` | pi integration, session host, runner, plugins, overlays, and CLI |
+| `packages/docs` | Starlight documentation and MDX content bundled with the CLI |
+| `packages/npm` | npm distribution and publishing tooling |
+| `mobile`, `android`, `ios` | Capacitor wrapper and native projects |
+| `patches` | Bun-managed patches to dependencies |
+| `scripts` | Workspace setup, test isolation, builds, and release helpers |
+| `docker` | Deployment and runner containers |
+
+The application uses Bun, strict TypeScript/ESM, React, better-auth,
+Kysely/SQLite, and Redis. Read the manifests for current dependency versions.
+
+## Commands and sources of truth
+
+Use **Bun** for workspace installation, builds, and tests. Do not substitute
+npm/yarn/pnpm for the workspace workflow; npm distribution tests are separate.
+
+- Install: `bun install --frozen-lockfile`
+- Application build: `bun run build`
+- Lint: `bun run lint`
+- Typecheck (including prompt generation and selected test projects): `bun run typecheck`
+- Full test orchestration: `bun run test`
+- Development server and UI: `bun run dev`
+- Documentation build: `bun run build:docs`
+- Database migrations, on an isolated development database: `bun run migrate`
+
+The root `package.json` defines the application build order:
+`protocol` → `extension-sdk` → `tunnel` → `tools` → `server` → `ui` → `cli`.
+Docs, distribution builds, and mobile builds have separate scripts.
+
+Use the root test command rather than replacing it with a blanket `bun test`:
+it intentionally isolates stateful server and CLI suites. For a focused
+stateful suite, use `bun scripts/test-isolated.ts <test-file-or-directory>`.
+Read the suite's setup before running it; test preload and integration fixtures
+can start infrastructure. See [CONTRIBUTING.md](CONTRIBUTING.md#verification).
+
+Treat manifests, workflow files, and executable configuration as the source of
+truth for commands and automation. Do not maintain static test counts here.
+Documentation drift should be corrected, not used to excuse missing checks.
+
+## PizzaPi-specific invariants
+
+### Session lifecycle and delivery
+
+- Use `packages/cli/src/runner/session-host.ts` for remote session control.
+  Do not restore upstream patches merely to widen pi's `ExtensionAPI` when a
+  supported host/runtime API already provides the capability.
+- Preserve steering vs follow-up semantics, queue ordering, cancellation,
+  and already-expanded prompt contents.
+- When changing tools, prompts, models, or session state, verify exactly when
+  the change becomes visible to the next assistant response. Add tests that
+  cross that lifecycle boundary; a setter assertion alone is insufficient.
+- Exercise reconnects, duplicate/replayed events, stale responses, session
+  switches, snapshot hydration, and pagination when the affected path uses
+  them. Preserve ordering and avoid losing or rendering messages twice.
+
+### Events, services, and isolation
+
+- Read [CONTEXT.md](CONTEXT.md) for event-system terminology and contracts.
+  Events, routes, runtime status, deliveries, and response contracts are
+  different concepts. A saved route is not proof that a service has armed it.
+- Preserve authenticated ownership across HTTP, Socket.IO, webhooks, tunnel
+  traffic, and runner services. Never trust a caller-supplied owner/session ID
+  without checking its authorization in the affected boundary.
+- Treat reconnection and retry paths as normal operation. Define deduplication,
+  expiration, cleanup, and recovery behavior for new asynchronous work.
+- Never point a sandbox or test harness at a user's or production Redis,
+  SQLite database, config directory, credentials, or session history. Use
+  disposable fixtures and dedicated infrastructure. The `dev:redis` helper
+  may reuse a listener on port 6379; it is not proof of isolation.
+
+### Features and configuration
+
+- User-facing capabilities need an appropriate web UI and CLI/TUI path, or
+  an explicit explanation of why a surface does not apply. Include loading,
+  empty, error, cancellation, and recovery states where relevant.
+- New PizzaPi-specific environment variables use `PIZZAPI_`; preserve upstream
+  names and existing compatibility aliases. Document defaults and validation.
+- Prefer Claude-compatible `mcpServers` configuration. Preserve supported
+  legacy inputs unless the change includes an explicit migration decision.
+- Follow overlay trust/grant checks; package discovery is not permission to
+  execute services or expand access. Keep security-sensitive approvals fail-closed.
+
+### Patches, prompts, and documentation
+
+- Keep dependency changes reproducible in manifests, `bun.lock`, and
+  `patchedDependencies`. Use Bun's patch workflow; never leave a fix only in
+  `node_modules`. Read the actual patch files and `patches/README.md`.
+- On upstream upgrades, reassess every affected patch and run
+  `bun test packages/cli/src/patches.test.ts` in addition to the required gates.
+- Edit prompt sources in `packages/cli/src/config/templates/` and composition
+  in `packages/cli/src/config/system-prompt.ts`. Do not hand-edit generated
+  `system-prompt.precompiled.ts`; regenerate through the typecheck/build workflow.
+- User-facing docs live under `packages/docs/src/content/docs/`. Update the
+  relevant existing page when changing behavior, commands, config, permissions,
+  or installation. Read `reference/agent-facing-docs.mdx` for bundled-doc rules.
+- Keep README concise. Link detailed guidance instead of duplicating it.
+
+## Safe delivery
+
+Work on a feature branch. Do not commit directly to `main`, bypass checks to
+hide failures, revert others' work, or run destructive cleanup without approval.
+Do not infer permission to publish, merge, release, or deploy from a request to
+inspect or edit code. `pizza web` can rebuild/restart a deployment; it is not a
+verification command.
+
+When a push or PR is requested, verify the target branch and resulting commit.
+Use a draft PR unless instructed otherwise. Report passed, failed, blocked, and
+not-run checks separately. A timeout, skipped job, or cancelled test is not a
+pass. Leave an accurate handoff even when verification is blocked.
