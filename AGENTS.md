@@ -185,12 +185,16 @@ cd packages/cli && bun test src/patches.test.ts
 
 | Package | Test files | What's covered |
 |---------|-----------|----------------|
-| **server** | 11 | Validation, security, sessions store, attachments store, API routes, pruning, pi-compat, SIGTERM drain upgrade guard |
-| **ui** | 3 | Message grouping, session viewer utils, path utilities |
-| **tools** | 2 | Toolkit helpers, pi-compat |
-| **cli** | 1 | Patch application and runtime behavior |
-| **protocol** | 0 | ⚠️ Needs tests |
-| **npm** | 0 | Build/publish scripts — no runtime code |
+| **cli** | 196 | Extensions (remote relay, MCP, triggers, subagents, workflow, goal, memory, plan mode), runner daemon + services, config, skills/rules discovery, overlays, usage, patch application |
+| **ui** | 153 | Session viewer + trigger cards, lib utilities (export, message helpers, sigils), hooks, git/file-explorer/service panels, attention, AI elements |
+| **server** | 124 | API routes, unified trigger engine (`events/`), Socket.IO namespaces + registry, sessions/attachments stores, migrations, validation/security; harness + e2e in `tests/` |
+| **protocol** | 14 | Wire types, payload guards, events, relay/viewer/runner/hub messages, trigger reconciliation, version |
+| **tools** | 9 | bash, read/write-file, search, sandbox, toolkit helpers, log, pi-compat |
+| **tunnel** | 5 | Tunnel client/server, security, cross-runner routing, integration |
+| **extension-sdk** | 2 | Extension host and service APIs |
+| **docs**, **npm** | 0 | Docs site and build/publish scripts — no runtime code |
+
+Counts are `*.test.ts(x)` files per package (excluding `node_modules`); `mobile/` and `scripts/` have one each.
 
 ### Testing standards
 
