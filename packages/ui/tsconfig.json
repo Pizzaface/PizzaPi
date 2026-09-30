@@ -9,6 +9,7 @@
         "experimentalDecorators": true,
         "useDefineForClassFields": false,
         "jsx": "react-jsx",
+        "baseUrl": ".",
         "paths": {
             "@/*": ["./src/*"]
         }
