@@ -24,6 +24,10 @@ PizzaPi searches for skills in these locations (all merged):
 | `<cwd>/.agents/agents/` | Claude Code compatible project agents |
 | Paths in the `skills` config array | Custom locations |
 
+<Aside type="note">
+  **Rules are not skills.** Markdown rule files in `~/.pizzapi/rules/`, `.pizzapi/rules/`, and Claude Code's `~/.claude/rules/` and `.claude/rules/` are always loaded into the system prompt as context instructions, rather than matched on demand like skills. See [Context Files](/PizzaPi/features/sessions/#context-files).
+</Aside>
+
 ---
 
 ## Writing a Skill

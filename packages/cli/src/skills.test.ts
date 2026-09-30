@@ -17,6 +17,7 @@ import {
     buildWorkerSkillPaths,
     loadProjectAgentFiles,
     loadRulesDir,
+    loadRules,
     createAgentsFilesOverride,
 } from "./skills.js";
 
@@ -624,6 +625,69 @@ describe("loadRulesDir", () => {
     });
 });
 
+describe("loadRules", () => {
+    let dir: string;
+    let testHome: string;
+    let homeSpy: ReturnType<typeof spyOn>;
+
+    beforeEach(() => {
+        dir = makeTmpDir();
+        testHome = makeTmpDir();
+        homeSpy = spyOn(os, "homedir").mockReturnValue(testHome);
+    });
+
+    afterEach(() => {
+        homeSpy.mockRestore();
+        rmSync(dir, { recursive: true, force: true });
+        rmSync(testHome, { recursive: true, force: true });
+    });
+
+    const writeRule = (root: string, prefix: string, name: string, content: string) => {
+        mkdirSync(join(root, prefix, "rules"), { recursive: true });
+        writeFileSync(join(root, prefix, "rules", name), content, "utf-8");
+    };
+
+    test("returns empty lists when no rules directories exist", () => {
+        expect(loadRules(dir)).toEqual({ global: [], project: [] });
+    });
+
+    test("discovers Claude Code rules from ~/.claude/rules and <project>/.claude/rules", () => {
+        writeRule(testHome, ".claude", "style.md", "# Global Claude rule");
+        writeRule(dir, ".claude", "testing.md", "# Project Claude rule");
+        const rules = loadRules(dir);
+        expect(rules.global.map(f => [f.path, f.content])).toEqual([
+            [join(testHome, ".claude", "rules", "style.md"), "# Global Claude rule"],
+        ]);
+        expect(rules.project.map(f => [f.path, f.content])).toEqual([
+            [join(dir, ".claude", "rules", "testing.md"), "# Project Claude rule"],
+        ]);
+    });
+
+    test("orders .claude rules before .pizzapi rules within each scope", () => {
+        writeRule(testHome, ".pizzapi", "a.md", "global-pizzapi");
+        writeRule(testHome, ".claude", "z.md", "global-claude");
+        writeRule(dir, ".pizzapi", "a.md", "project-pizzapi");
+        writeRule(dir, ".claude", "z.md", "project-claude");
+        const rules = loadRules(dir);
+        expect(rules.global.map(f => f.content)).toEqual(["global-claude", "global-pizzapi"]);
+        expect(rules.project.map(f => f.content)).toEqual(["project-claude", "project-pizzapi"]);
+    });
+
+    test("ignores non-markdown files in .claude/rules", () => {
+        writeRule(dir, ".claude", "notes.txt", "ignored");
+        writeRule(dir, ".claude", "rule.md", "kept");
+        expect(loadRules(dir).project.map(f => f.content)).toEqual(["kept"]);
+    });
+
+    test("does not duplicate rules when cwd is the home directory", () => {
+        writeRule(testHome, ".claude", "rule.md", "claude");
+        writeRule(testHome, ".pizzapi", "rule.md", "pizzapi");
+        const rules = loadRules(testHome);
+        expect(rules.global.map(f => f.content)).toEqual(["claude", "pizzapi"]);
+        expect(rules.project).toEqual([]);
+    });
+});
+
 // ── createAgentsFilesOverride ─────────────────────────────────────────────────
 
 describe("createAgentsFilesOverride", () => {
@@ -711,6 +775,22 @@ describe("createAgentsFilesOverride", () => {
             "# Global context",
             "# Project context (base)",
             "# Project rule",
+        ]);
+    });
+
+    test("places global Claude Code rules before project context and project Claude rules after", () => {
+        mkdirSync(join(testHome, ".claude", "rules"), { recursive: true });
+        writeFileSync(join(testHome, ".claude", "rules", "global.md"), "# Global Claude rule", "utf-8");
+        mkdirSync(join(dir, ".claude", "rules"), { recursive: true });
+        writeFileSync(join(dir, ".claude", "rules", "project.md"), "# Project Claude rule", "utf-8");
+        const override = createAgentsFilesOverride(dir)!;
+        const result = override({
+            agentsFiles: [{ path: join(dir, "CLAUDE.md"), content: "# Project context" }],
+        });
+        expect(result.agentsFiles.map(file => file.content)).toEqual([
+            "# Global Claude rule",
+            "# Project context",
+            "# Project Claude rule",
         ]);
     });
 

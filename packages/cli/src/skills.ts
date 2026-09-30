@@ -211,13 +211,34 @@ export function loadRulesDir(dir: string): AgentFile[] {
     return files;
 }
 
-/** Load global and project modular rules, in override-friendly order. */
+/**
+ * Load global and project modular rules, in override-friendly order.
+ *
+ * For Claude Code compatibility, `.claude/rules/*.md` is discovered alongside
+ * PizzaPi's own `.pizzapi/rules/*.md` at both scopes. Within each scope the
+ * Claude Code directory comes first so PizzaPi-native rules appear later (and
+ * therefore win when instructions conflict):
+ *
+ *   global:  ~/.claude/rules/*.md, then ~/.pizzapi/rules/*.md
+ *   project: <cwd>/.claude/rules/*.md, then <cwd>/.pizzapi/rules/*.md
+ *
+ * Rules are loaded unconditionally as context instructions; Claude Code's
+ * optional `paths:` frontmatter (path-scoped rules) is not interpreted, and
+ * only direct children of each directory are read. When cwd is the home
+ * directory, project entries that duplicate a global rule file are dropped.
+ */
 export function loadRules(cwd: string): { global: AgentFile[]; project: AgentFile[] } {
-    // TODO: also discover Claude Code's ~/.claude/rules/ for compatibility.
-    return {
-        global: loadRulesDir(join(homedir(), ".pizzapi", "rules")),
-        project: loadRulesDir(join(cwd, ".pizzapi", "rules")),
-    };
+    const home = homedir();
+    const global = [
+        ...loadRulesDir(join(home, ".claude", "rules")),
+        ...loadRulesDir(join(home, ".pizzapi", "rules")),
+    ];
+    const globalPaths = new Set(global.map((file) => file.path));
+    const project = [
+        ...loadRulesDir(join(cwd, ".claude", "rules")),
+        ...loadRulesDir(join(cwd, ".pizzapi", "rules")),
+    ].filter((file) => !globalPaths.has(file.path));
+    return { global, project };
 }
 
 /**

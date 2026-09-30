@@ -307,7 +307,7 @@ pi automatically loads **context files** at startup to give the agent project-sp
 | File | Location | Purpose |
 |------|----------|---------|
 | `AGENTS.md` or `CLAUDE.md` | `~/.pizzapi/`, parent directories, current directory | Project instructions, conventions, common commands |
-| `rules/*.md` | `~/.pizzapi/rules/` (global), `.pizzapi/rules/` (project) | Modular instructions, sorted lexicographically within each directory |
+| `rules/*.md` | `~/.claude/rules/` and `~/.pizzapi/rules/` (global), `.claude/rules/` and `.pizzapi/rules/` (project) | Modular instructions, sorted lexicographically within each directory. The `.claude/rules/` directories are read for Claude Code compatibility |
 | `SYSTEM.md` | `.pizzapi/SYSTEM.md` (project) or `~/.pizzapi/SYSTEM.md` (global) | Replace the default system prompt entirely |
 | `APPEND_SYSTEM.md` | Same locations | Append to the system prompt without replacing it |
 
@@ -318,8 +318,12 @@ pi automatically loads **context files** at startup to give the agent project-sp
 ### How Context Files Load
 
 1. Global `AGENTS.md` from `~/.pizzapi/`
-2. Global `~/.pizzapi/rules/*.md`, sorted lexicographically
+2. Global `~/.claude/rules/*.md`, then `~/.pizzapi/rules/*.md`, each sorted lexicographically
 3. Walk up from the current working directory, loading each `AGENTS.md` or `CLAUDE.md` found (the current directory is included)
-4. Project `.pizzapi/rules/*.md`, sorted lexicographically
+4. Project `.claude/rules/*.md`, then `.pizzapi/rules/*.md`, each sorted lexicographically
 
 All files are concatenated and included in the system prompt. This means you can have repository-wide instructions in the repo root and more specific instructions in subdirectories.
+
+<Aside type="note">
+  Rules from Claude Code's `.claude/rules/` directories are loaded as plain, always-on instructions: only `*.md` files directly inside the directory are read, and Claude Code's `paths:` frontmatter (path-scoped rules) is not interpreted. Because `.pizzapi/rules/` loads after `.claude/rules/` in each scope, PizzaPi-specific rules take precedence when they conflict. Setting `sendAgentsMd: false` turns off all rule files along with `AGENTS.md`.
+</Aside>
