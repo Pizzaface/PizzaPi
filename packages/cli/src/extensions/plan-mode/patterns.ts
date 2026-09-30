@@ -187,6 +187,12 @@ export const OUTPUT_REDIRECTION_PATTERN = /(^|[^<])(\d*)>(?!>)(?:\s*([^\s;|&]+))
 // ── Write-blocked tool names ─────────────────────────────────────────────────
 // These tools are blocked when plan mode is active.
 // Includes both core pi tools ("edit", "write"), PizzaPi custom tools ("write_file"),
-// and tools that spawn child sessions with full write access ("subagent", "spawn_session"),
-// which would otherwise bypass plan mode restrictions entirely.
-export const WRITE_BLOCKED_TOOL_NAMES = new Set(["edit", "write", "write_file", "subagent", "spawn_session"]);
+// and spawn_session, whose independent child sessions would otherwise bypass
+// plan mode restrictions entirely.
+/**
+ * Tools blocked outright in plan mode. `subagent` is intentionally absent:
+ * subagents launched from plan mode are forced read-only (see
+ * ../subagent/plan-mode.ts). `spawn_session` stays blocked because spawned
+ * sessions are separate processes that cannot inherit plan mode.
+ */
+export const WRITE_BLOCKED_TOOL_NAMES = new Set(["edit", "write", "write_file", "spawn_session"]);

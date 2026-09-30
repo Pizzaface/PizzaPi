@@ -222,23 +222,16 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
         // independent processes with their own full write access and there is no
         // mechanism to inject plan-mode restrictions into them.
         //
-        // subagent is also blocked for now because it similarly creates an isolated
-        // context (separate agent process) that does not inherit plan-mode state.
-        // TODO(plan-mode/subagent): Propagate plan-mode into subagent invocations
-        // instead of blanket-blocking.  This would require the subagent tool to
-        // accept and honor a read-only flag so that legitimate read-only delegation
-        // (e.g. `subagent(agent: "researcher", task: "...")`) can continue to work
-        // in plan mode.  The infrastructure change needed:
-        //   1. Extend the subagent tool API with an `options.planMode: boolean` param.
-        //   2. Have the subagent runner pass PIZZAPI_PLAN_MODE=1 (or equivalent) into
-        //      the spawned agent environment.
-        //   3. Load and enforce plan-mode restrictions inside the subagent session.
+        // subagent (and run_workflow) are NOT blocked: they run in-process and
+        // snapshot isPlanModeEnabled() at call time, forcing every child into
+        // read-only plan mode (read/grep/find/ls + guarded bash, no edit/write)
+        // from its first turn. See ../subagent/plan-mode.ts.
         if (WRITE_BLOCKED_TOOL_NAMES.has(event.toolName)) {
-            const isSpawnTool = event.toolName === "subagent" || event.toolName === "spawn_session";
+            const isSpawnTool = event.toolName === "spawn_session";
             return {
                 block: true,
                 reason: isSpawnTool
-                    ? `Plan mode: "${event.toolName}" is blocked — spawning sessions creates child contexts with full write access, bypassing plan mode. Use toggle_plan_mode to exit plan mode first.`
+                    ? `Plan mode: "${event.toolName}" is blocked — spawned sessions are independent processes with full write access, bypassing plan mode. Use the subagent tool for read-only delegation (subagents are automatically read-only in plan mode), or use toggle_plan_mode to exit plan mode first.`
                     : `Plan mode: "${event.toolName}" is blocked in read-only mode. Use toggle_plan_mode to exit plan mode first.`,
             };
         }
