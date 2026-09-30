@@ -10,7 +10,15 @@ import { readFileSync } from "node:fs";
  */
 
 describe("App payload validation wiring", () => {
-  const sourceText = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  // The socket wiring was extracted from App.tsx into app/* hooks; check the
+  // shell plus every extracted module so a guard can't silently move away.
+  const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
+  const sourceText = [
+    "./App.tsx",
+    "./app/useViewerSession.ts",
+    "./app/useHubSocket.ts",
+    "./app/useSessionActions.ts",
+  ].map(read).join("\n");
   const lifecycleSourceText = readFileSync(new URL("./lib/use-session-lifecycle.ts", import.meta.url), "utf8");
 
   test("imports the protocol decoders", () => {

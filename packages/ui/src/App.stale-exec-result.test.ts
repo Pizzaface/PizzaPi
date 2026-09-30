@@ -5,11 +5,12 @@ import { readFileSync } from "node:fs";
  * Guard: exec_result events from a previous session must be dropped when
  * the viewer has already switched to a new session.
  *
- * The relay stamps exec_result with the originating sessionId; App.tsx must
+ * The relay stamps exec_result with the originating sessionId; the viewer
+ * socket wiring (app/useViewerSession.ts, extracted from App.tsx) must
  * reject any event whose sessionId != the currently-active session.
  */
 describe("App stale exec_result session guard", () => {
-  const src = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  const src = readFileSync(new URL("./app/useViewerSession.ts", import.meta.url), "utf8");
 
   // Find the exec_result socket handler block.
   const execResultBlock = (() => {

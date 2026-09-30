@@ -11,7 +11,8 @@ import { readFileSync } from "node:fs";
  */
 
 describe("sendSessionInput attachment cross-session switch guard", () => {
-  const src = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  // sendSessionInput was extracted from App.tsx into app/useSessionInput.ts.
+  const src = readFileSync(new URL("./app/useSessionInput.ts", import.meta.url), "utf8");
 
   // Isolate the sendSessionInput function body for scoped assertions.
   // The function is declared as an async useCallback and ends at the last
