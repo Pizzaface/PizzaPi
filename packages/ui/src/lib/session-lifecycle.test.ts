@@ -127,56 +127,32 @@ describe("session lifecycle reducer", () => {
   });
 
   describe("snapshot hydration", () => {
-    test("snapshotStarted (non-chunked) clears awaiting-snapshot flag", () => {
+    test("snapshotStarted clears awaiting-snapshot flag", () => {
       const connected = sessionLifecycleReducer(
         sessionLifecycleReducer(initial(), a.sessionSelected("session-abc")),
         a.connected({}),
       );
-      const state = sessionLifecycleReducer(connected, a.snapshotStarted({}));
+      const state = sessionLifecycleReducer(connected, a.snapshotStarted());
       expect(state.phase).toBe("connecting");
       expect(state.status).toBe("Connected");
       expect(state.hydration.awaitingSnapshot).toBe(false);
       expect(state.hydration.hydrated).toBe(false);
-      expect(state.hydration.lastCompletedSnapshot).toBe("non-chunked");
     });
 
-    test("snapshotStarted (chunked) sets up chunk tracking", () => {
+    test("chunkReceived shows relay assembly progress while awaiting the snapshot", () => {
       const connected = sessionLifecycleReducer(
         sessionLifecycleReducer(initial(), a.sessionSelected("session-abc")),
         a.connected({}),
       );
-      const state = sessionLifecycleReducer(
-        connected,
-        a.snapshotStarted({ chunked: true, snapshotId: "snap-1", totalMessages: 100 }),
-      );
-      expect(state.phase).toBe("connecting");
-      expect(state.status).toBe("Loading session (0 of 100 messages)…");
-      expect(state.hydration.chunked).not.toBeNull();
-      expect(state.hydration.chunked?.snapshotId).toBe("snap-1");
-      expect(state.hydration.chunked?.totalMessages).toBe(100);
-    });
-
-    test("chunkReceived updates progress", () => {
-      const connected = sessionLifecycleReducer(
-        sessionLifecycleReducer(initial(), a.sessionSelected("session-abc")),
-        a.connected({}),
-      );
-      const chunked = sessionLifecycleReducer(
-        connected,
-        a.snapshotStarted({ chunked: true, snapshotId: "snap-1", totalMessages: 100 }),
-      );
-      const state = sessionLifecycleReducer(chunked, a.chunkReceived(40, 100));
+      expect(connected.hydration.awaitingSnapshot).toBe(true);
+      const state = sessionLifecycleReducer(connected, a.chunkReceived(40, 100));
       expect(state.status).toBe("Loading session (40 of 100 messages)…");
-      expect(state.hydration.chunked?.loadedMessages).toBe(40);
     });
 
-    test("chunkReceived without chunked state is a no-op", () => {
-      const connected = sessionLifecycleReducer(
-        sessionLifecycleReducer(initial(), a.sessionSelected("session-abc")),
-        a.connected({}),
-      );
-      const state = sessionLifecycleReducer(connected, a.chunkReceived(10, 100));
-      expect(state.status).toBe("Connected");
+    test("chunkReceived after hydration is a no-op", () => {
+      const live = goLive("session-abc");
+      const state = sessionLifecycleReducer(live, a.chunkReceived(10, 100));
+      expect(state).toBe(live);
     });
 
     test("snapshotComplete moves to live", () => {
@@ -184,7 +160,7 @@ describe("session lifecycle reducer", () => {
         sessionLifecycleReducer(initial(), a.sessionSelected("session-abc")),
         a.connected({}),
       );
-      const started = sessionLifecycleReducer(connected, a.snapshotStarted({}));
+      const started = sessionLifecycleReducer(connected, a.snapshotStarted());
       const state = sessionLifecycleReducer(started, a.snapshotComplete());
       expect(state.phase).toBe("live");
       expect(state.status).toBe("Connected");
@@ -198,7 +174,7 @@ describe("session lifecycle reducer", () => {
           sessionLifecycleReducer(initial(), a.sessionSelected("session-abc")),
           a.connected({}),
         ),
-        a.snapshotStarted({}),
+        a.snapshotStarted(),
       );
       const compacting = sessionLifecycleReducer(started, a.statusSet("Compacting…"));
       const state = sessionLifecycleReducer(compacting, a.snapshotComplete());
@@ -345,7 +321,7 @@ function goLive(sessionId: string) {
         sessionLifecycleReducer(createInitialSessionLifecycleState(), a.sessionSelected(sessionId)),
         a.connected({}),
       ),
-      a.snapshotStarted({}),
+      a.snapshotStarted(),
     ),
     a.snapshotComplete(),
   );

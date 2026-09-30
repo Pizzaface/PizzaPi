@@ -238,15 +238,12 @@ describe("chunked snapshot assembly", () => {
         const updateSessionState = spyOn({
             updateSessionState: async () => {},
         }, "updateSessionState");
-        const getSharedSession = spyOn({
-            getSharedSession: async () => ({ userId: "user-1", isEphemeral: false }),
-        }, "getSharedSession");
-        const storeAndReplaceImagesInEvent = spyOn({
-            storeAndReplaceImagesInEvent: async (event: unknown) => event,
-        }, "storeAndReplaceImagesInEvent");
-        const appendRelayEventToCache = spyOn({
-            appendRelayEventToCache: async () => {},
-        }, "appendRelayEventToCache");
+        const published: Array<{ event: unknown; opts: unknown }> = [];
+        const publishSessionEvent = async (_sid: string, event: unknown, opts?: unknown) => {
+            published.push({ event, opts });
+            return published.length;
+        };
+        pending.deferredEvents = [{ type: "message_start" }, { type: "message_end" }];
 
         applySnapshotPatchToPendingState(pending, {
             sessionName: "Updated",
@@ -258,9 +255,7 @@ describe("chunked snapshot assembly", () => {
         const fullState = await finalizeChunkedSnapshot("sess-chunked-recovery", pending, {
             consumePendingRecovery,
             updateSessionState: updateSessionState as any,
-            getSharedSession: getSharedSession as any,
-            storeAndReplaceImagesInEvent: storeAndReplaceImagesInEvent as any,
-            appendRelayEventToCache: appendRelayEventToCache as any,
+            publishSessionEvent: publishSessionEvent as any,
         });
 
         expect(fullState).toEqual({
@@ -275,7 +270,14 @@ describe("chunked snapshot assembly", () => {
         );
         expect(hasPendingRecovery("sess-chunked-recovery")).toBe(false);
         expect(consumePendingRecovery("sess-chunked-recovery", nonce)).toBe(false);
-        expect(appendRelayEventToCache).toHaveBeenCalledTimes(1);
+        // Full state is published (cached) once with viewer truncation, then
+        // the events that arrived during assembly follow it in order.
+        expect(published).toEqual([
+            { event: { type: "session_active", state: fullState }, opts: { truncateForViewers: true } },
+            { event: { type: "message_start" }, opts: undefined },
+            { event: { type: "message_end" }, opts: undefined },
+        ]);
+        expect(pending.deferredEvents).toEqual([]);
     });
 });
 

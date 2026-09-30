@@ -640,6 +640,16 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 }
             }
 
+            if (chunkedPending && !staleChunkStream) {
+                // The relay is assembling a chunked snapshot. Its finalize
+                // broadcast reaches this viewer (already in the room), and
+                // progress chunks keep the client's stall watchdog quiet.
+                // Signalling the runner would restart the whole transfer.
+                suppressRunnerSignal = true;
+                log.info(`awaiting in-flight chunked snapshot: sessionId=${nextSessionId} viewer=${socket.id}`);
+                return;
+            }
+
             // ── Cache miss — cold-start fallback ─────────────────────────
             // Signal the runner so it rebuilds and emits session_active.
             // This is the existing pre-optimization path.
@@ -787,10 +797,9 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             // passes the client's matchesHydrationGeneration check and corrupts
             // B's state. Capturing here lets us abort the continuation.
             const resyncGeneration = getCurrentGeneration();
-            // Never answer an in-flight chunk resync with lastState: it is the
-            // previous completed checkpoint until server assembly finishes.
-            // The client keeps the last good transcript visible and retries on
-            // an incomplete final chunk, after finalization is durable.
+            // Never answer a resync during chunk assembly with lastState: it is
+            // the previous completed checkpoint until assembly finishes, and
+            // the finalize broadcast will deliver the new one to this viewer.
             //
             // getPendingChunkedSnapshot() is node-local. Multi-node deployments
             // still need sticky routing or shared pending state for this guard.

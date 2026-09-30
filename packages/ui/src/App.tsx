@@ -106,8 +106,8 @@ import { useBrowserNotifications } from "@/hooks/useBrowserNotifications";
 import { useMountOnFirstOpen } from "@/hooks/useMountOnFirstOpen";
 import {
   toRelayMessage,
-  deduplicateMessages,
   normalizeMessages,
+  loadedPrefixBefore,
   normalizeModel,
   normalizeSessionName,
   augmentThinkingDurations,
@@ -123,12 +123,9 @@ import { sessionLifecycleActions as lifecycleActions } from "@/lib/session-lifec
 import {
   analyzeIncomingSeq,
   analyzeReplaySeq,
-  canFinalizeChunkHydration,
   mergeConnectedSeq,
-  registerChunkIndex,
   shouldAllowOutOfOrderSnapshotDuringHydration,
   shouldDeferEventForHydration,
-  shouldRequestChunkRecovery,
 } from "@/lib/session-seq";
 import { createLogger } from "@pizzapi/tools";
 import { isActiveViewerSessionPayload, matchesHydrationGeneration, matchesViewerGeneration, matchesViewerSession, shouldAcceptDisconnected } from "@/lib/viewer-switch";
@@ -890,16 +887,6 @@ export function App() {
   const confirmedMetaLiveSessionIdsRef = React.useRef<Set<string>>(new Set());
   const [metaInventoryVersion, setMetaInventoryVersion] = React.useState(0);
 
-  // Chunked session delivery: when session_active arrives with chunked:true,
-  // messages follow as session_messages_chunk events. This ref tracks state.
-  // The snapshotId ties chunks to their originating session_active so stale
-  // chunks from a previous stream are discarded (e.g. if a new viewer
-  // connects mid-stream and triggers a fresh emitSessionActive).
-  // (Owned by lifecycleRefs.chunked / lifecycleRefs.lastCompletedSnapshot.)
-  // Live deltas that arrive while the historical snapshot is loading are
-  // replayed after the snapshot is installed so the current turn is not lost.
-  const deferredChunkEventsRef = React.useRef<unknown[]>([]);
-
   // Mobile layout
   const {
     sidebarOpen, setSidebarOpen,
@@ -1109,7 +1096,6 @@ export function App() {
     lastSeqRef.current = null;
     renderedMcpReportTsRef.current = null;
     injectedMessagesRef.current = [];
-    deferredChunkEventsRef.current = [];
     // Single atomic reset — all session-scoped fields defined in SessionState
     // are cleared together. New fields added to SessionState are automatically
     // included; nothing can be accidentally left stale between sessions.
@@ -1743,22 +1729,15 @@ export function App() {
     // NOTE: heartbeat must NOT clear this flag — the server sends heartbeat
     // before addViewer() completes (viewer.ts:383-395), so clearing on HB
     // would drop the guard before the viewer is in the room, allowing
-    // in-flight chunks or deltas to be accepted and then overwritten by
-    // the later snapshot header.
+    // in-flight deltas to be accepted and then overwritten by the later
+    // snapshot.
     // session_active handles its own snapshot start via onSnapshotStarted.
-    if (type === "agent_end") {
-      onSnapshotStarted({});
+    if (type === "agent_end" && Array.isArray(evt.messages)) {
+      onSnapshotStarted();
     }
 
-    // Deltas cannot be applied on top of a half-loaded snapshot. Drop them
-    // before the header, but retain them during chunking for replay after the
-    // atomic swap. The same helper also rejects chunks seen before their header.
-    if (shouldDeferEventForHydration(
-      type,
-      lifecycleRefs.awaitingSnapshot.current,
-      !!lifecycleRefs.chunked.current,
-    )) {
-      if (lifecycleRefs.chunked.current) deferredChunkEventsRef.current.push(event);
+    // Deltas cannot be applied before the first snapshot; drop them.
+    if (shouldDeferEventForHydration(type, lifecycleRefs.awaitingSnapshot.current)) {
       return;
     }
 
@@ -1926,7 +1905,6 @@ export function App() {
     if (type === "session_active") {
       const state = evt.state as Record<string, unknown> | undefined;
       const rawMessages = Array.isArray(state?.messages) ? (state?.messages as unknown[]) : [];
-      const isChunked = !!state?.chunked;
       const resolved = resolveSnapshotMessages(state, requestedSnapshotMessagesRef.current);
       if (!resolved) {
         // An evicted/mismatched checkpoint cannot be hydrated from omitted messages.
@@ -1936,26 +1914,15 @@ export function App() {
         });
         return;
       }
-      const snapshotId = typeof state?.snapshotId === "string" ? state.snapshotId : "";
       const totalMessages = typeof state?.totalMessages === "number" ? state.totalMessages : rawMessages.length;
-      // A newer snapshot supersedes both the old chunks and any deltas buffered
-      // against them. Those deltas are already represented in this snapshot.
-      deferredChunkEventsRef.current = [];
-      onSnapshotStarted({ chunked: isChunked, snapshotId, totalMessages });
-      if (isChunked) {
-        // The header is real progress: preparing a big snapshot can consume
-        // most of the stall window, and the watchdog stays armed through the
-        // whole chunked transfer now — without this reset it could restart a
-        // healthy transfer right after a slow header, before chunk 0 arrives.
-        hydrationRequestedAtRef.current = Date.now();
-      }
+      onSnapshotStarted();
 
       const stateModel = normalizeModel(state?.model);
       const stateModels = Array.isArray(state?.availableModels)
         ? normalizeModelList(state.availableModels as unknown[])
         : [];
-      const normalizedMessages = resolved.messages;
-      if (!isChunked) patchSessionCache({ snapshotMessages: resolved.snapshot });
+      const tailMessages = resolved.messages;
+      patchSessionCache({ snapshotMessages: resolved.snapshot });
       const hasSessionName = !!state && Object.prototype.hasOwnProperty.call(state, "sessionName");
       const nextSessionName = hasSessionName ? normalizeSessionName(state?.sessionName) : null;
       const metaViaHub = metaSourceHubRef.current || evt._metaViaHub === true;
@@ -1964,17 +1931,25 @@ export function App() {
       }
 
       // Flush any queued streaming-delta RAF before replacing state so stale
-      // partials can't be re-inserted on top of the fresh snapshot. Chunked
-      // snapshots remain off-screen until complete, preserving the last good
-      // transcript instead of flashing an empty conversation on every refresh.
+      // partials can't be re-inserted on top of the fresh snapshot.
       cancelPendingDeltas();
-      if (!isChunked) {
-        const injected = injectedMessagesRef.current;
-        setMessages(injected.length > 0 ? [...normalizedMessages, ...injected] : normalizedMessages);
-        const serverHasMore = state?.hasMore === true;
-        const oldestLoadedIndex = typeof state?.oldestLoadedIndex === "number" ? state.oldestLoadedIndex : 0;
-        paginationStateRef.current = { totalMessages, hasMore: serverHasMore, oldestLoadedIndex };
-      }
+      const serverHasMore = state?.hasMore === true;
+      const oldestLoadedIndex = typeof state?.oldestLoadedIndex === "number" ? state.oldestLoadedIndex : 0;
+      const prevPagination = paginationStateRef.current;
+      // A tail-truncated snapshot (large sessions get one on every refresh)
+      // must not throw away older history this viewer already holds. Skip
+      // when the transcript shrank (compaction) — old indexes no longer apply.
+      const keptPrefix = serverHasMore && prevPagination
+        && prevPagination.oldestLoadedIndex < oldestLoadedIndex
+        && totalMessages >= prevPagination.totalMessages
+        ? loadedPrefixBefore(messagesRef.current, tailMessages)
+        : [];
+      const normalizedMessages = keptPrefix.length > 0 ? [...keptPrefix, ...tailMessages] : tailMessages;
+      const injected = injectedMessagesRef.current;
+      setMessages(injected.length > 0 ? [...normalizedMessages, ...injected] : normalizedMessages);
+      paginationStateRef.current = keptPrefix.length > 0 && prevPagination
+        ? { totalMessages, hasMore: prevPagination.hasMore, oldestLoadedIndex: prevPagination.oldestLoadedIndex }
+        : { totalMessages, hasMore: serverHasMore, oldestLoadedIndex };
       if (!metaViaHub) {
         setActiveModel(stateModel);
         if (hasSessionName) {
@@ -2007,14 +1982,9 @@ export function App() {
         setGoal(stateGoal ?? null);
       }
 
-      // Track chunked delivery state — messages arrive as subsequent
-      // session_messages_chunk events when the session is large. Lifecycle
-      // state (chunked / lastCompletedSnapshot / hydrated) is owned by
-      // useSessionLifecycle via onSnapshotStarted / onSnapshotComplete.
-
       // Don't clobber transient statuses with a generic "Connected" when the
-      // CLI sends a session_active snapshot right after a command.
-      // (Non-chunked completion is handled by onSnapshotComplete.)
+      // CLI sends a session_active snapshot right after a command
+      // (handled by onSnapshotComplete).
 
       // Don't unconditionally clear pendingQuestion / pendingPlan here.
       // session_active is also emitted for non-session-switch actions (model
@@ -2028,16 +1998,10 @@ export function App() {
       // keeps streaming indicators and Kill buttons visible. The snapshot payload
       // doesn't include explicit active-tool IDs, so we infer them by scanning
       // for toolCall blocks that have no matching toolResult.
-      if (!isChunked) {
-        setActiveToolCalls(detectInFlightTools(normalizedMessages));
-      } else {
-        // Clear stale tool call state from before the reconnect so old
-        // streaming badges and Kill buttons don't linger while chunks load.
-        setActiveToolCalls(new Map());
-      }
+      setActiveToolCalls(detectInFlightTools(normalizedMessages));
       setIsChangingModel(false);
-      // For non-chunked sessions, flush any pending MCP report immediately
-      if (!isChunked && pendingMcpReportRef.current) {
+      // Flush any pending MCP report now that the transcript is in place.
+      if (pendingMcpReportRef.current) {
         applyMcpReport(pendingMcpReportRef.current);
         pendingMcpReportRef.current = null;
       }
@@ -2063,7 +2027,7 @@ export function App() {
         setTodoList(stateTodos);
 
         patchSessionCache({
-          ...(!isChunked ? { messages: normalizedMessages } : {}),
+          messages: normalizedMessages,
           activeModel: stateModel,
           ...(hasSessionName ? { sessionName: nextSessionName } : {}),
           availableModels: stateModels,
@@ -2075,145 +2039,28 @@ export function App() {
         });
       } else {
         patchSessionCache({
-          ...(!isChunked ? { messages: normalizedMessages } : {}),
+          messages: normalizedMessages,
           availableModels: stateModels,
           ...(hasStateCommands ? { availableCommands: stateCommands } : {}),
           ...(hasStateAnalysis ? { analysis: stateAnalysis ?? null } : {}),
           ...(hasStateGoal ? { goal: stateGoal ?? null } : {}),
         });
       }
-      if (!isChunked) {
-        onSnapshotComplete();
-      }
+      onSnapshotComplete();
       return;
     }
 
-    // ── Chunked message delivery ───────────────────────────────────────────
-    // Large sessions send messages as a series of chunks after the metadata-only
-    // session_active event. Each chunk appends to the current messages array.
+    // ── Chunked snapshot progress ──────────────────────────────────────────
+    // The relay assembles large (chunked) snapshots itself and then sends a
+    // normal tail-truncated session_active. Meanwhile it forwards message-less
+    // progress chunks: count them as hydration progress so the stall watchdog
+    // doesn't restart a transfer that is succeeding.
     if (type === "session_messages_chunk") {
-      // Ignore chunks that arrive before the matching session_active header.
-      // This can happen when a viewer joins mid-stream: the room broadcast
-      // delivers in-flight chunks before the viewer's initial snapshot replay.
-      // Without this guard, chunks are appended to stale/empty state and then
-      // the later metadata-only session_active clears them with setMessages([]).
-      if (lifecycleRefs.awaitingSnapshot.current && !lifecycleRefs.chunked.current) {
-        return;
-      }
-
-      const chunkSnapshotId = typeof evt.snapshotId === "string" ? evt.snapshotId : "";
-      const chunkIndex = typeof evt.chunkIndex === "number" ? evt.chunkIndex : -1;
-      const chunkMessages = Array.isArray(evt.messages) ? evt.messages as unknown[] : [];
-      const isFinal = !!evt.final;
-      const totalChunks = typeof evt.totalChunks === "number" ? evt.totalChunks : 0;
-      const totalMessages = typeof evt.totalMessages === "number" ? evt.totalMessages : 0;
-
-      // Discard chunks from a stale snapshot stream.  Two cases:
-      // 1) A newer snapshot is actively loading (ref is non-null, IDs differ).
-      // 2) A snapshot already completed (ref is null) but late chunks from
-      //    the superseded sender are still draining — reject if the ID
-      //    doesn't match the last completed snapshot.
-      if (chunkSnapshotId) {
-        if (lifecycleRefs.chunked.current && lifecycleRefs.chunked.current.snapshotId !== chunkSnapshotId) {
-          return; // stale chunk — a newer snapshot is loading
-        }
-        if (!lifecycleRefs.chunked.current && lifecycleRefs.lastCompletedSnapshot.current && lifecycleRefs.lastCompletedSnapshot.current !== chunkSnapshotId) {
-          return; // stale chunk — arrived after a newer snapshot completed
-        }
-      }
-
-      const chunkState = lifecycleRefs.chunked.current;
-      if (!chunkState || chunkIndex < 0) {
-        return;
-      }
-
-      if (isFinal) {
-        chunkState.finalChunkSeen = true;
-      }
-
-      // Idempotency: duplicate retransmits for the same chunkIndex are ignored.
-      if (!registerChunkIndex(chunkState.receivedChunkIndexes, chunkIndex)) {
-        return;
-      }
-
-      if (Number.isInteger(totalChunks) && totalChunks > 0) {
-        chunkState.totalChunks = totalChunks;
-      }
-
-      // Buffer this chunk's raw messages by chunkIndex so we can assemble
-      // in index order at finalization time. Out-of-order delivery means we
-      // must NOT use arrival order — chunk 2 arriving before chunk 1 would
-      // produce a scrambled transcript if we append immediately.
-      chunkState.chunkBuffer.set(chunkIndex, chunkMessages);
-
-      // Update progress counter for status display.
-      chunkState.loadedMessages += chunkMessages.length;
-      const loaded = chunkState.loadedMessages;
-      onChunkProgress(loaded, totalMessages);
-      // The chunk header cleared awaitingSnapshot, but the stall watchdog stays
-      // armed while the transfer is in flight (chunked && !hydrated). Treat an
-      // arriving chunk as progress so the watchdog does not restart hydration
-      // underneath a transfer that is succeeding — a big session over a slow
-      // link legitimately exceeds the stall threshold between retries.
+      if (!lifecycleRefs.awaitingSnapshot.current) return;
       hydrationRequestedAtRef.current = Date.now();
-
-      const readyToFinalize = canFinalizeChunkHydration(
-        chunkState.finalChunkSeen,
-        chunkState.receivedChunkIndexes,
-        chunkState.totalChunks,
-      );
-
-      if (shouldRequestChunkRecovery(isFinal, readyToFinalize)) {
-        // The relay finalizes its durable snapshot before broadcasting the
-        // final chunk. A resync now can therefore recover the complete state
-        // without replaying the stale pre-chunk checkpoint.
-        // Omit lastSeq: delta-only replay cannot repair a missing historical
-        // chunk and would leave hydration stuck if newer deltas are cached.
-        viewerWsRef.current?.emit("resync", {});
-      }
-
-      if (readyToFinalize) {
-        // Assemble all buffered chunks in chunkIndex order so the resulting
-        // transcript matches the original server-side ordering regardless of
-        // network delivery order.
-        const sortedIndexes = Array.from(chunkState.chunkBuffer.keys()).sort((a, b) => a - b);
-        const orderedRaw: unknown[] = [];
-        for (const idx of sortedIndexes) {
-          const buf = chunkState.chunkBuffer.get(idx);
-          if (buf) {
-            for (const m of buf) orderedRaw.push(m);
-          }
-        }
-        // Convert the ordered raw messages with stable sequential keys and
-        // deduplicate the complete assembled list in one pass.
-        const convertedOrdered = orderedRaw
-          .map((m, i) => toRelayMessage(m, `snapshot-${i}`))
-          .filter((m): m is RelayMessage => m !== null);
-        const finalMessages = deduplicateMessages(convertedOrdered);
-
-        const injected = injectedMessagesRef.current;
-        const completedMessages = injected.length > 0 ? [...finalMessages, ...injected] : finalMessages;
-        const deferredEvents = deferredChunkEventsRef.current;
-        deferredChunkEventsRef.current = [];
-
-        setMessages(completedMessages);
-        setActiveToolCalls(detectInFlightTools(finalMessages));
-        paginationStateRef.current = { totalMessages, hasMore: false, oldestLoadedIndex: 0 };
-        patchSessionCache({ messages: completedMessages });
-        onSnapshotComplete();
-
-        // Queue updates above are applied in order, so replayed functional
-        // message updates land on the completed snapshot rather than the old
-        // visible transcript.
-        for (const deferredEvent of deferredEvents) {
-          handleRelayEvent(deferredEvent);
-        }
-
-        if (pendingMcpReportRef.current) {
-          applyMcpReport(pendingMcpReportRef.current);
-          pendingMcpReportRef.current = null;
-        }
-      }
+      const loaded = typeof evt.loadedMessages === "number" ? evt.loadedMessages : 0;
+      const total = typeof evt.totalMessages === "number" ? evt.totalMessages : 0;
+      if (total > 0) onChunkProgress(loaded, total);
       return;
     }
 
@@ -3297,9 +3144,6 @@ export function App() {
       relaySessionId === lifecycleRefs.activeSessionId.current &&
       lifecycleRefs.hydrated.current
     ) {
-      // awaitingSnapshot alone is not "finished": chunked headers clear it
-      // while the transfer is still in flight, and a stalled transfer must
-      // remain re-clickable.
       return;
     }
 
@@ -3339,7 +3183,6 @@ export function App() {
     renderedMcpReportTsRef.current = null;
     pendingMcpReportRef.current = null;
     injectedMessagesRef.current = [];
-    deferredChunkEventsRef.current = [];
     metaSourceHubRef.current = false;
     paginationStateRef.current = null;
     setLoadingOlderMessages(false);
@@ -3419,14 +3262,9 @@ export function App() {
       hydrationStallTimerRef.current = setInterval(() => {
         const sessionId = lifecycleRefs.activeSessionId.current;
         if (!sessionId || !nextSocket.connected) return;
-        // A chunked transfer clears awaitingSnapshot on the chunk *header*, so
-        // the transfer itself must keep the watchdog armed — a stream that
-        // stops mid-way (dropped frame, runner crash) would otherwise freeze
-        // "Loading session (x of y)…" forever with no retry. Arriving chunks
-        // reset hydrationRequestedAtRef, so a progressing transfer never trips.
-        const chunkInFlight =
-          lifecycleRefs.chunked.current !== null && !lifecycleRefs.hydrated.current;
-        if (!lifecycleRefs.awaitingSnapshot.current && !chunkInFlight) {
+        // Relay-side chunk assembly keeps awaitingSnapshot set; its progress
+        // chunks reset hydrationRequestedAtRef, so only a stalled transfer trips.
+        if (!lifecycleRefs.awaitingSnapshot.current) {
           hydrationRequestedAtRef.current = null;
           hydrationRetriesRef.current = 0;
           return;
@@ -3465,9 +3303,7 @@ export function App() {
       staleCheckTimerRef.current = setInterval(() => {
         if (!lifecycleRefs.activeSessionId.current) return;
         if (!nextSocket.connected) return;
-        const chunkTransferInFlight =
-          lifecycleRefs.chunked.current !== null && !lifecycleRefs.hydrated.current;
-        if (!agentActiveRef.current && !lifecycleRefs.awaitingSnapshot.current && !chunkTransferInFlight) return;
+        if (!agentActiveRef.current && !lifecycleRefs.awaitingSnapshot.current) return;
         const elapsed = Date.now() - lastViewerEventAtRef.current;
         if (elapsed > staleThresholdMsRef.current) {
           log.warn(`Stale connection detected (${Math.round(elapsed / 1000)}s since last event). Reconnecting…`);

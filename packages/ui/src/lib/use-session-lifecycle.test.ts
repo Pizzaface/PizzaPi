@@ -198,15 +198,14 @@ describe("useSessionLifecycle", () => {
     expect(apiRef.current!.viewerStatus).toBe("Connected");
 
     act(() => {
-      apiRef.current!.onSnapshotStarted({ chunked: true, snapshotId: "snap-1", totalMessages: 10 });
-    });
-    expect(apiRef.current!.refs.chunked.current).not.toBeNull();
-    expect(apiRef.current!.viewerStatus).toBe("Loading session (0 of 10 messages)…");
-
-    act(() => {
       apiRef.current!.onChunkProgress(5, 10);
     });
     expect(apiRef.current!.viewerStatus).toBe("Loading session (5 of 10 messages)…");
+
+    act(() => {
+      apiRef.current!.onSnapshotStarted();
+    });
+    expect(apiRef.current!.refs.awaitingSnapshot.current).toBe(false);
 
     act(() => {
       apiRef.current!.onSnapshotComplete();
@@ -223,19 +222,14 @@ describe("useSessionLifecycle", () => {
       apiRef.current!.openSession("session-abc");
     });
 
-    let immediateChunk: UseSessionLifecycleResult["refs"]["chunked"]["current"] = null;
     act(() => {
-      apiRef.current!.onSnapshotStarted({ chunked: true, snapshotId: "snap-1", totalMessages: 10 });
-      immediateChunk = apiRef.current!.refs.chunked.current;
+      apiRef.current!.onSnapshotStarted();
+      expect(apiRef.current!.refs.awaitingSnapshot.current).toBe(false);
+      expect(apiRef.current!.refs.hydrated.current).toBe(false);
     });
-
-    expect(immediateChunk?.snapshotId).toBe("snap-1");
-    expect(immediateChunk?.chunkBuffer).toBeInstanceOf(Map);
-    expect(apiRef.current!.refs.awaitingSnapshot.current).toBe(false);
 
     act(() => {
       apiRef.current!.onSnapshotComplete();
-      expect(apiRef.current!.refs.chunked.current).toBeNull();
       expect(apiRef.current!.refs.hydrated.current).toBe(true);
     });
   });

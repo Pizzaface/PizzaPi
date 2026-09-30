@@ -1,23 +1,24 @@
 // ── Chunked session_active assembly + event serialization ────────────────────
 // When a worker sends session_active with chunked:true, messages follow as
-// session_messages_chunk events.  We buffer them here and assemble the full
-// lastState after the final chunk so reconnecting viewers get complete data.
+// session_messages_chunk events.  Chunking only exists to fit runner→relay
+// frames under Socket.IO's size cap: the relay assembles the full state here,
+// and viewers get a tail-truncated session_active on finalize (older pages via
+// load_messages), exactly like non-chunked sessions. While assembling, viewers
+// only see message-less progress chunks.
 
 import {
     updateSessionState,
     patchSessionSnapshotState,
     touchSessionActivity,
     updateSessionHeartbeat,
-    getSharedSession,
     getSharedSessionSummary,
     broadcastSessionEventToViewers,
     publishSessionEvent,
     consumePendingRecovery,
     getSessionOwnerToken,
 } from "../../sio-registry.js";
-import { appendRelayEventToCache } from "../../../sessions/redis.js";
 import { isDeltaEvent, shouldPublishDelta } from "./viewer-gate.js";
-import { storeAndReplaceImagesInEvent, stripImagesFromPipelineEvent } from "../../strip-images.js";
+import { stripImagesFromPipelineEvent } from "../../strip-images.js";
 import { updateSessionMetaState, broadcastToSessionMeta, getSessionMetaState } from "../../sio-registry/meta.js";
 import { buildSnapshotPatchFromCapabilities, buildSnapshotPatchFromMetadata } from "../../sio-registry/snapshot-state.js";
 import { isMetaRelayEvent, metaEventToPatch, type MetaRelayEvent, type SessionMetaState } from "@pizzapi/protocol";
@@ -45,6 +46,7 @@ import {
     applySnapshotPatchToPendingState,
     canFinalizeChunkedSnapshot,
     enqueueSessionEvent,
+    CHUNK_STREAM_STALE_MS,
 } from "./relay-state.js";
 
 export {
@@ -67,18 +69,28 @@ const log = createLogger("sio/relay");
 export interface FinalizeChunkedSnapshotDeps {
     consumePendingRecovery: typeof consumePendingRecovery;
     updateSessionState: typeof updateSessionState;
-    getSharedSession: typeof getSharedSession;
-    storeAndReplaceImagesInEvent: typeof storeAndReplaceImagesInEvent;
-    appendRelayEventToCache: typeof appendRelayEventToCache;
+    publishSessionEvent: typeof publishSessionEvent;
 }
 
 const defaultFinalizeChunkedSnapshotDeps: FinalizeChunkedSnapshotDeps = {
     consumePendingRecovery,
     updateSessionState,
-    getSharedSession,
-    storeAndReplaceImagesInEvent,
-    appendRelayEventToCache,
+    publishSessionEvent,
 };
+
+/**
+ * Transcript events that must not reach viewers ahead of an in-flight chunked
+ * snapshot: they are newer than it and the snapshot would overwrite them.
+ * Pure deltas (viewer-gate DELTA_EVENTS) are dropped instead — each one is
+ * cumulative, so the next delta after the snapshot repairs the viewer.
+ */
+const DEFERRED_DURING_CHUNKING = new Set([
+    "message_start",
+    "message_end",
+    "turn_end",
+    "tool_execution_start",
+    "tool_execution_end",
+]);
 
 export async function finalizeChunkedSnapshot(
     sessionId: string,
@@ -90,36 +102,21 @@ export async function finalizeChunkedSnapshot(
     const isRecovery = deps.consumePendingRecovery(sessionId, pending.recoveryNonce);
     await deps.updateSessionState(sessionId, fullState, { isRecovery });
 
-    // Append a full session_active to the Redis replay cache
-    // so that findLatestSnapshotEvent() finds the assembled
-    // state instead of the metadata-only SA from chunk start.
-    // We do NOT use publishSessionEvent() here because that
-    // would broadcast the full assembled state as a single
-    // oversized frame to all viewers — the same transport
-    // issue chunking was designed to avoid.  Viewers already
-    // have the complete data from the chunk stream.
-    // Strip inline images before caching to keep the cache
-    // entry small and consistent with publishSessionEvent's
-    // image-stripping pipeline.
-    const session = await deps.getSharedSession(sessionId);
-    const userId = session?.userId ?? "unknown";
-    const snapshotEvent = { type: "session_active" as const, state: fullState };
-    let eventToCache: unknown = snapshotEvent;
-    try {
-        eventToCache = await deps.storeAndReplaceImagesInEvent(
-            snapshotEvent, sessionId, userId,
-        );
-    } catch {
-        // Fall back to original if image stripping fails
+    // Cache the FULL assembled state (sequenced, so replay/coverage logic can
+    // use it and findLatestSnapshotEvent / load_messages see every message),
+    // but broadcast only the tail to viewers — pushing the whole thing is the
+    // oversized frame chunking exists to avoid.
+    await deps.publishSessionEvent(
+        sessionId,
+        { type: "session_active", state: fullState },
+        { truncateForViewers: true },
+    );
+
+    // Events that arrived during assembly are newer than the snapshot.
+    for (const deferred of pending.deferredEvents ?? []) {
+        await deps.publishSessionEvent(sessionId, deferred);
     }
-    // Do NOT call incrementSeq() here — this entry is never
-    // broadcast to viewers.  Advancing the shared counter
-    // would create a seq gap that triggers unnecessary
-    // viewer resyncs (viewers would expect seq N but the
-    // next broadcast would be N+1).
-    await deps.appendRelayEventToCache(sessionId, eventToCache, {
-        isEphemeral: session?.isEphemeral,
-    });
+    pending.deferredEvents = [];
 
     return fullState;
 }
@@ -258,14 +255,27 @@ export function registerEventHandler(socket: RelaySocket): void {
                 });
 
                 if (canFinalizeChunkedSnapshot(pending)) {
-                    // All chunks received — assemble and persist the full state.
-                    // Only clear the pending entry after finalization succeeds
-                    // so a transient failure can still be retried by later
-                    // chunk retransmits.
+                    // All chunks received — assemble, persist, and publish the
+                    // tail to viewers. Only clear the pending entry after
+                    // finalization succeeds so a transient failure can still be
+                    // retried by later chunk retransmits.
                     await finalizeChunkedSnapshot(sessionId, pending);
                     pendingChunkedStates.delete(sessionId);
                 } else {
                     await touchSessionActivity(sessionId);
+                    // Message-less progress for hydrating viewers: drives the
+                    // "Loading session (x of y)" status and keeps the UI's
+                    // hydration-stall watchdog from restarting the transfer.
+                    let loadedMessages = 0;
+                    for (const c of pending.chunks) loadedMessages += c?.length ?? 0;
+                    await publishSessionEvent(sessionId, {
+                        type: "session_messages_chunk",
+                        snapshotId: chunkSnapshotId,
+                        chunkIndex,
+                        totalChunks,
+                        totalMessages: event.totalMessages,
+                        loadedMessages,
+                    });
                 }
             } else {
                 // Stale or unmatched chunk — just touch activity
@@ -376,23 +386,25 @@ export function registerEventHandler(socket: RelaySocket): void {
         const isOldCliMcpReport =
             event.type === "mcp_startup_report" && !(event as any).report;
         if (!isMetaRelayEvent(event as { type?: unknown }) || isOldCliMcpReport) {
-            // For session_messages_chunk and chunked session_active, broadcast
-            // to viewers WITHOUT caching.  Chunks are transient and only needed
-            // during active hydration; the final assembled snapshot is cached
-            // separately when assembly completes.  The metadata-only chunked
-            // session_active must also skip the cache — if the stream is
-            // interrupted before the final chunk, the replay path would find
-            // this empty-messages snapshot and show a blank transcript instead
-            // of the last durable state.
+            // The chunk header and chunks never reach viewers or the cache:
+            // finalizeChunkedSnapshot publishes the assembled snapshot (and the
+            // branch above sends message-less progress). Caching the empty
+            // header would make an interrupted stream replay a blank transcript.
             const isChunkedSessionActive =
                 event.type === "session_active" &&
                 !!(event.state as Record<string, unknown> | undefined)?.chunked;
-            // session_metadata_update is a lightweight heartbeat-only event:
-            // broadcast to currently-connected viewers but do NOT cache in Redis.
-            // Reconnecting viewers will get the full lastState snapshot instead.
-            const isMetadataOnlyUpdate = event.type === "session_metadata_update";
-            if (event.type === "session_messages_chunk" || isChunkedSessionActive || isMetadataOnlyUpdate) {
+            const pending = pendingChunkedStates.get(sessionId);
+            const assembling = !!pending && Date.now() - pending.lastActivityAt <= CHUNK_STREAM_STALE_MS;
+            if (event.type === "session_messages_chunk" || isChunkedSessionActive) {
+                // handled above
+            } else if (event.type === "session_metadata_update") {
+                // Lightweight heartbeat-only event: broadcast to connected
+                // viewers but do NOT cache. Reconnecting viewers get lastState.
                 await broadcastSessionEventToViewers(sessionId, eventToPublish);
+            } else if (assembling && DEFERRED_DURING_CHUNKING.has(event.type as string)) {
+                (pending!.deferredEvents ??= []).push(eventToPublish);
+            } else if (assembling && isDeltaEvent(event.type)) {
+                // Cumulative delta; the next one after the snapshot repairs viewers.
             } else if (isDeltaEvent(event.type) && !shouldPublishDelta(sessionId)) {
                 // Nobody is watching: drop the delta instead of rPushing a
                 // cumulative partial into the event cache and PUBLISHing it to

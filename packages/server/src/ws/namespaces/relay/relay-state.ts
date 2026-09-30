@@ -23,6 +23,12 @@ export interface ChunkedSessionState {
     recoveryNonce?: string;
     /** Timestamp of the chunk-start SA or the most recent chunk. */
     lastActivityAt: number;
+    /**
+     * Transcript events that arrived after the chunk-start SA. They are newer
+     * than the snapshot, so they are published to viewers only after the
+     * assembled snapshot is, or they'd be overwritten by it.
+     */
+    deferredEvents?: unknown[];
 }
 
 /**

@@ -3,6 +3,7 @@ import {
   toRelayMessage,
   deduplicateMessages,
   normalizeMessages,
+  loadedPrefixBefore,
   normalizeModel,
   normalizeSessionName,
   augmentThinkingDurations,
@@ -552,5 +553,25 @@ describe("buildStreamingPartialMessage", () => {
     expect(msg.content).toBeUndefined();
     expect(msg.details).toBeUndefined();
     expect(msg.isStreamingPartial).toBe(true);
+  });
+});
+
+describe("loadedPrefixBefore", () => {
+  const msgs = (from: number, to: number) =>
+    normalizeMessages(Array.from({ length: to - from }, (_, i) => ({ role: "user", content: `m${from + i}`, timestamp: from + i })));
+
+  test("keeps history older than a truncated snapshot's tail", () => {
+    const prev = msgs(0, 100); // e.g. an earlier full snapshot or paged-up history
+    const tail = msgs(70, 120);
+    expect(loadedPrefixBefore(prev, tail).map((m) => m.content)).toEqual(msgs(0, 70).map((m) => m.content));
+  });
+
+  test("keeps nothing when the tail does not overlap (e.g. after compaction)", () => {
+    expect(loadedPrefixBefore(msgs(0, 50), msgs(200, 250))).toEqual([]);
+  });
+
+  test("never anchors on index-based fallback keys", () => {
+    const noIds = (n: number) => normalizeMessages(Array.from({ length: n }, (_, i) => ({ role: "user", content: `x${i}` })));
+    expect(loadedPrefixBefore(noIds(10), noIds(5).slice(2))).toEqual([]);
   });
 });

@@ -34,12 +34,8 @@ export interface SessionLifecycleRefs {
   phase: React.MutableRefObject<SessionLifecycleState["phase"]>;
   /** True while the viewer should ignore streaming deltas. */
   awaitingSnapshot: React.MutableRefObject<boolean>;
-  /** True once session_active (non-chunked) or the final chunk is complete. */
+  /** True once a state-setting snapshot is complete. */
   hydrated: React.MutableRefObject<boolean>;
-  /** In-flight chunked snapshot state, or null. */
-  chunked: React.MutableRefObject<SessionLifecycleState["hydration"]["chunked"]>;
-  /** Last completed snapshot id; rejects stale late chunks. */
-  lastCompletedSnapshot: React.MutableRefObject<string | null>;
   /** Logical switch generation for stale-event filtering. */
   generation: React.MutableRefObject<number>;
   /** Currently active session id. */
@@ -106,14 +102,10 @@ export interface UseSessionLifecycleResult {
   /** Lifecycle callback: viewer socket error or connect_error. */
   onViewerError: (message: string) => void;
   /** Lifecycle callback: session_active (or agent_end) snapshot started arriving. */
-  onSnapshotStarted: (payload: {
-    chunked?: boolean;
-    snapshotId?: string;
-    totalMessages?: number;
-  }) => void;
-  /** Lifecycle callback: chunked hydration progress update. */
+  onSnapshotStarted: () => void;
+  /** Lifecycle callback: server-side chunk assembly progress (pre-hydration only). */
   onChunkProgress: (loaded: number, total: number) => void;
-  /** Lifecycle callback: snapshot (chunked or non-chunked) is complete and hydrated. */
+  /** Lifecycle callback: snapshot is complete and hydrated. */
   onSnapshotComplete: () => void;
   /** Wait for a spawned/resumed session id to appear in the live feed. */
   waitForSessionToGoLive: (sessionId: string, timeoutMs?: number) => Promise<boolean>;
@@ -144,8 +136,6 @@ export function useSessionLifecycle(
   const phaseRef = React.useRef(state.phase);
   const awaitingSnapshotRef = React.useRef(state.hydration.awaitingSnapshot);
   const hydratedRef = React.useRef(state.hydration.hydrated);
-  const chunkedRef = React.useRef(state.hydration.chunked);
-  const lastCompletedSnapshotRef = React.useRef(state.hydration.lastCompletedSnapshot);
   const generationRef = React.useRef(state.generation);
   const activeSessionIdRef = React.useRef(state.activeSessionId);
   const restartPendingSessionIdRef = React.useRef(state.reconnect.restartPendingSessionId);
@@ -154,8 +144,6 @@ export function useSessionLifecycle(
     phaseRef.current = state.phase;
     awaitingSnapshotRef.current = state.hydration.awaitingSnapshot;
     hydratedRef.current = state.hydration.hydrated;
-    chunkedRef.current = state.hydration.chunked;
-    lastCompletedSnapshotRef.current = state.hydration.lastCompletedSnapshot;
     generationRef.current = state.generation;
     activeSessionIdRef.current = state.activeSessionId;
     restartPendingSessionIdRef.current = state.reconnect.restartPendingSessionId;
@@ -330,34 +318,19 @@ export function useSessionLifecycle(
     dispatch(lifecycleActions.error(message));
   }, []);
 
-  const onSnapshotStarted = React.useCallback(
-    (payload: Parameters<UseSessionLifecycleResult["onSnapshotStarted"]>[0]) => {
-      const action = lifecycleActions.snapshotStarted({
-        chunked: payload.chunked,
-        snapshotId: payload.snapshotId,
-        totalMessages: payload.totalMessages,
-      });
-      if (action.type === "SNAPSHOT_STARTED") {
-        awaitingSnapshotRef.current = false;
-        hydratedRef.current = false;
-        chunkedRef.current = action.chunkState;
-        lastCompletedSnapshotRef.current = action.chunked === true ? null : "non-chunked";
-      }
-      dispatch(action);
-    },
-    [],
-  );
+  const onSnapshotStarted = React.useCallback(() => {
+    awaitingSnapshotRef.current = false;
+    hydratedRef.current = false;
+    dispatch(lifecycleActions.snapshotStarted());
+  }, []);
 
   const onChunkProgress = React.useCallback((loaded: number, total: number) => {
     dispatch(lifecycleActions.chunkReceived(loaded, total));
   }, []);
 
   const onSnapshotComplete = React.useCallback(() => {
-    const completedSnapshot = chunkedRef.current?.snapshotId ?? lastCompletedSnapshotRef.current;
     awaitingSnapshotRef.current = false;
     hydratedRef.current = true;
-    chunkedRef.current = null;
-    lastCompletedSnapshotRef.current = completedSnapshot;
     dispatch(lifecycleActions.snapshotComplete());
   }, []);
 
@@ -391,8 +364,6 @@ export function useSessionLifecycle(
       phase: phaseRef,
       awaitingSnapshot: awaitingSnapshotRef,
       hydrated: hydratedRef,
-      chunked: chunkedRef,
-      lastCompletedSnapshot: lastCompletedSnapshotRef,
       generation: generationRef,
       activeSessionId: activeSessionIdRef,
       restartPendingSessionId: restartPendingSessionIdRef,

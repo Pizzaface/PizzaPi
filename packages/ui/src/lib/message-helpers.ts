@@ -193,6 +193,19 @@ export function buildStreamingPartialMessage(input: {
   };
 }
 
+/**
+ * Older messages from `prev` to keep when a tail-truncated snapshot replaces a
+ * transcript that already reaches further back (paged-up history or an earlier
+ * full snapshot). Anchors on the tail's first stable key; [] when there is no
+ * overlap. Index-based fallback keys are not stable across snapshots.
+ */
+export function loadedPrefixBefore(prev: RelayMessage[], tail: RelayMessage[]): RelayMessage[] {
+  const anchor = tail[0]?.key;
+  if (!anchor || anchor.includes(":fallback:")) return [];
+  const idx = prev.findIndex((m) => m.key === anchor);
+  return idx > 0 ? prev.slice(0, idx) : [];
+}
+
 export function normalizeMessages(rawMessages: unknown[], keyOffset = 0): RelayMessage[] {
   const all = rawMessages
     .map((m, i) => toRelayMessage(m, `snapshot-${keyOffset + i}`))

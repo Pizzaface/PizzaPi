@@ -17,17 +17,7 @@ export type SessionLifecyclePhase =
   | "reconnecting"
   | "error";
 // Note: "hydrating" is intentionally folded into "connecting"; use the
-// hydration flags to distinguish awaiting-snapshot vs chunked-loading.
-
-export interface ChunkedDeliveryState {
-  snapshotId: string;
-  totalMessages: number;
-  totalChunks: number;
-  receivedChunkIndexes: Set<number>;
-  finalChunkSeen: boolean;
-  loadedMessages: number;
-  chunkBuffer: Map<number, unknown[]>;
-}
+// hydration flags to distinguish awaiting-snapshot vs hydrated.
 
 export interface SessionLifecycleState {
   /** Canonical lifecycle phase for the active session. */
@@ -50,18 +40,14 @@ export interface SessionLifecycleState {
     /** Error from the spawn API or wait-for-live timeout. */
     error: string | null;
   };
-  /** Hydration guard state — snapshot/chunk delivery tracking. */
+  /** Hydration guard state — snapshot delivery tracking. */
   hydration: {
     /** True between session selection and the first state-setting snapshot. */
     awaitingSnapshot: boolean;
-    /** True once session_active (non-chunked) or the final chunk has been processed. */
+    /** True once a state-setting snapshot has been processed. */
     hydrated: boolean;
     /** True when meta state for this session is authoritative from the hub namespace. */
     metaSourceHub: boolean;
-    /** In-flight chunked snapshot state, or null when not chunking. */
-    chunked: ChunkedDeliveryState | null;
-    /** Snapshot id of the most recently completed snapshot; rejects stale late chunks. */
-    lastCompletedSnapshot: string | null;
   };
   /** Reconnect tracking for CLI restarts / transient disconnects. */
   reconnect: {
@@ -102,14 +88,10 @@ export interface SessionLifecycleActions {
   /** Clear the CLI-restart pending flag after the timeout window expires. */
   restartPendingCleared: () => SessionLifecycleAction;
   /** State-setting snapshot (session_active / agent_end) started arriving. */
-  snapshotStarted: (payload?: {
-    chunked?: boolean;
-    snapshotId?: string;
-    totalMessages?: number;
-  }) => SessionLifecycleAction;
-  /** Chunked hydration progress update. */
+  snapshotStarted: () => SessionLifecycleAction;
+  /** Server-side chunk assembly progress while awaiting the first snapshot. */
   chunkReceived: (loaded: number, total: number) => SessionLifecycleAction;
-  /** Snapshot (chunked or not) is complete and the session is hydrated. */
+  /** Snapshot is complete and the session is hydrated. */
   snapshotComplete: () => SessionLifecycleAction;
   /** Lifecycle-level error (e.g. viewer socket error). */
   error: (message: string) => SessionLifecycleAction;
@@ -129,7 +111,7 @@ export type SessionLifecycleAction =
   | { type: "DISCONNECTED"; reason: string; isRestarting?: boolean; stopReconnect?: boolean }
   | { type: "RECONNECTING" }
   | { type: "RESTART_PENDING_CLEARED" }
-  | { type: "SNAPSHOT_STARTED"; chunked?: boolean; snapshotId?: string; totalMessages?: number; chunkState: ChunkedDeliveryState | null }
+  | { type: "SNAPSHOT_STARTED" }
   | { type: "CHUNK_RECEIVED"; loaded: number; total: number }
   | { type: "SNAPSHOT_COMPLETE" }
   | { type: "ERROR"; error: string }
@@ -154,25 +136,7 @@ export const sessionLifecycleActions: SessionLifecycleActions = {
   disconnected: (payload) => ({ type: "DISCONNECTED", ...payload }),
   reconnecting: () => ({ type: "RECONNECTING" }),
   restartPendingCleared: () => ({ type: "RESTART_PENDING_CLEARED" }),
-  snapshotStarted: (payload = {}) => {
-    const totalMessages = typeof payload.totalMessages === "number" ? payload.totalMessages : 0;
-    return {
-      type: "SNAPSHOT_STARTED",
-      ...payload,
-      totalMessages,
-      chunkState: payload.chunked === true
-        ? {
-            snapshotId: payload.snapshotId ?? "",
-            totalMessages,
-            totalChunks: 0,
-            receivedChunkIndexes: new Set<number>(),
-            finalChunkSeen: false,
-            loadedMessages: 0,
-            chunkBuffer: new Map<number, unknown[]>(),
-          }
-        : null,
-    };
-  },
+  snapshotStarted: () => ({ type: "SNAPSHOT_STARTED" }),
   chunkReceived: (loaded, total) => ({ type: "CHUNK_RECEIVED", loaded, total }),
   snapshotComplete: () => ({ type: "SNAPSHOT_COMPLETE" }),
   error: (error) => ({ type: "ERROR", error }),
@@ -198,8 +162,6 @@ function makeIdleState(): SessionLifecycleState {
       awaitingSnapshot: false,
       hydrated: false,
       metaSourceHub: false,
-      chunked: null,
-      lastCompletedSnapshot: null,
     },
     reconnect: {
       restartPendingSessionId: null,
@@ -389,24 +351,6 @@ export function sessionLifecycleReducer(
 
     case "SNAPSHOT_STARTED": {
       if (!state.activeSessionId) return state;
-      const isChunked = action.chunked === true;
-      const totalMessages = action.totalMessages;
-
-      if (isChunked) {
-        return {
-          ...state,
-          phase: "connecting",
-          status: `Loading session (0 of ${totalMessages} messages)…`,
-          hydration: {
-            ...state.hydration,
-            awaitingSnapshot: false,
-            hydrated: false,
-            chunked: action.chunkState,
-            lastCompletedSnapshot: null,
-          },
-        };
-      }
-
       return {
         ...state,
         phase: state.phase === "snapshot_replay" ? "snapshot_replay" : "connecting",
@@ -415,25 +359,17 @@ export function sessionLifecycleReducer(
           ...state.hydration,
           awaitingSnapshot: false,
           hydrated: false,
-          chunked: null,
-          lastCompletedSnapshot: "non-chunked",
         },
       };
     }
 
     case "CHUNK_RECEIVED": {
-      if (!state.hydration.chunked) return state;
+      // Only a viewer still waiting for its first snapshot shows progress;
+      // hydrated viewers keep their transcript until the snapshot lands.
+      if (!state.hydration.awaitingSnapshot) return state;
       return {
         ...state,
-        phase: "connecting",
         status: `Loading session (${Math.min(action.loaded, action.total)} of ${action.total} messages)…`,
-        hydration: {
-          ...state.hydration,
-          chunked: {
-            ...state.hydration.chunked,
-            loadedMessages: action.loaded,
-          },
-        },
       };
     }
 
@@ -448,8 +384,6 @@ export function sessionLifecycleReducer(
           ...state.hydration,
           awaitingSnapshot: false,
           hydrated: true,
-          chunked: null,
-          lastCompletedSnapshot: state.hydration.chunked?.snapshotId ?? state.hydration.lastCompletedSnapshot,
         },
       };
     }

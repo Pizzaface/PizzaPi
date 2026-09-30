@@ -9,7 +9,8 @@
  * For large sessions we split the payload: session_active carries metadata
  * only (model, name, cwd, todoList, etc.) with `chunked: true`, then the
  * full message history follows as a series of `session_messages_chunk` events
- * sent through the normal event pipeline. The UI assembles them on arrival.
+ * sent through the normal event pipeline. The relay assembles them and sends
+ * viewers a tail-truncated snapshot (older pages via load_messages).
  *
  * Small sessions (< CHUNK_THRESHOLD) use the original single-event path.
  */
