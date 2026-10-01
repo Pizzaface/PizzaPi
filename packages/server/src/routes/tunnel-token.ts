@@ -68,11 +68,11 @@ function signaturesMatch(actual: string, expected: string): boolean {
 }
 
 export function createTunnelToken(
-    input: { userId: string; sessionId: string; port: number },
+    input: { userId: string; sessionId: string; port: number; ttlMs?: number },
     nowMs = Date.now(),
 ): { token: string; expiresAt: string } {
     const secret = getTunnelSecret();
-    const exp = Math.floor((nowMs + TUNNEL_TOKEN_TTL_MS) / 1000);
+    const exp = Math.floor((nowMs + (input.ttlMs ?? TUNNEL_TOKEN_TTL_MS)) / 1000);
     const iat = Math.floor(nowMs / 1000);
     const kid = deriveKid(secret);
     const payload: TunnelTokenPayload = {

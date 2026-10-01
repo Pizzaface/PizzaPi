@@ -29,11 +29,12 @@ function isAttachmentUploadPath(pathname: string, method: string): boolean {
 }
 
 /**
- * Returns true if the URL path is a tunnel proxy route.
- * Pattern: /api/tunnel/:sessionId/:port/*
+ * Returns true if the URL path is a tunnel proxy route (session-, runner- or
+ * token-scoped: /api/tunnel/<...>/:port/*). Everything under /api/tunnel/ is
+ * handled by routes/tunnel.ts; /api/tunnel-token is NOT under this prefix.
  */
-function isTunnelPath(pathname: string): boolean {
-    return /^\/api\/tunnel\/[^/]+\/\d+(\/.*)?$/.test(pathname);
+export function isTunnelPath(pathname: string): boolean {
+    return pathname.startsWith("/api/tunnel/");
 }
 
 /**
