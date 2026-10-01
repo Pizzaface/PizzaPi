@@ -27,6 +27,29 @@ function makeRctx(pi: unknown) {
     return { rctx, sent, forwarded };
 }
 
+describe("abort exec command", () => {
+    test("aborts through the SessionHost", async () => {
+        let aborted = 0;
+        const { rctx, sent, forwarded } = makeRctx({});
+        Object.assign(rctx, {
+            latestCtx: {},
+            sessionHost: { abort: async () => { aborted++; } },
+            wasAborted: false,
+            buildHeartbeat: () => ({ type: "heartbeat" }),
+        });
+
+        await handleExecFromWeb(
+            { type: "exec", id: "stop", command: "abort" } as any,
+            rctx,
+            callbacks,
+        );
+
+        expect(aborted).toBe(1);
+        expect((sent[0] as any).ok).toBe(true);
+        expect(forwarded).toEqual([{ type: "heartbeat" }]);
+    });
+});
+
 describe("set_queued_messages exec command", () => {
     test("replaces pi's follow-up queue and broadcasts a heartbeat", async () => {
         const replaced: string[][] = [];
