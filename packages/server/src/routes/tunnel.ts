@@ -706,6 +706,9 @@ async function handleTunnelTokenMint(req: Request): Promise<Response> {
         return Response.json({ error: `Invalid ttlHours (1–${LABEL_MAX_TTL_HOURS})` }, { status: 400 });
     }
     if (!sessionId && !runnerId) return Response.json({ error: "Missing session or runner ID" }, { status: 400 });
+    // ttlHours applies to the signed path token too, so a caller that cannot
+    // carry a cookie (phone browser, mobile webview) can hold a durable link.
+    const ttlMs = ttlHours === undefined ? undefined : ttlHours * 3600 * 1000;
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
         return Response.json({ error: "Invalid port" }, { status: 400 });
     }
@@ -719,7 +722,7 @@ async function handleTunnelTokenMint(req: Request): Promise<Response> {
             return Response.json({ error: "Forbidden" }, { status: 403 });
         }
         const scoped = `runner:${runnerId}`;
-        const { token, expiresAt } = createTunnelToken({ userId: identity.userId, sessionId: scoped, port });
+        const { token, expiresAt } = createTunnelToken({ userId: identity.userId, sessionId: scoped, port, ttlMs });
         const hostTunnel = await mintTunnelLabel({ userId: identity.userId, scope: scoped, port }, ttlHours);
         return Response.json({ token, expiresAt, url: `${getAuthTunnelBasePath(token, scoped, port)}/`, ...(hostTunnel ? { hostUrl: hostTunnel.url } : {}) });
     }
@@ -731,7 +734,7 @@ async function handleTunnelTokenMint(req: Request): Promise<Response> {
     }
     if (!sessionData.runnerId) return Response.json({ error: "Session has no runner" }, { status: 503 });
 
-    const { token, expiresAt } = createTunnelToken({ userId: identity.userId, sessionId, port });
+    const { token, expiresAt } = createTunnelToken({ userId: identity.userId, sessionId, port, ttlMs });
     const hostTunnel = await mintTunnelLabel({ userId: identity.userId, scope: sessionId, port }, ttlHours);
     return Response.json({ token, expiresAt, url: `${getAuthTunnelBasePath(token, sessionId, port)}/`, ...(hostTunnel ? { hostUrl: hostTunnel.url } : {}) });
 }
