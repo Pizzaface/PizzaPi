@@ -130,7 +130,7 @@ export async function handleExecFromWeb(
                 return;
             }
             rctx.wasAborted = true;
-            rctx.latestCtx.abort();
+            await rctx.sessionHost?.abort();
             replyOk();
             rctx.forwardEvent(rctx.buildHeartbeat());
             return;
