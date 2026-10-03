@@ -44,6 +44,10 @@ export default function WebSearchSettings({ config, onSave, saving }: SectionPro
         typeof ollamaWs.maxLinks === "number" ? ollamaWs.maxLinks : 100,
     );
 
+    const [codexEnabled, setCodexEnabled] = useState<boolean>(
+        dig(config, ["providerSettings", "openai-codex", "webSearch", "enabled"], false) === true,
+    );
+
     // Inputs for adding domains
     const [allowedInput, setAllowedInput] = useState("");
     const [blockedInput, setBlockedInput] = useState("");
@@ -95,6 +99,7 @@ export default function WebSearchSettings({ config, onSave, saving }: SectionPro
                     maxLinks: ollamaMaxLinks,
                 },
             },
+            "openai-codex": { webSearch: { enabled: codexEnabled } },
         });
     }
 
@@ -268,6 +273,27 @@ export default function WebSearchSettings({ config, onSave, saving }: SectionPro
                         className="w-28"
                         disabled={!ollamaEnabled}
                     />
+                </div>
+            </div>
+
+            <div className="border-t border-border" />
+
+            {/* ── OpenAI Codex section ──────────────────────────────────── */}
+            <div className="flex flex-col gap-4">
+                <div className="flex items-center gap-2">
+                    <Globe className="h-5 w-5 text-muted-foreground" />
+                    <h3 className="text-sm font-medium">OpenAI Codex</h3>
+                </div>
+                <div className="flex items-center justify-between rounded-md border border-border bg-card p-4">
+                    <div className="flex flex-col gap-1">
+                        <Label htmlFor="codex-ws-enabled" className="text-sm font-medium">
+                            Enable Web Search
+                        </Label>
+                        <p className="text-xs text-muted-foreground">
+                            Give openai-codex models OpenAI's hosted web_search tool.
+                        </p>
+                    </div>
+                    <Switch id="codex-ws-enabled" checked={codexEnabled} onCheckedChange={setCodexEnabled} />
                 </div>
             </div>
 

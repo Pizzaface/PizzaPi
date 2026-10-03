@@ -910,3 +910,32 @@ describe("pi-tui patch application — Windows console output lifecycle", () => 
         }
     });
 });
+
+describe("pi-ai patch application — OpenAI Responses hosted web_search", () => {
+    test("web_search_call becomes hidden display blocks and is never replayed", async () => {
+        const { processResponsesStream, convertResponsesMessages } = await import(
+            piAiPath("dist/api/openai-responses-shared.js")
+        );
+        const item = {
+            type: "web_search_call",
+            id: "ws_1",
+            status: "completed",
+            action: { type: "search", query: "bun 2 release", sources: [{ type: "url", url: "https://bun.sh" }] },
+        };
+        async function* events() {
+            yield { type: "response.output_item.done", output_index: 0, item };
+            yield { type: "response.completed", response: { status: "completed", output: [item] } };
+        }
+        const output: any = { role: "assistant", content: [], stopReason: "stop", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: {} } };
+        const pushed: any[] = [];
+        await processResponsesStream(events(), output, { push: (e: any) => pushed.push(e) }, { provider: "openai-codex", api: "openai-codex-responses", id: "gpt-5.5", cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
+        expect(output.content).toEqual([
+            { type: "text", text: "", _serverToolUse: { id: "ws_1", name: "web_search", input: { query: "bun 2 release" } } },
+            { type: "text", text: "", _webSearchResult: { tool_use_id: "ws_1", content: [{ type: "web_search_result", title: "https://bun.sh", url: "https://bun.sh" }] } },
+        ]);
+
+        const model = { provider: "openai-codex", api: "openai-codex-responses", id: "gpt-5.5", input: ["text"] };
+        const msgs = convertResponsesMessages(model, { messages: [{ role: "assistant", provider: "openai-codex", api: "openai-codex-responses", model: "gpt-5.5", content: output.content, stopReason: "stop" }] }, new Set(["openai-codex"]));
+        expect(msgs.filter((m: any) => m.type === "message")).toEqual([]);
+    });
+});

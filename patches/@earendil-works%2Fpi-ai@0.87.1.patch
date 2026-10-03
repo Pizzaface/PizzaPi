@@ -1,11 +1,11 @@
 diff --git a/dist/api/anthropic-messages.js b/dist/api/anthropic-messages.js
-index 5dd85f1..7e332db 100644
 --- a/dist/api/anthropic-messages.js
 +++ b/dist/api/anthropic-messages.js
-@@ -474,6 +474,29 @@ export const stream = (model, context, options) => {
+@@ -473,7 +473,30 @@
+                         };
                          output.content.push(block);
                          stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
-                     }
++                    }
 +                    // PATCH(pizzapi): handle server_tool_use (web search query)
 +                    else if (event.content_block.type === "server_tool_use") {
 +                        const block = {
@@ -17,7 +17,7 @@ index 5dd85f1..7e332db 100644
 +                        };
 +                        output.content.push(block);
 +                        stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
-+                    }
+                     }
 +                    // PATCH(pizzapi): handle web_search_tool_result
 +                    else if (event.content_block.type === "web_search_tool_result") {
 +                        const block = {
@@ -32,7 +32,7 @@ index 5dd85f1..7e332db 100644
                  }
                  else if (event.type === "content_block_delta") {
                      if (event.delta.type === "text_delta") {
-@@ -515,6 +538,10 @@ export const stream = (model, context, options) => {
+@@ -515,6 +538,10 @@
                                  partial: output,
                              });
                          }
@@ -43,7 +43,7 @@ index 5dd85f1..7e332db 100644
                      }
                      else if (event.delta.type === "signature_delta") {
                          const index = blocks.findIndex((b) => b.index === event.index);
-@@ -531,6 +558,16 @@ export const stream = (model, context, options) => {
+@@ -531,6 +558,16 @@
                      if (block) {
                          delete block.index;
                          if (block.type === "text") {
@@ -60,7 +60,7 @@ index 5dd85f1..7e332db 100644
                              stream.push({
                                  type: "text_end",
                                  contentIndex: index,
-@@ -868,6 +905,22 @@ function buildParams(model, context, isOAuthToken, options) {
+@@ -868,6 +905,22 @@
              params.tools = convertTools(tools, isOAuthToken, compat.supportsEagerToolInputStreaming, compat.supportsStrictTools, toolCacheControl);
          }
      }
@@ -83,7 +83,7 @@ index 5dd85f1..7e332db 100644
      // Managed effort models always use adaptive thinking so prefix mismatches can
      // be dropped instead of surfacing as persistent 400 responses.
      if (model.compat?.supportsMidConvoEffort === true) {
-@@ -1020,7 +1073,23 @@ function convertMessages(transformedMessages, isOAuthToken, cacheControl, allowE
+@@ -1020,7 +1073,23 @@
              flushPendingSystemMessages();
              const blocks = [];
              for (const block of msg.content) {
@@ -108,7 +108,7 @@ index 5dd85f1..7e332db 100644
                      if (block.text.trim().length === 0)
                          continue;
                      blocks.push({
-@@ -1154,6 +1223,10 @@ function convertTools(tools, isOAuthToken, supportsEagerToolInputStreaming, supp
+@@ -1154,6 +1223,10 @@
      if (!tools)
          return [];
      return tools.map((tool, index) => {
@@ -119,14 +119,50 @@ index 5dd85f1..7e332db 100644
          const strict = resolveJsonSchemaStrictSampling(tool, supportsStrictTools);
          const parameters = getJsonSchemaToolParameters(tool, strict);
          const schema = parameters;
+diff --git a/dist/api/openai-responses-shared.js b/dist/api/openai-responses-shared.js
+--- a/dist/api/openai-responses-shared.js
++++ b/dist/api/openai-responses-shared.js
+@@ -179,6 +179,10 @@
+                         const reasoningItem = JSON.parse(block.thinkingSignature);
+                         output.push(reasoningItem);
+                     }
++                }
++                // PATCH(pizzapi): hosted web_search display blocks are UI-only; never replay them
++                else if (block.type === "text" && (block._serverToolUse || block._webSearchResult)) {
++                    continue;
+                 }
+                 else if (block.type === "text") {
+                     const textBlock = block;
+@@ -576,6 +580,21 @@
+         }
+         else if (event.type === "response.output_item.done") {
+             const item = event.item;
++            // PATCH(pizzapi): surface hosted web_search calls as UI blocks (same shape as Anthropic)
++            if (item?.type === "web_search_call") {
++                const action = item.action ?? {};
++                const query = action.query ?? (Array.isArray(action.queries) ? action.queries.join(" | ") : "");
++                output.content.push({ type: "text", text: "", _serverToolUse: { id: item.id, name: "web_search", input: { query } } });
++                stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
++                stream.push({ type: "text_end", contentIndex: output.content.length - 1, content: "", partial: output });
++                const sources = Array.isArray(action.sources) ? action.sources.filter((src) => typeof src?.url === "string") : [];
++                if (sources.length > 0) {
++                    output.content.push({ type: "text", text: "", _webSearchResult: { tool_use_id: item.id, content: sources.map((src) => ({ type: "web_search_result", title: src.title || src.url, url: src.url })) } });
++                    stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
++                    stream.push({ type: "text_end", contentIndex: output.content.length - 1, content: "", partial: output });
++                }
++                continue;
++            }
+             applyMessagePhaseStopReason(item);
+             const slot = getOrCreateSlot(event.output_index, item);
+             if (item.type === "reasoning" && slot?.type === "thinking") {
 diff --git a/dist/auth/oauth/anthropic.js b/dist/auth/oauth/anthropic.js
-index 8692e90..815bf6f 100644
 --- a/dist/auth/oauth/anthropic.js
 +++ b/dist/auth/oauth/anthropic.js
-@@ -296,11 +296,49 @@ async function refreshAnthropicToken(refreshToken, signal) {
+@@ -295,12 +295,50 @@
+         access: data.access_token,
          expires: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
      };
- }
++}
 +// PATCH(pizzapi): read Claude Code credentials as a refresh fallback.
 +async function tryReadClaudeCodeCredentials() {
 +    try {
@@ -157,7 +193,7 @@ index 8692e90..815bf6f 100644
 +    catch {
 +    }
 +    return null;
-+}
+ }
  export const anthropicOAuth = {
      name: "Anthropic (Claude Pro/Max)",
      isSubscription: true,
@@ -175,10 +211,9 @@ index 8692e90..815bf6f 100644
          return { apiKey: credential.access };
      },
 diff --git a/dist/utils/retry.js b/dist/utils/retry.js
-index 6538c63..40e856b 100644
 --- a/dist/utils/retry.js
 +++ b/dist/utils/retry.js
-@@ -66,6 +66,9 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
+@@ -66,6 +66,9 @@
      "stream ended before message_stop",
      "stream ended before a terminal response event",
      "http2 request did not get a response",
