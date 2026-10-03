@@ -4,6 +4,7 @@ import { injectCodexWebSearch, isOpenAICodexWebSearchEnabled } from "./openai-co
 test("injects web_search once, preserving existing tools", () => {
     const out = injectCodexWebSearch({ model: "x", tools: [{ type: "function", name: "read" }] }) as any;
     expect(out.tools).toEqual([{ type: "function", name: "read" }, { type: "web_search" }]);
+    expect(out.include).toEqual(["web_search_call.action.sources"]);
     expect(injectCodexWebSearch(out)).toBe(out);
     expect((injectCodexWebSearch({}) as any).tools).toEqual([{ type: "web_search" }]);
 });
