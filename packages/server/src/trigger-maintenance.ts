@@ -9,7 +9,7 @@
 
 import { sweepExpiredContracts, sweepStaleInflight, sweepUnresolvedSpawnIntents } from "./events/engine.js";
 import { createEngineDeps, sweepFailedWakes } from "./events/transport.js";
-import { pruneEvents } from "./events/store.js";
+import { checkpointWal, pruneEvents } from "./events/store.js";
 import { sweepDeadRunners } from "./events/runner-liveness.js";
 import { runWithAuthContext, type AuthContext } from "./auth.js";
 import { createLogger } from "@pizzapi/tools";
@@ -67,6 +67,7 @@ export function startTriggerMaintenance(
             try {
                 const pruned = await pruneEvents();
                 if (pruned > 0) log.info(`Pruned ${pruned} expired trigger event(s).`);
+                await checkpointWal();
             } catch (err) {
                 log.error("Failed to prune trigger events:", err);
             }
