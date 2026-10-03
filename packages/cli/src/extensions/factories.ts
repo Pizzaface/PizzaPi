@@ -30,6 +30,7 @@ import { pizzapiTitleExtension } from "./pizzapi-title.js";
 import { pizzapiHeaderExtension } from "./pizzapi-header.js";
 import { toolSearchExtension } from "./tool-search.js";
 import { ollamaWebToolsExtension } from "./ollama-web-tools.js";
+import { openaiCodexWebSearchExtension } from "./openai-codex-web-search.js";
 import { ollamaCloudProviderExtension } from "./ollama-cloud-provider.js";
 import { nvidiaProviderExtension } from "./nvidia-provider.js";
 import { openrouterProviderExtension } from "./openrouter-provider.js";
@@ -127,6 +128,7 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
     }
 
     factories.push(named(ollamaWebToolsExtension, "ollama-web-tools"));
+    factories.push(named(openaiCodexWebSearchExtension, "openai-codex-web-search"));
 
     // resources_discover dual-path: supplies the same skill/prompt paths as
     // DefaultResourceLoader's additionalSkillPaths/additionalPromptTemplatePaths

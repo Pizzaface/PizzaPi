@@ -633,6 +633,10 @@ export function applyProviderSettingsEnv(config: PizzaPiConfig): void {
         process.env.PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS = ws.blockedDomains.join(",");
     }
 
+    if (config.providerSettings?.["openai-codex"]?.webSearch?.enabled && !process.env.PIZZAPI_OPENAI_CODEX_WEB_SEARCH) {
+        process.env.PIZZAPI_OPENAI_CODEX_WEB_SEARCH = "1";
+    }
+
     const ollamaWs = config.providerSettings?.["ollama-cloud"]?.webSearch;
     if (ollamaWs?.enabled && !process.env.PIZZAPI_OLLAMA_WEB_SEARCH) {
         process.env.PIZZAPI_OLLAMA_WEB_SEARCH = "1";

@@ -196,6 +196,9 @@ export function registerSettingsHandlers(socket: Socket, isShuttingDown: () => b
                     if (v?.["ollama-cloud"]?.webSearch) {
                         ps["ollama-cloud"] = { ...ps["ollama-cloud"], webSearch: v["ollama-cloud"].webSearch };
                     }
+                    if (v?.["openai-codex"]?.webSearch) {
+                        ps["openai-codex"] = { ...ps["openai-codex"], webSearch: v["openai-codex"].webSearch };
+                    }
                     saveGlobal({ providerSettings: ps } as any);
                 } else if (section === "toolSearch") {
                     if (value != null && (typeof value !== "object" || Array.isArray(value))) {
