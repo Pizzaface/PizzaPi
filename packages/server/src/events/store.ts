@@ -31,6 +31,11 @@ const ROUTE_TABLE = "trigger_route" as const;
 const DELIVERY_TABLE = "trigger_delivery" as const;
 
 export const DEFAULT_RETENTION_DAYS = 30;
+/** Events that matched zero routes/targets (no delivery rows) are only useful
+ *  for the recent-feed view; a stale webhook can emit them by the thousand. */
+export const UNDELIVERED_RETENTION_DAYS = 1;
+/** Hard ceiling on trigger_event rows regardless of age (oldest deleted first). */
+export const MAX_EVENT_ROWS = 50_000;
 
 function newId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}${crypto.randomBytes(8).toString("base64url")}`;
@@ -87,6 +92,27 @@ export async function ensureEventTables(): Promise<void> {
     await db.schema.alterTable(EVENT_TABLE).addColumn("seq", "integer").execute();
   }
   await db.executeQuery(sql`UPDATE trigger_event SET seq = rowid WHERE seq IS NULL`.compile(db));
+  // sourceId column: the per-source MAX(seq) on publish used to json_extract
+  // every row (full scan per publish — pegged CPU at 300k rows).
+  if (!(await hasColumn(EVENT_TABLE, "sourceId"))) {
+    await db.schema.alterTable(EVENT_TABLE).addColumn("sourceId", "text").execute();
+  }
+  await db.executeQuery(
+    sql`UPDATE trigger_event SET sourceId = json_extract(eventJson, '$.source.id') WHERE sourceId IS NULL`.compile(db),
+  );
+  await db.schema
+    .createIndex("trigger_event_source_seq_idx")
+    .ifNotExists()
+    .on(EVENT_TABLE)
+    .columns(["sourceId", "seq"])
+    .execute();
+  // Retention/cap deletes and the un-typed feed order by createdAt alone.
+  await db.schema
+    .createIndex("trigger_event_time_idx")
+    .ifNotExists()
+    .on(EVENT_TABLE)
+    .column("createdAt")
+    .execute();
   await db.schema.dropIndex("trigger_event_fire_idx").ifExists().execute();
   await db.schema
     .createIndex("trigger_event_owner_fire_idx")
@@ -162,6 +188,14 @@ export async function ensureEventTables(): Promise<void> {
     .on(DELIVERY_TABLE)
     .columns(["eventId", "sessionId"])
     .execute();
+  // 30s sweeps (stale inflight, wake retry, unresolved spawn intents) filter
+  // by status; without this they scan every delivery row.
+  await db.schema
+    .createIndex("trigger_delivery_status_idx")
+    .ifNotExists()
+    .on(DELIVERY_TABLE)
+    .columns(["status", "updatedAt"])
+    .execute();
   await db.schema
     .createIndex("trigger_delivery_session_idx")
     .ifNotExists()
@@ -215,11 +249,9 @@ export async function insertEventWithPlan(
     // the same tx that claims the event. SQLite serializes write
     // transactions, so concurrent publishes get distinct, commit-ordered
     // seqs per source.
-    // ponytail: MAX(seq) scans via json_extract without an index — fine at
-    // 30-day-retention volumes; add a sourceId column if it ever shows up.
     const seqRow = await trx.executeQuery(
       sql<{ next: number }>`SELECT coalesce(MAX(seq), 0) + 1 AS next FROM ${sql.table(EVENT_TABLE)}
-        WHERE json_extract(eventJson, '$.source.id') = ${full.source.id}`.compile(trx),
+        WHERE sourceId = ${full.source.id}`.compile(trx),
     );
     const seq = Number(seqRow.rows[0]?.next ?? 1);
     try {
@@ -230,6 +262,7 @@ export async function insertEventWithPlan(
           type: full.type,
           fireId: fireId ?? null,
           ownerUserId: full.source.userId ?? null,
+          sourceId: full.source.id,
           eventJson: JSON.stringify(full),
           createdAt: full.ts,
           seq,
@@ -329,6 +362,7 @@ export async function insertEvent(
         type: full.type,
         fireId: fireId ?? null,
         ownerUserId: full.source.userId ?? null,
+        sourceId: full.source.id,
         eventJson: JSON.stringify(full),
         createdAt: full.ts,
       })
@@ -381,12 +415,24 @@ export async function listEvents(opts?: {
     .filter((e): e is TriggerEvent => e !== null);
 }
 
-/** Delete events older than the retention window, plus their deliveries.
+/** Delete events past retention, plus their deliveries. Three passes:
+ *    1. older than `retentionDays`
+ *    2. older than `undeliveredRetentionDays` with zero delivery rows
+ *       (matched no route — backpressure against webhook floods)
+ *    3. oldest rows beyond `maxRows`
  *  Single transaction: a crash mid-prune cannot leave deliveries whose
  *  event is gone (or vice versa). */
-export async function pruneEvents(retentionDays = DEFAULT_RETENTION_DAYS): Promise<number> {
+export async function pruneEvents(
+  retentionDays = DEFAULT_RETENTION_DAYS,
+  opts?: { undeliveredRetentionDays?: number; maxRows?: number },
+): Promise<number> {
   const db = getKysely();
-  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+  const dayMs = 24 * 60 * 60 * 1000;
+  const cutoff = new Date(Date.now() - retentionDays * dayMs).toISOString();
+  const undeliveredCutoff = new Date(
+    Date.now() - (opts?.undeliveredRetentionDays ?? UNDELIVERED_RETENTION_DAYS) * dayMs,
+  ).toISOString();
+  const maxRows = opts?.maxRows ?? MAX_EVENT_ROWS;
   return db.transaction().execute(async (trx) => {
     // Subquery deletes: no big IN-list (SQLite variable cap) and no orphaned
     // deliveries if the process dies mid-prune. Redundant on new databases
@@ -398,9 +444,32 @@ export async function pruneEvents(retentionDays = DEFAULT_RETENTION_DAYS): Promi
         eb.selectFrom(EVENT_TABLE).select("id").where("createdAt", "<", cutoff),
       )
       .execute();
-    const events = await trx.deleteFrom(EVENT_TABLE).where("createdAt", "<", cutoff).execute();
-    return events.reduce((n, r) => n + Number(r.numDeletedRows ?? 0n), 0);
+    let n = 0;
+    const count = (r: { numDeletedRows?: bigint }[]) => r.reduce((a, x) => a + Number(x.numDeletedRows ?? 0n), 0);
+    n += count(await trx.deleteFrom(EVENT_TABLE).where("createdAt", "<", cutoff).execute());
+    n += count(
+      await trx
+        .deleteFrom(EVENT_TABLE)
+        .where("createdAt", "<", undeliveredCutoff)
+        .where(({ not, exists, selectFrom }) =>
+          not(exists(selectFrom(DELIVERY_TABLE).select("id").whereRef("eventId", "=", "trigger_event.id"))),
+        )
+        .execute(),
+    );
+    // Row cap: everything older than the newest `maxRows` rows goes.
+    const overflow = trx.selectFrom(EVENT_TABLE).select("id").orderBy("createdAt", "desc").limit(-1).offset(maxRows);
+    await trx.deleteFrom(DELIVERY_TABLE).where("eventId", "in", overflow).execute();
+    n += count(await trx.deleteFrom(EVENT_TABLE).where("id", "in", overflow).execute());
+    return n;
   });
+}
+
+/** Fold the WAL back into the main file so hourly prunes don't leave a
+ *  multi-hundred-MB -wal sidecar. Not allowed inside a transaction, so it is
+ *  a separate call after pruneEvents(). Best-effort. */
+export async function checkpointWal(): Promise<void> {
+  const db = getKysely();
+  await db.executeQuery(sql`PRAGMA wal_checkpoint(TRUNCATE)`.compile(db));
 }
 
 /** Look up an Event by its publisher-supplied idempotency key. */

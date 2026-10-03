@@ -93,6 +93,49 @@ describe("event store", () => {
     expect(await store.listDeliveries({ sessionId: "s1" })).toHaveLength(0);
   });
 
+  it("prunes undelivered (zero-route) events after the short window, keeps delivered ones", async () => {
+    const noRoute = await store.insertEventWithPlan(eventInput("github:check_completed"), undefined, []);
+    const routed = await store.insertEventWithPlan(eventInput("github:pr_comment"), undefined, [
+      { sessionId: "s1", deliverAs: "steer" },
+    ]);
+    const fresh = await store.insertEventWithPlan(eventInput("github:check_completed"), undefined, []);
+    // Two days old: past the 1-day undelivered window, well inside 30-day retention.
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    await memDb.updateTable("trigger_event").set({ createdAt: twoDaysAgo })
+      .where("id", "in", [noRoute.event.eventId, routed.event.eventId]).execute();
+    expect(await store.pruneEvents(30)).toBe(1);
+    expect(await store.getEvent(noRoute.event.eventId)).toBeNull();
+    expect(await store.getEvent(routed.event.eventId)).not.toBeNull();
+    expect(await store.getEvent(fresh.event.eventId)).not.toBeNull();
+  });
+
+  it("caps total rows, deleting oldest events and their deliveries", async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      const { event } = await store.insertEventWithPlan(eventInput("t:cap", { i }), undefined, [
+        { sessionId: `s${i}`, deliverAs: "steer" },
+      ]);
+      ids.push(event.eventId);
+      await memDb.updateTable("trigger_event").set({ createdAt: `2024-01-0${i + 1}T00:00:00Z` })
+        .where("id", "=", event.eventId).execute();
+    }
+    expect(await store.pruneEvents(36500, { undeliveredRetentionDays: 36500, maxRows: 4 })).toBe(2);
+    const remaining = (await store.listEvents()).map((e) => e.eventId);
+    expect(remaining).toEqual([ids[5], ids[4], ids[3], ids[2]]);
+    expect(await store.listDeliveries({ sessionId: "s0" })).toHaveLength(0);
+    expect(await store.listDeliveries({ sessionId: "s5" })).toHaveLength(1);
+  });
+
+  it("seq lookup uses the sourceId index, not a table scan", async () => {
+    await store.insertEventWithPlan(eventInput(), undefined, []);
+    const plan = await memDb.executeQuery(
+      sql`EXPLAIN QUERY PLAN SELECT MAX(seq) FROM trigger_event WHERE sourceId = 'test'`.compile(memDb),
+    );
+    const detail = plan.rows.map((r: any) => r.detail).join("\n");
+    expect(detail).toContain("trigger_event_source_seq_idx");
+    expect(detail).not.toContain("SCAN trigger_event");
+  });
+
   it("routes: create/update/delete; config routes are read-only", async () => {
     const route = await store.createRoute({
       eventType: "test:fired",

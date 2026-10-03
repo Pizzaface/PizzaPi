@@ -271,6 +271,8 @@ export interface TriggerEventTable {
     /** Per-source FIFO counter (added by ensureEventTables): monotonic per
      *  source.id, assigned inside the publish transaction. */
     seq: number | null;
+    /** source.id exposed for the indexed per-source seq lookup (added by ensureEventTables). */
+    sourceId: string | null;
 }
 
 export interface TriggerRouteTable {
