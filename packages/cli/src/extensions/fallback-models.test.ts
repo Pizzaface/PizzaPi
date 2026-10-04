@@ -459,11 +459,14 @@ describe("fallbackModelsExtension", () => {
         const prompt = agent.prompt("go");
         await refreshStartedPromise;
         agent.abort();
-        resolveRefresh?.();
-        await expect(Promise.race([
-            prompt.then(() => "settled"),
-            new Promise((resolve) => setTimeout(() => resolve("timeout"), 1000)),
-        ])).resolves.toBe("settled");
+        try {
+            await expect(Promise.race([
+                prompt.then(() => "settled"),
+                new Promise((resolve) => setTimeout(() => resolve("timeout"), 1000)),
+            ])).resolves.toBe("settled");
+        } finally {
+            resolveRefresh?.();
+        }
         expect(pi._sent.at(-1)?.content).toContain("cancelled");
         expect(pi._userMessages).toHaveLength(0);
     });

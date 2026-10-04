@@ -54,6 +54,21 @@ export function currentQuotaStatus(
     return decision;
 }
 
+async function refreshUnlessAborted(refresh: (opts: { force: true }) => Promise<void>, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+    let onAbort!: () => void;
+    const aborted = new Promise<never>((_resolve, reject) => {
+        onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+        signal.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+        // The runner refresh may serve other sessions; abandon this wait, not their request.
+        await Promise.race([refresh({ force: true }), aborted]);
+    } finally {
+        signal.removeEventListener("abort", onAbort);
+    }
+}
+
 export async function waitForQuotaReturn(
     model: Pick<Model<any>, "provider" | "id"> | undefined,
     refreshUsage: (opts: { force: true }) => Promise<void>,
@@ -65,7 +80,7 @@ export async function waitForQuotaReturn(
     const sleep = deps.sleep ?? defaultSleep;
 
     const firstRefreshStartedAt = now();
-    await refreshUsage({ force: true });
+    await refreshUnlessAborted(refreshUsage, signal);
     const first = currentQuotaStatus(model, readUsage(), now(), firstRefreshStartedAt);
     if (first.state !== "limited") {
         return first.state === "available"
@@ -79,7 +94,7 @@ export async function waitForQuotaReturn(
         if (!Number.isFinite(resetAt)) return { state: "unknown", reason: "malformed", windows: result.windows };
         await sleep(Math.max(0, resetAt - now() + DEFAULT_RESET_SLOP_MS), signal);
         const refreshStartedAt = now();
-        await refreshUsage({ force: true });
+        await refreshUnlessAborted(refreshUsage, signal);
         result = currentQuotaStatus(model, readUsage(), now(), refreshStartedAt);
     }
     return result;

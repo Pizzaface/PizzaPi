@@ -5,6 +5,40 @@ import { withUsageFreshness } from "./provider-quota.js";
 const NOW = Date.parse("2026-01-01T00:00:00.000Z");
 
 describe("rate-limit wait helpers", () => {
+    test("cancels while quota refresh is pending without waiting for the request", async () => {
+        const controller = new AbortController();
+        const pending = waitForQuotaReturn(
+            { provider: "anthropic", id: "claude-sonnet-4-5" },
+            () => new Promise<void>(() => {}),
+            () => ({}),
+            controller.signal,
+        );
+        controller.abort();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            const outcome = await Promise.race([
+                pending.then(() => "continued", (error: Error) => error.name),
+                new Promise<string>((resolve) => { timer = setTimeout(() => resolve("still waiting"), 200); }),
+            ]);
+            expect(outcome).toBe("AbortError");
+        } finally {
+            clearTimeout(timer);
+        }
+    });
+
+    test("an already cancelled wait does not start a quota request", async () => {
+        const controller = new AbortController();
+        controller.abort();
+        let refreshes = 0;
+        await expect(waitForQuotaReturn(
+            { provider: "anthropic", id: "claude-sonnet-4-5" },
+            async () => { refreshes++; },
+            () => ({}),
+            controller.signal,
+        )).rejects.toThrow("Aborted");
+        expect(refreshes).toBe(0);
+    });
+
     test("uses shared provider-quota model-specific decisions", () => {
         const windows = [
             { label: "5-hour", utilization: 10, resets_at: "2026-01-01T01:00:00.000Z" },
