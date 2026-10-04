@@ -635,7 +635,10 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
     pi.on("agent_settled", handleAgentSettled);
 
     pi.on("turn_end", (event: any) => {
-        rctx.forwardEvent(event);
+        // Pi 1.0 includes multiple full-history projections for local boundary
+        // handlers. Viewers need only the turn results, not megabytes of context.
+        const { context: _context, ...turnEvent } = event;
+        rctx.forwardEvent(turnEvent);
         const tokenUsage = buildTokenUsage(rctx);
         const providerUsage = buildProviderUsage();
         emitTokenUsageUpdated(rctx, tokenUsage as any, providerUsage as any);
