@@ -79,3 +79,11 @@ bun test src/patches.test.ts
 | `pi-tui` | Windows console lifecycle wiring and safe no-op behavior off Windows. |
 
 If a test fails after a dependency bump, recreate the matching patch instead of changing PizzaPi source to depend on an unapplied upstream modification.
+
+Pi 1.0's codemode also needs its worker and QuickJS WASM embedded in compiled binaries. After building a native macOS/Linux target, run this offline smoke check from the repository root (Python 3 required):
+
+```bash
+python3 packages/cli/scripts/smoke-codemode-binary.py packages/cli/dist/binaries/macos-arm64/pizza-macos-arm64
+```
+
+Use the matching native binary path on Linux. The check uses a temporary home and a synthetic provider to run `return 6 * 7;` through the actual compiled codemode tool. It makes no model-provider calls. It terminates the PTY after verifying the result; it does not test graceful interactive shutdown.
