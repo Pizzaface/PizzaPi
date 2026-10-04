@@ -19,7 +19,7 @@ import {
 import {
   normalizeToolName,
 } from "@/components/session-viewer/utils";
-import type { SubAgentTurn } from "@/components/session-viewer/types";
+import type { SubAgentTurn, NestedToolCalls } from "@/components/session-viewer/types";
 
 // Re-export card components
 export { PizzaProgress, getPizzaStages, pizzaLayerLabel, stageVisual, ALL_STAGES, TOPPING_NAME_TO_IDX } from "@/components/session-viewer/cards/PizzaProgress";
@@ -112,6 +112,7 @@ export function renderContent(
   onTriggerResponse?: (triggerId: string, response: string, action?: string, sourceSessionId?: string) => boolean | void | Promise<boolean>,
   onActionSigilResponse?: (text: string) => Promise<boolean>,
   leadingText?: string,
+  nestedCalls?: NestedToolCalls,
 ) {
   // Structured command result cards (MCP, plugins, skills)
   if (role === "system" && isCommandResult(content)) {
@@ -141,6 +142,7 @@ export function renderContent(
         thinkingDuration,
         details,
         leadingText,
+        nestedCalls,
       );
     }
     return renderToolResult(content, toolName, isError);

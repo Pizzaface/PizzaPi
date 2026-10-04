@@ -136,4 +136,20 @@ describe("SessionMessageItem custom messages", () => {
 
     expect(view.container.innerHTML).toBe("");
   });
+
+  test("shows routed physical model for virtual model responses", () => {
+    const message: RelayMessage = {
+      key: "assistant-routed",
+      role: "assistant",
+      timestamp: 1_700_000_000_000,
+      provider: "openai",
+      model: "router-model",
+      responseModel: "gpt-6.1-sol",
+      content: "Routed response",
+    };
+
+    const view = render(<SessionMessageItem message={message} isLast={false} />);
+
+    expect(view.getByText("• openai/router-model → gpt-6.1-sol")).toBeTruthy();
+  });
 });

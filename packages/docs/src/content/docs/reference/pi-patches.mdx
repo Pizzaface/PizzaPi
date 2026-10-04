@@ -18,10 +18,10 @@ Bun applies these patches automatically from `patchedDependencies` on every `bun
 
 | Package | Patch file | Why it exists |
 |---------|------------|---------------|
-| `@earendil-works/pi-agent-core@0.87.1` | `patches/@earendil-works%2Fpi-agent-core@0.87.1.patch` | Refreshes the agent loop's latest system prompt and tool list before each assistant response. This lets `search_tools` and other dynamic tool/prompt changes take effect in the next assistant response instead of the next user turn. |
-| `@earendil-works/pi-ai@0.87.1` | `patches/@earendil-works%2Fpi-ai@0.87.1.patch` | Adds Anthropic server-side web-search passthrough, round-trips `server_tool_use` / `web_search_tool_result` blocks, retries transient JSON parse failures, and falls back to Claude Code Anthropic OAuth credentials during refresh. |
-| `@earendil-works/pi-coding-agent@0.87.1` | `patches/@earendil-works%2Fpi-coding-agent@0.87.1.patch` | Makes upstream pi behave as the PizzaPi wrapper: `.pizzapi` config directory, flat agent directory, PizzaPi changelog path, quiet startup by default, `pizza update --extensions` text, package/config command re-exports, inline `/skill:` expansion, `ollama-cloud` default model, OpenAI published context windows, removal of pi version-check UI, and a TUI live-bash-card reattach fix. |
-| `@earendil-works/pi-tui@0.87.1` | `patches/@earendil-works%2Fpi-tui@0.87.1.patch` | Adds a Windows console lifecycle that enables VT/UTF-8 console handling on start, publishes `globalThis.__PI_WINDOWS_CONSOLE_CAPS__`, and restores console state on stop. |
+| `@earendil-works/pi-agent-core@1.0.0` | `patches/@earendil-works%2Fpi-agent-core@1.0.0.patch` | Refreshes the agent loop's latest system prompt and tool list before each assistant response. This lets `search_tools` and other dynamic tool/prompt changes take effect in the next assistant response instead of the next user turn. |
+| `@earendil-works/pi-ai@1.0.0` | `patches/@earendil-works%2Fpi-ai@1.0.0.patch` | Adds Anthropic and OpenAI Codex hosted web-search support, preserves hosted search blocks in transcripts, retries transient JSON parse failures, and falls back to Claude Code Anthropic OAuth credentials during refresh. |
+| `@earendil-works/pi-coding-agent@1.0.0` | `patches/@earendil-works%2Fpi-coding-agent@1.0.0.patch` | Makes upstream pi behave as the PizzaPi wrapper: `.pizzapi` config directory, flat agent directory, PizzaPi changelog path, quiet startup by default, `pizza update --extensions` text, package/config command re-exports, inline `/skill:` expansion, `ollama-cloud` default model, OpenAI published context windows, removal of pi version-check UI, and a TUI live-bash-card reattach fix. |
+| `@earendil-works/pi-tui@1.0.0` | `patches/@earendil-works%2Fpi-tui@1.0.0.patch` | Preserves Windows console lifecycle hooks and the `globalThis.__PI_WINDOWS_CONSOLE_CAPS__` compatibility signal. The current lifecycle reports unknown capabilities; it does not itself enable VT or change console code pages. |
 
 `package.json` also contains a non-pi patch for `pptx-browser@4.1.5`; this page tracks only the upstream pi patch set.
 
@@ -32,15 +32,17 @@ Bun applies these patches automatically from `patchedDependencies` on every `bun
 ```json
 {
   "patchedDependencies": {
-    "@earendil-works/pi-coding-agent@0.87.1": "patches/@earendil-works%2Fpi-coding-agent@0.87.1.patch",
-    "@earendil-works/pi-agent-core@0.87.1": "patches/@earendil-works%2Fpi-agent-core@0.87.1.patch",
-    "@earendil-works/pi-ai@0.87.1": "patches/@earendil-works%2Fpi-ai@0.87.1.patch",
-    "@earendil-works/pi-tui@0.87.1": "patches/@earendil-works%2Fpi-tui@0.87.1.patch"
+    "@earendil-works/pi-coding-agent@1.0.0": "patches/@earendil-works%2Fpi-coding-agent@1.0.0.patch",
+    "@earendil-works/pi-agent-core@1.0.0": "patches/@earendil-works%2Fpi-agent-core@1.0.0.patch",
+    "@earendil-works/pi-ai@1.0.0": "patches/@earendil-works%2Fpi-ai@1.0.0.patch",
+    "@earendil-works/pi-tui@1.0.0": "patches/@earendil-works%2Fpi-tui@1.0.0.patch"
   }
 }
 ```
 
-When the dependency version changes, the key and patch filename must change together. If either side is stale, Bun will not apply the intended patch to the new package version.
+When the dependency version changes, the key and patch filename must change together. If either side is stale, Bun will not apply the intended patch to the new package version. Root `overrides` also pin the Pi suite: upstream caret dependencies must not resolve a second, unpatched copy. The patch tests check that Pi and PizzaPi resolve the same runtime packages.
+
+If an existing install still resolves older transitive packages after changing overrides, run `bun install --frozen-lockfile --force` to rebuild Bun's isolated dependency links.
 
 ## Regenerating patches on a pi bump
 
@@ -77,3 +79,11 @@ bun test src/patches.test.ts
 | `pi-tui` | Windows console lifecycle wiring and safe no-op behavior off Windows. |
 
 If a test fails after a dependency bump, recreate the matching patch instead of changing PizzaPi source to depend on an unapplied upstream modification.
+
+Pi 1.0's codemode also needs its worker and QuickJS WASM embedded in compiled binaries. After building a native macOS/Linux target, run this offline smoke check from the repository root (Python 3 required):
+
+```bash
+python3 packages/cli/scripts/smoke-codemode-binary.py packages/cli/dist/binaries/macos-arm64/pizza-macos-arm64
+```
+
+Use the matching native binary path on Linux. The check uses a temporary home and a synthetic provider to run `return 6 * 7;` through the actual compiled codemode tool. It makes no model-provider calls. It terminates the PTY after verifying the result; it does not test graceful interactive shutdown.

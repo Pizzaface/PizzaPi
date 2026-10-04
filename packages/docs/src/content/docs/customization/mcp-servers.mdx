@@ -282,6 +282,12 @@ pizza --no-mcp
   MCP servers launched via `npx` (e.g. `npx -y @tavily/mcp-server`) download the package on first run. This initial download can take 30+ seconds and is a common cause of timeout errors. Run the `npx` command manually once before adding it to your config, or increase `mcpTimeout` for the first session.
 </Aside>
 
+## Pi 1.0 codemode and tool discovery
+
+PizzaPi continues to own MCP configuration, project-trust gating, sandbox URL checks, OAuth, relay approvals, and connection lifecycle. It does not load Pi's built-in MCP extension, which would connect a second set of servers outside those PizzaPi boundaries. PizzaPi-managed tools remain ordinary direct-call tools by default. When PizzaPi's `toolSearch.enabled` is turned on, it registers them with Pi 1.0's `deferred` exposure: they remain callable through Pi 1.0 codemode but are not declared to the model until PizzaPi's `search_tools` activates them. In either mode, nested calls use Pi's normal tool pipeline, so PizzaPi `tool_call` hooks, approvals, and sandbox enforcement still apply.
+
+Pi 1.0's `codemode` and `tool_search` are inactive by default. To opt in to codemode, add `"+codemode"` to `defaultTools` in `~/.pizzapi/settings.json`; codemode can search and call PizzaPi-managed MCP tools with `searchTools()`. Pi's separate `tool_search` can also be enabled through `defaultTools`, but PizzaPi's `toolSearch` setting and `search_tools` remain the supported configuration for PizzaPi-managed deferral and `/mcp` status. These Pi tools do not replace PizzaPi's connection or trust policy.
+
 ## Tool search and deferred loading
 
 When many MCP tools consume too much model context, enable deferred loading in global `~/.pizzapi/config.json`:

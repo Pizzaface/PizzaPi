@@ -1,11 +1,11 @@
 diff --git a/dist/api/anthropic-messages.js b/dist/api/anthropic-messages.js
+index 106f2b9..5384db5 100644
 --- a/dist/api/anthropic-messages.js
 +++ b/dist/api/anthropic-messages.js
-@@ -473,7 +473,30 @@
-                         };
+@@ -520,6 +520,29 @@ export const stream = (model, context, options) => {
                          output.content.push(block);
                          stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
-+                    }
+                     }
 +                    // PATCH(pizzapi): handle server_tool_use (web search query)
 +                    else if (event.content_block.type === "server_tool_use") {
 +                        const block = {
@@ -17,7 +17,7 @@ diff --git a/dist/api/anthropic-messages.js b/dist/api/anthropic-messages.js
 +                        };
 +                        output.content.push(block);
 +                        stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
-                     }
++                    }
 +                    // PATCH(pizzapi): handle web_search_tool_result
 +                    else if (event.content_block.type === "web_search_tool_result") {
 +                        const block = {
@@ -32,7 +32,7 @@ diff --git a/dist/api/anthropic-messages.js b/dist/api/anthropic-messages.js
                  }
                  else if (event.type === "content_block_delta") {
                      if (event.delta.type === "text_delta") {
-@@ -515,6 +538,10 @@
+@@ -561,6 +584,10 @@ export const stream = (model, context, options) => {
                                  partial: output,
                              });
                          }
@@ -43,7 +43,7 @@ diff --git a/dist/api/anthropic-messages.js b/dist/api/anthropic-messages.js
                      }
                      else if (event.delta.type === "signature_delta") {
                          const index = blocks.findIndex((b) => b.index === event.index);
-@@ -531,6 +558,16 @@
+@@ -577,6 +604,16 @@ export const stream = (model, context, options) => {
                      if (block) {
                          delete block.index;
                          if (block.type === "text") {
@@ -60,7 +60,7 @@ diff --git a/dist/api/anthropic-messages.js b/dist/api/anthropic-messages.js
                              stream.push({
                                  type: "text_end",
                                  contentIndex: index,
-@@ -868,6 +905,22 @@
+@@ -936,6 +973,22 @@ function buildParams(model, context, isOAuthToken, options) {
              params.tools = convertTools(tools, isOAuthToken, compat.supportsEagerToolInputStreaming, compat.supportsStrictTools, toolCacheControl);
          }
      }
@@ -83,7 +83,7 @@ diff --git a/dist/api/anthropic-messages.js b/dist/api/anthropic-messages.js
      // Managed effort models always use adaptive thinking so prefix mismatches can
      // be dropped instead of surfacing as persistent 400 responses.
      if (model.compat?.supportsMidConvoEffort === true) {
-@@ -1020,7 +1073,23 @@
+@@ -1088,7 +1141,23 @@ function convertMessages(transformedMessages, isOAuthToken, cacheControl, allowE
              flushPendingSystemMessages();
              const blocks = [];
              for (const block of msg.content) {
@@ -108,7 +108,7 @@ diff --git a/dist/api/anthropic-messages.js b/dist/api/anthropic-messages.js
                      if (block.text.trim().length === 0)
                          continue;
                      blocks.push({
-@@ -1154,6 +1223,10 @@
+@@ -1258,6 +1327,10 @@ function convertTools(tools, isOAuthToken, supportsEagerToolInputStreaming, supp
      if (!tools)
          return [];
      return tools.map((tool, index) => {
@@ -116,24 +116,25 @@ diff --git a/dist/api/anthropic-messages.js b/dist/api/anthropic-messages.js
 +        if (tool.type && typeof tool.type === "string") {
 +            return tool;
 +        }
-         const strict = resolveJsonSchemaStrictSampling(tool, supportsStrictTools);
+         const strict = resolveJsonSchemaStrictSampling(tool, supportsStrictTools, isAnthropicStrictUnsupportedKeyword);
          const parameters = getJsonSchemaToolParameters(tool, strict);
          const schema = parameters;
 diff --git a/dist/api/openai-responses-shared.js b/dist/api/openai-responses-shared.js
+index f413fe5..114a01e 100644
 --- a/dist/api/openai-responses-shared.js
 +++ b/dist/api/openai-responses-shared.js
-@@ -179,6 +179,10 @@
-                         const reasoningItem = JSON.parse(block.thinkingSignature);
+@@ -180,6 +180,10 @@ export function convertResponsesMessages(model, context, allowedToolCallProvider
                          output.push(reasoningItem);
                      }
-+                }
+                 }
 +                // PATCH(pizzapi): hosted web_search display blocks are UI-only; never replay them
 +                else if (block.type === "text" && (block._serverToolUse || block._webSearchResult)) {
 +                    continue;
-                 }
++                }
                  else if (block.type === "text") {
                      const textBlock = block;
-@@ -576,6 +580,21 @@
+                     const parsedSignature = parseTextSignature(textBlock.textSignature);
+@@ -578,6 +582,21 @@ export async function processResponsesStream(openaiStream, output, stream, model
          }
          else if (event.type === "response.output_item.done") {
              const item = event.item;
@@ -156,13 +157,13 @@ diff --git a/dist/api/openai-responses-shared.js b/dist/api/openai-responses-sha
              const slot = getOrCreateSlot(event.output_index, item);
              if (item.type === "reasoning" && slot?.type === "thinking") {
 diff --git a/dist/auth/oauth/anthropic.js b/dist/auth/oauth/anthropic.js
+index e136a75..0f51abf 100644
 --- a/dist/auth/oauth/anthropic.js
 +++ b/dist/auth/oauth/anthropic.js
-@@ -295,12 +295,50 @@
-         access: data.access_token,
+@@ -221,6 +221,37 @@ async function refreshAnthropicToken(refreshToken, signal) {
          expires: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
      };
-+}
+ }
 +// PATCH(pizzapi): read Claude Code credentials as a refresh fallback.
 +async function tryReadClaudeCodeCredentials() {
 +    try {
@@ -172,7 +173,7 @@ diff --git a/dist/auth/oauth/anthropic.js b/dist/auth/oauth/anthropic.js
 +            if (raw) {
 +                const cc = JSON.parse(raw)?.claudeAiOauth;
 +                if (cc?.accessToken && cc?.refreshToken && cc.expiresAt > Date.now() + 60000) {
-+                    return { refresh: cc.refreshToken, access: cc.accessToken, expires: cc.expiresAt };
++                    return { type: "oauth", refresh: cc.refreshToken, access: cc.accessToken, expires: cc.expiresAt };
 +                }
 +            }
 +        }
@@ -187,17 +188,20 @@ diff --git a/dist/auth/oauth/anthropic.js b/dist/auth/oauth/anthropic.js
 +        ]);
 +        const cc = JSON.parse(readFileSync(join(homedir(), ".claude", ".credentials.json"), "utf-8"))?.claudeAiOauth;
 +        if (cc?.accessToken && cc?.refreshToken && cc.expiresAt > Date.now() + 60000) {
-+            return { refresh: cc.refreshToken, access: cc.accessToken, expires: cc.expiresAt };
++            return { type: "oauth", refresh: cc.refreshToken, access: cc.accessToken, expires: cc.expiresAt };
 +        }
 +    }
 +    catch {
 +    }
 +    return null;
- }
++}
  export const anthropicOAuth = {
      name: "Anthropic (Claude Pro/Max)",
      isSubscription: true,
-     login: loginAnthropic,
+@@ -241,7 +272,14 @@ export const anthropicOAuth = {
+         }
+         return loginAnthropic(interaction);
+     },
 -    refresh: (credential, signal) => refreshAnthropicToken(credential.refresh, signal),
 +    async refresh(credential, signal) {
 +        // PATCH(pizzapi): try Claude Code credentials first
@@ -211,9 +215,10 @@ diff --git a/dist/auth/oauth/anthropic.js b/dist/auth/oauth/anthropic.js
          return { apiKey: credential.access };
      },
 diff --git a/dist/utils/retry.js b/dist/utils/retry.js
+index 38781fb..de73040 100644
 --- a/dist/utils/retry.js
 +++ b/dist/utils/retry.js
-@@ -66,6 +66,9 @@
+@@ -69,6 +69,9 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
      "stream ended before message_stop",
      "stream ended before a terminal response event",
      "http2 request did not get a response",

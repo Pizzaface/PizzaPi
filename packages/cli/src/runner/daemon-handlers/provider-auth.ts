@@ -14,7 +14,7 @@
 import type { Socket } from "socket.io-client";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { AuthEvent, AuthPrompt, AuthType } from "@earendil-works/pi-ai";
 import { registerOllamaCloudProvider } from "../../ollama-cloud-models.js";
 import { logInfo } from "../logger.js";
@@ -103,7 +103,7 @@ export interface AuthRuntime {
     getProviders(): readonly (ProviderAuthShape & { id: string; name: string })[];
     getProvider(id: string): ProviderAuthShape | undefined;
     listCredentials(): Promise<readonly { providerId: string }[]>;
-    login(providerId: string, type: AuthType, interaction: { prompt: (p: AuthPrompt) => Promise<string>; notify: (e: AuthEvent) => void }): Promise<unknown>;
+    login(providerId: string, type: AuthType, interaction: { prompt: (p: AuthPrompt) => Promise<string>; notify: (e: AuthEvent) => void }, options?: Parameters<ModelRuntime["login"]>[3]): Promise<unknown>;
 }
 
 async function createRuntime(agentDir: string): Promise<ModelRuntime> {
@@ -208,8 +208,10 @@ export function registerProviderAuthHandlers(
                     });
                 });
 
+            const settings = SettingsManager.create(process.cwd(), resolveAgentDir());
             runtime
-                .login(providerId, type, { prompt, notify })
+                .login(providerId, type, { prompt, notify }, { getDeviceId: () => settings.getOrCreateDeviceId() })
+                .finally(() => settings.flush())
                 .then(() => {
                     logInfo(`provider auth: ${providerId} credentials saved`);
                     settle(login, { state: "done", providerId });

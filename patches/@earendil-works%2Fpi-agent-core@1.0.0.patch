@@ -1,8 +1,18 @@
 diff --git a/dist/agent-loop.js b/dist/agent-loop.js
-index 4bbd0ce..ca54985 100644
+index edcfba7..167fec1 100644
 --- a/dist/agent-loop.js
 +++ b/dist/agent-loop.js
-@@ -137,6 +137,9 @@ async function runLoop(initialContext, newMessages, initialConfig, signal, emit,
+@@ -112,6 +112,9 @@ async function runLoop(initialContext, newMessages, initialConfig, signal, emit,
+                 }
+                 await emit({ type: "turn_start" });
+             }
++            // PATCH(pizzapi): refresh dynamic tool/prompt state before declaring tool changes.
++            currentContext.systemPrompt = currentContext.__getLatestSystemPrompt?.() ?? currentContext.systemPrompt;
++            currentContext.tools = currentContext.__getLatestTools?.() ?? currentContext.tools;
+             // Process prepared and queued messages before the next assistant response.
+             for (const message of declareToolChanges(currentContext, [...preparedMessages, ...pendingMessages])) {
+                 await emit({ type: "message_start", message });
+@@ -137,6 +140,9 @@ async function runLoop(initialContext, newMessages, initialConfig, signal, emit,
                              : requestUpdate.thinkingLevel,
                  };
              }
@@ -12,7 +22,7 @@ index 4bbd0ce..ca54985 100644
              // Stream assistant response
              const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFunction);
              newMessages.push(message);
-@@ -266,6 +269,7 @@ async function streamAssistantResponse(context, config, signal, emit, streamFunc
+@@ -266,6 +272,7 @@ async function streamAssistantResponse(context, config, signal, emit, streamFunc
      // Convert to LLM-compatible messages (AgentMessage[] → Message[])
      const llmMessages = await config.convertToLlm(messages);
      const llmContext = normalizeContext({ messages: llmMessages });
@@ -21,10 +31,10 @@ index 4bbd0ce..ca54985 100644
      const resolvedApiKey = (config.getApiKey ? await config.getApiKey(config.model.provider) : undefined) || config.apiKey;
      const response = await streamFunction(config.model, llmContext, {
 diff --git a/dist/agent.js b/dist/agent.js
-index a2f462f..706b27d 100644
+index a8ccfc0..d8ec142 100644
 --- a/dist/agent.js
 +++ b/dist/agent.js
-@@ -294,6 +294,9 @@ export class Agent {
+@@ -296,6 +296,9 @@ export class Agent {
      }
      createContextSnapshot() {
          return {

@@ -14,8 +14,9 @@
  */
 
 import { $ } from "bun";
-import { join, dirname } from "path";
-import { existsSync, mkdirSync, cpSync, readdirSync, readFileSync, rmSync } from "fs";
+import { createRequire } from "module";
+import { join, dirname, relative, sep } from "path";
+import { existsSync, mkdirSync, cpSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { platform as osPlatform, arch as osArch } from "os";
 import { copyBinaryAssets } from "./src/binary-assets.js";
 
@@ -58,6 +59,97 @@ function resolvePiPackageDir(): string {
         dir = dirname(dir);
     }
     throw new Error("Could not locate @earendil-works/pi-coding-agent package root");
+}
+
+// ---------------------------------------------------------------------------
+// Bun compiled binary entrypoints
+// ---------------------------------------------------------------------------
+
+interface BuildEntrypoints {
+    cwd: string;
+    entrypoint: string;
+    extraEntrypoints: string[];
+    cleanup: () => void;
+}
+
+interface PiCodemodeRuntime {
+    quickjsWasmPath: string;
+    workerPath: string;
+}
+
+function toImportSpecifier(fromDir: string, target: string): string {
+    const specifier = relative(fromDir, target).split(sep).join("/");
+    return specifier.startsWith(".") ? specifier : `./${specifier}`;
+}
+
+function resolvePiCodemodeRuntime(piPkgDir: string): PiCodemodeRuntime {
+    const requireFromPi = createRequire(join(piPkgDir, "package.json"));
+    let quickjsWasmPath: string;
+    try {
+        quickjsWasmPath = requireFromPi.resolve("quickjs-wasi/quickjs.wasm");
+    } catch (err) {
+        throw new Error("Pi 1.0 codemode dependency missing: quickjs-wasi/quickjs.wasm", { cause: err });
+    }
+
+    const workerPath = join(piPkgDir, "dist", "extensions", "codemode", "worker.js");
+    const requiredFiles = [
+        workerPath,
+        join(piPkgDir, "dist", "config.js"),
+        join(dirname(piPkgDir), "pi-codemode", "dist", "runtime", "worker.js"),
+        quickjsWasmPath,
+    ];
+    for (const file of requiredFiles) {
+        if (!existsSync(file)) throw new Error(`Pi 1.0 codemode binary asset missing: ${file}`);
+    }
+
+    return { quickjsWasmPath, workerPath };
+}
+
+function prepareBuildEntrypoints(piPkgDir: string, sourceEntrypoint: string): BuildEntrypoints {
+    const codemode = resolvePiCodemodeRuntime(piPkgDir);
+
+    const buildRoot = join(import.meta.dirname, ".binary-build");
+    const workerDir = join(buildRoot, "src", "extensions", "codemode");
+    rmSync(buildRoot, { recursive: true, force: true });
+    mkdirSync(workerDir, { recursive: true });
+
+    writeFileSync(
+        join(buildRoot, "entry.ts"),
+        [
+            `import quickjsWasmPath from ${JSON.stringify(toImportSpecifier(buildRoot, codemode.quickjsWasmPath))};`,
+            `import { setEmbeddedQuickJSWasmPath } from ${JSON.stringify(toImportSpecifier(buildRoot, join(piPkgDir, "dist", "config.js")))};`,
+            `setEmbeddedQuickJSWasmPath(quickjsWasmPath);`,
+            `await import(${JSON.stringify(toImportSpecifier(buildRoot, sourceEntrypoint))});`,
+            "",
+        ].join("\n"),
+    );
+    writeFileSync(join(workerDir, "worker.ts"), `import ${JSON.stringify(toImportSpecifier(workerDir, codemode.workerPath))};\n`);
+
+    return {
+        cwd: buildRoot,
+        entrypoint: "./entry.ts",
+        extraEntrypoints: ["./src/extensions/codemode/worker.ts"],
+        cleanup: () => rmSync(buildRoot, { recursive: true, force: true }),
+    };
+}
+
+async function compileBinary(target: Target, cliVersion: string, entrypoints: BuildEntrypoints, outFile: string): Promise<number> {
+    const proc = Bun.spawn(
+        [
+            "bun",
+            "build",
+            "--compile",
+            `--target=${target.bunTarget}`,
+            "--define",
+            `__PIZZAPI_VERSION__=${JSON.stringify(cliVersion)}`,
+            entrypoints.entrypoint,
+            ...entrypoints.extraEntrypoints,
+            "--outfile",
+            outFile,
+        ],
+        { cwd: entrypoints.cwd, stdout: "inherit", stderr: "inherit" },
+    );
+    return await proc.exited;
 }
 
 // ---------------------------------------------------------------------------
@@ -245,35 +337,41 @@ console.log(`CLI version: ${cliVersion}`);
 
 const entrypoint = join(import.meta.dirname, "src", "index.ts");
 const distBinaries = join(import.meta.dirname, "dist", "binaries");
+const buildEntrypoints = prepareBuildEntrypoints(piPkgDir, entrypoint);
+console.log("Embedding pi codemode QuickJS runtime");
 
 let failed = false;
 
-for (const target of targets) {
-    const outDir = join(distBinaries, target.id);
-    const outFile = join(outDir, target.exeName);
+try {
+    for (const target of targets) {
+        const outDir = join(distBinaries, target.id);
+        const outFile = join(outDir, target.exeName);
 
-    mkdirSync(outDir, { recursive: true });
+        mkdirSync(outDir, { recursive: true });
 
-    console.log(`\n▶ Building ${target.id} → ${outFile}`);
+        console.log(`\n▶ Building ${target.id} → ${outFile}`);
 
-    const result = await $`bun build --compile --target=${target.bunTarget} --define __PIZZAPI_VERSION__='"${cliVersion}"' ${entrypoint} --outfile ${outFile}`.nothrow();
+        const exitCode = await compileBinary(target, cliVersion, buildEntrypoints, outFile);
 
-    if (result.exitCode !== 0) {
-        console.error(`  ✗ Build failed for ${target.id}`);
-        failed = true;
-        continue;
+        if (exitCode !== 0) {
+            console.error(`  ✗ Build failed for ${target.id}`);
+            failed = true;
+            continue;
+        }
+
+        console.log(`  ✓ Compiled`);
+
+        copyBinaryAssets(piPkgDir, outDir);
+        console.log(`  ✓ Assets copied`);
+
+        if (copyPtyLib(target, outDir)) {
+            console.log(`  ✓ PTY native library copied (${target.ptyLibName})`);
+        } else {
+            console.log(`  ⚠ PTY native library not available for ${target.ptyOs}-${target.ptyCpu} (cross-compile — must be added separately)`);
+        }
     }
-
-    console.log(`  ✓ Compiled`);
-
-    copyBinaryAssets(piPkgDir, outDir);
-    console.log(`  ✓ Assets copied`);
-
-    if (copyPtyLib(target, outDir)) {
-        console.log(`  ✓ PTY native library copied (${target.ptyLibName})`);
-    } else {
-        console.log(`  ⚠ PTY native library not available for ${target.ptyOs}-${target.ptyCpu} (cross-compile — must be added separately)`);
-    }
+} finally {
+    buildEntrypoints.cleanup();
 }
 
 if (failed) {

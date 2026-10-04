@@ -10,6 +10,7 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import type { SectionProps } from "./RunnerSettingsPanel";
+import { isRunnerChatModel } from "@/lib/message-helpers";
 
 interface ModelInfo {
     provider: string;
@@ -17,6 +18,8 @@ interface ModelInfo {
     name: string;
     reasoning: boolean;
     contextWindow: number;
+    /** Pi 1.0 operation type. Omitted means chat. */
+    type?: string;
 }
 
 interface FallbackEntry {
@@ -94,7 +97,7 @@ export default function ModelsSettings({ runnerId, tuiSettings, onSave, saving }
                 }
                 const data = await res.json();
                 if (!cancelled) {
-                    setModels(data.models ?? []);
+                    setModels(Array.isArray(data.models) ? data.models.filter(isRunnerChatModel) : []);
                 }
             } catch (err: any) {
                 if (!cancelled) {

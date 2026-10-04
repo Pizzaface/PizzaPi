@@ -10,6 +10,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { RelayContext } from "./remote-types.js";
 import { getAuthSource, authSourceLabel } from "./remote-auth-source.js";
 import { getActiveSubagentCount } from "./subagent/background-state.js";
+import { collectSessionTokenUsage } from "../usage/totals.js";
 
 // ── Pure utilities ───────────────────────────────────────────────────────────
 
@@ -81,20 +82,13 @@ export function installFooter(rctx: RelayContext, ctx: ExtensionContext) {
             render(width: number): string[] {
                 const activeCtx = rctx.latestCtx ?? ctx;
 
-                let totalInput = 0;
-                let totalOutput = 0;
-                let totalCacheRead = 0;
-                let totalCacheWrite = 0;
-                let totalCost = 0;
-                for (const entry of activeCtx.sessionManager.getEntries()) {
-                    if (entry.type === "message" && entry.message.role === "assistant") {
-                        totalInput += entry.message.usage.input;
-                        totalOutput += entry.message.usage.output;
-                        totalCacheRead += entry.message.usage.cacheRead;
-                        totalCacheWrite += entry.message.usage.cacheWrite;
-                        totalCost += Math.max(0, entry.message.usage.cost.total);
-                    }
-                }
+                const {
+                    input: totalInput,
+                    output: totalOutput,
+                    cacheRead: totalCacheRead,
+                    cacheWrite: totalCacheWrite,
+                    cost: totalCost,
+                } = collectSessionTokenUsage(activeCtx.sessionManager.getEntries());
 
                 const contextUsage = activeCtx.getContextUsage();
                 const contextWindow = contextUsage?.contextWindow ?? activeCtx.model?.contextWindow ?? 0;

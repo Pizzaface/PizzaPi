@@ -158,22 +158,22 @@ export function processFile(
     // line. Deterministic across replays, unique across distinct API calls.
     const eventUid = `${relativePath}:${lineStart}`;
 
-    // Extract usage from assistant messages
-    if (
-      obj.type === "message" &&
-      obj.message &&
-      obj.message.role === "assistant" &&
-      obj.message.usage
-    ) {
-      const msg = obj.message as any;
-      const usage = msg.usage;
-      const timestamp = new Date(obj.timestamp).getTime();
-
+    // Extract usage from assistant messages, tool results (Pi 1.0 nested
+    // model work such as codemode `models.*`), standalone usage entries, and
+    // branch/compaction summaries. `src` carries provider/model/usage.
+    const msg = obj.type === "message" ? obj.message : undefined;
+    const src =
+      msg?.usage && (msg.role === "assistant" || msg.role === "toolResult") ? msg
+      : obj.type !== "message" && obj.usage && ["usage", "branch_summary", "compaction"].includes(obj.type) ? obj
+      : undefined;
+    if (src) {
+      const usage = src.usage;
+      const summaryLike = obj.type === "branch_summary" || obj.type === "compaction" || msg?.role === "toolResult";
       events.push({
         event_uid: eventUid,
-        timestamp,
-        provider: msg.provider || "unknown",
-        model: msg.model || "unknown",
+        timestamp: new Date(obj.timestamp).getTime(),
+        provider: src.provider || (summaryLike ? "Tools" : "unknown"),
+        model: src.model || (summaryLike ? "summaries" : "unknown"),
         input_tokens: usage.input || 0,
         output_tokens: usage.output || 0,
         cache_read_tokens: usage.cacheRead || 0,

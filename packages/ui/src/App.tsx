@@ -114,6 +114,7 @@ import {
   normalizeModelList,
   normalizeCommandList,
   buildStreamingPartialMessage,
+  isNestedToolExecutionEvent,
 } from "@/lib/message-helpers";
 import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE, resolveSnapshotMessages } from "@/lib/session-ui-cache";
 import { removeMessagesByStableKey, replaceMessageByStableKey } from "@/lib/mcp-auth-banners";
@@ -2618,6 +2619,7 @@ export function App() {
     }
 
     if (type === "tool_execution_start") {
+      if (isNestedToolExecutionEvent(evt)) return;
       const toolCallId = typeof evt.toolCallId === "string" ? evt.toolCallId : "";
       const toolName = typeof evt.toolName === "string" ? evt.toolName : "unknown";
       if (toolCallId) {
@@ -2631,6 +2633,7 @@ export function App() {
     }
 
     if (type === "tool_execution_update") {
+      if (isNestedToolExecutionEvent(evt)) return;
       const toolCallId = typeof evt.toolCallId === "string" ? evt.toolCallId : "";
       const toolName = typeof evt.toolName === "string" ? evt.toolName : "unknown";
       // AskUserQuestion and plan_mode updates are handled separately below — skip here.
@@ -2660,6 +2663,7 @@ export function App() {
     }
 
     if (type === "tool_execution_end") {
+      if (isNestedToolExecutionEvent(evt)) return;
       const toolCallId = typeof evt.toolCallId === "string" ? evt.toolCallId : "";
       if (toolCallId) {
         // Evict any buffered streaming partial for this tool call so a pending

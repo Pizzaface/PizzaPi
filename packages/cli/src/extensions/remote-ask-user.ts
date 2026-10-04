@@ -358,6 +358,7 @@ export function registerAskUserTool(rctx: RelayContext) {
         label: "Ask User Question",
         description:
             "Ask the user one or more multiple-choice questions and wait for responses. Use this when you must collect user input before continuing.",
+        exposure: "model-only",
         parameters: {
             type: "object",
             properties: {

@@ -147,6 +147,7 @@ export const SessionMessageItem = React.memo(
               onTriggerResponse,
               onActionSigilResponse,
               message.leadingText,
+              message.nestedCalls,
             )}
           </div>
         );
@@ -173,6 +174,7 @@ export const SessionMessageItem = React.memo(
             onTriggerResponse,
             onActionSigilResponse,
             message.leadingText,
+            message.nestedCalls,
           )}
         </div>
       );
@@ -238,6 +240,11 @@ export const SessionMessageItem = React.memo(
               {message.timestamp && (
                 <span>• {new Date(message.timestamp).toLocaleTimeString()}</span>
               )}
+              {message.role === "assistant" && message.responseModel && message.responseModel !== message.model && (
+                <span className="normal-case font-mono" title="Selected model → concrete response model">
+                  • {message.provider ? `${message.provider}/` : ""}{message.model ?? "selected model"} → {message.responseModel}
+                </span>
+              )}
               {message.isError && <span className="text-destructive">• Error</span>}
               <MessageCopyButton
                 text={exportToMarkdown([message])}
@@ -280,6 +287,7 @@ export const SessionMessageItem = React.memo(
                       onTriggerResponse,
                       onActionSigilResponse,
                       message.leadingText,
+                      message.nestedCalls,
                     )}
                   </div>
                 )}
@@ -307,6 +315,7 @@ export const SessionMessageItem = React.memo(
                 onTriggerResponse,
                 onActionSigilResponse,
                 message.leadingText,
+                message.nestedCalls,
               )}
               {quotePopover && (
                 <div

@@ -1,3 +1,18 @@
+export interface NestedToolCallRecord {
+  id: string;
+  name: string;
+  arguments?: Record<string, unknown>;
+  argumentsBytes?: number;
+  status: "ok" | "error" | "unfinished";
+  durationMs?: number;
+  error?: string;
+}
+
+export interface NestedToolCalls {
+  calls: NestedToolCallRecord[];
+  complete: boolean;
+}
+
 export interface RelayMessage {
   key: string;
   role: string;
@@ -21,12 +36,19 @@ export interface RelayMessage {
   stopReason?: string;
   /** For assistant messages with stopReason === "error": the error description */
   errorMessage?: string;
+  /** Selected provider/model recorded on assistant responses. */
+  provider?: string;
+  model?: string;
+  /** Physical model returned by a virtual/routed model, when Pi reports one. */
+  responseModel?: string;
   /** For compactionSummary / branchSummary messages: the summary text */
   summary?: string;
   /** For compactionSummary messages: token count before compaction */
   tokensBefore?: number;
   /** Structured details from tool results (e.g., subagent SubagentDetails) */
   details?: unknown;
+  /** Pi 1.0 nested calls made by this tool (for example codemode/ctx.executeTool). */
+  nestedCalls?: NestedToolCalls;
   /**
    * True when this toolResult message is a synthetic streaming partial produced
    * by a `tool_execution_update` event (i.e. the tool is still in-flight).

@@ -747,7 +747,9 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
       currentActive: pi.getActiveTools() as string[],
       previousMcpToolNames,
       newMcpToolNames: res.toolNames,
-      deferredToolNames: toolSearchSnapshot?.deferredTools.map((tool) => tool.name) ?? [],
+      deferredToolNames: mergedConfig.toolSearch?.enabled
+        ? toolSearchSnapshot?.deferredTools.map((tool) => tool.name) ?? []
+        : [],
     });
     pi.setActiveTools(nextActiveTools);
 

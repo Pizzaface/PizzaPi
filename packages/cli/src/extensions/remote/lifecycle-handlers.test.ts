@@ -109,7 +109,7 @@ function setup(lastRetryableError: { errorMessage: string; detectedAt: number } 
 
     const agentEnd = handlers.get("agent_end")!;
     const agentSettled = handlers.get("agent_settled")!;
-    return { agentEnd, agentSettled, turnEnd: handlers.get("turn_end")!, emitted, rctx };
+    return { agentEnd, agentSettled, turnEnd: handlers.get("turn_end")!, emitted, rctx, handlers };
 }
 
 const agentEndCtx = { hasPendingMessages: () => false, shutdown: () => {} };
@@ -118,6 +118,38 @@ const agentEndCtx = { hasPendingMessages: () => false, shutdown: () => {} };
 function flush(): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, 0));
 }
+
+describe("nested tool events", () => {
+    test("forwards parentToolCallId from Pi 1.0 nested executions unchanged", () => {
+        const { handlers, rctx } = setup(null);
+        const event = {
+            type: "tool_execution_start",
+            toolCallId: "parent/1",
+            parentToolCallId: "parent",
+            toolName: "read",
+            args: { path: "README.md" },
+        };
+
+        handlers.get("tool_execution_start")!(event, {});
+
+        expect(rctx.forwardEvent).toHaveBeenCalledWith(event);
+    });
+
+    test("strips Pi 1.0 structuredContent from forwarded tool_execution_end", () => {
+        const { handlers, rctx } = setup(null);
+        const result = {
+            content: [{ type: "text", text: "ok" }],
+            details: { truncation: null },
+            structuredContent: { output: "x".repeat(1024 * 1024), exit_code: 0 },
+        };
+
+        handlers.get("tool_execution_end")!({ type: "tool_execution_end", toolCallId: "t1", toolName: "bash", result, isError: false }, {});
+
+        const forwarded = (rctx.forwardEvent as any).mock.calls[0][0];
+        expect(forwarded.result).toEqual({ content: result.content, details: result.details });
+        expect(result.structuredContent).toBeDefined(); // Pi's own event object is not mutated
+    });
+});
 
 describe("agent_end — session_error / session_complete ordering", () => {
     test("emits session_error before session_complete for a child session usage-limit error", async () => {

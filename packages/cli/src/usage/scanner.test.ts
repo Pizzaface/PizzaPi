@@ -143,6 +143,91 @@ describe("Scanner", () => {
     db.close();
   });
 
+  test("processFile includes tool-result usage from nested model work", () => {
+    const tmpDir = mkdtempSync("/tmp/usage-scanner-test-");
+    const filePath = join(tmpDir, "session.jsonl");
+    const h = header("session-tool-usage");
+    const msg = usageMsg("msg-001", "2026-03-23T12:05:00Z", 100, 50, 0.01);
+    const toolResult = {
+      type: "message",
+      id: "tool-001",
+      timestamp: "2026-03-23T12:06:00Z",
+      message: {
+        role: "toolResult",
+        toolCallId: "tc1",
+        toolName: "codemode",
+        content: [{ type: "text", text: "done" }],
+        isError: false,
+        usage: {
+          input: 7,
+          output: 3,
+          cacheRead: 2,
+          cacheWrite: 1,
+          totalTokens: 13,
+          cost: { total: 0.004, input: 0.001, output: 0.002, cacheRead: 0.0005, cacheWrite: 0.0005 },
+        },
+      },
+    };
+    const content = `${JSON.stringify(h)}\n${JSON.stringify(msg)}\n${JSON.stringify(toolResult)}\n`;
+    writeFileSync(filePath, content);
+
+    const db = makeDb(tmpDir);
+    processFile(db, filePath, "session.jsonl", h, content);
+
+    const events = db.query<any, []>("SELECT * FROM usage_events ORDER BY timestamp").all();
+    expect(events.length).toBe(2);
+    expect(events[1].provider).toBe("Tools");
+    expect(events[1].model).toBe("summaries");
+    expect(events[1].input_tokens).toBe(7);
+    expect(events[1].output_tokens).toBe(3);
+    expect(events[1].cache_read_tokens).toBe(2);
+    expect(events[1].cache_write_tokens).toBe(1);
+    expect(events[1].cost_usd).toBeCloseTo(0.004, 6);
+
+    const session = db.query<any, []>("SELECT * FROM sessions").get();
+    expect(session.total_input).toBe(107);
+    expect(session.total_output).toBe(53);
+    expect(session.total_cache_read).toBe(2);
+    expect(session.total_cache_write).toBe(1);
+    expect(session.total_cost).toBeCloseTo(0.014, 6);
+    db.close();
+  });
+
+  test("processFile includes standalone usage entries", () => {
+    const tmpDir = mkdtempSync("/tmp/usage-scanner-test-");
+    const filePath = join(tmpDir, "session.jsonl");
+    const h = header("session-usage-entry");
+    const usageEntry = {
+      type: "usage",
+      id: "usage-001",
+      timestamp: "2026-03-23T12:07:00Z",
+      kind: "cache_warm",
+      provider: "anthropic",
+      model: "claude-opus",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 10,
+        cacheWrite: 0,
+        totalTokens: 10,
+        cost: { total: 0.005, input: 0, output: 0, cacheRead: 0.005, cacheWrite: 0 },
+      },
+    };
+    const content = `${JSON.stringify(h)}\n${JSON.stringify(usageEntry)}\n`;
+    writeFileSync(filePath, content);
+
+    const db = makeDb(tmpDir);
+    processFile(db, filePath, "session.jsonl", h, content);
+
+    const event = db.query<any, []>("SELECT * FROM usage_events").get();
+    expect(event.cache_read_tokens).toBe(10);
+    expect(event.cost_usd).toBeCloseTo(0.005, 6);
+    const session = db.query<any, []>("SELECT * FROM sessions").get();
+    expect(session.total_cache_read).toBe(10);
+    expect(session.total_cost).toBeCloseTo(0.005, 6);
+    db.close();
+  });
+
   test("processFile skips malformed JSON lines without crashing", () => {
     const tmpDir = mkdtempSync("/tmp/usage-scanner-test-");
     const filePath = join(tmpDir, "session.jsonl");

@@ -8,8 +8,10 @@ import {
   normalizeSessionName,
   augmentThinkingDurations,
   normalizeModelList,
+  isChatModel,
   normalizeCommandList,
   buildStreamingPartialMessage,
+  isNestedToolExecutionEvent,
 } from "./message-helpers";
 import { extractTextFromToolContent, hasVisibleContent } from "@/components/session-viewer/utils";
 import type { RelayMessage } from "@/components/session-viewer/types";
@@ -84,6 +86,16 @@ describe("toRelayMessage", () => {
     expect(result?.stopReason).toBe("error");
   });
 
+  test("preserves assistant selected and routed model fields", () => {
+    const result = toRelayMessage(
+      { role: "assistant", provider: "openai", model: "router", responseModel: "gpt-6.1-sol" },
+      "x",
+    );
+    expect(result?.provider).toBe("openai");
+    expect(result?.model).toBe("router");
+    expect(result?.responseModel).toBe("gpt-6.1-sol");
+  });
+
   test("sets isError=true when isError field is true", () => {
     const result = toRelayMessage({ role: "tool_result", isError: true }, "x");
     expect(result?.isError).toBe(true);
@@ -102,6 +114,23 @@ describe("toRelayMessage", () => {
     const details = { subagentId: "s1", status: "done" };
     const result = toRelayMessage({ role: "tool_result", details }, "x");
     expect(result?.details).toEqual(details);
+  });
+
+  test("preserves Pi 1.0 nested tool call summaries", () => {
+    const nestedCalls = {
+      complete: true,
+      calls: [{ id: "tc1/1", name: "read", status: "ok", durationMs: 12 }],
+    };
+    const result = toRelayMessage({ role: "tool_result", nestedCalls }, "x");
+    expect(result?.nestedCalls).toEqual(nestedCalls);
+  });
+
+  test("drops malformed nested tool call summaries", () => {
+    const result = toRelayMessage({
+      role: "tool_result",
+      nestedCalls: { complete: true, calls: [{ id: 7, name: "read", status: "ok" }] },
+    }, "x");
+    expect(result?.nestedCalls).toBeUndefined();
   });
 
   test("preserves custom message metadata", () => {
@@ -238,7 +267,34 @@ describe("normalizeMessages", () => {
   });
 });
 
+// ── nested tool execution events ─────────────────────────────────────────────
+
+describe("isNestedToolExecutionEvent", () => {
+  test("detects Pi 1.0 nested tool events", () => {
+    expect(isNestedToolExecutionEvent({ parentToolCallId: "tc1", toolCallId: "tc1/1" })).toBe(true);
+  });
+
+  test("does not flag top-level or malformed tool events", () => {
+    expect(isNestedToolExecutionEvent({ toolCallId: "tc1" })).toBe(false);
+    expect(isNestedToolExecutionEvent({ parentToolCallId: "" })).toBe(false);
+    expect(isNestedToolExecutionEvent(null)).toBe(false);
+  });
+});
+
 // ── normalizeModel ────────────────────────────────────────────────────────────
+
+describe("isChatModel", () => {
+  test("accepts Pi 1.0 chat models and legacy model records", () => {
+    expect(isChatModel({ provider: "openai", id: "gpt-6.1-sol", type: "chat" })).toBe(true);
+    expect(isChatModel({ provider: "openai", id: "gpt-6.1-sol" })).toBe(true);
+  });
+
+  test("rejects non-chat operation models and malformed values", () => {
+    expect(isChatModel({ provider: "openrouter", id: "image-model", type: "image" })).toBe(false);
+    expect(isChatModel({ provider: "typesafe", id: "classifier-model", type: "classifier" })).toBe(false);
+    expect(isChatModel(null)).toBe(false);
+  });
+});
 
 describe("normalizeModel", () => {
   test("returns null for null/non-object input", () => {
@@ -253,6 +309,11 @@ describe("normalizeModel", () => {
 
   test("returns null when both id and modelId are missing", () => {
     expect(normalizeModel({ provider: "openai" })).toBeNull();
+  });
+
+  test("ignores Pi 1.0 non-chat operation models", () => {
+    expect(normalizeModel({ provider: "openrouter", id: "image-model", type: "image" })).toBeNull();
+    expect(normalizeModel({ provider: "typesafe", id: "jev-latest", type: "classifier" })).toBeNull();
   });
 
   test("parses standard availableModels shape (id field)", () => {

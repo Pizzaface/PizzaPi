@@ -29,6 +29,7 @@ import { sandboxEventsExtension } from "./sandbox-events.js";
 import { pizzapiTitleExtension } from "./pizzapi-title.js";
 import { pizzapiHeaderExtension } from "./pizzapi-header.js";
 import { toolSearchExtension } from "./tool-search.js";
+import { codemodeExtension, nativeToolSearchExtension } from "./builtin-extensions.js";
 import { ollamaWebToolsExtension } from "./ollama-web-tools.js";
 import { openaiCodexWebSearchExtension } from "./openai-codex-web-search.js";
 import { ollamaCloudProviderExtension } from "./ollama-cloud-provider.js";
@@ -121,9 +122,14 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
         factories.push(named(serviceMessageBridgeExtension, "service-message-bridge"));
     }
 
+    // Pi 1.0 codemode/tool_search are safe to load without Pi's built-in MCP.
+    // PizzaPi still owns MCP connection/trust/OAuth/approval boundaries.
+    factories.push(named(codemodeExtension, "codemode"));
+    factories.push(named(nativeToolSearchExtension, "tool_search"));
+
     if (!options.skipMcp) {
         factories.push(named(mcpExtension, "mcp"));
-        // Tool search must come after MCP so it can see registered MCP tools
+        // Legacy PizzaPi tool search must come after MCP so it can see registered MCP tools.
         factories.push(named(toolSearchExtension, "tool-search"));
     }
 

@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { vlen, wrap, computeBoxWidth, makeOptRow } from "./remote-plan-mode.js";
+import { vlen, wrap, computeBoxWidth, makeOptRow, registerPlanModeTool } from "./remote-plan-mode.js";
 
 // ── vlen ──────────────────────────────────────────────────────────────────────
 
@@ -201,5 +201,16 @@ describe("makeOptRow", () => {
 
     test("result always starts with two spaces", () => {
         expect(makeOptRow("x", "y").startsWith("  ")).toBe(true);
+    });
+});
+
+
+describe("registerPlanModeTool", () => {
+    test("registers as model-only so nested executeTool/codemode cannot prompt", () => {
+        let tool: any;
+        registerPlanModeTool({
+            pi: { registerTool: (t: any) => { tool = t; } },
+        } as any);
+        expect(tool.exposure).toBe("model-only");
     });
 });

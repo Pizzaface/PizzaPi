@@ -377,7 +377,7 @@ export function registerEventHandler(socket: RelaySocket): void {
         if (event.type === "message_end" || event.type === "turn_end") {
             const durations = thinkingDurations.get(sessionId);
             if (durations?.size) {
-                eventToPublish = augmentMessageThinkingDurations(event, durations);
+                eventToPublish = augmentMessageThinkingDurations(eventToPublish as Record<string, unknown>, durations);
             }
             clearThinkingMaps(sessionId);
         }

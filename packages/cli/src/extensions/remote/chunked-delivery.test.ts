@@ -503,6 +503,58 @@ describe("emitSessionMetadataUpdate", () => {
         });
     });
 
+    test("session_active preserves Pi 1.0 nestedCalls from real session context projection", () => {
+        const ctx = makeContext({
+            leafId: "tool-result-1",
+            entries: [
+                {
+                    type: "message",
+                    id: "assistant-1",
+                    parentId: null,
+                    timestamp: new Date(0).toISOString(),
+                    message: {
+                        role: "assistant",
+                        content: [{ type: "toolCall", id: "call-1", name: "parent_tool", arguments: {} }],
+                        api: "pi-messages",
+                        provider: "openai",
+                        model: "gpt-5",
+                        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+                        stopReason: "toolUse",
+                        timestamp: 0,
+                    },
+                },
+                {
+                    type: "message",
+                    id: "tool-result-1",
+                    parentId: "assistant-1",
+                    timestamp: new Date(0).toISOString(),
+                    message: {
+                        role: "toolResult",
+                        toolCallId: "call-1",
+                        toolName: "parent_tool",
+                        content: [{ type: "text", text: "done" }],
+                        details: undefined,
+                        nestedCalls: {
+                            complete: true,
+                            calls: [{ id: "call-1/1", name: "read", arguments: { path: "README.md" }, status: "ok", durationMs: 12 }],
+                        },
+                        isError: false,
+                        timestamp: 1,
+                    },
+                },
+            ],
+        });
+
+        emitSessionActive(ctx);
+
+        const evt = ctx.emitted[0] as any;
+        const toolResult = evt.state.messages.find((message: any) => message.role === "toolResult");
+        expect(toolResult?.nestedCalls).toEqual({
+            complete: true,
+            calls: [{ id: "call-1/1", name: "read", arguments: { path: "README.md" }, status: "ok", durationMs: 12 }],
+        });
+    });
+
     test("session_active falls back to transcript model when no live model exists", () => {
         const ctx = makeContext({
             leafId: "leaf-active-transcript-fallback",

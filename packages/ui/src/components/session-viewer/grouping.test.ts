@@ -98,6 +98,31 @@ describe("groupToolExecutionMessages", () => {
         expect(toolItem!.content).toBeTruthy();
     });
 
+    test("preserves nested call summaries from final tool results", () => {
+        const nestedCalls = {
+            complete: true,
+            calls: [{ id: "tc1/1", name: "read", status: "ok" as const, durationMs: 4 }],
+        };
+        const result = groupToolExecutionMessages([
+            msg({
+                key: "a1",
+                role: "assistant",
+                content: [
+                    { type: "toolCall", name: "codemode", id: "tc1", arguments: { script: "await tools.read({ path: 'x' })" } },
+                ],
+            }),
+            msg({
+                key: "r1",
+                role: "toolResult",
+                toolCallId: "tc1",
+                toolName: "codemode",
+                content: [{ type: "text", text: "done" }],
+                nestedCalls,
+            }),
+        ]);
+        expect(result.find((m) => m.role === "tool")?.nestedCalls).toEqual(nestedCalls);
+    });
+
     test("handles multiple tool calls in one assistant message", () => {
         const messages: RelayMessage[] = [
             msg({

@@ -4,8 +4,7 @@
 
 import type { RelayContext } from "./remote-types.js";
 import { emitSessionMetadataUpdate, readQueuedFollowUps } from "./remote/chunked-delivery.js";
-
-interface TokenTotals { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number }
+import { collectSessionTokenUsage, type TokenTotals } from "../usage/totals.js";
 
 // Per-relay-context cache of cumulative totals, additionally pinned to the
 // session manager instance so a session switch (or two sessions sharing the
@@ -31,17 +30,7 @@ export function buildTokenUsage(rctx: RelayContext): { input: number; output: nu
         return { ...cached.value, contextTokens };
     }
 
-    let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, cost = 0;
-    for (const entry of entries) {
-        if (entry.type === "message" && entry.message.role === "assistant") {
-            input += entry.message.usage.input;
-            output += entry.message.usage.output;
-            cacheRead += entry.message.usage.cacheRead;
-            cacheWrite += entry.message.usage.cacheWrite;
-            cost += Math.max(0, entry.message.usage.cost.total);
-        }
-    }
-    const totals: TokenTotals = { input, output, cacheRead, cacheWrite, cost };
+    const totals: TokenTotals = collectSessionTokenUsage(entries);
     tokenUsageCaches.set(rctx, { manager, key: cacheKey, value: totals });
     return { ...totals, contextTokens };
 }
