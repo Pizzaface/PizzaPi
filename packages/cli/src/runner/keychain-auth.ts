@@ -241,59 +241,24 @@ export function pickFreshestCredential(credentials: KeychainCredentials[]): Keyc
 /**
  * Read the best available external credential from all sources.
  *
- * Priority:
- * 1. macOS Keychain (all matching accounts, pick freshest)
- * 2. `~/.claude/.credentials.json` (cross-platform fallback)
+ * Candidates: every matching macOS Keychain account plus
+ * `~/.claude/.credentials.json`. The one with the latest expiry wins —
+ * a stale Keychain entry must not shadow a fresh credentials file.
  *
  * Returns the best credential with source metadata, or `null` if none found.
  */
 export function readBestExternalCredential(): ExternalCredential | null {
-    // Try Keychain first (macOS only, may have multiple accounts)
-    const accounts = enumerateKeychainAccounts();
-    if (accounts.length > 0) {
-        if (accounts.length === 1) {
-            return {
-                credentials: accounts[0].credentials,
-                source: "keychain",
-                sourceLabel: accounts[0].serviceName,
-            };
-        }
-        // Multiple accounts — pick the freshest
-        const now = Date.now();
-        let best: (typeof accounts)[number] | null = null;
-        let bestExpiry = 0;
-        for (const account of accounts) {
-            const expiry = account.credentials.claudeAiOauth?.expiresAt ?? 0;
-            if (expiry > bestExpiry) {
-                best = account;
-                bestExpiry = expiry;
-            }
-        }
-        if (best) {
-            if (accounts.length > 1) {
-                logAuth("keychain-multi-account", {
-                    accountCount: `${accounts.length}`,
-                    selected: best.serviceName,
-                    expiresIn: `${Math.round((bestExpiry - now) / 1000)}s`,
-                });
-            }
-            return {
-                credentials: best.credentials,
-                source: "keychain",
-                sourceLabel: best.serviceName,
-            };
-        }
-    }
-
-    // Fallback: credentials file
+    const candidates: ExternalCredential[] = enumerateKeychainAccounts().map((a) => ({
+        credentials: a.credentials,
+        source: "keychain" as const,
+        sourceLabel: a.serviceName,
+    }));
     const fileCred = readCredentialsFile();
-    if (fileCred) {
-        return {
-            credentials: fileCred,
-            source: "credentials-file",
-            sourceLabel: CREDENTIALS_FILE_PATH,
-        };
-    }
+    if (fileCred) candidates.push({ credentials: fileCred, source: "credentials-file", sourceLabel: CREDENTIALS_FILE_PATH });
 
-    return null;
+    let best: ExternalCredential | null = null;
+    for (const c of candidates) {
+        if (!best || (c.credentials.claudeAiOauth?.expiresAt ?? 0) > (best.credentials.claudeAiOauth?.expiresAt ?? 0)) best = c;
+    }
+    return best;
 }
