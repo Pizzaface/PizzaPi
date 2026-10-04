@@ -6,9 +6,12 @@ import {
     getSharedSessionSummary,
     getLocalTuiSocket,
     emitToRelaySessionVerified,
+    emitToRelaySessionInputAck,
+    hasRelaySessionListener,
     broadcastToSessionViewers,
 } from "../../sio-registry.js";
 import {
+    getChildSessions,
     isChildOfParent,
     isPendingParentDelinkChild,
     refreshChildSessionsTTL,
@@ -17,121 +20,158 @@ import { pushTriggerHistory, recordTriggerResponse } from "../../../sessions/tri
 import type { RelaySocket } from "./types.js";
 
 export function registerMessagingHandlers(socket: RelaySocket): void {
-    // ── session_message — inter-session messaging ────────────────────────
-    socket.on("session_message", async (data) => {
-        const sessionId = socket.data.sessionId;
-        if (!sessionId || data.token !== socket.data.token) {
-            socket.emit("error", { message: "Invalid token" });
-            return;
-        }
-
-        const targetSessionId = data.targetSessionId;
-        const messageText = data.message;
-        if (!targetSessionId || !messageText) {
-            socket.emit("error", { message: "session_message requires targetSessionId and message" });
-            return;
-        }
-
-        const [senderSession, targetSession] = await Promise.all([
-            getSharedSessionSummary(sessionId),
-            getSharedSessionSummary(targetSessionId),
-        ]);
-        if (!targetSession) {
-            socket.emit("session_message_error", {
-                targetSessionId,
-                error: "Target session not found or not connected",
-            });
-            return;
-        }
-
-        // Enforce same-user ownership to prevent cross-user message injection,
-        // especially for deliverAs:"input" which starts new agent turns.
-        if (!senderSession?.userId || !targetSession?.userId || senderSession.userId !== targetSession.userId) {
-            socket.emit("session_message_error", {
-                targetSessionId,
-                error: "Target session belongs to a different user",
-            });
-            return;
-        }
-
-        // Block messages from delinked children. If the sender's session
-        // still carries a parentSessionId pointing at the target (i.e. it
-        // was a linked child), but the target has already delinked it via
-        // /new, reject the message so stale children can't inject traffic
-        // into the parent's new conversation.
-        if (senderSession.parentSessionId === targetSessionId) {
-            const stillLinked = await isChildOfParent(targetSessionId, sessionId);
-            if (!stillLinked) {
-                socket.emit("session_message_error", {
-                    targetSessionId,
-                    error: "Sender is no longer a child of the target session (linked relationship is broken or stale)",
-                });
-                return;
-            }
-        }
-
-        const isInput = data.deliverAs === "input" || data.deliverAs === "steer";
-        const inputDelivery = data.deliverAs === "steer" ? "steer" : "followUp";
-
-        // Block stale parent→child traffic. Agent input always
-        // requires a live parent→child link (used by tell_child and
-        // session_complete follow-up). Plain session_message (used by
-        // send_message) is also blocked when the target's parentSessionId
-        // still names the sender — the parent may have run /new and
-        // delinked this child, so the old parent's plain messages must not
-        // reach the child's brand-new conversation either.
-        const isParentToChildTraffic = isInput || targetSession.parentSessionId === sessionId;
-        if (isParentToChildTraffic) {
-            const targetIsChild = await isChildOfParent(sessionId, targetSessionId);
-            if (!targetIsChild) {
-                socket.emit("session_message_error", {
-                    targetSessionId,
-                    error: "Target session is not a child of the sender (linked relationship is broken or stale)",
-                });
-                return;
-            }
-        }
-
+    const deliverSessionMessage = async (
+        fromSessionId: string,
+        targetSessionId: string,
+        messageText: string,
+        deliverAs: "input" | "steer" | undefined,
+    ): Promise<{ ok: boolean; error?: string }> => {
+        const isInput = deliverAs === "input" || deliverAs === "steer";
+        const inputDelivery = deliverAs === "steer" ? "steer" : "followUp";
         const targetSocket = getLocalTuiSocket(targetSessionId);
+        const attributedText = `Message from linked session ${fromSessionId}:\n\n${messageText}`;
+        const payload = isInput
+            ? { text: attributedText, attachments: [], client: "agent", fromSessionId, deliverAs: inputDelivery }
+            : { fromSessionId, message: messageText, ts: new Date().toISOString() };
+
         if (targetSocket?.connected) {
             try {
                 if (isInput) {
-                    // Tell Child steers active work; completion follow-ups remain queued.
-                    // Mirrors the viewer namespace "input" handler behavior.
-                    targetSocket.emit("input" as string, {
-                        text: messageText,
-                        attachments: [],
-                        client: "agent",
-                        deliverAs: inputDelivery,
+                    const delivered = await new Promise<boolean>((resolve) => {
+                        targetSocket.timeout(10_000).emit("input" as string, payload, (err: unknown, response: unknown) => {
+                            resolve(!err && (response === true || (Array.isArray(response) && response.some((r) => r === true))));
+                        });
                     });
-                } else {
-                    // Deliver to message bus (used by send_message / wait_for_message).
-                    targetSocket.emit("session_message" as string, {
-                        fromSessionId: sessionId,
-                        message: messageText,
-                        ts: new Date().toISOString(),
-                    });
+                    return delivered ? { ok: true } : { ok: false, error: "Target session did not acknowledge delivery" };
                 }
+                targetSocket.emit("session_message" as string, payload);
+                return { ok: true };
             } catch {
-                socket.emit("session_message_error", {
-                    targetSessionId,
-                    error: "Failed to deliver message to target session",
-                });
-            }
-        } else {
-            // Cross-node fallback: target TUI socket is on a different server node.
-            // Try to deliver via the relay room using verified cross-node emit.
-            const eventName = isInput ? "input" : "session_message";
-            const payload = isInput
-                ? { text: messageText, attachments: [], client: "agent", deliverAs: inputDelivery }
-                : { fromSessionId: sessionId, message: messageText, ts: new Date().toISOString() };
-            if (!await emitToRelaySessionVerified(targetSessionId, eventName, payload)) {
-                socket.emit("session_message_error", {
-                    targetSessionId,
-                    error: "Target session not found or not connected",
-                });
+                return { ok: false, error: "Failed to deliver message to target session" };
             }
         }
+
+        if (isInput) {
+            const result = await emitToRelaySessionInputAck(targetSessionId, "input", payload);
+            if (!result.hadListeners) return { ok: false, error: "Target session not found or not connected" };
+            return result.delivered ? { ok: true } : { ok: false, error: "Target session did not acknowledge delivery" };
+        }
+
+        return await emitToRelaySessionVerified(targetSessionId, "session_message", payload)
+            ? { ok: true }
+            : { ok: false, error: "Target session not found or not connected" };
+    };
+
+    // ── session_message — inter-session messaging ────────────────────────
+    socket.on("session_message", async (data, ack) => {
+        const sessionId = socket.data.sessionId;
+        if (!sessionId || !data || data.token !== socket.data.token) {
+            socket.emit("error", { message: "Invalid token" });
+            ack?.({ ok: false, error: "Invalid token" });
+            return;
+        }
+
+        const messageText = typeof data.message === "string" ? data.message : "";
+        if (!messageText.trim()) {
+            socket.emit("error", { message: "session_message requires non-empty message" });
+            ack?.({ ok: false, error: "session_message requires non-empty message" });
+            return;
+        }
+
+        const targetKind = data.target ?? "session";
+        const directTargetSessionId = typeof data.targetSessionId === "string" ? data.targetSessionId.trim() : "";
+        const validTarget = data.target === undefined
+            ? directTargetSessionId.length > 0
+            : data.target === "session"
+                ? directTargetSessionId.length > 0
+                : (data.target === "parent" || data.target === "children") && directTargetSessionId.length === 0;
+        if (!validTarget) {
+            const error = "session_message requires exactly one target: targetSessionId, target:'parent', or target:'children'";
+            socket.emit("error", { message: error });
+            ack?.({ ok: false, error });
+            return;
+        }
+
+        const isInput = data.deliverAs === "input" || data.deliverAs === "steer";
+        const senderSession = await getSharedSessionSummary(sessionId);
+        if (!senderSession?.userId) {
+            const error = "Sender session not found";
+            socket.emit("session_message_error", { targetSessionId: directTargetSessionId || targetKind, error });
+            ack?.({ ok: false, error });
+            return;
+        }
+
+        const resolveTargetIds = async (): Promise<{ ids: string[]; error?: string }> => {
+            if (targetKind === "parent") {
+                const parentId = senderSession.parentSessionId ?? senderSession.linkedParentId ?? null;
+                if (!parentId) return { ids: [], error: "Sender has no linked parent session" };
+                if (await isPendingParentDelinkChild(parentId, sessionId)) return { ids: [], error: "Sender is currently being delinked from the target session" };
+                if (!await isChildOfParent(parentId, sessionId)) return { ids: [], error: "Sender is no longer a child of the target session (linked relationship is broken or stale)" };
+                return { ids: [parentId] };
+            }
+            if (targetKind === "children") {
+                const children = await getChildSessions(sessionId);
+                const direct: string[] = [];
+                for (const childId of children) {
+                    const child = await getSharedSessionSummary(childId);
+                    if (!child || child.userId !== senderSession.userId) continue;
+                    if ((child.parentSessionId ?? child.linkedParentId) !== sessionId) continue;
+                    if (!await isChildOfParent(sessionId, childId)) continue;
+                    if (!getLocalTuiSocket(childId)?.connected && !await hasRelaySessionListener(childId)) continue;
+                    direct.push(childId);
+                }
+                return { ids: direct };
+            }
+            return { ids: [directTargetSessionId] };
+        };
+
+        const resolved = await resolveTargetIds();
+        if (resolved.error) {
+            socket.emit("session_message_error", { targetSessionId: directTargetSessionId || targetKind, error: resolved.error });
+            ack?.({ ok: false, error: resolved.error });
+            return;
+        }
+        if (resolved.ids.length === 0) {
+            const error = targetKind === "children" ? "No direct child sessions" : "Target session not found or not connected";
+            socket.emit("session_message_error", { targetSessionId: directTargetSessionId || targetKind, error });
+            ack?.({ ok: false, delivered: [], errors: [{ targetSessionId: directTargetSessionId || targetKind, error }] });
+            return;
+        }
+
+        const results = await Promise.all(resolved.ids.map(async (targetSessionId): Promise<{ targetSessionId: string; ok: boolean; error?: string }> => {
+            const targetSession = await getSharedSessionSummary(targetSessionId);
+            if (!targetSession) return { targetSessionId, ok: false, error: "Target session not found or not connected" };
+            if (!targetSession.userId || senderSession.userId !== targetSession.userId) {
+                return { targetSessionId, ok: false, error: "Target session belongs to a different user" };
+            }
+
+            const senderParent = senderSession.parentSessionId ?? senderSession.linkedParentId ?? null;
+            const targetParent = targetSession.parentSessionId ?? targetSession.linkedParentId ?? null;
+            const parentToChild = targetParent === sessionId;
+            const childToParent = senderParent === targetSessionId;
+            const legacyBus = !isInput && targetKind === "session";
+            if (!legacyBus && !parentToChild && !childToParent) {
+                return { targetSessionId, ok: false, error: "Target is not a linked parent or direct child of the sender" };
+            }
+            if (parentToChild && (await isPendingParentDelinkChild(sessionId, targetSessionId) || !await isChildOfParent(sessionId, targetSessionId))) {
+                return { targetSessionId, ok: false, error: "Target session is not a child of the sender (linked relationship is broken or stale)" };
+            }
+            if (childToParent && (await isPendingParentDelinkChild(targetSessionId, sessionId) || !await isChildOfParent(targetSessionId, sessionId))) {
+                return { targetSessionId, ok: false, error: "Sender is no longer a child of the target session (linked relationship is broken or stale)" };
+            }
+
+            const result = await deliverSessionMessage(sessionId, targetSessionId, messageText, data.deliverAs);
+            return result.ok
+                ? { targetSessionId, ok: true }
+                : { targetSessionId, ok: false, error: result.error ?? "Failed to deliver message to target session" };
+        }));
+
+        const delivered = results.filter((r) => r.ok).map((r) => r.targetSessionId);
+        const errors = results
+            .filter((r) => !r.ok)
+            .map((r) => ({ targetSessionId: r.targetSessionId, error: r.error ?? "Failed to deliver message to target session" }));
+        for (const err of errors) socket.emit("session_message_error", err);
+        ack?.({ ok: errors.length === 0, delivered, errors });
     });
 
     // ── session_trigger — child-to-parent trigger routing ────────────────

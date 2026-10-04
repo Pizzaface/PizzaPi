@@ -358,6 +358,38 @@ export async function emitToRelaySessionVerified(sessionId: string, eventName: s
     return (await emitToRelaySessionChecked(sessionId, eventName, data)) === "delivered";
 }
 
+export async function hasRelaySessionListener(sessionId: string): Promise<boolean> {
+    if (!io) return false;
+    const presence = await countSocketsInRoomCluster(io.of("/relay"), relaySessionRoom(sessionId));
+    return presence.kind !== "count" || presence.count > 0;
+}
+
+/** Emit to one relay session and resolve with the first boolean ack. */
+export async function emitToRelaySessionInputAck(
+    sessionId: string,
+    eventName: string,
+    data: unknown,
+    timeoutMs: number = 10_000,
+): Promise<{ hadListeners: boolean; delivered: boolean }> {
+    if (!io) return { hadListeners: false, delivered: false };
+    const room = relaySessionRoom(sessionId);
+    try {
+        const presence = await countSocketsInRoomCluster(io.of("/relay"), room);
+        if (presence.kind === "count" && presence.count === 0) return { hadListeners: false, delivered: false };
+
+        const relayNs = io.of("/relay") as any;
+        const responses = await new Promise<unknown[]>((resolve) => {
+            relayNs.to(room).timeout(timeoutMs).emit(eventName, data, (_err: unknown, ackResponses: unknown[] = []) => {
+                resolve(Array.isArray(ackResponses) ? ackResponses : []);
+            });
+        });
+        return { hadListeners: true, delivered: responses.some((r) => r === true) };
+    } catch (err) {
+        log.warn("emitToRelaySessionInputAck failed:", (err as Error)?.message);
+        return { hadListeners: true, delivered: false };
+    }
+}
+
 // ── Utilities ────────────────────────────────────────────────────────────────
 
 export function nextEphemeralExpiry(): string {

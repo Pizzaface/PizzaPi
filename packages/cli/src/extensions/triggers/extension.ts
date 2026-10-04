@@ -2,7 +2,7 @@
 // triggers/extension.ts — Trigger tools for parent-child session communication
 //
 // Provides three tools:
-//   - tell_child: Send a message to a linked child session
+//   - send_message: Send a steering message to a linked parent/child session
 //   - respond_to_trigger: Respond to a pending trigger from a child
 //   - escalate_trigger: Escalate a child's trigger to the human viewer
 // ============================================================================
@@ -57,6 +57,47 @@ export const receivedTriggers = new Map<string, { sourceSessionId: string; type:
 const handledTriggerTombstones = new Map<string, number>();
 
 const TRIGGER_RESPONSE_ACK_TIMEOUT_MS = 10_000;
+export const SESSION_MESSAGE_ACK_TIMEOUT_MS = 20_000;
+
+type SessionMessageAck = {
+    ok: boolean;
+    delivered?: string[];
+    errors?: Array<{ targetSessionId: string; error: string }>;
+    error?: string;
+};
+
+export async function sendSessionMessageWithAck(
+    conn: { socket: { emit: (...args: any[]) => void }; token: string },
+    payload: {
+        message: string;
+        targetSessionId?: string;
+        target?: "parent" | "children";
+        deliverAs?: "input" | "steer";
+    },
+): Promise<SessionMessageAck> {
+    return await new Promise<SessionMessageAck>((resolve) => {
+        let settled = false;
+        const finish = (result: SessionMessageAck) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            resolve(result);
+        };
+        const timeout = setTimeout(() => {
+            finish({ ok: false, error: `Timed out waiting for relay delivery ack after ${SESSION_MESSAGE_ACK_TIMEOUT_MS / 1000} seconds` });
+        }, SESSION_MESSAGE_ACK_TIMEOUT_MS);
+
+        conn.socket.emit("session_message" as any, {
+            token: conn.token,
+            message: payload.message,
+            ...(payload.targetSessionId ? { targetSessionId: payload.targetSessionId } : {}),
+            ...(payload.target ? { target: payload.target } : {}),
+            ...(payload.deliverAs ? { deliverAs: payload.deliverAs } : {}),
+        }, (result?: SessionMessageAck) => {
+            finish(result ?? { ok: false, error: "Relay did not return a delivery acknowledgement" });
+        });
+    });
+}
 
 export async function sendTriggerResponseWithAck(
     conn: { socket: { emit: (...args: any[]) => void }; token: string },
@@ -293,59 +334,63 @@ export const triggersExtension: ExtensionFactory = (pi) => {
     // handler, directly before disconnect(), to guarantee the socket is still
     // connected when the emit happens.
 
-    // ── tell_child ────────────────────────────────────────────────────────
+    // ── send_message ──────────────────────────────────────────────────────
     pi.registerTool({
-        name: "tell_child",
-        label: "Tell Child",
-        description: "Send a steering message to a linked child session, interrupting active work at the next agent boundary.",
+        name: "send_message",
+        label: "Send Message",
+        description: "Send a steering message to a linked session. Choose exactly one target: sessionId for one direct linked parent/child, target:'parent', or target:'children' to broadcast to active direct children.",
         parameters: {
             type: "object",
             properties: {
-                sessionId: { type: "string", description: "Child session ID" },
+                sessionId: { type: "string", description: "Direct target session ID. Must be a linked direct parent or child unless target is provided." },
+                target: { type: "string", enum: ["parent", "children"], description: "Use 'parent' from a child session, or 'children' to broadcast to active direct children." },
                 message: { type: "string", description: "Message to send" },
             },
-            required: ["sessionId", "message"],
+            required: ["message"],
         } as any,
         async execute(_toolCallId, rawParams) {
-            const params = rawParams as { sessionId: string; message: string };
+            const params = rawParams as { sessionId?: string; target?: "parent" | "children"; message?: string };
+            const sessionId = params.sessionId?.trim();
+            const target = params.target;
+            const message = params.message?.trim();
+            const targetCount = (sessionId ? 1 : 0) + (target ? 1 : 0);
+            if (targetCount !== 1) {
+                return { content: [{ type: "text" as const, text: "Error: Choose exactly one target: sessionId, target:'parent', or target:'children'." }], details: null as any };
+            }
+            if (!message) {
+                return { content: [{ type: "text" as const, text: "Error: message is required." }], details: null as any };
+            }
             const conn = getRelaySocket();
             if (!conn) {
-                return { content: [{ type: "text" as const, text: "Error: Not connected to relay. Cannot send message to child." }], details: null as any };
+                return { content: [{ type: "text" as const, text: "Error: Not connected to relay. Cannot send message." }], details: null as any };
             }
 
-            // Always steer active work rather than queueing behind the child's turn.
-            const result = await new Promise<string>((resolve) => {
-                const timeout = setTimeout(() => {
-                    conn.socket.off("session_message_error", onError);
-                    resolve(`Message sent to child ${params.sessionId}`);
-                }, 3000);
-
-                const onError = (err: { targetSessionId: string; error: string }) => {
-                    if (err.targetSessionId === params.sessionId) {
-                        clearTimeout(timeout);
-                        conn.socket.off("session_message_error", onError);
-                        resolve(`Error: ${err.error}`);
-                    }
-                };
-                conn.socket.on("session_message_error", onError);
-
-                conn.socket.emit("session_message", {
-                    token: conn.token,
-                    targetSessionId: params.sessionId,
-                    message: params.message,
-                    deliverAs: "steer",
-                });
+            const result = await sendSessionMessageWithAck(conn, {
+                message,
+                ...(sessionId ? { targetSessionId: sessionId } : {}),
+                ...(target ? { target } : {}),
+                deliverAs: "steer",
             });
-
-            return { content: [{ type: "text" as const, text: result }], details: null as any };
+            const delivered = result.delivered ?? [];
+            const failures = result.errors ?? [];
+            if (!result.ok) {
+                const deliveredText = delivered.length > 0 ? ` Delivered (${delivered.length}): ${delivered.join(", ")}.` : "";
+                const failureText = failures.length > 0
+                    ? ` Failed (${failures.length}): ${failures.map((e) => `${e.targetSessionId}: ${e.error}`).join("; ")}.`
+                    : ` ${result.error ?? "Failed to deliver message"}`;
+                return { content: [{ type: "text" as const, text: `Error: Message delivery incomplete.${deliveredText}${failureText}` }], details: result as any };
+            }
+            const targetLabel = target === "children" ? `${delivered.length} child session${delivered.length === 1 ? "" : "s"}` : target ?? sessionId;
+            const idList = delivered.length > 0 ? ` (${delivered.join(", ")})` : "";
+            return { content: [{ type: "text" as const, text: `Message delivered to ${targetLabel}${idList}.` }], details: result as any };
         },
         renderCall: (args: any, theme: any) => {
-            const sid = shortId(args.sessionId ?? "", 8);
+            const target = args.target ? String(args.target) : shortId(args.sessionId ?? "", 8);
             const msg = preview(args.message ?? "", 50);
             return new Text(
                 theme.fg("accent", "→") + " " +
-                theme.fg("muted", "child ") +
-                theme.fg("dim", sid) +
+                theme.fg("muted", "message ") +
+                theme.fg("dim", target) +
                 theme.fg("muted", ": ") +
                 theme.fg("dim", msg),
                 0, 0
@@ -391,7 +436,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
 
             // session_complete is respondable but handled differently:
             // - "ack": just acknowledge, no message to child
-            // - "followUp": deliver as input message to resume the child (like tell_child)
+            // - "followUp": deliver as input message to resume the child (like send_message)
             if (isSessionCompleteType(pending.type)) {
                 const action = params.action ?? "ack";
                 if (action === "followUp") {

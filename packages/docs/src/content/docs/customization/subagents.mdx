@@ -236,7 +236,7 @@ The launch card records that the subagent started in the background. The parent 
 
 | Feature | `subagent` | `spawn_session` |
 |---------|-----------|----------------|
-| **Communication** | Automatic follow-up result | Triggers + `tell_child` |
+| **Communication** | Automatic follow-up result | Triggers + `send_message` |
 | **Context** | Isolated in-process session | Fully independent session |
 | **UI** | Inline in parent session | Separate session view |
 | **Overhead** | Near-zero (in-process SDK) | Higher (relay round-trip, new PTY) |

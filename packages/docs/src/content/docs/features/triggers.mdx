@@ -100,9 +100,9 @@ For contract-bearing events, the action must be one allowed by the event's Respo
 
 Publishes a `lifecycle:escalation` event to the current session so the web UI surfaces it to the human viewer. The original trigger stays pending so a later `respond_to_trigger` still routes the answer back to the child/source.
 
-### `tell_child`
+### `send_message`
 
-Sends a steering message to a linked child session and interrupts active work at the next agent boundary.
+Sends a steering message across a direct linked session relationship and interrupts active work at the next agent boundary. Use `sessionId` for one direct child, `target: "parent"` from a child, or `target: "children"` to broadcast to active direct children.
 
 ---
 

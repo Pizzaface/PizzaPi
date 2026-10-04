@@ -932,10 +932,14 @@ function messageToSubAgentTurn(msg: RelayMessage): SubAgentTurn {
   const isStreaming = !hasOutput && !resultText;
 
   if (bare === "send_message") {
-    const sessionId = typeof input.sessionId === "string" ? input.sessionId : "unknown";
+    const sessionId = typeof input.sessionId === "string"
+      ? input.sessionId
+      : typeof input.target === "string"
+        ? input.target
+        : "unknown";
     const message = typeof input.message === "string" ? input.message : "";
     const isError = resultText?.toLowerCase().startsWith("error") ?? false;
-    return { type: "sent", sessionId, message, isStreaming, isError };
+    return { type: "sent", sessionId, message, resultText, isStreaming, isError };
   }
 
   if (bare === "wait_for_message") {

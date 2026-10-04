@@ -102,8 +102,9 @@ describe("relay — RelayClientToServerEvents payloads", () => {
     expect(failure.result).toBeUndefined();
   });
 
-  test("session_message carries token, targetSessionId, message", () => {
+  test("session_message carries token, explicit target, message, and optional ack", () => {
     type Payload = Parameters<RelayClientToServerEvents["session_message"]>[0];
+    type Ack = Parameters<RelayClientToServerEvents["session_message"]>[1];
 
     const minimal: Payload = {
       token: "tok-1",
@@ -115,8 +116,12 @@ describe("relay — RelayClientToServerEvents payloads", () => {
     expect(typeof minimal.message).toBe("string");
     expect(minimal.deliverAs).toBeUndefined();
 
-    const asInput: Payload = { ...minimal, deliverAs: "input" };
-    expect(asInput.deliverAs).toBe("input");
+    const parentTarget: Payload = { token: "tok-1", target: "parent", message: "Hello parent", deliverAs: "steer" };
+    expect(parentTarget.target).toBe("parent");
+    expect(parentTarget.deliverAs).toBe("steer");
+
+    const ack: Ack = (result) => expect(result.ok).toBe(true);
+    ack?.({ ok: true, delivered: ["sess-target"] });
   });
 
   test("session_trigger carries token and full trigger shape", () => {
@@ -268,7 +273,7 @@ describe("relay — RelayServerToClientEvents payloads", () => {
     expect(Object.keys(p)).toHaveLength(0);
   });
 
-  test("input carries text with optional attachments and delivery mode", () => {
+  test("input carries text with optional attachments, attribution, and delivery mode", () => {
     type Payload = Parameters<RelayServerToClientEvents["input"]>[0];
 
     const minimal: Payload = { text: "Do something useful" };
@@ -280,12 +285,14 @@ describe("relay — RelayServerToClientEvents payloads", () => {
     const full: Payload = {
       text: "Look at this screenshot",
       attachments: [attachment],
-      client: "mobile-web",
+      client: "agent",
+      fromSessionId: "child-1",
       deliverAs: "steer",
       requestId: "req-1",
     };
     expect(full.attachments).toHaveLength(1);
-    expect(full.client).toBe("mobile-web");
+    expect(full.client).toBe("agent");
+    expect(full.fromSessionId).toBe("child-1");
     expect(full.deliverAs).toBe("steer");
     expect(full.requestId).toBe("req-1");
   });

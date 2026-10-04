@@ -9,12 +9,17 @@ export function SubAgentTurnBubble({ turn }: { turn: SubAgentTurn }) {
     return (
       <div className="flex flex-col items-end gap-1">
         <div className="text-[10px] text-muted-foreground pr-1">
-          → {truncateSessionId(turn.sessionId)}
+          → {turn.sessionId === "parent" ? "Parent" : turn.sessionId === "children" ? "All children" : truncateSessionId(turn.sessionId)}
           {turn.isError && <span className="text-destructive ml-1">error</span>}
         </div>
         <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-blue-600/25 border border-blue-500/30 px-3 py-2 text-foreground whitespace-pre-wrap break-words leading-relaxed text-[0.8rem]">
           {turn.message || <span className="italic text-muted-foreground">(empty)</span>}
         </div>
+        {turn.isError && turn.resultText && (
+          <div className="max-w-[85%] whitespace-pre-wrap break-words rounded border border-destructive/30 bg-destructive/10 px-2 py-1 text-[11px] text-destructive">
+            {turn.resultText}
+          </div>
+        )}
         {turn.isStreaming && (
           <div className="flex items-center gap-1 text-[10px] text-muted-foreground pr-1">
             <Loader2Icon className="size-2.5 animate-spin" /> Sending…
@@ -138,7 +143,7 @@ export function SubAgentConversationCard({ turns }: { turns: SubAgentTurn[] }) {
               key={id}
               className="font-mono text-[10px] text-muted-foreground rounded bg-muted px-1.5 py-0.5"
             >
-              {truncateSessionId(id)}
+              {id === "parent" ? "Parent" : id === "children" ? "All children" : truncateSessionId(id)}
             </span>
           ))}
         </div>

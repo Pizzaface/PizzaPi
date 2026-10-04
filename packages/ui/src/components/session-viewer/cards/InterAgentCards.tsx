@@ -226,9 +226,9 @@ export function SendMessageCard({
     <ToolCardShell>
       <ToolCardHeader>
         <ToolCardTitle icon={<SendIcon className="size-3.5 shrink-0 text-blue-400" />}>
-          <span className="text-sm font-medium text-zinc-300">Message Sent</span>
+          <span className="text-sm font-medium text-zinc-300">Send Message</span>
           <span className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] text-zinc-500">
-            → {truncateSessionId(targetSessionId)}
+            → {targetSessionId === "parent" ? "Parent" : targetSessionId === "children" ? "All children" : truncateSessionId(targetSessionId)}
           </span>
         </ToolCardTitle>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -532,7 +532,7 @@ export function RespondToTriggerCard({
   );
 }
 
-// ── Tell Child Card ──────────────────────────────────────────────────────────
+// ── Legacy tell_child card ───────────────────────────────────────────────────
 
 export function TellChildCard({
   sessionId,
@@ -551,7 +551,7 @@ export function TellChildCard({
     <ToolCardShell>
       <ToolCardHeader className="py-2.5">
         <ToolCardTitle icon={<MessageCircleIcon className="size-3.5 shrink-0 text-blue-400" />}>
-          <span className="text-sm font-medium text-zinc-300">Tell Child</span>
+          <span className="text-sm font-medium text-zinc-300">Send Message</span>
           <span className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] text-zinc-500">
             → {truncateSessionId(sessionId)}
           </span>

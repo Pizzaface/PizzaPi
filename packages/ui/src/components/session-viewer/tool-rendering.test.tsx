@@ -81,6 +81,22 @@ describe("renderReadToolResult", () => {
 });
 
 describe("renderGroupedToolExecution", () => {
+  test("renders send_message target labels and error text", () => {
+    const node = renderGroupedToolExecution(
+      "tc-send",
+      "send_message",
+      { target: "children", message: "Go now" },
+      [{ type: "text", text: "Error: Message delivery incomplete. Delivered (1): child-1. Failed (1): child-2: Target session did not acknowledge delivery." }],
+      true,
+      false,
+    );
+
+    const view = render(<>{node}</>);
+    expect(view.container.textContent).toContain("Send Message");
+    expect(view.container.textContent).toContain("→ All children");
+    expect(view.container.textContent).toContain("Message delivery incomplete");
+  });
+
   test("renders Pi 1.0 nested tool call summaries on the parent card", () => {
     const node = renderGroupedToolExecution(
       "tc1",
@@ -100,9 +116,9 @@ describe("renderGroupedToolExecution", () => {
     );
 
     const view = render(<>{node}</>);
-    expect(view.getByText("Nested tool calls · 1 (truncated)")).toBeTruthy();
-    expect(view.getByText("tc1/1")).toBeTruthy();
-    expect(view.getByText("read")).toBeTruthy();
-    expect(view.getByText("ok")).toBeTruthy();
+    expect(view.container.textContent).toContain("Nested tool calls · 1 (truncated)");
+    expect(view.container.textContent).toContain("tc1/1");
+    expect(view.container.textContent).toContain("read");
+    expect(view.container.textContent).toContain("ok");
   });
 });
