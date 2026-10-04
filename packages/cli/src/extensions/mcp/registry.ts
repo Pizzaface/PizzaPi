@@ -615,6 +615,12 @@ export async function registerMcpTools(
             pi.registerTool({
               name: toolName,
               label: `${client.name}:${tool.name}`,
+              // Keep PizzaPi-managed MCP tools out of model declarations by default,
+              // while allowing Pi 1.0 codemode/search to call them through the normal
+              // tool pipeline (including tool_call approvals and sandbox checks).
+              // Preserve PizzaPi's existing direct-call default. When its search tool
+              // is enabled, keep deferred tools callable through Pi 1.0 codemode.
+              exposure: config.toolSearch?.enabled === true ? "deferred" : "direct",
               description: tool.description
                 ? `${tool.description} (source: ${sourceName})`
                 : `MCP tool from ${client.name} (source: ${sourceName})`,

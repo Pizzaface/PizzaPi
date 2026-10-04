@@ -36,6 +36,9 @@ const sampleModels = {
     models: [
         { provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude 4 Sonnet", reasoning: false, contextWindow: 200_000 },
         { provider: "openai-codex", id: "gpt-5.5", name: "GPT-5.5", reasoning: false, contextWindow: 128_000 },
+        { provider: "openrouter", id: "chat-model", name: "Chat Model", reasoning: false, contextWindow: 32_000 },
+        { provider: "openrouter", id: "image-model", name: "Image Model", type: "image", reasoning: false, contextWindow: 0 },
+        { provider: "typesafe", id: "classifier-model", name: "Classifier Model", type: "classifier", reasoning: false, contextWindow: 0 },
     ],
 };
 

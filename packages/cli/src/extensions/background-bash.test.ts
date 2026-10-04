@@ -91,9 +91,12 @@ describe("bash override with backgrounding", () => {
         expect(pi.messages.length).toBe(0);
     });
 
-    test("foreground non-zero exit throws like the built-in", async () => {
+    test("foreground non-zero exit returns Pi 1.0 structured error", async () => {
         const { tool } = getTool();
-        await expect(run(tool, { command: "exit 3" })).rejects.toThrow("exited with code 3");
+        const res = await run(tool, { command: "exit 3" });
+        expect(res.isError).toBe(true);
+        expect(res.content[0].text).toContain("Command exited with code 3");
+        expect(res.structuredContent.exit_code).toBe(3);
     });
 
     test("run_in_background returns immediately and notifies on exit", async () => {

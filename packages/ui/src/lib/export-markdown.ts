@@ -216,6 +216,11 @@ function formatMessage(message: RelayMessage): string | null {
       );
     }
 
+    if (message.responseModel && message.responseModel !== message.model) {
+      const selected = `${message.provider ? `${message.provider}/` : ""}${message.model ?? "selected model"}`;
+      parts.push(`_Model: ${selected} → ${message.responseModel}_`);
+    }
+
     const text = contentToString(message.content);
     if (text) parts.push(text);
 
@@ -252,6 +257,17 @@ function formatMessage(message: RelayMessage): string | null {
 
     if (message.isError && message.content) {
       parts.push(`> ⚠️ Tool returned an error`);
+    }
+
+    if (message.nestedCalls?.calls.length) {
+      const lines = message.nestedCalls.calls.map((call) => {
+        const bits = [`- ${call.id} ${call.name}: ${call.status}`];
+        if (typeof call.durationMs === "number") bits.push(`(${call.durationMs}ms)`);
+        if (call.error) bits.push(`— ${call.error}`);
+        return bits.join(" ");
+      });
+      if (message.nestedCalls.complete === false) lines.push("- [nested call list truncated]");
+      parts.push(`**Nested tool calls:**\n${lines.join("\n")}`);
     }
 
     // Subagent details — extract per-agent task/response pairs

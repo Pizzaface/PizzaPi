@@ -168,6 +168,36 @@ describe("MCP HTTP smoke test", () => {
             expect(tools[0].name).toBe("test_tool");
 
             clients[0].close();
+
+            const mockPi = {
+                registeredTools: [] as any[],
+                registerTool(tool: unknown) { this.registeredTools.push(tool); },
+                on() {},
+            };
+            const registered = await registerMcpTools(mockPi, {
+                mcpServers: { "test-http": { url: `http://localhost:${server.port}` } },
+            } as any);
+            expect(mockPi.registeredTools).toHaveLength(1);
+            expect(mockPi.registeredTools[0]).toMatchObject({
+                name: registered.toolNames[0],
+                exposure: "direct",
+            });
+            for (const client of registered.clients) client.close();
+
+            const deferredPi = {
+                registeredTools: [] as any[],
+                registerTool(tool: unknown) { this.registeredTools.push(tool); },
+                on() {},
+            };
+            const deferred = await registerMcpTools(deferredPi, {
+                toolSearch: { enabled: true },
+                mcpServers: { "test-http": { url: `http://localhost:${server.port}` } },
+            } as any);
+            expect(deferredPi.registeredTools[0]).toMatchObject({
+                name: deferred.toolNames[0],
+                exposure: "deferred",
+            });
+            for (const client of deferred.clients) client.close();
         } finally {
             server.stop(true);
         }

@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { cleanup, render } from "@testing-library/react";
 import React from "react";
-import { renderReadToolResult } from "./tool-rendering";
+import { renderGroupedToolExecution, renderReadToolResult } from "./tool-rendering";
 
 function findImage(node: React.ReactNode): React.ReactElement<React.ImgHTMLAttributes<HTMLImageElement>> | null {
   const all = findAllImages(node);
@@ -17,6 +18,8 @@ function findAllImages(node: React.ReactNode): React.ReactElement<React.ImgHTMLA
   }
   return findAllImages((node.props as { children?: React.ReactNode }).children);
 }
+
+afterEach(() => cleanup());
 
 describe("renderReadToolResult", () => {
   test("renders an image extracted to an attachment URL", () => {
@@ -74,5 +77,32 @@ describe("renderReadToolResult", () => {
     ]));
 
     expect(images).toHaveLength(2);
+  });
+});
+
+describe("renderGroupedToolExecution", () => {
+  test("renders Pi 1.0 nested tool call summaries on the parent card", () => {
+    const node = renderGroupedToolExecution(
+      "tc1",
+      "codemode",
+      { script: "await tools.read({ path: 'x' })" },
+      [{ type: "text", text: "done" }],
+      false,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        complete: false,
+        calls: [{ id: "tc1/1", name: "read", status: "ok", durationMs: 9 }],
+      },
+    );
+
+    const view = render(<>{node}</>);
+    expect(view.getByText("Nested tool calls · 1 (truncated)")).toBeTruthy();
+    expect(view.getByText("tc1/1")).toBeTruthy();
+    expect(view.getByText("read")).toBeTruthy();
+    expect(view.getByText("ok")).toBeTruthy();
   });
 });

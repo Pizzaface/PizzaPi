@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { registerProviderAuthHandlers, type AuthRuntime } from "./provider-auth.js";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 /** Socket double: records emits, lets tests fire inbound events. */
 function fakeSocket() {
@@ -53,6 +56,32 @@ function fakeRuntime(): { runtime: AuthRuntime; loggedIn: string[] } {
 }
 
 describe("provider auth handlers", () => {
+    test("ChatGPT login receives a persistent installation device ID", async () => {
+        const agentDir = mkdtempSync(join(tmpdir(), "pizzapi-auth-device-"));
+        try {
+            const { socket, fire, reply } = fakeSocket();
+            const { runtime } = fakeRuntime();
+            const ids: string[] = [];
+            runtime.getProvider = () => ({ auth: { oauth: {} } });
+            runtime.login = async (_provider, _type, _interaction, options) => {
+                const id = options?.getDeviceId?.();
+                if (!id) throw new Error("Sign in with ChatGPT requires a device ID");
+                ids.push(id);
+                return {};
+            };
+            registerProviderAuthHandlers(socket, () => false, () => agentDir, async () => runtime);
+            for (const requestId of ["device-1", "device-2"]) {
+                fire("auth_login_start", { requestId, providerId: "openai", authType: "oauth" });
+                expect((await reply(requestId)).step).toEqual({ state: "done", providerId: "openai" });
+            }
+            expect(ids[0]).toMatch(/^[0-9a-f-]{36}$/);
+            expect(ids[1]).toBe(ids[0]);
+            expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")).deviceId).toBe(ids[0]);
+        } finally {
+            rmSync(agentDir, { recursive: true, force: true });
+        }
+    });
+
     test("lists only providers with an interactive login", async () => {
         const { socket, fire, reply } = fakeSocket();
         const { runtime } = fakeRuntime();

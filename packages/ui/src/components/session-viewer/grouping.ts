@@ -851,6 +851,7 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
             toolCallId: resolvedToolCallId,
             timestamp: message.timestamp ?? grouped[existingIdx].timestamp,
             details: message.details ?? grouped[existingIdx].details,
+            nestedCalls: message.nestedCalls ?? grouped[existingIdx].nestedCalls,
             role: "tool",
           };
           continue;
@@ -870,6 +871,7 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
             toolCallId: resolvedToolCallId,
             timestamp: message.timestamp ?? grouped[existingIdxByKey].timestamp,
             details: message.details ?? grouped[existingIdxByKey].details,
+            nestedCalls: message.nestedCalls ?? grouped[existingIdxByKey].nestedCalls,
             role: "tool",
           };
           continue;

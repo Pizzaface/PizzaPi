@@ -142,6 +142,12 @@ When the agent performs a web search via Anthropic's server-side web search tool
 
 The results card shows a count badge (e.g., "8 results") and groups results in a clean list with hover highlighting.
 
+## Nested tool calls
+
+Pi 1.0 tools can call other tools internally, most commonly through codemode or extension `ctx.executeTool()` flows. PizzaPi keeps those nested calls attached to the parent tool card instead of rendering them as separate transcript messages.
+
+Expand **Nested tool calls** on a parent tool card to see each child call's ID, tool name, status, duration, and any truncated-argument or error note. Nested call results are not shown because Pi stores only bounded metadata for the session record.
+
 ## @mention & file attachment
 
 The chat input supports **@mentions** for referencing files and agents in your messages.

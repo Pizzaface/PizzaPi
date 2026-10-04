@@ -349,6 +349,7 @@ export function registerPlanModeTool(rctx: RelayContext) {
             "'Begin' (proceed with current context), " +
             "'Suggest Edit' (user provides feedback to revise the plan — resubmit an updated plan), " +
             "or 'Cancel' (do not proceed).",
+        exposure: "model-only",
         parameters: {
             type: "object",
             properties: {

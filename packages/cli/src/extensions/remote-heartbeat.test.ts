@@ -1,11 +1,11 @@
 import { describe, test, expect } from "bun:test";
 import { buildTokenUsage } from "./remote-heartbeat.js";
 
-function entry(input: number, output: number) {
+function entry(input: number, output: number, role = "assistant") {
   return {
     type: "message",
     message: {
-      role: "assistant",
+      role,
       usage: { input, output, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } },
     },
   };
@@ -59,6 +59,11 @@ describe("buildTokenUsage", () => {
     // Compaction shrinks context without changing the cache key.
     tokens = 5_000;
     expect(buildTokenUsage(rctx).contextTokens).toBe(5_000);
+  });
+
+  test("includes tool-result usage from nested model work", () => {
+    const rctx = makeRctx([entry(100, 50), entry(7, 3, "toolResult")], "leaf-1", 1000);
+    expect(buildTokenUsage(rctx)).toMatchObject({ input: 107, output: 53, cost: 0.02 });
   });
 
   test("returns zeros with no latestCtx", () => {

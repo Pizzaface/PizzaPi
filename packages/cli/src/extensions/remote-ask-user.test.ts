@@ -374,6 +374,11 @@ describe("remote-ask-user", () => {
 
         const params = { questions: [{ question: "Pick one", options: ["a", "b"] }] };
 
+        test("registers as model-only so nested executeTool/codemode cannot prompt", () => {
+            const { tool } = makeRctx();
+            expect(tool().exposure).toBe("model-only");
+        });
+
         test("does NOT prompt ctx.ui in RPC/headless mode (hasUI true, mode print)", async () => {
             const { rctx, tool } = makeRctx();
             let inputCalled = false;

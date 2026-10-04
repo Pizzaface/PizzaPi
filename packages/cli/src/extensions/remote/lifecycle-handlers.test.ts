@@ -109,7 +109,7 @@ function setup(lastRetryableError: { errorMessage: string; detectedAt: number } 
 
     const agentEnd = handlers.get("agent_end")!;
     const agentSettled = handlers.get("agent_settled")!;
-    return { agentEnd, agentSettled, emitted, rctx };
+    return { agentEnd, agentSettled, emitted, rctx, handlers };
 }
 
 const agentEndCtx = { hasPendingMessages: () => false, shutdown: () => {} };
@@ -118,6 +118,23 @@ const agentEndCtx = { hasPendingMessages: () => false, shutdown: () => {} };
 function flush(): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, 0));
 }
+
+describe("nested tool events", () => {
+    test("forwards parentToolCallId from Pi 1.0 nested executions unchanged", () => {
+        const { handlers, rctx } = setup(null);
+        const event = {
+            type: "tool_execution_start",
+            toolCallId: "parent/1",
+            parentToolCallId: "parent",
+            toolName: "read",
+            args: { path: "README.md" },
+        };
+
+        handlers.get("tool_execution_start")!(event, {});
+
+        expect(rctx.forwardEvent).toHaveBeenCalledWith(event);
+    });
+});
 
 describe("agent_end — session_error / session_complete ordering", () => {
     test("emits session_error before session_complete for a child session usage-limit error", async () => {

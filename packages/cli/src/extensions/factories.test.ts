@@ -29,7 +29,9 @@ import { goalExtension } from "./goal/index.js";
 import { initialPromptExtension } from "./initial-prompt.js";
 import { pizzapiHeaderExtension } from "./pizzapi-header.js";
 import { toolSearchExtension } from "./tool-search.js";
+import { codemodeExtension, nativeToolSearchExtension } from "./builtin-extensions.js";
 import { ollamaWebToolsExtension } from "./ollama-web-tools.js";
+import { openaiCodexWebSearchExtension } from "./openai-codex-web-search.js";
 import { sessionAnalysisExtension } from "./session-analysis.js";
 import { providerRequestLogExtension } from "./provider-request-log.js";
 import { fallbackModelsExtension } from "./fallback-models.js";
@@ -62,9 +64,12 @@ const CORE_EXTENSIONS_HEAD: ExtensionFactory[] = [
     remoteExtension,
     tunnelToolsExtension,
     serviceMessageBridgeExtension,
+    codemodeExtension,
+    nativeToolSearchExtension,
     mcpExtension,
     toolSearchExtension,  // Must be after MCP to see registered MCP tools
     ollamaWebToolsExtension,
+    openaiCodexWebSearchExtension,
 ];
 const CORE_EXTENSIONS_TAIL: ExtensionFactory[] = [
     goalExtension,
@@ -208,6 +213,8 @@ describe("buildPizzaPiExtensionFactories — safe mode", () => {
 
         expect(factories).not.toContain(remoteExtension);
         expect(factories).not.toContain(mcpExtension);
+        expect(factories).toContain(codemodeExtension);
+        expect(factories).toContain(nativeToolSearchExtension);
         // Should still have the always-on extensions
         expect(factories).toContain(restartExtension);
         expect(factories).toContain(setSessionNameExtension);

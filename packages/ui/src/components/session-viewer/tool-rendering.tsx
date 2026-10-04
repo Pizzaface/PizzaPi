@@ -57,6 +57,7 @@ import { CopyableCodeBlock } from "@/components/session-viewer/cards/InterAgentC
 import { WriteFileCard } from "@/components/session-viewer/cards/WriteFileCard";
 import { TodoCard } from "@/components/session-viewer/cards/TodoCard";
 import type { TodoItem } from "@/lib/types";
+import type { NestedToolCalls } from "@/components/session-viewer/types";
 import { getMobileRuntimeConfig, resolveMobileMediaUrlAsync } from "@/lib/mobile-runtime";
 
 /** Resolves a mobile attachment URL asynchronously (mints a short-lived token). */
@@ -127,6 +128,42 @@ export function metadataBadge(label: string, value: string) {
       <span className="opacity-70">{label}:</span>
       <span className="font-mono text-foreground/90">{value}</span>
     </span>
+  );
+}
+
+function NestedToolCallsSummary({ nestedCalls }: { nestedCalls?: NestedToolCalls }) {
+  const calls = nestedCalls?.calls ?? [];
+  if (calls.length === 0) return null;
+
+  const statusClass = (status: string) =>
+    status === "ok"
+      ? "text-emerald-400"
+      : status === "error"
+        ? "text-red-400"
+        : "text-yellow-400";
+
+  return (
+    <details className="rounded-lg border border-zinc-800 bg-zinc-950/70 text-xs">
+      <summary className="cursor-pointer list-none px-4 py-2 text-zinc-400 hover:bg-zinc-900">
+        Nested tool calls · {calls.length}{nestedCalls?.complete === false ? " (truncated)" : ""}
+      </summary>
+      <div className="divide-y divide-zinc-800/70">
+        {calls.map((call) => (
+          <div key={call.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 font-mono">
+            <span className="text-zinc-500">{call.id}</span>
+            <span className="text-zinc-200">{call.name}</span>
+            <span className={statusClass(call.status)}>{call.status}</span>
+            {typeof call.durationMs === "number" ? (
+              <span className="text-zinc-500">{call.durationMs}ms</span>
+            ) : null}
+            {typeof call.argumentsBytes === "number" ? (
+              <span className="text-zinc-500">args {formatBytes(call.argumentsBytes)}</span>
+            ) : null}
+            {call.error ? <span className="basis-full text-red-300 whitespace-pre-wrap">{call.error}</span> : null}
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -597,6 +634,7 @@ export function renderGroupedToolExecution(
   thinkingDuration?: number,
   details?: unknown,
   leadingText?: string,
+  nestedCalls?: NestedToolCalls,
 ) {
   const hasOutput = hasVisibleContent(content);
   // Streaming takes priority: a tool with partial output is still running.
@@ -1171,6 +1209,13 @@ export function renderGroupedToolExecution(
     </ModeAwareToolCard>
   );
 
+  const bodyWithNested = nestedCalls && nestedCalls.calls.length > 0 ? (
+    <div className="flex flex-col gap-2">
+      {body}
+      <NestedToolCallsSummary nestedCalls={nestedCalls} />
+    </div>
+  ) : body;
+
   if (thinking || leadingText) {
     // The reasoning/prose that precedes an interactive prompt (a question the
     // user must answer, a plan they must approve) is context the user needs
@@ -1192,12 +1237,12 @@ export function renderGroupedToolExecution(
               </Reasoning>
            </div>
          )}
-         {body}
+         {bodyWithNested}
       </div>
     );
   }
 
-  return body;
+  return bodyWithNested;
 }
 
 /**

@@ -163,13 +163,14 @@ export default function ProviderAuthSettings({ runnerId }: SectionProps) {
                     {step.authUrl && (
                         <div className="space-y-2">
                             <p className="text-xs text-muted-foreground">
-                                Open the authorization page, finish signing in, then paste the URL you land on back
-                                here. It can be a browser on any device.
+                                {step.prompt.type === "manual_code"
+                                    ? "Open the authorization page on any device, finish signing in, then paste the code here."
+                                    : "Open the authorization page, finish signing in, then paste the URL you land on back here. It can be a browser on any device."}
                             </p>
                             <Button asChild size="sm" variant="secondary">
                                 <a href={step.authUrl} target="_blank" rel="noreferrer">
                                     <ExternalLink className="h-3.5 w-3.5 mr-1" />
-                                    Open authorization page
+                                    {step.prompt.type === "manual_code" ? "Open sign-in page" : "Open authorization page"}
                                 </a>
                             </Button>
                         </div>

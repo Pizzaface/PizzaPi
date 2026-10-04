@@ -82,6 +82,23 @@ Choose the monospace font used for code blocks, inline code, and the terminal. O
 
 All non-system fonts are bundled with PizzaPi (self-hosted woff2 files, ~500KB total) — no external requests to Google Fonts or CDNs. Fonts load on demand with `font-display: swap` so there's no layout shift.
 
+## Runner terminal preferences
+
+**Runner Settings → TUI Preferences** configures the runner's terminal interface, separately from browser appearance. These settings are saved to `~/.pizzapi/settings.json` and apply to new terminal sessions.
+
+| Control | Setting | Default |
+|---------|---------|---------|
+| Terminal Mode | `tuiMode`: `fullscreen` or `regular` | Fullscreen; choose Regular for normal terminal scrollback |
+| Terminal Theme | `theme`: `system`, `dark`, `light`, or an existing custom theme | System, using the terminal palette |
+| Startup Display | `quietStartup`: `true`, `"header"`, or `false` | Quiet in PizzaPi; Header only shows version and key hints |
+| Steering Mode | `steeringMode`: `one-at-a-time` or `all` | One at a time |
+| Provider Transport | `transport`: `auto`, `sse`, `websocket`, or `websocket-cached` | Auto; this controls AI provider connections, not MCP |
+| Double-Escape Action | `doubleEscapeAction`: `tree`, `fork`, or `none` | Session tree |
+
+Saving preserves terminal options this panel does not edit. Older UI values such as `steeringMode: "manual"`, `transport: "stdio"`, and `doubleEscapeAction: "abort"` are replaced with supported defaults when you save. Existing valid preferences are retained.
+
+From the terminal, use `/settings` or set `"tuiMode": "regular"` in `~/.pizzapi/settings.json` to keep normal terminal scrollback.
+
 ## Notifications
 
 ### Browser push notifications

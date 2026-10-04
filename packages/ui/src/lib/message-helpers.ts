@@ -33,6 +33,9 @@ export function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage |
 
   const stopReason = typeof msg.stopReason === "string" ? msg.stopReason : undefined;
   const errorMessage = typeof msg.errorMessage === "string" ? msg.errorMessage : undefined;
+  const provider = typeof msg.provider === "string" ? msg.provider : undefined;
+  const model = typeof msg.model === "string" ? msg.model : undefined;
+  const responseModel = typeof msg.responseModel === "string" ? msg.responseModel : undefined;
 
   // Extract summary/tokensBefore for compactionSummary / branchSummary messages
   const summary = typeof msg.summary === "string" ? msg.summary : undefined;
@@ -40,6 +43,7 @@ export function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage |
 
   // Preserve structured details (e.g., subagent SubagentDetails) for tool results
   const details = msg.details !== undefined && msg.details !== null ? msg.details : undefined;
+  const nestedCalls = isNestedToolCalls(msg.nestedCalls) ? msg.nestedCalls : undefined;
 
   // Preserve custom-message metadata so the viewer can label extension/context
   // messages with their full key instead of only the generic "custom" role.
@@ -56,9 +60,13 @@ export function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage |
     isError: msg.isError === true || stopReason === "error",
     stopReason,
     errorMessage,
+    provider,
+    model,
+    responseModel,
     summary,
     tokensBefore,
     details,
+    nestedCalls,
     customType,
     display,
     isStreamingPartial: msg.isStreamingPartial === true ? true : undefined,
@@ -179,6 +187,7 @@ export function buildStreamingPartialMessage(input: {
       : null;
   const content = partial ? partial.content : undefined;
   const details = partial ? partial.details : undefined;
+  const nestedCalls = partial && isNestedToolCalls(partial.nestedCalls) ? partial.nestedCalls : undefined;
   return {
     key: `tool-call:${input.toolCallId}`,
     role: "toolResult",
@@ -186,6 +195,7 @@ export function buildStreamingPartialMessage(input: {
     toolName: input.toolName,
     content,
     details,
+    nestedCalls,
     isError: false,
     // Mark as a streaming partial so deduplication logic does not treat it as
     // a terminal tool result (the tool is still in-flight).
@@ -214,10 +224,40 @@ export function normalizeMessages(rawMessages: unknown[], keyOffset = 0): RelayM
   return deduplicateMessages(all);
 }
 
+export function isChatModel(model: unknown): boolean {
+  return !!model && typeof model === "object" && !Array.isArray(model) &&
+    (((model as Record<string, unknown>).type === undefined) || (model as Record<string, unknown>).type === "chat");
+}
+
+function isNestedToolCalls(value: unknown): value is NonNullable<RelayMessage["nestedCalls"]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const nested = value as Record<string, unknown>;
+  return typeof nested.complete === "boolean" && Array.isArray(nested.calls) && nested.calls.every((call) => {
+    if (!call || typeof call !== "object" || Array.isArray(call)) return false;
+    const item = call as Record<string, unknown>;
+    return typeof item.id === "string" && typeof item.name === "string" &&
+      (item.status === "ok" || item.status === "error" || item.status === "unfinished") &&
+      (item.arguments === undefined || (!!item.arguments && typeof item.arguments === "object" && !Array.isArray(item.arguments))) &&
+      (item.argumentsBytes === undefined || (typeof item.argumentsBytes === "number" && Number.isFinite(item.argumentsBytes))) &&
+      (item.durationMs === undefined || (typeof item.durationMs === "number" && Number.isFinite(item.durationMs))) &&
+      (item.error === undefined || typeof item.error === "string");
+  });
+}
+
+export function isNestedToolExecutionEvent(raw: unknown): boolean {
+  return !!(
+    raw &&
+    typeof raw === "object" &&
+    typeof (raw as Record<string, unknown>).parentToolCallId === "string" &&
+    ((raw as Record<string, unknown>).parentToolCallId as string).length > 0
+  );
+}
+
 export function normalizeModel(raw: unknown): ConfiguredModelInfo | null {
   if (!raw || typeof raw !== "object") return null;
   const model = raw as Record<string, unknown>;
   const provider = typeof model.provider === "string" ? model.provider.trim() : "";
+  if (!isChatModel(model)) return null;
   // Accept both `id` (availableModels shape) and `modelId` (buildSessionContext shape)
   const id = (typeof model.id === "string" ? model.id.trim() : "") ||
               (typeof model.modelId === "string" ? model.modelId.trim() : "");

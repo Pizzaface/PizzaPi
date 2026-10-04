@@ -585,6 +585,37 @@ describe("exportToMarkdown", () => {
     expect(md).not.toContain('"content"');
   });
 
+  test("exports routed physical model for virtual model responses", () => {
+    const md = exportToMarkdown([
+      msg({
+        role: "assistant",
+        provider: "openai",
+        model: "router-model",
+        responseModel: "gpt-6.1-sol",
+        content: "Routed response",
+      }),
+    ]);
+    expect(md).toContain("_Model: openai/router-model → gpt-6.1-sol_");
+  });
+
+  test("exports nested tool call summaries", () => {
+    const md = exportToMarkdown([
+      msg({
+        role: "tool",
+        toolName: "codemode",
+        toolInput: { script: "await tools.read({ path: 'x' })" },
+        content: [{ type: "text", text: "done" }],
+        nestedCalls: {
+          complete: false,
+          calls: [{ id: "tc1/1", name: "read", status: "ok", durationMs: 7 }],
+        },
+      }),
+    ]);
+    expect(md).toContain("Nested tool calls");
+    expect(md).toContain("tc1/1 read: ok (7ms)");
+    expect(md).toContain("nested call list truncated");
+  });
+
   test("trigger comment prefixes are stripped from exported messages", () => {
     const md = exportToMarkdown([
       msg({

@@ -11,7 +11,7 @@
  * The OAuth flows accept a pasted redirect URL, so the browser can live on a
  * different machine than the runner — no callback port needs publishing.
  */
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { AuthEvent, AuthPrompt, AuthType } from "@earendil-works/pi-ai";
 import { createInterface } from "readline";
 import { join } from "path";
@@ -187,7 +187,12 @@ export async function runAuthCommand(args: string[], cwd: string): Promise<numbe
                 ],
             })) as AuthType;
         }
-        await runtime.login(providerId, type, { prompt, notify });
+        const settings = SettingsManager.create(cwd, agentDir);
+        try {
+            await runtime.login(providerId, type, { prompt, notify }, { getDeviceId: () => settings.getOrCreateDeviceId() });
+        } finally {
+            await settings.flush();
+        }
     } catch (err) {
         log.error(`Login failed: ${err instanceof Error ? err.message : String(err)}`);
         return 1;

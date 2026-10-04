@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { isChatModel } from "@/lib/message-helpers";
 
 export interface RunnerModel {
   provider: string;
@@ -6,6 +7,14 @@ export interface RunnerModel {
   name?: string;
   reasoning?: boolean;
   contextWindow?: number;
+  /** Pi 1.0 operation type. Omitted means chat. */
+  type?: string;
+}
+
+function isRunnerChatModel(model: unknown): model is RunnerModel {
+  if (!model || typeof model !== "object") return false;
+  const value = model as Record<string, unknown>;
+  return typeof value.provider === "string" && typeof value.id === "string" && isChatModel(model);
 }
 
 /**
@@ -33,7 +42,7 @@ export function useRunnerModels(runnerId: string | null | undefined, enabled = t
       })
       .then((body: any) => {
         if (!cancelled) {
-          setModels(Array.isArray(body?.models) ? body.models : []);
+          setModels(Array.isArray(body?.models) ? body.models.filter(isRunnerChatModel) : []);
         }
       })
       .catch(() => { /* silent */ })

@@ -29,8 +29,10 @@ These providers use OAuth — authenticate with `/login` inside a session:
 | Provider | Subscription |
 |----------|-------------|
 | Anthropic | Claude Pro / Max |
-| OpenAI | ChatGPT Plus / Pro (Codex) |
+| OpenAI | ChatGPT Plus / Pro |
 | GitHub Copilot | Copilot subscription |
+
+Pi 1.0's native OpenAI ChatGPT login supersedes the older inherited OpenAI Codex subscription provider for new sign-ins. Existing legacy entries may still appear from older runner auth state, but prefer **OpenAI** for ChatGPT-backed sessions.
 
 ### API Key Providers
 
@@ -61,6 +63,10 @@ These are the most commonly used API-key providers. Many other built-in provider
 ### Using `/login` (Subscriptions)
 
 Inside a PizzaPi session, type `/login` in the chat input. You'll be prompted to select a provider and complete the OAuth flow in your browser. Tokens are stored in `~/.pizzapi/auth.json` and auto-refresh when they expire.
+
+The web UI's **Runner Settings → Model providers** panel drives the same runner login flow. It supports ordinary browser redirects, provider selection prompts, and copy-code/manual-code prompts such as Anthropic's headless login flow. It handles provider credentials only; configure MCP connections separately through [PizzaPi's MCP settings](/PizzaPi/customization/mcp-servers/).
+
+OpenAI ChatGPT login uses a stable installation `deviceId` in the runner's `settings.json`. The web login flow and `pizza auth openai` create and reuse this ID through Pi's settings manager, just like terminal `/login`.
 
 Use `/logout` to clear stored credentials.
 
@@ -119,6 +125,10 @@ When multiple sources provide credentials for the same provider:
 Use the `/model` command in the chat input to open the model selector. This shows all available models across your authenticated providers.
 
 In the PizzaPi web UI you can also use `/cycle_model` (alias of `/model`) to cycle through a subset of models, and `/effort` (or `/cycle_effort`) to change reasoning effort.
+
+Pi 1.0 model catalogs can include chat, image, and classifier operations. PizzaPi's chat model picker and runner model defaults intentionally show **chat models only**; image and classifier models are used programmatically through codemode or extensions and are not selectable as the session's chat model.
+
+Virtual models remain selectable like normal chat models. When Pi reports a concrete `responseModel` different from the selected model, PizzaPi shows both on that assistant message (selected → response) so you can distinguish the requested model from the model that answered.
 
 ### Setting Defaults
 
@@ -198,7 +208,7 @@ PizzaPi tracks two related things:
 
 | Data | Source | Where it appears |
 |------|--------|------------------|
-| Per-turn tokens and cost | Assistant message `usage` fields, including `input`, `output`, `cacheRead`, `cacheWrite`, and `usage.cost.total` | Session analysis / inspector panels and usage dashboards. |
+| Tokens and cost | Assistant and tool-result `usage` fields (including codemode model calls), plus standalone usage entries | Session totals and usage dashboards. |
 | Subscription quota windows | Provider usage APIs for Anthropic and OpenAI Codex | Usage indicator badges in the web UI. |
 
 `format-usage.ts` maps display providers to quota providers: `claude-subscription` uses Anthropic quota, `openai`/`openai-codex` use OpenAI Codex quota, and Google/Gemini CLI providers map to `google-gemini-cli` when usage data exists.
