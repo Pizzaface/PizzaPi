@@ -13,6 +13,12 @@ Use the file explorer to navigate directories and preview supported text files. 
 
 The Git panel shows repository status, diffs, branches, and staged changes. Use it to stage or unstage files and create commits; remote operations such as push, pull, merge, and rebase are available where configured. Review the diff before committing. The runner must have Git installed and repository credentials configured for remote operations.
 
+The panel refreshes local repository changes automatically, including edits made by an agent or another editor. Filesystem notifications trigger updates where supported; while the browser tab is visible, a five-second status check catches missed notifications and nested-file edits. Branch and worktree metadata also refreshes periodically. Returning to the browser tab or reconnecting refreshes the snapshot. **Refresh** updates status, branches, and worktrees; the update timestamp shows when the last snapshot arrived. A connection or refresh failure is shown explicitly rather than presenting old data as current.
+
+An open file diff updates as the repository changes. Files with both staged and unstaged edits have separate entries so you can review exactly what will be committed. The history explorer updates its commit list without changing an existing selection, and the Stash tab refreshes from the same repository state.
+
+Ahead/behind counts describe locally known remote-tracking refs, not a live query of the hosting service. Automatic updates and **Refresh** do **not** fetch, pull, or push. Choose **Sync options → Fetch remote updates** to update remote-tracking refs without changing the working tree. Fetch, pull, and push remain explicit actions.
+
 Git operations are carried over the runner service channel, not REST. See [Protocol](/PizzaPi/reference/architecture/#client-and-runner-communication) and the [Git service source](https://github.com/Pizzaface/PizzaPi/tree/main/packages/cli/src/runner/services).
 
 ## Web terminal

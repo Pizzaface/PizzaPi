@@ -374,6 +374,107 @@ describe("GitService git metadata watchers", () => {
         expect(Array.from(watchListeners.keys()).some((p) => p.startsWith("/repo-a/.git/"))).toBe(false);
     });
 
+    test("retires repo watchers on asynchronous error events and retries on the next request", async () => {
+        const errorListeners: Array<(err: Error) => void> = [];
+        const closePaths: string[] = [];
+        const watchedPaths: string[] = [];
+
+        const service = new GitService({
+            watchFs: (path) => {
+                watchedPaths.push(path);
+                return {
+                    close: () => { closePaths.push(path); },
+                    on: (event, listener) => {
+                        if (event === "error") errorListeners.push(listener);
+                    },
+                };
+            },
+            execGit: async (args, options) => {
+                if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
+                if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: `${options.cwd}\n`, stderr: "" };
+                if (args[0] === "rev-parse" && args[1] === "--git-path") return { stdout: `${options.cwd}/.git/${args[2]}\n`, stderr: "" };
+                if (args[0] === "status") return { stdout: "", stderr: "" };
+                if (args[0] === "diff") return { stdout: "", stderr: "" };
+                if (args[0] === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_status",
+            requestId: "watch-error-1",
+            sessionId: "session-a",
+            payload: { cwd: "/repo-a" },
+        });
+        await waitForResult(socket, "watch-error-1", "git_status_result");
+        await waitForCondition(() => errorListeners.length > 0);
+        const firstWatchCount = watchedPaths.length;
+
+        expect(() => errorListeners[0](new Error("watch failed"))).not.toThrow();
+        await waitForCondition(() => closePaths.length === firstWatchCount);
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_status",
+            requestId: "watch-error-2",
+            sessionId: "session-a",
+            payload: { cwd: "/repo-a" },
+        });
+        await waitForResult(socket, "watch-error-2", "git_status_result");
+        await waitForCondition(() => watchedPaths.length > firstWatchCount);
+
+        service.dispose();
+    });
+
+    test("retries watch setup after a zero-handle registration attempt", async () => {
+        let watchAttempts = 0;
+        const service = new GitService({
+            watchFs: () => {
+                watchAttempts++;
+                throw new Error("watch unavailable");
+            },
+            execGit: async (args, options) => {
+                if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
+                if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: `${options.cwd}\n`, stderr: "" };
+                if (args[0] === "rev-parse" && args[1] === "--git-path") return { stdout: `${options.cwd}/.git/${args[2]}\n`, stderr: "" };
+                if (args[0] === "status") return { stdout: "", stderr: "" };
+                if (args[0] === "diff") return { stdout: "", stderr: "" };
+                if (args[0] === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_status",
+            requestId: "watch-retry-1",
+            sessionId: "session-a",
+            payload: { cwd: "/repo-a" },
+        });
+        await waitForResult(socket, "watch-retry-1", "git_status_result");
+        await waitForCondition(() => watchAttempts > 0);
+        const firstAttempts = watchAttempts;
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_status",
+            requestId: "watch-retry-2",
+            sessionId: "session-a",
+            payload: { cwd: "/repo-a" },
+        });
+        await waitForResult(socket, "watch-retry-2", "git_status_result");
+        await waitForCondition(() => watchAttempts > firstAttempts);
+
+        service.dispose();
+    });
+
     test("normalizes relative git metadata paths to absolute paths before watching", async () => {
         const watchPaths: string[] = [];
 
@@ -428,6 +529,229 @@ describe("GitService git metadata watchers", () => {
         expect(watchPaths).toContain("/repo/.git/FETCH_HEAD");
         expect(watchPaths).toContain("/repo/.git/refs/heads");
         expect(watchPaths).toContain("/repo/.git/refs/remotes");
+        expect(watchPaths).toContain("/repo/.git");
+        expect(watchPaths).toContain("/repo/.git/refs/remotes/origin");
+    });
+
+    test("watches the worktree so file edits are pushed even when metadata watchers stay silent", async () => {
+        const watchListeners = new Map<string, () => void>();
+        let statusOutput = "";
+
+        const service = new GitService({
+            watchFs: (path, listener) => {
+                watchListeners.set(path, listener);
+                return { close: () => watchListeners.delete(path) };
+            },
+            execGit: async (args, options) => {
+                if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
+                if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: `${options.cwd}\n`, stderr: "" };
+                if (args[0] === "rev-parse" && args[1] === "--git-path") return { stdout: `${options.cwd}/.git/${args[2]}\n`, stderr: "" };
+                if (args[0] === "status") return { stdout: statusOutput, stderr: "" };
+                if (args[0] === "diff") return { stdout: "", stderr: "" };
+                if (args[0] === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_status",
+            requestId: "seed-working-tree",
+            sessionId: "session-a",
+            payload: { cwd: "/repo-a" },
+        });
+        await waitForResult(socket, "seed-working-tree", "git_status_result");
+        await waitForCondition(() => watchListeners.has("/repo-a"));
+
+        const watcherCount = watchListeners.size;
+        socket.emitted.length = 0;
+        statusOutput = " M edited.ts\0";
+        watchListeners.get("/repo-a")?.();
+
+        const pushed = await waitForEnvelope(
+            socket,
+            (envelope) => envelope.type === "git_status_result" && (envelope as any).sessionId === "session-a" && envelope.requestId === undefined,
+        );
+        expect((pushed.payload as any).changes).toEqual([{ status: " M", path: "edited.ts" }]);
+        expect(socket.emitted.some((e) => e.type === "git_repo_changed")).toBe(false);
+        expect(watchListeners.size).toBe(watcherCount);
+
+        service.dispose();
+    });
+
+    test("preserves metadata invalidation when a worktree event follows within the debounce window", async () => {
+        const watchListeners = new Map<string, () => void>();
+        const timers = new Set<{ callback: () => void; cancelled: boolean }>();
+
+        const service = new GitService({
+            setTimeoutFn: (callback) => {
+                const timer = { callback, cancelled: false };
+                timers.add(timer);
+                return timer as unknown as ReturnType<typeof setTimeout>;
+            },
+            clearTimeoutFn: (timer) => {
+                (timer as unknown as { cancelled: boolean }).cancelled = true;
+            },
+            watchFs: (path, listener) => {
+                watchListeners.set(path, listener);
+                return { close: () => watchListeners.delete(path) };
+            },
+            execGit: async (args, options) => {
+                if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
+                if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: `${options.cwd}\n`, stderr: "" };
+                if (args[0] === "rev-parse" && args[1] === "--git-path") return { stdout: `${options.cwd}/.git/${args[2]}\n`, stderr: "" };
+                if (args[0] === "status") return { stdout: " M changed.ts\0", stderr: "" };
+                if (args[0] === "diff") return { stdout: "", stderr: "" };
+                if (args[0] === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_status",
+            requestId: "seed-mixed-debounce",
+            sessionId: "session-a",
+            payload: { cwd: "/repo-a" },
+        });
+        await waitForResult(socket, "seed-mixed-debounce", "git_status_result");
+        await waitForCondition(() => watchListeners.has("/repo-a/.git/HEAD") && watchListeners.has("/repo-a"));
+
+        socket.emitted.length = 0;
+        watchListeners.get("/repo-a/.git/HEAD")?.();
+        watchListeners.get("/repo-a")?.();
+        // oxlint-disable-next-line unicorn/no-useless-spread -- drain only this batch; callbacks may schedule subsequent timers
+        for (const timer of [...timers]) {
+            if (!timer.cancelled) timer.callback();
+        }
+
+        await waitForEnvelope(socket, (envelope) => envelope.type === "git_repo_changed" && (envelope as any).sessionId === "session-a");
+        await waitForEnvelope(socket, (envelope) => envelope.type === "git_status_result" && (envelope as any).sessionId === "session-a" && envelope.requestId === undefined);
+
+        service.dispose();
+    });
+
+    test("uses read-only git status so refreshes do not update the index and loop on their own writes", async () => {
+        const statusEnvs: Array<Record<string, string> | undefined> = [];
+        const service = new GitService({
+            watchFs: () => ({ close: () => {} }),
+            execGit: async (args, options) => {
+                if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
+                if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: `${options.cwd}\n`, stderr: "" };
+                if (args[0] === "rev-parse" && args[1] === "--git-path") return { stdout: `${options.cwd}/.git/${args[2]}\n`, stderr: "" };
+                if (args[0] === "status") {
+                    statusEnvs.push(options.env);
+                    return { stdout: "", stderr: "" };
+                }
+                if (args[0] === "diff") return { stdout: "", stderr: "" };
+                if (args[0] === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_status",
+            requestId: "readonly-status",
+            sessionId: "session-a",
+            payload: { cwd: "/repo-a" },
+        });
+        await waitForResult(socket, "readonly-status", "git_status_result");
+
+        expect(statusEnvs.length).toBeGreaterThan(0);
+        expect(statusEnvs.every((env) => env?.GIT_OPTIONAL_LOCKS === "0")).toBe(true);
+
+        service.dispose();
+    });
+
+    test("bounds metadata debounce under a continuous fs event stream", async () => {
+        const watchListeners = new Map<string, () => void>();
+        const timers = new Set<{ due: number; callback: () => void; cancelled: boolean }>();
+        let now = 0;
+        let statusOutput = "";
+
+        const advance = async (ms: number) => {
+            now += ms;
+            let ran = true;
+            while (ran) {
+                ran = false;
+                for (const timer of [...timers].sort((a, b) => a.due - b.due)) {
+                    if (timer.cancelled || timer.due > now) continue;
+                    timers.delete(timer);
+                    timer.callback();
+                    ran = true;
+                }
+                await Promise.resolve();
+            }
+        };
+
+        const service = new GitService({
+            now: () => now,
+            setTimeoutFn: (callback, delayMs) => {
+                const timer = { due: now + delayMs, callback, cancelled: false };
+                timers.add(timer);
+                return timer as unknown as ReturnType<typeof setTimeout>;
+            },
+            clearTimeoutFn: (timer) => {
+                (timer as unknown as { cancelled: boolean }).cancelled = true;
+            },
+            watchFs: (path, listener) => {
+                watchListeners.set(path, listener);
+                return { close: () => watchListeners.delete(path) };
+            },
+            execGit: async (args, options) => {
+                if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
+                if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: `${options.cwd}\n`, stderr: "" };
+                if (args[0] === "rev-parse" && args[1] === "--git-path") return { stdout: `${options.cwd}/.git/${args[2]}\n`, stderr: "" };
+                if (args[0] === "status") return { stdout: statusOutput, stderr: "" };
+                if (args[0] === "diff") return { stdout: "", stderr: "" };
+                if (args[0] === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_status",
+            requestId: "seed-debounce",
+            sessionId: "session-a",
+            payload: { cwd: "/repo-a" },
+        });
+        await waitForResult(socket, "seed-debounce", "git_status_result");
+        await waitForCondition(() => watchListeners.has("/repo-a/.git/HEAD"));
+
+        socket.emitted.length = 0;
+        statusOutput = " M metadata.ts\0";
+        const headWatcher = watchListeners.get("/repo-a/.git/HEAD");
+        expect(headWatcher).toBeDefined();
+
+        for (let i = 0; i < 4; i++) {
+            headWatcher?.();
+            await advance(250);
+        }
+        headWatcher?.();
+        await advance(0);
+
+        const pushed = await waitForEnvelope(
+            socket,
+            (envelope) => envelope.type === "git_status_result" && (envelope as any).sessionId === "session-a" && envelope.requestId === undefined,
+            100,
+        );
+        expect((pushed.payload as any).changes).toEqual([{ status: " M", path: "metadata.ts" }]);
+
+        service.dispose();
     });
 
     test("debounces metadata fs events and pushes status only to interested cwd subscribers", async () => {
@@ -667,7 +991,79 @@ describe("GitService git_full_status", () => {
     });
 });
 
-describe("GitService pull/merge", () => {
+describe("GitService fetch/pull/merge", () => {
+    test("fetch refreshes remote refs explicitly without prune flags", async () => {
+        const gitCalls: string[][] = [];
+
+        const service = new GitService({
+            execGit: async (args) => {
+                gitCalls.push([...args]);
+                if (args[0] === "fetch") return { stdout: "", stderr: "fetched\n" };
+                if (args[0] === "rev-parse" && args.includes("--git-common-dir")) return { stdout: "/repo/.git\n", stderr: "" };
+                if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "" };
+                if (args[0] === "status") return { stdout: "", stderr: "" };
+                if (args[0] === "diff") return { stdout: "", stderr: "" };
+                if (args[0] === "rev-list") return { stdout: "0 0\n", stderr: "" };
+                throw new Error(`Unexpected git args: ${args.join(" ")}`);
+            },
+        });
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_fetch",
+            requestId: "fetch-1",
+            payload: { cwd: "/repo", remote: "origin", branch: "main" },
+        });
+        const result = await waitForResult(socket, "fetch-1", "git_fetch_result");
+
+        expect((result.payload as any).ok).toBe(true);
+        expect(gitCalls).toContainEqual(["fetch", "origin", "main"]);
+        expect(gitCalls.some((call) => call.includes("--prune"))).toBe(false);
+    });
+
+    test("fetch validates remote and branch names before running git", async () => {
+        const gitCalls: string[][] = [];
+        const service = new GitService({
+            execGit: async (args) => {
+                gitCalls.push([...args]);
+                if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "" };
+                return { stdout: "", stderr: "" };
+            },
+        });
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_fetch",
+            requestId: "fetch-bad-remote",
+            payload: { cwd: "/repo", remote: "bad remote" },
+        });
+        const badRemote = await waitForResult(socket, "fetch-bad-remote", "git_fetch_result");
+        expect(badRemote.payload).toEqual({ ok: false, message: "Invalid remote name" });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_fetch",
+            requestId: "fetch-bad-branch",
+            payload: { cwd: "/repo", remote: "origin", branch: "--all" },
+        });
+        const badBranch = await waitForResult(socket, "fetch-bad-branch", "git_fetch_result");
+        expect(badBranch.payload).toEqual({ ok: false, message: "Invalid branch name" });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git",
+            type: "git_fetch",
+            requestId: "fetch-branch-no-remote",
+            payload: { cwd: "/repo", branch: "main" },
+        });
+        const missingRemote = await waitForResult(socket, "fetch-branch-no-remote", "git_fetch_result");
+        expect(missingRemote.payload).toEqual({ ok: false, message: "Remote is required when fetching a specific branch" });
+        expect(gitCalls.some((call) => call[0] === "fetch")).toBe(false);
+    });
+
     test("pull uses fetch + rebase with explicit upstream", async () => {
         const gitCalls: string[][] = [];
 

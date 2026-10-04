@@ -79,6 +79,7 @@ interface GitPanelProps {
 
 export function GitPanel({ cwd, className, onOpenWorktree }: GitPanelProps) {
     const git = useGitService(cwd);
+    const offline = !git.available || !git.connected;
 
     // Diff modal state (replaces the old full-panel diff takeover).
     const [diffModal, setDiffModal] = useState<{ open: boolean; path?: string; staged?: boolean }>({
@@ -89,15 +90,24 @@ export function GitPanel({ cwd, className, onOpenWorktree }: GitPanelProps) {
     const [activeTab, setActiveTab] = useState<GitTab>("changes");
     const [explorerOpen, setExplorerOpen] = useState(false);
 
+    useEffect(() => {
+        setDiffModal({ open: false });
+        setExplorerOpen(false);
+        setActiveTab("changes");
+    }, [cwd]);
+
     const currentBranchInfo = git.branches.find((b) => b.isCurrent);
 
     const branchNameForLog = git.status?.branch;
     const currentShortHash = currentBranchInfo?.shortHash;
+    const historyRefreshKey = currentBranchInfo
+        ? git.branches.map((branch) => `${branch.name}:${branch.shortHash}`).join("|")
+        : git.refreshKey;
     useEffect(() => {
         if (!branchNameForLog) return;
         git.fetchLog(undefined, 1).catch(() => {});
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [branchNameForLog, currentShortHash]);
+    }, [branchNameForLog, currentShortHash, historyRefreshKey]);
 
     const [toast, setToast] = useState<GitOperationFeedback | null>(null);
 
@@ -142,9 +152,17 @@ export function GitPanel({ cwd, className, onOpenWorktree }: GitPanelProps) {
 
     // ── Loading / error / empty ───────────────────────────────────────
 
+    if (offline && !git.status) {
+        return (
+            <div role="status" className={cn("p-4 text-sm text-muted-foreground", className)}>
+                {git.connected ? "Git service unavailable on this runner." : "Disconnected. Git status will refresh when the connection returns."}
+            </div>
+        );
+    }
+
     if (git.loading && !git.status) {
         return (
-            <div className={cn("flex items-center justify-center p-8", className)}>
+            <div role="status" aria-label="Loading git status" className={cn("flex items-center justify-center p-8", className)}>
                 <Spinner className="size-5" />
             </div>
         );
@@ -153,7 +171,7 @@ export function GitPanel({ cwd, className, onOpenWorktree }: GitPanelProps) {
     if (git.error && !git.status) {
         return (
             <div className={cn("p-4", className)}>
-                <p className="text-sm text-red-400 mb-3">{git.error}</p>
+                <p role="alert" className="text-sm text-red-400 mb-3">{git.error}</p>
                 <Button variant="outline" size="sm" onClick={git.fetchStatus}>
                     <RefreshCw className="size-3 mr-1.5" /> Retry
                 </Button>
@@ -165,7 +183,7 @@ export function GitPanel({ cwd, className, onOpenWorktree }: GitPanelProps) {
 
     const { staged } = partitionChanges(git.status.changes);
     const hasChanges = git.status.changes.length > 0;
-    const isMutating = git.operationInProgress !== null;
+    const isMutating = offline || git.operationInProgress !== null;
     const isPushing = git.operationInProgress === "push";
     const isPulling = git.operationInProgress === "pull";
     const showPush = git.status.ahead > 0 || !git.status.hasUpstream;
@@ -187,6 +205,7 @@ export function GitPanel({ cwd, className, onOpenWorktree }: GitPanelProps) {
             {/* ── Commit-first composer (pinned top) ── */}
             {activeTab === "changes" && (
                 <GitCommitForm
+                    key={cwd}
                     hasStagedChanges={staged.length > 0}
                     stagedCount={staged.length}
                     onCommit={git.commit}
@@ -287,15 +306,20 @@ export function GitPanel({ cwd, className, onOpenWorktree }: GitPanelProps) {
                                 disabled={isMutating}
                                 className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors bg-muted/60 hover:bg-muted text-foreground disabled:opacity-50"
                                 title="Sync options"
+                                aria-label="Sync options"
                             >
                                 <MoreHorizontal className="size-3" />
                             </button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-56">
-                            <DropdownMenuItem onSelect={() => git.pull(false)} disabled={git.operationInProgress !== null}>
+                            <DropdownMenuItem onSelect={git.fetchRemote} disabled={isMutating}>
+                                <RefreshCw className="size-3.5" /> Fetch remote updates
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem onSelect={() => git.pull(false)} disabled={isMutating}>
                                 <Download className="size-3.5" /> Pull (fast-forward)
                             </DropdownMenuItem>
-                            <DropdownMenuItem onSelect={() => git.pull(true)} disabled={git.operationInProgress !== null}>
+                            <DropdownMenuItem onSelect={() => git.pull(true)} disabled={isMutating}>
                                 <Download className="size-3.5" /> Pull --rebase
                             </DropdownMenuItem>
                             <BranchSubmenu
@@ -330,7 +354,7 @@ export function GitPanel({ cwd, className, onOpenWorktree }: GitPanelProps) {
                     <button
                         type="button"
                         onClick={git.fetchStatus}
-                        disabled={git.loading}
+                        disabled={git.loading || offline}
                         className="text-muted-foreground hover:text-foreground transition-colors p-1"
                         title="Refresh git status"
                         aria-label="Refresh git status"
@@ -339,6 +363,22 @@ export function GitPanel({ cwd, className, onOpenWorktree }: GitPanelProps) {
                     </button>
                 </div>
             </div>
+
+            {(offline || git.error) ? (
+                <div role={git.error && !offline ? "alert" : "status"} className="flex items-center gap-2 px-3 py-2 text-xs border-b border-amber-500/20 bg-amber-500/10 text-amber-600 dark:text-amber-400">
+                    <AlertCircle className="size-3 shrink-0" />
+                    <span className="flex-1 min-w-0 break-words">
+                        {offline
+                            ? `${git.connected ? "Git service unavailable" : "Disconnected"}. Showing the last known status.`
+                            : `Refresh failed: ${git.error}. Showing the last known status.`}
+                    </span>
+                    {!offline && <button type="button" onClick={git.fetchStatus} disabled={git.loading} className="underline disabled:opacity-50">Retry</button>}
+                </div>
+            ) : git.lastUpdated !== null && (
+                <div className="px-3 py-1 text-[0.65rem] text-muted-foreground border-b border-border" title="Local repository updates automatically. Remote counts reflect the last fetch. Use Sync options → Fetch remote updates to check the remote.">
+                    {git.operationInProgress === "fetch" ? "Fetching remote updates…" : git.loading ? "Refreshing…" : `Updated ${new Date(git.lastUpdated).toLocaleTimeString()}`} · local repository
+                </div>
+            )}
 
             {/* Toast notification */}
             {toast && (
@@ -395,7 +435,7 @@ export function GitPanel({ cwd, className, onOpenWorktree }: GitPanelProps) {
                             <button
                                 type="button"
                                 onClick={() => git.mergeAbort()}
-                                disabled={git.operationInProgress !== null}
+                                disabled={isMutating}
                                 className="inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50 w-full @sm:w-auto"
                                 title="Abort the merge"
                             >
@@ -406,7 +446,7 @@ export function GitPanel({ cwd, className, onOpenWorktree }: GitPanelProps) {
                                 <button
                                     type="button"
                                     onClick={() => git.rebaseContinue()}
-                                    disabled={git.operationInProgress !== null}
+                                    disabled={isMutating}
                                     className="inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-600/20 text-green-600 dark:text-green-400 hover:bg-green-600/30 disabled:opacity-50 flex-1 @sm:flex-initial"
                                     title="Continue rebase after resolving conflicts"
                                 >
@@ -415,7 +455,7 @@ export function GitPanel({ cwd, className, onOpenWorktree }: GitPanelProps) {
                                 <button
                                     type="button"
                                     onClick={() => git.rebaseAbort()}
-                                    disabled={git.operationInProgress !== null}
+                                    disabled={isMutating}
                                     className="inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-500 dark:text-red-400 hover:bg-red-500/30 disabled:opacity-50 flex-1 @sm:flex-initial"
                                     title="Abort the rebase"
                                 >
@@ -471,11 +511,11 @@ export function GitPanel({ cwd, className, onOpenWorktree }: GitPanelProps) {
                             onUnstage={git.unstage}
                             onUnstageAll={git.unstageAll}
                             onDiscard={git.discard}
-                            operationInProgress={git.operationInProgress}
+                            operationInProgress={offline ? "disconnected" : git.operationInProgress}
                         />
                     )
                 )}
-                {activeTab === "stash" && <GitStashList cwd={cwd} />}
+                {activeTab === "stash" && <GitStashList key={cwd} git={git} />}
             </div>
 
             {/* Worktrees — only on the Changes tab */}
@@ -490,12 +530,14 @@ export function GitPanel({ cwd, className, onOpenWorktree }: GitPanelProps) {
                     onRemove={git.removeWorktree}
                     onPrune={git.pruneWorktrees}
                     onOpenWorktree={onOpenWorktree}
-                    operationInProgress={git.operationInProgress}
+                    operationInProgress={offline ? "disconnected" : git.operationInProgress}
                 />
             )}
 
             {/* Diff modal */}
             <GitDiffModal
+                key={`diff:${cwd}`}
+                refreshKey={git.refreshKey}
                 open={diffModal.open}
                 onOpenChange={(open) => setDiffModal((p) => ({ open, path: p.path, staged: p.staged }))}
                 changes={git.status.changes}
@@ -506,6 +548,8 @@ export function GitPanel({ cwd, className, onOpenWorktree }: GitPanelProps) {
 
             {/* Revision explorer (history + compare) */}
             <GitRevExplorer
+                key={`history:${cwd}`}
+                refreshKey={historyRefreshKey}
                 open={explorerOpen}
                 onOpenChange={setExplorerOpen}
                 cwd={cwd}

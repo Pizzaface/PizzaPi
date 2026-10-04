@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { watch } from "node:fs";
 import { rm } from "node:fs/promises";
 import { promisify } from "node:util";
-import { isAbsolute, join, normalize, resolve } from "node:path";
+import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import type { Socket } from "socket.io-client";
 import type { ServiceHandler, ServiceInitOptions, ServiceEnvelope } from "../service-handler.js";
 import type { ServiceSigilDef } from "@pizzapi/protocol";
@@ -11,8 +11,9 @@ import { isCwdAllowed } from "../workspace.js";
 const execFileAsync = promisify(execFile);
 const STATUS_CACHE_TTL_MS = 2_500;
 const METADATA_DEBOUNCE_MS = 300;
+const MAX_REFRESH_DEBOUNCE_MS = 1_000;
 
-type WatchHandle = { close(): void };
+type WatchHandle = { close(): void; on?(event: "error", listener: (err: Error) => void): void };
 type WatchFs = (path: string, listener: () => void) => WatchHandle;
 type SetTimeoutFn = (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
 type ClearTimeoutFn = (timeout: ReturnType<typeof setTimeout>) => void;
@@ -69,8 +70,10 @@ type GitWorktreeResultPayload = {
 type RepoWatchState = {
     watchers: WatchHandle[];
     debounceTimer: ReturnType<typeof setTimeout> | null;
+    debounceStartedAt: number | null;
     refreshInFlight: boolean;
     needsRefresh: boolean;
+    needsRepoChanged: boolean;
 };
 
 type GitUpstreamFailureReason = "detachedHead" | "missingUpstream" | "ambiguousUpstream";
@@ -310,6 +313,9 @@ export class GitService implements ServiceHandler {
                     break;
                 case "git_push":
                     void this.handlePush(payload, requestId, sessionId);
+                    break;
+                case "git_fetch":
+                    void this.handleFetch(payload, requestId, sessionId);
                     break;
                 case "git_pull":
                     void this.handlePull(payload, requestId, sessionId);
@@ -610,24 +616,37 @@ export class GitService implements ServiceHandler {
         this.removeSubscriber(cwd, sessionId);
     }
 
+    private watchPath(path: string, listener: () => void, onError: () => void): WatchHandle {
+        const watcher = this._watchFs(path, listener);
+        watcher.on?.("error", () => onError());
+        return watcher;
+    }
+
     private async startWatchingRepo(cwd: string): Promise<void> {
         if (this._repoWatchers.has(cwd)) return;
 
         const watchState: RepoWatchState = {
             watchers: [],
             debounceTimer: null,
+            debounceStartedAt: null,
             refreshInFlight: false,
             needsRefresh: false,
+            needsRepoChanged: false,
         };
         this._repoWatchers.set(cwd, watchState);
 
         try {
             const metadataPaths = await this.resolveGitMetadataWatchPaths(cwd);
+            const worktreeWatchPath = await this.resolveRepoRoot(cwd);
             if (this._repoWatchers.get(cwd) !== watchState) return;
+
+            const retireOnError = () => {
+                if (this._repoWatchers.get(cwd) === watchState) this.stopWatchingRepo(cwd);
+            };
 
             for (const path of metadataPaths) {
                 try {
-                    const handle = this._watchFs(path, () => this.scheduleRepoRefresh(cwd));
+                    const handle = this.watchPath(path, () => this.scheduleRepoRefresh(cwd, { repoChanged: true }), retireOnError);
                     if (this._repoWatchers.get(cwd) !== watchState) {
                         handle.close();
                         return;
@@ -636,6 +655,17 @@ export class GitService implements ServiceHandler {
                 } catch {
                     // Best-effort watcher registration: metadata paths vary by repo layout.
                 }
+            }
+
+            try {
+                const handle = this.watchPath(worktreeWatchPath, () => this.scheduleRepoRefresh(cwd, { repoChanged: false }), retireOnError);
+                if (this._repoWatchers.get(cwd) !== watchState) {
+                    handle.close();
+                    return;
+                }
+                watchState.watchers.push(handle);
+            } catch {
+                // Best-effort: visible UI refreshes still provide a bounded fallback.
             }
         } catch {
             // If git metadata paths can't be resolved, keep service functional.
@@ -654,6 +684,7 @@ export class GitService implements ServiceHandler {
             this._clearTimeout(watchState.debounceTimer);
             watchState.debounceTimer = null;
         }
+        watchState.debounceStartedAt = null;
 
         for (const watcher of watchState.watchers) {
             try {
@@ -666,26 +697,44 @@ export class GitService implements ServiceHandler {
         this._repoWatchers.delete(cwd);
     }
 
-    private scheduleRepoRefresh(cwd: string): void {
+    private scheduleRepoRefresh(cwd: string, options: { repoChanged: boolean } = { repoChanged: true }): void {
         const watchState = this._repoWatchers.get(cwd);
         if (!watchState) return;
+
+        const now = this._now();
+        watchState.debounceStartedAt ??= now;
+        watchState.needsRepoChanged ||= options.repoChanged;
 
         if (watchState.debounceTimer) {
             this._clearTimeout(watchState.debounceTimer);
         }
 
+        const elapsedMs = now - watchState.debounceStartedAt;
+        const delayMs = Math.max(0, Math.min(METADATA_DEBOUNCE_MS, MAX_REFRESH_DEBOUNCE_MS - elapsedMs));
         watchState.debounceTimer = this._setTimeout(() => {
+            const repoChanged = watchState.needsRepoChanged;
             watchState.debounceTimer = null;
-            void this.pushStatusUpdateForSubscribers(cwd);
-        }, METADATA_DEBOUNCE_MS);
+            watchState.debounceStartedAt = null;
+            watchState.needsRepoChanged = false;
+            void this.pushStatusUpdateForSubscribers(cwd, { repoChanged });
+        }, delayMs);
     }
 
-    private async pushStatusUpdateForSubscribers(cwd: string): Promise<void> {
+    private readOnlyGitEnv(env?: Record<string, string>): Record<string, string> {
+        const processEnv: Record<string, string> = {};
+        for (const [key, value] of Object.entries(process.env)) {
+            if (typeof value === "string") processEnv[key] = value;
+        }
+        return { ...processEnv, ...env, GIT_OPTIONAL_LOCKS: "0" };
+    }
+
+    private async pushStatusUpdateForSubscribers(cwd: string, options: { repoChanged: boolean }): Promise<void> {
         const watchState = this._repoWatchers.get(cwd);
         if (!watchState) return;
 
         if (watchState.refreshInFlight) {
             watchState.needsRefresh = true;
+            watchState.needsRepoChanged ||= options.repoChanged;
             return;
         }
 
@@ -697,7 +746,11 @@ export class GitService implements ServiceHandler {
 
         watchState.refreshInFlight = true;
         try {
-            await this.notifyRepoChanged(cwd);
+            if (options.repoChanged) {
+                await this.notifyRepoChanged(cwd);
+            } else {
+                await this.invalidateStatusCacheFamily(cwd);
+            }
             let snapshot = await this.getStatusSnapshot(cwd);
             if (snapshot.generation !== (this._statusGeneration.get(cwd) ?? 0)) {
                 snapshot = await this.getStatusSnapshot(cwd);
@@ -712,8 +765,10 @@ export class GitService implements ServiceHandler {
         } finally {
             watchState.refreshInFlight = false;
             if (watchState.needsRefresh) {
+                const repoChanged = watchState.needsRepoChanged;
                 watchState.needsRefresh = false;
-                this.scheduleRepoRefresh(cwd);
+                watchState.needsRepoChanged = false;
+                this.scheduleRepoRefresh(cwd, { repoChanged });
             }
         }
     }
@@ -756,14 +811,11 @@ export class GitService implements ServiceHandler {
             // Branch may have no upstream.
         }
 
-        if (head) paths.add(head);
-        if (index) paths.add(index);
-        if (packedRefs) paths.add(packedRefs);
-        if (fetchHead) paths.add(fetchHead);
-        if (headsDir) paths.add(headsDir);
-        if (remotesDir) paths.add(remotesDir);
-        if (currentBranchRef) paths.add(currentBranchRef);
-        if (upstreamRefPath) paths.add(upstreamRefPath);
+        for (const path of [head, index, packedRefs, fetchHead, headsDir, remotesDir, currentBranchRef, upstreamRefPath]) {
+            if (!path) continue;
+            paths.add(path);
+            paths.add(dirname(path));
+        }
 
         return [...paths];
     }
@@ -814,10 +866,9 @@ export class GitService implements ServiceHandler {
 
     /**
      * Invalidate caches for the whole repository family (all linked worktrees
-     * sharing one `--git-common-dir`), rebuild metadata watchers (HEAD/upstream
-     * refs may have changed — e.g. after a checkout), and broadcast a versioned
-     * `git_repo_changed` to EVERY subscriber of the family so non-initiating
-     * viewers refresh branches/worktrees/commits, not just status.
+     * sharing one `--git-common-dir`) and broadcast a versioned `git_repo_changed`
+     * to EVERY subscriber of the family so non-initiating viewers refresh
+     * branches/worktrees/commits, not just status.
      */
     private async notifyRepoChanged(cwd: string): Promise<void> {
         await this.invalidateStatusCacheFamily(cwd);
@@ -832,12 +883,8 @@ export class GitService implements ServiceHandler {
             // Linked worktrees have different toplevels, so the toplevel-keyed
             // family invalidation above missed them — invalidate directly.
             this.invalidateStatusCache(knownCwd);
-            // ponytail: unconditional watcher rebuild per change — diff the
-            // resolved watch paths first if fs.watch churn ever shows up.
-            if (this._repoWatchers.has(knownCwd)) {
-                this.stopWatchingRepo(knownCwd);
-                void this.startWatchingRepo(knownCwd);
-            }
+            // Metadata directory watchers survive ref-file replacement. Avoid
+            // rebuilding the worktree watcher on every status refresh.
             const subscribers = this._cwdSubscribers.get(knownCwd);
             if (!subscribers) continue;
             for (const sessionId of subscribers) {
@@ -872,7 +919,7 @@ export class GitService implements ServiceHandler {
             this._execGit(["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 }),
             // Use -z for NUL-delimited output — avoids C-quoting of filenames
             // with spaces/special chars and makes parsing unambiguous.
-            this._execGit(["status", "--porcelain=v1", "-uall", "-z"], { cwd, timeout: 10000 }),
+            this._execGit(["status", "--porcelain=v1", "-uall", "-z"], { cwd, timeout: 10000, env: this.readOnlyGitEnv() }),
             this._execGit(["diff", "--cached", "--stat"], { cwd, timeout: 10000 }),
             this._execGit(["rev-list", "--left-right", "--count", "HEAD...@{u}"], { cwd, timeout: 5000 }),
         ]);
@@ -895,10 +942,9 @@ export class GitService implements ServiceHandler {
             if (!entry || entry.length < 3) { i++; continue; }
             const xy = entry.substring(0, 2);
             const path = entry.substring(3);
-            // Renames (R/C) have a second NUL-delimited field for the new path
+            // Porcelain -z lists the destination first, then the original path.
             if (xy[0] === "R" || xy[0] === "C") {
-                const newPath = entries[i + 1] ?? path;
-                changes.push({ status: xy, path: newPath, originalPath: path });
+                changes.push({ status: xy, path, originalPath: entries[i + 1] ?? path });
                 i += 2;
             } else {
                 changes.push({ status: xy, path });
@@ -1534,7 +1580,7 @@ export class GitService implements ServiceHandler {
                 let behind = 0;
                 try {
                     const { stdout } = await this._execGit(["status", "--porcelain=v1", "-uall"],
-                        { cwd: wt.path, timeout: 5000 },
+                        { cwd: wt.path, timeout: 5000, env: this.readOnlyGitEnv() },
                     );
                     changeCount = stdout.split("\n").filter((l) => l.length > 0).length;
                 } catch { /* ignore — worktree might be mid-operation */ }
@@ -1949,6 +1995,51 @@ export class GitService implements ServiceHandler {
                 ok: false,
                 message,
                 noUpstream,
+            }, requestId, sessionId);
+        } finally {
+            this.endRepoMutation(mutation);
+        }
+    }
+
+    // ── git fetch ─────────────────────────────────────────────────────────
+
+    private async handleFetch(
+        payload: Record<string, unknown>,
+        requestId?: string,
+        sessionId?: string,
+    ): Promise<void> {
+        const cwd = await this.authorizeCwd(payload.cwd, "git_fetch_result", requestId, sessionId);
+        if (!cwd) return;
+
+        const remote = typeof payload.remote === "string" ? payload.remote.trim() : "";
+        const branch = typeof payload.branch === "string" ? payload.branch.trim() : "";
+
+        if (remote && !isValidRemoteName(remote)) {
+            this.emitError("git_fetch_result", "Invalid remote name", requestId, sessionId);
+            return;
+        }
+        if (branch && !isValidBranchName(branch)) {
+            this.emitError("git_fetch_result", "Invalid branch name", requestId, sessionId);
+            return;
+        }
+        if (branch && !remote) {
+            this.emitError("git_fetch_result", "Remote is required when fetching a specific branch", requestId, sessionId);
+            return;
+        }
+
+        const mutation = await this.beginRepoMutation(cwd, "git_fetch_result", "fetch", requestId, sessionId);
+        if (!mutation) return;
+
+        try {
+            const args = remote ? ["fetch", remote, ...(branch ? [branch] : [])] : ["fetch"];
+            const result = await this._execGit(args, { cwd, timeout: 60000 });
+            const output = (result.stdout + "\n" + result.stderr).trim();
+            await this.notifyRepoChanged(cwd);
+            this.emit("git_fetch_result", { ok: true, output }, requestId, sessionId);
+        } catch (err) {
+            this.emit("git_fetch_result", {
+                ok: false,
+                message: err instanceof Error ? err.message : String(err),
             }, requestId, sessionId);
         } finally {
             this.endRepoMutation(mutation);
@@ -2839,7 +2930,7 @@ export class GitService implements ServiceHandler {
 
             // Classify untracked vs tracked so we can delete vs restore.
             const { stdout } = await this._execGit(["status", "--porcelain=v1", "-uall", "-z", "--", ...paths],
-                { cwd: repoRoot, timeout: 10000 },
+                { cwd: repoRoot, timeout: 10000, env: this.readOnlyGitEnv() },
             );
             const untracked = new Set<string>();
             const entries = stdout.split("\0");
