@@ -209,7 +209,7 @@ describe("appendRelayEventToCache byte cap", () => {
         expect(snapshot?.event).toMatchObject({ type: "session_active", state: { messages: [{ content: "new" }] } });
     });
 
-    test("keeps an oversize full snapshot as the fallback instead of replacing it with a gap", async () => {
+    test("marks oversize full snapshots as gaps and keeps subsequent events within the byte cap", async () => {
         const sessionId = "s-oversize-snapshot";
         const key = keyForSession(sessionId);
 
@@ -217,12 +217,16 @@ describe("appendRelayEventToCache byte cap", () => {
 
         const rows = rowsByKey.get(key) ?? [];
         const totalBytes = rows.reduce((sum, row) => sum + Buffer.byteLength(row, "utf8"), 0);
-        const snapshot = await getLatestCachedSnapshotEvent(sessionId);
-
-        expect(totalBytes).toBeGreaterThan(500);
+        expect(totalBytes).toBeLessThanOrEqual(500);
         expect(await getLatestCachedRelayEventSeq(sessionId)).toBe(4);
-        expect(snapshot?.snapshotSeq).toBe(4);
-        expect(JSON.stringify(snapshot?.event)).toContain("x".repeat(2_000));
+        expect(await getLatestCachedSnapshotEvent(sessionId)).toBeNull();
+
+        await appendRelayEventToCache(sessionId, { type: "heartbeat" }, { seq: 5 });
+        expect(await getCachedRelayEventsAfterSeq(sessionId, 3)).toEqual([]);
+        expect(await getCachedRelayEventsAfterSeq(sessionId, 4)).toEqual([
+            { seq: 5, event: { type: "heartbeat" } },
+        ]);
+        expect(await getLatestCachedSnapshotEvent(sessionId)).toBeNull();
     });
 });
 

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { createClient } from "redis";
+import { getBestSnapshot } from "../ws/namespaces/snapshot-provider.js";
 import {
     _injectRedisForTesting,
     _resetRelayRedisCacheForTesting,
@@ -130,7 +131,7 @@ maybeDescribe("redis relay cache integration", () => {
         expect(await getLatestCachedSnapshotEvent(sessionId)).toBeNull();
     });
 
-    test("oversize full snapshots are kept as the fallback even above the byte cap", async () => {
+    test("oversize snapshots stay out of the cache and force lossless runner recovery", async () => {
         const sessionId = `${prefix}-snapshot`;
         await resetSession(sessionId);
 
@@ -138,13 +139,24 @@ maybeDescribe("redis relay cache integration", () => {
 
         const rows = await cachedRows(sessionId);
         const actualBytes = rows.reduce((sum, row) => sum + Buffer.byteLength(row, "utf8"), 0);
-        const snapshot = await getLatestCachedSnapshotEvent(sessionId);
-
         expect(rows).toHaveLength(1);
-        expect(actualBytes).toBeGreaterThan(500);
+        expect(actualBytes).toBeLessThanOrEqual(500);
         expect(await redis!.get(bytesKeyForSession(sessionId))).toBe(String(actualBytes));
-        expect(snapshot?.snapshotSeq).toBe(7);
-        expect(JSON.stringify(snapshot?.event)).toContain("x".repeat(2_000));
+        expect(await getLatestCachedRelayEventSeq(sessionId)).toBe(7);
+        expect(await getLatestCachedSnapshotEvent(sessionId)).toBeNull();
+
+        await appendRelayEventToCache(sessionId, { type: "heartbeat" }, { seq: 8, isEphemeral: false });
+        expect(await getCachedRelayEventsAfterSeq(sessionId, 6)).toEqual([]);
+        // A resuming viewer must ask the runner for a fresh snapshot, not claim
+        // this gap is current or silently fall back to an older lastState.
+        expect(await getBestSnapshot(sessionId, {
+            lastSeq: 6,
+            latestSeq: 8,
+            lastState: JSON.stringify({ messages: [{ content: "stale" }] }),
+        })).toBeNull();
+        expect(await getCachedRelayEventsAfterSeq(sessionId, 7)).toEqual([
+            { seq: 8, event: { type: "heartbeat" } },
+        ]);
     });
 
     test("full snapshots replace older rows instead of accumulating repeated transcripts", async () => {

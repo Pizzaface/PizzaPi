@@ -188,9 +188,9 @@ export async function appendRelayEventToCache(
     }
 
     let serialized = stringifyCachedPayload(payload);
-    // ponytail: allow one oversized full snapshot; page stored snapshots if a
-    // single transcript, rather than repeated history, exceeds the memory budget.
-    if (serialized.bytes > maxBytes && !compactSnapshot) {
+    // Oversized snapshots use the same gap/fresh-runner-snapshot path as other
+    // oversized events; retaining them here would defeat the memory budget.
+    if (serialized.bytes > maxBytes) {
         payload = { gap: GAP_MARKER };
         if (typeof opts.seq === "number" && Number.isFinite(opts.seq)) {
             payload.seq = opts.seq;
