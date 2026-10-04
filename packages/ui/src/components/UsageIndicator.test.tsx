@@ -31,3 +31,9 @@ test("Claude subscription alias does not duplicate an existing Anthropic badge",
     const { getAllByRole } = render(<UsageIndicator usage={{ anthropic: { status: "unknown", windows: [] } }} activeProvider="claude-subscription" authSource="oauth" />);
     expect(getAllByRole("button", { name: "Anthropic subscription usage (unknown)" })).toHaveLength(1);
 });
+
+test("badges show an active refreshing state while usage is being fetched", () => {
+    const { getByRole, getByText } = render(<UsageIndicator usage={{ anthropic: { status: "unknown", windows: [] } }} refreshing onRefresh={() => {}} />);
+    expect(getByRole("button", { name: "Anthropic subscription usage (refreshing)" })).toBeDefined();
+    expect(getByText("REFRESHING")).toBeDefined();
+});

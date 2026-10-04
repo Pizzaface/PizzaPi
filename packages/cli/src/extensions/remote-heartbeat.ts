@@ -5,6 +5,8 @@
 import type { RelayContext } from "./remote-types.js";
 import { emitSessionMetadataUpdate, readQueuedFollowUps } from "./remote/chunked-delivery.js";
 import { collectSessionTokenUsage, type TokenTotals } from "../usage/totals.js";
+import { buildProviderUsage, syncFromRunnerCacheIfChanged } from "./remote-provider-usage.js";
+import { emitTokenUsageUpdated } from "./remote-meta-events.js";
 
 // Per-relay-context cache of cumulative totals, additionally pinned to the
 // session manager instance so a session switch (or two sessions sharing the
@@ -64,6 +66,10 @@ export function startHeartbeat(rctx: RelayContext) {
         // session_active when they have.  This avoids re-serializing 10-50 MB
         // of message history every 10 s during idle/thinking sessions.
         emitSessionMetadataUpdate(rctx);
+        // Pick up the runner daemon's periodic usage refreshes in every session.
+        if (syncFromRunnerCacheIfChanged()) {
+            emitTokenUsageUpdated(rctx, buildTokenUsage(rctx), buildProviderUsage() as any);
+        }
     }, 10_000);
 }
 

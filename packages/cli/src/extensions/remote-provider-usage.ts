@@ -5,7 +5,7 @@
  * Anthropic and OpenAI Codex, and caches results.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { loadConfig, defaultAgentDir, expandHome } from "../config.js";
@@ -126,10 +126,34 @@ export function buildProviderUsage(): Record<string, ProviderUsageData> {
  * Read the runner daemon's shared usage cache file and populate the local
  * in-memory cache.
  */
+let runnerCacheMtimeMs = 0;
+
+/**
+ * Re-read the runner cache file if the daemon has rewritten it since the last
+ * read. Returns true when new data was loaded. Cheap enough (one stat) to call
+ * on every heartbeat so every session on the runner picks up daemon refreshes,
+ * not just the one that asked for it.
+ */
+export function syncFromRunnerCacheIfChanged(): boolean {
+    if (!runnerUsageCachePath) return false;
+    try {
+        if (statSync(runnerUsageCachePath).mtimeMs === runnerCacheMtimeMs) return false;
+    } catch {
+        return false;
+    }
+    refreshFromRunnerCacheSync();
+    return true;
+}
+
 async function refreshFromRunnerCache(): Promise<void> {
+    refreshFromRunnerCacheSync();
+}
+
+function refreshFromRunnerCacheSync(): void {
     if (!runnerUsageCachePath) return;
     try {
         if (!existsSync(runnerUsageCachePath)) return;
+        runnerCacheMtimeMs = statSync(runnerUsageCachePath).mtimeMs;
         const parsed = JSON.parse(readFileSync(runnerUsageCachePath, "utf-8")) as {
             fetchedAt: number;
             providers: Record<string, ProviderUsageData>;

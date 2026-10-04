@@ -116,14 +116,18 @@ function dotColorClass(pct: number): string {
 function ProviderBadge({
     providerId,
     data,
+    refreshing = false,
 }: {
     providerId: string;
     data: ProviderUsageData;
+    refreshing?: boolean;
 }) {
     const display = providerUsageDisplay(data);
     // Which window the number came from — "43%" alone reads as the whole subscription.
     const governingWindow = display.kind === "usage" ? display.label : null;
-    const label = display.kind === "unknown"
+    const label = refreshing
+        ? `${getProviderDisplayName(providerId)} subscription usage (refreshing)`
+        : display.kind === "unknown"
         ? `${getProviderDisplayName(providerId)} subscription usage (unknown)`
         : `${getProviderDisplayName(providerId)} subscription usage (${display.remainingPct.toFixed(0)}% remaining${governingWindow ? `, ${governingWindow} window` : ""})`;
 
@@ -143,11 +147,17 @@ function ProviderBadge({
                     onClick={() => setLocked((l) => !l)}
                 >
                     <ProviderIcon provider={providerId} className="size-3 flex-shrink-0" />
-                    <span className={cn(
-                        "inline-block h-2 w-2 rounded-full flex-shrink-0",
-                        display.kind === "unknown" ? "bg-slate-400 dark:bg-slate-500" : dotColorClass(display.usedPct),
-                    )} />
-                    <span className="tabular-nums">{display.kind === "unknown" ? "UNKNOWN" : `${display.remainingPct.toFixed(0)}%`}</span>
+                    {refreshing ? (
+                        <RefreshCw className="h-2.5 w-2.5 flex-shrink-0 animate-spin" data-testid="usage-refreshing" />
+                    ) : (
+                        <span className={cn(
+                            "inline-block h-2 w-2 rounded-full flex-shrink-0",
+                            display.kind === "unknown" ? "bg-slate-400 dark:bg-slate-500" : dotColorClass(display.usedPct),
+                        )} />
+                    )}
+                    <span className={cn("tabular-nums", refreshing && "animate-pulse")}>
+                        {display.kind === "unknown" ? (refreshing ? "REFRESHING" : "UNKNOWN") : `${display.remainingPct.toFixed(0)}%`}
+                    </span>
                     {governingWindow && <span className="text-muted-foreground/70">({governingWindow})</span>}
                 </button>
             </HoverCardTrigger>
@@ -218,7 +228,7 @@ export function UsageIndicator({ usage, authSource: rawAuthSource, activeProvide
                 <ApiKeyUsageBadge provider={activeProvider} />
             )}
             {entries.map(([id, data]) => (
-                <ProviderBadge key={id} providerId={id} data={data} />
+                <ProviderBadge key={id} providerId={id} data={data} refreshing={refreshing} />
             ))}
             {onRefresh && (
                 <Button
