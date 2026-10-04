@@ -853,7 +853,11 @@ export function renderGroupedToolExecution(
     );
   } else if (norm === "send_message" || norm.endsWith(".send_message")) {
     const inputArgs = parseToolInputArgs(toolInput);
-    const targetSessionId = typeof inputArgs.sessionId === "string" ? inputArgs.sessionId : "unknown";
+    const targetSessionId = typeof inputArgs.sessionId === "string"
+      ? inputArgs.sessionId
+      : typeof inputArgs.target === "string"
+        ? inputArgs.target
+        : "unknown";
     const message = typeof inputArgs.message === "string" ? inputArgs.message : "";
     const resultText = hasOutput ? extractTextFromToolContent(content) : null;
 

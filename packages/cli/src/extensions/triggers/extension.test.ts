@@ -7,7 +7,7 @@
 // ============================================================================
 
 import { describe, it, expect, beforeEach } from "bun:test";
-import { clearAndCancelPendingTriggers, finalizeSessionCompleteResponse, isSessionCompleteType, trackReceivedTrigger, receivedTriggers, sendTriggerResponseWithAck } from "./extension.js";
+import { clearAndCancelPendingTriggers, finalizeSessionCompleteResponse, isSessionCompleteType, trackReceivedTrigger, receivedTriggers, sendSessionMessageWithAck, sendTriggerResponseWithAck } from "./extension.js";
 import { handleTriggerResponse } from "../remote/connection.js";
 
 interface EmittedEvent {
@@ -22,12 +22,17 @@ function createMockSocket(opts?: { failSessionMessage?: boolean; failTriggerResp
     return {
         emitted,
         socket: {
-            emit(event: string, data: any, ack?: (result: { ok: boolean; error?: string }) => void) {
+            emit(event: string, data: any, ack?: (result: any) => void) {
                 emitted.push({ event, data });
-                if (event === "session_message" && opts?.failSessionMessage) {
-                    for (const handler of listeners.get("session_message_error") ?? []) {
-                        handler({ targetSessionId: data.targetSessionId, error: "Target session not found or not connected" });
+                if (event === "session_message") {
+                    if (opts?.failSessionMessage) {
+                        for (const handler of listeners.get("session_message_error") ?? []) {
+                            handler({ targetSessionId: data.targetSessionId, error: "Target session not found or not connected" });
+                        }
                     }
+                    ack?.(opts?.failSessionMessage
+                        ? { ok: false, errors: [{ targetSessionId: data.targetSessionId ?? data.target ?? "unknown", error: "Target session not found or not connected" }] }
+                        : { ok: true, delivered: [data.targetSessionId ?? data.target] });
                 }
                 if (event === "trigger_response" && ack) {
                     ack(opts?.failTriggerResponse
@@ -56,6 +61,38 @@ function createMockSocket(opts?: { failSessionMessage?: boolean; failTriggerResp
 type DeliveryResponder = NonNullable<
     NonNullable<Parameters<typeof finalizeSessionCompleteResponse>[1]>["respond"]
 >;
+
+describe("sendSessionMessageWithAck", () => {
+    it("acks direct delivery without waiting for silence", async () => {
+        const conn = createMockSocket();
+        const result = await sendSessionMessageWithAck(conn, {
+            targetSessionId: "child-1",
+            message: "hello",
+            deliverAs: "steer",
+        });
+        expect(result).toEqual({ ok: true, delivered: ["child-1"] });
+        expect(conn.emitted[0]).toMatchObject({
+            event: "session_message",
+            data: { token: "test-token", targetSessionId: "child-1", message: "hello", deliverAs: "steer" },
+        });
+    });
+
+    it("reports partial broadcast delivery honestly", async () => {
+        const conn = createMockSocket();
+        conn.socket.emit = ((event: string, data: any, ack?: (result: any) => void) => {
+            conn.emitted.push({ event, data });
+            ack?.({ ok: false, delivered: ["child-1"], errors: [{ targetSessionId: "child-2", error: "Target session did not acknowledge delivery" }] });
+        }) as any;
+        const result = await sendSessionMessageWithAck(conn, {
+            target: "children",
+            message: "hello all",
+            deliverAs: "steer",
+        });
+        expect(result.ok).toBe(false);
+        expect(result.delivered).toEqual(["child-1"]);
+        expect(result.errors?.[0]).toMatchObject({ targetSessionId: "child-2" });
+    });
+});
 
 async function simulateRespondToTrigger(
     params: { triggerId: string; response: string; action?: string },

@@ -63,7 +63,7 @@ const smallSystem = "You are a coding assistant.";
 // 26 builtin-shaped tools — mirrors what PizzaPi actually sends today (known
 // to work on the subscription lane).
 const BUILTIN_NAMES = [
-    "read", "bash", "edit", "write", "tell_child", "respond_to_trigger",
+    "read", "bash", "edit", "write", "send_message", "respond_to_trigger",
     "fire_trigger", "escalate_trigger", "list_available_triggers",
     "list_available_sigils", "subscribe_trigger", "unsubscribe_trigger",
     "update_trigger_subscription", "AskUserQuestion", "plan_mode",

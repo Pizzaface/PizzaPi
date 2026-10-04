@@ -504,11 +504,17 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
             settled = true;
             ack?.(delivered === true);
         };
+        const fromSessionId = typeof (data as any).fromSessionId === "string" ? (data as any).fromSessionId : undefined;
+        if ((data as any).client === "agent" && fromSessionId && handlers.isStaleChild(fromSessionId)) {
+            log.info(`pizzapi: dropping stale agent input from ${fromSessionId} — sender is a pre-/new child`);
+            settle(false);
+            return;
+        }
         // While waiting for delink_own_parent to be confirmed by the server,
-        // the old parent can still inject tell_child / follow-up input.
+        // the old parent can still inject send_message / follow-up input.
         // Drop agent-originated input until the server-side link is severed.
         if (handlers.isPendingDelinkOwnParent() && (data as any).client === "agent") {
-            log.info("pizzapi: dropping stale parent tell_child/follow-up input — delink_own_parent pending");
+            log.info("pizzapi: dropping stale parent send_message/follow-up input — delink_own_parent pending");
             settle(false);
             return;
         }
@@ -518,9 +524,10 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         handlers.clearFollowUpGrace();
 
         const inputText = data.text;
-        if (consumePendingApprovalFromWeb(rctx, inputText)) { settle(true); return; }
-        if (consumePendingAskUserQuestionFromWeb(rctx, inputText)) { settle(true); return; }
-        if (consumePendingPlanModeFromWeb(rctx, inputText)) { settle(true); return; }
+        const isAgentInput = (data as any).client === "agent";
+        if (!isAgentInput && consumePendingApprovalFromWeb(rctx, inputText)) { settle(true); return; }
+        if (!isAgentInput && consumePendingAskUserQuestionFromWeb(rctx, inputText)) { settle(true); return; }
+        if (!isAgentInput && consumePendingPlanModeFromWeb(rctx, inputText)) { settle(true); return; }
 
         const attachments = normalizeRemoteInputAttachments(data.attachments);
         const deliverAs = data.deliverAs === "followUp" ? "followUp" as const

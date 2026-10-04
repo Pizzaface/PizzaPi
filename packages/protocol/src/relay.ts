@@ -55,11 +55,14 @@ export interface RelayClientToServerEvents {
   /** TUI sends an inter-session message */
   session_message: (data: {
     token: string;
-    targetSessionId: string;
+    /** Direct target session ID. Required for target:"session" and legacy calls. */
+    targetSessionId?: string;
+    /** Explicit linked-session target. Omitted preserves legacy targetSessionId behavior. */
+    target?: "session" | "parent" | "children";
     message: string;
     /** "steer" interrupts at the next agent boundary; "input" queues a follow-up. Omitted delivers to the message bus. */
     deliverAs?: "input" | "steer";
-  }) => void;
+  }, ack?: (result: { ok: boolean; delivered?: string[]; errors?: Array<{ targetSessionId: string; error: string }>; error?: string }) => void) => void;
 
   /** Child session fires a trigger destined for its parent */
   session_trigger: (data: {
@@ -161,6 +164,8 @@ export interface RelayServerToClientEvents {
     text: string;
     attachments?: Attachment[];
     client?: string;
+    /** Source agent session ID for inter-agent input. */
+    fromSessionId?: string;
     deliverAs?: "steer" | "followUp";
     /** Viewer delivery attempt ID, preserved for mixed-version idempotency. */
     requestId?: string;

@@ -70,6 +70,7 @@ export interface SubAgentSentTurn {
   type: "sent";
   sessionId: string;
   message: string;
+  resultText?: string | null;
   isStreaming: boolean;
   isError: boolean;
 }

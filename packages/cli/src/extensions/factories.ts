@@ -105,7 +105,7 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
     factories.push(named(providerRequestLogExtension, "provider-request-log"));
     factories.push(named(fallbackModelsExtension, "fallback-models"));
 
-    // triggersExtension provides tell_child, respond_to_trigger, escalate_trigger tools.
+    // triggersExtension provides send_message, respond_to_trigger, escalate_trigger tools.
     // session_complete is fired from remoteExtension's shutdown handler (before disconnect).
     factories.push(named(triggersExtension, "triggers"));
 

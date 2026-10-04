@@ -3,7 +3,10 @@ import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 const mockGetSharedSession = mock(async (_id: string) => null as any);
 const mockGetLocalTuiSocket = mock((_id: string) => undefined as any);
 const mockEmitToRelaySessionVerified = mock(async (_id: string, _event: string, _payload: any) => false);
+const mockEmitToRelaySessionInputAck = mock(async (_id: string, _event: string, _payload: any) => ({ hadListeners: false, delivered: false }));
+const mockHasRelaySessionListener = mock(async (_id: string) => false);
 const mockBroadcastToSessionViewers = mock((_sessionId: string, _event: string, _payload: any) => {});
+const mockGetChildSessions = mock(async (_parentId: string) => [] as string[]);
 const mockIsChildOfParent = mock(async (_parentId: string, _childId: string) => true);
 const mockIsPendingParentDelinkChild = mock(async (_targetId: string, _senderId: string) => false);
 const mockRefreshChildSessionsTTL = mock(async (_parentId: string) => {});
@@ -15,12 +18,15 @@ mock.module("../../sio-registry.js", () => ({
     getSharedSessionSummary: mockGetSharedSession,
     getLocalTuiSocket: mockGetLocalTuiSocket,
     emitToRelaySessionVerified: mockEmitToRelaySessionVerified,
+    emitToRelaySessionInputAck: mockEmitToRelaySessionInputAck,
+    hasRelaySessionListener: mockHasRelaySessionListener,
     broadcastToSessionViewers: mockBroadcastToSessionViewers,
 }));
 
 mock.module("../../sio-state/index.js", () => ({
     acquireSessionOwnershipLock: async () => {},
     releaseSessionOwnershipLock: async () => {},
+    getChildSessions: mockGetChildSessions,
     isChildOfParent: mockIsChildOfParent,
     isPendingParentDelinkChild: mockIsPendingParentDelinkChild,
     refreshChildSessionsTTL: mockRefreshChildSessionsTTL,
@@ -63,12 +69,18 @@ describe("registerMessagingHandlers session_trigger acking", () => {
         mockGetLocalTuiSocket.mockReset();
         mockEmitToRelaySessionVerified.mockReset();
         mockBroadcastToSessionViewers.mockReset();
+        mockEmitToRelaySessionInputAck.mockReset();
+        mockHasRelaySessionListener.mockReset();
+        mockGetChildSessions.mockReset();
         mockIsChildOfParent.mockReset();
         mockIsPendingParentDelinkChild.mockReset();
         mockRefreshChildSessionsTTL.mockReset();
         mockPushTriggerHistory.mockReset();
         mockRecordTriggerResponse.mockReset();
 
+        mockEmitToRelaySessionInputAck.mockResolvedValue({ hadListeners: false, delivered: false });
+        mockHasRelaySessionListener.mockResolvedValue(false);
+        mockGetChildSessions.mockResolvedValue([]);
         mockIsChildOfParent.mockResolvedValue(true);
         mockIsPendingParentDelinkChild.mockResolvedValue(false);
         mockRefreshChildSessionsTTL.mockResolvedValue(undefined);
@@ -80,10 +92,15 @@ describe("registerMessagingHandlers session_trigger acking", () => {
         for (const deliverAs of ["steer", "input"] as const) {
             test(`delivers ${deliverAs} input ${local ? "locally" : "across nodes"}`, async () => {
                 const socket = createMockSocket("parent-1");
-                const emit = mock((_event: string, _data: any) => {});
-                mockGetSharedSession.mockResolvedValue({ userId: "u1" });
-                mockGetLocalTuiSocket.mockReturnValue(local ? { connected: true, emit } : undefined);
-                mockEmitToRelaySessionVerified.mockResolvedValue(true);
+                const emit = mock((_event: string, _data: any, cb?: (err: unknown, response: unknown) => void) => cb?.(null, true));
+                const timeout = mock((_ms: number) => ({ emit }));
+                mockGetSharedSession.mockImplementation(async (id: string) => {
+                    if (id === "parent-1") return { userId: "u1", parentSessionId: null, linkedParentId: null } as any;
+                    if (id === "child-1") return { userId: "u1", parentSessionId: "parent-1", linkedParentId: "parent-1" } as any;
+                    return null;
+                });
+                mockGetLocalTuiSocket.mockReturnValue(local ? { connected: true, timeout } : undefined);
+                mockEmitToRelaySessionInputAck.mockResolvedValue({ hadListeners: true, delivered: true });
                 registerMessagingHandlers(socket as any);
 
                 await socket.fireEvent("session_message", {
@@ -91,12 +108,13 @@ describe("registerMessagingHandlers session_trigger acking", () => {
                 });
 
                 const payload = {
-                    text: "Change direction", attachments: [], client: "agent",
+                    text: "Message from linked session parent-1:\n\nChange direction", attachments: [], client: "agent",
+                    fromSessionId: "parent-1",
                     deliverAs: deliverAs === "steer" ? "steer" : "followUp",
                 };
                 expect(mockIsChildOfParent).toHaveBeenCalledWith("parent-1", "child-1");
-                if (local) expect(emit).toHaveBeenCalledWith("input", payload);
-                else expect(mockEmitToRelaySessionVerified).toHaveBeenCalledWith("child-1", "input", payload);
+                if (local) expect(emit).toHaveBeenCalledWith("input", payload, expect.any(Function));
+                else expect(mockEmitToRelaySessionInputAck).toHaveBeenCalledWith("child-1", "input", payload);
             });
         }
     }
