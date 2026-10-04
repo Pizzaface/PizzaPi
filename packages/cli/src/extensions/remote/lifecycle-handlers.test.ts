@@ -134,6 +134,21 @@ describe("nested tool events", () => {
 
         expect(rctx.forwardEvent).toHaveBeenCalledWith(event);
     });
+
+    test("strips Pi 1.0 structuredContent from forwarded tool_execution_end", () => {
+        const { handlers, rctx } = setup(null);
+        const result = {
+            content: [{ type: "text", text: "ok" }],
+            details: { truncation: null },
+            structuredContent: { output: "x".repeat(1024 * 1024), exit_code: 0 },
+        };
+
+        handlers.get("tool_execution_end")!({ type: "tool_execution_end", toolCallId: "t1", toolName: "bash", result, isError: false }, {});
+
+        const forwarded = (rctx.forwardEvent as any).mock.calls[0][0];
+        expect(forwarded.result).toEqual({ content: result.content, details: result.details });
+        expect(result.structuredContent).toBeDefined(); // Pi's own event object is not mutated
+    });
 });
 
 describe("agent_end — session_error / session_complete ordering", () => {
