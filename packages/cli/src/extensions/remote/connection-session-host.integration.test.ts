@@ -200,6 +200,38 @@ describe("connection handler -> SessionHost -> AgentSession.prompt integration",
         });
     });
 
+    test("agent input does not consume pending human approvals", async () => {
+        const promptCalls: Array<{ text: string; options: any }> = [];
+        const fakeSession = {
+            prompt: async (text: string, options: any) => { promptCalls.push({ text, options }); },
+        } as any;
+        const host = new SessionHost(() => fakeSession, {
+            newSession: async () => ({ cancelled: false }),
+            switchSession: async () => ({ cancelled: false }),
+            fork: async () => ({ cancelled: false }),
+        });
+        const { rctx } = makeRctx(host);
+        const { connectionHandlers } = createConnectionHandlers({
+            rctx,
+            state: makeState() as any,
+            triggerWaits: { cancelAll: () => 0 } as any,
+            delinkManager: {} as any,
+            cancellationManager: {} as any,
+            followUpGrace: { clearFollowUpGrace: () => {} } as any,
+            setModelFromWeb: async () => {},
+        });
+        consumeApproval = true;
+        const ack = mock((_delivered: boolean) => {});
+
+        connect(rctx, connectionHandlers);
+        lastSocket!.trigger("input", { text: "yes", client: "agent", fromSessionId: "child-1" }, ack);
+        await sleep(30);
+
+        expect(ack).toHaveBeenCalledWith(true);
+        expect(promptCalls).toHaveLength(1);
+        expect(promptCalls[0].text).toBe("yes");
+    });
+
     test("acknowledges an interactive response consumed by the runner", async () => {
         const fakeSession = { prompt: mock(async () => {}) } as any;
         const host = new SessionHost(() => fakeSession, {

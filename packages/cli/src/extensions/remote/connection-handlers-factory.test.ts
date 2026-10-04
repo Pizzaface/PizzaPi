@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import { createConnectionHandlers } from "./connection-handlers-factory.js";
+import { shouldDropAgentInput } from "./connection.js";
 
 describe("createConnectionHandlers flushDeferredDelinks", () => {
     function makeDeps() {
@@ -88,6 +89,30 @@ describe("createConnectionHandlers flushDeferredDelinks", () => {
         expect(state.sessionCompleteTransportGeneration).toBe(1);
         expect(state.pendingSessionCompleteDelivery).toBeNull();
         expect(fireSessionComplete).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("remote input guard", () => {
+    test("drops stale child agent input but not human approval text", () => {
+        const handlers = {
+            isStaleChild: (id: string) => id === "old-child",
+            isPendingDelinkOwnParent: () => false,
+            getStalePrimaryParentId: () => null,
+        };
+        expect(shouldDropAgentInput({ client: "agent", fromSessionId: "old-child" }, handlers)).toBe(true);
+        expect(shouldDropAgentInput({ client: "web", fromSessionId: "old-child" }, handlers)).toBe(false);
+    });
+
+    test("drops old-parent agent input during pending parent delink but preserves child input", () => {
+        const handlers = {
+            isStaleChild: () => false,
+            isPendingDelinkOwnParent: () => true,
+            getStalePrimaryParentId: () => "old-parent",
+        };
+        expect(shouldDropAgentInput({ client: "agent", fromSessionId: "old-parent" }, handlers)).toBe(true);
+        expect(shouldDropAgentInput({ client: "agent", fromSessionId: "child-1" }, handlers)).toBe(false);
+        expect(shouldDropAgentInput({ client: "agent" }, handlers)).toBe(true);
+        expect(shouldDropAgentInput({ client: "web", fromSessionId: "old-parent" }, handlers)).toBe(false);
     });
 });
 

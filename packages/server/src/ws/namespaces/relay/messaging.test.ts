@@ -182,4 +182,108 @@ describe("registerMessagingHandlers session_trigger acking", () => {
 
         expect(ack).toHaveBeenCalledWith({ ok: false, error: "Target session parent-1 is not connected" });
     });
+
+    test("delivers child to parent via target parent and explicit parent sessionId", async () => {
+        for (const payloadTarget of [{ target: "parent" }, { targetSessionId: "parent-1" }] as const) {
+            const socket = createMockSocket("child-1");
+            const ack = mock((_result: any) => {});
+            mockGetSharedSession.mockImplementation(async (id: string) => {
+                if (id === "child-1") return { userId: "u1", parentSessionId: null, linkedParentId: "parent-1" } as any;
+                if (id === "parent-1") return { userId: "u1", parentSessionId: null, linkedParentId: null } as any;
+                return null;
+            });
+            mockEmitToRelaySessionInputAck.mockResolvedValue({ hadListeners: true, delivered: true });
+            registerMessagingHandlers(socket as any);
+
+            await socket.fireEvent("session_message", { token: "relay-token", message: "hi", deliverAs: "steer", ...payloadTarget }, ack);
+
+            expect(ack).toHaveBeenLastCalledWith({ ok: true, delivered: ["parent-1"], errors: [] });
+            expect(mockIsChildOfParent).toHaveBeenCalledWith("parent-1", "child-1");
+        }
+    });
+
+    test("broadcasts only live direct children and reports partial failures", async () => {
+        const socket = createMockSocket("parent-1");
+        const ack = mock((_result: any) => {});
+        mockGetChildSessions.mockResolvedValue(["child-live", "child-offline", "grandchild"]);
+        mockGetSharedSession.mockImplementation(async (id: string) => {
+            if (id === "parent-1") return { userId: "u1", parentSessionId: null, linkedParentId: null } as any;
+            if (id === "child-live") return { userId: "u1", parentSessionId: "parent-1", linkedParentId: "parent-1" } as any;
+            if (id === "child-offline") return { userId: "u1", parentSessionId: "parent-1", linkedParentId: "parent-1" } as any;
+            if (id === "grandchild") return { userId: "u1", parentSessionId: "child-live", linkedParentId: "child-live" } as any;
+            return null;
+        });
+        mockHasRelaySessionListener.mockImplementation(async (id: string) => id === "child-live");
+        mockEmitToRelaySessionInputAck.mockImplementation(async (id: string) => ({ hadListeners: true, delivered: id === "child-live" }));
+        registerMessagingHandlers(socket as any);
+
+        await socket.fireEvent("session_message", { token: "relay-token", target: "children", message: "go", deliverAs: "steer" }, ack);
+
+        expect(mockEmitToRelaySessionInputAck).toHaveBeenCalledTimes(1);
+        expect(mockEmitToRelaySessionInputAck).toHaveBeenCalledWith("child-live", "input", expect.any(Object));
+        expect(ack).toHaveBeenCalledWith({ ok: true, delivered: ["child-live"], errors: [] });
+    });
+
+    test("reports child disconnecting during attempted broadcast delivery", async () => {
+        const socket = createMockSocket("parent-1");
+        const ack = mock((_result: any) => {});
+        mockGetChildSessions.mockResolvedValue(["child-1"]);
+        mockGetSharedSession.mockImplementation(async (id: string) => {
+            if (id === "parent-1") return { userId: "u1", parentSessionId: null, linkedParentId: null } as any;
+            if (id === "child-1") return { userId: "u1", parentSessionId: "parent-1", linkedParentId: "parent-1" } as any;
+            return null;
+        });
+        mockHasRelaySessionListener.mockResolvedValue(true);
+        mockEmitToRelaySessionInputAck.mockResolvedValue({ hadListeners: true, delivered: false });
+        registerMessagingHandlers(socket as any);
+
+        await socket.fireEvent("session_message", { token: "relay-token", target: "children", message: "go", deliverAs: "steer" }, ack);
+
+        expect(ack).toHaveBeenCalledWith({ ok: false, delivered: [], errors: [{ targetSessionId: "child-1", error: "Target session did not acknowledge delivery" }] });
+    });
+
+    test("denies cross-user unrelated self and pending-delink traffic", async () => {
+        const cases = [
+            { name: "cross-user", target: "other", other: { userId: "u2", parentSessionId: "parent-1", linkedParentId: "parent-1" }, pending: false, linked: true, error: "Target session belongs to a different user" },
+            { name: "unrelated", target: "other", other: { userId: "u1", parentSessionId: null, linkedParentId: null }, pending: false, linked: true, error: "Target is not a linked parent or direct child of the sender" },
+            { name: "self", target: "parent-1", other: { userId: "u1", parentSessionId: null, linkedParentId: null }, pending: false, linked: true, error: "Target is not a linked parent or direct child of the sender" },
+            { name: "pending parent-to-child", target: "child-1", other: { userId: "u1", parentSessionId: "parent-1", linkedParentId: "parent-1" }, pending: true, linked: true, error: "Target session is not a child of the sender" },
+            { name: "pending child-to-parent", sender: "child-1", target: "parent-1", senderData: { userId: "u1", parentSessionId: "parent-1", linkedParentId: "parent-1" }, other: { userId: "u1", parentSessionId: null, linkedParentId: null }, pending: true, linked: true, error: "Sender is no longer a child" },
+        ];
+        for (const c of cases) {
+            const socket = createMockSocket(c.sender ?? "parent-1");
+            const ack = mock((_result: any) => {});
+            mockGetSharedSession.mockImplementation(async (id: string) => {
+                if (id === (c.sender ?? "parent-1")) return (c.senderData ?? { userId: "u1", parentSessionId: null, linkedParentId: null }) as any;
+                if (id === c.target) return c.other as any;
+                return null;
+            });
+            mockIsPendingParentDelinkChild.mockResolvedValue(c.pending);
+            mockIsChildOfParent.mockResolvedValue(c.linked);
+            registerMessagingHandlers(socket as any);
+            await socket.fireEvent("session_message", { token: "relay-token", targetSessionId: c.target, message: c.name, deliverAs: "steer" }, ack);
+            expect(ack.mock.calls.at(-1)?.[0].ok).toBe(false);
+            expect(JSON.stringify(ack.mock.calls.at(-1)?.[0])).toContain(c.error);
+        }
+    });
+
+    test("rejects malformed empty targets and negative input ack", async () => {
+        const socket = createMockSocket("parent-1");
+        const ack = mock((_result: any) => {});
+        mockGetSharedSession.mockImplementation(async (id: string) => {
+            if (id === "parent-1") return { userId: "u1", parentSessionId: null, linkedParentId: null } as any;
+            if (id === "child-1") return { userId: "u1", parentSessionId: "parent-1", linkedParentId: "parent-1" } as any;
+            return null;
+        });
+        registerMessagingHandlers(socket as any);
+
+        await socket.fireEvent("session_message", null, ack);
+        await socket.fireEvent("session_message", { token: "relay-token", targetSessionId: "child-1", target: "children", message: "bad" }, ack);
+        mockEmitToRelaySessionInputAck.mockResolvedValue({ hadListeners: true, delivered: false });
+        await socket.fireEvent("session_message", { token: "relay-token", targetSessionId: "child-1", message: "no ack", deliverAs: "steer" }, ack);
+
+        expect(ack.mock.calls[0][0]).toMatchObject({ ok: false, error: "Invalid token" });
+        expect(ack.mock.calls[1][0]).toMatchObject({ ok: false, error: expect.stringContaining("exactly one target") });
+        expect(ack.mock.calls[2][0]).toMatchObject({ ok: false, errors: [{ targetSessionId: "child-1", error: "Target session did not acknowledge delivery" }] });
+    });
 });

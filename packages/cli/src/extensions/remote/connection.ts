@@ -123,6 +123,17 @@ export interface ConnectionHandlers {
     getParentSessionIdForRegister: () => string | null | undefined;
 }
 
+export function shouldDropAgentInput(
+    data: { client?: string; fromSessionId?: string },
+    handlers: Pick<ConnectionHandlers, "isStaleChild" | "isPendingDelinkOwnParent" | "getStalePrimaryParentId">,
+): boolean {
+    if (data.client !== "agent") return false;
+    if (typeof data.fromSessionId === "string" && handlers.isStaleChild(data.fromSessionId)) return true;
+    if (!handlers.isPendingDelinkOwnParent()) return false;
+    const stalePrimary = handlers.getStalePrimaryParentId();
+    return !data.fromSessionId || (!!stalePrimary && data.fromSessionId === stalePrimary);
+}
+
 export function handleTriggerResponse(
     rctx: RelayContext,
     data: { triggerId: string; response: string; action?: string; targetSessionId?: string },
@@ -505,16 +516,13 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
             ack?.(delivered === true);
         };
         const fromSessionId = typeof (data as any).fromSessionId === "string" ? (data as any).fromSessionId : undefined;
-        if ((data as any).client === "agent" && fromSessionId && handlers.isStaleChild(fromSessionId)) {
-            log.info(`pizzapi: dropping stale agent input from ${fromSessionId} — sender is a pre-/new child`);
-            settle(false);
-            return;
-        }
         // While waiting for delink_own_parent to be confirmed by the server,
         // the old parent can still inject send_message / follow-up input.
         // Drop agent-originated input until the server-side link is severed.
-        if (handlers.isPendingDelinkOwnParent() && (data as any).client === "agent") {
-            log.info("pizzapi: dropping stale parent send_message/follow-up input — delink_own_parent pending");
+        if (shouldDropAgentInput({ client: (data as any).client, fromSessionId }, handlers)) {
+            log.info(fromSessionId && handlers.isStaleChild(fromSessionId)
+                ? `pizzapi: dropping stale agent input from ${fromSessionId} — sender is a pre-/new child`
+                : "pizzapi: dropping stale parent send_message/follow-up input — delink_own_parent pending");
             settle(false);
             return;
         }

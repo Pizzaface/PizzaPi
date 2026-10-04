@@ -7,7 +7,7 @@
 // ============================================================================
 
 import { describe, it, expect, beforeEach } from "bun:test";
-import { clearAndCancelPendingTriggers, finalizeSessionCompleteResponse, isSessionCompleteType, trackReceivedTrigger, receivedTriggers, sendSessionMessageWithAck, sendTriggerResponseWithAck } from "./extension.js";
+import { clearAndCancelPendingTriggers, finalizeSessionCompleteResponse, isSessionCompleteType, trackReceivedTrigger, receivedTriggers, SESSION_MESSAGE_ACK_TIMEOUT_MS, sendSessionMessageWithAck, sendTriggerResponseWithAck } from "./extension.js";
 import { handleTriggerResponse } from "../remote/connection.js";
 
 interface EmittedEvent {
@@ -15,7 +15,7 @@ interface EmittedEvent {
     data: unknown;
 }
 
-function createMockSocket(opts?: { failSessionMessage?: boolean; failTriggerResponse?: boolean }) {
+function createMockSocket(opts?: { failSessionMessage?: boolean; failTriggerResponse?: boolean; noSessionMessageAck?: boolean }) {
     const emitted: EmittedEvent[] = [];
     const listeners = new Map<string, ((...args: any[]) => void)[]>();
 
@@ -25,6 +25,7 @@ function createMockSocket(opts?: { failSessionMessage?: boolean; failTriggerResp
             emit(event: string, data: any, ack?: (result: any) => void) {
                 emitted.push({ event, data });
                 if (event === "session_message") {
+                    if (opts?.noSessionMessageAck) return;
                     if (opts?.failSessionMessage) {
                         for (const handler of listeners.get("session_message_error") ?? []) {
                             handler({ targetSessionId: data.targetSessionId, error: "Target session not found or not connected" });
@@ -75,6 +76,10 @@ describe("sendSessionMessageWithAck", () => {
             event: "session_message",
             data: { token: "test-token", targetSessionId: "child-1", message: "hello", deliverAs: "steer" },
         });
+    });
+
+    it("keeps sender timeout longer than the relay's 10s receiver ack timeout", () => {
+        expect(SESSION_MESSAGE_ACK_TIMEOUT_MS).toBeGreaterThan(10_000);
     });
 
     it("reports partial broadcast delivery honestly", async () => {

@@ -57,7 +57,7 @@ export const receivedTriggers = new Map<string, { sourceSessionId: string; type:
 const handledTriggerTombstones = new Map<string, number>();
 
 const TRIGGER_RESPONSE_ACK_TIMEOUT_MS = 10_000;
-const SESSION_MESSAGE_ACK_TIMEOUT_MS = 10_000;
+export const SESSION_MESSAGE_ACK_TIMEOUT_MS = 20_000;
 
 type SessionMessageAck = {
     ok: boolean;
