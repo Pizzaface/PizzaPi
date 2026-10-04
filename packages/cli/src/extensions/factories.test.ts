@@ -30,6 +30,7 @@ import { initialPromptExtension } from "./initial-prompt.js";
 import { pizzapiHeaderExtension } from "./pizzapi-header.js";
 import { toolSearchExtension } from "./tool-search.js";
 import { ollamaWebToolsExtension } from "./ollama-web-tools.js";
+import { openaiCodexWebSearchExtension } from "./openai-codex-web-search.js";
 import { sessionAnalysisExtension } from "./session-analysis.js";
 import { providerRequestLogExtension } from "./provider-request-log.js";
 import { fallbackModelsExtension } from "./fallback-models.js";
@@ -65,6 +66,7 @@ const CORE_EXTENSIONS_HEAD: ExtensionFactory[] = [
     mcpExtension,
     toolSearchExtension,  // Must be after MCP to see registered MCP tools
     ollamaWebToolsExtension,
+    openaiCodexWebSearchExtension,
 ];
 const CORE_EXTENSIONS_TAIL: ExtensionFactory[] = [
     goalExtension,
