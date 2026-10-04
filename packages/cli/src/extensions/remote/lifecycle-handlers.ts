@@ -56,7 +56,7 @@ import type { DelinkManager } from "./delink-management.js";
 import type { CancellationManager } from "./trigger-cancellation.js";
 import { isManualAbort } from "./followup-grace.js";
 import type { FollowUpGraceManager } from "./followup-grace.js";
-import { stripStructuredContent } from "./strip-structured-content.js";
+import { slimForwardedEvent } from "./slim-forwarded-event.js";
 
 const log = createLogger("remote");
 const LINKED_CHILD_COUNT_TIMEOUT_MS = 2_000;
@@ -636,7 +636,7 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
     pi.on("agent_settled", handleAgentSettled);
 
     pi.on("turn_end", (event: any) => {
-        rctx.forwardEvent(event);
+        rctx.forwardEvent(slimForwardedEvent(event));
         const tokenUsage = buildTokenUsage(rctx);
         const providerUsage = buildProviderUsage();
         emitTokenUsageUpdated(rctx, tokenUsage as any, providerUsage as any);
@@ -665,7 +665,7 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
 
     pi.on("tool_execution_start", (event: any) => rctx.forwardEvent(event));
     pi.on("tool_execution_update", (event: any) => rctx.forwardEvent(event));
-    pi.on("tool_execution_end", (event: any) => rctx.forwardEvent(stripStructuredContent(event)));
+    pi.on("tool_execution_end", (event: any) => rctx.forwardEvent(slimForwardedEvent(event)));
 
     pi.on("model_select", (event: any) => {
         rctx.forwardEvent(event);

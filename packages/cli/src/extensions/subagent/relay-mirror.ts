@@ -18,7 +18,7 @@ import { io, type Socket } from "socket.io-client";
 import { SOCKET_PROTOCOL_VERSION } from "@pizzapi/protocol";
 import { createLogger } from "@pizzapi/tools";
 import type { SingleResult } from "./types.js";
-import { stripStructuredContent } from "../remote/strip-structured-content.js";
+import { slimForwardedEvent } from "../remote/slim-forwarded-event.js";
 
 const log = createLogger("subagent-mirror");
 
@@ -367,7 +367,7 @@ export function createSubagentMirror(opts: MirrorOptions): SubagentMirror | null
         sessionId,
         forward(event) {
             if (closed || finished || !event?.type || !STREAMED_EVENTS.has(event.type)) return;
-            emit(stripStructuredContent(event));
+            emit(slimForwardedEvent(event));
         },
         setModel(next) {
             if (closed || finished) return;

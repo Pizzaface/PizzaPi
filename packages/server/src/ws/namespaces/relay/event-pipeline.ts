@@ -370,10 +370,17 @@ export function registerEventHandler(socket: RelaySocket): void {
 
         // Augment message_end / turn_end with thinking durations
         let eventToPublish: unknown = data.event;
+        if (event.type === "turn_end") {
+            // Older CLIs forward Pi's turn_end wholesale: `context` holds
+            // full-transcript copies (~6 MB) that would be buffered in Redis.
+            // Viewers only read `message`. Newer CLIs already strip these.
+            const { context: _c, entries: _e, toolResults: _t, ...slim } = event as Record<string, unknown>;
+            eventToPublish = slim;
+        }
         if (event.type === "message_end" || event.type === "turn_end") {
             const durations = thinkingDurations.get(sessionId);
             if (durations?.size) {
-                eventToPublish = augmentMessageThinkingDurations(event, durations);
+                eventToPublish = augmentMessageThinkingDurations(eventToPublish as Record<string, unknown>, durations);
             }
             clearThinkingMaps(sessionId);
         }

@@ -149,6 +149,37 @@ describe("nested tool events", () => {
         expect(forwarded.result).toEqual({ content: result.content, details: result.details });
         expect(result.structuredContent).toBeDefined(); // Pi's own event object is not mutated
     });
+
+    test("strips full-transcript context/entries/toolResults from forwarded turn_end", () => {
+        const { handlers, rctx } = setup(null);
+        const message = { role: "assistant", content: [{ type: "text", text: "done" }] };
+        const event = {
+            type: "turn_end",
+            turnIndex: 2,
+            message,
+            toolResults: [{ role: "toolResult", content: [] }],
+            messageEntryId: "e1",
+            toolResultEntryIds: ["e2"],
+            entries: [{ type: "message" }],
+            continue: false,
+            context: { contextEntries: [1], contextMessages: [2], llmMessages: [3], pendingMessages: [], canContinue: false },
+            outcome: { type: "completed" },
+        };
+
+        handlers.get("turn_end")!(event, {});
+
+        const forwarded = (rctx.forwardEvent as any).mock.calls[0][0];
+        expect(forwarded).toEqual({
+            type: "turn_end",
+            turnIndex: 2,
+            message,
+            messageEntryId: "e1",
+            toolResultEntryIds: ["e2"],
+            continue: false,
+            outcome: { type: "completed" },
+        });
+        expect(event.context).toBeDefined(); // Pi's own event object is not mutated
+    });
 });
 
 describe("agent_end — session_error / session_complete ordering", () => {
