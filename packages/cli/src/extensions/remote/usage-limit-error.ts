@@ -25,7 +25,6 @@ const USAGE_LIMIT_PHRASES: ReadonlyArray<RegExp> = [
     /tokens\s+per\s+minute/i,
     /requests\s+per\s+minute/i,
     /output\s+tokens\s+per/i,
-    /context\s+window/i,
     // Single-word patterns with word boundaries
     /\bquota\b/i,
 ];

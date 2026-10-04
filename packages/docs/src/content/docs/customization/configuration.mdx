@@ -455,6 +455,7 @@ Edit directly or use the `/settings` command inside a session.
     "openai-codex:gpt-5.5",
     "ollama-cloud:glm-5.2"
   ],
+  "waitForRateLimits": false,
   "compaction": {
     "enabled": true,
     "reserveTokens": 16384,
@@ -470,7 +471,9 @@ Edit directly or use the `/settings` command inside a session.
 }
 ```
 
-`fallbackModels` is an ordered list of model references (`provider:modelId` or just `modelId`). Fallback runs only when a turn ends with `stopReason: "error"` and the final error message matches a usage-limit phrase (`usage limit`, `rate limit`, `quota`, `quota exceeded`, `resource exhausted`, `tokens per minute`, `requests per minute`, `output tokens per`, `context window`) or a provider-capacity phrase (`overloaded`, HTTP `529`, `throttl...`). Agent-core retries happen first; fallback sees the terminal failed turn, switches to the next configured fallback with credentials, and sends the last user input back as a steer message. It starts after the current model's position in the chain when present, otherwise at the beginning, skips unavailable/already-tried models, and cascades until one succeeds or no configured fallback is available. Configure it from the web UI under **Runner → Settings → Models** or by editing `~/.pizzapi/settings.json` directly.
+`fallbackModels` is an ordered list of model references (`provider:modelId` or just `modelId`). Fallback runs only when a turn ends with `stopReason: "error"` and the final error message matches a usage-limit phrase (`usage limit`, `rate limit`, `quota`, `quota exceeded`, `resource exhausted`, `tokens per minute`, `requests per minute`, `output tokens per`) or a provider-capacity phrase (`overloaded`, HTTP `529`, `throttl...`). At the failed turn boundary, fallback switches to the next configured model with credentials and sends the last user input back as a steer message. It starts after the current model's position in the chain when present, otherwise at the beginning, skips unavailable/already-tried models, and cascades until one succeeds or no configured fallback is available. Configure it from the web UI under **Runner → Settings → Models** or by editing `~/.pizzapi/settings.json` directly.
+
+`waitForRateLimits` defaults to `false`. When enabled, a usage-limit failure with no remaining fallback can wait for verified quota recovery on the current model before continuing. Unknown or stale quota never triggers a retry. The global setting applies on session start; `/rate-limit-wait on|off|cancel|status` controls the current session from the TUI or web composer. See [waiting for rate limits](/PizzaPi/features/providers-and-models/#wait-for-rate-limits-to-return) for cancellation and recovery behavior.
 
 <Aside type="note">
   PizzaPi config (`~/.pizzapi/config.json`) controls the relay, MCP servers, hooks, sandbox, and PizzaPi extensions. Pi settings (`~/.pizzapi/settings.json`) control model defaults, compaction, retry, and session behavior. They are independent — don't mix them up.

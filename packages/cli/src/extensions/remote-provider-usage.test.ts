@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { activeUsageWindows, preserveUsageWindowsOnError } from "./remote-provider-usage.js";
+import { activeUsageWindows } from "./provider-quota.js";
+import { preserveUsageWindowsOnError } from "./remote-provider-usage.js";
 
 const NOW = Date.parse("2026-03-10T12:00:00Z");
 
@@ -42,19 +43,27 @@ describe("preserveUsageWindowsOnError", () => {
         const existing = {
             windows: [{ label: "5-hour", utilization: 42, resets_at: "2026-12-31T23:59:59Z" }],
             status: "ok" as const,
+            fetchedAt: NOW,
+            expiresAt: NOW + 1,
         };
-        expect(preserveUsageWindowsOnError(existing, 403)).toEqual({
+        expect(preserveUsageWindowsOnError(existing, 403, NOW + 2)).toEqual({
             windows: existing.windows,
             status: "unknown",
             errorCode: 403,
+            fetchedAt: NOW,
+            checkedAt: NOW + 2,
+            expiresAt: NOW + 1,
         });
     });
 
     test("uses empty windows when no cached data exists", () => {
-        expect(preserveUsageWindowsOnError(undefined, 429)).toEqual({
+        expect(preserveUsageWindowsOnError(undefined, 429, NOW)).toEqual({
             windows: [],
             status: "unknown",
             errorCode: 429,
+            fetchedAt: undefined,
+            checkedAt: NOW,
+            expiresAt: undefined,
         });
     });
 
@@ -65,11 +74,16 @@ describe("preserveUsageWindowsOnError", () => {
                 { label: "7-day", utilization: 15, resets_at: "2026-12-31T23:59:59Z" },
             ],
             status: "ok" as const,
+            fetchedAt: NOW,
+            expiresAt: NOW + 1,
         };
-        expect(preserveUsageWindowsOnError(existing, 401)).toEqual({
+        expect(preserveUsageWindowsOnError(existing, 401, NOW + 2)).toEqual({
             windows: existing.windows,
             status: "unknown",
             errorCode: 401,
+            fetchedAt: NOW,
+            checkedAt: NOW + 2,
+            expiresAt: NOW + 1,
         });
     });
 });

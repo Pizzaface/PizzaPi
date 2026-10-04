@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { Window } from "happy-dom";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import * as React from "react";
 
 const win = new Window({ url: "http://localhost/" });
@@ -68,6 +68,28 @@ function renderPanel(tuiSettings: Record<string, unknown> = {}, onSave = (_k: st
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 describe("ModelsSettings", () => {
+    test("wait for rate limits is opt-in and saved independently of fallbacks", async () => {
+        mockFetch();
+        const onSave = mock();
+        const { getByRole } = renderPanel({}, onSave);
+        const toggle = getByRole("checkbox", { name: "Wait for rate limits to return" }) as HTMLInputElement;
+        expect(toggle.checked).toBe(false);
+        fireEvent.click(toggle);
+        fireEvent.click(getByRole("button", { name: "Save" }));
+        expect(onSave).toHaveBeenCalledWith("models", expect.objectContaining({ waitForRateLimits: true, fallbackModels: [] }));
+    });
+
+    test("loads enabled waiting and allows disabling it", async () => {
+        mockFetch();
+        const onSave = mock();
+        const { getByRole } = renderPanel({ waitForRateLimits: true }, onSave);
+        const toggle = getByRole("checkbox", { name: "Wait for rate limits to return" }) as HTMLInputElement;
+        expect(toggle.checked).toBe(true);
+        fireEvent.click(toggle);
+        fireEvent.click(getByRole("button", { name: "Save" }));
+        expect(onSave).toHaveBeenCalledWith("models", expect.objectContaining({ waitForRateLimits: false }));
+    });
+
     test("renders fallback models from tuiSettings", async () => {
         mockFetch();
         const { getByText, queryByText } = renderPanel({ fallbackModels: ["openai-codex:gpt-5.5"] });

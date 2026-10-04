@@ -1,15 +1,20 @@
 import type { ProviderUsageData } from "./remote-types.js";
+import { activeUsageWindows } from "./provider-quota.js";
 
 /**
  * Format a single provider's usage data into human-readable lines.
  * Returns empty array if no usage data available.
  */
-export function formatProviderUsage(data: ProviderUsageData | undefined): string[] {
+export function formatProviderUsage(data: ProviderUsageData | undefined, now = Date.now()): string[] {
     if (!data) return [];
-    if (data.status === "unknown") return ["  Usage: unknown (access denied)"];
+    if (data.status === "unknown" || (data.expiresAt !== undefined && data.expiresAt <= now)) {
+        return [`  Usage: unknown${data.errorCode ? ` (HTTP ${data.errorCode})` : ""}`];
+    }
     if (data.windows.length === 0) return [];
+    const windows = activeUsageWindows(data.windows, now);
+    if (windows.length === 0) return ["  Usage: unknown"];
 
-    const parts = data.windows.map((w) => {
+    const parts = windows.map((w) => {
         const pct = Math.round(w.utilization);
         return `${w.label}: ${pct}%`;
     });

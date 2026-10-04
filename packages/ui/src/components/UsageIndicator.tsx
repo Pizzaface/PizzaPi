@@ -77,7 +77,7 @@ function UsageBar({ window: w }: { window: UsageWindow }) {
 
 function ProviderSection({ providerId, data }: { providerId: string; data: ProviderUsageData }) {
     const displayName = getProviderDisplayName(providerId);
-    if (data.status === "unknown") {
+    if (providerUsageDisplay(data).kind === "unknown") {
         return (
             <div className="flex flex-col gap-2">
                 <div className="flex items-center gap-1.5">
@@ -193,13 +193,12 @@ export interface UsageIndicatorProps {
 }
 
 export function UsageIndicator({ usage, authSource: rawAuthSource, activeProvider, onRefresh, refreshing = false }: UsageIndicatorProps) {
-    const entries = React.useMemo(
-        () => Object.entries(usage ?? {}).filter(([id, d]) =>
-            showsUsageIndicator(id) &&
-            (d.status === "unknown" || activeWindows(d.windows).length > 0),
-        ),
-        [usage],
-    );
+    const entries = Object.entries(usage ?? {}).filter(([id]) => showsUsageIndicator(id));
+    const quotaProvider = activeProvider === "claude-subscription" ? "anthropic" : activeProvider;
+    if (rawAuthSource === "oauth" && quotaProvider && showsUsageIndicator(quotaProvider) &&
+        !entries.some(([id]) => (id === "claude-subscription" ? "anthropic" : id) === quotaProvider)) {
+        entries.push([quotaProvider, { windows: [], status: "unknown" }]);
+    }
 
     // Normalize the auth source string to the typed union
     const authSource: AuthSource = (

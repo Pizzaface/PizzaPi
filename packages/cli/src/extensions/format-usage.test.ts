@@ -3,13 +3,25 @@ import { formatProviderUsage, getUsageKey, buildUsageKeyToProviderMap, normalize
 import type { ProviderUsageData } from "./remote-types.js";
 
 describe("formatProviderUsage", () => {
+    test("retained expired windows are not shown as current usage", () => {
+        expect(formatProviderUsage({ status: "ok", windows: [
+            { label: "5-hour", utilization: 100, resets_at: "2000-01-01T00:00:00Z" },
+            { label: "7-day", utilization: 30, resets_at: "2099-01-01T00:00:00Z" },
+        ] })).toEqual(["  Usage: 7-day: 30%"]);
+        expect(formatProviderUsage({ status: "ok", expiresAt: 1, windows: [] })).toEqual(["  Usage: unknown"]);
+    });
+    test("does not label a rate-limited usage check as access denied", () => {
+        expect(formatProviderUsage({ windows: [], status: "unknown", errorCode: 429 })).toEqual(["  Usage: unknown (HTTP 429)"]);
+        expect(formatProviderUsage({ windows: [], status: "unknown" })).toEqual(["  Usage: unknown"]);
+    });
+
     test("returns empty array when data is undefined", () => {
         expect(formatProviderUsage(undefined)).toEqual([]);
     });
 
     test("returns unknown message when status is unknown", () => {
         const data: ProviderUsageData = { windows: [], status: "unknown", errorCode: 403 };
-        expect(formatProviderUsage(data)).toEqual(["  Usage: unknown (access denied)"]);
+        expect(formatProviderUsage(data)).toEqual(["  Usage: unknown (HTTP 403)"]);
     });
 
     test("returns empty array when no windows", () => {
@@ -22,7 +34,7 @@ describe("formatProviderUsage", () => {
             windows: [{ label: "7-day", utilization: 62.3, resets_at: "2026-03-14T00:00:00Z" }],
             status: "ok",
         };
-        expect(formatProviderUsage(data)).toEqual(["  Usage: 7-day: 62%"]);
+        expect(formatProviderUsage(data, Date.parse("2026-03-09T00:00:00Z"))).toEqual(["  Usage: 7-day: 62%"]);
     });
 
     test("formats multiple windows", () => {
@@ -33,7 +45,7 @@ describe("formatProviderUsage", () => {
             ],
             status: "ok",
         };
-        expect(formatProviderUsage(data)).toEqual(["  Usage: 5-hour: 25%, 7-day: 62%"]);
+        expect(formatProviderUsage(data, Date.parse("2026-03-09T00:00:00Z"))).toEqual(["  Usage: 5-hour: 25%, 7-day: 62%"]);
     });
 
     test("rounds utilization to nearest integer", () => {
@@ -41,7 +53,7 @@ describe("formatProviderUsage", () => {
             windows: [{ label: "7-day", utilization: 33.7, resets_at: "2026-03-14T00:00:00Z" }],
             status: "ok",
         };
-        expect(formatProviderUsage(data)).toEqual(["  Usage: 7-day: 34%"]);
+        expect(formatProviderUsage(data, Date.parse("2026-03-09T00:00:00Z"))).toEqual(["  Usage: 7-day: 34%"]);
     });
 });
 

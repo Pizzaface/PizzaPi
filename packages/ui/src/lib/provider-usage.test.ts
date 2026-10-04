@@ -71,24 +71,24 @@ describe("providerUsageDisplay", () => {
         expect(display.label).toBe("7-day");
     });
 
-    test("all windows expired reads as fully reset", () => {
+    test("all windows expired is unknown, not proof of restored quota", () => {
         const data: ProviderUsageData = {
             status: "ok",
             windows: [{ label: "5-hour", utilization: 99, resets_at: PAST }],
         };
         expect(providerUsageDisplay(data, NOW)).toEqual({
-            kind: "usage",
-            usedPct: 0,
-            remainingPct: 100,
+            kind: "unknown",
+            usedPct: null,
+            remainingPct: null,
             label: null,
         });
     });
 
-    test("no windows reads as fully available", () => {
+    test("no windows is unknown", () => {
         expect(providerUsageDisplay({ status: "ok", windows: [] }, NOW)).toEqual({
-            kind: "usage",
-            usedPct: 0,
-            remainingPct: 100,
+            kind: "unknown",
+            usedPct: null,
+            remainingPct: null,
             label: null,
         });
     });
@@ -107,6 +107,12 @@ describe("providerUsageDisplay", () => {
         );
         expect(low.usedPct).toBe(0);
         expect(low.remainingPct).toBe(100);
+    });
+
+    test("expired provider snapshot is unknown even when windows have not reset", () => {
+        expect(providerUsageDisplay({ status: "ok", expiresAt: NOW - 1, windows: [
+            { label: "7-day", utilization: 25, resets_at: FUTURE },
+        ] }, NOW).kind).toBe("unknown");
     });
 
     test("unknown status short-circuits", () => {

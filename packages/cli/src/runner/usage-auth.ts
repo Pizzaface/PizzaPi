@@ -46,10 +46,13 @@ function readMinimalccPiImportedCredential(opts: { now?: number; path?: string }
  *
  * This reads the raw credential without refreshing expired OAuth tokens.
  */
-export function getOAuthAccessToken(raw: unknown): string | null {
+export function getOAuthAccessToken(raw: unknown, opts: { now?: number } = {}): string | null {
     if (!isRecord(raw)) return null;
     const type = raw.type;
     if (type === "api_key") return null;
+
+    const expires = typeof raw.expires === "number" ? raw.expires : typeof raw.expiresAt === "number" ? raw.expiresAt : undefined;
+    if (expires !== undefined && Number.isFinite(expires) && expires <= (opts.now ?? Date.now())) return null;
 
     const access = raw.access;
     if (typeof access === "string" && access.trim().length > 0) return access;

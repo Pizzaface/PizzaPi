@@ -19,6 +19,11 @@ describe("getOAuthAccessToken", () => {
         expect(getOAuthAccessToken({ type: "api_key", key: "sk-123" })).toBeNull();
     });
 
+    test("ignores expired OAuth credentials", () => {
+        expect(getOAuthAccessToken({ type: "oauth", access: "old", expires: 1 }, { now: 2 })).toBeNull();
+        expect(getOAuthAccessToken({ type: "oauth", access: "fresh", expires: 3 }, { now: 2 })).toBe("fresh");
+    });
+
     test("returns null for invalid payload", () => {
         expect(getOAuthAccessToken({})).toBeNull();
         expect(getOAuthAccessToken("token")).toBeNull();
