@@ -229,6 +229,13 @@ export function isChatModel(model: unknown): boolean {
     (((model as Record<string, unknown>).type === undefined) || (model as Record<string, unknown>).type === "chat");
 }
 
+/** Runner model-list entry with a provider/id that chat pickers can select. */
+export function isRunnerChatModel(model: unknown): model is { provider: string; id: string } {
+  if (!isChatModel(model)) return false;
+  const value = model as Record<string, unknown>;
+  return typeof value.provider === "string" && typeof value.id === "string";
+}
+
 function isNestedToolCalls(value: unknown): value is NonNullable<RelayMessage["nestedCalls"]> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const nested = value as Record<string, unknown>;

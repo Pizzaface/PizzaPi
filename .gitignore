@@ -1,5 +1,6 @@
 node_modules/
 dist/
+packages/cli/.binary-build/
 .env
 *.log
 .DS_Store

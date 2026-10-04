@@ -159,56 +159,21 @@ export function processFile(
     const eventUid = `${relativePath}:${lineStart}`;
 
     // Extract usage from assistant messages, tool results (Pi 1.0 nested
-    // model work such as codemode `models.*`), and standalone usage entries.
-    if (obj.type === "message" && obj.message?.usage) {
-      const msg = obj.message as any;
-      if (msg.role === "assistant" || msg.role === "toolResult") {
-        const usage = msg.usage;
-        const timestamp = new Date(obj.timestamp).getTime();
-        const isTool = msg.role === "toolResult";
-
-        events.push({
-          event_uid: eventUid,
-          timestamp,
-          provider: isTool ? (msg.provider || "Tools") : (msg.provider || "unknown"),
-          model: isTool ? (msg.model || "summaries") : (msg.model || "unknown"),
-          input_tokens: usage.input || 0,
-          output_tokens: usage.output || 0,
-          cache_read_tokens: usage.cacheRead || 0,
-          cache_write_tokens: usage.cacheWrite || 0,
-          cost_usd: usage.cost?.total ?? null,
-          cost_input: usage.cost?.input ?? null,
-          cost_output: usage.cost?.output ?? null,
-          cost_cache_read: usage.cost?.cacheRead ?? null,
-          cost_cache_write: usage.cost?.cacheWrite ?? null,
-        });
-      }
-    } else if (obj.type === "usage" && obj.usage) {
-      const usage = obj.usage;
-      const timestamp = new Date(obj.timestamp).getTime();
+    // model work such as codemode `models.*`), standalone usage entries, and
+    // branch/compaction summaries. `src` carries provider/model/usage.
+    const msg = obj.type === "message" ? obj.message : undefined;
+    const src =
+      msg?.usage && (msg.role === "assistant" || msg.role === "toolResult") ? msg
+      : obj.type !== "message" && obj.usage && ["usage", "branch_summary", "compaction"].includes(obj.type) ? obj
+      : undefined;
+    if (src) {
+      const usage = src.usage;
+      const summaryLike = obj.type === "branch_summary" || obj.type === "compaction" || msg?.role === "toolResult";
       events.push({
         event_uid: eventUid,
-        timestamp,
-        provider: obj.provider || "unknown",
-        model: obj.model || "unknown",
-        input_tokens: usage.input || 0,
-        output_tokens: usage.output || 0,
-        cache_read_tokens: usage.cacheRead || 0,
-        cache_write_tokens: usage.cacheWrite || 0,
-        cost_usd: usage.cost?.total ?? null,
-        cost_input: usage.cost?.input ?? null,
-        cost_output: usage.cost?.output ?? null,
-        cost_cache_read: usage.cost?.cacheRead ?? null,
-        cost_cache_write: usage.cost?.cacheWrite ?? null,
-      });
-    } else if ((obj.type === "branch_summary" || obj.type === "compaction") && obj.usage) {
-      const usage = obj.usage;
-      const timestamp = new Date(obj.timestamp).getTime();
-      events.push({
-        event_uid: eventUid,
-        timestamp,
-        provider: obj.provider || "Tools",
-        model: obj.model || "summaries",
+        timestamp: new Date(obj.timestamp).getTime(),
+        provider: src.provider || (summaryLike ? "Tools" : "unknown"),
+        model: src.model || (summaryLike ? "summaries" : "unknown"),
         input_tokens: usage.input || 0,
         output_tokens: usage.output || 0,
         cache_read_tokens: usage.cacheRead || 0,
