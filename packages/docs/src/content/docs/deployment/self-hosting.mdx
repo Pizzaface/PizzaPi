@@ -142,6 +142,8 @@ Configure the server by setting environment variables in Docker Compose or your 
 | `PIZZAPI_EPHEMERAL_TTL_MS` | `600000` | Idle TTL for ephemeral relay sessions and their Redis event data (10 minutes). Invalid or non-positive values fall back to the default. |
 | `PIZZAPI_EPHEMERAL_SWEEP_MS` | `60000` | Interval for pruning expired ephemeral relay sessions (1 minute). Invalid or non-positive values fall back to the default. |
 | `PIZZAPI_RELAY_EVENT_TTL_MS` | `86400000` | Redis event TTL for non-ephemeral sessions (24 hours). Ephemeral sessions use `PIZZAPI_EPHEMERAL_TTL_MS` instead. |
+| `PIZZAPI_RELAY_EVENT_BUFFER_SIZE` | `1000` | Maximum Redis replay-cache rows per session. Invalid or non-positive values fall back to the default. |
+| `PIZZAPI_RELAY_EVENT_CACHE_MAX_BYTES` | `8388608` | Approximate maximum Redis replay-cache bytes per session (8 MiB). Full snapshots replace older cache rows and are kept even when larger than this so they remain available for fallback. Other oversize events become cache-gap markers so viewers fall back to a full snapshot instead of replaying incomplete deltas. Invalid or non-positive values fall back to the default. |
 | `PIZZAPI_RELAY_SNAPSHOT_SCAN_CHUNK_SIZE` | `64` | Redis scan chunk size for relay snapshot cleanup. Invalid or non-positive values fall back to the default. |
 | `PIZZAPI_ATTACHMENT_DIR` | `<cwd>/.pizzapi/uploads` | Directory for uploaded session attachments. Resolved to an absolute path at server startup. |
 | `PIZZAPI_ATTACHMENT_TTL_MS` | `900000` | TTL for regular uploaded session attachments (15 minutes). Invalid or non-positive values fall back to the default; extracted session images use a separate 24-hour TTL. |

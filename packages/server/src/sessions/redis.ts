@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { connectRedisClient, isRedisDisabled, redisUrl, type RedisClient } from "../redis-client.js";
 import { getEphemeralTtlMs } from "./store.js";
 import { createLogger } from "@pizzapi/tools";
@@ -5,8 +6,10 @@ import { createLogger } from "@pizzapi/tools";
 const log = createLogger("redis");
 
 const DEFAULT_EVENT_BUFFER_SIZE = 1000;
+const DEFAULT_EVENT_CACHE_MAX_BYTES = 8 * 1024 * 1024;
 const DEFAULT_EVENT_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_SNAPSHOT_SCAN_CHUNK_SIZE = 64;
+const GAP_MARKER = "oversize";
 
 export interface CachedRelayEventRecord {
     seq?: number;
@@ -15,7 +18,8 @@ export interface CachedRelayEventRecord {
 
 interface ParsedCachedRelayEventRecord {
     seq?: number;
-    event: unknown;
+    event?: unknown;
+    gap?: typeof GAP_MARKER;
 }
 
 function isSnapshotEvent(event: unknown): event is Record<string, unknown> {
@@ -30,6 +34,17 @@ function isSnapshotEvent(event: unknown): event is Record<string, unknown> {
     return false;
 }
 
+function isFullSnapshotEvent(event: unknown): boolean {
+    if (!event || typeof event !== "object") return false;
+    const evt = event as Record<string, unknown>;
+    if (evt.type === "agent_end") return Array.isArray(evt.messages);
+    if (evt.type !== "session_active") return false;
+    const state = evt.state;
+    if (!state || typeof state !== "object" || Array.isArray(state)) return false;
+    const snapshot = state as Record<string, unknown>;
+    return snapshot.chunked !== true && Array.isArray(snapshot.messages);
+}
+
 function parsePositiveInt(value: string | undefined, fallback: number): number {
     if (!value) return fallback;
     const parsed = Number.parseInt(value, 10);
@@ -38,6 +53,10 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
 
 function eventBufferSize(): number {
     return parsePositiveInt(process.env.PIZZAPI_RELAY_EVENT_BUFFER_SIZE, DEFAULT_EVENT_BUFFER_SIZE);
+}
+
+function eventCacheMaxBytes(): number {
+    return parsePositiveInt(process.env.PIZZAPI_RELAY_EVENT_CACHE_MAX_BYTES, DEFAULT_EVENT_CACHE_MAX_BYTES);
 }
 
 function nonEphemeralEventTtlMs(): number {
@@ -55,6 +74,59 @@ function snapshotScanChunkSize(): number {
 function eventsKey(sessionId: string): string {
     return `pizzapi:relay:session:${sessionId}:events`;
 }
+
+function eventsBytesKey(sessionId: string): string {
+    return `${eventsKey(sessionId)}:bytes`;
+}
+
+function stringifyCachedPayload(payload: ParsedCachedRelayEventRecord): { json: string; bytes: number } {
+    const json = JSON.stringify(payload);
+    return { json, bytes: Buffer.byteLength(json, "utf8") };
+}
+
+const APPEND_AND_TRIM_SCRIPT = `
+local listKey = KEYS[1]
+local bytesKey = KEYS[2]
+local payload = ARGV[1]
+local payloadBytes = tonumber(ARGV[2]) or string.len(payload)
+local maxCount = tonumber(ARGV[3]) or 1000
+local maxBytes = tonumber(ARGV[4]) or 8388608
+local ttlMs = tonumber(ARGV[5]) or 600000
+local compactSnapshot = ARGV[6] == "1"
+
+if compactSnapshot then
+  redis.call("DEL", listKey, bytesKey)
+end
+
+local preLen = redis.call("LLEN", listKey)
+redis.call("RPUSH", listKey, payload)
+
+local total
+if redis.call("EXISTS", bytesKey) == 0 and preLen > 0 then
+  while redis.call("LLEN", listKey) > 1 do
+    redis.call("LPOP", listKey)
+  end
+  total = payloadBytes
+else
+  total = redis.call("INCRBY", bytesKey, payloadBytes)
+end
+
+while redis.call("LLEN", listKey) > maxCount do
+  local row = redis.call("LPOP", listKey)
+  if row then total = total - string.len(row) end
+end
+
+while total > maxBytes and redis.call("LLEN", listKey) > 1 do
+  local row = redis.call("LPOP", listKey)
+  if row then total = total - string.len(row) else break end
+end
+
+if total < 0 then total = 0 end
+redis.call("SET", bytesKey, total)
+redis.call("PEXPIRE", listKey, ttlMs)
+redis.call("PEXPIRE", bytesKey, ttlMs)
+return total
+`;
 
 let _redis: RedisClient | null = null;
 let _initPromise: Promise<void> | null = null;
@@ -116,27 +188,42 @@ export async function appendRelayEventToCache(
     const redis = await getClient();
     if (!redis) return;
 
-    const payload: ParsedCachedRelayEventRecord = {
-        event,
-    };
+    const maxBytes = eventCacheMaxBytes();
+    const compactSnapshot = isFullSnapshotEvent(event);
+    let payload: ParsedCachedRelayEventRecord = { event };
     if (typeof opts.seq === "number" && Number.isFinite(opts.seq)) {
         payload.seq = opts.seq;
     }
+
+    let serialized = stringifyCachedPayload(payload);
+    if (serialized.bytes > maxBytes && !compactSnapshot) {
+        payload = { gap: GAP_MARKER };
+        if (typeof opts.seq === "number" && Number.isFinite(opts.seq)) {
+            payload.seq = opts.seq;
+        }
+        serialized = stringifyCachedPayload(payload);
+    }
+
     const ttlMs = ttlMsForSession(opts.isEphemeral);
 
     try {
-        const key = eventsKey(sessionId);
-        const multi = redis.multi();
-        multi.rPush(key, JSON.stringify(payload));
-        multi.lTrim(key, -eventBufferSize(), -1);
-        multi.pExpire(key, ttlMs);
-        await multi.exec();
+        await redis.eval(APPEND_AND_TRIM_SCRIPT, {
+            keys: [eventsKey(sessionId), eventsBytesKey(sessionId)],
+            arguments: [
+                serialized.json,
+                String(serialized.bytes),
+                String(eventBufferSize()),
+                String(maxBytes),
+                String(ttlMs),
+                compactSnapshot ? "1" : "0",
+            ],
+        });
     } catch (error) {
         logUnavailableOnce("Failed to append relay event to Redis cache", error);
     }
 }
 
-function parseCachedRelayEventRow(row: string): CachedRelayEventRecord | null {
+function parseCachedRelayEventRow(row: string): ParsedCachedRelayEventRecord | null {
     try {
         const parsed = JSON.parse(row) as unknown;
         if (!parsed || typeof parsed !== "object") {
@@ -144,11 +231,12 @@ function parseCachedRelayEventRow(row: string): CachedRelayEventRecord | null {
         }
 
         const record = parsed as Record<string, unknown>;
+        const seq = typeof record.seq === "number" && Number.isFinite(record.seq) ? record.seq : undefined;
+        if (record.gap === GAP_MARKER) {
+            return { seq, gap: GAP_MARKER };
+        }
         if (Object.prototype.hasOwnProperty.call(record, "event")) {
-            return {
-                seq: typeof record.seq === "number" && Number.isFinite(record.seq) ? record.seq : undefined,
-                event: record.event,
-            };
+            return { seq, event: record.event };
         }
 
         return { event: parsed };
@@ -157,8 +245,20 @@ function parseCachedRelayEventRow(row: string): CachedRelayEventRecord | null {
     }
 }
 
-function isSequencedCachedRelayEvent(record: CachedRelayEventRecord): record is CachedRelayEventRecord & { seq: number } {
-    return typeof record.seq === "number" && Number.isFinite(record.seq);
+function isGapRecord(record: ParsedCachedRelayEventRecord): boolean {
+    return record.gap === GAP_MARKER;
+}
+
+function hasCachedEvent(record: ParsedCachedRelayEventRecord): record is CachedRelayEventRecord {
+    return Object.prototype.hasOwnProperty.call(record, "event");
+}
+
+function isSequencedCachedRelayEvent(record: ParsedCachedRelayEventRecord): record is CachedRelayEventRecord & { seq: number } {
+    return hasCachedEvent(record) && typeof record.seq === "number" && Number.isFinite(record.seq);
+}
+
+function isSequencedGapRecord(record: ParsedCachedRelayEventRecord): record is ParsedCachedRelayEventRecord & { seq: number } {
+    return isGapRecord(record) && typeof record.seq === "number" && Number.isFinite(record.seq);
 }
 
 export async function getCachedRelayEvents(sessionId: string): Promise<CachedRelayEventRecord[]> {
@@ -172,7 +272,7 @@ export async function getCachedRelayEvents(sessionId: string): Promise<CachedRel
         const events: CachedRelayEventRecord[] = [];
         for (const row of rows) {
             const parsed = parseCachedRelayEventRow(row);
-            if (parsed) {
+            if (parsed && hasCachedEvent(parsed)) {
                 events.push(parsed);
             }
         }
@@ -207,7 +307,7 @@ export async function getLatestCachedRelayEventSeq(sessionId: string): Promise<n
             const rows = await redis.lRange(key, start, end);
             for (let i = rows.length - 1; i >= 0; i--) {
                 const parsed = parseCachedRelayEventRow(rows[i]);
-                if (parsed && isSequencedCachedRelayEvent(parsed)) return parsed.seq;
+                if (parsed && (isSequencedCachedRelayEvent(parsed) || isSequencedGapRecord(parsed))) return parsed.seq;
             }
         }
         return null;
@@ -234,6 +334,7 @@ export async function getCachedRelayEventsAfterSeq(
         type SequencedRecord = CachedRelayEventRecord & { seq: number };
         const collected: SequencedRecord[] = [];
         let sawLegacyRow = false;
+        let sawGap = false;
         const chunkSize = snapshotScanChunkSize();
 
         // Events are rPush'd: newest at the tail. Scan backwards in chunks
@@ -246,6 +347,14 @@ export async function getCachedRelayEventsAfterSeq(
             for (let i = rows.length - 1; i >= 0; i--) {
                 const parsed = parseCachedRelayEventRow(rows[i]);
                 if (!parsed) continue;
+                if (isGapRecord(parsed)) {
+                    if (isSequencedGapRecord(parsed) && parsed.seq <= afterSeq) {
+                        stopped = true;
+                        break;
+                    }
+                    sawGap = true;
+                    continue;
+                }
                 if (!isSequencedCachedRelayEvent(parsed)) {
                     sawLegacyRow = true;
                     continue;
@@ -259,7 +368,7 @@ export async function getCachedRelayEventsAfterSeq(
             if (stopped) break;
         }
 
-        if (afterSeq > 0 && sawLegacyRow) {
+        if (sawGap || (afterSeq > 0 && sawLegacyRow)) {
             return [];
         }
 
@@ -338,6 +447,8 @@ export async function getLatestCachedSnapshotEvent(sessionId: string): Promise<L
                 const row = rows[i];
                 const parsed = parseCachedRelayEventRow(row);
                 if (!parsed) continue;
+                if (isGapRecord(parsed)) return null;
+                if (!hasCachedEvent(parsed)) continue;
                 if (isSnapshotEvent(parsed.event)) {
                     return {
                         event: parsed.event as Record<string, unknown>,
@@ -362,7 +473,7 @@ export async function deleteRelayEventCache(sessionId: string): Promise<void> {
     if (!redis) return;
 
     try {
-        await redis.del(eventsKey(sessionId));
+        await redis.del([eventsKey(sessionId), eventsBytesKey(sessionId)]);
     } catch (error) {
         logUnavailableOnce("Failed to delete relay event cache from Redis", error);
     }
@@ -375,7 +486,7 @@ export async function deleteRelayEventCaches(sessionIds: string[]): Promise<void
     if (!redis) return;
 
     try {
-        const keys = sessionIds.map((sessionId) => eventsKey(sessionId));
+        const keys = sessionIds.flatMap((sessionId) => [eventsKey(sessionId), eventsBytesKey(sessionId)]);
         await redis.del(keys);
     } catch (error) {
         logUnavailableOnce("Failed to delete relay event caches from Redis", error);
