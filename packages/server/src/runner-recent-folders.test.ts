@@ -57,9 +57,15 @@ describe("recordRecentFolder", () => {
     });
 
     authTest("prunes lowest-usage entries beyond cap of 50", async () => {
-        // Boost two older folders, then add two new folders past the cap.
+        // Distinct timestamps make project-3 the oldest low-usage folder;
+        // real-clock millisecond ties are otherwise resolved by random UUID.
         for (let i = 1; i <= 50; i++) {
-            await recordRecentFolder(USER, RUNNER, `/code/project-${i}`);
+            const path = `/code/project-${i}`;
+            await recordRecentFolder(USER, RUNNER, path);
+            await getKysely().updateTable("runner_recent_folder")
+                .set({ lastUsedAt: new Date(Date.UTC(2026, 0, 1) + i * 1_000).toISOString() })
+                .where("userId", "=", USER).where("runnerId", "=", RUNNER).where("path", "=", path)
+                .execute();
         }
         await recordRecentFolder(USER, RUNNER, "/code/project-1");
         await recordRecentFolder(USER, RUNNER, "/code/project-2");
@@ -72,6 +78,7 @@ describe("recordRecentFolder", () => {
         expect(folders).toContain("/code/project-1");
         expect(folders).toContain("/code/project-2");
         expect(folders).not.toContain("/code/project-3");
+        expect(folders).not.toContain("/code/project-4");
     });
 
     authTest("cap is per (userId, runnerId) pair", async () => {

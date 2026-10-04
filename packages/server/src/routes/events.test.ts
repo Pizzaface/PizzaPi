@@ -898,7 +898,7 @@ describe("dead-runner route cleanup", () => {
 
   it("DELETE /api/runners/:id/routes bulk-deletes stamped routes with unsubscribe deltas", async () => {
     await seedRunner("runner-dead", "u1");
-    await store.createRoute({
+    const spawn = await store.createRoute({
       eventType: "hook:a", target: { kind: "spawn", spec: { runnerId: "runner-dead", ownerUserId: "u1" } },
       deliverAs: "steer", origin: "agent", ownerUserId: "u1",
     });
@@ -906,6 +906,12 @@ describe("dead-runner route cleanup", () => {
       eventType: "time:cron", target: { kind: "session", sessionId: "gone", runnerId: "runner-dead" },
       deliverAs: "followUp", origin: "agent", ownerUserId: "u1",
     });
+    // Distinct timestamps force newest-first storage order rather than the
+    // accidental insertion order seen when both creations share a millisecond.
+    await memDb.updateTable("trigger_route").set({ updatedAt: "2026-01-01T00:00:00.000Z" })
+      .where("id", "=", spawn.routeId).execute();
+    await memDb.updateTable("trigger_route").set({ updatedAt: "2026-01-01T00:00:01.000Z" })
+      .where("id", "=", sched.routeId).execute();
     // Skipped: config (read-only) and webhook-owned routes on the same runner.
     await store.syncConfigRoutes([{
       eventType: "hook:cfg", target: { kind: "spawn", spec: { runnerId: "runner-dead" } }, deliverAs: "steer", origin: "config",
@@ -930,10 +936,11 @@ describe("dead-runner route cleanup", () => {
     expect(remaining).toContain("rt_wh_1");
     expect(remaining.some((id) => id.startsWith("rt_cfg_"))).toBe(true);
     expect(remaining).toHaveLength(3);
-    expect(mirrored).toEqual([
-      expect.objectContaining({ action: "unsubscribe", routeId: expect.stringMatching(/^rt_/), runnerId: "runner-dead", sessionId: "" }),
+    expect(mirrored).toHaveLength(2);
+    expect(mirrored).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: "unsubscribe", routeId: spawn.routeId, runnerId: "runner-dead", sessionId: "" }),
       expect.objectContaining({ action: "unsubscribe", routeId: sched.routeId, runnerId: "runner-dead", sessionId: "gone" }),
-    ]);
+    ]));
   });
 
   it("DELETE /api/runners/:id/routes is owner-gated (404 shape) and allows ownerless runners", async () => {

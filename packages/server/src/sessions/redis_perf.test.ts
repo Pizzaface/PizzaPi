@@ -40,8 +40,11 @@ describe("deleteRelayEventCaches Performance", () => {
         expect(mockDel.mock.calls[0]).toEqual([
             [
                 "pizzapi:relay:session:s1:events",
+                "pizzapi:relay:session:s1:events:bytes",
                 "pizzapi:relay:session:s2:events",
+                "pizzapi:relay:session:s2:events:bytes",
                 "pizzapi:relay:session:s3:events",
+                "pizzapi:relay:session:s3:events:bytes",
             ],
         ]);
     });

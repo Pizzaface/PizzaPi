@@ -394,13 +394,16 @@ describe("resetPerSessionRelayState — reconnect state reset", () => {
 
     test("deletes the relay event cache for the session", async () => {
         const del = spyOn({
-            del: async (_key: string) => 1,
+            del: async (_key: string | string[]) => 1,
         }, "del");
         _injectRedisForTesting({ del } as unknown);
 
         await resetPerSessionRelayState("sess-reconnect");
 
-        expect(del).toHaveBeenCalledWith("pizzapi:relay:session:sess-reconnect:events");
+        expect(del).toHaveBeenCalledWith([
+            "pizzapi:relay:session:sess-reconnect:events",
+            "pizzapi:relay:session:sess-reconnect:events:bytes",
+        ]);
     });
 
     test("does not clear state for other sessions", async () => {

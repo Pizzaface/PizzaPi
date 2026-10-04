@@ -109,7 +109,7 @@ function setup(lastRetryableError: { errorMessage: string; detectedAt: number } 
 
     const agentEnd = handlers.get("agent_end")!;
     const agentSettled = handlers.get("agent_settled")!;
-    return { agentEnd, agentSettled, emitted, rctx };
+    return { agentEnd, agentSettled, turnEnd: handlers.get("turn_end")!, emitted, rctx };
 }
 
 const agentEndCtx = { hasPendingMessages: () => false, shutdown: () => {} };
@@ -255,6 +255,31 @@ describe("agent_end — forwarded event must not carry run-scoped messages", () 
         agentSettled({}, agentEndCtx);
         await flush();
         expect(emitted).toEqual(["lifecycle:session_complete"]);
+    });
+});
+
+describe("turn_end — omit Pi boundary context from relay traffic", () => {
+    test("preserves turn results without forwarding or mutating the full context", () => {
+        const { turnEnd, rctx } = setup(null);
+        const message = { role: "assistant", content: [{ type: "text", text: "done" }] };
+        const toolResults = [{ role: "toolResult", toolCallId: "call-1", content: [] }];
+        const context = {
+            contextEntries: [{ text: "private history".repeat(100_000) }],
+            contextMessages: [message],
+            llmMessages: [message],
+            pendingMessages: [],
+            canContinue: true,
+        };
+        const event = Object.freeze({ type: "turn_end", turnIndex: 3, message, toolResults, context });
+
+        turnEnd(event, agentEndCtx);
+
+        const forwarded = (rctx.forwardEvent as ReturnType<typeof mock>).mock.calls
+            .map(([value]) => value)
+            .find((value) => value?.type === "turn_end");
+        expect(forwarded).toEqual({ type: "turn_end", turnIndex: 3, message, toolResults });
+        expect(JSON.stringify(forwarded).length).toBeLessThan(1_000);
+        expect(event.context).toBe(context);
     });
 });
 
