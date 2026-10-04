@@ -57,6 +57,7 @@ import { useRunnerServices, attachServiceAnnounceListener, seedServiceCache, set
 import { useRunnerData } from "@/hooks/useRunnerData";
 import { SigilProvider } from "@/components/sigils/SigilContext";
 import { PizzaPiNavProvider, type PizzaPiNavActions } from "@/components/sigils/PizzaPiNavContext";
+import { SessionNamesProvider } from "@/components/session-viewer/session-names-context";
 import { resolveFilePath } from "@/components/file-explorer/utils";
 import { ServicePanelButtons, ServicePanelOverflowItems, useServicePanelState, useVisibleServicePanels } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
@@ -5624,6 +5625,7 @@ export function App() {
                     <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
                       <SigilProvider sigilDefs={runnerSigilDefs} panels={dynamicPanels} runnerId={activeSessionInfo?.runnerId ?? undefined} runnerOnline={runnersStatus === "connected" && activeRunnerInfo !== null} sessionCwd={activeSessionInfo?.cwd}>
                       <PizzaPiNavProvider actions={pizzaPiNavActions}>
+                      <SessionNamesProvider value={sessionNamesMap}>
                       <SessionViewer
                         promptRef={promptRef}
                         sessionId={activeSessionId}
@@ -5795,6 +5797,7 @@ export function App() {
                         onButtonDragStart={handleButtonDragStart}
                         toolbarPositions={buttonPositions.positions}
                       />
+                      </SessionNamesProvider>
                       </PizzaPiNavProvider>
                       </SigilProvider>
                     </ErrorBoundary>
