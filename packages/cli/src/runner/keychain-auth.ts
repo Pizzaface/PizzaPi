@@ -19,7 +19,6 @@ import { execSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { logAuth } from "./logger.js";
 
 // ── Credential shape (Claude Code) ─────────────────────────────────────────
 
