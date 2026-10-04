@@ -1,6 +1,6 @@
 import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
 import { Window } from "happy-dom";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render } from "@testing-library/react";
 import React from "react";
 
 const win = new Window({ url: "http://localhost/" });
@@ -23,6 +23,9 @@ const win = new Window({ url: "http://localhost/" });
 
 const gitState = {
     available: true,
+    connected: true,
+    lastUpdated: null as number | null,
+    refreshKey: 0,
     status: {
         branch: "feature/test",
         changes: [],
@@ -36,7 +39,7 @@ const gitState = {
     worktrees: [],
     currentBranch: "feature/test",
     loading: false,
-    error: null,
+    error: null as string | null,
     operationInProgress: null as string | null,
     lastOperationResult: null as any,
     lastConflictType: null as string | null,
@@ -127,6 +130,11 @@ const { GitPanel } = await import("./GitPanel");
 
 afterEach(() => {
     cleanup();
+    gitState.available = true;
+    gitState.connected = true;
+    gitState.lastUpdated = null;
+    gitState.refreshKey = 0;
+    gitState.error = null;
     gitState.operationInProgress = null;
     gitState.lastOperationResult = null;
     gitState.lastConflictType = null;
@@ -138,6 +146,31 @@ afterEach(() => {
 });
 
 describe("GitPanel", () => {
+    test("shows fetch progress without implying a pull is running", () => {
+        gitState.operationInProgress = "fetch";
+        gitState.lastUpdated = Date.now();
+        const { getByText } = render(<GitPanel cwd="/repo" />);
+        expect(getByText(/Fetching remote updates/)).toBeTruthy();
+    });
+
+    test("shows disconnected state instead of implying cached status is live", () => {
+        gitState.connected = false;
+        const { getByRole, getByTestId, getByTitle } = render(<GitPanel cwd="/repo" />);
+        expect(getByRole("status").textContent).toContain("Disconnected");
+        expect(getByTestId("branch-selector").getAttribute("data-disabled")).toBe("true");
+        expect((getByTitle("Sync options") as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    test("keeps refresh errors visible alongside the previous snapshot and offers retry", () => {
+        gitState.error = "Repository temporarily unavailable";
+        const { getByRole, getByText } = render(<GitPanel cwd="/repo" />);
+        expect(getByRole("alert").textContent).toContain(gitState.error);
+        expect(getByText("Working tree clean")).toBeTruthy();
+        const calls = gitState.fetchStatus.mock.calls.length;
+        fireEvent.click(getByRole("button", { name: "Retry" }));
+        expect(gitState.fetchStatus.mock.calls.length).toBe(calls + 1);
+    });
+
     test("disables branch selector and sync controls while any mutation is running", () => {
         gitState.operationInProgress = "commit";
 
@@ -195,6 +228,15 @@ describe("GitPanel", () => {
         ];
         rerender(<GitPanel cwd="/repo" />);
         expect(gitState.fetchLog.mock.calls.length).toBe(callsAfterInitial + 1);
+    });
+
+    test("refreshes detached HEAD history when status changes without a branch ref", () => {
+        gitState.status.branch = "HEAD";
+        const { rerender } = render(<GitPanel cwd="/repo" />);
+        const calls = gitState.fetchLog.mock.calls.length;
+        gitState.refreshKey++;
+        rerender(<GitPanel cwd="/repo" />);
+        expect(gitState.fetchLog.mock.calls.length).toBe(calls + 1);
     });
 
     test("falls back to hash+date tooltip when log entry is stale relative to HEAD", () => {

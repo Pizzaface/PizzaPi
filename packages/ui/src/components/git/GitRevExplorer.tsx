@@ -5,7 +5,7 @@
  * commit shows its changes; a second selection (or a branch chip / Range bar)
  * establishes a Base→Head range that re-scopes immediately.
  */
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -21,6 +21,8 @@ interface GitRevExplorerProps {
     onOpenChange: (open: boolean) => void;
     cwd: string;
     log: GitLogEntry[];
+    /** Changes when the parent knows HEAD/refs changed and history should reload. */
+    refreshKey?: string | number;
     fetchLog: () => Promise<GitLogEntry[]>;
     fetchCommitFiles: (revision: string, base?: string) => Promise<Array<{ status: string; path: string }>>;
     fetchDiffRevs: (base: string, head: string, path?: string) => Promise<string>;
@@ -33,7 +35,9 @@ function short(h: string): string {
 export function GitRevExplorer({
     open,
     onOpenChange,
+    cwd,
     log,
+    refreshKey,
     fetchLog,
     fetchCommitFiles,
     fetchDiffRevs,
@@ -46,8 +50,10 @@ export function GitRevExplorer({
             >
                 <DialogTitle className="sr-only">Revision explorer</DialogTitle>
                 <GitRevExplorerBody
+                    key={cwd}
                     onOpenChange={onOpenChange}
                     log={log}
+                    refreshKey={refreshKey}
                     fetchLog={fetchLog}
                     fetchCommitFiles={fetchCommitFiles}
                     fetchDiffRevs={fetchDiffRevs}
@@ -60,6 +66,7 @@ export function GitRevExplorer({
 interface GitRevExplorerBodyProps {
     onOpenChange: (open: boolean) => void;
     log: GitLogEntry[];
+    refreshKey?: string | number;
     fetchLog: () => Promise<GitLogEntry[]>;
     fetchCommitFiles: (revision: string, base?: string) => Promise<Array<{ status: string; path: string }>>;
     fetchDiffRevs: (base: string, head: string, path?: string) => Promise<string>;
@@ -69,12 +76,13 @@ interface GitRevExplorerBodyProps {
 export function GitRevExplorerBody({
     onOpenChange,
     log: initialLog,
+    refreshKey,
     fetchLog,
     fetchCommitFiles,
     fetchDiffRevs,
 }: GitRevExplorerBodyProps) {
     const [entries, setEntries] = useState<GitLogEntry[]>(initialLog);
-    const [headHash, setHeadHash] = useState<string | null>(null);
+    const [headHash, setHeadHash] = useState<string | null>(() => initialLog[0]?.hash ?? null);
     const [baseHash, setBaseHash] = useState<string | null>(null);
     const [files, setFiles] = useState<Array<{ status: string; path: string }>>([]);
     const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -82,26 +90,47 @@ export function GitRevExplorerBody({
     const [logLoading, setLogLoading] = useState(false);
     const [filesLoading, setFilesLoading] = useState(false);
     const [diffLoading, setDiffLoading] = useState(false);
+    const [logError, setLogError] = useState<string | null>(null);
+    const [filesError, setFilesError] = useState<string | null>(null);
+    const [logRetryKey, setLogRetryKey] = useState(0);
+    const fetchLogRef = useRef(fetchLog);
+    const headHashRef = useRef(headHash);
+    const baseHashRef = useRef(baseHash);
+    fetchLogRef.current = fetchLog;
 
-    // Load the log on mount.
+    useEffect(() => { headHashRef.current = headHash; }, [headHash]);
+    useEffect(() => { baseHashRef.current = baseHash; }, [baseHash]);
+
+    const retryLog = useCallback(() => setLogRetryKey((key) => key + 1), []);
+
+    // Load the log on mount and when the parent's HEAD/refs signature changes.
     useEffect(() => {
         let cancelled = false;
         setLogLoading(true);
-        fetchLog()
-            .then((entries) => {
+        setLogError(null);
+        fetchLogRef.current()
+            .then((nextEntries) => {
                 if (cancelled) return;
-                setEntries(entries);
-                if (entries.length > 0) {
-                    setHeadHash(entries[0].hash);
-                    setBaseHash(null);
-                }
+                const hashes = new Set(nextEntries.map((entry) => entry.hash));
+                const previousHead = headHashRef.current;
+                const previousBase = baseHashRef.current;
+                const nextHead = previousHead && hashes.has(previousHead) ? previousHead : (nextEntries[0]?.hash ?? null);
+                const nextBase = nextHead === previousHead && previousBase && hashes.has(previousBase) ? previousBase : null;
+                headHashRef.current = nextHead;
+                baseHashRef.current = nextBase;
+                setEntries(nextEntries);
+                setHeadHash(nextHead);
+                setBaseHash(nextBase);
+            })
+            .catch((err: unknown) => {
+                console.error("Failed to load git history:", err);
+                if (!cancelled) setLogError("Failed to load history.");
             })
             .finally(() => {
                 if (!cancelled) setLogLoading(false);
             });
         return () => { cancelled = true; };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [refreshKey, logRetryKey]);
 
     const rows: GraphRow[] = useMemo(() => layoutGraph(entries), [entries]);
 
@@ -117,9 +146,18 @@ export function GitRevExplorerBody({
         if (!headHash) return;
         let cancelled = false;
         setFilesLoading(true);
+        setFilesError(null);
+        setFiles([]);
         setSelectedFile(null);
         fetchCommitFiles(headHash, baseHash ?? undefined)
             .then((fileList) => { if (!cancelled) setFiles(fileList); })
+            .catch((err: unknown) => {
+                console.error("Failed to load git revision files:", err);
+                if (!cancelled) {
+                    setFiles([]);
+                    setFilesError("Failed to load files.");
+                }
+            })
             .finally(() => { if (!cancelled) setFilesLoading(false); });
         return () => { cancelled = true; };
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -135,6 +173,10 @@ export function GitRevExplorerBody({
         const base = baseHash ?? `${headHash}^`;
         fetchDiffRevs(base, headHash, selectedFile ?? undefined)
             .then((diffText) => { if (!cancelled) setDiff(diffText); })
+            .catch((err: unknown) => {
+                console.error("Failed to load git revision diff:", err);
+                if (!cancelled) setDiff("Failed to load diff.");
+            })
             .finally(() => { if (!cancelled) setDiffLoading(false); });
         return () => { cancelled = true; };
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -225,6 +267,12 @@ export function GitRevExplorerBody({
                     <div className="flex-1 flex items-center justify-center">
                         <Spinner className="size-5" />
                     </div>
+                ) : logError && entries.length === 0 ? (
+                    <div className="flex-1 flex items-center justify-center text-muted-foreground gap-2">
+                        <GitCommit className="size-6 opacity-40" />
+                        <span className="text-sm">{logError}</span>
+                        <button type="button" onClick={retryLog} className="text-xs underline hover:text-foreground">Retry</button>
+                    </div>
                 ) : entries.length === 0 ? (
                     <div className="flex-1 flex items-center justify-center text-muted-foreground gap-2">
                         <GitCommit className="size-6 opacity-40" />
@@ -234,8 +282,9 @@ export function GitRevExplorerBody({
                     <div className="flex flex-1 min-h-0">
                         {/* Left: graph */}
                         <div className="w-[300px] shrink-0 border-r border-border flex flex-col min-h-0">
-                            <div className="px-3 py-1.5 text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border/60">
-                                Commits
+                            <div className="flex items-center gap-2 px-3 py-1.5 text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground border-b border-border/60">
+                                <span>Commits</span>
+                                {logError && <button type="button" onClick={retryLog} className="ml-auto underline normal-case tracking-normal hover:text-foreground">Retry</button>}
                             </div>
                             <ScrollArea className="flex-1">
                                 <div className="py-1">
@@ -268,7 +317,12 @@ export function GitRevExplorerBody({
                                     {filesLoading && files.length === 0 && (
                                         <div className="flex items-center justify-center py-4"><Spinner className="size-4" /></div>
                                     )}
-                                    {!filesLoading && files.length === 0 && (
+                                    {!filesLoading && filesError && (
+                                        <div className="px-3 py-4 text-xs text-muted-foreground text-center">
+                                            {filesError}
+                                        </div>
+                                    )}
+                                    {!filesLoading && !filesError && files.length === 0 && (
                                         <div className="px-3 py-4 text-xs text-muted-foreground text-center">
                                             No files changed
                                         </div>

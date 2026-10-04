@@ -9,7 +9,7 @@
  */
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ServiceEnvelope } from "../service-handler.js";
@@ -99,6 +99,27 @@ beforeAll(() => {
 
 afterAll(() => {
     rmSync(root, { recursive: true, force: true });
+});
+
+test("renamed files report the destination path and original source path", async () => {
+    const repo = makeRepo(root, "rename-status");
+    git(repo, "mv", "a.txt", "renamed file.txt");
+    const service = new GitService();
+    const socket = createMockSocket();
+    service.init(socket as any, { isShuttingDown: () => false });
+    try {
+        dispatch(socket, {
+            serviceId: "git", type: "git_status", requestId: "rename-status",
+            payload: { cwd: repo },
+        });
+        const result = await waitForResult(socket, "rename-status", "git_status_result");
+        expect(result.payload).toMatchObject({
+            ok: true,
+            changes: [{ status: "R ", path: "renamed file.txt", originalPath: "a.txt" }],
+        });
+    } finally {
+        service.dispose();
+    }
 });
 
 describe("cwd authority (fix 1)", () => {
@@ -223,6 +244,37 @@ describe("common-dir mutation locking (fix 2)", () => {
 });
 
 describe("repo-change broadcast (fix 3) + watcher rebuild (fix 5)", () => {
+    test("external working tree replacement pushes fresh status without a git metadata event", async () => {
+        const service = new GitService({});
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatch(socket, {
+            serviceId: "git", type: "git_status", requestId: "edit-seed",
+            sessionId: "viewer-edit", payload: { cwd: repoB },
+        });
+        await waitForResult(socket, "edit-seed", "git_status_result");
+        await new Promise((r) => setTimeout(r, 500));
+        socket.emitted.length = 0;
+
+        const replacement = join(repoB, "a.txt.replacement");
+        writeFileSync(replacement, "edited\n");
+        renameSync(replacement, join(repoB, "a.txt"));
+
+        const pushed = await waitForEnvelope(
+            socket,
+            (e) => e.type === "git_status_result"
+                && !e.requestId
+                && (e as any).sessionId === "viewer-edit"
+                && ((e.payload as any).changes ?? []).some((change: any) => change.path === "a.txt"),
+            7_000,
+        );
+        expect((pushed.payload as any).ok).toBe(true);
+
+        git(repoB, "restore", "--worktree", "a.txt");
+        service.dispose();
+    }, 10_000);
+
     test("external checkout pushes git_repo_changed and fresh status to subscribers", async () => {
         const service = new GitService({});
         const socket = createMockSocket();

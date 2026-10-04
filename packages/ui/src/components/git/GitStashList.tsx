@@ -16,25 +16,24 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useGitService, type GitStashEntry } from "@/hooks/useGitService";
+import type { GitStashEntry, UseGitServiceReturn } from "@/hooks/useGitService";
 import { getGitOperationFeedback, type GitOperationFeedback } from "./git-operation-feedback";
 import { AlertCircle, Archive, Check, CornerDownLeft, RotateCcw, Trash2, MoreHorizontal, Box } from "lucide-react";
 
 interface GitStashListProps {
-    cwd: string;
+    git: Pick<UseGitServiceReturn, "available" | "connected" | "refreshKey" | "operationInProgress" | "lastOperationResult" | "stashes" | "stashList" | "stashPush" | "stashPop" | "stashApply" | "stashDrop">;
     className?: string;
 }
 
-export function GitStashList({ cwd, className }: GitStashListProps) {
-    const git = useGitService(cwd);
+export function GitStashList({ git, className }: GitStashListProps) {
     const [message, setMessage] = useState("");
     const [includeUntracked, setIncludeUntracked] = useState(false);
     const [feedback, setFeedback] = useState<GitOperationFeedback | null>(null);
 
+    const { available, connected, refreshKey, stashList } = git;
     useEffect(() => {
-        git.stashList();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [cwd]);
+        if (available && connected) stashList();
+    }, [available, connected, refreshKey, stashList]);
 
     useEffect(() => {
         if (!git.lastOperationResult) return;
@@ -43,7 +42,7 @@ export function GitStashList({ cwd, className }: GitStashListProps) {
         return () => clearTimeout(timer);
     }, [git.lastOperationResult]);
 
-    const isBusy = git.operationInProgress !== null;
+    const isBusy = !available || !connected || git.operationInProgress !== null;
     const stashes = git.stashes ?? [];
 
     const handlePush = (e: React.FormEvent) => {
