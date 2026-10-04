@@ -94,22 +94,14 @@ local maxBytes = tonumber(ARGV[4]) or 8388608
 local ttlMs = tonumber(ARGV[5]) or 600000
 local compactSnapshot = ARGV[6] == "1"
 
-if compactSnapshot then
+-- Superseded snapshots and legacy caches have no history worth retaining.
+-- Delete the list directly rather than materializing every old row in Lua.
+if compactSnapshot or redis.call("EXISTS", bytesKey) == 0 or redis.call("EXISTS", listKey) == 0 then
   redis.call("DEL", listKey, bytesKey)
 end
 
-local preLen = redis.call("LLEN", listKey)
 redis.call("RPUSH", listKey, payload)
-
-local total
-if redis.call("EXISTS", bytesKey) == 0 and preLen > 0 then
-  while redis.call("LLEN", listKey) > 1 do
-    redis.call("LPOP", listKey)
-  end
-  total = payloadBytes
-else
-  total = redis.call("INCRBY", bytesKey, payloadBytes)
-end
+local total = redis.call("INCRBY", bytesKey, payloadBytes)
 
 while redis.call("LLEN", listKey) > maxCount do
   local row = redis.call("LPOP", listKey)
@@ -196,6 +188,8 @@ export async function appendRelayEventToCache(
     }
 
     let serialized = stringifyCachedPayload(payload);
+    // ponytail: allow one oversized full snapshot; page stored snapshots if a
+    // single transcript, rather than repeated history, exceeds the memory budget.
     if (serialized.bytes > maxBytes && !compactSnapshot) {
         payload = { gap: GAP_MARKER };
         if (typeof opts.seq === "number" && Number.isFinite(opts.seq)) {
