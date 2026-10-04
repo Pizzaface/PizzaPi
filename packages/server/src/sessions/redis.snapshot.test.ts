@@ -59,12 +59,6 @@ const mockRedisClient = {
     lRange: mockLrange,
     eval: mockEval,
     del: mock(() => Promise.resolve(1)),
-    multi: mock(() => ({
-        rPush: mock(() => {}),
-        lTrim: mock(() => {}),
-        pExpire: mock(() => {}),
-        exec: mock(() => Promise.resolve()),
-    })),
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
