@@ -11,6 +11,7 @@ import { afterAll, describe, it, expect, beforeEach, mock } from "bun:test";
 // ── Shared spy state ─────────────────────────────────────────────────────────
 const stateUpdates: string[] = [];
 const broadcasts: string[] = [];
+const publishedEvents: unknown[] = [];
 let redisOwnerToken: string | null = "token-node-a";
 let tokenReadShouldThrow = false;
 let lockHeld = false;
@@ -41,7 +42,11 @@ mock.module("../../sio-registry.js", () => ({
     getSharedSession: async () => null,
     getSharedSessionSummary: async () => null,
     broadcastSessionEventToViewers: async (sessionId: string) => { broadcasts.push(sessionId); },
-    publishSessionEvent: async (sessionId: string) => { broadcasts.push(sessionId); return 0; },
+    publishSessionEvent: async (sessionId: string, event: unknown) => {
+        broadcasts.push(sessionId);
+        publishedEvents.push(event);
+        return 0;
+    },
     consumePendingRecovery: () => false,
     updateSessionMetaState: async () => 0,
     broadcastToSessionMeta: async () => {},
@@ -145,6 +150,7 @@ describe("A2-017: event pipeline stale cross-node socket rejection", () => {
     beforeEach(() => {
         stateUpdates.length = 0;
         broadcasts.length = 0;
+        publishedEvents.length = 0;
         redisOwnerToken = "token-node-a";
         tokenReadShouldThrow = false;
         lockHeld = false;
@@ -186,6 +192,26 @@ describe("A2-017: event pipeline stale cross-node socket rejection", () => {
 
         expect(stateUpdates).toEqual(["sess-1"]);
         expect(broadcasts).toEqual(["sess-1"]);
+    });
+
+    it("strips older workers' Pi boundary context before queueing or publishing turn results", async () => {
+        const { socket, fire } = makeSocket("sess-1", "token-node-a");
+        registerEventHandler(socket);
+        const turn = {
+            type: "turn_end",
+            turnIndex: 1,
+            message: { role: "assistant", content: [{ type: "text", text: "done" }] },
+            toolResults: [],
+        };
+        const context = { llmMessages: [{ content: "full history".repeat(100_000) }] };
+        const event = Object.freeze({ ...turn, context });
+
+        await fire("event", { token: "token-node-a", seq: 1, event });
+        await drainPipeline("sess-1");
+
+        expect(publishedEvents).toEqual([turn]);
+        expect(JSON.stringify(publishedEvents).length).toBeLessThan(1_000);
+        expect(event.context).toBe(context);
     });
 
     it("serializes replacement registration that starts after the initial ownership check", async () => {

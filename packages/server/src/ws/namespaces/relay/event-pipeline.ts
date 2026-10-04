@@ -136,8 +136,12 @@ export function registerEventHandler(socket: RelaySocket): void {
             sendCumulativeEventAck(socket, data.seq);
         }
 
-        const event = data.event as Record<string, unknown> | undefined;
-        if (!event) return;
+        const incomingEvent = data.event as Record<string, unknown> | undefined;
+        if (!incomingEvent) return;
+        // Older workers forward Pi's full-history boundary context. Strip it
+        // before queueing, caching or broadcasting, without mutating the input.
+        const event = incomingEvent.type === "turn_end" ? { ...incomingEvent } : incomingEvent;
+        if (event.type === "turn_end") delete event.context;
 
         // Serialize async processing per session to guarantee chunk order.
         enqueueSessionEvent(sessionId, async () => {
@@ -369,14 +373,7 @@ export function registerEventHandler(socket: RelaySocket): void {
         trackThinkingDeltas(sessionId, event);
 
         // Augment message_end / turn_end with thinking durations
-        let eventToPublish: unknown = data.event;
-        if (event.type === "turn_end") {
-            // Older CLIs forward Pi's turn_end wholesale: `context` holds
-            // full-transcript copies (~6 MB) that would be buffered in Redis.
-            // Viewers only read `message`. Newer CLIs already strip these.
-            const { context: _c, entries: _e, toolResults: _t, ...slim } = event as Record<string, unknown>;
-            eventToPublish = slim;
-        }
+        let eventToPublish: unknown = event;
         if (event.type === "message_end" || event.type === "turn_end") {
             const durations = thinkingDurations.get(sessionId);
             if (durations?.size) {

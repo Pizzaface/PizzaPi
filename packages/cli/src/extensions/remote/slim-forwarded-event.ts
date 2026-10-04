@@ -5,17 +5,16 @@
  *
  * - tool_execution_end: Pi 1.0 `result.structuredContent` (bash: up to 1 MiB of
  *   full output, for programmatic callers such as codemode).
- * - turn_end: Pi 0.87+ BoundaryState `context` (contextEntries/contextMessages/
- *   llmMessages: full-transcript copies, ~6 MB observed), `entries`, and
- *   `toolResults` (already sent as their own message_end events). Viewers and
- *   the relay only read `turn_end.message`.
+ * - turn_end: Pi BoundaryState `context` (contextEntries/contextMessages/
+ *   llmMessages: full-transcript copies, ~6 MB observed). The relay strips it
+ *   too, for older CLIs.
  *
  * Returns a copy; never mutates Pi's event.
  */
 export function slimForwardedEvent<T>(event: T): T {
     const e = event as any;
     if (e?.type === "turn_end") {
-        const { context: _c, entries: _e, toolResults: _t, ...rest } = e;
+        const { context: _c, ...rest } = e;
         return rest;
     }
     const result = e?.result;
