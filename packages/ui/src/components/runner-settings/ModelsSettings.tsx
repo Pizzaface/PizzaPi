@@ -69,6 +69,7 @@ export default function ModelsSettings({ runnerId, tuiSettings, onSave, saving }
         (tuiSettings.defaultThinkingLevel as ThinkingLevel) ?? "none",
     );
     const [fallbackModels, setFallbackModels] = useState<FallbackEntry[]>(initialFallbacks);
+    const [waitForRateLimits, setWaitForRateLimits] = useState(tuiSettings.waitForRateLimits === true);
 
     // Models fetched from the runner
     const [models, setModels] = useState<ModelInfo[]>([]);
@@ -81,6 +82,7 @@ export default function ModelsSettings({ runnerId, tuiSettings, onSave, saving }
         setDefaultModel(tuiSettings.defaultModel ?? "");
         setDefaultThinkingLevel((tuiSettings.defaultThinkingLevel as ThinkingLevel) ?? "none");
         setFallbackModels(normalizeFallbackModels(tuiSettings.fallbackModels));
+        setWaitForRateLimits(tuiSettings.waitForRateLimits === true);
     }, [tuiSettings]);
 
     // Fetch available models
@@ -140,10 +142,12 @@ export default function ModelsSettings({ runnerId, tuiSettings, onSave, saving }
             defaultModel,
             defaultThinkingLevel,
             fallbackModels: fallbackModels.map(fallbackToString),
+            waitForRateLimits,
         });
     };
 
     const isDirty =
+        waitForRateLimits !== (tuiSettings.waitForRateLimits === true) ||
         defaultProvider !== (tuiSettings.defaultProvider ?? "") ||
         defaultModel !== (tuiSettings.defaultModel ?? "") ||
         defaultThinkingLevel !== ((tuiSettings.defaultThinkingLevel as string) ?? "none") ||
@@ -369,6 +373,24 @@ export default function ModelsSettings({ runnerId, tuiSettings, onSave, saving }
                         );
                     })}
                 </div>
+            </div>
+
+            <div className="flex flex-col gap-2">
+                <Label htmlFor="wait-for-rate-limits" className="flex items-center gap-2">
+                    <input
+                        id="wait-for-rate-limits"
+                        type="checkbox"
+                        checked={waitForRateLimits}
+                        onChange={(event) => setWaitForRateLimits(event.target.checked)}
+                        aria-describedby="wait-for-rate-limits-help"
+                        className="size-4 accent-primary"
+                    />
+                    Wait for rate limits to return
+                </Label>
+                <p id="wait-for-rate-limits-help" className="text-xs text-muted-foreground">
+                    After fallbacks are exhausted, wait for verified subscription quota recovery before continuing.
+                    Unknown usage never triggers a retry. In a session, use /rate-limit-wait on, off, status, or cancel.
+                </p>
             </div>
 
             {/* Info note */}

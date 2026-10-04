@@ -125,6 +125,10 @@ describe("isUsageLimitError", () => {
             expect(isUsageLimitError("Service capacity exceeded for this region")).toBe(false);
         });
 
+        test("context length is non-recoverable by waiting", () => {
+            expect(isUsageLimitError("This request exceeds the model context window")).toBe(false);
+        });
+
         test("model not found error", () => {
             expect(isUsageLimitError("Model not found: claude-opus-4-5")).toBe(false);
         });

@@ -1,4 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
+import { Agent } from "@earendil-works/pi-agent-core";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,10 +10,32 @@ mock.module("node:os", () => ({
     homedir: () => process.env.HOME ?? realOs.homedir(),
 }));
 
+let providerUsage: Record<string, any> = {};
+function stampProviderUsage(): void {
+    const now = Date.now();
+    for (const data of Object.values(providerUsage)) {
+        if (data && typeof data === "object") {
+            data.fetchedAt = now;
+            data.checkedAt = now;
+            data.expiresAt = now + 5 * 60 * 1000;
+        }
+    }
+}
+
+const defaultRefreshUsage = async () => { stampProviderUsage(); };
+const refreshAllUsageMock = mock(defaultRefreshUsage);
+
+mock.module("./remote-provider-usage.js", () => ({
+    refreshAllUsage: refreshAllUsageMock,
+    buildProviderUsage: () => providerUsage,
+}));
+
 const { fallbackModelsExtension } = await import("./fallback-models.js");
+const { AgentSession } = await import("@earendil-works/pi-coding-agent");
 
 function makeFakePi() {
     const handlers: Record<string, Function> = {};
+    const commands = new Map<string, any>();
     const sentMessages: any[] = [];
     const sentUserMessages: any[] = [];
     const setModelCalls: any[] = [];
@@ -21,6 +44,7 @@ function makeFakePi() {
         on: mock((event: string, handler: Function) => {
             handlers[event] = handler;
         }),
+        registerCommand: mock((name: string, opts: any) => commands.set(name, opts)),
         sendMessage: mock((msg: any, opts?: any) => sentMessages.push({ ...msg, _opts: opts })),
         sendUserMessage: mock((...args: any[]) => sentUserMessages.push(args)),
         setModel: mock(async (model: any) => {
@@ -28,6 +52,7 @@ function makeFakePi() {
             return true;
         }),
         _handlers: handlers,
+        _commands: commands,
         _sent: sentMessages,
         _userMessages: sentUserMessages,
         _setModelCalls: setModelCalls,
@@ -59,6 +84,7 @@ function makeFakeContext(model?: { provider: string; id: string }) {
         },
         model: model ?? { provider: "anthropic", id: "claude-sonnet-4-5" },
         cwd: "/tmp",
+        signal: new AbortController().signal,
     };
     return ctx;
 }
@@ -79,11 +105,14 @@ describe("fallbackModelsExtension", () => {
         rmSync(tmpHome, { recursive: true, force: true });
     });
 
-    function writeSettings(fallbackModels: unknown) {
+    function writeSettings(fallbackModels: unknown, waitForRateLimits = false) {
         writeFileSync(
             join(tmpHome, ".pizzapi", "settings.json"),
-            JSON.stringify({ fallbackModels }),
+            JSON.stringify({ fallbackModels, waitForRateLimits }),
         );
+        providerUsage = {};
+        refreshAllUsageMock.mockImplementation(defaultRefreshUsage);
+        refreshAllUsageMock.mockClear();
     }
 
     test("ignores non-rate-limit errors when fallback models are configured", async () => {
@@ -294,6 +323,303 @@ describe("fallbackModelsExtension", () => {
         for (const m of pi._sent) expect(m._opts).toEqual({ triggerTurn: false });
         // Only the one real fallback retry is ever issued.
         expect(pi._userMessages).toHaveLength(1);
+    });
+
+    test("waits for current model quota in turn_end and continues once without replaying input", async () => {
+        const resetAt = Date.now() + 10;
+        writeSettings([], true);
+        providerUsage = {
+            anthropic: { status: "ok", windows: [{ label: "5-hour", utilization: 100, resets_at: new Date(resetAt).toISOString() }] },
+        };
+        let refreshes = 0;
+        refreshAllUsageMock.mockImplementation(async () => {
+            refreshes++;
+            if (refreshes > 1) {
+                providerUsage = {
+                    anthropic: { status: "ok", windows: [{ label: "5-hour", utilization: 50, resets_at: new Date(Date.now() + 1000).toISOString() }] },
+                };
+            }
+            stampProviderUsage();
+        });
+        const pi = makeFakePi();
+        const ctx = makeFakeContext();
+
+        fallbackModelsExtension(pi);
+        pi._handlers.session_start({}, ctx);
+        pi._handlers.input({ text: "do work" }, ctx);
+
+        const result = await pi._handlers.turn_end(
+            { message: { role: "assistant", stopReason: "error", errorMessage: "Rate limit reached" } },
+            ctx,
+        );
+
+        expect(result?.continue).toBe(true);
+        expect(result?.entries?.[0]).toMatchObject({ type: "custom_message", customType: "fallback_status" });
+        expect(pi._userMessages).toHaveLength(0);
+        expect(pi._handlers.agent_before_settle).toBeUndefined();
+    });
+
+    test("AgentSession turn_end boundary itself stays pending while extension waits", async () => {
+        let release!: () => void;
+        const fakeSession = Object.assign(Object.create((AgentSession as any).prototype), {
+            _lastActivityOutcome: "completed",
+            _turnIndex: 1,
+            _extensionRunner: {
+                hasHandlers: () => true,
+                emitError: () => {},
+                emitBoundary: async (_event: any) => {
+                    await new Promise<void>((resolve) => { release = resolve; });
+                    return { entries: [], continue: true };
+                },
+            },
+            _findPersistedMessageEntryId: () => "entry-1",
+            _buildBoundaryContext: () => ({ canContinue: true }),
+            _commitBoundaryDrafts: () => {},
+            _reportInvalidBoundaryContinuation: () => {},
+        });
+
+        let settled = false;
+        const wait = (fakeSession as any)._dispatchTurnEndBoundary({ role: "assistant", stopReason: "error" }, [])
+            .then((value: boolean) => { settled = true; return value; });
+        await Promise.resolve();
+        expect(settled).toBe(false);
+        release();
+        expect(await wait).toBe(true);
+    });
+
+    test("turn_end remains pending while quota wait is active", async () => {
+        writeSettings([], true);
+        let resolveRefresh: (() => void) | undefined;
+        refreshAllUsageMock.mockImplementationOnce(async () => {
+            await new Promise<void>((resolve) => { resolveRefresh = resolve; });
+            stampProviderUsage();
+        });
+        providerUsage = {
+            anthropic: { status: "ok", windows: [{ label: "5-hour", utilization: 100, resets_at: new Date(Date.now() + 1000).toISOString() }] },
+        };
+        const pi = makeFakePi();
+        const ctx = makeFakeContext();
+
+        fallbackModelsExtension(pi);
+        pi._handlers.session_start({}, ctx);
+        pi._handlers.input({ text: "do work" }, ctx);
+
+        let settled = false;
+        const wait = pi._handlers.turn_end(
+            { message: { role: "assistant", stopReason: "error", errorMessage: "Rate limit reached" } },
+            ctx,
+        ).then(() => { settled = true; });
+        await Promise.resolve();
+        expect(settled).toBe(false);
+
+        providerUsage = {
+            anthropic: { status: "ok", windows: [{ label: "5-hour", utilization: 50, resets_at: new Date(Date.now() + 1000).toISOString() }] },
+        };
+        stampProviderUsage();
+        resolveRefresh?.();
+        await wait;
+        expect(settled).toBe(true);
+    });
+
+    test("real Agent turn_end wait is cancelled by Agent.abort", async () => {
+        writeSettings([], true);
+        let resolveRefresh: (() => void) | undefined;
+        let refreshStarted!: () => void;
+        const refreshStartedPromise = new Promise<void>((resolve) => { refreshStarted = resolve; });
+        refreshAllUsageMock.mockImplementationOnce(async () => {
+            refreshStarted();
+            await new Promise<void>((resolve) => { resolveRefresh = resolve; });
+            stampProviderUsage();
+        });
+        providerUsage = {
+            anthropic: { status: "ok", windows: [{ label: "5-hour", utilization: 100, resets_at: new Date(Date.now() + 1000).toISOString() }] },
+        };
+        const pi = makeFakePi();
+        const ctx = makeFakeContext();
+        fallbackModelsExtension(pi);
+        pi._handlers.session_start({}, ctx);
+        pi._handlers.input({ text: "do work" }, ctx);
+
+        const model = { provider: "anthropic", id: "claude-sonnet-4-5", api: "test", name: "Test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1000, maxTokens: 100 };
+        const agent = new Agent({
+            initialState: { model: model as any, systemPrompt: "test", tools: [] },
+            streamFn: (async () => ({
+                async *[Symbol.asyncIterator]() { yield { type: "done" } as const; },
+                async result() {
+                    return { role: "assistant", content: [], api: "test", provider: "anthropic", model: "claude-sonnet-4-5", stopReason: "error", errorMessage: "Rate limit reached", timestamp: Date.now() } as any;
+                },
+            }) as any) as any,
+        });
+        agent.subscribe(async (event, signal) => {
+            if (event.type !== "turn_end") return;
+            ctx.signal = signal;
+            await pi._handlers.turn_end({ message: event.message, toolResults: event.toolResults }, ctx);
+        });
+
+        const prompt = agent.prompt("go");
+        await refreshStartedPromise;
+        agent.abort();
+        try {
+            await expect(Promise.race([
+                prompt.then(() => "settled"),
+                new Promise((resolve) => setTimeout(() => resolve("timeout"), 1000)),
+            ])).resolves.toBe("settled");
+        } finally {
+            resolveRefresh?.();
+        }
+        expect(pi._sent.at(-1)?.content).toContain("cancelled");
+        expect(pi._userMessages).toHaveLength(0);
+    });
+
+    test("remote stop abort signal cancels an active quota wait", async () => {
+        writeSettings([], true);
+        let resolveRefresh: (() => void) | undefined;
+        refreshAllUsageMock.mockImplementationOnce(async () => {
+            await new Promise<void>((resolve) => { resolveRefresh = resolve; });
+            stampProviderUsage();
+        });
+        providerUsage = {
+            anthropic: { status: "ok", windows: [{ label: "5-hour", utilization: 100, resets_at: new Date(Date.now() + 1000).toISOString() }] },
+        };
+        const pi = makeFakePi();
+        const controller = new AbortController();
+        const ctx = makeFakeContext();
+        ctx.signal = controller.signal;
+
+        fallbackModelsExtension(pi);
+        pi._handlers.session_start({}, ctx);
+        pi._handlers.input({ text: "do work" }, ctx);
+
+        const wait = pi._handlers.turn_end(
+            { message: { role: "assistant", stopReason: "error", errorMessage: "Rate limit reached" } },
+            ctx,
+        );
+        await Promise.resolve();
+        controller.abort("remote stop");
+        resolveRefresh?.();
+        await expect(wait).resolves.toBeUndefined();
+        expect(pi._sent.at(-1)?.content).toContain("cancelled");
+    });
+
+    test("does not wait when confirmed quota is unknown", async () => {
+        writeSettings([], true);
+        providerUsage = { anthropic: { status: "unknown", windows: [] } };
+        const pi = makeFakePi();
+        const ctx = makeFakeContext();
+
+        fallbackModelsExtension(pi);
+        pi._handlers.session_start({}, ctx);
+        pi._handlers.input({ text: "do work" }, ctx);
+        const result = await pi._handlers.turn_end(
+            { message: { role: "assistant", stopReason: "error", errorMessage: "Rate limit reached" } },
+            ctx,
+        );
+
+        expect(result).toBeUndefined();
+        expect(pi._userMessages).toHaveLength(0);
+        expect(pi._sent.at(-1)?.content).toContain("provider_status");
+    });
+
+    test("cancels pending wait on new input before continuation", async () => {
+        writeSettings([], true);
+        let resolveRefresh: (() => void) | undefined;
+        refreshAllUsageMock.mockImplementationOnce(async () => {
+            await new Promise<void>((resolve) => { resolveRefresh = resolve; });
+            stampProviderUsage();
+        });
+        providerUsage = {
+            anthropic: { status: "ok", windows: [{ label: "5-hour", utilization: 100, resets_at: new Date(Date.now() + 1000).toISOString() }] },
+        };
+        const pi = makeFakePi();
+        const ctx = makeFakeContext();
+
+        fallbackModelsExtension(pi);
+        pi._handlers.session_start({}, ctx);
+        pi._handlers.input({ text: "do work" }, ctx);
+        const wait = pi._handlers.turn_end(
+            { message: { role: "assistant", stopReason: "error", errorMessage: "Rate limit reached" } },
+            ctx,
+        );
+        await Promise.resolve();
+        pi._handlers.input({ text: "new work" }, ctx);
+        resolveRefresh?.();
+
+        expect(await wait).toBeUndefined();
+        expect(pi._userMessages).toHaveLength(0);
+    });
+
+    test("stops after 3 automatic recovery attempts for one input", async () => {
+        writeSettings([], true);
+        const pi = makeFakePi();
+        const ctx = makeFakeContext();
+
+        fallbackModelsExtension(pi);
+        pi._handlers.session_start({}, ctx);
+        pi._handlers.input({ text: "do work" }, ctx);
+
+        for (let i = 0; i < 3; i++) {
+            providerUsage = {
+                anthropic: { status: "ok", windows: [{ label: "5-hour", utilization: 100, resets_at: new Date(Date.now() + 1).toISOString() }] },
+            };
+            const wait = pi._handlers.turn_end(
+                { message: { role: "assistant", stopReason: "error", errorMessage: "Rate limit reached" } },
+                ctx,
+            );
+            await new Promise((resolve) => setTimeout(resolve, 2));
+            providerUsage = {
+                anthropic: { status: "ok", windows: [{ label: "5-hour", utilization: 50, resets_at: new Date(Date.now() + 1000).toISOString() }] },
+            };
+            await wait;
+        }
+
+        await pi._handlers.turn_end(
+            { message: { role: "assistant", stopReason: "error", errorMessage: "Rate limit reached" } },
+            ctx,
+        );
+
+        expect(pi._sent.at(-1)?.content).toContain("stopped after 3 recovery attempts");
+    });
+
+    test("/rate-limit-wait on only arms an existing failed task", async () => {
+        writeSettings([], false);
+        providerUsage = {
+            anthropic: { status: "ok", windows: [{ label: "5-hour", utilization: 100, resets_at: new Date(Date.now() + 1000).toISOString() }] },
+        };
+        const pi = makeFakePi();
+        const ctx = makeFakeContext();
+
+        fallbackModelsExtension(pi);
+        pi._handlers.session_start({}, ctx);
+        await pi._commands.get("rate-limit-wait").handler("on", ctx);
+
+        expect(refreshAllUsageMock).not.toHaveBeenCalled();
+        expect(pi._userMessages).toHaveLength(0);
+    });
+
+    test("/rate-limit-wait cancel aborts a pending wait", async () => {
+        writeSettings([], true);
+        let resolveRefresh: (() => void) | undefined;
+        refreshAllUsageMock.mockImplementationOnce(async () => {
+            await new Promise<void>((resolve) => { resolveRefresh = resolve; });
+            stampProviderUsage();
+        });
+        providerUsage = {
+            anthropic: { status: "ok", windows: [{ label: "5-hour", utilization: 100, resets_at: new Date(Date.now() + 1000).toISOString() }] },
+        };
+        const pi = makeFakePi();
+        const ctx = makeFakeContext();
+
+        fallbackModelsExtension(pi);
+        pi._handlers.session_start({}, ctx);
+        const wait = pi._handlers.turn_end(
+            { message: { role: "assistant", stopReason: "error", errorMessage: "Rate limit reached" } },
+            ctx,
+        );
+        await Promise.resolve();
+        await pi._commands.get("rate-limit-wait").handler("cancel", ctx);
+        resolveRefresh?.();
+        await expect(wait).resolves.toBeUndefined();
+        expect(pi._sent.at(-1)?.content).toContain("cancelled");
     });
 
     test("resets the tried set after a successful turn so the chain can continue", async () => {

@@ -8,6 +8,9 @@ export interface ProviderUsageData {
   windows: UsageWindow[];
   status?: "ok" | "unknown";
   errorCode?: number;
+  fetchedAt?: number;
+  checkedAt?: number;
+  expiresAt?: number;
 }
 
 // Record<providerId, ProviderUsageData>  e.g. { anthropic: {...}, "openai-codex": {...} }
@@ -36,7 +39,8 @@ export function activeWindows(windows: UsageWindow[], now = Date.now()): UsageWi
 }
 
 export function providerUsageDisplay(data: ProviderUsageData, now = Date.now()) {
-  if (data.status === "unknown") {
+  if (data.status === "unknown" || (data.expiresAt !== undefined &&
+      (!Number.isFinite(data.expiresAt) || data.expiresAt <= now))) {
     return { kind: "unknown" as const, usedPct: null, remainingPct: null, label: null };
   }
 
@@ -48,7 +52,10 @@ export function providerUsageDisplay(data: ProviderUsageData, now = Date.now()) 
     if (governing === null || w.utilization > governing.utilization) governing = w;
   }
 
-  const usedPct = Math.min(100, Math.max(0, governing?.utilization ?? 0));
+  if (!governing || !Number.isFinite(governing.utilization)) {
+    return { kind: "unknown" as const, usedPct: null, remainingPct: null, label: null };
+  }
+  const usedPct = Math.min(100, Math.max(0, governing.utilization));
   return {
     kind: "usage" as const,
     usedPct,

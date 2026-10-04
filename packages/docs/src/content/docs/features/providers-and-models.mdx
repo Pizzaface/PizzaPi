@@ -175,7 +175,7 @@ Workers read this list when listing, switching, cycling, and spawning model-awar
 }
 ```
 
-Fallback runs only when the current assistant turn ends with `stopReason: "error"` and the error text matches a usage-limit, quota, rate-limit, context-window, or provider-capacity condition. PizzaPi records the last user input for the session, switches to the next authenticated fallback model, and re-sends that input as a steer message.
+Fallback runs only when the current assistant turn ends with `stopReason: "error"` and the error text matches a usage-limit, quota, rate-limit, or provider-capacity condition. Context-window exhaustion is not a rate limit. PizzaPi records the last user input for the session, switches to the next authenticated fallback model, and re-sends that input as a steer message.
 
 Cascade behavior:
 
@@ -185,6 +185,23 @@ Cascade behavior:
 4. The process repeats until a fallback succeeds or the chain is exhausted.
 
 The UI receives a visible `fallback_status` notice such as “Primary model hit a provider limit. Retrying with …”. If no captured input exists, PizzaPi sends a generic retry instruction instead of silently doing nothing.
+
+### Wait for rate limits to return
+
+Enable **Runner → Settings → Models → Wait for rate limits to return**, or set `"waitForRateLimits": true` in `~/.pizzapi/settings.json`. It defaults to `false`; saved settings apply on the next session start.
+
+After a usage-limit failure exhausts the fallback chain (including an empty chain), PizzaPi can wait for the **current model's** subscription quota to recover. It checks quota before waiting, waits until the latest applicable exhausted window resets, then checks again before continuing. Anthropic model-family windows are matched to the selected model. Missing, stale, malformed, or unknown quota is not evidence that usage is available. If recovery cannot be verified, waiting stops with a visible reason rather than retrying blindly.
+
+Use these commands in the TUI or web session composer:
+
+| Command | Effect |
+|---------|--------|
+| `/rate-limit-wait on` | Enable waiting for this session; start waiting if there is a pending usage-limit failure. |
+| `/rate-limit-wait off` | Disable waiting for this session and cancel any current wait. |
+| `/rate-limit-wait cancel` | Cancel the current wait without changing the setting. |
+| `/rate-limit-wait status` | Show whether waiting is disabled, enabled, or active. |
+
+New input, a model change, or session shutdown cancels an active wait. **Stop** also cancels automatic waiting during a running task. For a wait started by `/rate-limit-wait on` after the task has already ended, use `/rate-limit-wait cancel`; there is no running task to stop. Waiting does not survive a worker restart. Automatic recovery is limited to three attempts per input. The automatic recovery path continues the interrupted conversation instead of re-sending the original task. It does not handle context-length errors, fix authentication, or guarantee recovery from API billing/spend caps or provider overload.
 
 ---
 
@@ -213,7 +230,7 @@ PizzaPi tracks two related things:
 
 `format-usage.ts` maps display providers to quota providers: `claude-subscription` uses Anthropic quota, `openai`/`openai-codex` use OpenAI Codex quota, and Google/Gemini CLI providers map to `google-gemini-cli` when usage data exists.
 
-`remote-provider-usage.ts` caches quota windows in the worker and, under the runner daemon, reads the daemon's shared usage cache file instead of every worker polling providers independently. Anthropic usage is cached for 15 minutes; other usage data uses a 5-minute cache. Forced refresh requests go through runner IPC when available.
+`remote-provider-usage.ts` caches quota windows in the worker and, under the runner daemon, reads the daemon's shared usage cache file instead of every worker polling providers independently. Anthropic usage is cached for 15 minutes; other usage data uses a 5-minute cache. Snapshots carry per-provider freshness timestamps; refreshing the shared file does not make old quota fresh. Forced refresh requests go through runner IPC; runner-managed workers do not fall back to independent provider requests when IPC is slow or unavailable. Failed checks have a 60-second cooldown, including manual refreshes. The usage badge displays **UNKNOWN**, rather than disappearing or implying 100% availability, when quota cannot be verified. Anthropic credential discovery includes the `anthropic` and `claude-subscription` providers and Claude Code's stored OAuth credentials.
 
 ---
 

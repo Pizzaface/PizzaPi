@@ -7,12 +7,11 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { loadConfig, defaultAgentDir, expandHome } from "../config.js";
-import { getAnthropicKeychainToken } from "../runner/usage-auth.js";
-import type { UsageWindow, ProviderUsageData } from "./remote-types.js";
-
-const DEFAULT_USAGE_CACHE_TTL = 5 * 60 * 1000; // 5 min
-const ANTHROPIC_USAGE_CACHE_TTL = 15 * 60 * 1000; // 15 min (rate-limit anthropic checks)
+import { getAnthropicKeychainToken, getOAuthAccessToken } from "../runner/usage-auth.js";
+import type { ProviderUsageData } from "./remote-types.js";
+import { fetchJsonWithTimeout, isUsageRefreshCoolingDown, parseAnthropicUsageWindows, parseCodexUsageWindows, usageCacheTtl, usageUnknown, withUsageFreshness } from "./provider-quota.js";
 
 const usageCache = new Map<string, { data: ProviderUsageData; fetchedAt: number }>();
 
@@ -59,55 +58,66 @@ function requestRunnerUsageRefresh(timeoutMs = 5000): Promise<boolean> {
             clearTimeout(timer);
             resolve(true);
         });
-        process.send!({ type: "refresh_usage_request", requestId });
+        try {
+            process.send!({ type: "refresh_usage_request", requestId });
+        } catch {
+            clearTimeout(timer);
+            pendingRefreshRequests.delete(requestId);
+            resolve(false);
+        }
     });
 }
 
 export function getOAuthToken(providerId: string): string | null {
+    return getOAuthTokens([providerId])[0] ?? null;
+}
+
+function getOAuthTokens(providerIds: string[]): string[] {
     try {
         const config = loadConfig(process.cwd());
         const agentDir = config.agentDir
             ? expandHome(config.agentDir)
             : defaultAgentDir();
         const authPath = join(agentDir, "auth.json");
-        if (!existsSync(authPath)) return null;
-        const auth = JSON.parse(readFileSync(authPath, "utf-8"));
-        return (auth as any)?.[providerId]?.access ?? null;
+        const tokens: string[] = [];
+        for (const providerId of providerIds) {
+            const token = getOAuthAccessToken(readStoredCredential(providerId, authPath));
+            if (token && !tokens.includes(token)) tokens.push(token);
+        }
+        return tokens;
     } catch {
-        return null;
+        return [];
     }
 }
 
-function providerUsageTtl(providerId: string): number {
-    return providerId === "anthropic" ? ANTHROPIC_USAGE_CACHE_TTL : DEFAULT_USAGE_CACHE_TTL;
+function isProviderUsageData(value: unknown): value is ProviderUsageData {
+    if (typeof value !== "object" || value === null || !Array.isArray((value as ProviderUsageData).windows)) return false;
+    return (value as ProviderUsageData).windows.every((w) => (
+        typeof w === "object" &&
+        w !== null &&
+        typeof w.label === "string" &&
+        typeof w.utilization === "number" &&
+        typeof w.resets_at === "string"
+    ));
 }
 
 function isCached(providerId: string, opts: { force?: boolean } = {}): boolean {
     if (opts.force) return false;
     const entry = usageCache.get(providerId);
     if (!entry) return false;
-    return Date.now() - entry.fetchedAt < providerUsageTtl(providerId);
-}
-
-/**
- * Drop windows whose `resets_at` has already passed — the window rolled over
- * and the cached utilization is stale (Anthropic is cached for 15 min, and
- * workers read a daemon-written snapshot that can be older still).
- * An unparseable `resets_at` is kept, so a bad timestamp can't hide real usage.
- */
-export function activeUsageWindows(windows: UsageWindow[], now = Date.now()): UsageWindow[] {
-    return windows.filter((w) => {
-        const resetsAt = Date.parse(w.resets_at);
-        return !Number.isFinite(resetsAt) || resetsAt > now;
-    });
+    const now = Date.now();
+    return entry.data.status === "unknown"
+        ? isUsageRefreshCoolingDown(entry.data, now)
+        : now - entry.fetchedAt < usageCacheTtl(providerId);
 }
 
 export function buildProviderUsage(): Record<string, ProviderUsageData> {
     const out: Record<string, ProviderUsageData> = {};
     const now = Date.now();
     for (const [id, { data }] of usageCache) {
-        const windows = activeUsageWindows(data.windows, now);
-        out[id] = windows.length === data.windows.length ? data : { ...data, windows };
+        out[id] = typeof data.expiresAt === "number" && data.expiresAt <= now
+            ? { ...data, status: "unknown" }
+            : data;
     }
     return out;
 }
@@ -126,8 +136,9 @@ async function refreshFromRunnerCache(): Promise<void> {
         };
         const fetchedAt = typeof parsed.fetchedAt === "number" ? parsed.fetchedAt : 0;
         for (const [id, data] of Object.entries(parsed.providers ?? {})) {
-            if (data && Array.isArray((data as ProviderUsageData).windows)) {
-                usageCache.set(id, { data: data as ProviderUsageData, fetchedAt });
+            if (isProviderUsageData(data)) {
+                const providerFetchedAt = typeof data.fetchedAt === "number" ? data.fetchedAt : fetchedAt;
+                usageCache.set(id, { data: withUsageFreshness(id, data, providerFetchedAt), fetchedAt: providerFetchedAt });
             }
         }
     } catch {
@@ -139,86 +150,61 @@ async function refreshFromRunnerCache(): Promise<void> {
 export function preserveUsageWindowsOnError(
     existing: ProviderUsageData | undefined,
     status: number,
+    checkedAt = Date.now(),
 ): ProviderUsageData {
-    return {
-        windows: existing?.windows ?? [],
-        status: "unknown",
-        errorCode: status,
-    };
+    return usageUnknown(existing, status, checkedAt);
 }
 
 async function refreshAnthropicUsage(opts: { force?: boolean } = {}): Promise<void> {
-    if (isCached("anthropic", opts)) return;
+    if (isUsageRefreshCoolingDown(usageCache.get("anthropic")?.data) || isCached("anthropic", opts)) return;
     // auth.json first, then Claude Code's own OAuth token (Keychain /
     // ~/.claude/.credentials.json) for users who never ran /login inside
     // pizzapi — read-only, never refreshed.
-    const token = getOAuthToken("anthropic") ?? getAnthropicKeychainToken();
-    if (!token) return;
-    try {
-        const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
-            headers: {
-                Authorization: `Bearer ${token}`,
-                "anthropic-version": "2023-06-01",
-                "anthropic-beta": "oauth-2025-04-20",
-            },
-        });
-        if (!res.ok) {
-            if (res.status === 401 || res.status === 403 || res.status === 429) {
-                // Auth/rate-limit errors should not erase known-good cached quota
-                // data. Preserve existing windows and surface the error code so
-                // the UI can show "UNKNOWN" without dropping the percentage.
+    const tokens = getOAuthTokens(["anthropic", "claude-subscription"]);
+    const keychainToken = getAnthropicKeychainToken();
+    if (keychainToken && !tokens.includes(keychainToken)) tokens.push(keychainToken);
+    if (tokens.length === 0) return;
+    for (const token of tokens) {
+        try {
+            const res = await fetchJsonWithTimeout<Record<string, unknown>>("https://api.anthropic.com/api/oauth/usage", {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "anthropic-version": "2023-06-01",
+                    "anthropic-beta": "oauth-2025-04-20",
+                },
+            });
+            if (!res.ok) {
+                if (res.status === 401 || res.status === 403) continue;
+                const checkedAt = Date.now();
                 usageCache.set("anthropic", {
-                    data: preserveUsageWindowsOnError(usageCache.get("anthropic")?.data, res.status),
-                    fetchedAt: Date.now(),
+                    data: preserveUsageWindowsOnError(usageCache.get("anthropic")?.data, res.status, checkedAt),
+                    fetchedAt: checkedAt,
                 });
+                return;
             }
+            const { windows, malformed } = parseAnthropicUsageWindows(res.json ?? {});
+            const fetchedAt = Date.now();
+            usageCache.set("anthropic", {
+                data: withUsageFreshness("anthropic", malformed || windows.length === 0 ? { windows, status: "unknown" } : { windows, status: "ok" }, fetchedAt),
+                fetchedAt,
+            });
+            return;
+        } catch {
+            const checkedAt = Date.now();
+            usageCache.set("anthropic", { data: usageUnknown(usageCache.get("anthropic")?.data, undefined, checkedAt), fetchedAt: checkedAt });
             return;
         }
-        const raw = (await res.json()) as Record<string, unknown>;
-
-        const WINDOW_LABELS: Record<string, string> = {
-            five_hour: "5-hour",
-            seven_day: "7-day",
-            seven_day_opus: "7-day (Opus)",
-            seven_day_sonnet: "7-day (Sonnet)",
-            seven_day_oauth_apps: "7-day (OAuth apps)",
-            seven_day_cowork: "7-day (co-work)",
-        };
-        const windows: UsageWindow[] = [];
-        for (const [key, label] of Object.entries(WINDOW_LABELS)) {
-            const w = raw[key] as { utilization: number; resets_at: string } | null | undefined;
-            if (w?.resets_at != null && typeof w.utilization === "number") {
-                windows.push({ label, utilization: w.utilization, resets_at: w.resets_at });
-            }
-        }
-        if (windows.length > 0) {
-            usageCache.set("anthropic", { data: { windows, status: "ok" }, fetchedAt: Date.now() });
-        }
-    } catch {
-        // Non-fatal
     }
+    const checkedAt = Date.now();
+    usageCache.set("anthropic", { data: preserveUsageWindowsOnError(usageCache.get("anthropic")?.data, 401, checkedAt), fetchedAt: checkedAt });
 }
 
 async function refreshCodexUsage(opts: { force?: boolean } = {}): Promise<void> {
-    if (isCached("openai-codex", opts)) return;
+    if (isUsageRefreshCoolingDown(usageCache.get("openai-codex")?.data) || isCached("openai-codex", opts)) return;
     const token = getOAuthToken("openai-codex");
     if (!token) return;
     try {
-        const res = await fetch("https://chatgpt.com/backend-api/wham/usage", {
-            headers: {
-                Authorization: `Bearer ${token}`,
-            },
-        });
-        if (!res.ok) {
-            if (res.status === 401 || res.status === 403 || res.status === 429) {
-                usageCache.set("openai-codex", {
-                    data: preserveUsageWindowsOnError(usageCache.get("openai-codex")?.data, res.status),
-                    fetchedAt: Date.now(),
-                });
-            }
-            return;
-        }
-        const raw = (await res.json()) as {
+        const res = await fetchJsonWithTimeout<{
             plan_type?: string;
             rate_limit?: {
                 primary?: { used_percent: number; window_minutes?: number | null; resets_at?: number | null } | null;
@@ -238,66 +224,28 @@ async function refreshCodexUsage(opts: { force?: boolean } = {}): Promise<void> 
                     primary_window?: { used_percent: number; limit_window_seconds?: number | null; reset_at?: number | null } | null;
                 } | null;
             }> | null;
-        };
-
-        function windowLabel(minutes: number | null | undefined): string {
-            if (!minutes) return "Usage";
-            if (minutes < 60) return `${minutes}-min`;
-            if (minutes < 60 * 24) return `${Math.round(minutes / 60)}-hour`;
-            return `${Math.round(minutes / 60 / 24)}-day`;
+        }>("https://chatgpt.com/backend-api/wham/usage", {
+            headers: {
+                Authorization: `Bearer ${token}`,
+            },
+        });
+        if (!res.ok) {
+            const checkedAt = Date.now();
+            usageCache.set("openai-codex", {
+                data: preserveUsageWindowsOnError(usageCache.get("openai-codex")?.data, res.status, checkedAt),
+                fetchedAt: checkedAt,
+            });
+            return;
         }
-
-        function toWindow(
-            w:
-                | { used_percent: number; window_minutes?: number | null; resets_at?: number | null }
-                | { used_percent: number; limit_window_seconds?: number | null; reset_at?: number | null }
-                | null
-                | undefined,
-            label: string,
-        ): UsageWindow | null {
-            if (!w) return null;
-            const used = typeof w.used_percent === "number" ? w.used_percent : null;
-            const resetAt =
-                "resets_at" in w
-                    ? w.resets_at
-                    : "reset_at" in w
-                      ? w.reset_at
-                      : null;
-            if (used == null || resetAt == null) return null;
-
-            const minutes =
-                "window_minutes" in w
-                    ? (w.window_minutes ?? undefined)
-                    : "limit_window_seconds" in w && typeof w.limit_window_seconds === "number"
-                      ? Math.max(1, Math.round(w.limit_window_seconds / 60))
-                      : undefined;
-
-            return {
-                label: minutes ? windowLabel(minutes) : label,
-                utilization: used,
-                resets_at: new Date(resetAt * 1000).toISOString(),
-            };
-        }
-
-        const windows: UsageWindow[] = [];
-        const primary = toWindow(raw.rate_limit?.primary_window ?? raw.rate_limit?.primary, "Primary");
-        if (primary) windows.push(primary);
-        const secondary = toWindow(raw.rate_limit?.secondary_window ?? raw.rate_limit?.secondary, "Secondary");
-        if (secondary) windows.push(secondary);
-
-        for (const extra of raw.additional_rate_limits ?? []) {
-            const w = toWindow(extra.rate_limit?.primary_window ?? extra.rate_limit?.primary, extra.limit_name);
-            if (w) {
-                w.label = extra.limit_name;
-                windows.push(w);
-            }
-        }
-
-        if (windows.length > 0) {
-            usageCache.set("openai-codex", { data: { windows, status: "ok" }, fetchedAt: Date.now() });
-        }
+        const { windows, malformed } = parseCodexUsageWindows(res.json ?? {});
+        const fetchedAt = Date.now();
+        usageCache.set("openai-codex", {
+            data: withUsageFreshness("openai-codex", malformed || windows.length === 0 ? { windows, status: "unknown" } : { windows, status: "ok" }, fetchedAt),
+            fetchedAt,
+        });
     } catch {
-        // Non-fatal
+        const checkedAt = Date.now();
+        usageCache.set("openai-codex", { data: usageUnknown(usageCache.get("openai-codex")?.data, undefined, checkedAt), fetchedAt: checkedAt });
     }
 }
 
@@ -310,15 +258,13 @@ export async function refreshAllUsage(opts: { force?: boolean } = {}): Promise<v
     }
 
     // When running under a runner daemon, ask it to force-refresh the shared
-    // cache rather than every worker hitting the provider APIs. This preserves
-    // the daemon's rate-limiting and credential discovery, and updates the file
-    // for all sessions. Fall back to a direct fetch if IPC is unavailable.
+    // cache rather than every worker hitting the provider APIs. If IPC is slow
+    // or unavailable, keep the runner-owned snapshot and let quota decisions
+    // treat stale/unknown data conservatively instead of fanning out provider calls.
     if (runnerUsageCachePath && force) {
-        const refreshed = await requestRunnerUsageRefresh();
-        if (refreshed) {
-            await refreshFromRunnerCache();
-            return;
-        }
+        await requestRunnerUsageRefresh(12_000);
+        await refreshFromRunnerCache();
+        return;
     }
 
     await Promise.allSettled([

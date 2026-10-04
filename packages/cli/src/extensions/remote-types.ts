@@ -125,12 +125,21 @@ export interface UsageWindow {
     label: string;
     utilization: number;
     resets_at: string;
+    /** Omitted means global. Unknown scopes may affect availability but never mark a model limited. */
+    scope?: "global" | "unknown";
+    meteredFeature?: string;
 }
 
 export interface ProviderUsageData {
     windows: UsageWindow[];
     status?: "ok" | "unknown";
     errorCode?: number;
+    /** When usable quota windows were last fetched. Omitted on old cache files. */
+    fetchedAt?: number;
+    /** When this provider was last checked, including failed/unknown checks. */
+    checkedAt?: number;
+    /** After this time the snapshot is stale and must not imply availability. */
+    expiresAt?: number;
 }
 
 // ── MCP startup report ───────────────────────────────────────────────────────

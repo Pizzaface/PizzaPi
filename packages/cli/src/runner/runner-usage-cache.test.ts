@@ -5,6 +5,69 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 describe("runner-usage-cache", () => {
+    test("reads claude-subscription OAuth credentials for Anthropic usage", () => {
+        const repoRoot = join(import.meta.dir, "../../../..");
+        const runnerSrcDir = import.meta.dir.includes("/dist/runner")
+            ? import.meta.dir.replace("/dist/runner", "/src/runner")
+            : import.meta.dir;
+        const childTestPath = join(runnerSrcDir, `.runner-usage-cache-claude-subscription-${Date.now()}-${Math.random().toString(16).slice(2)}.test.ts`);
+        const home = mkdtempSync(join(tmpdir(), "runner-usage-credentials-"));
+        try {
+            writeFileSync(childTestPath, `
+import { expect, mock, test } from "bun:test";
+import { join } from "node:path";
+
+const calls: string[] = [];
+mock.module("@earendil-works/pi-coding-agent", () => ({
+    readStoredCredential: (providerId: string) => {
+        calls.push(providerId);
+        return providerId === "claude-subscription" ? { type: "oauth", access: "subscription-token" } : undefined;
+    },
+}));
+mock.module("../config.js", () => ({
+    loadConfig: () => ({}),
+    defaultAgentDir: () => join(process.cwd(), ".agent"),
+    expandHome: (input: string) => input,
+}));
+mock.module("./usage-auth.js", () => ({
+    getOAuthAccessToken: (raw: any) => raw?.access ?? null,
+    getAnthropicKeychainToken: () => null,
+}));
+mock.module("./logger.js", () => ({ logInfo: () => {}, logWarn: () => {} }));
+
+test("claude-subscription auth backs Anthropic usage", async () => {
+    let auth = "";
+    globalThis.fetch = async (_url: string | URL | Request, init?: RequestInit) => {
+        auth = String((init?.headers as Record<string, string>)?.Authorization ?? "");
+        return { ok: true, json: async () => ({ five_hour: { utilization: 1, resets_at: "2026-01-01T00:00:00.000Z" } }) } as Response;
+    };
+    const { getRunnerAnthropicUsageData } = await import("./runner-usage-cache.ts");
+    const data = await getRunnerAnthropicUsageData({ force: true });
+    expect(calls).toContain("anthropic");
+    expect(calls).toContain("claude-subscription");
+    expect(auth).toBe("Bearer subscription-token");
+    expect(data?.status).toBe("ok");
+    expect(typeof data?.fetchedAt).toBe("number");
+    expect(data?.checkedAt).toBe(data?.fetchedAt);
+    expect(typeof data?.expiresAt).toBe("number");
+    const originalNow = Date.now;
+    const now = Date.now();
+    globalThis.fetch = async () => ({ ok: false, status: 429 }) as Response;
+    expect((await getRunnerAnthropicUsageData({ force: true }))?.status).toBe("unknown");
+    Date.now = () => now + 60_001;
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ five_hour: { utilization: 2, resets_at: "2099-01-01T00:00:00Z" } }) }) as Response;
+    expect((await getRunnerAnthropicUsageData())?.status).toBe("ok");
+    Date.now = originalNow;
+});
+`);
+            execFileSync(process.execPath, ["test", childTestPath], { cwd: repoRoot, env: { ...process.env, HOME: home }, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+            expect(true).toBe(true);
+        } finally {
+            rmSync(childTestPath, { force: true });
+            rmSync(home, { recursive: true, force: true });
+        }
+    });
+
     test("refreshes usage data with tracked cwd auth paths and drops them after untracking", () => {
         const repoRoot = join(import.meta.dir, "../../../..");
         const tmpHome = mkdtempSync(join(tmpdir(), "runner-usage-cache-test-"));
@@ -104,16 +167,27 @@ describe("runner-usage-cache child", () => {
         expect(authPathsWhileTracked).toContain(join(home, "custom-agent-dir", "auth.json"));
 
         const firstCache = JSON.parse(firstWrite);
-        expect(firstCache.providers.anthropic.windows).toEqual([
-            {
-                label: "5-hour",
-                utilization: 42,
-                resets_at: "2026-01-01T00:00:00.000Z",
-            },
-        ]);
+        expect(firstCache.providers.anthropic).toMatchObject({
+            status: "ok",
+            windows: [
+                {
+                    label: "5-hour",
+                    utilization: 42,
+                    resets_at: "2026-01-01T00:00:00.000Z",
+                },
+            ],
+        });
+        expect(typeof firstCache.providers.anthropic.fetchedAt).toBe("number");
+        expect(firstCache.providers.anthropic.checkedAt).toBe(firstCache.providers.anthropic.fetchedAt);
+        expect(firstCache.providers.anthropic.expiresAt).toBeGreaterThan(firstCache.providers.anthropic.fetchedAt);
 
         globalThis.fetch = async () => { throw new Error("temporary outage"); };
-        expect(await getRunnerAnthropicUsageData({ force: true })).toEqual(firstCache.providers.anthropic);
+        expect(await getRunnerAnthropicUsageData({ force: true })).toMatchObject({
+            windows: firstCache.providers.anthropic.windows,
+            status: "unknown",
+            fetchedAt: firstCache.providers.anthropic.fetchedAt,
+            expiresAt: firstCache.providers.anthropic.expiresAt,
+        });
 
         globalThis.fetch = async () => ({
             ok: true,

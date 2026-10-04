@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { loadConfig, defaultAgentDir, expandHome } from "../config.js";
 import { getOAuthAccessToken, getAnthropicKeychainToken } from "./usage-auth.js";
+import { fetchJsonWithTimeout, isUsageRefreshCoolingDown, parseAnthropicUsageWindows, parseCodexUsageWindows, usageUnknown, withUsageFreshness } from "../extensions/provider-quota.js";
 import { logInfo, logWarn } from "./logger.js";
 
 // ── Runner-wide usage cache (shared with worker processes via file) ───────────
@@ -12,11 +13,14 @@ import { logInfo, logWarn } from "./logger.js";
 // a given machine.  All worker sessions inherit PIZZAPI_RUNNER_USAGE_CACHE_PATH
 // and read from this file instead of each making their own API calls.
 
-interface UsageWindow { label: string; utilization: number; resets_at: string }
+interface UsageWindow { label: string; utilization: number; resets_at: string; scope?: "global" | "unknown"; meteredFeature?: string }
 interface ProviderUsageData {
     windows: UsageWindow[];
     status?: "ok" | "unknown";
     errorCode?: number;
+    fetchedAt?: number;
+    checkedAt?: number;
+    expiresAt?: number;
 }
 interface RunnerUsageCacheFile {
     fetchedAt: number;
@@ -54,6 +58,14 @@ export function runnerUsageCacheFilePath(): string {
     return join(homedir(), ".pizzapi", "usage-cache.json");
 }
 
+function readRunnerUsageCacheFile(): RunnerUsageCacheFile | null {
+    try {
+        return JSON.parse(readFileSync(runnerUsageCacheFilePath(), "utf-8")) as RunnerUsageCacheFile;
+    } catch {
+        return null;
+    }
+}
+
 /**
  * Returns all unique auth.json paths known to the daemon:
  * the daemon's own startup CWD first, followed by any CWD registered by active
@@ -76,54 +88,45 @@ function getKnownAuthPaths(): string[] {
     return [...seen];
 }
 
-async function fetchAnthropicUsageData(): Promise<ProviderUsageData | null> {
-    let token: string | null = null;
+async function fetchAnthropicUsageData(existing?: ProviderUsageData | null): Promise<ProviderUsageData | null> {
+    if (isUsageRefreshCoolingDown(existing ?? undefined)) return existing ?? null;
+    const tokens: string[] = [];
     try {
         for (const authPath of getKnownAuthPaths()) {
-            const raw = readStoredCredential("anthropic", authPath);
-            token = getOAuthAccessToken(raw);
-            if (token) break;
-        }
-        // No anthropic entry in auth.json (never ran /login inside pizzapi) —
-        // fall back to Claude Code's own stored OAuth token, read-only.
-        if (!token) token = getAnthropicKeychainToken();
-    } catch (err: any) {
-        logWarn(`failed to get Anthropic credentials: ${err?.message ?? String(err)}`);
-        return null;
-    }
-    if (!token) return null;
-    try {
-        const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
-            headers: {
-                Authorization: `Bearer ${token}`,
-                "anthropic-version": "2023-06-01",
-                "anthropic-beta": "oauth-2025-04-20",
-            },
-        });
-        if (!res.ok) {
-            if (res.status === 403) return { windows: [], status: "unknown", errorCode: 403 };
-            return null;
-        }
-        const raw = (await res.json()) as Record<string, unknown>;
-        const WINDOW_LABELS: Record<string, string> = {
-            five_hour: "5-hour",
-            seven_day: "7-day",
-            seven_day_opus: "7-day (Opus)",
-            seven_day_sonnet: "7-day (Sonnet)",
-            seven_day_oauth_apps: "7-day (OAuth apps)",
-            seven_day_cowork: "7-day (co-work)",
-        };
-        const windows: UsageWindow[] = [];
-        for (const [key, label] of Object.entries(WINDOW_LABELS)) {
-            const w = raw[key] as { utilization: number; resets_at: string } | null | undefined;
-            if (w?.resets_at != null && typeof w.utilization === "number") {
-                windows.push({ label, utilization: w.utilization, resets_at: w.resets_at });
+            for (const provider of ["anthropic", "claude-subscription"]) {
+                const token = getOAuthAccessToken(readStoredCredential(provider, authPath));
+                if (token && !tokens.includes(token)) tokens.push(token);
             }
         }
-        return windows.length > 0 ? { windows, status: "ok" } : null;
-    } catch {
-        return null;
+        const keychainToken = getAnthropicKeychainToken();
+        if (keychainToken && !tokens.includes(keychainToken)) tokens.push(keychainToken);
+    } catch (err: any) {
+        logWarn(`failed to get Anthropic credentials: ${err?.message ?? String(err)}`);
+        return usageUnknown(existing ?? undefined);
     }
+    if (tokens.length === 0) return null;
+
+    for (const token of tokens) {
+        try {
+            const res = await fetchJsonWithTimeout<Record<string, unknown>>("https://api.anthropic.com/api/oauth/usage", {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "anthropic-version": "2023-06-01",
+                    "anthropic-beta": "oauth-2025-04-20",
+                },
+            });
+            if (!res.ok) {
+                if (res.status === 401 || res.status === 403) continue;
+                return usageUnknown(existing ?? undefined, res.status);
+            }
+            const { windows, malformed } = parseAnthropicUsageWindows(res.json ?? {});
+            return malformed || windows.length === 0 ? { windows, status: "unknown" } : { windows, status: "ok" };
+        } catch (err: any) {
+            logWarn(`failed to fetch Anthropic usage: ${err?.message ?? String(err)}`);
+            return usageUnknown(existing ?? undefined);
+        }
+    }
+    return usageUnknown(existing ?? undefined, 401);
 }
 
 export async function getRunnerAnthropicUsageData(opts: { force?: boolean } = {}): Promise<ProviderUsageData | null> {
@@ -131,7 +134,10 @@ export async function getRunnerAnthropicUsageData(opts: { force?: boolean } = {}
         try {
             const cached = JSON.parse(readFileSync(runnerUsageCacheFilePath(), "utf-8")) as RunnerUsageCacheFile;
             const anthropic = cached.providers?.anthropic;
-            if (anthropic?.windows) _lastAnthropicUsage = { data: anthropic, fetchedAt: cached.fetchedAt };
+            if (anthropic?.windows) {
+                const fetchedAt = typeof anthropic.fetchedAt === "number" ? anthropic.fetchedAt : cached.fetchedAt;
+                _lastAnthropicUsage = { data: withUsageFreshness("anthropic", anthropic, fetchedAt), fetchedAt };
+            }
         } catch {
             // No prior runner cache.
         }
@@ -140,78 +146,43 @@ export async function getRunnerAnthropicUsageData(opts: { force?: boolean } = {}
     const now = Date.now();
     const force = opts.force === true;
 
-    if (!force && _lastAnthropicUsage && now - _lastAnthropicUsage.fetchedAt < ANTHROPIC_USAGE_REFRESH_INTERVAL) {
+    if (!force && _lastAnthropicUsage?.data?.status === "ok" && now - _lastAnthropicUsage.fetchedAt < ANTHROPIC_USAGE_REFRESH_INTERVAL) {
         return _lastAnthropicUsage.data;
     }
 
-    const data = await fetchAnthropicUsageData();
-    // Keep the last successful value through transient refresh failures. A failed
-    // poll must not erase Anthropic from the shared cache and every new worker.
+    const data = await fetchAnthropicUsageData(_lastAnthropicUsage?.data ?? null);
     if (data !== null) {
-        _lastAnthropicUsage = { data, fetchedAt: now };
-        return data;
+        const completedAt = Date.now();
+        const fresh = withUsageFreshness("anthropic", data, data.status === "ok" ? completedAt : _lastAnthropicUsage?.fetchedAt ?? completedAt);
+        _lastAnthropicUsage = { data: fresh, fetchedAt: fresh.fetchedAt ?? completedAt };
+        return fresh;
     }
-    return _lastAnthropicUsage?.data ?? null;
+    return null;
 }
 
-async function fetchCodexUsageData(): Promise<ProviderUsageData | null> {
+async function fetchCodexUsageData(existing?: ProviderUsageData): Promise<ProviderUsageData | null> {
+    if (isUsageRefreshCoolingDown(existing)) return existing ?? null;
     let token: string | null = null;
     try {
         for (const authPath of getKnownAuthPaths()) {
-            const raw = readStoredCredential("openai-codex", authPath);
-            token = getOAuthAccessToken(raw);
+            token = getOAuthAccessToken(readStoredCredential("openai-codex", authPath));
             if (token) break;
         }
     } catch (err: any) {
         logWarn(`failed to get OpenAI Codex credentials: ${err?.message ?? String(err)}`);
-        return null;
+        return usageUnknown(existing);
     }
     if (!token) return null;
     try {
-        const res = await fetch("https://chatgpt.com/backend-api/wham/usage", {
+        const res = await fetchJsonWithTimeout<Record<string, unknown>>("https://chatgpt.com/backend-api/wham/usage", {
             headers: { Authorization: `Bearer ${token}` },
         });
-        if (!res.ok) {
-            if (res.status === 403) return { windows: [], status: "unknown", errorCode: 403 };
-            return null;
-        }
-        const raw = (await res.json()) as any;
-
-        function windowLabel(minutes: number | null | undefined): string {
-            if (!minutes) return "Usage";
-            if (minutes < 60) return `${minutes}-min`;
-            if (minutes < 60 * 24) return `${Math.round(minutes / 60)}-hour`;
-            return `${Math.round(minutes / 60 / 24)}-day`;
-        }
-        function toWin(w: any, label: string): UsageWindow | null {
-            if (!w) return null;
-            const used = typeof w.used_percent === "number" ? w.used_percent : null;
-            const resetAt = "resets_at" in w ? w.resets_at : "reset_at" in w ? w.reset_at : null;
-            if (used == null || resetAt == null) return null;
-            const minutes = "window_minutes" in w
-                ? (w.window_minutes ?? undefined)
-                : "limit_window_seconds" in w && typeof w.limit_window_seconds === "number"
-                    ? Math.max(1, Math.round(w.limit_window_seconds / 60))
-                    : undefined;
-            return {
-                label: minutes ? windowLabel(minutes) : label,
-                utilization: used,
-                resets_at: new Date(resetAt * 1000).toISOString(),
-            };
-        }
-
-        const windows: UsageWindow[] = [];
-        const primary = toWin(raw.rate_limit?.primary_window ?? raw.rate_limit?.primary, "Primary");
-        if (primary) windows.push(primary);
-        const secondary = toWin(raw.rate_limit?.secondary_window ?? raw.rate_limit?.secondary, "Secondary");
-        if (secondary) windows.push(secondary);
-        for (const extra of raw.additional_rate_limits ?? []) {
-            const w = toWin(extra.rate_limit?.primary_window ?? extra.rate_limit?.primary, extra.limit_name);
-            if (w) { w.label = extra.limit_name; windows.push(w); }
-        }
-        return windows.length > 0 ? { windows, status: "ok" } : null;
-    } catch {
-        return null;
+        if (!res.ok) return usageUnknown(existing, res.status);
+        const { windows, malformed } = parseCodexUsageWindows(res.json ?? {});
+        return malformed || windows.length === 0 ? { windows, status: "unknown" } : { windows, status: "ok" };
+    } catch (err: any) {
+        logWarn(`failed to fetch OpenAI Codex usage: ${err?.message ?? String(err)}`);
+        return usageUnknown(existing);
     }
 }
 
@@ -239,17 +210,19 @@ export function singleFlight<A extends unknown[]>(fn: (...args: A) => Promise<vo
 export const refreshAndWriteRunnerUsageCache = singleFlight(doRefreshAndWriteRunnerUsageCache);
 
 async function doRefreshAndWriteRunnerUsageCache(opts: { forceAnthropic?: boolean } = {}): Promise<void> {
+    const existing = readRunnerUsageCacheFile()?.providers ?? {};
     const [anthropicResult, codexResult] = await Promise.allSettled([
         getRunnerAnthropicUsageData({ force: opts.forceAnthropic === true }),
-        fetchCodexUsageData(),
+        fetchCodexUsageData(existing["openai-codex"]),
     ]);
 
-    const providers: Record<string, ProviderUsageData> = {};
+    const providers: Record<string, ProviderUsageData> = { ...existing };
     if (anthropicResult.status === "fulfilled" && anthropicResult.value) {
-        providers.anthropic = anthropicResult.value;
+        const fetchedAt = anthropicResult.value.fetchedAt ?? Date.now();
+        providers.anthropic = withUsageFreshness("anthropic", anthropicResult.value, fetchedAt);
     }
     if (codexResult.status === "fulfilled" && codexResult.value) {
-        providers["openai-codex"] = codexResult.value;
+        providers["openai-codex"] = withUsageFreshness("openai-codex", codexResult.value, Date.now());
     }
 
     if (Object.keys(providers).length === 0) return; // No credentials available — skip write
