@@ -12,6 +12,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { createRequire } from "node:module";
 
 /**
  * Resolve a deep path inside @earendil-works/pi-coding-agent.
@@ -79,6 +80,17 @@ async function withIsolatedModelRuntime(run: (runtime: any) => void | Promise<vo
 // ---------------------------------------------------------------------------
 
 describe("pi-coding-agent patch application", () => {
+    test("Pi runtime resolves the same patched dependencies as PizzaPi", () => {
+        const local = createRequire(import.meta.url);
+        const upstream = createRequire(piCodingAgentPath("package.json"));
+        // Direct pins alone do not constrain upstream's caret dependencies.
+        // A second copy bypasses patches and splits AgentMessage augmentation.
+        for (const name of ["pi-agent-core", "pi-ai", "pi-tui", "pi-codemode"]) {
+            const manifest = `@earendil-works/${name}/package.json`;
+            expect(upstream.resolve(manifest)).toBe(local.resolve(manifest));
+        }
+    });
+
     // Phase 2 (SessionHost sendUserMessage routing): PizzaPi's
     // expandPromptTemplates hunk was removed. As of pi 0.84.2, upstream owns the
     // same opt-in API; these guards verify the native behavior without restoring
@@ -186,13 +198,14 @@ describe("pi-coding-agent patch application", () => {
 
         // Upstream defaults to false, which dumps the banner, keybinding hints
         // and a full skill/prompt/extension listing on every launch.
-        expect(source).toContain("quietStartup ?? true");
+        expect(source).toContain("if (value === undefined)");
+        expect(source).toContain("return true;");
         expect(source).not.toContain("quietStartup ?? false");
 
-        // `?? true` (not a hardcoded true) is what keeps an explicit
-        // `quietStartup: false` in settings.json working as an opt back in.
+        // The undefined-only default keeps an explicit `quietStartup: false` in
+        // settings.json working as an opt back in.
         const getter = source.slice(source.indexOf("getQuietStartup()"));
-        expect(getter.slice(0, 600)).toContain("this.settings.quietStartup ??");
+        expect(getter.slice(0, 800)).toContain("value === true || value === \"header\" ? value : false");
     });
 
     test("config.js: CONFIG_DIR_NAME is overridden to .pizzapi", async () => {
@@ -233,7 +246,10 @@ describe("pi-coding-agent patch application", () => {
         expect(source).toContain("PATCH(pizzapi): Report OpenAI API's published context capacity");
         expect(source).toContain('"gpt-5.6-sol": 1050000');
         expect(source).toContain("withOfficialOpenAIContextWindows");
+        expect(source).toContain("getAllModels");
+        expect(source).toContain("filterAllModels");
         expect(source).toContain('"gpt-6-astra": 1050000');
+        expect(source).toContain('"gpt-6.1-sol": 1050000');
         expect(source).toContain('provider.id !== "openai-codex"');
     });
 
@@ -281,7 +297,7 @@ describe("pi-coding-agent patched runtime behavior", () => {
         expect(dir).not.toContain(".pizzapi/agent/sessions");
     });
 
-    test("OpenAI API models expose published capacity without changing Codex backend limits", async () => {
+    test("OpenAI and Codex models expose published capacity through getModels/getAllModels", async () => {
         await withIsolatedModelRuntime((runtime) => {
             const expected: Record<string, number> = {
                 "gpt-5.4": 1_050_000,
@@ -298,8 +314,10 @@ describe("pi-coding-agent patched runtime behavior", () => {
             for (const [id, contextWindow] of Object.entries(expected)) {
                 expect(runtime.getModel("openai", id)?.contextWindow).toBe(contextWindow);
             }
-            const codex = runtime.getModel("openai-codex", "gpt-5.4") ?? runtime.getModel("openai-codex", "gpt-5.4-mini");
-            if (codex) expect(codex.contextWindow).toBe(272_000);
+            expect(runtime.getModel("openai-codex", "gpt-5.6-sol")?.contextWindow).toBe(1_050_000);
+            expect(runtime.getModel("openai-codex", "gpt-6.1-sol")?.contextWindow).toBe(1_050_000);
+            expect(runtime.getAllModels("openai").find((m: any) => m.id === "gpt-5.6-sol")?.contextWindow).toBe(1_050_000);
+            expect(runtime.getAllModels("openai-codex").find((m: any) => m.id === "gpt-6.1-sol")?.contextWindow).toBe(1_050_000);
             expect(runtime.getModel("openai", "gpt-4o")?.contextWindow).toBe(128_000);
         });
     });
@@ -582,6 +600,10 @@ describe("pi-agent-core dynamic tool refresh", () => {
         expect(seenToolSets[0]).toEqual(["search_tools"]);
         expect(seenToolSets[1]).toContain("dynamic_tool");
 
+        expect(agent.state.messages.some((message: any) =>
+            message.role === "system" && message.toolsAdded?.some((tool: any) => tool.name === "dynamic_tool"),
+        )).toBe(true);
+
         const dynamicToolResult = agent.state.messages.find(
             (message: any) => message.role === "toolResult" && message.toolName === "dynamic_tool",
         ) as any;
@@ -601,6 +623,7 @@ describe("pi-agent-core patch application", () => {
         ).text();
 
         expect(agentSource).toContain("PATCH(pizzapi): allow the agent loop to refresh dynamic tool/prompt state");
+        expect(loopSource).toContain("PATCH(pizzapi): refresh dynamic tool/prompt state before declaring tool changes");
         expect(loopSource).toContain("PATCH(pizzapi): refresh dynamic tool/prompt state before each assistant response");
     });
 });

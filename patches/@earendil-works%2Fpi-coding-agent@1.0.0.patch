@@ -1,8 +1,8 @@
 diff --git a/dist/config.js b/dist/config.js
-index 872dd55..a580a87 100644
+index 7245e21..4f2e55e 100644
 --- a/dist/config.js
 +++ b/dist/config.js
-@@ -367,6 +367,10 @@ export function getExamplesPath() {
+@@ -368,6 +368,10 @@ export function getExamplesPath() {
  }
  /** Get path to CHANGELOG.md */
  export function getChangelogPath() {
@@ -13,7 +13,7 @@ index 872dd55..a580a87 100644
      return resolve(join(getPackageDir(), "CHANGELOG.md"));
  }
  /**
-@@ -400,7 +404,7 @@ const piConfigName = pkg.piConfig?.name;
+@@ -429,7 +433,7 @@ const piConfigName = pkg.piConfig?.name;
  export const PACKAGE_NAME = pkg.name || "@earendil-works/pi-coding-agent";
  export const APP_NAME = piConfigName || "pi";
  export const APP_TITLE = piConfigName ? APP_NAME : "π";
@@ -22,7 +22,7 @@ index 872dd55..a580a87 100644
  export const VERSION = pkg.version || "0.0.0";
  // e.g., PI_CODING_AGENT_DIR or TAU_CODING_AGENT_DIR
  export const ENV_AGENT_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;
-@@ -423,7 +427,8 @@ export function getAgentDir() {
+@@ -452,7 +456,8 @@ export function getAgentDir() {
      if (envDir) {
          return expandTildePath(envDir);
      }
@@ -33,10 +33,10 @@ index 872dd55..a580a87 100644
  /** Get path to user's custom themes directory */
  export function getCustomThemesDir() {
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index 36fdb31..fe1454a 100644
+index 1da213f..3d6b891 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
-@@ -1363,29 +1363,40 @@ export class AgentSession {
+@@ -1627,29 +1627,46 @@ export class AgentSession {
       * Emits errors via extension runner if file read fails.
       */
      _expandSkillCommand(text) {
@@ -72,8 +72,14 @@ index 36fdb31..fe1454a 100644
 +            try {
 +                const content = readFileSync(skill.filePath, "utf-8");
 +                const body = stripFrontmatter(content).trim();
-+                const skillBlock = `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
-+                return args ? `${skillBlock}\n\n${args}` : skillBlock;
++                const skillBlock = `<skill name="${skill.name}" location="${skill.filePath}">
++References are relative to ${skill.baseDir}.
++
++${body}
++</skill>`;
++                return args ? `${skillBlock}
++
++${args}` : skillBlock;
 +            }
 +            catch (err) {
 +                // Emit error like extension commands do
@@ -101,7 +107,7 @@ index 36fdb31..fe1454a 100644
      async _queueUserInput(text, images, behavior, source) {
          if (text.startsWith("/")) {
 diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
-index 4977814..d73c5d0 100644
+index f3869e2..3a9b74e 100644
 --- a/dist/core/model-resolver.js
 +++ b/dist/core/model-resolver.js
 @@ -21,6 +21,7 @@ export const defaultModelPerProvider = {
@@ -113,10 +119,10 @@ index 4977814..d73c5d0 100644
      xai: "grok-4.7",
      groq: "openai/gpt-oss-120b",
 diff --git a/dist/core/model-runtime.js b/dist/core/model-runtime.js
-index 81bf752..dbf7eae 100644
+index 1fa738d..b94588a 100644
 --- a/dist/core/model-runtime.js
 +++ b/dist/core/model-runtime.js
-@@ -22,6 +22,37 @@ export class CredentialSynchronizationError extends Error {
+@@ -24,6 +24,51 @@ export class CredentialSynchronizationError extends Error {
          this.credential = credential;
      }
  }
@@ -135,58 +141,72 @@ index 81bf752..dbf7eae 100644
 +    "gpt-6-astra": 1050000,
 +    "gpt-6-luna": 1050000,
 +    "gpt-6-sol": 1050000,
++    "gpt-6.1-sol": 1050000,
 +    "gpt-daybreak-blue-latest": 1050000,
 +    "gpt-daybreak-red-latest": 400000,
 +};
++function applyOfficialOpenAIContextWindow(model) {
++    const contextWindow = OPENAI_CONTEXT_WINDOWS[model.id];
++    return contextWindow === undefined || contextWindow === model.contextWindow
++        ? model
++        : { ...model, contextWindow };
++}
++function mapOfficialOpenAIContextWindows(models) {
++    return models.map(applyOfficialOpenAIContextWindow);
++}
 +function withOfficialOpenAIContextWindows(provider) {
 +    if (!provider || (provider.id !== "openai" && provider.id !== "openai-codex"))
 +        return provider;
 +    return {
 +        ...provider,
-+        getModels: () => provider.getModels().map((model) => {
-+            const contextWindow = OPENAI_CONTEXT_WINDOWS[model.id];
-+            return contextWindow === undefined || contextWindow === model.contextWindow
-+                ? model
-+                : { ...model, contextWindow };
-+        }),
++        getModels: () => mapOfficialOpenAIContextWindows(provider.getModels()),
++        ...(provider.getAllModels
++            ? { getAllModels: () => mapOfficialOpenAIContextWindows(provider.getAllModels()) }
++            : {}),
++        ...(provider.filterModels
++            ? { filterModels: (models, credential) => mapOfficialOpenAIContextWindows(provider.filterModels(models, credential)) }
++            : {}),
++        ...(provider.filterAllModels
++            ? { filterAllModels: (models, credential) => mapOfficialOpenAIContextWindows(provider.filterAllModels(models, credential)) }
++            : {}),
 +    };
 +}
  function mergeHeaders(base, override) {
      if (!base && !override)
          return undefined;
-@@ -131,7 +162,7 @@ export class ModelRuntime {
-         ]);
+@@ -149,7 +194,7 @@ export class ModelRuntime {
      }
-     recomposeProvider(providerId) {
+     /** The provider without virtual models, or undefined when nothing defines it. */
+     composeProvider(providerId) {
 -        const base = this.nativeExtensionProviders.get(providerId) ?? this.builtins.get(providerId);
 +        const base = this.nativeExtensionProviders.get(providerId) ?? withOfficialOpenAIContextWindows(this.builtins.get(providerId));
          const extension = this.extensionProviders.get(providerId);
-         if (!base && !this.config.getProvider(providerId) && !extension) {
-             this.models.deleteProvider(providerId);
+         if (!this.config.getProvider(providerId) && !extension) {
+             // No overlays: use the builtin untouched so its auth/login/stream behavior is exact.
 diff --git a/dist/core/settings-manager.js b/dist/core/settings-manager.js
-index ed9d8d2..222e731 100644
+index 3cf1268..e868d6c 100644
 --- a/dist/core/settings-manager.js
 +++ b/dist/core/settings-manager.js
-@@ -690,7 +690,13 @@ export class SettingsManager {
+@@ -732,7 +732,14 @@ export class SettingsManager {
          this.save();
      }
      getQuietStartup() {
--        return this.settings.quietStartup ?? false;
 +        // PATCH(pizzapi): default quiet ON. Upstream defaults to false, which
 +        // prints the version banner, keybinding hints, the scoped-model list
-+        // and a full listing of every skill/prompt/extension on every launch —
-+        // dozens of lines before the composer is reachable. Real warnings (skill
-+        // conflicts, path errors) still show when quiet, and an explicit
-+        // `quietStartup: false` in settings.json still opts back in to verbose.
-+        return this.settings.quietStartup ?? true;
++        // and a full listing of every skill/prompt/extension on every launch.
++        // Real warnings still show when quiet, and explicit quietStartup:false
++        // in settings.json still opts back in to verbose.
+         const value = this.settings.quietStartup;
++        if (value === undefined)
++            return true;
+         return value === true || value === "header" ? value : false;
      }
      setQuietStartup(quiet) {
-         this.globalSettings.quietStartup = quiet;
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 52dcaaf..aed9535 100644
+index eda1c08..e9cb062 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
-@@ -14,6 +14,7 @@ export { type ModelScopeDiagnostic, type ResolveCliModelResult, type ResolveMode
+@@ -15,6 +15,7 @@ export { type ModelScopeDiagnostic, type ResolveCliModelResult, type ResolveMode
  export { type CreateModelRuntimeOptions, CredentialSynchronizationError, type CredentialSynchronizationOperation, ModelRuntime, type ModelRuntimeAuthOverrides, } from "./core/model-runtime.ts";
  export type { PackageManager, PathMetadata, ProgressCallback, ProgressEvent, ResolvedPaths, ResolvedResource, } from "./core/package-manager.ts";
  export { DefaultPackageManager } from "./core/package-manager.ts";
@@ -195,7 +215,7 @@ index 52dcaaf..aed9535 100644
  export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
  export { AgentSessionRuntime, type AgentSessionRuntimeDiagnostic, type AgentSessionServices, type CreateAgentSessionFromServicesOptions, type CreateAgentSessionOptions, type CreateAgentSessionResult, type CreateAgentSessionRuntimeFactory, type CreateAgentSessionRuntimeResult, type CreateAgentSessionServicesOptions, createAgentSession, createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices, createBashTool, createCodingTools, createEditTool, createFindTool, createGrepTool, createLsTool, createPowerShellTool, createReadOnlyTools, createReadTool, createWriteTool, type PromptTemplate, } from "./core/sdk.ts";
 diff --git a/dist/index.js b/dist/index.js
-index d833966..6ae246e 100644
+index c48934f..4adfbc1 100644
 --- a/dist/index.js
 +++ b/dist/index.js
 @@ -13,6 +13,7 @@ export { ModelRegistry } from "./core/model-registry.js";
@@ -207,10 +227,10 @@ index d833966..6ae246e 100644
  // SDK for programmatic usage
  export { AgentSessionRuntime, 
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 2c17c2f..421fe9d 100644
+index 3a9ad25..29d748a 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -787,12 +787,6 @@ export class InteractiveMode {
+@@ -827,12 +827,6 @@ export class InteractiveMode {
                  .catch(() => { })
                  .finally(() => clearTimeout(timeout));
          }
@@ -223,22 +243,24 @@ index 2c17c2f..421fe9d 100644
          // Start package update check asynchronously
          this.checkForPackageUpdates()
              .then((updates) => {
-@@ -3673,31 +3667,13 @@ export class InteractiveMode {
-         this.chatContainer.addChild(new Text(theme.fg("warning", `Warning: ${warningMessage}`), 1, 0));
+@@ -3728,34 +3722,10 @@ export class InteractiveMode {
+         this.chatContainer.addChild(new ThemedText(() => theme.fg("warning", `Warning: ${warningMessage}`), 1, 0));
          this.ui.requestRender();
      }
 -    showNewVersionNotification(release) {
--        const action = theme.fg("accent", `${APP_NAME} update`);
--        const updateInstruction = theme.fg("muted", `New version ${release.version} is available. Run `) + action;
+-        const updateInstruction = () => theme.fg("muted", `New version ${release.version} is available. Run `) +
+-            theme.fg("accent", `${APP_NAME} update`);
 -        const changelogUrl = "https://pi.dev/changelog";
--        const changelogLink = getCapabilities().hyperlinks
--            ? hyperlink(theme.fg("accent", changelogUrl), changelogUrl)
--            : theme.fg("accent", changelogUrl);
--        const changelogLine = theme.fg("muted", "Changelog: ") + changelogLink;
+-        const changelogLine = () => {
+-            const changelogLink = getCapabilities().hyperlinks
+-                ? hyperlink(theme.fg("accent", changelogUrl), changelogUrl)
+-                : theme.fg("accent", changelogUrl);
+-            return theme.fg("muted", "Changelog: ") + changelogLink;
+-        };
 -        const note = release.note?.trim();
 -        this.chatContainer.addChild(new Spacer(1));
 -        this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
--        this.chatContainer.addChild(new Text(`${theme.bold(theme.fg("warning", "Update Available"))}\n${updateInstruction}`, 1, 0));
+-        this.chatContainer.addChild(new ThemedText(() => `${theme.bold(theme.fg("warning", "Update Available"))}\n${updateInstruction()}`, 1, 0));
 -        if (note) {
 -            this.chatContainer.addChild(new Spacer(1));
 -            this.chatContainer.addChild(new Markdown(note, 1, 0, this.getMarkdownThemeWithSettings(), {
@@ -246,32 +268,25 @@ index 2c17c2f..421fe9d 100644
 -            }));
 -            this.chatContainer.addChild(new Spacer(1));
 -        }
--        this.chatContainer.addChild(new Text(changelogLine, 1, 0));
+-        this.chatContainer.addChild(new ThemedText(changelogLine, 1, 0));
 -        this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
 -        this.ui.requestRender();
 -    }
      showPackageUpdateNotification(packages) {
--        const action = theme.fg("accent", `${APP_NAME} update --extensions`);
-+        // PATCH(pizzapi): APP_NAME resolves from pi-coding-agent's own
-+        // package.json (piConfig.name), which PizzaPi cannot set, so this
-+        // rendered "pi update --extensions" while the shipped binary is
-+        // `pizza`. Hardcode the string rather than changing APP_NAME, which
-+        // also derives ENV_AGENT_DIR/ENV_SESSION_DIR and APP_TITLE.
-+        const action = theme.fg("accent", `pizza update --extensions`);
-         const updateInstruction = theme.fg("muted", "Package updates are available. Run ") + action;
+         const updateInstruction = () => theme.fg("muted", "Package updates are available. Run ") +
+-            theme.fg("accent", `${APP_NAME} update --extensions`);
++            // PATCH(pizzapi): the shipped binary is `pizza`, not upstream `pi`.
++            theme.fg("accent", `pizza update --extensions`);
          const packageLines = packages.map((pkg) => `- ${pkg}`).join("\n");
          this.chatContainer.addChild(new Spacer(1));
-@@ -3742,6 +3718,16 @@ export class InteractiveMode {
+         this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
+@@ -3799,6 +3769,12 @@ export class InteractiveMode {
      }
      updatePendingMessagesDisplay() {
          this.pendingMessagesContainer.clear();
 +        // PATCH(pizzapi): clear() also unmounts the live bash cards that
 +        // handleBashCommand() adds to this same container while the agent is
-+        // streaming. Without re-attaching them, any queue_update during a
-+        // running bash command strands this.bashComponent off-screen and its
-+        // streamed appendOutput() goes nowhere. pendingBashComponents is the
-+        // authoritative list of cards that belong to this container (idle-path
-+        // cards go straight to chatContainer and are unaffected).
++        // streaming. Re-attach them before rendering queued-message text.
 +        for (const pendingBashComponent of this.pendingBashComponents) {
 +            this.pendingMessagesContainer.addChild(pendingBashComponent);
 +        }
