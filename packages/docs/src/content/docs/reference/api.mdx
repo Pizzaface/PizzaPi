@@ -166,6 +166,15 @@ Spawn a new agent session on a runner.
 
 If the runner's spawn acknowledgement times out, `pending` is `true`.
 
+An optional `idempotencyKey` (string, up to 200 characters) makes retries safe:
+a repeat request from the same user for the same runner and key within ten
+minutes (per relay process) returns the original `sessionId` with `"deduplicated": true`
+instead of spawning again. Replay re-checks that the caller owns the runner,
+using the durable owner record when the runner is offline, so a retry after a
+lost response still succeeds even if the runner has since disconnected. If
+neither live state nor the durable record names the caller as the owner, the
+cache is not consulted.
+
 ---
 
 ### `POST /api/runners/restart`

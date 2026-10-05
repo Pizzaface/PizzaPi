@@ -17,6 +17,7 @@ import {
     registerTerminal,
 } from "../ws/sio-registry.js";
 import { getRunnerServices } from "../ws/sio-registry/runners.js";
+import { getRunnerOwner } from "../runner-owner.js";
 import { triggerAllowedForCwd } from "./mode-scope.js";
 import { createRoute, deleteRoute, listRoutes, updateRoute, listDeliveries, eventsForIds } from "../events/store.js";
 import { publishEvent } from "../events/engine.js";
@@ -272,19 +273,14 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
         const runnerId = requestedRunnerId;
         const runner = await getRunnerData(runnerId);
-        if (!runner) {
-            return Response.json({ error: "Runner not found" }, { status: 404 });
-        }
-        if (!runner.userId) {
-            return Response.json({ error: "Runner is not associated with a user" }, { status: 403 });
-        }
-        if (runner.userId !== identity.userId) {
-            return Response.json({ error: "Forbidden" }, { status: 403 });
-        }
 
-        // Idempotency is scoped to (caller, runner, key) and consulted only
-        // after the caller is authorized for the runner, so a guessed or
-        // colliding key can never surface another tenant's/runner's session.
+        // Idempotency is scoped to (caller, runner, key). A replay is answered
+        // only after the caller is re-authorized for the runner, so a guessed
+        // or colliding key can never surface another tenant's/runner's
+        // session. Replay must not depend on the runner still being live: a
+        // spawn whose response was lost before the runner disconnected would
+        // otherwise 404 on retry. Offline runners authorize through the
+        // durable owner record instead (fail-closed when none exists).
         const idempotencyKey = rawIdempotencyKey
             ? spawnIdempotencyCacheKey(identity.userId, runnerId, rawIdempotencyKey)
             : null;
@@ -298,8 +294,21 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 && cached.userId === identity.userId
                 && cached.runnerId === runnerId
             ) {
-                return Response.json({ ok: true, runnerId, sessionId: cached.sessionId, deduplicated: true });
+                const owner = runner ? runner.userId : await getRunnerOwner(runnerId);
+                if (owner && owner === identity.userId) {
+                    return Response.json({ ok: true, runnerId, sessionId: cached.sessionId, deduplicated: true });
+                }
             }
+        }
+
+        if (!runner) {
+            return Response.json({ error: "Runner not found" }, { status: 404 });
+        }
+        if (!runner.userId) {
+            return Response.json({ error: "Runner is not associated with a user" }, { status: 403 });
+        }
+        if (runner.userId !== identity.userId) {
+            return Response.json({ error: "Forbidden" }, { status: 403 });
         }
 
         if (requestedCwd) {

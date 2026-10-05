@@ -92,6 +92,9 @@ mock.module("../runner-recent-folders.js", () => ({
 mock.module("../user-hidden-models.js", () => ({ getHiddenModels: mock(() => Promise.resolve([])) }));
 import * as _runnerRegistryModule from "../ws/sio-registry/runners.js";
 import * as _sioStateModule from "../ws/sio-state/index.js";
+import * as _runnerOwnerModule from "../runner-owner.js";
+const mockGetRunnerOwner = mock((_runnerId: string) => Promise.resolve(null as string | null));
+spyOn(_runnerOwnerModule, "getRunnerOwner").mockImplementation(mockGetRunnerOwner as any);
 spyOn(_runnerRegistryModule, "getRunnerServices").mockImplementation(mockGetRunnerServices as any);
 spyOn(_sioStateModule, "getSession").mockImplementation(mockGetSession as any);
 
@@ -1022,6 +1025,36 @@ describe("runner spawn idempotency (F14)", () => {
         const attacker = await spawn("runner-A", "f14-cross-user");
         expect(attacker.status).toBe(403);
         expect(JSON.stringify(attacker.body)).not.toContain(victim.body.sessionId);
+    });
+
+    test("replays the cached session after the runner disconnects (R12)", async () => {
+        asUser("user-1");
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+        const emit = mock(() => {});
+        mockGetLocalRunnerSocket.mockReturnValue({ emit } as any);
+        const first = await spawn("runner-A", "r12-offline");
+        expect(first.status).toBe(200);
+
+        // Response lost, runner goes offline: no live state, no socket.
+        mockGetRunnerData.mockReturnValue(Promise.resolve(null));
+        mockGetLocalRunnerSocket.mockReturnValue(null);
+        mockGetRunnerOwner.mockReturnValue(Promise.resolve("user-1"));
+        const retry = await spawn("runner-A", "r12-offline");
+        expect(retry).toEqual({
+            status: 200,
+            body: { ok: true, runnerId: "runner-A", sessionId: first.body.sessionId, deduplicated: true },
+        });
+        expect(emit).toHaveBeenCalledTimes(1);
+
+        // Fail closed: an offline runner whose durable owner is unknown or
+        // someone else does not answer from cache.
+        for (const owner of [null, "user-2"]) {
+            mockGetRunnerOwner.mockReturnValue(Promise.resolve(owner));
+            const denied = await spawn("runner-A", "r12-offline");
+            expect(denied.status).toBe(404);
+            expect(JSON.stringify(denied.body)).not.toContain(first.body.sessionId);
+        }
+        mockGetRunnerOwner.mockReturnValue(Promise.resolve(null));
     });
 
     test("the same key on a different owned runner spawns a fresh session", async () => {
