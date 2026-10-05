@@ -16,27 +16,71 @@
  */
 
 import { requireEnrollmentAuth } from "../middleware.js";
-import { createSetupClaim, pollSetupClaim, approveSetupClaim, getSetupClaimInfo } from "../setup-claims.js";
+import { RateLimiter, getClientIp } from "../security.js";
+import {
+    createSetupClaim,
+    pollSetupClaim,
+    approveSetupClaim,
+    getSetupClaimInfo,
+    normalizeSetupClaimRelayUrl,
+    SETUP_CLAIM_RELAY_URL_MAX_LENGTH,
+    SetupClaimRejectedError,
+} from "../setup-claims.js";
 import type { RouteHandler } from "./types.js";
+
+/**
+ * Per-client limit on unauthenticated claim creation. A CLI creates one claim
+ * per setup attempt (or one per 10-minute expiry while waiting headless); the
+ * headroom covers several runner containers pairing from behind one NAT.
+ */
+export const SETUP_CLAIM_CREATE_LIMIT_PER_CLIENT = 30;
+export const SETUP_CLAIM_CREATE_WINDOW_MS = 10 * 60 * 1000;
+const setupClaimCreateRateLimiter = new RateLimiter(SETUP_CLAIM_CREATE_LIMIT_PER_CLIENT, SETUP_CLAIM_CREATE_WINDOW_MS);
 
 export const handleSetupClaimsRoute: RouteHandler = async (req, url) => {
     // Create a pending claim (called by the CLI during `pizzapi setup --scan`).
     if (url.pathname === "/api/setup-claim" && req.method === "POST") {
-        let relayUrl = "";
-        let label: string | undefined;
-        try {
-            const body = (await req.json()) as { relayUrl?: string; label?: string };
-            relayUrl = typeof body.relayUrl === "string" ? body.relayUrl.trim() : "";
-            label = typeof body.label === "string" ? body.label : undefined;
-        } catch {
-            relayUrl = "";
-        }
-        if (!relayUrl) {
-            return Response.json({ error: "Missing required field: relayUrl" }, { status: 400 });
+        // Unauthenticated durable write: throttle per client before parsing.
+        const rateKey = `setup-claim:${getClientIp(req)}`;
+        if (!setupClaimCreateRateLimiter.check(rateKey)) {
+            return Response.json(
+                { error: "Too many setup-claim requests. Please try again later." },
+                { status: 429, headers: { "Retry-After": String(setupClaimCreateRateLimiter.getRetryAfter(rateKey)) } },
+            );
         }
 
-        const { token, expiresAt } = await createSetupClaim(relayUrl, label);
-        return Response.json({ token, expiresAt });
+        let rawRelayUrl: unknown;
+        let label: string | undefined;
+        try {
+            const body = (await req.json()) as { relayUrl?: unknown; label?: unknown };
+            rawRelayUrl = body.relayUrl;
+            label = typeof body.label === "string" ? body.label : undefined;
+        } catch {
+            rawRelayUrl = undefined;
+        }
+        if (typeof rawRelayUrl !== "string" || !rawRelayUrl.trim()) {
+            return Response.json({ error: "Missing required field: relayUrl" }, { status: 400 });
+        }
+        const relayUrl = normalizeSetupClaimRelayUrl(rawRelayUrl);
+        if (!relayUrl) {
+            return Response.json(
+                { error: `Invalid relayUrl: must be an http(s) URL of at most ${SETUP_CLAIM_RELAY_URL_MAX_LENGTH} characters` },
+                { status: 400 },
+            );
+        }
+
+        try {
+            const { token, expiresAt } = await createSetupClaim(relayUrl, label);
+            return Response.json({ token, expiresAt });
+        } catch (err) {
+            if (err instanceof SetupClaimRejectedError && err.reason === "quota_exceeded") {
+                return Response.json(
+                    { error: "Too many pending setup claims. Please try again later." },
+                    { status: 429, headers: { "Retry-After": "60" } },
+                );
+            }
+            throw err;
+        }
     }
 
     // Non-consuming status/label read for the web approval UI (checked before the

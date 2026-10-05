@@ -157,6 +157,8 @@ A container with no resolvable relay credential and a known `PIZZAPI_RELAY_URL` 
 
 That key shows up individually in the relay's Settings → API Keys, labeled by name, and can be revoked on its own without touching any other runner's credentials — unlike a hand-copied token shared across machines.
 
+Because claim creation is unauthenticated, the relay bounds it: each client IP may create at most 30 claims per 10 minutes, at most 500 claims may be pending relay-wide, and the submitted relay URL must be an `http(s)` URL of at most 2048 characters. Over-limit requests get `429` with `Retry-After` and pairing fails with that error; restart the container (or run `pizza runner pair`) after the window passes. When provisioning many runners from behind one NAT address at once, stagger them or use the secrets-file path below.
+
 Opt out with `PIZZAPI_PAIRING=0` if you'd rather the container fail fast with an actionable error than sit there waiting for a human to click a link (e.g. for the secrets-file path below, or any automated provisioning where no one will be watching the logs).
 
 **Re-pairing after revoking a key.** Revoking the minted key in the web UI doesn't make the runner forget it — the stale key sits in `config.json` in the data volume until something replaces it. Run the same headless flow on demand instead of hand-editing the volume:
