@@ -202,8 +202,8 @@ If the agent exits plan mode without ever submitting a plan via `plan_mode`, it 
 
 ## Session Behavior
 
-- **State does not persist across resumes** — resuming a session currently starts with plan mode off and the sandbox overlay cleared. Any in-progress execution steps are not restored.
-- **State resets on session switch** — switching to a different session clears plan mode so the new session starts with full access. The sandbox overlay is also cleared.
+- **State persists across resumes.** Plan-mode state is saved in the session transcript. When the session starts, resumes, reloads, or forks (from the TUI, from `--continue`, or from the web UI's in-place switch), PizzaPi restores the latest saved state. It also reapplies the sandbox read-only overlay before any tool call can run. A session that was in plan mode stays read-only until plan mode is exited. In-progress execution steps are restored as well.
+- **New sessions start with plan mode off.** A new session has no saved state, so `/new` and switching to a session that never used plan mode start with full access and clear the sandbox overlay. Plan mode from the previous session does not carry over.
 - **Context filtering** — when plan mode is off, the `[PLAN MODE ACTIVE]` context messages are automatically stripped from the conversation to keep the context window clean.
 
 ---

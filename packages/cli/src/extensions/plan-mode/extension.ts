@@ -462,30 +462,50 @@ After completing a step, include a [DONE:n] tag in your response (e.g. [DONE:1])
         persistState();
     });
 
-    // ── Restore state on session start/resume ────────────────────────────────
-    pi.on("session_start", async (_event, ctx) => {
-        const entries = ctx.sessionManager.getEntries();
+    // ── Restore state on session start / resume / switch / fork ──────────────
+    //
+    // The transcript is the source of truth for plan-mode state. Every session
+    // transition (startup, --continue, /new, /resume, /fork, reload, and the
+    // worker's in-place session_switch) re-derives state from the *target*
+    // session's latest persisted "plan-mode-toggle" entry:
+    //   - saved entry present → restore it (including the sandbox read-only
+    //     overlay) BEFORE any tool call can run in that session;
+    //   - no saved entry (genuinely new session) → reset to plan mode OFF so
+    //     state from a previous session never leaks into a new one.
+    // Restoring and resetting used to be two separate session_start handlers;
+    // the unconditional reset ran second and silently disabled a resumed plan
+    // mode (and its read-only overlay).
+    function restoreStateFromSession(ctx: { sessionManager: { getEntries(): unknown[] } }, reason: string | undefined) {
+        const entries = ctx.sessionManager.getEntries() as Array<{ type: string; customType?: string; data?: unknown; message?: unknown }>;
+        const wasEnabled = planModeEnabled;
 
-        // Restore persisted state
         const saved = entries
-            .filter((e: { type: string; customType?: string }) => e.type === "custom" && e.customType === "plan-mode-toggle")
-            .pop() as { data?: { enabled: boolean; todos?: PlanTodoItem[]; executing?: boolean } } | undefined;
+            .filter((e) => e.type === "custom" && e.customType === "plan-mode-toggle")
+            .pop() as { data?: { enabled?: boolean; todos?: PlanTodoItem[]; executing?: boolean } } | undefined;
 
         if (saved?.data) {
-            planModeEnabled = saved.data.enabled ?? false;
-            todoItems = saved.data.todos ?? [];
-            executionMode = saved.data.executing ?? false;
+            planModeEnabled = saved.data.enabled === true;
+            todoItems = Array.isArray(saved.data.todos) ? saved.data.todos : [];
+            executionMode = saved.data.executing === true;
             // On resume, the context message was already sent in the original session
             planModeContextSent = planModeEnabled;
+        } else {
+            planModeEnabled = false;
+            todoItems = [];
+            executionMode = false;
+            planModeContextSent = false;
         }
+        planSubmittedDuringSession = false;
+        planModeToolInvokedThisTurn = false;
+        // A pending "Clear Context & Begin" belongs to the session it was
+        // requested in; only a same-session reload may keep it.
+        if (reason !== "reload") _pendingContextClear = false;
 
         // On resume: re-scan messages to rebuild completion state
-        const isResume = saved !== undefined;
-        if (isResume && executionMode && todoItems.length > 0) {
+        if (saved?.data && executionMode && todoItems.length > 0) {
             let executeIndex = -1;
             for (let i = entries.length - 1; i >= 0; i--) {
-                const entry = entries[i] as { type: string; customType?: string };
-                if (entry.customType === "plan-mode-execute") {
+                if (entries[i].customType === "plan-mode-execute") {
                     executeIndex = i;
                     break;
                 }
@@ -502,33 +522,27 @@ After completing a step, include a [DONE:n] tag in your response (e.g. [DONE:1])
             markCompletedSteps(allText, todoItems);
         }
 
-        // Re-apply sandbox overlay to match restored plan mode state.
-        // On resume with plan mode enabled, the overlay must be re-activated;
-        // on resume with plan mode off, ensure it's cleared.
+        // Re-apply sandbox overlay to match the restored state: re-activate it
+        // when resuming into plan mode, clear it otherwise.
         if (isSandboxActive()) {
             setReadOnlyOverlay(planModeEnabled);
         }
         syncModuleState();
+        if (wasEnabled !== planModeEnabled) {
+            _onPlanModeChange?.(planModeEnabled);
+            _planModeMetaEmitter?.(planModeEnabled);
+        }
+    }
+
+    pi.on("session_start", async (event, ctx) => {
+        restoreStateFromSession(ctx, (event as { reason?: string } | undefined)?.reason);
     });
 
-    pi.on("session_start", () => {
-        const wasEnabled = planModeEnabled;
-        planModeEnabled = false;
-        executionMode = false;
-        todoItems = [];
-        planModeContextSent = false;
-        _pendingContextClear = false;
-        // Clear sandbox read-only overlay so the new session starts with full
-        // write access. Without this, a previous session's plan mode leaks
-        // read-only restrictions into the next session.
-        if (wasEnabled && isSandboxActive()) {
-            setReadOnlyOverlay(false);
-        }
-        syncModuleState();
-        if (wasEnabled) {
-            _onPlanModeChange?.(false);
-            _planModeMetaEmitter?.(false);
-        }
-        persistState();
+    // The runner worker performs /new, /resume and /fork in place and emits
+    // "session_switch" (removed from upstream's type union, dispatched by
+    // string key) instead of session_start. Restore from the target session
+    // there too, otherwise the previous session's plan-mode state would apply.
+    pi.on("session_switch" as any, async (event: { reason?: string } | undefined, ctx: { sessionManager: { getEntries(): unknown[] } }) => {
+        restoreStateFromSession(ctx, event?.reason);
     });
 };
