@@ -44,7 +44,7 @@ import type { RouteInput } from "@pizzapi/protocol";
 import type { Webhook } from "../webhooks/store.js";
 import { createHmac, timingSafeEqual } from "crypto";
 import { createLogger } from "@pizzapi/tools";
-import { consumeNonceOnce } from "../redis-kv-store.js";
+import { consumeNonceOnce, releaseNonce } from "../redis-kv-store.js";
 import {
     createWebhook,
     getWebhook,
@@ -459,6 +459,9 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
             );
         }
 
+        // Legacy dedupe reservation, released below when the attempt fails in
+        // a retryable way (see after deliverFire()).
+        let legacyReservation: string | null = null;
         if (useEnhanced) {
             // Enhanced verification: HMAC of `${timestamp}.${nonce}.${rawBody}` with replay protection.
             const timestampMs = Date.parse(timestampHeader!);
@@ -521,90 +524,111 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
                     { status: 409 },
                 );
             }
+            legacyReservation = `${webhookId}:${expected}`;
             log.warn(
                 `Webhook ${webhookId} fired with a deprecated legacy body-only signature; `
                 + "migrate the caller to X-Webhook-Timestamp/X-Webhook-Nonce signing.",
             );
         }
 
-        // Parse body JSON
-        let body: Record<string, unknown>;
-        try {
-            body = JSON.parse(rawBodyText) as Record<string, unknown>;
-        } catch {
-            return Response.json({ error: "Invalid JSON body" }, { status: 400 });
-        }
-
-        // Check event filter
-        const eventType = (body.type as string | undefined) ?? "webhook";
-
-        if (webhook.eventFilter && webhook.eventFilter.length > 0) {
-            if (!webhook.eventFilter.includes(eventType)) {
-                // Event filtered — silently accept but don't fire
-                return Response.json({ ok: true, filtered: true });
+        const deliverFire = async (): Promise<Response> => {
+            // Parse body JSON
+            let body: Record<string, unknown>;
+            try {
+                body = JSON.parse(rawBodyText) as Record<string, unknown>;
+            } catch {
+                return Response.json({ error: "Invalid JSON body" }, { status: 400 });
             }
-        }
 
-        // Unified trigger system (ADR-0002): a webhook is a Source publishing
-        // `webhook:<slug>` events; routing decides the target. A default
-        // spawn-spec route is ensured lazily from the webhook's spawn config,
-        // and users can repoint/extend routes via /api/routes.
-        // SECURITY: fail-closed — never spawn on a runner the webhook owner no
-        // longer owns (runner reclaimed by another user after webhook creation).
-        if (webhook.runnerId) {
-            const runnerData = await getRunnerData(webhook.runnerId).catch(() => null);
-            if (!runnerData || runnerData.userId !== webhook.userId) {
-                return Response.json({ error: "Runner is not available for this webhook" }, { status: 403 });
+            // Check event filter
+            const eventType = (body.type as string | undefined) ?? "webhook";
+
+            if (webhook.eventFilter && webhook.eventFilter.length > 0) {
+                if (!webhook.eventFilter.includes(eventType)) {
+                    // Event filtered — silently accept but don't fire
+                    return Response.json({ ok: true, filtered: true });
+                }
             }
-        }
 
-        const routeType = webhookEventType(webhook.name);
-        const configRoute = await getRoute(webhookRouteId(webhook.id));
-        if (webhook.runnerId && !configRoute) {
-            // Ensure this webhook's config-backed route even when unrelated
-            // routes already exist for the same event type.
-            await syncWebhookRoute(webhook).catch((err) => log.warn("webhook route sync failed:", err));
-        } else if (!webhook.runnerId) {
-            const existingRoutes = await listRoutes({ eventType: routeType, ownerUserId: webhook.userId });
-            if (existingRoutes.length === 0) {
-                return Response.json(
-                    { error: "Webhook has no runner assigned and no routes configured" },
-                    { status: 500 },
+            // Unified trigger system (ADR-0002): a webhook is a Source publishing
+            // `webhook:<slug>` events; routing decides the target. A default
+            // spawn-spec route is ensured lazily from the webhook's spawn config,
+            // and users can repoint/extend routes via /api/routes.
+            // SECURITY: fail-closed — never spawn on a runner the webhook owner no
+            // longer owns (runner reclaimed by another user after webhook creation).
+            if (webhook.runnerId) {
+                const runnerData = await getRunnerData(webhook.runnerId).catch(() => null);
+                if (!runnerData || runnerData.userId !== webhook.userId) {
+                    return Response.json({ error: "Runner is not available for this webhook" }, { status: 403 });
+                }
+            }
+
+            const routeType = webhookEventType(webhook.name);
+            const configRoute = await getRoute(webhookRouteId(webhook.id));
+            if (webhook.runnerId && !configRoute) {
+                // Ensure this webhook's config-backed route even when unrelated
+                // routes already exist for the same event type.
+                await syncWebhookRoute(webhook).catch((err) => log.warn("webhook route sync failed:", err));
+            } else if (!webhook.runnerId) {
+                const existingRoutes = await listRoutes({ eventType: routeType, ownerUserId: webhook.userId });
+                if (existingRoutes.length === 0) {
+                    return Response.json(
+                        { error: "Webhook has no runner assigned and no routes configured" },
+                        { status: 500 },
+                    );
+                }
+            }
+
+            try {
+                const outcome = await publishEvent(
+                    {
+                        type: routeType,
+                        payload: { ...(body as Record<string, JsonValue>), externalType: eventType },
+                        summary: `Webhook ${webhook.name}`,
+                    },
+                    // Tenant scope: the webhook's owner. Only their routes match, so
+                    // two users' equivalently named webhooks can never cross-fire.
+                    { kind: "webhook", id: webhook.id, name: webhook.name, auth: "hmac", userId: webhook.userId },
+                    createEngineDeps(),
                 );
+                log.info(`Webhook ${webhookId} published ${outcome.event.eventId} (${outcome.deliveries.length} deliveries, ${outcome.spawnedSessions.length} spawns)`);
+                if (outcome.deliveries.length === 0) {
+                    // 503: routes exist but nothing accepted the delivery (runner
+                    // offline, spawn rejected) — the sender should retry.
+                    return Response.json(
+                        { error: "Webhook event published but no route delivered it — retry" },
+                        { status: 503 },
+                    );
+                }
+                return Response.json({
+                    ok: true,
+                    eventId: outcome.event.eventId,
+                    sessionIds: outcome.deliveries.map((d) => d.sessionId),
+                    spawnedSessions: outcome.spawnedSessions,
+                });
+            } catch (err) {
+                log.error(`Webhook ${webhookId} publish failed:`, err);
+                return Response.json({ error: "Failed to publish webhook event" }, { status: 500 });
             }
-        }
+        };
 
+        let fired: Response;
         try {
-            const outcome = await publishEvent(
-                {
-                    type: routeType,
-                    payload: { ...(body as Record<string, JsonValue>), externalType: eventType },
-                    summary: `Webhook ${webhook.name}`,
-                },
-                // Tenant scope: the webhook's owner. Only their routes match, so
-                // two users' equivalently named webhooks can never cross-fire.
-                { kind: "webhook", id: webhook.id, name: webhook.name, auth: "hmac", userId: webhook.userId },
-                createEngineDeps(),
-            );
-            log.info(`Webhook ${webhookId} published ${outcome.event.eventId} (${outcome.deliveries.length} deliveries, ${outcome.spawnedSessions.length} spawns)`);
-            if (outcome.deliveries.length === 0) {
-                // 503: routes exist but nothing accepted the delivery (runner
-                // offline, spawn rejected) — the sender should retry.
-                return Response.json(
-                    { error: "Webhook event published but no route delivered it — retry" },
-                    { status: 503 },
-                );
-            }
-            return Response.json({
-                ok: true,
-                eventId: outcome.event.eventId,
-                sessionIds: outcome.deliveries.map((d) => d.sessionId),
-                spawnedSessions: outcome.spawnedSessions,
-            });
+            fired = await deliverFire();
         } catch (err) {
-            log.error(`Webhook ${webhookId} publish failed:`, err);
-            return Response.json({ error: "Failed to publish webhook event" }, { status: 500 });
+            if (legacyReservation) await releaseNonce("webhook-legacy", legacyReservation);
+            throw err;
         }
+        // A legacy body-only signature cannot be re-signed with a fresh nonce,
+        // so a retryable failure (runner unavailable, no routes, nothing
+        // delivered, publish error) must not consume the dedupe slot: the
+        // sender's retry of the identical body would otherwise get 409 for the
+        // whole dedupe window. Successful, filtered, and malformed-body
+        // outcomes stay consumed.
+        if (legacyReservation && (fired.status >= 500 || fired.status === 403)) {
+            await releaseNonce("webhook-legacy", legacyReservation);
+        }
+        return fired;
     }
 
     return undefined;

@@ -129,6 +129,23 @@ export async function consumeNonceOnce(namespace: string, nonce: string, ttlMs: 
     return true;
 }
 
+/**
+ * Release a nonce previously reserved by `consumeNonceOnce`, so the same value
+ * can be consumed again. Used when the reserved operation failed in a way the
+ * caller should be allowed to retry.
+ */
+export async function releaseNonce(namespace: string, nonce: string): Promise<void> {
+    nonceMemoryStore.delete(`${namespace}:${nonce}`);
+    const redis = await getClient();
+    if (redis && !isRedisDisabled()) {
+        try {
+            await redis.del(`pizzapi:nonce:${namespace}:${nonce}`);
+        } catch (err) {
+            log.warn("Redis nonce release failed:", err);
+        }
+    }
+}
+
 // ── Rate-limit helper (INCR + PEXPIRE) ──────────────────────────────────────
 
 export interface RedisRateLimitWindow {

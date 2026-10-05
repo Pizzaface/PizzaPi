@@ -746,11 +746,13 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
             const rawBody = JSON.stringify(payload);
             const legacySig = createHmac("sha256", ACTIVE_WEBHOOK.secret).update(rawBody).digest("hex");
 
+            mockGetLocalRunnerSocket.mockReturnValue({ emit: mock(() => {}) });
+            mockWaitForSpawnAck.mockReturnValue(Promise.resolve({ ok: true }));
+            mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: mock(() => {}) });
+
             const [req1, url1] = makeReq("POST", "/api/webhooks/wh-1/fire", payload, { "x-webhook-signature": legacySig });
             const res1 = await handleWebhooksRoute(req1, url1);
-            // 200 or a runner-related 5xx — authenticated, not 401/409
-            expect(res1?.status).not.toBe(401);
-            expect(res1?.status).not.toBe(409);
+            expect(res1?.status).toBe(200);
             const eventsAfterFirst = (await memDb.selectFrom("trigger_event").selectAll().execute()).length;
 
             // Replay the identical captured request.
@@ -763,6 +765,56 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
             const [req3, url3] = makeReq("POST", "/api/webhooks/wh-1/fire", { other: 1 }, { "x-webhook-signature": "badhash" });
             const res3 = await handleWebhooksRoute(req3, url3);
             expect(res3?.status).toBe(401);
+        } finally {
+            delete process.env.PIZZAPI_WEBHOOK_ALLOW_LEGACY_SIGNATURES;
+        }
+    });
+
+    test("legacy dedupe releases retryable failures so the identical retry can succeed (R11)", async () => {
+        process.env.PIZZAPI_WEBHOOK_ALLOW_LEGACY_SIGNATURES = "true";
+        try {
+            mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+            const payload = { type: "push", event: "legacy-retry" };
+            const legacySig = createHmac("sha256", ACTIVE_WEBHOOK.secret).update(JSON.stringify(payload)).digest("hex");
+            const fire = async () => {
+                const [req, url] = makeReq("POST", "/api/webhooks/wh-1/fire", payload, { "x-webhook-signature": legacySig });
+                return (await handleWebhooksRoute(req, url))!;
+            };
+
+            // 1. Runner unavailable for the webhook owner → 403 (retryable).
+            mockGetRunnerData.mockReturnValue(Promise.resolve(null));
+            expect((await fire()).status).toBe(403);
+
+            // 2. Runner back but it rejects the spawn → nothing delivered, 503.
+            mockGetRunnerData.mockReturnValue(Promise.resolve({ runnerId: "runner-1", userId: "user-1" }));
+            mockGetLocalRunnerSocket.mockReturnValue({ emit: mock(() => {}) });
+            mockWaitForSpawnAck.mockReturnValue(Promise.resolve({ ok: false, message: "runner busy" }));
+            expect((await fire()).status).toBe(503);
+
+            // 3. Recovery: the identical signed retry is accepted and delivered.
+            mockWaitForSpawnAck.mockReturnValue(Promise.resolve({ ok: true }));
+            mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: mock(() => {}) });
+            expect((await fire()).status).toBe(200);
+
+            // 4. Once successfully accepted, the replay is deduplicated again.
+            expect((await fire()).status).toBe(409);
+        } finally {
+            delete process.env.PIZZAPI_WEBHOOK_ALLOW_LEGACY_SIGNATURES;
+        }
+    });
+
+    test("legacy dedupe keeps a deterministic rejection consumed (R11)", async () => {
+        process.env.PIZZAPI_WEBHOOK_ALLOW_LEGACY_SIGNATURES = "true";
+        try {
+            mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+            const rawBody = "not json";
+            const legacySig = createHmac("sha256", ACTIVE_WEBHOOK.secret).update(rawBody).digest("hex");
+            const fire = async () => {
+                const [req, url] = makeReq("POST", "/api/webhooks/wh-1/fire", rawBody, { "x-webhook-signature": legacySig });
+                return (await handleWebhooksRoute(req, url))!;
+            };
+            expect((await fire()).status).toBe(400);
+            expect((await fire()).status).toBe(409);
         } finally {
             delete process.env.PIZZAPI_WEBHOOK_ALLOW_LEGACY_SIGNATURES;
         }

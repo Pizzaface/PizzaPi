@@ -123,7 +123,10 @@ one of the two headers is also rejected; it is never downgraded to legacy mode.
 To keep an old integration working while you migrate it, set
 `PIZZAPI_WEBHOOK_ALLOW_LEGACY_SIGNATURES=true` on the relay. Legacy requests are
 then accepted, logged as deprecated, and deduplicated per webhook for 24 hours:
-a second request with an identical signed body in that window returns `409`. A
+a second request with an identical signed body in that window returns `409`.
+An attempt that fails in a retryable way (`403` runner unavailable, `500`, or
+`503`) releases its deduplication record, so retrying the identical request
+works once the runner or route recovers. A
 caller that legitimately repeats the same body must add a unique field (such as
 a delivery ID) to the body. The deduplication record expires after 24 hours, so
 legacy mode still allows a captured request to be replayed later. Migrate to
