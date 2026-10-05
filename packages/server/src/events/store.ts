@@ -21,6 +21,7 @@ import type {
   RouteInput,
   TriggerEvent,
 } from "@pizzapi/protocol";
+import { deliveryRecipientFor } from "@pizzapi/protocol";
 import { createLogger } from "@pizzapi/tools";
 import { getKysely } from "../auth.js";
 
@@ -202,6 +203,54 @@ export async function ensureEventTables(): Promise<void> {
     .on(DELIVERY_TABLE)
     .columns(["sessionId", "updatedAt"])
     .execute();
+  // Recipient principal, persisted on the Delivery so a config route's target
+  // binding survives the route's removal or re-hashing (the JSON field is the
+  // source of truth; NULL here = nobody or unstamped — see deliveryJson).
+  if (!(await hasColumn(DELIVERY_TABLE, "recipientUserId"))) {
+    await db.schema.alterTable(DELIVERY_TABLE).addColumn("recipientUserId", "text").execute();
+  }
+  await backfillDeliveryRecipients();
+}
+
+/** Deterministic id prefix of config-file routes (see syncConfigRoutes). */
+export const CONFIG_ROUTE_ID_PREFIX = "rt_cfg_";
+
+/**
+ * Stamp the recipient principal on pre-upgrade pending/inflight rows from
+ * their route. Rows whose config route is already gone are unresolvable and
+ * stay unstamped (the engine treats them as deliverable to nobody).
+ */
+async function backfillDeliveryRecipients(): Promise<void> {
+  const db = getKysely();
+  const rows = await db.executeQuery(
+    sql<{ id: string; deliveryJson: string; ownerUserId: string | null }>`
+      SELECT d.id, d.deliveryJson, e.ownerUserId FROM ${sql.table(DELIVERY_TABLE)} d
+      JOIN ${sql.table(EVENT_TABLE)} e ON e.id = d.eventId
+      WHERE d.status IN ('pending', 'inflight')
+        AND json_type(d.deliveryJson, '$.recipientUserId') IS NULL
+        AND json_type(d.deliveryJson, '$.recipientBound') IS NULL
+    `.compile(db),
+  );
+  let stamped = 0;
+  for (const row of rows.rows) {
+    const delivery = parseJson<Delivery>(row.deliveryJson, "delivery");
+    if (!delivery) continue;
+    const routeId = delivery.routeId ?? delivery.spawnRouteId;
+    const route = routeId ? await getRoute(routeId) : null;
+    if (routeId && !route && routeId.startsWith(CONFIG_ROUTE_ID_PREFIX)) continue;
+    const recipient = deliveryRecipientFor(route, row.ownerUserId ?? undefined);
+    if (recipient.recipientUserId === undefined && recipient.recipientBound === undefined) continue;
+    await db
+      .updateTable(DELIVERY_TABLE)
+      .set({
+        recipientUserId: recipient.recipientUserId ?? null,
+        deliveryJson: JSON.stringify({ ...delivery, ...recipient }),
+      })
+      .where("id", "=", row.id)
+      .execute();
+    stamped++;
+  }
+  if (stamped > 0) log.info(`Backfilled the recipient principal on ${stamped} queued delivery row(s)`);
 }
 
 // ── Events ───────────────────────────────────────────────────────────────────
@@ -222,6 +271,8 @@ export interface PlannedDelivery {
   deliverAs: DeliverAs;
   expiresAt?: string;
   spawnRouteId?: string;
+  recipientUserId?: string | null;
+  recipientBound?: boolean;
 }
 
 /** Insert an event row and ALL its planned delivery rows (status pending) in
@@ -316,6 +367,8 @@ export async function insertEventWithPlan(
         status: "pending",
         createdAt: full.ts,
         ...(p.expiresAt ? { expiresAt: p.expiresAt } : {}),
+        ...(p.recipientUserId !== undefined ? { recipientUserId: p.recipientUserId } : {}),
+        ...(p.recipientBound !== undefined ? { recipientBound: p.recipientBound } : {}),
       };
       try {
         await trx
@@ -327,6 +380,7 @@ export async function insertEventWithPlan(
             status: delivery.status,
             deliveryJson: JSON.stringify(delivery),
             updatedAt: delivery.createdAt,
+            recipientUserId: delivery.recipientUserId ?? null,
             ...(delivery.expiresAt ? { expiresAt: delivery.expiresAt } : {}),
           })
           .execute();
@@ -593,7 +647,7 @@ export async function syncConfigRoutes(desired: RouteInput[]): Promise<void> {
         ...input,
         origin: "config",
         // Deterministic id so re-syncs are stable for UI references.
-        routeId: `rt_cfg_${crypto.createHash("sha256").update(JSON.stringify(input)).digest("base64url").slice(0, 16)}`,
+        routeId: `${CONFIG_ROUTE_ID_PREFIX}${crypto.createHash("sha256").update(JSON.stringify(input)).digest("base64url").slice(0, 16)}`,
         createdAt: new Date().toISOString(),
       };
       await trx
@@ -637,6 +691,7 @@ export async function createDelivery(
         status: delivery.status,
         deliveryJson: JSON.stringify(delivery),
         updatedAt: delivery.createdAt,
+        recipientUserId: delivery.recipientUserId ?? null,
         ...(delivery.expiresAt ? { expiresAt: delivery.expiresAt } : {}),
       })
       .execute();
@@ -811,9 +866,10 @@ export async function listPendingWakeDeliveries(
 
 /**
  * True when durable trigger records still reference `sessionId` on behalf of
- * a tenant other than `userId`: a delivery of another owner's event (config
- * routes excepted — they are operator-level and deliver every tenant's
- * events to an operator-chosen session), an event another owner published
+ * a tenant other than `userId`: a delivery stamped for another recipient
+ * principal (or for nobody), an unstamped (pre-upgrade) delivery of another
+ * owner's event (config routes excepted — they are operator-level and
+ * deliver every tenant's events to an operator-chosen session), an event another owner published
  * as that session, another owner's session route targeting it, or a config
  * session route whose target is bound to a different principal (or to none).
  *
@@ -834,8 +890,12 @@ export async function sessionReferencedByOtherTenant(sessionId: string, userId: 
       JOIN ${sql.table(EVENT_TABLE)} e ON e.id = d.eventId
       LEFT JOIN ${sql.table(ROUTE_TABLE)} r ON r.id = json_extract(d.deliveryJson, '$.routeId')
       WHERE d.sessionId = ${sessionId}
-        AND ${otherOwner("e.ownerUserId")}
-        AND (r.origin IS NULL OR r.origin <> 'config')
+        AND CASE
+          WHEN json_type(d.deliveryJson, '$.recipientUserId') IS NOT NULL
+            THEN ${userId === null ? sql`1 = 1` : sql`(d.recipientUserId IS NULL OR d.recipientUserId <> ${userId})`}
+          WHEN json_type(d.deliveryJson, '$.recipientBound') IS NOT NULL THEN 0
+          ELSE (${otherOwner("e.ownerUserId")} AND (r.origin IS NULL OR r.origin <> 'config'))
+        END
       LIMIT 1
     `.compile(db),
   );

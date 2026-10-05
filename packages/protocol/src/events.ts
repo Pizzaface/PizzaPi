@@ -258,6 +258,23 @@ export interface Delivery {
   failureReason?: "offline_policy";
   /** When the response contract TTL lapses. */
   expiresAt?: string;
+  /**
+   * The principal this delivery may be handed to, stamped when the row is
+   * planned so it survives removal or re-hashing of the producing Route: a
+   * config session route's bound principal (`null` = nobody, fail closed),
+   * otherwise the route's owner, else the event's authenticated owner.
+   * Absent on rows with no tenant to enforce (ownerless legacy events) and on
+   * pre-upgrade rows whose route could not be resolved.
+   */
+  recipientUserId?: string | null;
+  /**
+   * Set on every delivery planned from a config route. True when
+   * `recipientUserId` comes from a config session route's target binding:
+   * live delivery then requires positive proof that the session is
+   * registered by that principal. False for config spawn routes (operator
+   * level). Absent on other routes' deliveries and on pre-upgrade rows.
+   */
+  recipientBound?: boolean;
 }
 
 /**
@@ -320,6 +337,28 @@ export function configTargetPrincipal(
 ): string | null | undefined {
   if (route.origin !== "config" || route.target.kind !== "session") return undefined;
   return route.target.ownerUserId ?? route.ownerUserId ?? null;
+}
+
+/**
+ * The recipient principal to stamp on a Delivery planned from `route` (null
+ * for an implicit direct route) for an event owned by `eventOwnerUserId`.
+ * Mirrors the drain-time tenant rules so the binding outlives the route.
+ */
+export function deliveryRecipientFor(
+  route: Pick<Route, "origin" | "ownerUserId" | "target"> | null,
+  eventOwnerUserId: string | undefined,
+): Pick<Delivery, "recipientUserId" | "recipientBound"> {
+  if (route?.origin === "config") {
+    const principal = configTargetPrincipal(route);
+    if (principal !== undefined) return { recipientUserId: principal, recipientBound: true };
+    // Config spawn routes keep the operator-level behaviour; recipientBound
+    // false still marks the row as stamped (not a pre-upgrade row).
+    return route.ownerUserId !== undefined
+      ? { recipientUserId: route.ownerUserId, recipientBound: false }
+      : { recipientBound: false };
+  }
+  if (route?.ownerUserId) return { recipientUserId: route.ownerUserId };
+  return eventOwnerUserId !== undefined ? { recipientUserId: eventOwnerUserId } : {};
 }
 
 export function isTriggerEvent(v: unknown): v is TriggerEvent {

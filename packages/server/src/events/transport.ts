@@ -332,8 +332,11 @@ export function createEngineDeps(): EngineDeps {
       // session registered by that user may receive them (an unbound row
       // reaches nobody). Requires positive proof: a missing ownership record
       // (stale room membership after the record's sweep) is not a match.
-      // The row stays pending for the rightful owner.
-      const principal = route ? configTargetPrincipal(route) : undefined;
+      // The binding is stamped on the row, so it holds after the route is
+      // gone. The row stays pending for the rightful owner.
+      const principal = delivery.recipientBound === true
+        ? (delivery.recipientUserId ?? null)
+        : route ? configTargetPrincipal(route) : undefined;
       if (principal !== undefined) {
         const live = principal === null ? null : await getSharedSession(delivery.sessionId);
         if (principal === null || live?.userId !== principal) {

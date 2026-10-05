@@ -16,9 +16,10 @@ import type {
   TriggerFilter,
   TriggerFilterMode,
 } from "@pizzapi/protocol";
-import { configTargetPrincipal, isValidEventType, routeMatchesOwner } from "@pizzapi/protocol";
+import { deliveryRecipientFor, isValidEventType, routeMatchesOwner } from "@pizzapi/protocol";
 import { createLogger } from "@pizzapi/tools";
 import {
+  CONFIG_ROUTE_ID_PREFIX,
   createDelivery,
   deleteDelivery,
   expirePendingDeliveries,
@@ -275,23 +276,21 @@ export async function sweepUnresolvedSpawnIntents(olderThanMs = 60_000): Promise
 }
 
 /**
- * The principal a delivery may be handed to: for a config session route, the
- * principal its target is bound to (config routes may carry every tenant's
- * events to an operator-chosen session, so the event owner is not the
- * recipient); otherwise its route's owner, else the event's authenticated
- * owner. `null` = nobody (an unbound config session route — fail closed).
- * `undefined` = no tenant to enforce (legacy ownerless events predate tenant
- * stamping).
+ * The principal a delivery may be handed to: the recipient stamped on the row
+ * when it was planned (see deliveryRecipientFor — for a config session route,
+ * the principal its target is bound to, since config routes may carry every
+ * tenant's events to an operator-chosen session). Pre-upgrade rows derive it
+ * from their route the same way; one whose config route is gone cannot be
+ * resolved and goes to nobody. `null` = nobody (fail closed). `undefined` =
+ * no tenant to enforce (legacy ownerless events predate tenant stamping).
  */
 async function deliveryTenant(delivery: Delivery, event: TriggerEvent): Promise<string | null | undefined> {
-  const route = delivery.routeId ? await getRoute(delivery.routeId).catch(() => null) : null;
-  if (route?.origin === "config") {
-    const principal = configTargetPrincipal(route);
-    // Config spawn routes keep the operator-level behaviour.
-    return principal === undefined ? route.ownerUserId : principal;
+  if (delivery.recipientUserId !== undefined || delivery.recipientBound !== undefined) {
+    return delivery.recipientUserId;
   }
-  if (route?.ownerUserId) return route.ownerUserId;
-  return event.source.userId;
+  const route = delivery.routeId ? await getRoute(delivery.routeId).catch(() => null) : null;
+  if (!route && delivery.routeId?.startsWith(CONFIG_ROUTE_ID_PREFIX)) return null;
+  return deliveryRecipientFor(route, event.source.userId).recipientUserId;
 }
 
 /** Whether a drain for a session registered by `ownerUserId` may hand over a row of `tenant`. */
@@ -498,17 +497,24 @@ async function publishEventUnchained(
   // direct wake targets are not).
   const dispatch = new Map<string, { route: Route | null; supersedePendingWake?: boolean }>();
   const planRows: PlannedDelivery[] = [];
+  // Every row carries its recipient principal so the binding outlives the route.
   for (const s of plan.sessions) {
-    planRows.push({ sessionId: s.sessionId, routeId: s.route.routeId, deliverAs: s.route.deliverAs, expiresAt });
+    planRows.push({
+      sessionId: s.sessionId, routeId: s.route.routeId, deliverAs: s.route.deliverAs, expiresAt,
+      ...deliveryRecipientFor(s.route, source.userId),
+    });
     dispatch.set(s.sessionId, { route: s.route });
   }
   for (const sp of plan.spawns) {
     // routeId survives spawn resolution (spawnRouteId is cleared) so per-route history can attribute it.
-    planRows.push({ sessionId: "", routeId: sp.routeId, spawnRouteId: sp.routeId, deliverAs: sp.deliverAs, expiresAt });
+    planRows.push({
+      sessionId: "", routeId: sp.routeId, spawnRouteId: sp.routeId, deliverAs: sp.deliverAs, expiresAt,
+      ...deliveryRecipientFor(sp, source.userId),
+    });
     dispatch.set(sp.routeId, { route: sp });
   }
   for (const t of extraTargets ?? []) {
-    planRows.push({ sessionId: t.sessionId, deliverAs: t.deliverAs ?? "steer", expiresAt });
+    planRows.push({ sessionId: t.sessionId, deliverAs: t.deliverAs ?? "steer", expiresAt, ...deliveryRecipientFor(null, source.userId) });
     // Direct fires are implicit single-session Routes; the synthetic route
     // carries the wake flag through to the delivery executor.
     dispatch.set(t.sessionId, { route: t.wake ? implicitRoute(t) : null, supersedePendingWake: t.wake === true });
@@ -576,6 +582,11 @@ async function resumeUnfinished(
       continue;
     }
     if (delivery.status === "pending") {
+      // A pre-upgrade row whose config route is gone belongs to nobody.
+      if ((await deliveryTenant(delivery, event)) === null) {
+        settled.push(delivery);
+        continue;
+      }
       // The crash interrupted the emit — re-attempt the handoff.
       const route = delivery.routeId ? await getRoute(delivery.routeId).catch(() => null) : null;
       const attempt = await claimAndDeliver(delivery, event, route, deps, "Resumed delivery");
@@ -659,11 +670,18 @@ export async function sweepExpiredContracts(deps: EngineDeps, now = new Date()):
       );
       if (!won) continue;
       if (nextSessionId) {
+        // The parent hop inherits a bound (or unresolvable) recipient;
+        // otherwise it belongs to the event's owner, as before.
+        const tenant = await deliveryTenant(current, event);
+        const recipient = tenant === null || current.recipientBound === true
+          ? { recipientUserId: tenant ?? null, recipientBound: true }
+          : deliveryRecipientFor(null, event.source.userId);
         const next = await createDelivery({
           eventId: event.eventId,
           eventType: event.type,
           sessionId: nextSessionId,
           deliverAs: "steer",
+          ...recipient,
           expiresAt: event.responseContract?.ttlMs
             ? new Date(now.getTime() + event.responseContract.ttlMs).toISOString()
             : undefined,

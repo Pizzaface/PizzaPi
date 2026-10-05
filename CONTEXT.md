@@ -35,6 +35,8 @@ _Avoid_: active (for a Route that is only saved)
 **Delivery**:
 One per-session attempt to hand an Event to a recipient, with its own lifecycle
 (pending → delivered → responded/expired). Durable: queued until the session is available, with TTL.
+Each Delivery records its recipient principal when it is planned (a config Route's target
+binding, else the Route's or Event's owner), so the binding survives the Route's removal.
 _Avoid_: dispatch, injection
 
 **Event Type**:

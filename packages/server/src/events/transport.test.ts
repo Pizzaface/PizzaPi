@@ -195,6 +195,31 @@ describe("trigger transport delivery receipt", () => {
     expect((await store.getDelivery(again.deliveries[0].deliveryId))?.status).toBe("pending");
   });
 
+  it("bound delivery whose config route vanished still requires the bound principal live (R2-5)", async () => {
+    await store.syncConfigRoutes([
+      { eventType: "cfg:fan", target: { kind: "session", sessionId: "ops-resume", ownerUserId: "operator" }, deliverAs: "steer", origin: "config" },
+    ]);
+    const source = { kind: "api" as const, id: "hook", auth: "api-key" as const, userId: "u1" };
+    const deps = transport.createEngineDeps();
+    // Offline target: the delivery queues.
+    const out = await authStorage.run(authCtx, () => engine.publishEvent({ type: "cfg:fan", fireId: "f-resume" }, source, deps));
+    expect((await store.getDelivery(out.deliveries[0].deliveryId))?.status).toBe("pending");
+    await store.syncConfigRoutes([]);
+
+    // Duplicate fireId resumes the pending handoff without a route; the event
+    // owner's live session must not receive it.
+    localSocket = makeLocalSocket();
+    sharedSession = { sessionId: "ops-resume", userId: "u1" };
+    await authStorage.run(authCtx, () => engine.publishEvent({ type: "cfg:fan", fireId: "f-resume" }, source, deps));
+    expect(localSocket.emits).toHaveLength(0);
+    expect((await store.getDelivery(out.deliveries[0].deliveryId))?.status).toBe("pending");
+
+    sharedSession = { sessionId: "ops-resume", userId: "operator" };
+    await authStorage.run(authCtx, () => engine.publishEvent({ type: "cfg:fan", fireId: "f-resume" }, source, deps));
+    expect(localSocket.emits.map((e) => e.event)).toEqual(["session_trigger"]);
+    expect((await store.getDelivery(out.deliveries[0].deliveryId))?.status).toBe("delivered");
+  });
+
   it("ack-capable CLI: row stays inflight until the ack settles it delivered", async () => {
     localSocket = makeLocalSocket();
     sharedSession = { sessionId: "s-new", acksSessionTrigger: true };

@@ -944,6 +944,16 @@ given a fresh session ID instead. Rows synced before this requirement that
 have no binding deliver to nobody until the file is fixed. `target.ownerUserId`
 is ignored on API-created routes.
 
+A live delivery requires the target session's current ownership record to
+name the bound user; a missing record is treated as a mismatch, and the
+delivery stays queued. The bound user is also recorded on each queued
+Delivery when it is created, so removing or changing the route (a config
+reload, session cleanup, or an edit that changes the route's ID) never
+releases already-queued deliveries to anyone else. At startup the relay
+backfills this field on deliveries queued by an older version from their
+route; a queued config delivery whose route is already gone is delivered to
+nobody.
+
 ```json
 {
   "routes": [
