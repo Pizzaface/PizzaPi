@@ -125,6 +125,11 @@ function createFakeIo() {
 
 mock.restore();
 
+// Registration consults the durable runner_owner store (fail-closed); back it
+// with a disposable in-memory database.
+const { installRunnerOwnerTestDb } = await import("../../../tests/fixtures/runner-owner-db.js");
+const ownerDb = await installRunnerOwnerTestDb();
+
 const { initSioRegistry, runnerSecrets, runnerRoom, getRunnerSecret, _resetRunnerSecretsForTesting } = await import("./context.js");
 const { initStateRedis } = await import("../sio-state.js");
 const { _injectRedisForTesting, _resetRedisKvStoreForTesting } = await import("../../redis-kv-store.js");
@@ -153,6 +158,7 @@ async function registerWithSecret(runnerId: string, secret: string, userId: stri
 
 describe("sweepOrphanedRunners secret revocation", () => {
     beforeEach(async () => {
+        await ownerDb.reset();
         store.clear();
         setStore.clear();
         liveRunnerRooms.clear();

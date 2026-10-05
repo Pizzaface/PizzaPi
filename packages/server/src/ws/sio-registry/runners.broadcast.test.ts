@@ -139,6 +139,11 @@ function createFakeIo() {
     };
 }
 
+// Registration consults the durable runner_owner store (fail-closed); back it
+// with a disposable in-memory database.
+const { installRunnerOwnerTestDb } = await import("../../../tests/fixtures/runner-owner-db.js");
+const ownerDb = await installRunnerOwnerTestDb();
+
 const { initSioRegistry, runnersUserRoom, runnerSecrets } = await import("./context.js");
 const { initStateRedis } = await import("../sio-state.js");
 const { registerRunner, removeRunner, updateRunnerSkills, updateRunnerAgents, updateRunnerPlugins, updateRunnerServices, getRunnerServices } =
@@ -148,6 +153,7 @@ const { registerRunner, removeRunner, updateRunnerSkills, updateRunnerAgents, up
 // cache on the barrel (../sio-state/index.js) cannot leak a fake into this file.
 describe("runners broadcast", () => {
     beforeEach(async () => {
+        await ownerDb.reset();
         store.clear();
         setStore.clear();
         emitCalls.length = 0;

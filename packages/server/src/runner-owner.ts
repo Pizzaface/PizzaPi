@@ -70,7 +70,14 @@ export async function getRunnerLastSeen(runnerId: string): Promise<string | null
     return row?.lastSeenAt ?? null;
 }
 
-/** Upsert the durable owner. Best-effort: a record failure must never fail registration. */
+/**
+ * Record the durable owner for a runner, refreshing its liveness stamp.
+ * Never overwrites an established owner: the conflict update only applies
+ * when the stored owner already matches (ownership transfer must be an
+ * explicit, separate flow). Best-effort: a record failure must never fail
+ * registration — callers that need an authorization decision use
+ * {@link claimRunnerOwner} instead.
+ */
 export async function rememberRunnerOwner(runnerId: string, userId: string | null | undefined): Promise<void> {
     if (!userId) return;
     try {
@@ -78,11 +85,48 @@ export async function rememberRunnerOwner(runnerId: string, userId: string | nul
         await getKysely()
             .insertInto(TABLE)
             .values({ runnerId, userId, updatedAt: nowIso, lastSeenAt: nowIso })
-            .onConflict((oc) => oc.column("runnerId").doUpdateSet({ userId, updatedAt: nowIso, lastSeenAt: nowIso }))
+            .onConflict((oc) =>
+                oc
+                    .column("runnerId")
+                    .doUpdateSet({ updatedAt: nowIso, lastSeenAt: nowIso })
+                    .where(`${TABLE}.userId`, "=", userId),
+            )
             .execute();
     } catch (err) {
         log.warn(`Failed to record runner owner for ${runnerId}:`, err);
     }
+}
+
+export type RunnerOwnerClaim = "owned" | "conflict";
+
+/**
+ * Authoritative ownership decision for a caller-supplied runner ID, shared by
+ * every transport that registers a runner identity (Socket.IO runner
+ * registration and tunnel registration).
+ *
+ * - Authenticated caller: atomically records the caller as owner when the ID
+ *   has no durable owner yet (first claim), then reads the stored owner back.
+ *   Returns "owned" only when the stored owner is the caller.
+ * - Anonymous caller (`userId` null): never records anything; returns
+ *   "conflict" when any durable owner exists.
+ *
+ * The durable record outlives the ephemeral Redis state and runner secret
+ * (both deleted on disconnect), so an offline runner's ID cannot be claimed
+ * by a different user. Store failures THROW — callers must fail closed.
+ */
+export async function claimRunnerOwner(runnerId: string, userId: string | null | undefined): Promise<RunnerOwnerClaim> {
+    const db = getKysely();
+    if (userId) {
+        const nowIso = new Date().toISOString();
+        await db
+            .insertInto(TABLE)
+            .values({ runnerId, userId, updatedAt: nowIso, lastSeenAt: nowIso })
+            .onConflict((oc) => oc.column("runnerId").doNothing())
+            .execute();
+    }
+    const row = await db.selectFrom(TABLE).select("userId").where("runnerId", "=", runnerId).executeTakeFirst();
+    if (!row) return userId ? "conflict" : "owned";
+    return row.userId === userId ? "owned" : "conflict";
 }
 
 /** Durable owner lookup; null when the runner never registered since this table landed. */

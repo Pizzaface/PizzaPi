@@ -39,7 +39,7 @@ import {
 } from "./context.js";
 import { broadcastToHub } from "./hub.js";
 import { broadcastToRunnersNs } from "./runners-broadcast.js";
-import { rememberRunnerOwner, touchRunnerSeen } from "../../runner-owner.js";
+import { claimRunnerOwner, rememberRunnerOwner, touchRunnerSeen, type RunnerOwnerClaim } from "../../runner-owner.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("sio-registry");
@@ -139,13 +139,13 @@ export async function registerRunner(
     let runnerId: string;
 
     if (requestedId && secret) {
-        const auth = await validateAndPersistRunnerSecret(requestedId, secret);
-        if (auth === "mismatch") {
-            return new Error(`Runner authentication failed: secret mismatch for runner ${requestedId}`);
-        }
-        // Ownership guard: a correct secret presented by a DIFFERENT
-        // authenticated user must not take over the runner (and its sessions,
-        // tunnels, skills, provider credentials). Reject before any hash write.
+        // Ownership guard: a caller-supplied runner ID registered by a
+        // DIFFERENT authenticated user must not be taken over (with its
+        // sessions, tunnels, skills, provider credentials) — whether the
+        // runner is live (Redis state) or offline (durable runner_owner
+        // record; Redis state and secret are deleted on disconnect).
+        // Runs BEFORE secret validation so a rejected claim can never persist
+        // an attacker-chosen secret and lock the real runner out.
         // Explicit ownership transfer, if ever needed, is a separate audited
         // flow — out of scope here.
         const existing = await getRunnerState(requestedId);
@@ -156,6 +156,30 @@ export async function registerRunner(
             return new Error(
                 `Runner authentication failed: runner ${requestedId} is owned by a different user`,
             );
+        }
+        let claim: RunnerOwnerClaim;
+        try {
+            claim = await claimRunnerOwner(requestedId, opts.userId ?? null);
+        } catch (err) {
+            // Fail closed: without the durable owner we cannot tell a
+            // reconnect from a cross-user claim of an offline runner.
+            log.error(`Runner owner lookup failed for ${requestedId}; rejecting registration:`, err);
+            return new Error(
+                `Runner authentication failed: ownership of runner ${requestedId} could not be verified`,
+            );
+        }
+        if (claim === "conflict") {
+            log.warn(
+                `Rejected runner registration for ${requestedId}: authenticated user ${opts.userId ?? "anonymous"} does not match durable owner`,
+            );
+            return new Error(
+                `Runner authentication failed: runner ${requestedId} is owned by a different user ` +
+                    `(to register this machine under another account, remove runnerId/runnerSecret from ~/.pizzapi/runner.json)`,
+            );
+        }
+        const auth = await validateAndPersistRunnerSecret(requestedId, secret);
+        if (auth === "mismatch") {
+            return new Error(`Runner authentication failed: secret mismatch for runner ${requestedId}`);
         }
         // Re-registration (existing secret matched) or first claim: clean up any
         // stale local socket association for this runnerId.

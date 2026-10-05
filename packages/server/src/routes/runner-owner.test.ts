@@ -168,13 +168,24 @@ describe("spawn route management with offline runner", () => {
     expect(res.status).toBe(404);
   });
 
-  it("rememberRunnerOwner upserts and skips empty users", async () => {
+  it("rememberRunnerOwner records once, never overwrites an established owner, and skips empty users", async () => {
     await owner.rememberRunnerOwner("r-x", "u1");
     await owner.rememberRunnerOwner("r-x", "u2");
-    expect(await owner.getRunnerOwner("r-x")).toBe("u2");
+    expect(await owner.getRunnerOwner("r-x")).toBe("u1");
     await owner.rememberRunnerOwner("r-x", null);
-    expect(await owner.getRunnerOwner("r-x")).toBe("u2");
+    expect(await owner.getRunnerOwner("r-x")).toBe("u1");
     await owner.rememberRunnerOwner("r-never", null);
     expect(await owner.getRunnerOwner("r-never")).toBeNull();
+  });
+
+  it("claimRunnerOwner claims unowned IDs once and reports conflicts for other users", async () => {
+    expect(await owner.claimRunnerOwner("r-claim", "u1")).toBe("owned");
+    expect(await owner.claimRunnerOwner("r-claim", "u1")).toBe("owned");
+    expect(await owner.claimRunnerOwner("r-claim", "u2")).toBe("conflict");
+    expect(await owner.claimRunnerOwner("r-claim", null)).toBe("conflict");
+    expect(await owner.getRunnerOwner("r-claim")).toBe("u1");
+    // Anonymous callers never create a durable record.
+    expect(await owner.claimRunnerOwner("r-anon", null)).toBe("owned");
+    expect(await owner.getRunnerOwner("r-anon")).toBeNull();
   });
 });

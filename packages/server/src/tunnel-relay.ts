@@ -5,6 +5,7 @@ import { WebSocketServer, type WebSocket as NodeWebSocket, type RawData } from "
 import { createLogger } from "@pizzapi/tools";
 import { bindAuthContext, getAuth, type AuthContext } from "./auth.js";
 import { getRunnerData } from "./ws/sio-registry.js";
+import { claimRunnerOwner } from "./runner-owner.js";
 
 const log = createLogger("tunnel-relay");
 
@@ -70,21 +71,40 @@ function adaptWs(ws: NodeWebSocket): BrowserCompatibleWebSocket {
     };
 }
 
+/**
+ * Authorize a tunnel `register` message: a valid user API key AND the
+ * caller must own `runnerId` — per live runner state and the durable
+ * runner_owner record (claimed atomically for a brand-new ID). Returns the
+ * owning userId, or null to reject. Fails closed on any lookup error.
+ * Must run inside an auth context.
+ */
+export async function authorizeTunnelRegistration(apiKey: string, runnerId: string): Promise<string | null> {
+    try {
+        const result = await getAuth().api.verifyApiKey({ body: { key: apiKey } });
+        if (!result.valid || !result.key?.userId) return null;
+        const userId = result.key.userId;
+        const runnerData = await getRunnerData(runnerId);
+        if (runnerData?.userId && runnerData.userId !== userId) return null;
+        // Live Redis state is deleted on disconnect, so it cannot be the only
+        // authority: consult (and, for a brand-new ID, atomically claim) the
+        // durable runner owner shared with Socket.IO runner registration.
+        // Store errors throw → reject.
+        if ((await claimRunnerOwner(runnerId, userId)) !== "owned") {
+            log.warn(`Rejected tunnel registration for runner ${runnerId}: owned by a different user`);
+            return null;
+        }
+        return userId;
+    } catch (err) {
+        log.warn(`Tunnel registration auth failed for runner ${runnerId}:`, err);
+        return null;
+    }
+}
+
 export function initTunnelRelay(context: AuthContext): TunnelRelay {
     if (relay && wss) return relay;
 
     relay = new TunnelRelay({
-        apiKeys: bindAuthContext(context, async (apiKey: string, runnerId: string): Promise<string | null> => {
-            try {
-                const result = await getAuth().api.verifyApiKey({ body: { key: apiKey } });
-                if (!result.valid || !result.key?.userId) return null;
-                const runnerData = await getRunnerData(runnerId);
-                if (runnerData?.userId && runnerData.userId !== result.key.userId) return null;
-                return result.key.userId;
-            } catch {
-                return null;
-            }
-        }),
+        apiKeys: bindAuthContext(context, authorizeTunnelRegistration),
         log: {
             info: (...args) => console.log("[tunnel-relay]", ...args),
             debug: (...args) => {
