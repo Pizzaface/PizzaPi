@@ -932,6 +932,30 @@ config-file Route (`PIZZAPI_ROUTES_FILE`) with no `ownerUserId`: it is
 operator-level and matches all users. Legacy rows whose owner could not be
 backfilled at startup match nothing (they're logged and remain deletable).
 
+**Config session targets are bound to a principal.** A config-file Route with a
+`session` target must name the user who owns that session, either as
+`target.ownerUserId` or (for a tenant-scoped route) through the route's
+`ownerUserId`, which is the default. The relay refuses to load a routes file
+with an unbound session target. Only a session registered by the bound
+user receives the route's deliveries, whether live or drained on
+registration. The target session ID stays reserved for that user after the
+session's ownership record is pruned: another user who registers that ID is
+given a fresh session ID instead. Rows synced before this requirement that
+have no binding deliver to nobody until the file is fixed. `target.ownerUserId`
+is ignored on API-created routes.
+
+```json
+{
+  "routes": [
+    {
+      "eventType": "github:pr_comment",
+      "target": { "kind": "session", "sessionId": "ops-session", "ownerUserId": "operator-user-id" },
+      "deliverAs": "followUp"
+    }
+  ]
+}
+```
+
 ### `POST /api/events` — publish an Event
 
 The one fire path (ADR-0002): publish an Event; Routes decide which sessions

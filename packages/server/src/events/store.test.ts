@@ -479,12 +479,32 @@ describe("recycled session id tombstone (F09)", () => {
     expect(await store.sessionReferencedByOtherTenant("sched-x", "victim")).toBe(false);
 
     await store.syncConfigRoutes([
-      { eventType: "cfg:x", target: { kind: "session", sessionId: "ops-x" }, deliverAs: "steer", origin: "config" },
+      { eventType: "cfg:x", target: { kind: "session", sessionId: "ops-x", ownerUserId: "operator" }, deliverAs: "steer", origin: "config" },
     ]);
     const [cfg] = await store.listRoutes({ eventType: "cfg:x" });
     const { event } = await store.insertEvent({ type: "cfg:x", source: owned("someone"), payload: {} });
     await store.createDelivery({ eventId: event.eventId, eventType: event.type, sessionId: "ops-x", deliverAs: "steer", routeId: cfg.routeId });
     expect(await store.sessionReferencedByOtherTenant("ops-x", "operator")).toBe(false);
+  });
+
+  it("config session routes reserve their target for the bound principal only (R5)", async () => {
+    await store.syncConfigRoutes([
+      // Operator-level fan-in bound to the operator's session.
+      { eventType: "cfg:x", target: { kind: "session", sessionId: "ops-bound", ownerUserId: "operator" }, deliverAs: "steer", origin: "config" },
+      // Tenant-scoped config route: the tenant is the default principal.
+      { eventType: "cfg:x", target: { kind: "session", sessionId: "tenant-bound" }, deliverAs: "steer", origin: "config", ownerUserId: "victim" },
+      // Legacy/unbound row (pre-dates the binding requirement).
+      { eventType: "cfg:x", target: { kind: "session", sessionId: "ops-unbound" }, deliverAs: "steer", origin: "config" },
+    ]);
+    // No ownership row, no deliveries: the route alone reserves the id.
+    expect(await store.sessionReferencedByOtherTenant("ops-bound", "attacker")).toBe(true);
+    expect(await store.sessionReferencedByOtherTenant("ops-bound", null)).toBe(true);
+    expect(await store.sessionReferencedByOtherTenant("ops-bound", "operator")).toBe(false);
+    expect(await store.sessionReferencedByOtherTenant("tenant-bound", "attacker")).toBe(true);
+    expect(await store.sessionReferencedByOtherTenant("tenant-bound", "victim")).toBe(false);
+    // Unbound: reserved for nobody (fail closed).
+    expect(await store.sessionReferencedByOtherTenant("ops-unbound", "attacker")).toBe(true);
+    expect(await store.sessionReferencedByOtherTenant("ops-unbound", "operator")).toBe(true);
   });
 });
 

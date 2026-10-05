@@ -155,6 +155,27 @@ describe("trigger transport delivery receipt", () => {
     expect((await store.getDelivery(deliveryId))?.status).toBe("delivered");
   });
 
+  it("config session route: a live session owned by someone other than the bound principal receives nothing (R5)", async () => {
+    await store.syncConfigRoutes([
+      { eventType: "cfg:fan", target: { kind: "session", sessionId: "ops-live", ownerUserId: "operator" }, deliverAs: "steer", origin: "config" },
+    ]);
+    const source = { kind: "api" as const, id: "hook", auth: "api-key" as const, userId: "u1" };
+    const deps = transport.createEngineDeps();
+
+    // A different user registered the recycled id.
+    localSocket = makeLocalSocket();
+    sharedSession = { sessionId: "ops-live", userId: "attacker" };
+    const out = await authStorage.run(authCtx, () => engine.publishEvent({ type: "cfg:fan" }, source, deps));
+    expect(localSocket.emits).toHaveLength(0);
+    expect((await store.getDelivery(out.deliveries[0].deliveryId))?.status).toBe("pending");
+
+    // The bound principal's live session receives it.
+    sharedSession = { sessionId: "ops-live", userId: "operator" };
+    const ok = await authStorage.run(authCtx, () => engine.publishEvent({ type: "cfg:fan" }, source, deps));
+    expect(localSocket.emits.map((e) => e.event)).toEqual(["session_trigger"]);
+    expect((await store.getDelivery(ok.deliveries[0].deliveryId))?.status).toBe("delivered");
+  });
+
   it("ack-capable CLI: row stays inflight until the ack settles it delivered", async () => {
     localSocket = makeLocalSocket();
     sharedSession = { sessionId: "s-new", acksSessionTrigger: true };

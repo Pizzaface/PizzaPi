@@ -63,6 +63,7 @@ export type {
 export {
   isValidEventType,
   routeMatchesOwner,
+  configTargetPrincipal,
   isSourceIdentity,
   isTriggerEvent,
   isRouteTarget,

@@ -16,7 +16,7 @@ import type {
   TriggerFilter,
   TriggerFilterMode,
 } from "@pizzapi/protocol";
-import { isValidEventType, routeMatchesOwner } from "@pizzapi/protocol";
+import { configTargetPrincipal, isValidEventType, routeMatchesOwner } from "@pizzapi/protocol";
 import { createLogger } from "@pizzapi/tools";
 import {
   createDelivery,
@@ -275,21 +275,29 @@ export async function sweepUnresolvedSpawnIntents(olderThanMs = 60_000): Promise
 }
 
 /**
- * The tenant a delivery belongs to: its route's owner, else the event's
- * authenticated owner. `undefined` = no tenant to enforce (ownerless config
- * routes are operator-level and deliver every tenant's events; legacy
- * ownerless events predate tenant stamping).
+ * The principal a delivery may be handed to: for a config session route, the
+ * principal its target is bound to (config routes may carry every tenant's
+ * events to an operator-chosen session, so the event owner is not the
+ * recipient); otherwise its route's owner, else the event's authenticated
+ * owner. `null` = nobody (an unbound config session route — fail closed).
+ * `undefined` = no tenant to enforce (legacy ownerless events predate tenant
+ * stamping).
  */
-async function deliveryTenant(delivery: Delivery, event: TriggerEvent): Promise<string | undefined> {
+async function deliveryTenant(delivery: Delivery, event: TriggerEvent): Promise<string | null | undefined> {
   const route = delivery.routeId ? await getRoute(delivery.routeId).catch(() => null) : null;
+  if (route?.origin === "config") {
+    const principal = configTargetPrincipal(route);
+    // Config spawn routes keep the operator-level behaviour.
+    return principal === undefined ? route.ownerUserId : principal;
+  }
   if (route?.ownerUserId) return route.ownerUserId;
-  if (route && route.origin === "config") return undefined;
   return event.source.userId;
 }
 
 /** Whether a drain for a session registered by `ownerUserId` may hand over a row of `tenant`. */
-function drainAllowed(tenant: string | undefined, ownerUserId: string | null): boolean {
-  return tenant === undefined || tenant === ownerUserId;
+function drainAllowed(tenant: string | null | undefined, ownerUserId: string | null): boolean {
+  if (tenant === undefined) return true;
+  return tenant !== null && tenant === ownerUserId;
 }
 
 /**

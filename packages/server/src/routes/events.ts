@@ -248,7 +248,9 @@ async function validateAndStampTarget(
   if (!(await ownsSession(target.sessionId, userId))) {
     return { ok: false, status: 404, error: "Session not found or not connected" };
   }
-  const stamped = await withSessionRunnerId(target, userId);
+  // target.ownerUserId is a config-route binding; never client-writable.
+  const { ownerUserId: _clientOwner, ...clientTarget } = target;
+  const stamped = await withSessionRunnerId(clientTarget, userId);
   if (!stamped.ok) return { ok: false, status: /not found/i.test(stamped.error) ? 404 : 400, error: stamped.error };
   return stamped;
 }

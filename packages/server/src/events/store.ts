@@ -814,7 +814,8 @@ export async function listPendingWakeDeliveries(
  * a tenant other than `userId`: a delivery of another owner's event (config
  * routes excepted — they are operator-level and deliver every tenant's
  * events to an operator-chosen session), an event another owner published
- * as that session, or another owner's session route targeting it.
+ * as that session, another owner's session route targeting it, or a config
+ * session route whose target is bound to a different principal (or to none).
  *
  * Deliveries and events outlive the relay_session ownership row (ephemeral
  * sessions are pruned within minutes), so this is the ownership tombstone
@@ -854,11 +855,29 @@ export async function sessionReferencedByOtherTenant(sessionId: string, userId: 
       SELECT 1 AS one FROM ${sql.table(ROUTE_TABLE)} r
       WHERE json_extract(r.routeJson, '$.target.kind') = 'session'
         AND json_extract(r.routeJson, '$.target.sessionId') = ${sessionId}
+        AND r.origin <> 'config'
         AND ${otherOwner("r.ownerUserId")}
       LIMIT 1
     `.compile(db),
   );
-  return routed.rows.length > 0;
+  if (routed.rows.length > 0) return true;
+  // Config session routes reserve their target for the bound principal
+  // (target.ownerUserId, else the route's ownerUserId). An unbound row
+  // reserves it for nobody (fail closed).
+  const configured = await db.executeQuery(
+    sql<{ one: number }>`
+      SELECT 1 AS one FROM ${sql.table(ROUTE_TABLE)} r
+      WHERE r.origin = 'config'
+        AND json_extract(r.routeJson, '$.target.kind') = 'session'
+        AND json_extract(r.routeJson, '$.target.sessionId') = ${sessionId}
+        AND (
+          coalesce(json_extract(r.routeJson, '$.target.ownerUserId'), r.ownerUserId) IS NULL
+          OR ${userId === null ? sql`1 = 1` : sql`coalesce(json_extract(r.routeJson, '$.target.ownerUserId'), r.ownerUserId) <> ${userId}`}
+        )
+      LIMIT 1
+    `.compile(db),
+  );
+  return configured.rows.length > 0;
 }
 
 /**

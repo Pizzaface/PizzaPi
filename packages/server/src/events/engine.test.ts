@@ -571,6 +571,30 @@ describe("delivery receipt acks (inflight settle)", () => {
     expect(await engine.drainPendingResponseRelays("s-recycled", owner.deps, "u1")).toBe(1);
   });
 
+  it("config session route deliveries drain only to the bound target principal (R5)", async () => {
+    await store.syncConfigRoutes([
+      { eventType: "cfg:fan", target: { kind: "session", sessionId: "ops-target", ownerUserId: "operator" }, deliverAs: "steer", origin: "config" },
+      { eventType: "cfg:fan", target: { kind: "session", sessionId: "ops-unbound" }, deliverAs: "steer", origin: "config" },
+    ]);
+    // Any tenant's event fans in to the operator's (offline) session.
+    const out = await engine.publishEvent({ type: "cfg:fan", payload: { secret: 1 } }, source, makeDeps({ deliver: async () => "unreachable" }).deps);
+    expect(out.deliveries.map((d) => d.status)).toEqual(["pending", "pending"]);
+
+    // Another user registers the recycled target id: nothing drains.
+    const attacker = makeDeps();
+    expect(await engine.drainPendingDeliveries("ops-target", attacker.deps, "u2")).toBe(0);
+    expect(await engine.drainPendingDeliveries("ops-target", attacker.deps, "u1")).toBe(0); // even the event's own tenant
+    expect(await engine.drainPendingDeliveries("ops-target", attacker.deps, null)).toBe(0);
+    // An unbound config target drains to nobody, operator included.
+    expect(await engine.drainPendingDeliveries("ops-unbound", attacker.deps, "operator")).toBe(0);
+    expect(attacker.delivered).toHaveLength(0);
+
+    // The bound principal drains it.
+    const operator = makeDeps();
+    expect(await engine.drainPendingDeliveries("ops-target", operator.deps, "operator")).toBe(1);
+    expect(operator.delivered.map((d) => d.delivery.sessionId)).toEqual(["ops-target"]);
+  });
+
   it("drainPendingResponseRelays re-relays a failed response relay on source registration", async () => {
     // A child session published a contract event; the parent answered, but the
     // relay to the (offline) child source failed → marker stays for the drain.

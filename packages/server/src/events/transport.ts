@@ -9,7 +9,7 @@
 
 import { randomUUID } from "crypto";
 import type { Delivery, Route, TriggerEvent } from "@pizzapi/protocol";
-import { renderEventText } from "@pizzapi/protocol";
+import { configTargetPrincipal, renderEventText } from "@pizzapi/protocol";
 import { createLogger } from "@pizzapi/tools";
 import {
   broadcastToSessionViewers,
@@ -328,6 +328,17 @@ export async function emitTriggerResponse(
 export function createEngineDeps(): EngineDeps {
   return {
     async deliver(delivery, event, route): Promise<DeliverOutcome> {
+      // Config session routes are bound to a target principal: only a
+      // session registered by that user may receive them (an unbound row
+      // reaches nobody). The row stays pending for the rightful owner.
+      const principal = route ? configTargetPrincipal(route) : undefined;
+      if (principal !== undefined) {
+        const live = principal === null ? null : await getSharedSession(delivery.sessionId);
+        if (principal === null || (live && live.userId !== principal)) {
+          log.warn(`Delivery ${delivery.deliveryId}: session ${delivery.sessionId} is not owned by config route ${route?.routeId}'s target principal — not delivering`);
+          return "unreachable";
+        }
+      }
       const trigger = toWireEnvelope(delivery, event, route);
       // Ack-capable sessions (new CLIs): emit with a receipt ack — the row is
       // inflight until the ack lands; a disconnect between emit and receipt

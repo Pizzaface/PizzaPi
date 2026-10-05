@@ -20,9 +20,11 @@ _Avoid_: trigger (as a noun for the fired thing), message, notification
 A rule deciding which sessions receive an Event. Subsumes today's subscriptions and filters;
 a direct-addressed fire is just an implicit Route to one session. Routes are tenant-scoped:
 a Route matches only Events published by its `ownerUserId` (ownerless config routes are
-operator-level and match all users). A Route targeting an existing session lives until that
-session is explicitly closed or the Route is removed — disconnects, idleness, and runner
-restarts do not end it.
+operator-level and match all users). A config Route targeting an existing session is bound
+to that session's owner (`target.ownerUserId`, else the Route's `ownerUserId`); only that
+user's session receives it, and the target id stays reserved for them. A Route targeting
+an existing session lives until that session is explicitly closed or the Route is
+removed — disconnects, idleness, and runner restarts do not end it.
 _Avoid_: subscription, listener, binding
 
 **Runtime Status**:

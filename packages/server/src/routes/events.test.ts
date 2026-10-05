@@ -295,6 +295,25 @@ describe("events HTTP surface", () => {
     expect(deleted!.status).toBe(200);
   });
 
+  it("never stores a client-supplied config target binding on API routes (R5)", async () => {
+    const created = await call(routes, "POST", "/api/routes", {
+      eventType: "t:bind",
+      target: { kind: "session", sessionId: "owned", ownerUserId: "someone-else" },
+      deliverAs: "steer",
+      origin: "ui",
+    });
+    expect(created!.status).toBe(200);
+    const { route } = (await created!.json()) as any;
+    expect(route.target.ownerUserId).toBeUndefined();
+    const updated = await call(routes, "PUT", `/api/routes/${route.routeId}`, {
+      target: { kind: "session", sessionId: "owned", ownerUserId: "someone-else" },
+    });
+    expect(((await updated!.json()) as any).route.target.ownerUserId).toBeUndefined();
+    const stored = await store.getRoute(route.routeId);
+    expect(stored?.target.kind).toBe("session");
+    expect(stored?.target.kind === "session" ? stored.target.ownerUserId : "n/a").toBeUndefined();
+  });
+
   it("rejects malformed route fields on create and update", async () => {
     const valid = {
       eventType: "test:route",

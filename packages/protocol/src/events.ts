@@ -162,6 +162,15 @@ export type RouteTarget =
       wake?: boolean;
       /** What to do when this existing session is offline; legacy `wake: true` means `wake`. */
       offlinePolicy?: "wait" | "wake" | "fail";
+      /**
+       * Config routes only: the principal that owns the target session. Only
+       * a session registered by this user receives the route's deliveries,
+       * and the target id stays reserved for them after the session's
+       * ownership row is pruned. Defaults to the route's `ownerUserId`; a
+       * config session route with neither is rejected. Ignored (stripped) on
+       * API-created routes, whose target ownership is checked at write time.
+       */
+      ownerUserId?: string;
     }
   | { kind: "spawn"; spec: SpawnSpec };
 
@@ -300,6 +309,19 @@ export function routeMatchesOwner(route: Pick<Route, "origin" | "ownerUserId">, 
   return eventOwnerUserId !== undefined && route.ownerUserId === eventOwnerUserId;
 }
 
+/**
+ * The principal a config session route's target is bound to: the target's
+ * declared owner, else the route's tenant. `null` = unbound (fail closed:
+ * no session may receive it or reclaim its id). `undefined` = not a config
+ * session route.
+ */
+export function configTargetPrincipal(
+  route: Pick<Route, "origin" | "ownerUserId" | "target">,
+): string | null | undefined {
+  if (route.origin !== "config" || route.target.kind !== "session") return undefined;
+  return route.target.ownerUserId ?? route.ownerUserId ?? null;
+}
+
 export function isTriggerEvent(v: unknown): v is TriggerEvent {
   return (
     isRecord(v) &&
@@ -319,7 +341,8 @@ export function isRouteTarget(v: unknown): v is RouteTarget {
       && v.sessionId.length > 0
       && (v.runnerId === undefined || typeof v.runnerId === "string")
       && (v.wake === undefined || typeof v.wake === "boolean")
-      && (v.offlinePolicy === undefined || v.offlinePolicy === "wait" || v.offlinePolicy === "wake" || v.offlinePolicy === "fail");
+      && (v.offlinePolicy === undefined || v.offlinePolicy === "wait" || v.offlinePolicy === "wake" || v.offlinePolicy === "fail")
+      && (v.ownerUserId === undefined || (typeof v.ownerUserId === "string" && v.ownerUserId.length > 0));
   }
   if (v.kind === "spawn") {
     if (!isRecord(v.spec)) return false;
