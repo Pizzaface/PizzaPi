@@ -548,6 +548,57 @@ describe("review R18 — cluster/container CLI global options", () => {
     }
 });
 
+describe("review R2-2 — unknown global options fail closed; file-writing options are mutations", () => {
+    const blocked = [
+        // --as-user-extra takes a value: real kubectl runs `delete`.
+        "kubectl --as-user-extra get delete pod x",
+        "oc --as-user-extra get delete pod x",
+        // Profiling writes a file (default ./profile.pprof, or --profile-output).
+        "kubectl --profile cpu --profile-output /tmp/target version --client",
+        "kubectl --profile=cpu get pods",
+        "kubectl get pods --profile heap",
+        "kubectl --profile-output=/tmp/target get pods",
+        "kubectl --log-file /tmp/x get pods",
+        "kubectl get pods --log-dir=/tmp/x",
+        // Any option the classifier does not know, before the subcommand is
+        // identified, might take a value that shifts the subcommand.
+        "kubectl --some-future-flag get delete pod x",
+        "kubectl --some-future-flag get pods",
+        "helm --some-future-flag list uninstall rel",
+        "docker --some-future-flag ps rm x",
+        "podman --some-future-flag ps rm x",
+        "nerdctl --some-future-flag ps rm x",
+        "docker compose --some-future-flag ps up",
+        "kubectl config --some-future-flag view delete-context prod",
+        "kubectl -Zfoo get pods",
+    ];
+    for (const cmd of blocked) {
+        test(`${cmd} → blocked in both modes`, () => expect(bothModes(cmd)).toEqual([true, true]));
+    }
+
+    const allowed = [
+        "kubectl --as-user-extra=reviewer get pods",
+        "kubectl --as-user-extra k=v get pods",
+        "kubectl --profile none get pods",
+        "kubectl --profile=none get pods",
+        "kubectl --some-future-flag=x get pods",
+        "kubectl --warnings-as-errors get pods",
+        "kubectl --match-server-version get pods",
+        "kubectl -nkube-system get pods",
+        "kubectl -n=kube-system get pods",
+        "docker -v",
+        "docker --version",
+        "docker --tls --tlsverify ps",
+        "podman -r ps",
+        "nerdctl --debug ps",
+        "helm --kube-insecure-skip-tls-verify list",
+        "docker compose --dry-run ps",
+    ];
+    for (const cmd of allowed) {
+        test(`${cmd} → allowed in both modes`, () => expect(bothModes(cmd)).toEqual([false, false]));
+    }
+});
+
 describe("F20 — redirections", () => {
     test("<> read-write redirect creates files → blocked (no-sandbox)", () => {
         expect(noSandbox("cat <>newfile")).toBe(true);

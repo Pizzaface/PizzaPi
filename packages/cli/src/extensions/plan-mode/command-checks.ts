@@ -351,9 +351,12 @@ const HELM_READ_SUBCOMMANDS = new Set([
  * Only options that *require* a value belong here: listing a boolean flag
  * would make it swallow the real subcommand (`docker -D rm ps` must not be
  * read as `ps`). Attached forms (`--namespace=x`, `-nx`) are a single token
- * and need no entry. Unknown flags are treated as boolean, so an unlisted
- * value-taking flag leaves its value in subcommand position, which is then
- * classified (and normally blocked) as if it were the subcommand.
+ * and need no entry.
+ *
+ * Fail closed (review R2-2): before a subcommand is identified, a separate
+ * option token that is in neither this table nor the tool's boolean table
+ * might take a value (`kubectl --as-user-extra get delete pod x` runs
+ * `delete`), so the command is treated as destructive.
  */
 const DOCKER_GLOBAL_VALUE_OPTIONS = [
     "-c", "--context", "-H", "--host", "-l", "--log-level", "--config",
@@ -376,7 +379,7 @@ const KUBECTL_GLOBAL_VALUE_OPTIONS = [
     "--client-key", "--request-timeout", "--tls-server-name", "-v", "--v", "--vmodule", "--cache-dir",
     "--username", "--password", "--profile", "--profile-output", "--log-file", "--log-dir",
     "--log-file-max-size", "--log-backtrace-at", "--stderrthreshold", "--kuberc",
-    "--log-flush-frequency", "--config",
+    "--log-flush-frequency", "--config", "--as-user-extra",
 ];
 const HELM_GLOBAL_VALUE_OPTIONS = [
     "-n", "--namespace", "--kube-context", "--kubeconfig", "--kube-apiserver", "--kube-as-group",
@@ -388,6 +391,32 @@ const COMPOSE_VALUE_OPTIONS = [
     "-f", "--file", "-p", "--project-name", "--profile", "--env-file", "--project-directory",
     "--ansi", "--parallel", "--progress",
 ];
+/** Global options known to take no value (they never consume the next word). */
+const COMMON_BOOLEAN_OPTIONS = ["-h", "--help"];
+const DOCKER_GLOBAL_BOOLEAN_OPTIONS = ["-D", "--debug", "--tls", "--tlsverify", "-v", "--version"];
+const PODMAN_GLOBAL_BOOLEAN_OPTIONS = ["-r", "--remote", "--syslog", "--noout", "--transient-store", "-v", "--version"];
+const NERDCTL_GLOBAL_BOOLEAN_OPTIONS = ["--debug", "--debug-full", "--experimental", "--insecure-registry", "-v", "--version"];
+const KUBECTL_GLOBAL_BOOLEAN_OPTIONS = [
+    "--insecure-skip-tls-verify", "--match-server-version", "--warnings-as-errors", "--disable-compression",
+    "--logtostderr", "--alsologtostderr", "--add-dir-header", "--skip-headers", "--skip-log-headers",
+    "--one-output",
+];
+const HELM_GLOBAL_BOOLEAN_OPTIONS = ["--debug", "--kube-insecure-skip-tls-verify"];
+const COMPOSE_BOOLEAN_OPTIONS = ["--dry-run", "--compatibility", "--all-resources"];
+const CLUSTER_GLOBAL_BOOLEAN_OPTIONS: Record<string, ReadonlySet<string>> = {
+    docker: new Set([...COMMON_BOOLEAN_OPTIONS, ...DOCKER_GLOBAL_BOOLEAN_OPTIONS]),
+    podman: new Set([...COMMON_BOOLEAN_OPTIONS, ...PODMAN_GLOBAL_BOOLEAN_OPTIONS]),
+    nerdctl: new Set([...COMMON_BOOLEAN_OPTIONS, ...NERDCTL_GLOBAL_BOOLEAN_OPTIONS]),
+    kubectl: new Set([...COMMON_BOOLEAN_OPTIONS, ...KUBECTL_GLOBAL_BOOLEAN_OPTIONS]),
+    oc: new Set([...COMMON_BOOLEAN_OPTIONS, ...KUBECTL_GLOBAL_BOOLEAN_OPTIONS]),
+    helm: new Set([...COMMON_BOOLEAN_OPTIONS, ...HELM_GLOBAL_BOOLEAN_OPTIONS]),
+};
+/**
+ * kubectl/oc options that write a file wherever they appear: `--profile`
+ * (other than `none`) writes `./profile.pprof` or `--profile-output`, and the
+ * klog options write log files.
+ */
+const KUBECTL_FILE_WRITING_OPTIONS = ["--profile", "--profile-output", "--log-file", "--log-dir"];
 const CLUSTER_GLOBAL_VALUE_OPTIONS: Record<string, ReadonlySet<string>> = {
     docker: new Set(DOCKER_GLOBAL_VALUE_OPTIONS),
     podman: new Set(PODMAN_GLOBAL_VALUE_OPTIONS),
@@ -398,16 +427,22 @@ const CLUSTER_GLOBAL_VALUE_OPTIONS: Record<string, ReadonlySet<string>> = {
 };
 const COMPOSE_VALUE_OPTION_SET: ReadonlySet<string> = new Set(COMPOSE_VALUE_OPTIONS);
 const HELP_VERSION_WORDS = new Set(["--help", "-h", "--version"]);
+/** Stand-in "subcommand" for an unclassifiable option; never on a read allowlist. */
+const UNKNOWN_OPTION = "\0unknown-option";
 
 /**
  * Return the next positional word at or after `start`, skipping option
  * flags and consuming the separate value of each option in `valueOptions`.
  * `--help`/`-h`/`--version` count as positional so they can be classified.
+ * A separate option token in neither `valueOptions` nor `booleanOptions`
+ * yields {@link UNKNOWN_OPTION}: it might take a value and so hide the real
+ * positional, and callers must treat it as unsafe.
  */
 function nextClusterPositional(
     words: string[],
     start: number,
     valueOptions: ReadonlySet<string>,
+    booleanOptions: ReadonlySet<string>,
 ): { word: string; next: number } {
     let i = start;
     while (i < words.length) {
@@ -415,12 +450,39 @@ function nextClusterPositional(
         if (w === "--") return { word: words[i + 1] ?? "", next: i + 2 };
         if (HELP_VERSION_WORDS.has(w)) return { word: w, next: i + 1 };
         if (w.startsWith("-") && w.length > 1) {
-            i += valueOptions.has(w) ? 2 : 1;
-            continue;
+            if (valueOptions.has(w)) { i += 2; continue; }
+            // Self-contained forms cannot consume the next word:
+            // `--opt=value`, a known boolean, or an attached short value (`-nx`, `-n=x`).
+            if (
+                (w.startsWith("--") && w.includes("=")) ||
+                booleanOptions.has(w) ||
+                (!w.startsWith("--") && valueOptions.has(w.slice(0, 2)))
+            ) {
+                i += 1;
+                continue;
+            }
+            return { word: UNKNOWN_OPTION, next: i + 1 };
         }
         return { word: w, next: i + 1 };
     }
     return { word: "", next: i };
+}
+
+/** Does a kubectl/oc command use an option that writes a local file? */
+function usesKubectlFileWritingOption(words: string[]): boolean {
+    for (let i = 1; i < words.length; i++) {
+        const w = words[i];
+        if (w === "--") break;
+        for (const opt of KUBECTL_FILE_WRITING_OPTIONS) {
+            let value: string | undefined;
+            if (w === opt) value = words[i + 1] ?? "";
+            else if (w.startsWith(`${opt}=`)) value = w.slice(opt.length + 1);
+            else continue;
+            if (opt === "--profile" && value === "none") continue;
+            return true;
+        }
+    }
+    return false;
 }
 
 /** docker/podman/nerdctl, kubectl/oc and helm: allowlist of read-only subcommands. */
@@ -433,13 +495,21 @@ export function isDestructiveClusterCommand(segment: string): boolean {
     // Skip global options (consuming their values) to find the subcommand,
     // then do the same for a second-level subcommand (`config view`,
     // `compose -f x.yml ps`). Global options may also appear between them.
-    const first = nextClusterPositional(all, 1, globalValueOptions);
+    const globalBooleanOptions = CLUSTER_GLOBAL_BOOLEAN_OPTIONS[tool];
+    if ((tool === "kubectl" || tool === "oc") && usesKubectlFileWritingOption(all)) return true;
+    const first = nextClusterPositional(all, 1, globalValueOptions, globalBooleanOptions);
+    if (first.word === UNKNOWN_OPTION) return true;
     const sub = first.word.toLowerCase();
     if (!sub) return false;
     const secondValueOptions = sub === "compose"
         ? new Set([...globalValueOptions, ...COMPOSE_VALUE_OPTION_SET])
         : globalValueOptions;
-    const sub2 = nextClusterPositional(all, first.next, secondValueOptions).word.toLowerCase();
+    const secondBooleanOptions = sub === "compose"
+        ? new Set([...globalBooleanOptions, ...COMPOSE_BOOLEAN_OPTIONS])
+        : globalBooleanOptions;
+    // An unknown option here yields UNKNOWN_OPTION, which no second-level
+    // allowlist contains, so it fails closed wherever sub2 is consulted.
+    const sub2 = nextClusterPositional(all, first.next, secondValueOptions, secondBooleanOptions).word.toLowerCase();
     if (tool === "docker" || tool === "podman" || tool === "nerdctl") {
         if (CONTAINER_READ_SUBCOMMANDS.has(sub)) return false;
         if (CONTAINER_GROUP_SUBCOMMANDS.has(sub)) return !CONTAINER_READ_SECOND_LEVEL.has(sub2);
