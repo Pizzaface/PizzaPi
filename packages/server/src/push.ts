@@ -1,5 +1,6 @@
 import webpush from "web-push";
 import https from "node:https";
+import { isIP } from "node:net";
 import { getKysely } from "./auth.js";
 import {
     createPinnedLookup,
@@ -137,7 +138,8 @@ export interface WebPushTransportDeps {
  *      public unicast address (loopback, RFC1918, link-local, CGNAT, ULA, …),
  *   3. connects with a pinned `lookup` that only returns those validated
  *      addresses, so DNS rebinding between check and connect is ineffective.
- * The original hostname is kept for TLS SNI and certificate verification.
+ * A DNS hostname is kept for TLS SNI and certificate verification; IP-literal
+ * endpoints send no SNI and are verified against their bare address.
  * Redirects are never followed (a 3xx is treated as a delivery failure).
  *
  * Rejects with `webpush.WebPushError` (carrying `statusCode`) on non-2xx.
@@ -154,13 +156,21 @@ export async function sendWebPushPinned(
     const endpoint = new URL(requestDetails.endpoint);
     const addresses = await resolvePublicAddresses(endpoint.hostname, deps.lookupHost);
     const doRequest = deps.request ?? https.request;
+    // URL.hostname brackets IPv6 literals ("[2001:db8::1]"). The TLS layer
+    // verifies the certificate against `servername` when one is given, so a
+    // bracketed (or any IP) servername would be matched as a DNS name and fail
+    // against the certificate's IP SAN. SNI must not carry an IP literal anyway
+    // (RFC 6066 §3): omit it for IP endpoints so verification uses the bare
+    // connect address, and keep the DNS hostname for everything else.
+    const host = endpoint.hostname.replace(/^\[(.*)\]$/, "$1");
+    const servername = isIP(host) ? undefined : host;
 
     return new Promise((resolve, reject) => {
         const req = doRequest(
             {
                 protocol: "https:",
-                hostname: endpoint.hostname.replace(/^\[(.*)\]$/, "$1"),
-                servername: endpoint.hostname,
+                hostname: host,
+                ...(servername ? { servername } : {}),
                 port: endpoint.port || 443,
                 path: `${endpoint.pathname}${endpoint.search}`,
                 method: requestDetails.method,

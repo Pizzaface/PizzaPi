@@ -3,6 +3,8 @@ import { createTestAuthContext, getKysely, runWithAuthContext } from "./auth.js"
 import { unsubscribePush, updateSuppressChildNotifications, getSubscriptionsForUser, isValidPushEndpoint, registerNativePush, unregisterNativePush, getNativeRegistrationsForUser, ensureNativePushRegistrationTable, sendPushToUser, updateNativeSuppressChildNotifications, sendWebPushPinned } from "./push.js";
 import { createECDH, randomBytes } from "crypto";
 import { EventEmitter } from "events";
+import https from "https";
+import type { AddressInfo } from "net";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -1021,6 +1023,75 @@ describe("sendWebPushPinned", () => {
             expect(err?.statusCode).toBe(status);
             expect(captured).toHaveLength(1);
         }
+    });
+
+    // Self-signed cert whose only SAN is the public IPv6 literal below (valid to 2126).
+    const IPV6_PUSH_HOST = "2606:4700:4700::1111";
+    const IPV6_PUSH_KEY = `-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgFjnkZtrH0WlQs4t0
+Ba/EDdMNW6DUBiemKjGHnWzWV5ChRANCAAS6Muyey2PcIRo6wAPzQrp9j5AoipIo
+1HU3h0xyRSACfPK/WbFVcihVXk2lRXqI3fWBn+PBhzAvc6UkH3yt5jR3
+-----END PRIVATE KEY-----
+`;
+    const IPV6_PUSH_CERT = `-----BEGIN CERTIFICATE-----
+MIIBrDCCAVKgAwIBAgIUAIIm7j7kj/DyvJaXC4jZPcY4UYYwCgYIKoZIzj0EAwIw
+HDEaMBgGA1UEAwwRcGl6emFwaSBwdXNoIHRlc3QwIBcNMjYxMDA1MDE1MjM1WhgP
+MjEyNjA5MTEwMTUyMzVaMBwxGjAYBgNVBAMMEXBpenphcGkgcHVzaCB0ZXN0MFkw
+EwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEujLsnstj3CEaOsAD80K6fY+QKIqSKNR1
+N4dMckUgAnzyv1mxVXIoVV5NpUV6iN31gZ/jwYcwL3OlJB98reY0d6NwMG4wHQYD
+VR0OBBYEFDig7N4l4Akq1qnW37O2ls0paQ3QMB8GA1UdIwQYMBaAFDig7N4l4Akq
+1qnW37O2ls0paQ3QMBsGA1UdEQQUMBKHECYGRwBHAAAAAAAAAAAAEREwDwYDVR0T
+AQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiByjpa/O9jqKNGoKvWtTS8rtSaH
+C69bK5zKOmdM0VXxKgIhAPl+gECTUwcKluIcJBT+E08ovD7Bkvg5Dd9b31DsgBi1
+-----END CERTIFICATE-----
+`;
+
+    it("verifies an IPv6-literal endpoint's certificate against its bare address (real TLS handshake)", async () => {
+        const server = https.createServer({ key: IPV6_PUSH_KEY, cert: IPV6_PUSH_CERT }, (_req, res) => {
+            res.statusCode = 201;
+            res.end();
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+        try {
+            const { port } = server.address() as AddressInfo;
+            const captured: any[] = [];
+            // The sandbox has no route to the public IPv6 address, so only the
+            // socket is redirected to loopback. The TLS identity check is real:
+            // it runs against the options' servername, or — as Node/Bun do when
+            // SNI is omitted — the connect host the endpoint names.
+            const request = ((options: any, onResponse: any) => {
+                captured.push(options);
+                const { lookup: _lookup, ...rest } = options;
+                return https.request({
+                    ...rest,
+                    hostname: "127.0.0.1",
+                    servername: options.servername ?? options.hostname,
+                    ca: IPV6_PUSH_CERT,
+                }, onResponse);
+            }) as any;
+            const result = await sendWebPushPinned(
+                makeSubscription(`https://[${IPV6_PUSH_HOST}]:${port}/push/v1/abc`),
+                "{}",
+                { lookupHost: async () => { throw new Error("IP literals must not be resolved"); }, request },
+            );
+            expect(result.statusCode).toBe(201);
+            expect(captured[0].hostname).toBe(IPV6_PUSH_HOST);
+            // No SNI for IP literals (RFC 6066), and never the bracketed URL form.
+            expect(captured[0].servername).toBeUndefined();
+        } finally {
+            server.close();
+        }
+    });
+
+    it("sends no SNI for IPv4-literal endpoints and keeps the DNS name otherwise", async () => {
+        const captured: any[] = [];
+        await sendWebPushPinned(
+            makeSubscription("https://142.250.80.10/push"),
+            "{}",
+            { lookupHost: async () => [], request: fakeRequest(201, captured) },
+        );
+        expect(captured[0].hostname).toBe("142.250.80.10");
+        expect(captured[0].servername).toBeUndefined();
     });
 
     it("refuses stored endpoints that fail textual validation without resolving or connecting", async () => {
