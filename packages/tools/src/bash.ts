@@ -1,7 +1,7 @@
 import { Type } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { exec } from "child_process";
-import { wrapCommand, getSandboxEnv, isSandboxActive } from "./sandbox.js";
+import { wrapCommand, getSandboxEnv, isSandboxActive, isSandboxRequiredButUnavailable } from "./sandbox.js";
 import { resolvePosixShell } from "./posix-shell.js";
 
 // ── Internal types for dependency injection (used in tests) ───────────────────
@@ -9,6 +9,7 @@ import { resolvePosixShell } from "./posix-shell.js";
 export interface BashDeps {
     execFn: typeof exec;
     isSandboxActiveFn: () => boolean;
+    isSandboxRequiredButUnavailableFn: () => boolean;
     getSandboxEnvFn: () => Record<string, string>;
     wrapCommandFn: (cmd: string) => Promise<string>;
 }
@@ -18,6 +19,7 @@ export interface BashDeps {
 export function createBashTool(deps?: Partial<BashDeps>): AgentTool {
     const execFn = deps?.execFn ?? exec;
     const isSandboxActiveFn = deps?.isSandboxActiveFn ?? isSandboxActive;
+    const isSandboxRequiredButUnavailableFn = deps?.isSandboxRequiredButUnavailableFn ?? isSandboxRequiredButUnavailable;
     const getSandboxEnvFn = deps?.getSandboxEnvFn ?? getSandboxEnv;
     const wrapCommandFn = deps?.wrapCommandFn ?? wrapCommand;
 
@@ -59,6 +61,16 @@ export function createBashTool(deps?: Partial<BashDeps>): AgentTool {
 
             let command: string = params.command;
             let env: NodeJS.ProcessEnv = process.env;
+
+            // Fail closed: an explicitly required sandbox that could not be
+            // enabled must not degrade to running the command directly.
+            if (isSandboxRequiredButUnavailableFn()) {
+                const text = "❌ Sandbox blocked: the sandbox was required but is not active, so commands cannot run.";
+                return {
+                    content: [{ type: "text" as const, text }],
+                    details: { command: params.command, stdout: "", stderr: text, sandboxBlocked: true },
+                };
+            }
 
             // Sandbox integration: wrap command and inject proxy env vars
             if (isSandboxActiveFn()) {

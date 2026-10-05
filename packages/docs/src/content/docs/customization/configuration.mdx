@@ -385,6 +385,7 @@ Only the settings listed here have environment-variable overrides. Overrides app
 | `PIZZAPI_DISABLED_RUNNER_SERVICES` | `disabledRunnerServices` | Comma-separated list of service IDs to skip (e.g. `git,time`) |
 | `PIZZAPI_SANDBOX` | `sandbox.mode` | Override sandbox mode: `none`, `basic`, or `full` ([Sandbox](/PizzaPi/security/sandbox/)) |
 | `PIZZAPI_NO_SANDBOX` | — | Set to `1` to disable sandbox (shorthand for `none`) ([Sandbox](/PizzaPi/security/sandbox/)) |
+| `PIZZAPI_SANDBOX_ALLOW_UNSANDBOXED` | unset | Set to `1` or `true` to let an explicitly requested sandbox (`--sandbox`, `PIZZAPI_SANDBOX`, or `sandbox.mode` in `~/.pizzapi/config.json`) degrade to unsandboxed execution when it cannot be enabled, instead of refusing to start ([Sandbox](/PizzaPi/security/sandbox/#when-the-sandbox-cannot-be-enabled)) |
 | `PIZZAPI_DEBUG` | — | Set to `1` for debug-level PizzaPi CLI logging, including de-duplicated config warnings. |
 | `PIZZAPI_LOG_PROVIDER_REQUEST` | — | Set to `1` to log summarized outbound Anthropic `/v1/messages` request data for diagnostics. Authorization headers are fingerprinted, not printed raw. |
 | `PIZZAPI_HIDDEN_MODELS` | — | JSON array of `provider/modelId` keys hidden from model listing/switching in worker sessions. Usually seeded and updated by the relay from the user's web preferences. |

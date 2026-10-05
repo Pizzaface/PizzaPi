@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { createBashToolDefinition, truncateTail } from "@earendil-works/pi-coding-agent";
+import { isSandboxRequiredButUnavailable } from "@pizzapi/tools";
 import { loadConfig } from "../config.js";
 import { SHELL_PROC_CAPTURE_PREFIX, sessionJobsFilePath, readSessionJobs } from "../runner/session-procs.js";
 export { tailFile } from "../runner/session-procs.js";
@@ -379,6 +380,12 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
         nextRunInBackground = false;
         nextTitle = "";
         if (signal?.aborted) throw new Error("aborted");
+        // Fail closed: never run a model command directly when the user
+        // required a sandbox that could not be enabled. Startup normally
+        // aborts first; this guards callers that swallowed that error.
+        if (isSandboxRequiredButUnavailable()) {
+            throw new Error("Sandbox blocked: the sandbox was required but is not active, so commands cannot run.");
+        }
 
         const logPath = join(tmpdir(), `pizzapi-bash-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.log`);
         const log = createWriteStream(logPath);

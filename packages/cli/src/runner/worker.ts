@@ -2,7 +2,7 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, readStoredCred
 import { SHELL_PROC_CAPTURE_PREFIX } from "./session-procs.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv, resolveExplicitProjectTrust } from "../config.js";
+import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, shouldSandboxFailClosed, loadGlobalConfig, applyProviderSettingsEnv, resolveExplicitProjectTrust } from "../config.js";
 import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride, loadRules } from "../skills.js";
 import { getPluginSkillPaths, getPluginPromptTemplatePaths } from "../extensions/claude-plugins.js";
 import { setRegisteredCommandsProvider } from "../extensions/command-introspection.js";
@@ -340,10 +340,26 @@ async function main(): Promise<void> {
         sandboxConfig.srtConfig = overridden.srtConfig;
     }
 
+    // An explicitly requested sandbox fails closed: if it cannot be enabled
+    // the worker aborts instead of letting bash run with runner-account
+    // authority. PIZZAPI_SANDBOX_ALLOW_UNSANDBOXED=1 restores degradation.
+    const sandboxFailClosed = shouldSandboxFailClosed({
+        effectiveMode: sandboxConfig.mode,
+        override: sandboxOverride,
+        globalMode: loadGlobalConfig().sandbox?.mode,
+        env: process.env,
+    });
     try {
-        await initSandbox(sandboxConfig);
+        await initSandbox(sandboxConfig, { failClosed: sandboxFailClosed });
     } catch (err) {
-        logWarn(`sandbox init failed, continuing unsandboxed: ${err instanceof Error ? err.message : String(err)}`);
+        const msg = err instanceof Error ? err.message : String(err);
+        if (sandboxFailClosed) {
+            throw new Error(
+                `Refusing to start: ${msg}. The sandbox was explicitly requested, so the session will not run unsandboxed. ` +
+                "Fix the sandbox dependencies, choose sandbox mode \"none\", or set PIZZAPI_SANDBOX_ALLOW_UNSANDBOXED=1 to allow running unsandboxed.",
+            );
+        }
+        logWarn(`sandbox init failed, continuing unsandboxed: ${msg}`);
     }
     if (isSandboxActive()) {
         process.env.PIZZAPI_SANDBOX_ACTIVE = "1";

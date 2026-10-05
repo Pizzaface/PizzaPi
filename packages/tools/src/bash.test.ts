@@ -40,6 +40,7 @@ let capturedOpts: { timeout?: number; env?: NodeJS.ProcessEnv; maxBuffer?: numbe
 let sandboxActive = false;
 let sandboxEnvVars: Record<string, string> = {};
 let wrapCommandThrows = false;
+let sandboxRequiredButUnavailable = false;
 
 // Helpers to set mock state
 function setSuccess(stdout: string, stderr = "") {
@@ -59,6 +60,7 @@ function resetMockState() {
     sandboxActive = false;
     sandboxEnvVars = {};
     wrapCommandThrows = false;
+    sandboxRequiredButUnavailable = false;
 }
 
 // ── Build the mock exec function ──────────────────────────────────────────────
@@ -111,6 +113,7 @@ function mockExecCallback(
 const testTool = createBashTool({
     execFn: mockExecCallback as typeof exec,
     isSandboxActiveFn: () => sandboxActive,
+    isSandboxRequiredButUnavailableFn: () => sandboxRequiredButUnavailable,
     getSandboxEnvFn: () => ({ ...sandboxEnvVars }),
     wrapCommandFn: async (cmd: string) => {
         if (wrapCommandThrows) throw new Error("sandbox denied: path not allowed");
@@ -193,6 +196,17 @@ describe("bashTool", () => {
             expect(capturedOpts.env?.PATH).toBeDefined();
             sandboxActive = false;
             sandboxEnvVars = {};
+        });
+
+        // F18: a required sandbox that failed to initialize must not fall
+        // back to running the command directly.
+        test("blocks without executing when a required sandbox is unavailable", async () => {
+            sandboxRequiredButUnavailable = true;
+            setSuccess("should-not-run");
+            const result = await execBash("echo ok");
+            expect(result.details.sandboxBlocked).toBe(true);
+            expect(result.content[0].text).toContain("Sandbox blocked");
+            expect(_capturedCmd).toBe("");
         });
 
         test("returns sandboxBlocked=true when wrapCommand throws", async () => {

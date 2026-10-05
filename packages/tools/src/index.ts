@@ -12,6 +12,8 @@ export {
     validatePath,
     getSandboxEnv,
     isSandboxActive,
+    isSandboxRequiredButUnavailable,
+    SandboxUnavailableError,
     setReadOnlyOverlay,
     isReadOnlyOverlay,
     getSandboxMode,
