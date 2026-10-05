@@ -47,7 +47,9 @@ function deriveKid(secret: string): string {
  * unconfigured deploys keep working without code changes.
  *
  * Rotation: set PIZZAPI_TUNNEL_TOKEN_SECRET_PREVIOUS to the old secret;
- * tokens signed with it are still accepted until they expire (up to 1 h).
+ * tokens signed with it are still accepted until they expire. Callers may
+ * request lifetimes up to LABEL_MAX_TTL_HOURS (168 h) and the UI mints 24 h
+ * tokens, so keep the previous secret for the longest lifetime issued.
  */
 function getTunnelSecret(): string {
     return process.env.PIZZAPI_TUNNEL_TOKEN_SECRET ?? getAuthContext().config.secret;

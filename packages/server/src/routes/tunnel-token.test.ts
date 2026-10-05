@@ -205,6 +205,37 @@ describe("tunnel token — rotation (previous secret)", () => {
         });
     });
 
+    test("previous-key tokens stay valid for their full requested lifetime (up to 168 h), not 1 h", () => {
+        const ctx = createTestAuthContext({ dbPath: ":memory:", secret: "auth-secret-aaaaaaaaaaaaaaaaaaaaaa" });
+        const oldSecret = "old-secret-gggggggggggggggggggggggggggg";
+        const newSecret = "new-secret-hhhhhhhhhhhhhhhhhhhhhhhhhhhh";
+        const HOUR = 3600 * 1000;
+        // Longest lifetime handleTunnelTokenMint accepts (LABEL_MAX_TTL_HOURS).
+        const maxTtlMs = 168 * HOUR;
+
+        let oldToken: string;
+        withEnv({ PIZZAPI_TUNNEL_TOKEN_SECRET: oldSecret, PIZZAPI_TUNNEL_TOKEN_SECRET_PREVIOUS: undefined }, () => {
+            runWithAuthContext(ctx, () => {
+                oldToken = createTunnelToken({ userId: "u-1", sessionId: "s-1", port: 3000, ttlMs: maxTtlMs }, 0).token;
+            });
+        });
+
+        withEnv({ PIZZAPI_TUNNEL_TOKEN_SECRET: newSecret, PIZZAPI_TUNNEL_TOKEN_SECRET_PREVIOUS: oldSecret }, () => {
+            runWithAuthContext(ctx, () => {
+                // Well past the 1 h the rotation guide used to assume.
+                expect(verifyTunnelToken(oldToken!, 2 * HOUR)).not.toBeNull();
+                expect(verifyTunnelToken(oldToken!, maxTtlMs - HOUR)).not.toBeNull();
+                expect(verifyTunnelToken(oldToken!, maxTtlMs + 1_000)).toBeNull();
+            });
+        });
+        // Dropping the previous secret early cuts those live links off.
+        withEnv({ PIZZAPI_TUNNEL_TOKEN_SECRET: newSecret, PIZZAPI_TUNNEL_TOKEN_SECRET_PREVIOUS: undefined }, () => {
+            runWithAuthContext(ctx, () => {
+                expect(verifyTunnelToken(oldToken!, 2 * HOUR)).toBeNull();
+            });
+        });
+    });
+
     test("rejects previous-key token once previous secret is removed", () => {
         const ctx = createTestAuthContext({ dbPath: ":memory:", secret: "auth-secret-aaaaaaaaaaaaaaaaaaaaaa" });
 
