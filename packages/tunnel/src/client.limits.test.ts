@@ -126,6 +126,43 @@ describe("TunnelClient response backpressure", () => {
       server.close();
     }
   });
+
+  test("a response-pause received before the response headers is applied once they arrive", async () => {
+    // Headers (and the body right behind them) are delayed, so the relay's
+    // pause lands while the request is active but has no local response yet.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const server = createServer((_req, res) => {
+      void gate.then(() => {
+        res.writeHead(200, { "content-type": "application/octet-stream" });
+        for (let i = 0; i < 8; i++) res.write(Buffer.alloc(1024, 0x62));
+        res.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no address");
+    try {
+      const client = newClient();
+      client.exposePort(address.port);
+      const { sent } = attachMockRelay(client);
+      startGet(client, "r-early", address.port);
+      (client as any).handleMessage(JSON.stringify({ type: "response-pause", id: "r-early" }));
+      expect((client as any).activeRequests.get("r-early")?.response).toBeNull();
+
+      release();
+      await waitUntil(() => decode(sent).some((m) => m.type === "response-start" && m.id === "r-early"));
+      await sleep(150);
+      expect(dataBytes(sent, "r-early")).toBe(0);
+      expect(decode(sent).some((m) => m.type === "response-data-end" && m.id === "r-early")).toBe(false);
+
+      (client as any).handleMessage(JSON.stringify({ type: "response-resume", id: "r-early" }));
+      await waitUntil(() => decode(sent).some((m) => m.type === "response-data-end" && m.id === "r-early"));
+      expect(dataBytes(sent, "r-early")).toBe(8 * 1024);
+    } finally {
+      server.close();
+    }
+  });
 });
 
 describe("TunnelClient request-body backpressure and limits", () => {

@@ -657,6 +657,9 @@ export class TunnelClient extends EventEmitter {
           this.send({ type: "response-data", id, data: chunk.toString("binary") });
           this.applyRelaySocketBackpressure(id, active);
         });
+        // Apply flow state that arrived before the headers (a response-pause
+        // from the relay) now that there is a local response to pause.
+        this.updateResponseFlow(active);
 
         response.on("end", () => finalizeResponse());
         response.on("error", (error) => finalizeResponse(error instanceof Error ? error : new Error(String(error))));
