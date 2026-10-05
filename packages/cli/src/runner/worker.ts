@@ -371,9 +371,6 @@ async function main(): Promise<void> {
         logWarn("sandbox was requested but is not active (platform unsupported or init failed)");
     }
     bootTimer.end("[boot] sandbox");
-    // Tell the daemon the security-critical startup phase passed, so it can
-    // report session_ready to the relay (see worker-startup.ts).
-    reportWorkerStartupReady();
 
     // ── Agent session config ───────────────────────────────────────────────
     // When spawned "as" an agent, these env vars carry the agent definition.
@@ -900,6 +897,13 @@ async function main(): Promise<void> {
         logInfo("[worker] daemon gone; shutting down");
         void shutdown();
     });
+
+    // Tell the daemon the whole boot chain (sandbox, project trust, resource
+    // and plugin loading, model runtime, session creation, extension/relay
+    // binding) succeeded, so it can report session_ready to the relay. Any
+    // earlier fatal error is reported as a startup error instead (see
+    // main().catch and worker-startup.ts).
+    reportWorkerStartupReady();
 
     // Keep the process alive; work happens via relay/websocket events.
     await new Promise<void>(() => {});

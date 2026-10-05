@@ -1843,8 +1843,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             const doSpawn = () => {
                 try {
                     // Report session_ready only once the worker confirms its
-                    // startup (sandbox stage) succeeded; a worker that refuses
-                    // to start (e.g. fail-closed sandbox) yields session_error.
+                    // full startup chain succeeded; a worker that refuses
+                    // to start (fail-closed sandbox, or any later fatal boot error) yields session_error.
                     const onStartup = (result: WorkerStartupResult) => {
                         if (result.ok) {
                             socket.emit("session_ready", { sessionId });

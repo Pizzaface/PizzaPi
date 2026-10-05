@@ -9,7 +9,9 @@
  *
  * Now the worker reports the outcome of its security-critical startup phase
  * over the IPC channel:
- *   - `{ type: "startup_ready" }` once the sandbox stage has completed;
+ *   - `{ type: "startup_ready" }` once the whole boot chain has completed
+ *     (sandbox, project trust, resource/plugin loading, model runtime,
+ *     session creation and extension binding);
  *   - `{ type: "startup_error", message }` when startup fails before that.
  * The daemon waits for one of those (or for the worker to exit) before it
  * emits `session_ready` / `session_error`. The wait is bounded: if neither
@@ -43,7 +45,7 @@ function truncate(message: string): string {
 
 let startupReported = false;
 
-/** Worker: report that startup (including the sandbox stage) succeeded. */
+/** Worker: report that the full startup chain (including the sandbox stage) succeeded. */
 export function reportWorkerStartupReady(): void {
     if (startupReported) return;
     startupReported = true;

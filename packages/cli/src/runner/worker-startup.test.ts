@@ -194,3 +194,85 @@ describe("project envOverrides cannot disable an operator-required sandbox (revi
         }
     }, 40_000);
 });
+
+// Review R2-12: readiness is reported only after the whole boot chain, so a
+// fatal error after the sandbox stage (here: agentDir is a regular file, which
+// fails resource/model-runtime setup) reaches the daemon as a startup error
+// instead of following an already-reported ready.
+describe("real worker reports post-sandbox boot failures as startup errors (review R2-12)", () => {
+    test("agentDir pointing at a file yields startup_error, not ready", async () => {
+        const { mkdirSync } = await import("node:fs");
+        mkdirSync(join(tmp, ".pizzapi"), { recursive: true });
+        const agentDirFile = join(tmp, "agent-dir-is-a-file");
+        writeFileSync(agentDirFile, "not a directory");
+        writeFileSync(
+            join(tmp, ".pizzapi", "config.json"),
+            JSON.stringify({ sandbox: { mode: "none" }, agentDir: agentDirFile }),
+        );
+        const child = spawn(process.execPath, [join(import.meta.dir, "worker.ts")], {
+            cwd: tmp,
+            env: {
+                PATH: process.env.PATH,
+                HOME: tmp,
+                PIZZAPI_WORKER_CWD: tmp,
+                PIZZAPI_SESSION_ID: "r2-12-test-session",
+                PIZZAPI_RELAY_URL: "http://127.0.0.1:9",
+                PIZZAPI_API_KEY: "test-key",
+                PIZZAPI_NO_MCP: "1",
+                PIZZAPI_NO_PLUGINS: "1",
+                PIZZAPI_NO_RELAY: "1",
+            },
+            stdio: ["ignore", "ignore", "pipe", "ipc"],
+        });
+        let stderr = "";
+        child.stderr?.on("data", (d) => { stderr += String(d); });
+        try {
+            const result = await waitForStartup(child, 30_000);
+            if (result === "none" || result.ok) throw new Error(`expected startup error, got ${JSON.stringify(result)}; stderr:\n${stderr}`);
+            // The worker's own error, not the generic "exited during startup".
+            expect(result.message).not.toContain("exited during startup");
+        } finally {
+            child.kill("SIGKILL");
+        }
+    }, 40_000);
+});
+
+describe("real worker reports ready once fully booted (review R2-12)", () => {
+    test("a healthy worker reaches startup_ready after the full boot chain", async () => {
+        const { mkdirSync } = await import("node:fs");
+        mkdirSync(join(tmp, ".pizzapi"), { recursive: true });
+        writeFileSync(join(tmp, ".pizzapi", "config.json"), JSON.stringify({ sandbox: { mode: "none" } }));
+        const child = spawn(process.execPath, [join(import.meta.dir, "worker.ts")], {
+            cwd: tmp,
+            env: {
+                PATH: process.env.PATH,
+                HOME: tmp,
+                PIZZAPI_WORKER_CWD: tmp,
+                PIZZAPI_SESSION_ID: "r2-12-ok-session",
+                PIZZAPI_RELAY_URL: "http://127.0.0.1:9",
+                PIZZAPI_API_KEY: "test-key",
+                PIZZAPI_NO_MCP: "1",
+                PIZZAPI_NO_PLUGINS: "1",
+                PIZZAPI_NO_RELAY: "1",
+            },
+            stdio: ["ignore", "pipe", "pipe", "ipc"],
+        });
+        let output = "";
+        child.stdout?.on("data", (d) => { output += String(d); });
+        child.stderr?.on("data", (d) => { output += String(d); });
+        try {
+            const result = await waitForStartup(child, 30_000);
+            if (result === "none" || !result.ok || result.timedOut) {
+                throw new Error(`expected ready, got ${JSON.stringify(result)}; output:\n${output}`);
+            }
+            // Ready is reported only after the boot chain finished, which logs
+            // this line first (stdout may be delivered after the IPC message).
+            for (let i = 0; i < 100 && !output.includes("started (cwd="); i++) {
+                await new Promise((r) => setTimeout(r, 20));
+            }
+            expect(output).toContain("started (cwd=");
+        } finally {
+            child.kill("SIGKILL");
+        }
+    }, 40_000);
+});
