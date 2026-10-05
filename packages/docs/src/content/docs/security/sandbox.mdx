@@ -259,6 +259,8 @@ What happens on an unsupported platform, or when sandbox initialization fails (f
 
 A project-local `.pizzapi/config.json` can escalate the mode, but it cannot make startup fail closed by itself.
 
+For runner sessions, the runner reports a new session as ready only after its worker confirms that the sandbox stage passed. When a fail-closed worker refuses to start, the runner reports a spawn error with the worker's reason instead, so the web UI and the spawn API show the failure (the spawn request fails if this happens within its acknowledgement window) rather than a session that disappears. If a worker has not reported within 20 seconds, the runner falls back to reporting it ready; the sandbox is still enforced, because the worker exits before running any tool.
+
 To accept unsandboxed execution for an explicitly requested mode, for example on Windows, set `PIZZAPI_SANDBOX_ALLOW_UNSANDBOXED=1`. You can also choose `none` explicitly.
 
 ---

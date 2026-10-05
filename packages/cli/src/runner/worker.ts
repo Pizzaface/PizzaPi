@@ -190,6 +190,7 @@ import { forwardCliError } from "../extensions/remote.js";
 import { buildPizzaPiExtensionFactories } from "../extensions/factories.js";
 import { armWorkerStartupGate, markWorkerStartupComplete } from "../extensions/worker-startup-gate.js";
 import { runWorkerShutdownHooks } from "../extensions/shutdown-hooks.js";
+import { reportWorkerStartupError, reportWorkerStartupReady } from "./worker-startup.js";
 
 // ── Session metadata / context tracking ──────────────────────────────────
 
@@ -298,7 +299,9 @@ async function main(): Promise<void> {
     try {
         process.chdir(cwd);
     } catch (err) {
-        logError(`failed to chdir to ${cwd}: ${err instanceof Error ? err.message : String(err)}`);
+        const message = `failed to chdir to ${cwd}: ${err instanceof Error ? err.message : String(err)}`;
+        logError(message);
+        await reportWorkerStartupError(message);
         process.exit(1);
     }
 
@@ -368,6 +371,9 @@ async function main(): Promise<void> {
         logWarn("sandbox was requested but is not active (platform unsupported or init failed)");
     }
     bootTimer.end("[boot] sandbox");
+    // Tell the daemon the security-critical startup phase passed, so it can
+    // report session_ready to the relay (see worker-startup.ts).
+    reportWorkerStartupReady();
 
     // ── Agent session config ───────────────────────────────────────────────
     // When spawned "as" an agent, these env vars carry the agent definition.
@@ -899,7 +905,10 @@ async function main(): Promise<void> {
     await new Promise<void>(() => {});
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
     logError(err instanceof Error ? err.stack ?? err.message : String(err));
+    // Before readiness was reported, surface the reason to the daemon (and
+    // from there to the relay as session_error) instead of only stderr.
+    await reportWorkerStartupError(err);
     process.exit(1);
 });

@@ -14,6 +14,7 @@ import {
 import { runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd, refreshAndWriteRunnerUsageCache } from "./runner-usage-cache.js";
 import { recordTranscriptLink } from "./session-transcript-links.js";
 import { isCwdAllowed } from "./workspace.js";
+import { watchWorkerStartup, WORKER_STARTUP_TIMEOUT_MS, type WorkerStartupResult } from "./worker-startup.js";
 import { loadConfig } from "../config.js";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { isStrippedSubprocessEnvName } from "@pizzapi/tools";
@@ -205,6 +206,16 @@ export function spawnSession(
          * relay event may still fire later and re-run the same cleanup.
          */
         onSessionExit?: (sessionId: string) => void;
+        /**
+         * Called once with the worker's startup outcome (see worker-startup.ts):
+         * ok after the worker reports its sandbox stage passed, or an error
+         * when it reports a startup failure or exits first. Bounded by
+         * `startupTimeoutMs`; a restart-in-place before readiness does not
+         * call it (the replacement worker reports for itself).
+         */
+        onStartup?: (result: WorkerStartupResult) => void;
+        /** @internal Override the startup report timeout for tests. */
+        startupTimeoutMs?: number;
     },
 ): void {
     logInfo(`spawning headless worker for session ${sessionId}…`);
@@ -348,6 +359,13 @@ export function spawnSession(
         // incorrectly deletes attachments for a still-live restarting session.
         stdio: ["ignore", "inherit", "inherit", "ipc"],
     });
+
+    if (options?.onStartup) {
+        watchWorkerStartup(child, options.onStartup, {
+            timeoutMs: options.startupTimeoutMs ?? WORKER_STARTUP_TIMEOUT_MS,
+            onTimeout: () => logInfo(`session ${sessionId} worker has not reported startup yet; reporting it ready anyway`),
+        });
+    }
 
     // Pre-restart IPC signal: the worker sends this before calling process.exit(43).
     // Marking restartingSessions here (synchronously, while the worker is still

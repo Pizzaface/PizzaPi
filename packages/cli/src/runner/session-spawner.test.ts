@@ -845,4 +845,75 @@ describe("session-spawner child", () => {
             rmSync(tempCwd, { recursive: true, force: true });
         }
     });
+
+    test("reports worker startup outcome only after the worker's startup IPC (review R13)", async () => {
+        const isCwdAllowed = mock((_cwd: string | undefined) => true);
+        class FakeChild extends EventEmitter {
+            pid = 4322;
+            killed = false;
+            exitCode: number | null = null;
+            send = mock((_msg: unknown) => {});
+        }
+        const children: FakeChild[] = [];
+        const spawnMock = mock((_execPath: string, _args: string[], _options: any) => {
+            const c = new FakeChild();
+            children.push(c);
+            return c;
+        });
+        mock.module("node:child_process", () => ({ ...realChildProcess, spawn: spawnMock, execFile: mock(() => {}) }));
+        mock.module("../extensions/session-attachments.js", () => ({ cleanupSessionAttachments: mock(async () => {}) }));
+        mock.module("./logger.js", () => ({ logInfo: mock(() => {}) }));
+        mock.module("./runner-usage-cache.js", () => ({
+            runnerUsageCacheFilePath: () => "/tmp/test-usage-cache.json",
+            trackSessionCwd: mock(() => {}),
+            untrackSessionCwd: mock(() => {}),
+            refreshAndWriteRunnerUsageCache: mock(async () => {}),
+        }));
+        mock.module("./workspace.js", () => ({ isCwdAllowed }));
+        mock.module("./session-procs.js", () => ({
+            ensureSessionProcDir: () => {},
+            sessionProcFilePath: (_sessionId: string) => "/tmp/test-session-startup.procs",
+            readRecordedGroupPids: () => [],
+            recordSessionGroupPid: () => {},
+            removeSessionProcFile: () => {},
+        }));
+
+        const { spawnSession } = await import("./session-spawner.js");
+        const tempCwd = mkdtempSync(join(tmpdir(), "session-spawner-startup-test-"));
+        const killSpy = spyOn(process, "kill").mockImplementation((() => true) as any);
+        try {
+            // Fail-closed sandbox: the worker reports startup_error, then exits.
+            const failed: unknown[] = [];
+            spawnSession("sess-fail", "k", "https://relay.example", tempCwd, new Map(), new Set(), new Set(), undefined, {
+                onStartup: (r) => failed.push(r),
+                shutdownGraceMs: 1,
+            });
+            expect(failed).toEqual([]); // nothing reported at spawn time
+            children[0]!.emit("message", { type: "startup_error", message: "Refusing to start: sandbox unavailable" });
+            children[0]!.emit("exit", 1, null);
+            expect(failed).toEqual([{ ok: false, message: "Refusing to start: sandbox unavailable" }]);
+
+            // Healthy worker: ready only after startup_ready.
+            const ready: unknown[] = [];
+            spawnSession("sess-ok", "k", "https://relay.example", tempCwd, new Map(), new Set(), new Set(), undefined, {
+                onStartup: (r) => ready.push(r),
+            });
+            expect(ready).toEqual([]);
+            children[1]!.emit("message", { type: "startup_ready" });
+            expect(ready).toEqual([{ ok: true }]);
+
+            // Silent early exit is an error too.
+            const silent: unknown[] = [];
+            spawnSession("sess-silent", "k", "https://relay.example", tempCwd, new Map(), new Set(), new Set(), undefined, {
+                onStartup: (r) => silent.push(r),
+                shutdownGraceMs: 1,
+            });
+            children[2]!.emit("exit", 1, null);
+            expect(silent).toHaveLength(1);
+            expect(silent[0]).toMatchObject({ ok: false });
+        } finally {
+            killSpy.mockRestore();
+            rmSync(tempCwd, { recursive: true, force: true });
+        }
+    });
 });
