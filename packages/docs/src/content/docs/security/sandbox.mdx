@@ -391,6 +391,7 @@ If `PIZZAPI_WORKSPACE_ROOTS` is set, the other variables are ignored. If none ar
 - Paths are normalized — trailing slashes are stripped, symlinks are resolved.
 - A session's `cwd` must be **equal to or a subdirectory of** at least one root.
 - Path traversal attacks (`/../`) are neutralized via `realpathSync` before comparison.
+- Paths that do not exist yet (for example a new Git worktree destination) are resolved through their nearest existing ancestor, so an in-root symlink that points outside the roots cannot be used as a parent. A path that passes through a dangling or unresolvable symlink is rejected.
 - On Windows, comparisons are case-insensitive.
 - The filesystem root (`/`) as a root allows everything (equivalent to unscoped).
 

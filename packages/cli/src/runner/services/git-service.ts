@@ -2189,6 +2189,16 @@ export class GitService implements ServiceHandler {
         if (!mutation) return;
 
         try {
+            // Revalidate after the async mutation lock: an ancestor of the
+            // prospective worktree path may have been swapped for a symlink
+            // while we waited. isCwdAllowed canonicalizes through the nearest
+            // existing ancestor, so a symlinked parent pointing outside the
+            // roots is rejected before git can populate it.
+            if (!isCwdAllowed(resolvedPath)) {
+                this.emitError("git_worktree_add_result", "Worktree path outside allowed roots", requestId, sessionId);
+                return;
+            }
+
             let args: string[];
             let resultBranch = branch;
 

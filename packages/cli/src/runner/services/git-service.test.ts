@@ -1,4 +1,7 @@
 import { describe, test, expect } from "bun:test";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ServiceEnvelope } from "../service-handler.js";
 import { GitService, GIT_SIGIL_DEFS } from "./git-service.js";
 
@@ -2650,4 +2653,106 @@ describe("GitService worktree add/prune", () => {
         expect(removedPaths).toEqual(["/repo/.worktrees/merged", "/repo/.worktrees/squashed"]);
         expect((r.payload as any).message).toContain("remote-deleted");
     });
+});
+
+describe("GitService worktree add workspace-root containment (F22)", () => {
+    function withRoots(fn: (dirs: { root: string; repo: string; outside: string }) => Promise<void>) {
+        return async () => {
+            const base = mkdtempSync(join(tmpdir(), "git-wt-roots-"));
+            const prev = {
+                roots: process.env.PIZZAPI_WORKSPACE_ROOTS,
+                root: process.env.PIZZAPI_WORKSPACE_ROOT,
+                legacy: process.env.PIZZAPI_RUNNER_ROOTS,
+            };
+            const root = join(base, "allowed");
+            const repo = join(root, "repo");
+            const outside = join(base, "outside");
+            mkdirSync(repo, { recursive: true });
+            mkdirSync(outside, { recursive: true });
+            delete process.env.PIZZAPI_WORKSPACE_ROOTS;
+            delete process.env.PIZZAPI_RUNNER_ROOTS;
+            process.env.PIZZAPI_WORKSPACE_ROOT = root;
+            try {
+                await fn({ root, repo, outside });
+            } finally {
+                for (const [k, v] of [
+                    ["PIZZAPI_WORKSPACE_ROOTS", prev.roots],
+                    ["PIZZAPI_WORKSPACE_ROOT", prev.root],
+                    ["PIZZAPI_RUNNER_ROOTS", prev.legacy],
+                ] as const) {
+                    if (v === undefined) delete process.env[k];
+                    else process.env[k] = v;
+                }
+                rmSync(base, { recursive: true, force: true });
+            }
+        };
+    }
+
+    function makeService(repo: string, worktreeAdds: string[][]) {
+        return new GitService({
+            execGit: async (args) => {
+                if (args[0] === "worktree" && args[1] === "add") worktreeAdds.push([...args]);
+                if (args[0] === "rev-parse" && args[1] === "--verify") throw new Error("not found");
+                if (args[0] === "rev-parse") return { stdout: `${repo}\n`, stderr: "" };
+                return { stdout: "", stderr: "" };
+            },
+        });
+    }
+
+    test("rejects a relative worktree path through an in-root symlink to an external dir before git runs", withRoots(async ({ repo, outside }) => {
+        symlinkSync(outside, join(repo, "escape"), "dir");
+        const adds: string[][] = [];
+        const service = makeService(repo, adds);
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git", type: "git_worktree_add", requestId: "f22-1",
+            payload: { cwd: repo, branch: "feat/x", path: "escape/wt" },
+        });
+        const r = await waitForResult(socket, "f22-1", "git_worktree_add_result");
+        expect((r.payload as any).ok).toBe(false);
+        expect((r.payload as any).message).toContain("outside allowed roots");
+        expect(adds).toEqual([]);
+    }));
+
+    test("rejects multi-hop and dangling ancestor symlinks", withRoots(async ({ root, repo, outside }) => {
+        const hop = join(root, "..", "hop");
+        symlinkSync(outside, hop, "dir");
+        symlinkSync(hop, join(repo, "hop1"), "dir");
+        symlinkSync(join(outside, "missing"), join(repo, "dangling"), "dir");
+        const adds: string[][] = [];
+        const service = makeService(repo, adds);
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git", type: "git_worktree_add", requestId: "f22-2",
+            payload: { cwd: repo, branch: "feat/x", path: "hop1/wt" },
+        });
+        dispatchServiceMessage(socket, {
+            serviceId: "git", type: "git_worktree_add", requestId: "f22-3",
+            payload: { cwd: repo, branch: "feat/y", path: join(repo, "dangling", "wt") },
+        });
+        const r2 = await waitForResult(socket, "f22-2", "git_worktree_add_result");
+        const r3 = await waitForResult(socket, "f22-3", "git_worktree_add_result");
+        expect((r2.payload as any).ok).toBe(false);
+        expect((r3.payload as any).ok).toBe(false);
+        expect(adds).toEqual([]);
+    }));
+
+    test("still allows a new worktree under a real in-root directory", withRoots(async ({ repo }) => {
+        const adds: string[][] = [];
+        const service = makeService(repo, adds);
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        dispatchServiceMessage(socket, {
+            serviceId: "git", type: "git_worktree_add", requestId: "f22-4",
+            payload: { cwd: repo, branch: "feat/z", path: ".worktrees/z" },
+        });
+        const r = await waitForResult(socket, "f22-4", "git_worktree_add_result");
+        expect((r.payload as any).ok).toBe(true);
+        expect(adds).toEqual([["worktree", "add", "-b", "feat/z", "--", ".worktrees/z"]]);
+    }));
 });
