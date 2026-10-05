@@ -40,6 +40,7 @@ mock.module("../../sio-registry.js", () => ({
     touchSessionActivity: async () => {},
     updateSessionHeartbeat: async () => {},
     getSharedSession: async () => null,
+    emitToRelaySession: () => {},
     getSharedSessionSummary: async () => null,
     broadcastSessionEventToViewers: async (sessionId: string) => { broadcasts.push(sessionId); },
     publishSessionEvent: async (sessionId: string, event: unknown) => {
