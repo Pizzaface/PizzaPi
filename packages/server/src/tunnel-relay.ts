@@ -5,7 +5,7 @@ import { WebSocketServer, type WebSocket as NodeWebSocket, type RawData } from "
 import { createLogger } from "@pizzapi/tools";
 import { bindAuthContext, getAuth, type AuthContext } from "./auth.js";
 import { getRunnerData } from "./ws/sio-registry.js";
-import { claimRunnerOwner } from "./runner-owner.js";
+import { lookupRunnerOwner } from "./runner-owner.js";
 
 const log = createLogger("tunnel-relay");
 
@@ -107,9 +107,12 @@ function adaptWs(ws: NodeWebSocket): BrowserCompatibleWebSocket {
 
 /**
  * Authorize a tunnel `register` message: a valid user API key AND the
- * caller must own `runnerId` — per live runner state and the durable
- * runner_owner record (claimed atomically for a brand-new ID). Returns the
- * owning userId, or null to reject. Fails closed on any lookup error.
+ * caller must already own `runnerId` — per the durable runner_owner record,
+ * or (when no durable record exists yet) the live runner state. The tunnel
+ * handshake carries no runner secret, so it NEVER establishes ownership:
+ * the first claim of an ID happens only through Socket.IO runner
+ * registration, which validates the runner secret. Returns the owning
+ * userId, or null to reject. Fails closed on any lookup error.
  * Must run inside an auth context.
  */
 export async function authorizeTunnelRegistration(apiKey: string, runnerId: string): Promise<string | null> {
@@ -120,11 +123,16 @@ export async function authorizeTunnelRegistration(apiKey: string, runnerId: stri
         const runnerData = await getRunnerData(runnerId);
         if (runnerData?.userId && runnerData.userId !== userId) return null;
         // Live Redis state is deleted on disconnect, so it cannot be the only
-        // authority: consult (and, for a brand-new ID, atomically claim) the
-        // durable runner owner shared with Socket.IO runner registration.
-        // Store errors throw → reject.
-        if ((await claimRunnerOwner(runnerId, userId)) !== "owned") {
-            log.warn(`Rejected tunnel registration for runner ${runnerId}: owned by a different user`);
+        // authority: the durable owner (shared with Socket.IO registration)
+        // decides when present. Store errors throw → reject.
+        const durableOwner = await lookupRunnerOwner(runnerId);
+        const owner = durableOwner ?? runnerData?.userId ?? null;
+        if (owner !== userId) {
+            log.warn(
+                owner
+                    ? `Rejected tunnel registration for runner ${runnerId}: owned by a different user`
+                    : `Rejected tunnel registration for runner ${runnerId}: runner has not registered (tunnel registration cannot claim a runner ID)`,
+            );
             return null;
         }
         return userId;

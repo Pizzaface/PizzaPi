@@ -20,7 +20,7 @@ mock.module("./ws/sio-registry.js", () => ({
 const { createTestAuthContext, runWithAuthContext, getKysely } = await import("./auth.js");
 const { runAllMigrations } = await import("./migrations.js");
 const { mintEphemeralApiKey } = await import("./routes/utils.js");
-const { rememberRunnerOwner, getRunnerOwner } = await import("./runner-owner.js");
+const { rememberRunnerOwner, getRunnerOwner, claimRunnerOwner } = await import("./runner-owner.js");
 const { authorizeTunnelRegistration } = await import("./tunnel-relay.js");
 
 const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-tunnel-owner-"));
@@ -78,11 +78,25 @@ describe("authorizeTunnelRegistration — durable runner ownership", () => {
         expect(await inCtx(() => authorizeTunnelRegistration(keyB, "runner-live"))).toBeNull();
     });
 
-    test("first registration of a brand-new ID claims it durably for the caller", async () => {
-        expect(await inCtx(() => authorizeTunnelRegistration(keyA, "runner-new"))).toBe(userA);
-        expect(await inCtx(() => getRunnerOwner("runner-new"))).toBe(userA);
-        // The claim now blocks other users across transports.
+    test("tunnel-first registration cannot claim an unrecognized runner ID (no durable or live owner)", async () => {
+        // e.g. an offline runner that predates the durable owner table: the
+        // tunnel handshake carries no runner secret, so it must not claim.
         expect(await inCtx(() => authorizeTunnelRegistration(keyB, "runner-new"))).toBeNull();
+        expect(await inCtx(() => getRunnerOwner("runner-new"))).toBeNull();
+
+        // The legitimate runner then registers over Socket.IO (with its
+        // secret), which records the durable owner…
+        expect(await inCtx(() => claimRunnerOwner("runner-new", userA))).toBe("owned");
+        // …and its tunnel registration now succeeds, while others stay out.
+        expect(await inCtx(() => authorizeTunnelRegistration(keyA, "runner-new"))).toBe(userA);
+        expect(await inCtx(() => authorizeTunnelRegistration(keyB, "runner-new"))).toBeNull();
+    });
+
+    test("a live runner registered by the caller is accepted even before its durable record lands", async () => {
+        liveRunners.set("runner-live-a", { runnerId: "runner-live-a", userId: userA });
+        expect(await inCtx(() => authorizeTunnelRegistration(keyA, "runner-live-a"))).toBe(userA);
+        // Tunnel registration never writes the durable owner itself.
+        expect(await inCtx(() => getRunnerOwner("runner-live-a"))).toBeNull();
     });
 
     test("rejects an invalid API key", async () => {

@@ -129,6 +129,17 @@ export async function claimRunnerOwner(runnerId: string, userId: string | null |
     return row.userId === userId ? "owned" : "conflict";
 }
 
+/**
+ * Read-only durable owner lookup for authorization decisions: null when no
+ * owner is recorded; store failures THROW so callers fail closed. Never
+ * records anything (use {@link claimRunnerOwner} on the secret-validated
+ * registration path).
+ */
+export async function lookupRunnerOwner(runnerId: string): Promise<string | null> {
+    const row = await getKysely().selectFrom(TABLE).select("userId").where("runnerId", "=", runnerId).executeTakeFirst();
+    return row?.userId ?? null;
+}
+
 /** Durable owner lookup; null when the runner never registered since this table landed. */
 export async function getRunnerOwner(runnerId: string): Promise<string | null> {
     const row = await getKysely()

@@ -1229,10 +1229,6 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             // Reaching "connect" means the auth middleware accepted us — clear any
             // earlier rejection so `runner status` stops reporting it as stale.
             patchRunnerState(statePath, { authRejected: false });
-            if (tunnelClient && !tunnelClientStarted) {
-                tunnelClientStarted = true;
-                tunnelClient.connect();
-            }
             const verb = isFirstConnect ? "connected" : "reconnected";
             isFirstConnect = false;
             logInfo(`${verb}. Registering as ${identity.runnerId}…`);
@@ -1291,6 +1287,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     logWarn(`server assigned unexpected ID ${runnerId} (expected ${identity.runnerId})`);
                 }
                 logInfo(`registered as ${runnerId}`);
+                // Start the tunnel only after the secret-validated Socket.IO
+                // registration recorded this runner's owner: the relay refuses
+                // tunnel registration for a runner ID it does not know yet.
+                if (tunnelClient && !tunnelClientStarted) {
+                    tunnelClientStarted = true;
+                    tunnelClient.connect();
+                }
                 patchRunnerState(statePath, {
                     connected: true,
                     connectedAt: new Date().toISOString(),

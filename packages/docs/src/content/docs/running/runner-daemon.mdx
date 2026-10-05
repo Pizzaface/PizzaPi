@@ -87,7 +87,10 @@ The relay durably records which account first registered each `runnerId`. That
 account keeps the identity even while the runner is offline: registering the same
 `runnerId` with an API key from a **different** account — over the runner socket or
 the tunnel — is rejected, and registration also fails closed if the relay cannot
-read its ownership record. To move a machine to another account, stop the runner
+read its ownership record. Only the runner socket registration (which proves the
+`runnerSecret`) can record a new identity: a tunnel connection for a `runnerId` the
+relay has never seen registered is refused, and the runner opens its tunnel only after
+its runner registration succeeds. To move a machine to another account, stop the runner
 and delete `runnerId` and `runnerSecret` from `~/.pizzapi/runner.json` so it
 registers a fresh identity.
 
