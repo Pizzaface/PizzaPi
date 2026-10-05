@@ -616,12 +616,16 @@ export const handleEventsRoute: RouteHandler = async (req, url) => {
     // Recovery operators get no wider reach here than on single-route
     // DELETE: only rows the per-route predicate classifies as genuinely
     // ownerless ("recovery") — never a row stamped for another tenant.
+    // On an owned runner every row still goes through the per-route
+    // predicate: a row stamped for another tenant is never selected.
     const recovery = owner === null && isRouteRecoveryOperator(identity.userId);
     const stamped: Route[] = [];
     for (const r of await listRoutes()) {
       if (routeRunnerId(r) !== runnerId) continue;
-      if (owner !== null || r.ownerUserId === identity.userId
-        || (recovery && (await routeAccess(r, identity.userId)) === "recovery")) {
+      if (owner !== null
+        ? (await routeAccess(r, identity.userId)) !== null
+        : r.ownerUserId === identity.userId
+          || (recovery && (await routeAccess(r, identity.userId)) === "recovery")) {
         stamped.push(r);
       }
     }

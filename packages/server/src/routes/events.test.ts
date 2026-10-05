@@ -1010,6 +1010,23 @@ describe("dead-runner route cleanup", () => {
     ]));
   });
 
+  it("DELETE /api/runners/:id/routes on an owned runner never deletes foreign-stamped routes (R2 P3)", async () => {
+    await seedRunner("runner-dead", "u1");
+    const mine = await store.createRoute({
+      eventType: "time:cron", target: { kind: "session", sessionId: "gone", runnerId: "runner-dead" },
+      deliverAs: "followUp", origin: "agent", ownerUserId: "u1",
+    });
+    const foreign = await store.createRoute({
+      eventType: "time:cron", target: { kind: "session", sessionId: "theirs", runnerId: "runner-dead" },
+      deliverAs: "followUp", origin: "agent", ownerUserId: "u2",
+    });
+    const res = await call(routes, "DELETE", "/api/runners/runner-dead/routes");
+    expect(await res!.json()).toEqual({ ok: true, removed: 1, skipped: 0 });
+    const remaining = (await store.listRoutes()).map((r) => r.routeId);
+    expect(remaining).toEqual([foreign.routeId]);
+    expect(remaining).not.toContain(mine.routeId);
+  });
+
   it("DELETE /api/runners/:id/routes is owner-gated (404 shape) and allows ownerless runners", async () => {
     await seedRunner("runner-theirs", "u2");
     await store.createRoute({
