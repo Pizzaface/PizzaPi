@@ -176,6 +176,25 @@ describe("trigger transport delivery receipt", () => {
     expect((await store.getDelivery(ok.deliveries[0].deliveryId))?.status).toBe("delivered");
   });
 
+  it("config session route: no live ownership record means no delivery (positive proof, R2-4)", async () => {
+    await store.syncConfigRoutes([
+      { eventType: "cfg:fan", target: { kind: "session", sessionId: "ops-stale", ownerUserId: "operator" }, deliverAs: "steer", origin: "config" },
+    ]);
+    const source = { kind: "api" as const, id: "hook", auth: "api-key" as const, userId: "u1" };
+    const deps = transport.createEngineDeps();
+    // Stale room membership: a socket is reachable but the record was swept.
+    localSocket = makeLocalSocket();
+    sharedSession = null;
+    const out = await authStorage.run(authCtx, () => engine.publishEvent({ type: "cfg:fan" }, source, deps));
+    expect(localSocket.emits).toHaveLength(0);
+    expect((await store.getDelivery(out.deliveries[0].deliveryId))?.status).toBe("pending");
+    // A record without an owner is no proof either.
+    sharedSession = { sessionId: "ops-stale" };
+    const again = await authStorage.run(authCtx, () => engine.publishEvent({ type: "cfg:fan" }, source, deps));
+    expect(localSocket.emits).toHaveLength(0);
+    expect((await store.getDelivery(again.deliveries[0].deliveryId))?.status).toBe("pending");
+  });
+
   it("ack-capable CLI: row stays inflight until the ack settles it delivered", async () => {
     localSocket = makeLocalSocket();
     sharedSession = { sessionId: "s-new", acksSessionTrigger: true };

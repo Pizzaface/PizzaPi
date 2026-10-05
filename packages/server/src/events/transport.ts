@@ -330,11 +330,13 @@ export function createEngineDeps(): EngineDeps {
     async deliver(delivery, event, route): Promise<DeliverOutcome> {
       // Config session routes are bound to a target principal: only a
       // session registered by that user may receive them (an unbound row
-      // reaches nobody). The row stays pending for the rightful owner.
+      // reaches nobody). Requires positive proof: a missing ownership record
+      // (stale room membership after the record's sweep) is not a match.
+      // The row stays pending for the rightful owner.
       const principal = route ? configTargetPrincipal(route) : undefined;
       if (principal !== undefined) {
         const live = principal === null ? null : await getSharedSession(delivery.sessionId);
-        if (principal === null || (live && live.userId !== principal)) {
+        if (principal === null || live?.userId !== principal) {
           log.warn(`Delivery ${delivery.deliveryId}: session ${delivery.sessionId} is not owned by config route ${route?.routeId}'s target principal — not delivering`);
           return "unreachable";
         }
