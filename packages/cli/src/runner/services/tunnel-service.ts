@@ -1,7 +1,23 @@
 import type { TunnelClient } from "@pizzapi/tunnel";
 import type { Socket } from "socket.io-client";
 import type { ServiceHandler, ServiceInitOptions, ServiceEnvelope } from "../service-handler.js";
-import { logInfo } from "../logger.js";
+import { logInfo, logWarn } from "../logger.js";
+
+/**
+ * Runner-side tunnel buffer ceiling from PIZZAPI_TUNNEL_MAX_BUFFERED_BYTES
+ * (non-negative integer bytes; 0 disables). Unset or invalid → undefined, so
+ * the TunnelClient default applies.
+ */
+export function tunnelMaxBufferedBytesFromEnv(env: Record<string, string | undefined> = process.env): number | undefined {
+    const raw = env.PIZZAPI_TUNNEL_MAX_BUFFERED_BYTES?.trim();
+    if (!raw) return undefined;
+    const value = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+    if (!Number.isSafeInteger(value)) {
+        logWarn(`[tunnel] ignoring invalid PIZZAPI_TUNNEL_MAX_BUFFERED_BYTES=${JSON.stringify(raw)}; using default`);
+        return undefined;
+    }
+    return value;
+}
 
 interface TunnelInfo {
     port: number;

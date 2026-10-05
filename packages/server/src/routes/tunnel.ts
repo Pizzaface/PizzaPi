@@ -10,7 +10,7 @@
  *   - Runner-based:  /api/tunnel/runner/:runnerId/:port/* (preferred, stable across session switches)
  */
 
-import type { TunnelRelay } from "@pizzapi/tunnel";
+import { TUNNEL_SEND_HIGH_WATER_BYTES, type TunnelRelay } from "@pizzapi/tunnel";
 import { requireSession } from "../middleware.js";
 import { assertTunnelTokenStillValid, createTunnelToken, getAuthTunnelBasePath, tunnelTokenAgeMs, verifyTunnelToken } from "./tunnel-token.js";
 import { getTunnelRelay } from "../tunnel-relay.js";
@@ -20,6 +20,8 @@ import { LABEL_MAX_TTL_HOURS, mintTunnelLabel } from "./tunnel-host.js";
 import type { RouteHandler } from "./types.js";
 
 const TUNNEL_MAX_BUFFERED_BYTES = 25 * 1024 * 1024; // ponytail: fixed ceiling, raise if legit large HTML responses appear
+/** Streamed responses: ask the runner to pause once this many bytes wait for the viewer. */
+const TUNNEL_STREAM_HIGH_WATER_BYTES = TUNNEL_SEND_HIGH_WATER_BYTES;
 
 /** Pattern: /api/tunnel/auth/:token/:sessionId/:port/<rest> — mobile iframe auth. */
 const AUTH_TUNNEL_PATH_RE = /^\/api\/tunnel\/auth\/([^/]+)\/([^/]+)\/(\d+)(\/.*)?$/;
@@ -562,6 +564,10 @@ function tunnelErrorResponse(message: string): Response {
         return Response.json({ error: "Tunnel request timed out" }, { status: 504 });
     }
 
+    if (message.includes("Too many concurrent")) {
+        return Response.json({ error: `Tunnel error: ${message}` }, { status: 503, headers: { "Retry-After": "1" } });
+    }
+
     if (message.includes("body too large") || message.includes("too large")) {
         return Response.json({ error: `Tunnel error: ${message}` }, { status: 413 });
     }
@@ -593,12 +599,23 @@ async function streamRequestBodyToRelay(
         void reader.cancel(signal.reason).catch(() => {});
     };
     signal.addEventListener("abort", cancelReader, { once: true });
+    let bodyRejected = false;
     try {
         while (!signal.aborted) {
+            // Backpressure: do not pull more of the viewer's body until the
+            // runner socket has drained and the runner has not paused us.
+            await relay.waitForRequestCapacity(runnerId, requestId, signal);
+            if (signal.aborted) break;
             const { done, value } = await reader.read();
             if (done || signal.aborted) break;
             if (!value || value.byteLength === 0) continue;
-            relay.sendRequestData(runnerId, requestId, Buffer.from(value));
+            if (!relay.sendRequestData(runnerId, requestId, Buffer.from(value))) {
+                // Over the body limit (the relay already failed the request)
+                // or the runner is gone — stop reading the viewer's body.
+                bodyRejected = true;
+                cancelReader();
+                break;
+            }
         }
     } finally {
         signal.removeEventListener("abort", cancelReader);
@@ -606,7 +623,17 @@ async function streamRequestBodyToRelay(
         reader.releaseLock();
     }
 
-    if (!signal.aborted) relay.sendRequestDataEnd(runnerId, requestId);
+    if (!signal.aborted && !bodyRejected) relay.sendRequestDataEnd(runnerId, requestId);
+}
+
+/** 413 when a declared Content-Length already exceeds the tunnel request-body limit. */
+function rejectOversizedTunnelBody(req: Request, relay: TunnelRelay): Response | null {
+    const limit = relay.limits.maxRequestBodyBytes;
+    if (limit <= 0) return null;
+    const declared = req.headers.get("content-length");
+    if (declared === null || !/^\d+$/.test(declared)) return null;
+    if (Number(declared) <= limit) return null;
+    return tunnelErrorResponse("Request body too large");
 }
 
 function proxyTunnelRequestViaRelay(
@@ -624,6 +651,9 @@ function proxyTunnelRequestViaRelay(
     /** Set for capability-authenticated routes (token/label) — see TunnelRequestStartMessage. */
     capabilityAgeMs?: number,
 ): Promise<Response> {
+    const oversized = rejectOversizedTunnelBody(req, relay);
+    if (oversized) return Promise.resolve(oversized);
+    const maxStreamBufferedBytes = relay.limits.maxBufferedBytes;
     return new Promise<Response>((resolve) => {
         const bodyAbortController = new AbortController();
         let relayCancel: (() => void) | undefined;
@@ -658,6 +688,7 @@ function proxyTunnelRequestViaRelay(
         let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
         let streamClosed = false;
         let shouldBuffer = false;
+        let responsePaused = false;
         let bufferedBytes = 0;
         const bodyChunks: Buffer[] = [];
 
@@ -739,10 +770,19 @@ function proxyTunnelRequestViaRelay(
                         start(controller) {
                             streamController = controller;
                         },
+                        pull() {
+                            // The viewer drained below the high-water mark.
+                            if (!responsePaused) return;
+                            responsePaused = false;
+                            relay.resumeResponse(runnerId, requestId);
+                        },
                         cancel() {
                             streamClosed = true;
                             cancelRequest();
                         },
+                    }, {
+                        highWaterMark: TUNNEL_STREAM_HIGH_WATER_BYTES,
+                        size: (chunk) => chunk?.byteLength ?? 0,
                     });
 
                     resolveOnce(new Response(stream, {
@@ -762,13 +802,27 @@ function proxyTunnelRequestViaRelay(
                         return;
                     }
 
-                    if (streamClosed) return;
+                    if (streamClosed || !streamController) return;
                     try {
-                        streamController?.enqueue(
+                        streamController.enqueue(
                             new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength),
                         );
                     } catch {
                         streamClosed = true;
+                        return;
+                    }
+                    const desired = streamController.desiredSize ?? 0;
+                    const queuedBytes = TUNNEL_STREAM_HIGH_WATER_BYTES - desired;
+                    if (maxStreamBufferedBytes > 0 && queuedBytes > maxStreamBufferedBytes) {
+                        // Slow viewer and a producer that ignored pause (or an
+                        // older runner): terminate instead of queueing without bound.
+                        cancelRequest();
+                        errorStream(new Error("Tunnel response buffer limit exceeded"));
+                        return;
+                    }
+                    if (desired <= 0 && !responsePaused) {
+                        responsePaused = true;
+                        relay.pauseResponse(runnerId, requestId);
                     }
                 },
                 onResponseEnd: () => {

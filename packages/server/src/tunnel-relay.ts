@@ -1,6 +1,6 @@
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import { TunnelRelay } from "@pizzapi/tunnel";
+import { DEFAULT_TUNNEL_RELAY_LIMITS, TunnelRelay, type TunnelRelayLimits } from "@pizzapi/tunnel";
 import { WebSocketServer, type WebSocket as NodeWebSocket, type RawData } from "ws";
 import { createLogger } from "@pizzapi/tools";
 import { bindAuthContext, getAuth, type AuthContext } from "./auth.js";
@@ -12,8 +12,39 @@ const log = createLogger("tunnel-relay");
 let relay: TunnelRelay | null = null;
 let wss: WebSocketServer | null = null;
 
+/** Environment variables for each tunnel limit (0 disables a limit). */
+export const TUNNEL_LIMIT_ENV: Readonly<Record<keyof TunnelRelayLimits, string>> = Object.freeze({
+    maxRequestBodyBytes: "PIZZAPI_TUNNEL_MAX_REQUEST_BODY_BYTES",
+    maxResponseBodyBytes: "PIZZAPI_TUNNEL_MAX_RESPONSE_BODY_BYTES",
+    maxInFlightPerRunner: "PIZZAPI_TUNNEL_MAX_INFLIGHT_PER_RUNNER",
+    maxBufferedBytes: "PIZZAPI_TUNNEL_MAX_BUFFERED_BYTES",
+});
+
+/**
+ * Resolve tunnel resource limits from the environment. Values must be
+ * non-negative decimal integers (0 disables that limit); anything else is
+ * ignored with a warning and the default is used.
+ */
+export function readTunnelLimitsFromEnv(env: Record<string, string | undefined> = process.env): TunnelRelayLimits {
+    const limits: TunnelRelayLimits = { ...DEFAULT_TUNNEL_RELAY_LIMITS };
+    for (const key of Object.keys(TUNNEL_LIMIT_ENV) as Array<keyof TunnelRelayLimits>) {
+        const name = TUNNEL_LIMIT_ENV[key];
+        const raw = env[name]?.trim();
+        if (!raw) continue;
+        const value = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+        if (!Number.isSafeInteger(value)) {
+            log.warn(`Ignoring invalid ${name}=${JSON.stringify(raw)}; using default ${limits[key]}`);
+            continue;
+        }
+        limits[key] = value;
+    }
+    return limits;
+}
+
 interface BrowserCompatibleWebSocket {
     readyState: number;
+    /** Bytes queued for sending — lets the relay apply backpressure to the runner socket. */
+    readonly bufferedAmount: number;
     send(data: string | Buffer): void;
     close(code?: number, reason?: string): void;
     addEventListener(type: "message" | "close" | "error", listener: (event: unknown) => void): void;
@@ -40,6 +71,9 @@ function adaptWs(ws: NodeWebSocket): BrowserCompatibleWebSocket {
     return {
         get readyState() {
             return ws.readyState as number;
+        },
+        get bufferedAmount() {
+            return ws.bufferedAmount;
         },
         send(data) {
             ws.send(data as string | Buffer);
@@ -105,6 +139,7 @@ export function initTunnelRelay(context: AuthContext): TunnelRelay {
 
     relay = new TunnelRelay({
         apiKeys: bindAuthContext(context, authorizeTunnelRegistration),
+        limits: readTunnelLimitsFromEnv(),
         log: {
             info: (...args) => console.log("[tunnel-relay]", ...args),
             debug: (...args) => {

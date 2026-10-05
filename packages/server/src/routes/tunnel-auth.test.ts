@@ -42,8 +42,12 @@ mock.module("../tunnel-relay.js", () => ({
             }, 0);
             return { cancel() {} };
         },
-        sendRequestData() {},
+        sendRequestData() { return true; },
         sendRequestDataEnd() {},
+        limits: { maxRequestBodyBytes: 0, maxResponseBodyBytes: 0, maxInFlightPerRunner: 0, maxBufferedBytes: 0 },
+        waitForRequestCapacity: async () => {},
+        pauseResponse() {},
+        resumeResponse() {},
     }),
 }));
 

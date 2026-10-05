@@ -10,6 +10,23 @@ import {
 } from "./tunnel-host";
 import { proxyTunnelRequestViaRelay } from "./tunnel";
 
+/** Fill in the TunnelRelay surface the proxy uses beyond what a test fakes (no limits, no backpressure). */
+function fakeRelay(relay: object): never {
+    const original = (relay as { sendRequestData?: (...args: unknown[]) => unknown }).sendRequestData;
+    return {
+        limits: { maxRequestBodyBytes: 0, maxResponseBodyBytes: 0, maxInFlightPerRunner: 0, maxBufferedBytes: 0 },
+        waitForRequestCapacity: async () => {},
+        pauseResponse() {},
+        resumeResponse() {},
+        ...relay,
+        sendRequestData: (...args: unknown[]) => {
+            original?.(...args);
+            return true;
+        },
+    } as never;
+}
+
+
 const ORIGINAL_DOMAIN = process.env.PIZZAPI_TUNNEL_DOMAIN;
 const ORIGINAL_BASE_URL = process.env.PIZZAPI_BASE_URL;
 
@@ -216,7 +233,7 @@ describe("passthrough proxy mode (basePath \"\")", () => {
 
         const responsePromise = proxyTunnelRequestViaRelay(
             new Request("http://abc.t.localhost/app/route"),
-            relay as never,
+            fakeRelay(relay),
             "runner-1",
             "req-1",
             "", // basePath "" → passthrough
@@ -295,7 +312,7 @@ describe("host header forwarding", () => {
 
             proxyTunnelRequestViaRelay(
                 new Request("http://abc.t.localhost/path"),
-                relay as never,
+                fakeRelay(relay),
                 "runner-1",
                 "req-capture",
                 "", // basePath "" → host-based passthrough
@@ -327,7 +344,7 @@ describe("host header forwarding", () => {
 
         await proxyTunnelRequestViaRelay(
             new Request("http://example.com/path"),
-            relay as never,
+            fakeRelay(relay),
             "runner-1",
             "req-path",
             "/tunnel/session/3000", // non-empty basePath → path-based

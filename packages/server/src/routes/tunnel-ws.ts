@@ -35,6 +35,52 @@ const HOP_BY_HOP = new Set([
 
 const tunnelProxyWss = new WebSocketServer({ noServer: true });
 
+type TunnelRelayInstance = NonNullable<ReturnType<typeof getTunnelRelay>>;
+
+/**
+ * Viewer → runner: forward a frame, then pause reading from the viewer while
+ * the runner socket is congested (real backpressure — ws pauses the TCP read).
+ */
+export function forwardViewerWsFrame(
+    relay: TunnelRelayInstance,
+    runnerId: string,
+    tunnelWsId: string,
+    viewerWs: NodeWebSocket,
+    data: string,
+    binary: true | undefined,
+): void {
+    relay.sendWsData(runnerId, tunnelWsId, data, binary);
+    if (viewerWs.isPaused || !relay.isRunnerCongested(runnerId)) return;
+    viewerWs.pause();
+    void relay.waitForRunnerDrain(runnerId).then(() => {
+        if (viewerWs.readyState === NodeWebSocket.OPEN) viewerWs.resume();
+    });
+}
+
+/**
+ * Runner → viewer: a WebSocket cannot ask the runner to slow down, so a viewer
+ * that stops draining is disconnected once its send buffer exceeds the hard
+ * limit instead of queueing without bound. Returns false when it closed.
+ */
+export function deliverRunnerWsFrame(
+    relay: TunnelRelayInstance,
+    runnerId: string,
+    tunnelWsId: string,
+    viewerWs: NodeWebSocket,
+    data: string,
+    binary: boolean | undefined,
+): boolean {
+    const limit = relay.limits.maxBufferedBytes;
+    if (limit > 0 && viewerWs.bufferedAmount > limit) {
+        log.warn(`Closing tunnel WebSocket ${tunnelWsId}: viewer send buffer exceeded ${limit} bytes`);
+        // Notifies the runner and routes through onClose → viewerWs.close(1013).
+        relay.sendWsClose(runnerId, tunnelWsId, 1013, "tunnel buffer limit exceeded");
+        return false;
+    }
+    viewerWs.send(binary ? Buffer.from(data, "base64") : data);
+    return true;
+}
+
 /**
  * Handle an HTTP upgrade request that might be a tunnel WebSocket.
  * Returns true if the request was handled (tunnel path), false if Socket.IO
@@ -315,9 +361,11 @@ async function handleUpgradeAsync(
             viewerWs = ws;
 
             ws.on("message", (data, isBinary) => {
-                relay.sendWsData(
+                forwardViewerWsFrame(
+                    relay,
                     runnerId,
                     tunnelWsId,
+                    ws,
                     isBinary ? Buffer.from(data as Buffer).toString("base64") : data.toString(),
                     isBinary || undefined,
                 );
@@ -360,7 +408,7 @@ async function handleUpgradeAsync(
             },
             onData: (data, binary) => {
                 if (!viewerWs || viewerWs.readyState !== NodeWebSocket.OPEN) return;
-                viewerWs.send(binary ? Buffer.from(data, "base64") : data);
+                deliverRunnerWsFrame(relay, runnerId, tunnelWsId, viewerWs, data, binary);
             },
             onClose: (code, reason) => {
                 if (!handshakeComplete) {
@@ -495,7 +543,7 @@ async function handleRunnerUpgradeAsync(
         tunnelProxyWss.handleUpgrade(req, rawSocket, head, (ws) => {
             viewerWs = ws;
             ws.on("message", (data, isBinary) => {
-                relay.sendWsData(runnerId, tunnelWsId, isBinary ? Buffer.from(data as Buffer).toString("base64") : data.toString(), isBinary || undefined);
+                forwardViewerWsFrame(relay, runnerId, tunnelWsId, ws, isBinary ? Buffer.from(data as Buffer).toString("base64") : data.toString(), isBinary || undefined);
             });
             ws.on("close", (code, reason) => {
                 if (!closingFromRelay) relay.sendWsClose(runnerId, tunnelWsId, code, reason.toString());
@@ -518,7 +566,7 @@ async function handleRunnerUpgradeAsync(
             onOpened: (protocol) => finalizeUpgrade(protocol),
             onData: (data, binary) => {
                 if (!viewerWs || viewerWs.readyState !== NodeWebSocket.OPEN) return;
-                viewerWs.send(binary ? Buffer.from(data, "base64") : data);
+                deliverRunnerWsFrame(relay, runnerId, tunnelWsId, viewerWs, data, binary);
             },
             onClose: (code, reason) => {
                 if (!handshakeComplete) { closePendingSocket(502, reason || "Tunnel WebSocket closed"); return; }

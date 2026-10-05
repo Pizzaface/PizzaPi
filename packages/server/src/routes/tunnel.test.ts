@@ -15,6 +15,22 @@ import {
 } from "./tunnel";
 import { safeDecodePathComponent } from "./tunnel";
 
+/** Fill in the TunnelRelay surface the proxy uses beyond what a test fakes (no limits, no backpressure). */
+function fakeRelay(relay: object): never {
+    const original = (relay as { sendRequestData?: (...args: unknown[]) => unknown }).sendRequestData;
+    return {
+        limits: { maxRequestBodyBytes: 0, maxResponseBodyBytes: 0, maxInFlightPerRunner: 0, maxBufferedBytes: 0 },
+        waitForRequestCapacity: async () => {},
+        pauseResponse() {},
+        resumeResponse() {},
+        ...relay,
+        sendRequestData: (...args: unknown[]) => {
+            original?.(...args);
+            return true;
+        },
+    } as never;
+}
+
 describe("safeDecodePathComponent", () => {
     test("decodes valid percent-encoding", () => {
         expect(safeDecodePathComponent("session%20id")).toBe("session id");
@@ -709,7 +725,7 @@ describe("tunnel route streaming proxy", () => {
                 // @ts-expect-error Bun supports duplex
                 duplex: "half",
             }),
-            relay as never,
+            fakeRelay(relay),
             "runner-1", "request-1", "/api/tunnel/s-1/3000", 3000, "/data", "/data", {},
         );
         expect(response.status).toBe(504);
@@ -739,7 +755,7 @@ describe("tunnel route streaming proxy", () => {
                 // @ts-expect-error Bun supports duplex
                 duplex: "half",
             }),
-            relay as never,
+            fakeRelay(relay),
             "runner-1", "request-1", "/api/tunnel/s-1/3000", 3000, "/data", "/data", {},
         );
         await new Promise<void>((resolve) => queueMicrotask(resolve));
@@ -780,7 +796,7 @@ describe("tunnel route streaming proxy", () => {
                 // @ts-expect-error Bun supports duplex
                 duplex: "half",
             }),
-            relay as never,
+            fakeRelay(relay),
             "runner-1", "request-1", "/api/tunnel/s-1/3000", 3000, "/data", "/data", {},
         );
         callbacks!.onResponseStart(200, "OK", { "content-type": "text/plain" });
@@ -814,7 +830,7 @@ describe("tunnel route streaming proxy", () => {
 
         const responsePromise = proxyTunnelRequestViaRelay(
             new Request("http://localhost/api/tunnel/s-1/3000/data"),
-            relay as never,
+            fakeRelay(relay),
             "runner-1",
             "request-1",
             "/api/tunnel/s-1/3000",
@@ -903,7 +919,7 @@ describe("tunnel auth header forwarding", () => {
 
         const response = await proxyTunnelRequestViaRelay(
             req,
-            relay as never,
+            fakeRelay(relay),
             "runner-1",
             "request-1",
             "/api/tunnel/s-1/3000",

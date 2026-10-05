@@ -16,7 +16,7 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { getCachedOllamaCloudModels, registerOllamaCloudProvider, toOllamaCloudRuntimeModel } from "../ollama-cloud-models.js";
 import { registerNvidiaProvider } from "../nvidia-models.js";
 import { registerOpenRouterProvider } from "../openrouter-models.js";
-import { TunnelService } from "./services/tunnel-service.js";
+import { TunnelService, tunnelMaxBufferedBytesFromEnv } from "./services/tunnel-service.js";
 import { ProcessService } from "./services/process-service.js";
 import { MemoryService } from "./services/memory-service.js";
 import { TimeService, TIME_TRIGGER_DEFS, TIME_SIGIL_DEFS } from "./services/time-service.js";
@@ -905,6 +905,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 runnerId: identity.runnerId,
                 apiKey,
                 relayUrl: tunnelRelayUrl,
+                maxBufferedBytes: tunnelMaxBufferedBytesFromEnv(),
                 log: {
                     info: (...args) => logInfo(formatTunnelLog(...args)),
                     debug: (...args) => logInfo(formatTunnelLog(...args)),

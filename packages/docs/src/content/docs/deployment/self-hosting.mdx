@@ -157,6 +157,10 @@ Configure the server by setting environment variables in Docker Compose or your 
 | `PIZZAPI_RELAY_IMAGE_MAX_EVENT_BYTES` | `134217728` | Maximum aggregate decoded bytes of images extracted from one session event (128 MiB); images beyond it are marked `omitted` (`event_budget_exceeded`). Invalid or non-positive values fall back to the default. |
 | `PIZZAPI_EXTRACTED_IMAGE_USER_QUOTA_BYTES` | `2147483648` | Per-user cap on stored extracted-image bytes (2 GiB), including images kept alive because a pinned or durable session references them. New images over the quota are marked `omitted` (`quota_exceeded`) instead of being written; space frees as images expire or sessions are pruned. Invalid or non-positive values fall back to the default. |
 | `PIZZAPI_ROUTE_RECOVERY_USER_IDS` | — | Comma-separated user IDs allowed to list and delete legacy event routes whose owner cannot be resolved from any record. Unset means nobody can manage such quarantined routes through the API (they never match events). Recovery is delete-only. |
+| `PIZZAPI_TUNNEL_MAX_REQUEST_BODY_BYTES` | `104857600` | Maximum request body per tunnelled HTTP request (100 MiB), enforced against `Content-Length` and the streamed byte count. Oversized requests get `413`. `0` disables the limit. Invalid values fall back to the default. |
+| `PIZZAPI_TUNNEL_MAX_RESPONSE_BODY_BYTES` | `0` (unlimited) | Maximum response body per tunnelled HTTP request; the stream is terminated once exceeded. Unlimited by default so large downloads and long-lived streams (SSE, logs) keep working — memory is bounded by the buffer limit below. |
+| `PIZZAPI_TUNNEL_MAX_INFLIGHT_PER_RUNNER` | `256` | Maximum concurrent tunnelled HTTP requests plus WebSockets per runner. Excess requests get `503`. `0` disables the limit. |
+| `PIZZAPI_TUNNEL_MAX_BUFFERED_BYTES` | `67108864` | Hard ceiling (64 MiB) on bytes queued for any one slow tunnel consumer (runner link, viewer response stream, viewer WebSocket). Producers are paused at about 1 MiB; a stream that still exceeds this ceiling is terminated. `0` disables the ceiling (backpressure still applies). Also read by the runner daemon for its side of the tunnel. |
 | `PIZZAPI_DISABLE_SIGNUP_AFTER_FIRST_USER` | `true` | Disable new signups after the first user exists. Set to `false` to keep signups open. |
 | `PIZZAPI_TRUST_MOBILE_ORIGINS` | trusted unless set to `false` | Trust Capacitor mobile origins (`capacitor://localhost`, `https://localhost`) for auth/CORS. |
 | `PIZZAPI_MOBILE_OTA_DIR` | — | Directory containing mobile OTA `manifest.json` and `.zip` bundles. Unset or missing directory disables OTA routes with 404s. |
@@ -472,6 +476,7 @@ The server enforces body size limits to prevent denial-of-service:
 
 - **API routes**: 1 MB maximum
 - **Attachment uploads**: 30 MB per file by default (configurable via `PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES`); multipart body ceiling 50 MB
+- **Tunnel requests**: streamed to the runner rather than buffered, with their own 100 MiB per-request limit (`PIZZAPI_TUNNEL_MAX_REQUEST_BODY_BYTES`), a per-runner concurrency cap, and buffer limits (see the tunnel variables above)
 
 Requests exceeding these limits receive a `413 Payload Too Large` response.
 

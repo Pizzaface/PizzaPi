@@ -59,7 +59,9 @@ export async function enforceBodySizeLimit(req: Request, url: URL): Promise<Resp
 
     if (isTunnelPath(url.pathname)) {
         // Tunnel routes stream request bodies directly to the runner relay.
-        // Do not pre-buffer or size-cap them here.
+        // Do not pre-buffer them here: the tunnel proxy enforces its own
+        // (larger, configurable) Content-Length and streamed-byte limit plus
+        // backpressure — see PIZZAPI_TUNNEL_MAX_REQUEST_BODY_BYTES.
         return req;
     }
 

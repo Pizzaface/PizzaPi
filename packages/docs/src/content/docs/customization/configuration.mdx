@@ -412,6 +412,7 @@ Only the settings listed here have environment-variable overrides. Overrides app
 | `PIZZAPI_HIDDEN_MODELS` | — | JSON array of `provider/modelId` keys hidden from model listing/switching in worker sessions. Usually seeded and updated by the relay from the user's web preferences. |
 | `PIZZAPI_SUBAGENT_MODEL` | — | Default subagent/workflow model as `provider/modelId`; empty/unset means auto-select. Usually managed by the web UI. |
 | `PIZZAPI_SANDBOX_MODE` | — | Internal status set after sandbox initialization to the active resolved mode (`basic` or `full`). Use `PIZZAPI_SANDBOX` to request a mode. |
+| `PIZZAPI_TUNNEL_MAX_BUFFERED_BYTES` | — | Runner-side tunnel buffer ceiling in bytes (default 64 MiB; `0` disables). A local request body, local WebSocket, or relay link that falls this far behind is terminated instead of queueing without bound. Invalid values are ignored. The relay reads the same variable for its side ([Self-Hosting](/PizzaPi/deployment/self-hosting/)). |
 | `PIZZAPI_RUNNER_STATE_PATH` | — | Override runner daemon state/lock file. Default: `~/.pizzapi/runner.json`. |
 | `PIZZAPI_RUNNER_USAGE_CACHE_PATH` | — | Override the runner-wide provider-usage cache file inherited by workers. Normally set by the daemon. |
 | `PIZZAPI_MCP_AUTH_DIR` | — | Override MCP OAuth token/client storage directory. Default: `~/.pizzapi/mcp-auth`. Useful for tests or isolated installs. |
