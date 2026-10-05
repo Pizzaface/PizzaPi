@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
 const tempDir = mkdtempSync(join(tmpdir(), "pizzapi-attachments-"));
@@ -303,5 +303,63 @@ describe("extracted image limits (F11)", () => {
             expect(out._imagesStripped).toBe(true);
             expect(store.extractedImageBytesForUser("user-f11-pipe")).toBeLessThanOrEqual(50_000);
         });
+    });
+});
+
+describe("unexpected image-store failures preserve content (review R4)", () => {
+    function b64(decodedBytes: number, seed: string): string {
+        return seed + "A".repeat(Math.ceil((decodedBytes * 4) / 3) - 1);
+    }
+
+    test("an I/O failure keeps the inline image instead of erasing it, and a later stage can retry", async () => {
+        const { createHash } = await import("node:crypto");
+        const { mkdirSync } = await import("node:fs");
+        const { stripImagesFromPipelineEvent, storeAndReplaceImagesInEvent } = await import("../ws/strip-images.js");
+        const user = "user-r4";
+        const failing = b64(40_000, "J");
+        const healthy = b64(40_000, "K");
+        // Block the failing image's target path with a directory so the write
+        // fails with an unexpected I/O error (not a policy rejection).
+        const failingId = createHash("sha256").update(user).update(":").update(failing).digest("hex").slice(0, 24);
+        // Resolve the store's real upload root (module-level, fixed at first import).
+        const probe = await runWithAuthContext(authContext, () => store.storeExtractedImage({
+            attachmentId: "r4-probe", sessionId: "s-r4", ownerUserId: user, mimeType: "image/png", base64Data: b64(20_000, "L"),
+        }));
+        const blocker = join(dirname(probe.filePath), `extracted-${failingId}.png`);
+        mkdirSync(blocker, { recursive: true });
+        const event = {
+            type: "agent_end",
+            messages: [{
+                role: "user",
+                content: [
+                    { type: "image", source: { type: "base64", media_type: "image/png", data: failing } },
+                    { type: "image", source: { type: "base64", media_type: "image/png", data: healthy } },
+                ],
+            }],
+        };
+        try {
+            const out = await runWithAuthContext(authContext, () =>
+                stripImagesFromPipelineEvent(event, "s-r4", user)) as any;
+            const [kept, stored] = out.messages[0].content;
+            // The failed image is NOT replaced with an omitted marker.
+            expect(kept.source.omitted).toBeUndefined();
+            expect(kept.source.data).toBe(failing);
+            expect(stored.source.extracted).toBe(true);
+            expect(stored.source.data).toBeUndefined();
+            // Downstream fallback stays enabled for the failed image.
+            expect(out._imagesStripped).toBeUndefined();
+
+            // The cache/broadcast stage retries; once storage recovers the
+            // image is extracted instead of lost.
+            rmSync(blocker, { recursive: true, force: true });
+            const final = await runWithAuthContext(authContext, () =>
+                storeAndReplaceImagesInEvent(out, "s-r4", user)) as any;
+            const [retried, unchanged] = final.messages[0].content;
+            expect(retried.source.extracted).toBe(true);
+            expect(store._testGetAttachments().has(failingId)).toBe(true);
+            expect(unchanged).toEqual(stored);
+        } finally {
+            rmSync(blocker, { recursive: true, force: true });
+        }
     });
 });

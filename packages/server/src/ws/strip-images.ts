@@ -50,8 +50,19 @@ export type OmittedImageReason =
     | "too_many_images"
     | "event_budget_exceeded"
     | "quota_exceeded"
-    | "invalid"
-    | "store_failed";
+    | "invalid";
+
+/**
+ * Result of storing one event's extracted images. Only deliberate policy
+ * rejections (size/quota/invalid) may discard content; unexpected storage
+ * failures keep the original inline image so nothing is irreversibly erased.
+ */
+export interface StoreExtractedImagesResult {
+    /** Images refused by policy: replaced with omitted markers. */
+    rejected: Map<string, OmittedImageReason>;
+    /** Images that hit an unexpected storage error: inline data is kept. */
+    failed: Set<string>;
+}
 
 export interface ImageExtractionLimits {
     /** Max decoded bytes of a single image (the attachment upload limit). */
@@ -286,17 +297,19 @@ function processMessage(msg: unknown, ctx: ExtractionContext): unknown {
 // ── Async store + replace pipeline ───────────────────────────────────────────
 
 /**
- * Store extracted images with bounded concurrency. Returns the IDs that
- * could not be stored (with the reason) so their URL placeholders can be
- * replaced with omitted markers instead of dangling attachment links.
+ * Store extracted images with bounded concurrency. Policy rejections are
+ * returned with their reason so their URL placeholders become omitted markers;
+ * unexpected failures are returned separately so the caller can restore the
+ * original inline data instead of leaving dangling attachment links.
  */
 export async function storeExtractedImages(
     images: ExtractedImage[],
     sessionId: string,
     userId: string,
     concurrency: number = STORE_CONCURRENCY,
-): Promise<Map<string, OmittedImageReason>> {
-    const failed = new Map<string, OmittedImageReason>();
+): Promise<StoreExtractedImagesResult> {
+    const rejected = new Map<string, OmittedImageReason>();
+    const failed = new Set<string>();
     let next = 0;
     const worker = async () => {
         while (next < images.length) {
@@ -312,35 +325,51 @@ export async function storeExtractedImages(
                 });
             } catch (err) {
                 if (err instanceof ExtractedImageRejectedError) {
-                    failed.set(img.attachmentId, err.reason);
+                    rejected.set(img.attachmentId, err.reason);
                     log.warn(`Dropped extracted image for session ${sessionId}: ${err.message}`);
                 } else {
-                    failed.set(img.attachmentId, "store_failed");
-                    log.error(`Failed to store extracted image for session ${sessionId}:`, err);
+                    failed.add(img.attachmentId);
+                    log.error(`Failed to store extracted image for session ${sessionId}; keeping inline data:`, err);
                 }
             }
         }
     };
     const workers = Math.max(1, Math.min(concurrency, images.length));
     await Promise.all(Array.from({ length: workers }, worker));
-    return failed;
+    return { rejected, failed };
 }
 
-/** Swap URL placeholders for images that failed to store with omitted markers. */
-function replaceFailedImages(messages: unknown[], failed: Map<string, OmittedImageReason>): unknown[] {
-    if (failed.size === 0) return messages;
+/**
+ * Fix up URL placeholders for images that were not stored: policy rejections
+ * become omitted markers; unexpected failures get the original inline block
+ * back. `processed` is extractImages() output for `original`, which maps
+ * messages and content blocks 1:1, so blocks are paired by position.
+ */
+function replaceUnstoredImages(
+    original: unknown[],
+    processed: unknown[],
+    stored: StoreExtractedImagesResult,
+): unknown[] {
+    if (stored.rejected.size === 0 && stored.failed.size === 0) return processed;
     const urlToReason = new Map<string, OmittedImageReason>();
-    for (const [id, reason] of failed) urlToReason.set(getExtractedImageUrl(id), reason);
-    return messages.map((msg) => {
+    for (const [id, reason] of stored.rejected) urlToReason.set(getExtractedImageUrl(id), reason);
+    const failedUrls = new Set<string>();
+    for (const id of stored.failed) failedUrls.add(getExtractedImageUrl(id));
+    return processed.map((msg, msgIndex) => {
         if (!msg || typeof msg !== "object") return msg;
         const m = msg as Record<string, unknown>;
         if (!Array.isArray(m.content)) return msg;
+        const originalContent = (original[msgIndex] as Record<string, unknown> | undefined)?.content;
         let changed = false;
-        const content = m.content.map((block: unknown) => {
+        const content = m.content.map((block: unknown, blockIndex: number) => {
             if (!block || typeof block !== "object") return block;
             const b = block as Record<string, unknown>;
             const source = b.source as Record<string, unknown> | undefined;
             if (b.type !== "image" || source?.extracted !== true || typeof source.url !== "string") return block;
+            if (failedUrls.has(source.url) && Array.isArray(originalContent) && originalContent[blockIndex] !== undefined) {
+                changed = true;
+                return originalContent[blockIndex];
+            }
             const reason = urlToReason.get(source.url);
             if (!reason) return block;
             changed = true;
@@ -354,26 +383,30 @@ function replaceFailedImages(messages: unknown[], failed: Map<string, OmittedIma
 /**
  * Extract, store (bounded), and rewrite one messages array. Returns null when
  * nothing changed so callers can return the original object untouched.
+ * `complete` is false when an unexpected storage failure left inline image
+ * data in place, so a later stage may retry extraction.
  */
 async function extractAndStore(
     messages: unknown[],
     sessionId: string,
     userId: string,
     label: string,
-): Promise<unknown[] | null> {
+): Promise<{ messages: unknown[]; complete: boolean } | null> {
     const result = extractImages(messages, sessionId, userId);
     if (result.extracted.length === 0 && result.omitted === 0) return null;
 
-    const failed = await storeExtractedImages(result.extracted, sessionId, userId);
-    const finalMessages = replaceFailedImages(result.messages, failed);
-    const omitted = result.omitted + failed.size;
+    const stored = await storeExtractedImages(result.extracted, sessionId, userId);
+    const finalMessages = replaceUnstoredImages(messages, result.messages, stored);
+    const omitted = result.omitted + stored.rejected.size;
+    const extractedCount = result.extracted.length - stored.rejected.size - stored.failed.size;
 
     log.info(
-        `${label}: extracted ${result.extracted.length - failed.size} image(s) for session ${sessionId}` +
-        (omitted > 0 ? `, omitted ${omitted} over-limit/failed image(s)` : "") +
+        `${label}: extracted ${extractedCount} image(s) for session ${sessionId}` +
+        (omitted > 0 ? `, omitted ${omitted} over-limit image(s)` : "") +
+        (stored.failed.size > 0 ? `, kept ${stored.failed.size} image(s) inline after storage failure` : "") +
         `, saved ~${(result.savedBytes / 1024 / 1024).toFixed(1)} MB`,
     );
-    return finalMessages;
+    return { messages: finalMessages, complete: stored.failed.size === 0 };
 }
 
 /**
@@ -396,10 +429,10 @@ export async function storeAndReplaceImages(
 
     if (!Array.isArray(s.messages) || s.messages.length === 0) return state;
 
-    const messages = await extractAndStore(s.messages, sessionId, userId, "state payload");
-    if (!messages) return state;
+    const result = await extractAndStore(s.messages, sessionId, userId, "state payload");
+    if (!result) return state;
 
-    return { ...s, messages };
+    return { ...s, messages: result.messages };
 }
 
 /**
@@ -419,10 +452,10 @@ export async function storeAndReplaceImagesInEvent(
 
     if (evt.type !== "agent_end" || !Array.isArray(evt.messages)) return event;
 
-    const messages = await extractAndStore(evt.messages, sessionId, userId, "agent_end");
-    if (!messages) return event;
+    const result = await extractAndStore(evt.messages, sessionId, userId, "agent_end");
+    if (!result) return event;
 
-    return { ...evt, messages };
+    return { ...evt, messages: result.messages };
 }
 
 // ── Pipeline-level image stripping ───────────────────────────────────────────
@@ -439,7 +472,9 @@ export async function storeAndReplaceImagesInEvent(
  *   - session_messages_chunk → event.messages
  *
  * Sets `_imagesStripped: true` on the returned event so downstream calls to
- * storeAndReplaceImages / storeAndReplaceImagesInEvent can skip redundant work.
+ * storeAndReplaceImages / storeAndReplaceImagesInEvent can skip redundant work,
+ * unless an unexpected storage failure kept inline image data: the flag is then
+ * left unset so a downstream stage can retry extraction of just those images.
  */
 export async function stripImagesFromPipelineEvent(
     event: unknown,
@@ -458,19 +493,23 @@ export async function stripImagesFromPipelineEvent(
         const state = evt.state as Record<string, unknown> | undefined;
         if (!state || !Array.isArray(state.messages) || state.messages.length === 0) return event;
 
-        const messages = await extractAndStore(state.messages, sessionId, userId, "[pipeline] session_active");
-        if (!messages) return event;
+        const result = await extractAndStore(state.messages, sessionId, userId, "[pipeline] session_active");
+        if (!result) return event;
 
-        return { ...evt, state: { ...state, messages }, _imagesStripped: true };
+        const out: Record<string, unknown> = { ...evt, state: { ...state, messages: result.messages } };
+        if (result.complete) out._imagesStripped = true;
+        return out;
     }
 
     if (eventType === "agent_end" || eventType === "session_messages_chunk") {
         if (!Array.isArray(evt.messages) || evt.messages.length === 0) return event;
 
-        const messages = await extractAndStore(evt.messages as unknown[], sessionId, userId, `[pipeline] ${String(eventType)}`);
-        if (!messages) return event;
+        const result = await extractAndStore(evt.messages as unknown[], sessionId, userId, `[pipeline] ${String(eventType)}`);
+        if (!result) return event;
 
-        return { ...evt, messages, _imagesStripped: true };
+        const out: Record<string, unknown> = { ...evt, messages: result.messages };
+        if (result.complete) out._imagesStripped = true;
+        return out;
     }
 
     return event;
