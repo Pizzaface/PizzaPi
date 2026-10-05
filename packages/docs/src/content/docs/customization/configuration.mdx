@@ -157,7 +157,7 @@ A documented subset of settings can also be overridden with **environment variab
 | `agentDir` | `string` | `~/.pizzapi` | Agent config directory (skills, extensions, etc.) |
 | `skills` | `string[]` | `[]` | Additional skill directories. Supports `~` expansion. |
 | `hooks` | `object` | — | Lifecycle hook scripts. See [Hooks](/PizzaPi/customization/hooks/). |
-| `envOverrides` | `Record<string, string>` | — | Environment variables to inject into runner worker sessions. |
+| `envOverrides` | `Record<string, string>` | — | Environment variables to inject into runner worker sessions. Keys that relax a protection (`PIZZAPI_SANDBOX`, `PIZZAPI_SANDBOX_ALLOW_UNSANDBOXED`, `PIZZAPI_SANDBOX_ACTIVE`, `PIZZAPI_SANDBOX_MODE`, `PIZZAPI_PLAN_MODE_ALLOWED_TOOLS`, `PIZZAPI_BASH_PASSTHROUGH_ENV`, `PIZZAPI_ALLOW_PROJECT_HOOKS`, `PIZZAPI_ALLOW_PROJECT_MCP`) are honoured only from the global `~/.pizzapi/config.json`; a project config cannot set or change them. |
 | `allowProjectHooks` | `boolean` | `false` | Trust gate: allow project-local hooks to run. **Global config only.** |
 | `allowProjectMcp` | `boolean` | `false` | Allows project-local MCP server definitions to load; otherwise they are excluded. **Global config only.** |
 | `trustedPlugins` | `string[]` | `[]` | Trusted Claude Code plugin paths. **Global config only.** Managed via `pizza plugins trust`. |
