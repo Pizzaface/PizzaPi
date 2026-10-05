@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ServiceEnvelope } from "../service-handler.js";
@@ -2739,6 +2740,47 @@ describe("GitService worktree add workspace-root containment (F22)", () => {
         expect((r2.payload as any).ok).toBe(false);
         expect((r3.payload as any).ok).toBe(false);
         expect(adds).toEqual([]);
+    }));
+
+    test("real git: missing/../symlink and symlink/../ shapes cannot create a worktree outside the roots (review R2)", withRoots(async ({ repo, outside }) => {
+        const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "pipe" });
+        git("init", "-q");
+        git("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
+        symlinkSync(outside, join(repo, "link"), "dir");
+        mkdirSync(join(outside, "inner"));
+        symlinkSync(join(outside, "inner"), join(repo, "ilink"), "dir");
+
+        const service = new GitService();
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+
+        const attempts = [
+            { id: "r2-abs", path: `${repo}/missing/../link/wt-abs` },
+            { id: "r2-rel", path: "missing/../link/wt-rel" },
+            { id: "r2-up", path: "ilink/../wt-up" },
+            { id: "r2-deep", path: `${repo}/m1/m2/../../link/wt-deep` },
+        ];
+        for (const [i, a] of attempts.entries()) {
+            dispatchServiceMessage(socket, {
+                serviceId: "git", type: "git_worktree_add", requestId: a.id,
+                payload: { cwd: repo, branch: `feat/r2-${i}`, path: a.path },
+            });
+            const r = await waitForResult(socket, a.id, "git_worktree_add_result");
+            expect({ id: a.id, ok: (r.payload as any).ok }).toEqual({ id: a.id, ok: false });
+        }
+        for (const name of ["wt-abs", "wt-rel", "wt-up", "wt-deep"]) {
+            expect(existsSync(join(outside, name))).toBe(false);
+        }
+
+        // A missing/.. detour that stays in the root still works with real git.
+        dispatchServiceMessage(socket, {
+            serviceId: "git", type: "git_worktree_add", requestId: "r2-ok",
+            payload: { cwd: repo, branch: "feat/r2-ok", path: `${repo}/missing/../.worktrees/ok` },
+        });
+        const ok = await waitForResult(socket, "r2-ok", "git_worktree_add_result");
+        expect((ok.payload as any).ok).toBe(true);
+        expect(existsSync(join(repo, ".worktrees", "ok", ".git"))).toBe(true);
+        service.dispose?.();
     }));
 
     test("still allows a new worktree under a real in-root directory", withRoots(async ({ repo }) => {

@@ -2178,8 +2178,11 @@ export class GitService implements ServiceHandler {
             return;
         }
 
-        // Validate the resolved worktree path is within allowed roots
-        const resolvedPath = path.startsWith("/") ? path : join(cwd, path);
+        // Validate the resolved worktree path is within allowed roots. Do not
+        // use join() here: it collapses ".." lexically, whereas git (via the
+        // kernel) applies ".." after following symlinks — `link/../wt` must be
+        // judged where git will actually create it.
+        const resolvedPath = path.startsWith("/") ? path : `${cwd}/${path}`;
         if (!isCwdAllowed(resolvedPath)) {
             this.emitError("git_worktree_add_result", "Worktree path outside allowed roots", requestId, sessionId);
             return;

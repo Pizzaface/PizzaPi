@@ -112,6 +112,18 @@ describe("workspace guards", () => {
             expect(isCwdAllowed(join(root, "repo", "dangling"))).toBe(false);
         });
 
+        test("resumes symlink resolution after .. leaves a missing suffix (review R2)", () => {
+            // root/repo/link -> outside ; root/repo/missing/../link/wt is outside/wt
+            symlinkSync(outside, join(root, "repo", "link"), symlinkType);
+            const repo = join(root, "repo");
+            expect(canonicalizeProspectivePath(`${repo}/missing/../link/wt`)).toBe(join(realpathSync(outside), "wt"));
+            expect(isCwdAllowed(`${repo}/missing/../link/wt`)).toBe(false);
+            expect(isCwdAllowed(`${repo}/a/b/../../link/wt`)).toBe(false);
+            // Partial unwinding stays in the missing suffix and is still lexical.
+            expect(canonicalizeProspectivePath(`${repo}/a/b/../c`)).toBe(join(realpathSync(repo), "a", "c"));
+            expect(isCwdAllowed(`${repo}/missing/../.worktrees/ok`)).toBe(true);
+        });
+
         test("applies .. after a symlink to the resolved target, like the kernel", () => {
             // root/repo/link -> outside/inner ; root/repo/link/../wt is outside/wt
             mkdirSync(join(outside, "inner"), { recursive: true });

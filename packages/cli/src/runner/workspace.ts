@@ -57,8 +57,11 @@ export function isCwdAllowed(cwd: string | undefined): boolean {
  * Components are resolved left-to-right: every existing component is passed
  * through realpath, so symlinks (including multi-hop chains) are followed and
  * ".." is applied to the *resolved* parent rather than lexically. From the
- * first missing component onward the remainder is appended lexically, since
- * anything created there is a real directory under the resolved parent.
+ * first missing component onward segments are appended lexically, since
+ * anything created there is a real directory under the resolved parent; once
+ * enough ".." segments climb back out of that missing suffix, filesystem
+ * resolution resumes, so `missing/../symlink` follows the symlink exactly as
+ * `mkdir -p` / `git worktree add` would.
  *
  * Returns null when an existing component cannot be resolved (for example a
  * dangling or looping symlink, which a create operation would follow to an
@@ -71,16 +74,20 @@ export function canonicalizeProspectivePath(p: string): string | null {
     const appendSegment = (base: string, seg: string) =>
         /[\\/]$/.test(base) ? base + seg : `${base}/${seg}`;
     let current = root;
-    let missing = false;
+    // Number of trailing lexical (not-yet-existing) components in `current`.
+    // Zero means `current` is a fully resolved existing path.
+    let missingDepth = 0;
     for (const seg of segments) {
         if (seg === ".") continue;
         if (seg === "..") {
             current = dirname(current);
+            if (missingDepth > 0) missingDepth--;
             continue;
         }
         const candidate = appendSegment(current, seg);
-        if (missing) {
+        if (missingDepth > 0) {
             current = candidate;
+            missingDepth++;
             continue;
         }
         try {
@@ -88,7 +95,7 @@ export function canonicalizeProspectivePath(p: string): string | null {
         } catch (err) {
             const code = (err as NodeJS.ErrnoException).code;
             if (code !== "ENOENT" && code !== "ENOTDIR") return null;
-            missing = true;
+            missingDepth = 1;
             current = candidate;
             continue;
         }
