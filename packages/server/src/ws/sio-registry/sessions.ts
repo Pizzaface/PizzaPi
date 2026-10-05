@@ -109,7 +109,7 @@ import {
 import { broadcastToHub } from "./hub.js";
 import { createLogger } from "@pizzapi/tools";
 import { pushTriggerHistory } from "../../sessions/trigger-store.js";
-import { deleteSessionRoutes } from "../../events/store.js";
+import { deleteSessionRoutes, sessionReferencedByOtherTenant } from "../../events/store.js";
 import { routeToSubscription } from "../../events/reconcile.js";
 
 export { markPendingRecovery, consumePendingRecovery, hasPendingRecovery, _resetPendingRecoveriesForTesting } from "./viewer-recovery.js";
@@ -250,6 +250,15 @@ async function registerTuiSessionUnlocked(
         if (persistedUserId !== null && persistedUserId !== userId) {
             log.warn(
                 `registerTuiSession: ended session ${sessionId} is owned by a different user in SQLite — generating new session ID`,
+            );
+            sessionId = randomUUID();
+            shareUrl = `${process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173"}/session/${sessionId}`;
+        } else if (persistedUserId === null && await sessionReferencedByOtherTenant(sessionId, userId)) {
+            // Tertiary guard: the ownership row was pruned (ephemeral sweep),
+            // but durable deliveries / response relays / session routes still
+            // name another user. Refuse to recycle the id.
+            log.warn(
+                `registerTuiSession: session ${sessionId} has no owner row but durable trigger records belong to a different user — generating new session ID`,
             );
             sessionId = randomUUID();
             shareUrl = `${process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173"}/session/${sessionId}`;

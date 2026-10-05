@@ -33,6 +33,7 @@ mock.module("../../events/store.js", () => ({
         deletedRouteOptions.push({ sessionId, preserveDurable: opts?.preserveDurable });
         return [];
     },
+    sessionReferencedByOtherTenant: async () => false,
 }));
 
 mock.module("../../events/reconcile.js", () => ({

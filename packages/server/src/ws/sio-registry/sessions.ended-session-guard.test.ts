@@ -117,6 +117,17 @@ mock.module("../../sessions/store.js", () => ({
     touchRelaySession: async () => {},
 }));
 
+// Durable trigger-record tenant probe — controllable per test (recycled-id
+// guard for sessions whose ownership row was pruned).
+const mockSessionReferencedByOtherTenant = mock(
+    async (_sessionId: string, _userId: string | null): Promise<boolean> => false,
+);
+mock.module("../../events/store.js", () => ({
+    deleteSessionRoutes: async () => [],
+    listRoutes: async () => [],
+    sessionReferencedByOtherTenant: mockSessionReferencedByOtherTenant,
+}));
+
 mock.module("./hub.js", () => ({
     broadcastToHub: async () => {},
 }));
@@ -141,7 +152,40 @@ describe("registerTuiSession — ended-session SQLite ownership guard", () => {
         mockGetRelaySessionUserId.mockImplementation(async () => null);
         mockGetPersistedRelaySessionRunner.mockReset();
         mockGetPersistedRelaySessionRunner.mockImplementation(async () => null);
+        mockSessionReferencedByOtherTenant.mockReset();
+        mockSessionReferencedByOtherTenant.mockImplementation(async () => false);
         await initStateRedis(mockRedis as never);
+    });
+
+    it("generates a new session ID when the owner row was pruned but durable trigger records belong to another user (F09)", async () => {
+        const REQUESTED_ID = "00000000-0000-0000-0000-pruned000001";
+        mockGetRelaySessionUserId.mockImplementation(async () => null); // ephemeral row pruned
+        mockSessionReferencedByOtherTenant.mockImplementation(async (id, userId) =>
+            id === REQUESTED_ID && userId !== "user-a");
+
+        const attacker = await registerTuiSession(makeSocket(), "/cwd", {
+            sessionId: REQUESTED_ID,
+            userId: "user-b",
+            userName: "User B",
+            isEphemeral: true,
+        });
+        expect(attacker.sessionId).not.toBe(REQUESTED_ID);
+        expect(mockSessionReferencedByOtherTenant).toHaveBeenCalledWith(REQUESTED_ID, "user-b");
+    });
+
+    it("keeps the requested ID for its own owner after the owner row was pruned (F09)", async () => {
+        const REQUESTED_ID = "00000000-0000-0000-0000-pruned000002";
+        mockGetRelaySessionUserId.mockImplementation(async () => null);
+        mockSessionReferencedByOtherTenant.mockImplementation(async (id, userId) =>
+            id === REQUESTED_ID && userId !== "user-a");
+
+        const owner = await registerTuiSession(makeSocket(), "/cwd", {
+            sessionId: REQUESTED_ID,
+            userId: "user-a",
+            userName: "User A",
+            isEphemeral: true,
+        });
+        expect(owner.sessionId).toBe(REQUESTED_ID);
     });
 
     it("preserves the requested session ID when no persisted row exists", async () => {

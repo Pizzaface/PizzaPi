@@ -810,6 +810,58 @@ export async function listPendingWakeDeliveries(
 }
 
 /**
+ * True when durable trigger records still reference `sessionId` on behalf of
+ * a tenant other than `userId`: a delivery of another owner's event (config
+ * routes excepted — they are operator-level and deliver every tenant's
+ * events to an operator-chosen session), an event another owner published
+ * as that session, or another owner's session route targeting it.
+ *
+ * Deliveries and events outlive the relay_session ownership row (ephemeral
+ * sessions are pruned within minutes), so this is the ownership tombstone
+ * that stops a different user from registering a recycled id and draining
+ * or receiving the previous owner's durable records. A null `userId` treats
+ * every owned reference as foreign (fail closed).
+ */
+export async function sessionReferencedByOtherTenant(sessionId: string, userId: string | null): Promise<boolean> {
+  const db = getKysely();
+  const otherOwner = (column: string) => userId === null
+    ? sql`${sql.ref(column)} IS NOT NULL`
+    : sql`${sql.ref(column)} IS NOT NULL AND ${sql.ref(column)} <> ${userId}`;
+  const delivery = await db.executeQuery(
+    sql<{ one: number }>`
+      SELECT 1 AS one FROM ${sql.table(DELIVERY_TABLE)} d
+      JOIN ${sql.table(EVENT_TABLE)} e ON e.id = d.eventId
+      LEFT JOIN ${sql.table(ROUTE_TABLE)} r ON r.id = json_extract(d.deliveryJson, '$.routeId')
+      WHERE d.sessionId = ${sessionId}
+        AND ${otherOwner("e.ownerUserId")}
+        AND (r.origin IS NULL OR r.origin <> 'config')
+      LIMIT 1
+    `.compile(db),
+  );
+  if (delivery.rows.length > 0) return true;
+  const sourced = await db.executeQuery(
+    sql<{ one: number }>`
+      SELECT 1 AS one FROM ${sql.table(EVENT_TABLE)} e
+      WHERE e.sourceId = ${sessionId}
+        AND json_extract(e.eventJson, '$.source.kind') = 'session'
+        AND ${otherOwner("e.ownerUserId")}
+      LIMIT 1
+    `.compile(db),
+  );
+  if (sourced.rows.length > 0) return true;
+  const routed = await db.executeQuery(
+    sql<{ one: number }>`
+      SELECT 1 AS one FROM ${sql.table(ROUTE_TABLE)} r
+      WHERE json_extract(r.routeJson, '$.target.kind') = 'session'
+        AND json_extract(r.routeJson, '$.target.sessionId') = ${sessionId}
+        AND ${otherOwner("r.ownerUserId")}
+      LIMIT 1
+    `.compile(db),
+  );
+  return routed.rows.length > 0;
+}
+
+/**
  * Responded deliveries whose response never reached the SOURCE session
  * (relay failed while the source was offline). Drained when that source
  * session registers.

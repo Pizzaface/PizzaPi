@@ -373,7 +373,7 @@ describe("trigger transport delivery receipt", () => {
     }, { guard: ["pending"] });
     localSocket = makeLocalSocket();
 
-    expect(await engine.drainPendingResponseRelays(source.id, transport.createEngineDeps())).toBe(1);
+    expect(await engine.drainPendingResponseRelays(source.id, transport.createEngineDeps(), "u1")).toBe(1);
     expect(localSocketLookups).toEqual(["parent-completion-drain"]);
     expect(localSocket.emits[0]).toMatchObject({
       event: "trigger_response",
@@ -403,7 +403,7 @@ describe("trigger transport delivery receipt", () => {
 
     localSocket = makeLocalSocket();
     const deps = transport.createEngineDeps();
-    const relayed = await engine.drainPendingResponseRelays("child-2", deps);
+    const relayed = await engine.drainPendingResponseRelays("child-2", deps, "u1");
     expect(relayed).toBe(1);
     expect((await store.getDelivery(d!.deliveryId))?.responseRelayPending).toBeUndefined();
     expect(localSocket.emits[0].event).toBe("trigger_response");

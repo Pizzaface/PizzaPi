@@ -439,6 +439,55 @@ describe("event store tenant scope", () => {
   });
 });
 
+describe("recycled session id tombstone (F09)", () => {
+  let store: Awaited<typeof storePromise>;
+  beforeAll(async () => {
+    store = await storePromise;
+    await store.ensureEventTables();
+  });
+  afterEach(async () => {
+    await memDb.deleteFrom("trigger_delivery").execute();
+    await memDb.deleteFrom("trigger_route").execute();
+    await memDb.deleteFrom("trigger_event").execute();
+  });
+
+  const owned = (userId: string): SourceIdentity => ({ kind: "api", id: "src", auth: "api-key", userId });
+
+  it("flags a delivery of another tenant's event and allows the owner", async () => {
+    const { event } = await store.insertEvent({ type: "t:x", source: owned("victim"), payload: {} });
+    await store.createDelivery({ eventId: event.eventId, eventType: event.type, sessionId: "sess-x", deliverAs: "steer" });
+    expect(await store.sessionReferencedByOtherTenant("sess-x", "attacker")).toBe(true);
+    expect(await store.sessionReferencedByOtherTenant("sess-x", null)).toBe(true);
+    expect(await store.sessionReferencedByOtherTenant("sess-x", "victim")).toBe(false);
+    expect(await store.sessionReferencedByOtherTenant("sess-other", "attacker")).toBe(false);
+  });
+
+  it("survives the delivery being responded (response relays keep the row)", async () => {
+    const source: SourceIdentity = { kind: "session", id: "child-x", auth: "socket", userId: "victim" };
+    const { event } = await store.insertEvent({ type: "t:ask", source, payload: {} });
+    // The SOURCE session id is referenced too (pending response relays drain to it).
+    expect(await store.sessionReferencedByOtherTenant("child-x", "attacker")).toBe(true);
+    expect(await store.sessionReferencedByOtherTenant("child-x", "victim")).toBe(false);
+    expect(event.source.id).toBe("child-x");
+  });
+
+  it("flags another tenant's session route but not ownerless config-route deliveries", async () => {
+    await store.createRoute({
+      eventType: "time:cron", target: { kind: "session", sessionId: "sched-x" }, deliverAs: "followUp", origin: "agent", ownerUserId: "victim",
+    });
+    expect(await store.sessionReferencedByOtherTenant("sched-x", "attacker")).toBe(true);
+    expect(await store.sessionReferencedByOtherTenant("sched-x", "victim")).toBe(false);
+
+    await store.syncConfigRoutes([
+      { eventType: "cfg:x", target: { kind: "session", sessionId: "ops-x" }, deliverAs: "steer", origin: "config" },
+    ]);
+    const [cfg] = await store.listRoutes({ eventType: "cfg:x" });
+    const { event } = await store.insertEvent({ type: "cfg:x", source: owned("someone"), payload: {} });
+    await store.createDelivery({ eventId: event.eventId, eventType: event.type, sessionId: "ops-x", deliverAs: "steer", routeId: cfg.routeId });
+    expect(await store.sessionReferencedByOtherTenant("ops-x", "operator")).toBe(false);
+  });
+});
+
 describe("transactional publish (insertEventWithPlan)", () => {
   let store: Awaited<typeof storePromise>;
   beforeAll(async () => {

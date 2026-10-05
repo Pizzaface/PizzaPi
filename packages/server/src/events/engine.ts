@@ -275,15 +275,44 @@ export async function sweepUnresolvedSpawnIntents(olderThanMs = 60_000): Promise
 }
 
 /**
+ * The tenant a delivery belongs to: its route's owner, else the event's
+ * authenticated owner. `undefined` = no tenant to enforce (ownerless config
+ * routes are operator-level and deliver every tenant's events; legacy
+ * ownerless events predate tenant stamping).
+ */
+async function deliveryTenant(delivery: Delivery, event: TriggerEvent): Promise<string | undefined> {
+  const route = delivery.routeId ? await getRoute(delivery.routeId).catch(() => null) : null;
+  if (route?.ownerUserId) return route.ownerUserId;
+  if (route && route.origin === "config") return undefined;
+  return event.source.userId;
+}
+
+/** Whether a drain for a session registered by `ownerUserId` may hand over a row of `tenant`. */
+function drainAllowed(tenant: string | undefined, ownerUserId: string | null): boolean {
+  return tenant === undefined || tenant === ownerUserId;
+}
+
+/**
  * Re-relay responses that were recorded while the SOURCE session was offline.
  * Called when that source session registers, next to drainPendingDeliveries.
+ * Only responses to events the registering owner published are relayed: a
+ * session id recycled by another user after its ownership row was pruned
+ * must not receive the previous owner's answers.
  */
-export async function drainPendingResponseRelays(sessionId: string, deps: EngineDeps): Promise<number> {
+export async function drainPendingResponseRelays(
+  sessionId: string,
+  deps: EngineDeps,
+  ownerUserId: string | null,
+): Promise<number> {
   const pending = await pendingResponseRelaysFor(sessionId);
   let relayed = 0;
   for (const delivery of pending) {
     const event = await getEvent(delivery.eventId);
     if (!event) continue;
+    if (!drainAllowed(event.source.userId, ownerUserId)) {
+      log.warn(`Response relay drain: skipping ${delivery.deliveryId} — session ${sessionId} is registered by a different owner than the event's`);
+      continue;
+    }
     try {
       if (await deps.relayResponse(delivery, event)) {
         const cleared = await updateDelivery(delivery.deliveryId, { responseRelayPending: undefined });
@@ -557,9 +586,15 @@ async function resumeUnfinished(
 /**
  * Drain a session's pending deliveries (FIFO) through the delivery executor.
  * Called when a session registers — pending events queued while it was
- * offline (or while a wake was in flight) deliver now.
+ * offline (or while a wake was in flight) deliver now. Rows belonging to a
+ * tenant other than the registering owner are left untouched (a recycled
+ * session id must never drain the previous owner's queue).
  */
-export async function drainPendingDeliveries(sessionId: string, deps: EngineDeps): Promise<number> {
+export async function drainPendingDeliveries(
+  sessionId: string,
+  deps: EngineDeps,
+  ownerUserId: string | null,
+): Promise<number> {
   const pending = await pendingDeliveriesFor(sessionId);
   let drained = 0;
   for (const delivery of pending) {
@@ -567,6 +602,10 @@ export async function drainPendingDeliveries(sessionId: string, deps: EngineDeps
     if (!event) {
       await updateDelivery(delivery.deliveryId, { status: "expired" });
       drained++;
+      continue;
+    }
+    if (!drainAllowed(await deliveryTenant(delivery, event), ownerUserId)) {
+      log.warn(`Delivery drain: skipping ${delivery.deliveryId} — session ${sessionId} is registered by a different owner than the delivery's tenant`);
       continue;
     }
     const attempt = await claimAndDeliver(delivery, event, null, deps, "Drain of delivery");
