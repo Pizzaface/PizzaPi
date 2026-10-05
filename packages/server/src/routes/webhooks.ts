@@ -11,13 +11,19 @@
  * Fire endpoint (no auth cookie — validated via HMAC):
  *   POST /api/webhooks/:id/fire     — spawn a new session + fire trigger
  *
- * HMAC validation (two modes, auto-detected):
- *   Enhanced: SHA-256 of `${timestamp}.${nonce}.${rawBody}` — requires X-Webhook-Timestamp
- *             and X-Webhook-Nonce headers; includes replay protection.
- *   Legacy:   SHA-256 of raw body only — used when the enhanced headers are absent.
- * Caller must always send:
+ * HMAC validation:
+ *   Enhanced (default, required): SHA-256 of `${timestamp}.${nonce}.${rawBody}` —
+ *             requires X-Webhook-Timestamp and X-Webhook-Nonce headers; includes
+ *             a freshness window and single-use nonce (replay protection).
+ *   Legacy:   SHA-256 of raw body only — DISABLED by default because a captured
+ *             request is replayable. Operators can re-enable it with
+ *             PIZZAPI_WEBHOOK_ALLOW_LEGACY_SIGNATURES=true; accepted legacy
+ *             requests are then deduplicated per webhook for
+ *             LEGACY_WEBHOOK_DEDUPE_WINDOW_MS (identical signed bodies → 409).
+ *   A request carrying only one of the two freshness headers is rejected
+ *   (no silent downgrade to legacy mode).
+ * Caller must send:
  *   - X-Webhook-Signature (hex digest)
- * Optional for enhanced mode (enables replay protection):
  *   - X-Webhook-Timestamp (ISO string or RFC3339 date)
  *   - X-Webhook-Nonce (unique per delivery)
  *
@@ -56,6 +62,22 @@ const log = createLogger("webhooks-api");
 const WEBHOOK_REPLAY_WINDOW_MS = 5 * 60 * 1000;
 /** Allow up to 30s of clock skew (NTP drift) before rejecting as "future". */
 const WEBHOOK_CLOCK_SKEW_MS = 30 * 1000;
+/**
+ * When legacy (body-only) signatures are explicitly allowed, an identical
+ * signed body is accepted at most once per webhook within this window.
+ */
+export const LEGACY_WEBHOOK_DEDUPE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Legacy body-only HMAC signatures have no replay protection, so they are
+ * rejected unless the operator opts back in. Read per request so the setting
+ * can be toggled in tests and takes effect without code changes.
+ */
+export function legacyWebhookSignaturesAllowed(): boolean {
+    const raw = process.env.PIZZAPI_WEBHOOK_ALLOW_LEGACY_SIGNATURES;
+    if (!raw) return false;
+    return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
+}
 
 // ── HMAC helpers ─────────────────────────────────────────────────────────────
 
@@ -428,6 +450,15 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
         const nonceHeader = req.headers.get("x-webhook-nonce");
         const useEnhanced = !!(timestampHeader && nonceHeader);
 
+        if (!useEnhanced && (timestampHeader || nonceHeader)) {
+            // A partial freshness header set must never downgrade to the
+            // replayable body-only mode.
+            return Response.json(
+                { error: "Both X-Webhook-Timestamp and X-Webhook-Nonce headers are required" },
+                { status: 401 },
+            );
+        }
+
         if (useEnhanced) {
             // Enhanced verification: HMAC of `${timestamp}.${nonce}.${rawBody}` with replay protection.
             const timestampMs = Date.parse(timestampHeader!);
@@ -463,12 +494,37 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
                 return Response.json({ error: "Webhook nonce has already been used" }, { status: 409 });
             }
         } else {
-            // Legacy verification: HMAC of raw body only (no replay protection).
+            // Legacy verification: HMAC of raw body only. It carries no
+            // freshness, so it is opt-in and deduplicated when enabled.
+            if (!legacyWebhookSignaturesAllowed()) {
+                return Response.json(
+                    {
+                        error: "Missing X-Webhook-Timestamp and X-Webhook-Nonce headers: legacy body-only "
+                            + "signatures are disabled. Sign `${timestamp}.${nonce}.${rawBody}` instead.",
+                    },
+                    { status: 401 },
+                );
+            }
             const expected = computeHmac(webhook.secret, rawBodyText);
             if (!hmacEqual(signature, expected)) {
                 log.warn(`Invalid HMAC (legacy) for webhook ${webhookId}`);
                 return Response.json({ error: "Invalid signature" }, { status: 401 });
             }
+            const firstUse = await consumeNonceOnce(
+                "webhook-legacy",
+                `${webhookId}:${expected}`,
+                LEGACY_WEBHOOK_DEDUPE_WINDOW_MS,
+            );
+            if (!firstUse) {
+                return Response.json(
+                    { error: "Duplicate legacy webhook delivery (identical signed body already accepted)" },
+                    { status: 409 },
+                );
+            }
+            log.warn(
+                `Webhook ${webhookId} fired with a deprecated legacy body-only signature; `
+                + "migrate the caller to X-Webhook-Timestamp/X-Webhook-Nonce signing.",
+            );
         }
 
         // Parse body JSON

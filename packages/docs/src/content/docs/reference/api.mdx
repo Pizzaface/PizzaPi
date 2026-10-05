@@ -1385,23 +1385,18 @@ Delete a webhook.
 
 Fire a webhook — publishes a `webhook:<slug>` Event and delivers it through all matching Routes. A Route may target an existing session or spawn a new one, so a fire can reach multiple sessions. **No session cookie required** — authenticated via HMAC signature.
 
-**Auth:** HMAC-SHA256 signature of the request body using the webhook's `secret`. Two modes are supported and auto-detected by header presence:
+**Auth:** HMAC-SHA256 signature using the webhook's `secret`:
 
-- **Legacy mode** (default): sign the raw request body and send only `X-Webhook-Signature`.
-- **Enhanced mode** (replay-protected): sign `${timestamp}.${nonce}.${rawBody}` and include `X-Webhook-Timestamp` (ISO string or RFC3339) and `X-Webhook-Nonce` headers. The timestamp must be within a 5-minute window and the nonce must be unique per delivery.
+- **Enhanced mode** (required by default, replay-protected): sign `${timestamp}.${nonce}.${rawBody}` and include `X-Webhook-Timestamp` (ISO string or RFC3339) and `X-Webhook-Nonce` headers. The timestamp must be within a 5-minute window and the nonce must be unique per delivery. Sending only one of the two headers returns `401`.
+- **Legacy mode** (deprecated): sign the raw request body and send only `X-Webhook-Signature`. Rejected with `401` unless the relay sets `PIZZAPI_WEBHOOK_ALLOW_LEGACY_SIGNATURES=true`; when enabled, an identical signed body is accepted at most once per webhook per 24 hours (`409` on repeat).
 
 **Headers:**
 
 ```http
 X-Webhook-Signature: <hex-encoded HMAC-SHA256>
-Content-Type: application/json
-```
-
-For enhanced mode, also include:
-
-```http
 X-Webhook-Timestamp: 2025-01-15T12:00:00.000Z
 X-Webhook-Nonce: <unique nonce>
+Content-Type: application/json
 ```
 
 **Response:**

@@ -673,43 +673,54 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
         expect(res?.status).toBe(404);
     });
 
-    test("falls back to legacy HMAC when X-Webhook-Timestamp is absent (nonce-only → no enhanced mode)", async () => {
-        // Only nonce provided, no timestamp → useEnhanced=false → legacy mode.
-        // Invalid legacy signature → 401 Invalid signature.
-        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-        const [req, url] = makeReq(
-            "POST",
-            "/api/webhooks/wh-1/fire",
-            { event: "test" },
-            { "x-webhook-signature": "badhash", "x-webhook-nonce": "nonce-a" },
-        );
-        const res = await handleWebhooksRoute(req, url);
-        expect(res?.status).toBe(401);
-        const body = await res!.json();
-        expect(body.error).toContain("Invalid signature");
+    test("rejects a nonce-only header set instead of downgrading to legacy mode", async () => {
+        process.env.PIZZAPI_WEBHOOK_ALLOW_LEGACY_SIGNATURES = "true";
+        try {
+            mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+            const payload = { event: "test" };
+            // Even a VALID legacy body signature must not be accepted with a partial header set.
+            const legacySig = createHmac("sha256", ACTIVE_WEBHOOK.secret).update(JSON.stringify(payload)).digest("hex");
+            const [req, url] = makeReq(
+                "POST",
+                "/api/webhooks/wh-1/fire",
+                payload,
+                { "x-webhook-signature": legacySig, "x-webhook-nonce": "nonce-a" },
+            );
+            const res = await handleWebhooksRoute(req, url);
+            expect(res?.status).toBe(401);
+            const body = await res!.json();
+            expect(body.error).toContain("X-Webhook-Timestamp and X-Webhook-Nonce");
+        } finally {
+            delete process.env.PIZZAPI_WEBHOOK_ALLOW_LEGACY_SIGNATURES;
+        }
     });
 
-    test("falls back to legacy HMAC when X-Webhook-Nonce is absent (timestamp-only → no enhanced mode)", async () => {
-        // Only timestamp provided, no nonce → useEnhanced=false → legacy mode.
-        // Invalid legacy signature → 401 Invalid signature.
-        mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
-        const [req, url] = makeReq(
-            "POST",
-            "/api/webhooks/wh-1/fire",
-            { event: "test" },
-            {
-                "x-webhook-signature": "badhash",
-                "x-webhook-timestamp": new Date().toISOString(),
-            },
-        );
-        const res = await handleWebhooksRoute(req, url);
-        expect(res?.status).toBe(401);
-        const body = await res!.json();
-        expect(body.error).toContain("Invalid signature");
+    test("rejects a timestamp-only header set instead of downgrading to legacy mode", async () => {
+        process.env.PIZZAPI_WEBHOOK_ALLOW_LEGACY_SIGNATURES = "true";
+        try {
+            mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+            const payload = { event: "test" };
+            const legacySig = createHmac("sha256", ACTIVE_WEBHOOK.secret).update(JSON.stringify(payload)).digest("hex");
+            const [req, url] = makeReq(
+                "POST",
+                "/api/webhooks/wh-1/fire",
+                payload,
+                {
+                    "x-webhook-signature": legacySig,
+                    "x-webhook-timestamp": new Date().toISOString(),
+                },
+            );
+            const res = await handleWebhooksRoute(req, url);
+            expect(res?.status).toBe(401);
+            const body = await res!.json();
+            expect(body.error).toContain("X-Webhook-Timestamp and X-Webhook-Nonce");
+        } finally {
+            delete process.env.PIZZAPI_WEBHOOK_ALLOW_LEGACY_SIGNATURES;
+        }
     });
 
-    test("accepts valid legacy HMAC (raw body only) when enhanced headers are absent", async () => {
-        // Backward-compat: callers that only sign the raw body are still accepted.
+    test("rejects a valid legacy body-only signature by default", async () => {
+        delete process.env.PIZZAPI_WEBHOOK_ALLOW_LEGACY_SIGNATURES;
         mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
         const payload = { type: "push", event: "test" };
         const rawBody = JSON.stringify(payload);
@@ -721,8 +732,40 @@ describe("POST /api/webhooks/:id/fire — HMAC validation", () => {
             { "x-webhook-signature": legacySig },
         );
         const res = await handleWebhooksRoute(req, url);
-        // 200 or a runner-related 5xx — not a 401
-        expect(res?.status).not.toBe(401);
+        expect(res?.status).toBe(401);
+        const body = await res!.json();
+        expect(body.error).toContain("legacy");
+        expect(await memDb.selectFrom("trigger_event").selectAll().execute()).toHaveLength(0);
+    });
+
+    test("with PIZZAPI_WEBHOOK_ALLOW_LEGACY_SIGNATURES, accepts a legacy request once and rejects its replay", async () => {
+        process.env.PIZZAPI_WEBHOOK_ALLOW_LEGACY_SIGNATURES = "true";
+        try {
+            mockGetWebhook.mockReturnValue(Promise.resolve(ACTIVE_WEBHOOK));
+            const payload = { type: "push", event: "legacy-replay" };
+            const rawBody = JSON.stringify(payload);
+            const legacySig = createHmac("sha256", ACTIVE_WEBHOOK.secret).update(rawBody).digest("hex");
+
+            const [req1, url1] = makeReq("POST", "/api/webhooks/wh-1/fire", payload, { "x-webhook-signature": legacySig });
+            const res1 = await handleWebhooksRoute(req1, url1);
+            // 200 or a runner-related 5xx — authenticated, not 401/409
+            expect(res1?.status).not.toBe(401);
+            expect(res1?.status).not.toBe(409);
+            const eventsAfterFirst = (await memDb.selectFrom("trigger_event").selectAll().execute()).length;
+
+            // Replay the identical captured request.
+            const [req2, url2] = makeReq("POST", "/api/webhooks/wh-1/fire", payload, { "x-webhook-signature": legacySig });
+            const res2 = await handleWebhooksRoute(req2, url2);
+            expect(res2?.status).toBe(409);
+            expect((await memDb.selectFrom("trigger_event").selectAll().execute()).length).toBe(eventsAfterFirst);
+
+            // An invalid legacy signature is still 401 (and consumes nothing).
+            const [req3, url3] = makeReq("POST", "/api/webhooks/wh-1/fire", { other: 1 }, { "x-webhook-signature": "badhash" });
+            const res3 = await handleWebhooksRoute(req3, url3);
+            expect(res3?.status).toBe(401);
+        } finally {
+            delete process.env.PIZZAPI_WEBHOOK_ALLOW_LEGACY_SIGNATURES;
+        }
     });
 
     test("returns 401 when X-Webhook-Signature is missing", async () => {
