@@ -46,6 +46,7 @@ import {
     applySnapshotPatchToPendingState,
     canFinalizeChunkedSnapshot,
     enqueueSessionEvent,
+    getChunkedSnapshotLimits,
     CHUNK_STREAM_STALE_MS,
 } from "./relay-state.js";
 
@@ -53,6 +54,13 @@ export {
     type ChunkedSessionState,
     CHUNK_STREAM_STALE_MS,
     type PendingChunkUpdate,
+    type ChunkApplyResult,
+    type ChunkedSnapshotLimits,
+    getChunkedSnapshotLimits,
+    DEFAULT_SNAPSHOT_MAX_CHUNKS,
+    DEFAULT_SNAPSHOT_MAX_MESSAGES,
+    DEFAULT_SNAPSHOT_MAX_BYTES,
+    DEFAULT_SNAPSHOT_MAX_DEFERRED_EVENTS,
     pendingChunkedStates,
     applyChunkToPendingState,
     applySnapshotPatchToPendingState,
@@ -119,6 +127,31 @@ export async function finalizeChunkedSnapshot(
     pending.deferredEvents = [];
 
     return fullState;
+}
+
+/**
+ * Abandon an in-flight chunked snapshot that is malformed or over its resource
+ * budget. The previously persisted snapshot stays authoritative; events that
+ * were deferred behind the snapshot are published (in arrival order) so they
+ * are not silently lost. Viewers recover through the normal stale/missing
+ * snapshot path.
+ */
+export async function abortChunkedSnapshot(
+    sessionId: string,
+    pending: ChunkedSessionState,
+    reason: string,
+    deps: Pick<FinalizeChunkedSnapshotDeps, "publishSessionEvent"> = defaultFinalizeChunkedSnapshotDeps,
+): Promise<void> {
+    log.warn(`Aborting chunked snapshot ${pending.snapshotId.slice(0, 8)} for ${sessionId}: ${reason}`);
+    if (pendingChunkedStates.get(sessionId) === pending) {
+        pendingChunkedStates.delete(sessionId);
+    }
+    const deferred = pending.deferredEvents ?? [];
+    pending.deferredEvents = [];
+    pending.chunks = [];
+    for (const evt of deferred) {
+        await deps.publishSessionEvent(sessionId, evt);
+    }
 }
 
 /** Register the main event pipeline handler on the given socket. */
@@ -250,15 +283,20 @@ export function registerEventHandler(socket: RelaySocket): void {
             const isFinal = !!event.final;
             const totalChunks = typeof event.totalChunks === "number" ? event.totalChunks : 0;
 
-            if (pending && pending.snapshotId === chunkSnapshotId && chunkIndex >= 0) {
-                applyChunkToPendingState(pending, {
+            if (pending && pending.snapshotId === chunkSnapshotId) {
+                // Validates index bounds and aggregate budgets before any
+                // mutation; an invalid chunk abandons the whole snapshot.
+                const applied = applyChunkToPendingState(pending, {
                     chunkIndex,
                     chunkMessages,
                     totalChunks,
                     isFinalChunk: isFinal,
                 });
 
-                if (canFinalizeChunkedSnapshot(pending)) {
+                if (applied.status === "rejected") {
+                    await abortChunkedSnapshot(sessionId, pending, applied.reason);
+                    await touchSessionActivity(sessionId);
+                } else if (canFinalizeChunkedSnapshot(pending)) {
                     // All chunks received — assemble, persist, and publish the
                     // tail to viewers. Only clear the pending entry after
                     // finalization succeeds so a transient failure can still be
@@ -270,8 +308,7 @@ export function registerEventHandler(socket: RelaySocket): void {
                     // Message-less progress for hydrating viewers: drives the
                     // "Loading session (x of y)" status and keeps the UI's
                     // hydration-stall watchdog from restarting the transfer.
-                    let loadedMessages = 0;
-                    for (const c of pending.chunks) loadedMessages += c?.length ?? 0;
+                    const loadedMessages = pending.receivedMessages ?? 0;
                     await publishSessionEvent(sessionId, {
                         type: "session_messages_chunk",
                         snapshotId: chunkSnapshotId,
@@ -406,7 +443,16 @@ export function registerEventHandler(socket: RelaySocket): void {
                 // viewers but do NOT cache. Reconnecting viewers get lastState.
                 await broadcastSessionEventToViewers(sessionId, eventToPublish);
             } else if (assembling && DEFERRED_DURING_CHUNKING.has(event.type as string)) {
-                (pending!.deferredEvents ??= []).push(eventToPublish);
+                const deferred = (pending!.deferredEvents ??= []);
+                if (deferred.length < getChunkedSnapshotLimits().maxDeferredEvents) {
+                    deferred.push(eventToPublish);
+                } else {
+                    // Deferred-event budget exhausted: give up on the snapshot
+                    // rather than buffering without bound, then publish this
+                    // event after the flushed backlog to preserve order.
+                    await abortChunkedSnapshot(sessionId, pending!, "deferred event budget exceeded");
+                    await publishSessionEvent(sessionId, eventToPublish);
+                }
             } else if (assembling && isDeltaEvent(event.type)) {
                 // Cumulative delta; the next one after the snapshot repairs viewers.
             } else if (isDeltaEvent(event.type) && !shouldPublishDelta(sessionId)) {
