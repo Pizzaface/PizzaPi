@@ -28,18 +28,18 @@ const mockRegisterNativePush = mock(async (_input: any) => ({
     suppressChildNotifications: 1,
     createdAt: new Date().toISOString(),
 }));
+const mockSubscribePush = mock(async (_input: any) => "sub-1");
 const mockUpdateNativeSuppressChildNotifications = mock(async (_userId: string, _platform: string, _suppress: boolean): Promise<number> => 1);
 
 mock.module("../middleware.js", () => ({ requireSession: mockRequireSession }));
 
 mock.module("../push.js", () => ({
     getVapidPublicKey: mock(() => "vapid-key"),
-    subscribePush: mock(async () => ({ id: "sub-1" })),
+    subscribePush: mockSubscribePush,
     unsubscribePush: mock(async () => true),
     getSubscriptionsForUser: mock(async () => []),
     updateEnabledEvents: mock(async () => 1),
     updateSuppressChildNotifications: mock(async () => 1),
-    isValidPushEndpoint: mock(() => true),
     isNtfyConfigured: mockIsNtfyConfigured,
     getNtfyPublicUrl: mockGetNtfyPublicUrl,
     registerNativePush: mockRegisterNativePush,
@@ -183,5 +183,42 @@ describe("POST /api/push/register-native", () => {
         const [req, url] = makeReq("/api/push/register-native", "POST");
         const res = await handlePushRoute(req, url);
         expect(res?.status).toBe(401);
+    });
+});
+
+// ── POST /api/push/subscribe ─────────────────────────────────────────────────
+// The endpoint validator is NOT mocked (routes import it from push-endpoint.js).
+
+describe("POST /api/push/subscribe endpoint validation", () => {
+    beforeEach(() => {
+        mockRequireSession.mockReset();
+        mockSubscribePush.mockReset();
+        mockRequireSession.mockImplementation(async () => ({ userId: "user-route-1", userName: "Test User" }));
+        mockSubscribePush.mockImplementation(async () => "sub-1");
+    });
+
+    const keys = { p256dh: "p", auth: "a" };
+
+    it("rejects IPv6-literal endpoints with an explicit error and stores nothing", async () => {
+        for (const endpoint of ["https://[2606:4700:4700::1111]/push", "https://[::ffff:8.8.8.8]/push"]) {
+            const [req, url] = makeReq("/api/push/subscribe", "POST", { endpoint, keys });
+            const res = await handlePushRoute(req, url);
+            expect(res?.status).toBe(400);
+            const json = await res!.json();
+            expect(json.error).toMatch(/IPv6-literal hosts are not supported/);
+        }
+        expect(mockSubscribePush).not.toHaveBeenCalled();
+    });
+
+    it("keeps the SSRF error for private targets and accepts DNS-hostname endpoints", async () => {
+        const [badReq, badUrl] = makeReq("/api/push/subscribe", "POST", { endpoint: "https://[::1]/push", keys });
+        const bad = await handlePushRoute(badReq, badUrl);
+        expect(bad?.status).toBe(400);
+        expect((await bad!.json()).error).toMatch(/private\/loopback/);
+
+        const [req, url] = makeReq("/api/push/subscribe", "POST", { endpoint: "https://fcm.googleapis.com/fcm/send/abc", keys });
+        const res = await handlePushRoute(req, url);
+        expect(res?.status).toBe(200);
+        expect(mockSubscribePush).toHaveBeenCalledTimes(1);
     });
 });

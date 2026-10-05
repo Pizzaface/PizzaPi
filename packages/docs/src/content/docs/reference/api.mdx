@@ -1506,8 +1506,14 @@ Subscribe the browser to push notifications.
 }
 ```
 
-`endpoint` must be an `https://` URL. IP-literal hosts must be public unicast
-addresses and `localhost` names are rejected (`400`). At delivery time the relay
+`endpoint` must be an `https://` URL. IPv4-literal hosts must be public unicast
+addresses and `localhost` names are rejected (`400`). IPv6-literal hosts
+(`https://[2001:…]/…`, including IPv4-mapped forms) are not supported and are
+rejected with `400` and the error `IPv6-literal hosts are not supported; use a
+DNS hostname`: the pinned Bun runtime cannot verify a TLS certificate for an
+IPv6-literal host. Browser push services use DNS hostnames, so this does not
+affect normal subscriptions. Rows stored before this restriction are refused
+at delivery time with the same reason. At delivery time the relay
 resolves the endpoint host, skips delivery if **any** resolved address is
 loopback, private, link-local, CGNAT, multicast, or otherwise non-global, and
 connects only to the validated addresses (redirects are not followed).

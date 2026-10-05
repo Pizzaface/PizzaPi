@@ -4,10 +4,10 @@ import { isIP } from "node:net";
 import { getKysely } from "./auth.js";
 import {
     createPinnedLookup,
-    isPublicUnicastAddress,
     resolvePublicAddresses,
     type HostLookupFn,
 } from "./outbound-address.js";
+import { pushEndpointRejectionReason } from "./push-endpoint.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("push");
@@ -68,53 +68,11 @@ export function getVapidPublicKey(): string {
 
 // ── Push endpoint validation ─────────────────────────────────────────────────
 
-/**
- * Validate that a push subscription endpoint is safe to store.
- *
- * Requirements:
- *   1. Must be a valid URL.
- *   2. Must use the `https:` scheme.
- *   3. Hostname must not be `localhost`/`*.localhost`, and an IP-literal
- *      hostname must be a public unicast address (see
- *      {@link isPublicUnicastAddress}).
- *
- * The URL parser normalizes bare-integer / hex / octal IPv4 forms
- * (2130706433, 0x7f000001) to dotted-quad, so those are covered too. No
- * hostname allowlist is enforced: it would break enterprise proxies and custom
- * HTTPS push providers on public addresses.
- *
- * This is only a fast, textual pre-check. A DNS name can still resolve (or
- * later rebind) to an internal address, so delivery additionally resolves the
- * host, rejects any non-public address, and pins the connection to the
- * validated addresses — see {@link sendWebPushPinned}.
- *
- * Returns true if the endpoint is acceptable; false otherwise.
- */
-export function isValidPushEndpoint(endpoint: string): boolean {
-    let parsed: URL;
-    try {
-        parsed = new URL(endpoint);
-    } catch {
-        return false;
-    }
-
-    // Must be HTTPS
-    if (parsed.protocol !== "https:") return false;
-
-    const host = parsed.hostname.toLowerCase();
-    if (!host) return false;
-
-    // Reject localhost / .localhost hostnames (hostname-based loopback).
-    if (host === "localhost" || host.endsWith(".localhost")) return false;
-
-    // IP literal (IPv6 is bracketed by the URL API): must be public unicast.
-    const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
-    if (/^[\d.]+$/.test(bare) || bare.includes(":")) {
-        return isPublicUnicastAddress(bare);
-    }
-
-    return true;
-}
+export {
+    IPV6_LITERAL_PUSH_ENDPOINT_ERROR,
+    isValidPushEndpoint,
+    pushEndpointRejectionReason,
+} from "./push-endpoint.js";
 
 /** Upper bound on a single Web Push delivery (connect + response). */
 const WEB_PUSH_TIMEOUT_MS = 15_000;
@@ -138,8 +96,9 @@ export interface WebPushTransportDeps {
  *      public unicast address (loopback, RFC1918, link-local, CGNAT, ULA, …),
  *   3. connects with a pinned `lookup` that only returns those validated
  *      addresses, so DNS rebinding between check and connect is ineffective.
- * A DNS hostname is kept for TLS SNI and certificate verification; IP-literal
+ * A DNS hostname is kept for TLS SNI and certificate verification; IPv4-literal
  * endpoints send no SNI and are verified against their bare address.
+ * IPv6-literal endpoints are refused (see `IPV6_LITERAL_PUSH_ENDPOINT_ERROR`).
  * Redirects are never followed (a 3xx is treated as a delivery failure).
  *
  * Rejects with `webpush.WebPushError` (carrying `statusCode`) on non-2xx.
@@ -149,20 +108,20 @@ export async function sendWebPushPinned(
     payload: string,
     deps: WebPushTransportDeps = {},
 ): Promise<{ statusCode: number }> {
-    if (!isValidPushEndpoint(subscription.endpoint)) {
-        throw new Error("Refusing to deliver to an invalid or non-public push endpoint");
+    // Re-check stored rows too: a subscription saved before IPv6 literals were
+    // refused must not reach the transport.
+    const rejection = pushEndpointRejectionReason(subscription.endpoint);
+    if (rejection) {
+        throw new Error(`Refusing to deliver: ${rejection}`);
     }
     const requestDetails = webpush.generateRequestDetails(subscription, payload);
     const endpoint = new URL(requestDetails.endpoint);
     const addresses = await resolvePublicAddresses(endpoint.hostname, deps.lookupHost);
     const doRequest = deps.request ?? https.request;
-    // URL.hostname brackets IPv6 literals ("[2001:db8::1]"). The TLS layer
-    // verifies the certificate against `servername` when one is given, so a
-    // bracketed (or any IP) servername would be matched as a DNS name and fail
-    // against the certificate's IP SAN. SNI must not carry an IP literal anyway
-    // (RFC 6066 §3): omit it for IP endpoints so verification uses the bare
-    // connect address, and keep the DNS hostname for everything else.
-    const host = endpoint.hostname.replace(/^\[(.*)\]$/, "$1");
+    // SNI must not carry an IP literal (RFC 6066 §3): omit it for IPv4-literal
+    // endpoints so verification uses the bare connect address, and keep the
+    // DNS hostname for everything else. (IPv6 literals were refused above.)
+    const host = endpoint.hostname;
     const servername = isIP(host) ? undefined : host;
 
     return new Promise((resolve, reject) => {

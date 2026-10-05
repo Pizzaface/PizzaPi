@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, spyOn } from "bun:test";
 import { createTestAuthContext, getKysely, runWithAuthContext } from "./auth.js";
-import { unsubscribePush, updateSuppressChildNotifications, getSubscriptionsForUser, isValidPushEndpoint, registerNativePush, unregisterNativePush, getNativeRegistrationsForUser, ensureNativePushRegistrationTable, sendPushToUser, updateNativeSuppressChildNotifications, sendWebPushPinned } from "./push.js";
-import { createECDH, randomBytes, X509Certificate } from "crypto";
+import { unsubscribePush, updateSuppressChildNotifications, getSubscriptionsForUser, isValidPushEndpoint, registerNativePush, unregisterNativePush, getNativeRegistrationsForUser, ensureNativePushRegistrationTable, sendPushToUser, updateNativeSuppressChildNotifications, sendWebPushPinned, pushEndpointRejectionReason, IPV6_LITERAL_PUSH_ENDPOINT_ERROR } from "./push.js";
+import https from "node:https";
+import { createECDH, randomBytes } from "crypto";
 import { EventEmitter } from "events";
-import tls from "tls";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -288,8 +288,16 @@ describe("isValidPushEndpoint", () => {
         expect(isValidPushEndpoint("https://[::ffff:172.16.0.1]/push")).toBe(false);
     });
 
-    authIt("accepts IPv4-mapped IPv6 for public IPs (no over-blocking)", () => {
-        expect(isValidPushEndpoint("https://[::ffff:8.8.8.8]/push")).toBe(true);
+    authIt("rejects public IPv6 literals (including IPv4-mapped) with an explicit reason", () => {
+        for (const endpoint of ["https://[::ffff:8.8.8.8]/push", "https://[2606:4700:4700::1111]/push"]) {
+            expect(isValidPushEndpoint(endpoint)).toBe(false);
+            expect(pushEndpointRejectionReason(endpoint)).toBe(IPV6_LITERAL_PUSH_ENDPOINT_ERROR);
+        }
+        // Non-public IPv6 targets keep the SSRF wording.
+        expect(pushEndpointRejectionReason("https://[::1]/push")).toMatch(/private\/loopback/);
+        // DNS hostnames and public IPv4 literals are unaffected.
+        expect(pushEndpointRejectionReason("https://fcm.googleapis.com/fcm/send/abc")).toBeNull();
+        expect(pushEndpointRejectionReason("https://142.250.80.10/push")).toBeNull();
     });
 
     // ── All-interfaces bind addresses ────────────────────────────────────
@@ -1024,47 +1032,45 @@ describe("sendWebPushPinned", () => {
         }
     });
 
-    // Certificate whose only SAN is the public IPv6 literal below (valid to 2126).
+    // Bun 1.3.10 (the pinned runtime) fails TLS identity verification for a
+    // real request to an IPv6-literal host regardless of `servername`, so such
+    // endpoints are refused before any resolution or connection is attempted.
     const IPV6_PUSH_HOST = "2606:4700:4700::1111";
-    const IPV6_PUSH_CERT = `-----BEGIN CERTIFICATE-----
-MIIBrDCCAVKgAwIBAgIUAIIm7j7kj/DyvJaXC4jZPcY4UYYwCgYIKoZIzj0EAwIw
-HDEaMBgGA1UEAwwRcGl6emFwaSBwdXNoIHRlc3QwIBcNMjYxMDA1MDE1MjM1WhgP
-MjEyNjA5MTEwMTUyMzVaMBwxGjAYBgNVBAMMEXBpenphcGkgcHVzaCB0ZXN0MFkw
-EwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEujLsnstj3CEaOsAD80K6fY+QKIqSKNR1
-N4dMckUgAnzyv1mxVXIoVV5NpUV6iN31gZ/jwYcwL3OlJB98reY0d6NwMG4wHQYD
-VR0OBBYEFDig7N4l4Akq1qnW37O2ls0paQ3QMB8GA1UdIwQYMBaAFDig7N4l4Akq
-1qnW37O2ls0paQ3QMBsGA1UdEQQUMBKHECYGRwBHAAAAAAAAAAAAEREwDwYDVR0T
-AQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiByjpa/O9jqKNGoKvWtTS8rtSaH
-C69bK5zKOmdM0VXxKgIhAPl+gECTUwcKluIcJBT+E08ovD7Bkvg5Dd9b31DsgBi1
------END CERTIFICATE-----
-`;
 
-    it("verifies an IPv6-literal endpoint's certificate against its bare address", async () => {
-        const captured: any[] = [];
-        const result = await sendWebPushPinned(
-            makeSubscription(`https://[${IPV6_PUSH_HOST}]/push/v1/abc`),
-            "{}",
-            {
-                lookupHost: async () => { throw new Error("IP literals must not be resolved"); },
-                request: fakeRequest(201, captured),
-            },
-        );
-        expect(result.statusCode).toBe(201);
-        expect(captured[0].hostname).toBe(IPV6_PUSH_HOST);
-        // No SNI for IP literals (RFC 6066), and never the bracketed URL form.
-        expect(captured[0].servername).toBeUndefined();
+    it("refuses IPv6-literal endpoints at send time without resolving or connecting", async () => {
+        for (const endpoint of [
+            `https://[${IPV6_PUSH_HOST}]/push/v1/abc`,
+            "https://[::ffff:8.8.8.8]/push",
+        ]) {
+            const captured: any[] = [];
+            let resolved = false;
+            const err: any = await sendWebPushPinned(
+                makeSubscription(endpoint),
+                "{}",
+                {
+                    lookupHost: async () => { resolved = true; return [{ address: "8.8.8.8", family: 4 }]; },
+                    request: fakeRequest(201, captured),
+                },
+            ).catch((e) => e);
+            expect(err).toBeInstanceOf(Error);
+            expect(err.message).toContain(IPV6_LITERAL_PUSH_ENDPOINT_ERROR);
+            expect(resolved).toBe(false);
+            expect(captured).toHaveLength(0);
+        }
+    });
 
-        // Run the TLS identity check against a real certificate whose only SAN
-        // is the IPv6 address, using the name the request actually verifies:
-        // the servername when set, otherwise the connect host. (A rerouted
-        // loopback handshake is not portable: Bun 1.3.10 checks the identity
-        // against the socket's address rather than the requested host.)
-        const x509 = new X509Certificate(IPV6_PUSH_CERT);
-        const peer = { subject: {}, subjectaltname: x509.subjectAltName } as any;
-        const verifiedName = captured[0].servername ?? captured[0].hostname;
-        expect(tls.checkServerIdentity(verifiedName, peer)).toBeUndefined();
-        // The previous behaviour (bracketed URL.hostname as servername) fails.
-        expect((tls.checkServerIdentity(`[${IPV6_PUSH_HOST}]`, peer) as any)?.code).toBe("ERR_TLS_CERT_ALTNAME_INVALID");
+    it("refuses IPv6-literal endpoints on the default transport too", async () => {
+        // No injected request/lookup: the real https.request path must never be reached.
+        const requestSpy = spyOn(https, "request");
+        try {
+            await expect(sendWebPushPinned(
+                makeSubscription(`https://[${IPV6_PUSH_HOST}]/push/v1/abc`),
+                "{}",
+            )).rejects.toThrow(IPV6_LITERAL_PUSH_ENDPOINT_ERROR);
+            expect(requestSpy).not.toHaveBeenCalled();
+        } finally {
+            requestSpy.mockRestore();
+        }
     });
 
     it("sends no SNI for IPv4-literal endpoints and keeps the DNS name otherwise", async () => {
