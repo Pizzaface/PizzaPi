@@ -172,6 +172,35 @@ describe("TunnelRelay limits", () => {
     relay.dispose();
   });
 
+  test("viewer→runner request-body chunks that would cross maxBufferedBytes (serialized frame + queued) fail the request", async () => {
+    // Body limit is generous; only the hard buffer ceiling applies.
+    const { relay, runner } = await registeredRelay({ maxBufferedBytes: 200, maxRequestBodyBytes: 1024 });
+    const rec = recorder();
+    relay.proxyHttpRequest("r1", req("b1"), rec.callbacks);
+
+    // A 100-byte chunk of high bytes serializes (binary string → JSON \u escapes)
+    // to a frame far larger than 200 bytes even on an empty socket.
+    const chunk = Buffer.alloc(100, 0x80);
+    const frame = JSON.stringify({ type: "request-data", id: "b1", data: chunk.toString("binary") });
+    expect(Buffer.byteLength(frame, "utf8")).toBeGreaterThan(200);
+    expect(relay.sendRequestData("r1", "b1", chunk)).toBe(false);
+    expect(runner.messages().filter((m) => m.type === "request-data")).toEqual([]);
+    expect(rec.errors).toEqual(["Tunnel buffer limit exceeded"]);
+    expect(runner.messages().at(-1)).toEqual({ type: "request-end", id: "b1" });
+
+    // A small chunk fits on an empty socket ...
+    const rec2 = recorder();
+    relay.proxyHttpRequest("r1", req("b2"), rec2.callbacks);
+    expect(relay.sendRequestData("r1", "b2", Buffer.from("ok"))).toBe(true);
+    expect(runner.messages().filter((m) => m.type === "request-data")).toHaveLength(1);
+    // ... but already-queued runner bytes count against the ceiling too.
+    runner.ws.bufferedAmount = 180;
+    expect(relay.sendRequestData("r1", "b2", Buffer.from("ok"))).toBe(false);
+    expect(runner.messages().filter((m) => m.type === "request-data")).toHaveLength(1);
+    expect(rec2.errors).toEqual(["Tunnel buffer limit exceeded"]);
+    relay.dispose();
+  });
+
   test("viewer→runner WebSocket frames that would cross maxBufferedBytes close the stream instead of queueing", async () => {
     const { relay, runner } = await registeredRelay({ maxBufferedBytes: 64 });
     const closes: Array<number | undefined> = [];

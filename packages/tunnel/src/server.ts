@@ -318,15 +318,18 @@ export class TunnelRelay {
   }
 
   /**
-   * Forward a request-body chunk. Returns false (and fails the request with a
-   * "Request body too large" error) once the per-request body limit is
-   * exceeded; callers must stop sending.
+   * Forward a request-body chunk. Returns false once the per-request body
+   * limit is exceeded ("Request body too large") or when the frame would push
+   * the runner socket past `maxBufferedBytes` (queued bytes PLUS this frame's
+   * serialized size; "Tunnel buffer limit exceeded"). In both cases the
+   * request is failed and nothing is queued; callers must stop sending.
    */
   sendRequestData(runnerId: string, requestId: string, data: Buffer): boolean {
     const runner = this.runners.get(runnerId);
     if (!runner) return false;
     const pending = this.pendingRequests.get(requestId);
-    if (pending && pending.runnerId === runnerId) {
+    const owned = pending !== undefined && pending.runnerId === runnerId;
+    if (owned) {
       pending.requestBytes += data.length;
       const limit = this.limits.maxRequestBodyBytes;
       if (limit > 0 && pending.requestBytes > limit) {
@@ -334,11 +337,17 @@ export class TunnelRelay {
         return false;
       }
     }
-    this.send(runner.ws, {
+    const payload = JSON.stringify({
       type: "request-data",
       id: requestId,
       data: data.toString("binary"),
-    });
+    } satisfies TunnelServerMessage);
+    const ceiling = this.limits.maxBufferedBytes;
+    if (ceiling > 0 && socketBufferedAmount(runner.ws) + Buffer.byteLength(payload, "utf8") > ceiling) {
+      if (owned) this.failPendingRequest(requestId, pending, "Tunnel buffer limit exceeded");
+      return false;
+    }
+    if (runner.ws.readyState === WebSocket.OPEN) runner.ws.send(payload);
     return true;
   }
 
