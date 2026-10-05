@@ -611,9 +611,18 @@ export const handleEventsRoute: RouteHandler = async (req, url) => {
     if (owner !== null && owner !== identity.userId) {
       return Response.json({ error: "Runner not found or not owned by you" }, { status: 404 });
     }
+    // Recovery operators get no wider reach here than on single-route
+    // DELETE: only rows the per-route predicate classifies as genuinely
+    // ownerless ("recovery") — never a row stamped for another tenant.
     const recovery = owner === null && isRouteRecoveryOperator(identity.userId);
-    const stamped = (await listRoutes()).filter((r) => routeRunnerId(r) === runnerId
-      && (owner !== null || recovery || r.ownerUserId === identity.userId));
+    const stamped: Route[] = [];
+    for (const r of await listRoutes()) {
+      if (routeRunnerId(r) !== runnerId) continue;
+      if (owner !== null || r.ownerUserId === identity.userId
+        || (recovery && (await routeAccess(r, identity.userId)) === "recovery")) {
+        stamped.push(r);
+      }
+    }
     // Config routes are read-only (deleteRoute throws); webhook routes belong
     // to the webhooks surface (their webhook row would dangle). Skip both,
     // report them, delete the rest.

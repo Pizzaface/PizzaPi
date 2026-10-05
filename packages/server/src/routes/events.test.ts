@@ -1090,6 +1090,25 @@ describe("dead-runner route cleanup", () => {
       expect(await store.getRoute(spawn.routeId)).toBeNull();
     });
 
+    it("recovery bulk-delete of an ownerless runner never selects foreign-owned routes (R19)", async () => {
+      process.env.PIZZAPI_ROUTE_RECOVERY_USER_IDS = "u1";
+      const { spawn } = await seedOrphans();
+      // Explicitly stamped for another tenant, on the same ownerless runner.
+      const foreign = await store.createRoute({
+        eventType: "hook:foreign", target: { kind: "spawn", spec: { runnerId: "runner-orphan" } },
+        deliverAs: "steer", origin: "agent", ownerUserId: "u2",
+      });
+      const foreignSpec = await store.createRoute({
+        eventType: "hook:foreign-spec", target: { kind: "spawn", spec: { runnerId: "runner-orphan", ownerUserId: "u2" } },
+        deliverAs: "steer", origin: "agent",
+      });
+      const bulk = await call(routes, "DELETE", "/api/runners/runner-orphan/routes");
+      expect(await bulk!.json()).toEqual({ ok: true, removed: 1, skipped: 0 });
+      expect(await store.getRoute(spawn.routeId)).toBeNull();
+      expect(await store.getRoute(foreign.routeId)).not.toBeNull();
+      expect(await store.getRoute(foreignSpec.routeId)).not.toBeNull();
+    });
+
     it("recovery authority never extends to routes with a resolvable owner", async () => {
       process.env.PIZZAPI_ROUTE_RECOVERY_USER_IDS = "u1";
       const theirs = await store.createRoute({

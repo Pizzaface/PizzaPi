@@ -1090,7 +1090,9 @@ are skipped and counted. Intended for cleaning up after a dead runner.
 or the durable owner record). For a runner with no resolvable owner, a caller
 removes only routes stamped with their own `ownerUserId`; unstamped routes on
 such a runner can be removed only by a user listed in
-`PIZZAPI_ROUTE_RECOVERY_USER_IDS`.
+`PIZZAPI_ROUTE_RECOVERY_USER_IDS`, and only when no record resolves an owner
+for the route itself. Routes stamped for another user (on the route or in its
+spawn spec) are never selected by recovery cleanup.
 
 **Response:**
 
