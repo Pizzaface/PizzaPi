@@ -152,7 +152,10 @@ export function isProjectMcpTrusted(globalConfig: Partial<PizzaPiConfig>): boole
  * global config (or the real process environment) can.
  */
 export const GLOBAL_ONLY_ENV_OVERRIDES: ReadonlySet<string> = new Set([
+    // Every env var the worker consults when resolving its sandbox
+    // (worker.ts: PIZZAPI_NO_SANDBOX=1 is shorthand for PIZZAPI_SANDBOX=off).
     "PIZZAPI_SANDBOX",
+    "PIZZAPI_NO_SANDBOX",
     "PIZZAPI_SANDBOX_ALLOW_UNSANDBOXED",
     "PIZZAPI_SANDBOX_ACTIVE",
     "PIZZAPI_SANDBOX_MODE",

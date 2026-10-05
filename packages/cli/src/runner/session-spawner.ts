@@ -150,6 +150,47 @@ export async function notifyWorkersOfRestart(
 // - Windows: import.meta.url contains "~BUN" (drive letter/format varies)
 export const isCompiledBinary = import.meta.url.includes("$bunfs") || import.meta.url.includes("~BUN") || import.meta.url.includes("%7EBUN");
 
+const WORKER_ENV_DENYLIST = new Set([
+    "PIZZAPI_RUNNER_TOKEN",
+    "PIZZAPI_RUNNER_API_KEY",
+    // Per-session provider snapshot — each worker derives its own from
+    // PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER; never inherit the daemon's.
+    "PIZZAPI_SESSION_PROVIDER",
+    "NODE_OPTIONS",
+    "BUN_OPTIONS",           // Bun equivalent of NODE_OPTIONS — can inject code via --preload
+    "LD_PRELOAD",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_FORCE_FLAT_NAMESPACE",
+]);
+
+// Docker/K8s `<NAME>_FILE` secret pointers (e.g. PIZZAPI_API_KEY_FILE,
+// PIZZAPI_RUNNER_TOKEN_FILE) were already expanded by the CLI entrypoint
+// that started this daemon. A worker never needs them — it gets its own
+// PIZZAPI_API_KEY in spawnSession — and forwarding them would let the worker (whose
+// compiled-binary entrypoint re-runs that expansion) or any process it
+// starts re-read a daemon credential from disk.
+function isWorkerEnvDenied(key: string): boolean {
+    if (WORKER_ENV_DENYLIST.has(key)) return true;
+    if (!key.toUpperCase().endsWith("_FILE")) return false;
+    const base = key.slice(0, -"_FILE".length);
+    return WORKER_ENV_DENYLIST.has(base.toUpperCase()) || isStrippedSubprocessEnvName(base);
+}
+
+/**
+ * The `envOverrides` a worker for `cwd` receives: the merged global+project
+ * config (project keys in GLOBAL_ONLY_ENV_OVERRIDES are already dropped by
+ * loadConfig), restricted to non-denied `PIZZAPI_*` keys.
+ */
+export function workerEnvOverrides(cwd: string): Record<string, string> {
+    const envOverrides: Record<string, string> = {};
+    for (const [key, val] of Object.entries(loadConfig(cwd).envOverrides ?? {})) {
+        if (key.startsWith("PIZZAPI_") && !isWorkerEnvDenied(key) && typeof val === "string") {
+            envOverrides[key] = val;
+        }
+    }
+    return envOverrides;
+}
+
 /**
  * Returns the spawn arguments for starting a worker subprocess.
  * - Compiled binary: `[process.execPath, ["_worker"]]`
@@ -263,32 +304,7 @@ export function spawnSession(
     //   LD_PRELOAD               – shared-library injection (Linux)
     //   DYLD_INSERT_LIBRARIES    – shared-library injection (macOS)
     //   DYLD_FORCE_FLAT_NAMESPACE
-    const WORKER_ENV_DENYLIST = new Set([
-        "PIZZAPI_RUNNER_TOKEN",
-        "PIZZAPI_RUNNER_API_KEY",
-        // Per-session provider snapshot — each worker derives its own from
-        // PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER; never inherit the daemon's.
-        "PIZZAPI_SESSION_PROVIDER",
-        "NODE_OPTIONS",
-        "BUN_OPTIONS",           // Bun equivalent of NODE_OPTIONS — can inject code via --preload
-        "LD_PRELOAD",
-        "DYLD_INSERT_LIBRARIES",
-        "DYLD_FORCE_FLAT_NAMESPACE",
-    ]);
-
-    // Docker/K8s `<NAME>_FILE` secret pointers (e.g. PIZZAPI_API_KEY_FILE,
-    // PIZZAPI_RUNNER_TOKEN_FILE) were already expanded by the CLI entrypoint
-    // that started this daemon. A worker never needs them — it gets its own
-    // PIZZAPI_API_KEY below — and forwarding them would let the worker (whose
-    // compiled-binary entrypoint re-runs that expansion) or any process it
-    // starts re-read a daemon credential from disk.
-    const isWorkerEnvDenied = (key: string): boolean => {
-        if (WORKER_ENV_DENYLIST.has(key)) return true;
-        if (!key.toUpperCase().endsWith("_FILE")) return false;
-        const base = key.slice(0, -"_FILE".length);
-        return WORKER_ENV_DENYLIST.has(base.toUpperCase()) || isStrippedSubprocessEnvName(base);
-    };
-
+    // (see WORKER_ENV_DENYLIST / isWorkerEnvDenied above)
     const baseEnv: Record<string, string> = {};
     for (const [key, val] of Object.entries(process.env)) {
         if (!isWorkerEnvDenied(key) && typeof val === "string") {
@@ -296,12 +312,7 @@ export function spawnSession(
         }
     }
 
-    const envOverrides: Record<string, string> = {};
-    for (const [key, val] of Object.entries(loadConfig(effectiveCwd).envOverrides ?? {})) {
-        if (key.startsWith("PIZZAPI_") && !isWorkerEnvDenied(key) && typeof val === "string") {
-            envOverrides[key] = val;
-        }
-    }
+    const envOverrides = workerEnvOverrides(effectiveCwd);
 
     const env: Record<string, string> = {
         ...baseEnv,

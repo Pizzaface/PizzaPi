@@ -44,6 +44,8 @@ describe("project envOverrides cannot relax security controls", () => {
     test("covers the escape hatches added by the security fixes", () => {
         for (const key of [
             "PIZZAPI_SANDBOX_ALLOW_UNSANDBOXED",
+            // Worker shorthand for PIZZAPI_SANDBOX=off (review R2-1).
+            "PIZZAPI_NO_SANDBOX",
             "PIZZAPI_PLAN_MODE_ALLOWED_TOOLS",
             "PIZZAPI_BASH_PASSTHROUGH_ENV",
         ]) {
