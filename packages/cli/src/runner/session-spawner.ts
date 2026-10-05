@@ -8,6 +8,7 @@ import {
     sessionProcFilePath,
     ensureSessionProcDir,
     readRecordedGroupPids,
+    recordSessionGroupPid,
     removeSessionProcFile,
 } from "./session-procs.js";
 import { runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd, refreshAndWriteRunnerUsageCache } from "./runner-usage-cache.js";
@@ -379,10 +380,17 @@ export function spawnSession(
             // message above; this add is a belt-and-suspenders fallback for the
             // (unlikely) case where the IPC message was not sent or was lost.
             restartingSessions.add(sessionId);
-            // ponytail: background processes from the old worker's group survive a
-            // restart-in-place (intentional — session continues) but land in a
-            // different pgid than the new worker. Track historical pgids per
-            // session if orphans from restarted workers become a problem.
+            // Background processes from the old worker's group survive a
+            // restart-in-place (intentional — session continues) but keep the
+            // old worker's PGID, not the new worker's. Record that historical
+            // group in the session pid file so the Processes panel keeps
+            // listing it and the final session cleanup (SIGTERM → SIGKILL)
+            // reaps it. Only record a group that still has live members so a
+            // dead PGID is never kept around to be recycled.
+            if (child.pid && isProcessGroupAlive(child.pid)) {
+                recordSessionGroupPid(sessionProcFilePath(sessionId), child.pid);
+                logInfo(`session ${sessionId} retained prior worker process group ${child.pid} for cleanup`);
+            }
             logInfo(`re-spawning session ${sessionId} (worker restart requested)`);
             onRestartRequested();
         } else {

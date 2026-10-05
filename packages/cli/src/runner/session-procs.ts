@@ -19,7 +19,7 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { mkdirSync, readFileSync, writeFileSync, rmSync, openSync, readSync, closeSync, statSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync, readSync, closeSync, statSync } from "node:fs";
 
 /** Directory holding per-session recorded-group pid files. */
 export function sessionProcDir(): string {
@@ -88,6 +88,21 @@ export function parseRecordedGroupPids(content: string): number[] {
         if (Number.isInteger(n) && n > 0) seen.add(n);
     }
     return [...seen];
+}
+
+/**
+ * Append a process-group PID to a session's pid file (best-effort). Used by
+ * the daemon to carry a previous worker generation's group across a
+ * restart-in-place, so inline children of the old worker (MCP stdio servers
+ * etc.) stay listed and are reaped when the session finally ends.
+ */
+export function recordSessionGroupPid(filePath: string, pid: number): void {
+    if (!Number.isInteger(pid) || pid <= 0) return;
+    try {
+        appendFileSync(filePath, `${pid}\n`);
+    } catch {
+        // best-effort
+    }
 }
 
 /** Delete a session's pid file and persisted shell registry (best-effort). */

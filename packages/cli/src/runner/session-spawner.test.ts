@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, spyOn, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -36,6 +36,7 @@ mock.module("./session-procs.js", () => ({
     ensureSessionProcDir: () => {},
     sessionProcFilePath: (_sessionId: string) => "/tmp/test-session.procs",
     readRecordedGroupPids: () => recordedGroupPids,
+    recordSessionGroupPid: () => {},
     removeSessionProcFile: () => {},
 }));
 
@@ -365,6 +366,7 @@ describe("session-spawner child", () => {
             ensureSessionProcDir: () => {},
             sessionProcFilePath: (_sessionId: string) => "/tmp/test-session.procs",
             readRecordedGroupPids: () => recordedGroupPids,
+            recordSessionGroupPid: () => {},
             removeSessionProcFile: () => {},
         }));
 
@@ -452,6 +454,7 @@ describe("session-spawner child", () => {
             ensureSessionProcDir: () => {},
             sessionProcFilePath: () => "/tmp/test-session.procs",
             readRecordedGroupPids: () => recordedGroupPids,
+            recordSessionGroupPid: () => {},
             removeSessionProcFile: () => {},
         }));
         mock.module("../config.js", () => ({ loadConfig: () => ({ envOverrides: {} }) }));
@@ -526,6 +529,7 @@ describe("session-spawner child", () => {
             ensureSessionProcDir: () => {},
             sessionProcFilePath: () => "/tmp/test-session.procs",
             readRecordedGroupPids: () => [],
+            recordSessionGroupPid: () => {},
             removeSessionProcFile: () => {},
         }));
         mock.module("../config.js", () => ({ loadConfig: () => ({ envOverrides: {} }) }));
@@ -600,6 +604,7 @@ describe("session-spawner child", () => {
             sessionProcFilePath: () => "/tmp/test-session.procs",
             // groupPids contains child.pid (4321) — should be deduplicated
             readRecordedGroupPids: () => [4321],
+            recordSessionGroupPid: () => {},
             removeSessionProcFile: () => {},
         }));
         mock.module("../config.js", () => ({ loadConfig: () => ({ envOverrides: {} }) }));
@@ -657,6 +662,106 @@ describe("session-spawner child", () => {
         } finally {
             rmSync(childTestPath, { force: true });
             rmSync(tmpHome, { recursive: true, force: true });
+        }
+    });
+
+    test("restart-in-place retains the prior worker process group and reaps it on final exit (F23)", async () => {
+        const logInfo = mock((_message: string) => {});
+        const isCwdAllowed = mock((_cwd: string | undefined) => true);
+
+        class FakeChild extends EventEmitter {
+            pid = 0;
+            killed = false;
+            exitCode: number | null = null;
+        }
+
+        let nextPid = 7001;
+        let latestChild: FakeChild | null = null;
+        const spawnMock = mock(() => {
+            latestChild = new FakeChild();
+            latestChild.pid = nextPid++;
+            return latestChild;
+        });
+
+        // Simulated on-disk pid file shared across worker generations.
+        const procFile: number[] = [];
+        mock.module("node:child_process", () => ({ spawn: spawnMock, execFile: mock(() => {}) }));
+        mock.module("../extensions/session-attachments.js", () => ({ cleanupSessionAttachments: mock(async () => {}) }));
+        mock.module("./logger.js", () => ({ logInfo }));
+        mock.module("./runner-usage-cache.js", () => ({
+            runnerUsageCacheFilePath: () => "/tmp/test-usage-cache.json",
+            trackSessionCwd: () => {},
+            untrackSessionCwd: () => {},
+            refreshAndWriteRunnerUsageCache: mock(async () => {}),
+        }));
+        mock.module("./workspace.js", () => ({ isCwdAllowed }));
+        mock.module("./session-procs.js", () => ({
+            ensureSessionProcDir: () => {},
+            sessionProcFilePath: () => "/tmp/test-session.procs",
+            readRecordedGroupPids: () => [...new Set(procFile)],
+            recordSessionGroupPid: (_file: string, pid: number) => { procFile.push(pid); },
+            removeSessionProcFile: () => { procFile.length = 0; },
+        }));
+        mock.module("../config.js", () => ({ loadConfig: () => ({ envOverrides: {} }) }));
+
+        const { spawnSession } = await import("./session-spawner.js");
+        const tempCwd = mkdtempSync(join(tmpdir(), "session-spawner-restart-pgid-"));
+
+        // Group 7001 keeps a live member (e.g. an MCP server that ignored pipe
+        // closure); probes for every other group report ESRCH.
+        const liveGroups = new Set([7001]);
+        const signals: { pid: number; signal?: string | number }[] = [];
+        const killSpy = spyOn(process, "kill").mockImplementation((pid: number, signal?: string | number) => {
+            if (signal === 0 && !liveGroups.has(-pid)) {
+                throw Object.assign(new Error("No such process"), { code: "ESRCH" });
+            }
+            signals.push({ pid, signal });
+            return true;
+        });
+
+        try {
+            const runningSessions = new Map();
+            const restartingSessions = new Set<string>();
+            const killedSessions = new Set<string>();
+            const respawn = () => spawnSession(
+                "sess-gen", "api-key", "https://relay.example", tempCwd,
+                runningSessions, restartingSessions, killedSessions, respawn, { shutdownGraceMs: 30 },
+            );
+            respawn();
+            const gen1 = latestChild!;
+            expect(gen1.pid).toBe(7001);
+
+            // Generation 1 restarts in place: its group must NOT be signaled
+            // (continuity), but must be recorded for later cleanup.
+            gen1.exitCode = 43;
+            gen1.emit("exit", 43, null);
+            await Promise.resolve();
+            expect(procFile).toEqual([7001]);
+            expect(signals.some((s) => s.pid === -7001 && s.signal !== 0)).toBe(false);
+            const gen2 = latestChild!;
+            expect(gen2.pid).toBe(7002);
+
+            // Generation 2 restarts too; its group is already empty, so it is
+            // not recorded (avoids keeping a dead PGID that could be recycled).
+            gen2.exitCode = 43;
+            gen2.emit("exit", 43, null);
+            await Promise.resolve();
+            expect(procFile).toEqual([7001]);
+            const gen3 = latestChild!;
+
+            // Final termination reaps the historical group along with the
+            // current worker's group: SIGTERM now, SIGKILL after the grace.
+            gen3.exitCode = 0;
+            gen3.emit("exit", 0, null);
+            await Promise.resolve();
+            expect(signals).toContainEqual({ pid: -7003, signal: "SIGTERM" });
+            expect(signals).toContainEqual({ pid: -7001, signal: "SIGTERM" });
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            expect(signals).toContainEqual({ pid: -7001, signal: "SIGKILL" });
+            expect(procFile).toEqual([]);
+        } finally {
+            killSpy.mockRestore();
+            rmSync(tempCwd, { recursive: true, force: true });
         }
     });
 

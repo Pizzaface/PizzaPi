@@ -123,6 +123,8 @@ The model generator:
 
 The runner tracks OS processes spawned by a session so the web UI can show a **Processes** panel. Background shells are listed with PID, command, title, status, runtime, and log path. The panel can tail a background shell's log and send a kill request for the shell or other listed session process.
 
+When a session restarts its worker in place, processes left in the previous worker's process group (for example an MCP stdio server that did not exit with its parent) are kept running so the session continues, but the runner records that group with the session. They stay visible in the Processes panel and are terminated (SIGTERM, then SIGKILL after the shutdown grace period) together with the current worker when the session ends.
+
 The TUI also has a lightweight session-processes widget. It polls the session's process group every five seconds using `pgrep -g 0` and `ps`, then shows a compact line such as `⚙ 2 procs vite:1234 · bun:5678`. If the platform lacks those commands, the widget stays hidden.
 
 ---
