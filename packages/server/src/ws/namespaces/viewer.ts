@@ -598,6 +598,9 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             // ── SnapshotProvider: try server-side cache before signaling the runner
             const chunkedPending = getPendingChunkedSnapshot(nextSessionId);
             const staleChunkStream = chunkedPending?.stale === true;
+            // A chunked snapshot was rejected after its chunks were ACKed: the
+            // cached snapshot predates what the runner believes it sent.
+            const rejectedSnapshot = !!freshSession.snapshotRejectedAt;
             if (!chunkedPending || staleChunkStream) {
                 const snapshotResult = await getBestSnapshot(nextSessionId, {
                     lastSeq: requestedLastSeq,
@@ -628,12 +631,12 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                     snapshotResult.send(socket, generation, messagesHash);
                     suppressRunnerSignal = true;
                     log.info(`snapshot-provider hydration: sessionId=${nextSessionId} viewer=${socket.id} type=${snapshotResult.snapshot.type}`);
-                    if (staleChunkStream) {
+                    if (staleChunkStream || rejectedSnapshot) {
                         // The cache served a pre-stream checkpoint over a wedged
-                        // chunk stream — that transcript is old. Ask the runner
-                        // for a fresh snapshot instead of suppressing recovery,
-                        // so the viewer isn't stranded on the old checkpoint if
-                        // the stream never finishes.
+                        // or rejected chunk stream — that transcript is old. Ask
+                        // the runner for a fresh snapshot instead of suppressing
+                        // recovery, so the viewer isn't stranded on the old
+                        // checkpoint if the stream never finishes.
                         forwardRecoverySignalOrNotify(nextSessionId, socket, generation);
                     }
                     return;

@@ -131,16 +131,27 @@ export async function finalizeChunkedSnapshot(
 
 /**
  * Abandon an in-flight chunked snapshot that is malformed or over its resource
- * budget. The previously persisted snapshot stays authoritative; events that
- * were deferred behind the snapshot are published (in arrival order) so they
- * are not silently lost. Viewers recover through the normal stale/missing
- * snapshot path.
+ * budget. The previously persisted snapshot stays in place but is older than
+ * what the runner believes it delivered (its chunks were already ACKed), so a
+ * durable `snapshotRejectedAt` marker is recorded on the shared session: viewer
+ * hydration still serves the old snapshot but also asks the runner for a fresh
+ * one instead of suppressing recovery. Events that were deferred behind the
+ * snapshot are published (in arrival order) so they are not silently lost.
  */
+export interface AbortChunkedSnapshotDeps {
+    publishSessionEvent: typeof publishSessionEvent;
+    markSnapshotRejected?: (sessionId: string) => Promise<void>;
+}
+
+async function markSnapshotRejected(sessionId: string): Promise<void> {
+    await updateSessionFields(sessionId, { snapshotRejectedAt: new Date().toISOString() });
+}
+
 export async function abortChunkedSnapshot(
     sessionId: string,
     pending: ChunkedSessionState,
     reason: string,
-    deps: Pick<FinalizeChunkedSnapshotDeps, "publishSessionEvent"> = defaultFinalizeChunkedSnapshotDeps,
+    deps: AbortChunkedSnapshotDeps = { ...defaultFinalizeChunkedSnapshotDeps, markSnapshotRejected },
 ): Promise<void> {
     log.warn(`Aborting chunked snapshot ${pending.snapshotId.slice(0, 8)} for ${sessionId}: ${reason}`);
     if (pendingChunkedStates.get(sessionId) === pending) {
@@ -149,6 +160,11 @@ export async function abortChunkedSnapshot(
     const deferred = pending.deferredEvents ?? [];
     pending.deferredEvents = [];
     pending.chunks = [];
+    try {
+        await (deps.markSnapshotRejected ?? markSnapshotRejected)(sessionId);
+    } catch (err) {
+        log.error(`Failed to record rejected chunked snapshot for ${sessionId}:`, err);
+    }
     for (const evt of deferred) {
         await deps.publishSessionEvent(sessionId, evt);
     }

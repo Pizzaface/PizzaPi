@@ -628,6 +628,8 @@ export async function updateSessionState(sessionId: string, state: unknown, opts
         // A full snapshot carries fresh metadata — the accumulated overlay of
         // "patches since the last snapshot" is now stale. Reset it.
         snapshotOverlay: null,
+        // A full snapshot landed, so any earlier rejected chunk stream is superseded.
+        snapshotRejectedAt: null,
     };
 
     if (session.isEphemeral) {

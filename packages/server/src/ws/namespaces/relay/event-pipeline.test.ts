@@ -390,6 +390,7 @@ describe("chunked snapshot resource limits (F10)", () => {
         pending.deferredEvents = [{ type: "message_start" }, { type: "message_end" }];
         pendingChunkedStates.set("sess-abort", pending);
         const published: unknown[] = [];
+        const marked: string[] = [];
         const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
         try {
             await abortChunkedSnapshot("sess-abort", pending, "test", {
@@ -397,6 +398,7 @@ describe("chunked snapshot resource limits (F10)", () => {
                     published.push(evt);
                     return published.length;
                 }) as any,
+                markSnapshotRejected: async (sid: string) => { marked.push(sid); },
             });
         } finally {
             warnSpy.mockRestore();
@@ -404,6 +406,8 @@ describe("chunked snapshot resource limits (F10)", () => {
         }
         expect(pendingChunkedStates.has("sess-abort")).toBe(false);
         expect(published).toEqual([{ type: "message_start" }, { type: "message_end" }]);
+        // Review R10: the rejection is recorded durably for viewer recovery.
+        expect(marked).toEqual(["sess-abort"]);
         expect(pending.chunks).toEqual([]);
         expect(pending.deferredEvents).toEqual([]);
     });
