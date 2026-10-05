@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, spyOn } from "bun:test";
 import { createTestAuthContext, getKysely, runWithAuthContext } from "./auth.js";
-import { unsubscribePush, updateSuppressChildNotifications, getSubscriptionsForUser, isValidPushEndpoint, registerNativePush, unregisterNativePush, getNativeRegistrationsForUser, ensureNativePushRegistrationTable, sendPushToUser, updateNativeSuppressChildNotifications } from "./push.js";
+import { unsubscribePush, updateSuppressChildNotifications, getSubscriptionsForUser, isValidPushEndpoint, registerNativePush, unregisterNativePush, getNativeRegistrationsForUser, ensureNativePushRegistrationTable, sendPushToUser, updateNativeSuppressChildNotifications, sendWebPushPinned } from "./push.js";
+import { createECDH, randomBytes } from "crypto";
+import { EventEmitter } from "events";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -915,5 +917,121 @@ describe("updateNativeSuppressChildNotifications", () => {
         await registerNativePush({ userId: "user-nscn-3", platform: "android" });
         const count = await updateNativeSuppressChildNotifications("user-nscn-3", "android", true);
         expect(count).toBe(1);
+    });
+});
+
+// ── sendWebPushPinned (DNS-based SSRF protection at dispatch time) ─────────
+
+describe("sendWebPushPinned", () => {
+    function makeSubscription(endpoint: string) {
+        const ecdh = createECDH("prime256v1");
+        ecdh.generateKeys();
+        return {
+            endpoint,
+            keys: {
+                p256dh: ecdh.getPublicKey().toString("base64url"),
+                auth: randomBytes(16).toString("base64url"),
+            },
+        };
+    }
+
+    function fakeRequest(statusCode: number, captured: any[]) {
+        return ((options: any, onResponse: (res: any) => void) => {
+            captured.push(options);
+            const req = new EventEmitter() as any;
+            req.write = () => true;
+            req.destroy = () => undefined;
+            req.end = () => {
+                const res = new EventEmitter() as any;
+                res.statusCode = statusCode;
+                res.headers = {};
+                queueMicrotask(() => {
+                    onResponse(res);
+                    res.emit("end");
+                });
+            };
+            return req;
+        }) as any;
+    }
+
+    it("rejects before connecting when the endpoint host resolves to a private address", async () => {
+        for (const address of ["127.0.0.1", "10.0.0.7", "169.254.169.254", "::1", "fd00::5", "::ffff:192.168.1.1"]) {
+            const captured: any[] = [];
+            await expect(sendWebPushPinned(
+                makeSubscription("https://push.attacker.example/sub/1"),
+                "{}",
+                {
+                    lookupHost: async () => [{ address, family: address.includes(":") ? 6 : 4 }],
+                    request: fakeRequest(201, captured),
+                },
+            )).rejects.toThrow();
+            expect(captured).toHaveLength(0);
+        }
+    });
+
+    it("rejects when any one of several records is private (rebinding/mixed answers)", async () => {
+        const captured: any[] = [];
+        await expect(sendWebPushPinned(
+            makeSubscription("https://push.attacker.example/sub/1"),
+            "{}",
+            {
+                lookupHost: async () => [{ address: "8.8.8.8", family: 4 }, { address: "10.0.0.1", family: 4 }],
+                request: fakeRequest(201, captured),
+            },
+        )).rejects.toThrow();
+        expect(captured).toHaveLength(0);
+    });
+
+    it("pins the connection to the validated address while keeping the hostname for TLS", async () => {
+        const captured: any[] = [];
+        let resolutions = 0;
+        const result = await sendWebPushPinned(
+            makeSubscription("https://push.example.com:8443/sub/abc?x=1"),
+            JSON.stringify({ type: "agent_finished" }),
+            {
+                lookupHost: async () => {
+                    resolutions++;
+                    return [{ address: "142.250.80.10", family: 4 }];
+                },
+                request: fakeRequest(201, captured),
+            },
+        );
+        expect(result.statusCode).toBe(201);
+        expect(resolutions).toBe(1);
+        expect(captured).toHaveLength(1);
+        const opts = captured[0];
+        expect(opts.hostname).toBe("push.example.com");
+        expect(opts.servername).toBe("push.example.com");
+        expect(String(opts.port)).toBe("8443");
+        expect(opts.path).toBe("/sub/abc?x=1");
+        // A later (rebinding) resolution inside the client still yields the pinned address.
+        let pinned: unknown;
+        opts.lookup("push.example.com", { all: true }, (_err: unknown, addrs: unknown) => { pinned = addrs; });
+        expect(pinned).toEqual([{ address: "142.250.80.10", family: 4 }]);
+    });
+
+    it("surfaces non-2xx responses (including redirects, which are not followed) as WebPushError", async () => {
+        for (const status of [302, 410]) {
+            const captured: any[] = [];
+            const err: any = await sendWebPushPinned(
+                makeSubscription("https://push.example.com/sub/abc"),
+                "{}",
+                { lookupHost: async () => [{ address: "8.8.8.8", family: 4 }], request: fakeRequest(status, captured) },
+            ).catch((e) => e);
+            expect(err?.statusCode).toBe(status);
+            expect(captured).toHaveLength(1);
+        }
+    });
+
+    it("refuses stored endpoints that fail textual validation without resolving or connecting", async () => {
+        const captured: any[] = [];
+        let resolved = false;
+        await expect(sendWebPushPinned(
+            makeSubscription("https://[::1]/push"),
+            "{}",
+            { lookupHost: async () => { resolved = true; return [{ address: "8.8.8.8", family: 4 }]; }, request: fakeRequest(201, captured) },
+        )).rejects.toThrow();
+        expect(resolved).toBe(false);
+        expect(captured).toHaveLength(0);
     });
 });

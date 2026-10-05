@@ -1466,6 +1466,12 @@ Subscribe the browser to push notifications.
 }
 ```
 
+`endpoint` must be an `https://` URL. IP-literal hosts must be public unicast
+addresses and `localhost` names are rejected (`400`). At delivery time the relay
+resolves the endpoint host, skips delivery if **any** resolved address is
+loopback, private, link-local, CGNAT, multicast, or otherwise non-global, and
+connects only to the validated addresses (redirects are not followed).
+
 **Response:**
 
 ```json

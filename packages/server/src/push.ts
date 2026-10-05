@@ -1,5 +1,12 @@
 import webpush from "web-push";
+import https from "node:https";
 import { getKysely } from "./auth.js";
+import {
+    createPinnedLookup,
+    isPublicUnicastAddress,
+    resolvePublicAddresses,
+    type HostLookupFn,
+} from "./outbound-address.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("push");
@@ -61,36 +68,26 @@ export function getVapidPublicKey(): string {
 // ── Push endpoint validation ─────────────────────────────────────────────────
 
 /**
- * RFC1918 / loopback / link-local IPv4 ranges that push endpoints must not target.
- * Checked against the raw hostname to block SSRF attacks.
- */
-const PRIVATE_IP_PATTERNS = [
-    /^127\./,                    // 127.0.0.0/8 loopback
-    /^10\./,                     // 10.0.0.0/8
-    /^172\.(1[6-9]|2\d|3[01])\./, // 172.16.0.0/12
-    /^192\.168\./,               // 192.168.0.0/16
-    /^169\.254\./,               // 169.254.0.0/16 link-local
-    /^\[::1\]$/,                 // IPv6 loopback — URL API returns "[::1]" with brackets
-    /^\[f[cd][0-9a-f]{2}:/i,      // IPv6 ULA fc00::/7 (fc** and fd**) — URL API wraps IPv6 in "[...]"
-    /^\[fe[89ab][0-9a-f]:/i,     // IPv6 link-local fe80::/10
-    /^0\./,                      // 0.0.0.0/8
-    /^\[::\]$/,                  // IPv6 all-interfaces bind address (:: / ::/128)
-];
-
-/**
- * Validate that a push subscription endpoint is safe to use.
+ * Validate that a push subscription endpoint is safe to store.
  *
  * Requirements:
  *   1. Must be a valid URL.
  *   2. Must use the `https:` scheme.
- *   3. Hostname must not be a loopback, link-local, or RFC1918 address.
+ *   3. Hostname must not be `localhost`/`*.localhost`, and an IP-literal
+ *      hostname must be a public unicast address (see
+ *      {@link isPublicUnicastAddress}).
  *
  * The URL parser normalizes bare-integer / hex / octal IPv4 forms
- * (2130706433, 0x7f000001) to dotted-quad, so those are covered by the
- * private-IP patterns below. No hostname allowlist is enforced: it would break
- * enterprise proxies and custom HTTPS push providers on public addresses.
+ * (2130706433, 0x7f000001) to dotted-quad, so those are covered too. No
+ * hostname allowlist is enforced: it would break enterprise proxies and custom
+ * HTTPS push providers on public addresses.
  *
- * Returns true if the endpoint is safe; false otherwise.
+ * This is only a fast, textual pre-check. A DNS name can still resolve (or
+ * later rebind) to an internal address, so delivery additionally resolves the
+ * host, rejects any non-public address, and pins the connection to the
+ * validated addresses — see {@link sendWebPushPinned}.
+ *
+ * Returns true if the endpoint is acceptable; false otherwise.
  */
 export function isValidPushEndpoint(endpoint: string): boolean {
     let parsed: URL;
@@ -104,34 +101,104 @@ export function isValidPushEndpoint(endpoint: string): boolean {
     if (parsed.protocol !== "https:") return false;
 
     const host = parsed.hostname.toLowerCase();
+    if (!host) return false;
 
     // Reject localhost / .localhost hostnames (hostname-based loopback).
-    // The IP-based patterns below do not catch the plain string "localhost".
     if (host === "localhost" || host.endsWith(".localhost")) return false;
 
-    // Reject IPv4-mapped IPv6 addresses (::ffff:x.x.x.x).
-    // Bun's URL API normalizes the dotted-decimal form to hex pairs before we
-    // ever see it:  [::ffff:127.0.0.1] → [::ffff:7f00:1]
-    // We match the two 16-bit hex groups, convert them back to dotted-decimal
-    // IPv4, then check against the same private-range patterns.
-    const ipv4MappedMatch = host.match(/^\[::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})\]$/);
-    if (ipv4MappedMatch) {
-        const high = parseInt(ipv4MappedMatch[1], 16);
-        const low = parseInt(ipv4MappedMatch[2], 16);
-        const innerIpv4 = `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
-        for (const pattern of PRIVATE_IP_PATTERNS) {
-            if (pattern.test(innerIpv4)) return false;
-        }
-        // Inner IPv4 is public — fall through to the normal allow path.
+    // IP literal (IPv6 is bracketed by the URL API): must be public unicast.
+    const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+    if (/^[\d.]+$/.test(bare) || bare.includes(":")) {
+        return isPublicUnicastAddress(bare);
     }
 
-    // Reject private/loopback addresses (SSRF protection).
-    for (const pattern of PRIVATE_IP_PATTERNS) {
-        if (pattern.test(host)) return false;
-    }
-
-    // Any HTTPS endpoint on a non-private host is accepted.
     return true;
+}
+
+/** Upper bound on a single Web Push delivery (connect + response). */
+const WEB_PUSH_TIMEOUT_MS = 15_000;
+/** Cap on the push service response body we buffer (only used for errors). */
+const WEB_PUSH_MAX_RESPONSE_BYTES = 16 * 1024;
+
+export interface WebPushTransportDeps {
+    /** DNS resolver used to validate the endpoint host (tests inject this). */
+    lookupHost?: HostLookupFn;
+    /** HTTPS request implementation (tests inject this). */
+    request?: typeof https.request;
+}
+
+/**
+ * Deliver a Web Push message with SSRF protection.
+ *
+ * Unlike `webpush.sendNotification`, which lets the HTTPS client resolve the
+ * endpoint hostname itself, this:
+ *   1. re-validates the stored endpoint textually,
+ *   2. resolves the hostname and rejects it if ANY A/AAAA record is not a
+ *      public unicast address (loopback, RFC1918, link-local, CGNAT, ULA, …),
+ *   3. connects with a pinned `lookup` that only returns those validated
+ *      addresses, so DNS rebinding between check and connect is ineffective.
+ * The original hostname is kept for TLS SNI and certificate verification.
+ * Redirects are never followed (a 3xx is treated as a delivery failure).
+ *
+ * Rejects with `webpush.WebPushError` (carrying `statusCode`) on non-2xx.
+ */
+export async function sendWebPushPinned(
+    subscription: webpush.PushSubscription,
+    payload: string,
+    deps: WebPushTransportDeps = {},
+): Promise<{ statusCode: number }> {
+    if (!isValidPushEndpoint(subscription.endpoint)) {
+        throw new Error("Refusing to deliver to an invalid or non-public push endpoint");
+    }
+    const requestDetails = webpush.generateRequestDetails(subscription, payload);
+    const endpoint = new URL(requestDetails.endpoint);
+    const addresses = await resolvePublicAddresses(endpoint.hostname, deps.lookupHost);
+    const doRequest = deps.request ?? https.request;
+
+    return new Promise((resolve, reject) => {
+        const req = doRequest(
+            {
+                protocol: "https:",
+                hostname: endpoint.hostname.replace(/^\[(.*)\]$/, "$1"),
+                servername: endpoint.hostname,
+                port: endpoint.port || 443,
+                path: `${endpoint.pathname}${endpoint.search}`,
+                method: requestDetails.method,
+                headers: requestDetails.headers as Record<string, string | number>,
+                lookup: createPinnedLookup(addresses) as unknown as https.RequestOptions["lookup"],
+                timeout: WEB_PUSH_TIMEOUT_MS,
+            },
+            (res) => {
+                let received = 0;
+                const chunks: Buffer[] = [];
+                res.on("data", (chunk: Buffer) => {
+                    if (received < WEB_PUSH_MAX_RESPONSE_BYTES) {
+                        chunks.push(chunk);
+                        received += chunk.length;
+                    }
+                });
+                res.on("end", () => {
+                    const statusCode = res.statusCode ?? 0;
+                    if (statusCode < 200 || statusCode > 299) {
+                        reject(new webpush.WebPushError(
+                            "Received unexpected response code",
+                            statusCode,
+                            res.headers as unknown as Record<string, string>,
+                            Buffer.concat(chunks).toString("utf8").slice(0, WEB_PUSH_MAX_RESPONSE_BYTES),
+                            requestDetails.endpoint,
+                        ));
+                    } else {
+                        resolve({ statusCode });
+                    }
+                });
+                res.on("error", reject);
+            },
+        );
+        req.on("timeout", () => req.destroy(new Error("Web Push request timed out")));
+        req.on("error", reject);
+        if (requestDetails.body) req.write(requestDetails.body);
+        req.end();
+    });
 }
 
 // ── DB table ─────────────────────────────────────────────────────────────────
@@ -701,7 +768,7 @@ export async function sendPushToUser(
             };
 
             try {
-                await webpush.sendNotification(pushSub, payloadStr);
+                await sendWebPushPinned(pushSub, payloadStr);
             } catch (err: any) {
                 if (err?.statusCode === 410 || err?.statusCode === 404) {
                     // Subscription expired or unregistered — clean up
