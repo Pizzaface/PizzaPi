@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useServiceChannel } from "@/hooks/useServiceChannel";
-import { useTunnelSrc } from "@/hooks/useTunnelSrc";
+import { tunnelIframeSandbox, useTunnelSrc } from "@/hooks/useTunnelSrc";
 import { reportError } from "@/lib/frontend-log";
 import { ExternalLink, Plus, X, RefreshCw, Loader2, PanelRightOpen } from "lucide-react";
 import { parsePanelId, makePanelId, scopePanelIdToRunner } from "@/components/service-panels/panel-instance";
@@ -112,17 +112,14 @@ export function TunnelPanel({ sessionId, runnerId, panelId, onSpawnPanel, runner
     const activePort = detachedPort ?? previewPort;
     const activeTunnel = tunnels.find(t => t.port === activePort);
 
-    // Resolve the iframe URL for the active preview (web = relative, mobile =
-    // signed token against the relay). This is the fix for blank iframes in the
-    // Capacitor app, where a relative /api/tunnel/... hit the local bundle.
-    const { base: previewBase, loading: previewLoading, error: previewError } = useTunnelSrc({
+    // Resolve the iframe URL for the active preview (always minted; never the
+    // cookie-authenticated relative path). Uses the dedicated tunnel origin when configured (SPAs see a clean
+    // location.pathname), otherwise a signed, CSP-sandboxed relay path.
+    const { base: previewBase, isolated: previewIsolated, loading: previewLoading, error: previewError } = useTunnelSrc({
         sessionId,
         port: activePort,
         runnerId,
         enabled: live && activePort !== null,
-        // User-app previews get the dedicated tunnel origin when configured —
-        // SPAs see a clean location.pathname instead of the proxy prefix.
-        preferHostOrigin: true,
     });
 
     if (!live) return null;
@@ -271,10 +268,10 @@ export function TunnelPanel({ sessionId, runnerId, panelId, onSpawnPanel, runner
                             </div>
                         )}
                         {/*
-                          * allow-same-origin is required for storage/cookie-dependent dashboards
-                          * (e.g. service panels that read localStorage). The tunnel URL is served
-                          * from our own origin so same-origin grants no extra cross-origin privilege
-                          * beyond what a plain fetch would already allow. See also PR #415.
+                          * allow-same-origin is granted ONLY on the isolated tunnel origin. On the
+                          * relay path it would let runner-controlled scripts act as PizzaPi itself
+                          * (DOM, API, storage), so those previews run as an opaque origin; the
+                          * relay injects an in-memory storage stand-in for them.
                           */}
                         <iframe
                             key={iframeKey}
@@ -282,8 +279,7 @@ export function TunnelPanel({ sessionId, runnerId, panelId, onSpawnPanel, runner
                             src={previewBase}
                             className="w-full h-full border-0"
                             title={`Tunnel preview — port ${activePort}`}
-                            // SECURITY: allow-same-origin is needed because tunnel content is same-origin. TODO: serve tunnel content from a separate origin to enable full sandbox isolation.
-                            sandbox="allow-scripts allow-forms allow-same-origin allow-popups"
+                            sandbox={tunnelIframeSandbox(previewIsolated)}
                             // See IframeServicePanel: framed voice capture needs
                             // Permissions-Policy delegation or getUserMedia is blocked.
                             allow="microphone"

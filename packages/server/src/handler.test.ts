@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { createTestAuthContext } from "./auth";
 import { runAllMigrations } from "./migrations";
 import { handleFetch as rawHandleFetch, MAX_BODY_SIZE, MAX_ATTACHMENT_BODY_SIZE, enforceBodySizeLimit, withSecurityHeaders } from "./handler";
+import { PATH_TUNNEL_SANDBOX_CSP } from "./routes/tunnel";
 
 const authContext = createTestAuthContext({
     dbPath: join(mkdtempSync(join(tmpdir(), "handler-test-")), "auth.db"),
@@ -367,24 +368,46 @@ describe("withSecurityHeaders", () => {
         expect(res.statusText).toBe("Created");
     });
 
-    test("tunnel responses get SAMEORIGIN and no CSP", () => {
-        const res = withSecurityHeaders(new Response("ok", { headers: { "x-pizzapi-tunnel": "1" } }));
+    test("path tunnel responses get SAMEORIGIN and only the opaque-origin sandbox CSP", () => {
+        const res = withSecurityHeaders(new Response("ok", { headers: { "x-pizzapi-tunnel": "path" } }));
         expect(res.headers.get("x-frame-options")).toBe("SAMEORIGIN");
-        expect(res.headers.get("content-security-policy")).toBeNull();
+        expect(res.headers.get("content-security-policy")).toBe(PATH_TUNNEL_SANDBOX_CSP);
     });
 
-    test("token-authenticated tunnel responses allow mobile cross-origin framing", () => {
+    test("path tunnel sandbox never grants same-origin privileges and keeps upstream CSP", () => {
+        const res = withSecurityHeaders(new Response("ok", {
+            headers: { "x-pizzapi-tunnel": "path", "content-security-policy": "img-src 'self'" },
+        }));
+        const csp = res.headers.get("content-security-policy")!;
+        expect(csp).toContain("img-src 'self'");
+        expect(csp).toContain("sandbox allow-scripts");
+        expect(csp).not.toContain("allow-same-origin");
+    });
+
+    test("unknown/legacy tunnel markers fail closed to the sandbox", () => {
+        const res = withSecurityHeaders(new Response("ok", { headers: { "x-pizzapi-tunnel": "1" } }));
+        expect(res.headers.get("content-security-policy")).toBe(PATH_TUNNEL_SANDBOX_CSP);
+    });
+
+    test("token-authenticated tunnel responses allow mobile cross-origin framing but stay sandboxed", () => {
         const res = withSecurityHeaders(new Response("ok", {
             headers: {
-                "x-pizzapi-tunnel": "1",
+                "x-pizzapi-tunnel": "path",
                 "x-pizzapi-tunnel-frame": "cross-origin",
                 "x-frame-options": "SAMEORIGIN",
                 "content-security-policy": "frame-ancestors 'self'",
             },
         }));
         expect(res.headers.get("x-frame-options")).toBeNull();
-        expect(res.headers.get("content-security-policy")).toBeNull();
+        expect(res.headers.get("content-security-policy")).toBe(PATH_TUNNEL_SANDBOX_CSP);
         expect(res.headers.get("x-pizzapi-tunnel-frame")).toBeNull();
+    });
+
+    test("isolated host-origin tunnel responses are not sandboxed", () => {
+        const res = withSecurityHeaders(new Response("ok", {
+            headers: { "x-pizzapi-tunnel": "host", "x-pizzapi-tunnel-frame": "cross-origin" },
+        }));
+        expect(res.headers.get("content-security-policy")).toBeNull();
     });
 
     test("non-tunnel responses still get DENY and CSP", () => {

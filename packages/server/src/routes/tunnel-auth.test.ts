@@ -156,6 +156,83 @@ describe("runner tunnel auth", () => {
         expect(Buffer.concat(chunks).toString()).toStartWith("HTTP/1.1 503");
     });
 
+    test("browser navigation to a cookie route is redirected to a signed, sandboxable token path", async () => {
+        const res = await call(`${BASE}/app/page?x=1&apiKey=leak`, {
+            headers: { cookie, "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe" },
+        });
+        expect(res.status).toBe(302);
+        expect(res.headers.get("cache-control")).toBe("no-store");
+        const location = res.headers.get("location")!;
+        expect(location).toMatch(new RegExp(`^/api/tunnel/auth/[^/]+/runner%3A${RUNNER_ID}/8477/app/page\\?x=1$`));
+        // The redirect target works without any cookie (opaque-origin subresources carry none).
+        lastProxied = null;
+        const followed = await call(`http://localhost:7492${location}`);
+        expect(followed.status).toBe(200);
+        expect(lastProxied!.path).toBe("/app/page?x=1");
+    });
+
+    test("navigation redirect still requires ownership (anonymous → 401, no token minted)", async () => {
+        const res = await call(`${BASE}/`, { headers: { "sec-fetch-mode": "navigate" } });
+        expect(res.status).toBe(401);
+        expect(res.headers.get("location")).toBeNull();
+    });
+
+    test("token route grants CORS only to the opaque sandbox origin and answers its preflight", async () => {
+        const mint = await call("http://localhost:7492/api/tunnel-token", {
+            method: "POST",
+            headers: { cookie, "content-type": "application/json" },
+            body: JSON.stringify({ runnerId: RUNNER_ID, port: 8477 }),
+        });
+        const { url } = (await mint.json()) as { url: string };
+
+        lastProxied = null;
+        const preflight = await call(`http://localhost:7492${url}api/data`, {
+            method: "OPTIONS",
+            headers: { origin: "null", "access-control-request-method": "POST", "access-control-request-headers": "content-type" },
+        });
+        expect(preflight.status).toBe(204);
+        expect(preflight.headers.get("access-control-allow-origin")).toBe("null");
+        expect(preflight.headers.get("access-control-allow-headers")).toBe("content-type");
+        expect(lastProxied).toBeNull();
+
+        const opaque = await call(`http://localhost:7492${url}api/data`, { headers: { origin: "null" } });
+        expect(opaque.headers.get("access-control-allow-origin")).toBe("null");
+        expect(opaque.headers.get("access-control-allow-credentials")).toBe("true");
+
+        const sameOrigin = await call(`http://localhost:7492${url}api/data`);
+        expect(sameOrigin.headers.get("access-control-allow-origin")).toBeNull();
+    });
+
+    test("end to end: token-path documents are CSP-sandboxed and exempt from the cookie CSRF gate", async () => {
+        const { handleFetch } = await import("../handler.js");
+        const mint = await call("http://localhost:7492/api/tunnel-token", {
+            method: "POST",
+            headers: { cookie, "content-type": "application/json" },
+            body: JSON.stringify({ runnerId: RUNNER_ID, port: 8477 }),
+        });
+        const { url } = (await mint.json()) as { url: string };
+        const doc = await handleFetch(new Request(`http://localhost:7492${url}`), authContext);
+        expect(doc.status).toBe(200);
+        expect(doc.headers.get("content-security-policy")).toContain("sandbox allow-scripts");
+        expect(doc.headers.get("content-security-policy")).not.toContain("allow-same-origin");
+
+        // A sandboxed document POSTs with Origin: null; a stray relay cookie
+        // must not turn that into a CSRF rejection on the token route…
+        const post = await handleFetch(new Request(`http://localhost:7492${url}api/save`, {
+            method: "POST",
+            headers: { cookie, origin: "null", "content-type": "application/json" },
+            body: "{}",
+        }), authContext);
+        expect(post.status).toBe(200);
+        // …while cookie-authenticated tunnel routes keep the gate.
+        const cookiePost = await handleFetch(new Request(`${BASE}/api/save`, {
+            method: "POST",
+            headers: { cookie, origin: "null", "content-type": "application/json" },
+            body: "{}",
+        }), authContext);
+        expect(cookiePost.status).toBe(403);
+    });
+
     test("isTunnelPath covers runner- and token-scoped paths (no body buffering/cap)", () => {
         expect(isTunnelPath("/api/tunnel/runner/r/8477/api/feedback/voice")).toBe(true);
         expect(isTunnelPath("/api/tunnel/auth/tok/runner:r/8477/x")).toBe(true);

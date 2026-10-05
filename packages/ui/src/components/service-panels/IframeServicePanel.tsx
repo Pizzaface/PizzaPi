@@ -1,19 +1,19 @@
 /**
  * Generic iframe panel for dynamic service panels.
  *
- * Renders the service's self-hosted UI inside an iframe,
- * proxied through the tunnel system at /api/tunnel/{sessionId}/{port}/.
+ * Renders the service's self-hosted UI inside an iframe, proxied through the
+ * tunnel system on the isolated tunnel origin when configured, otherwise on a
+ * signed, CSP-sandboxed relay path (see useTunnelSrc).
  *
  * Query and fragment parameters from `pizzapi://panel/...` deep links
  * are forwarded to the iframe URL so the panel can read them via
  * `location.search` and `location.hash`.
  *
- * URL resolution (web vs mobile) lives in useTunnelSrc — on mobile it mints a
- * signed token so the absolute relay URL loads inside the Capacitor webview.
+ * URL resolution (web vs mobile, origin isolation) lives in useTunnelSrc.
  */
 import { useEffect, useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
-import { useTunnelSrc } from "@/hooks/useTunnelSrc";
+import { tunnelIframeSandbox, useTunnelSrc } from "@/hooks/useTunnelSrc";
 import { reportError } from "@/lib/frontend-log";
 
 interface IframeServicePanelProps {
@@ -32,7 +32,7 @@ interface IframeServicePanelProps {
 }
 
 export function IframeServicePanel({ sessionId, port, query, fragment, panelParams, cwd, runnerId }: IframeServicePanelProps) {
-    const { base, error } = useTunnelSrc({ sessionId, port, runnerId });
+    const { base, isolated, error } = useTunnelSrc({ sessionId, port, runnerId });
     // Heuristic: HTTP failures inside an iframe don't fire onError, so flag a
     // panel that never fires onLoad within a grace window as likely-broken.
     const [loadTimedOut, setLoadTimedOut] = useState(false);
@@ -100,8 +100,10 @@ export function IframeServicePanel({ sessionId, port, query, fragment, panelPara
                 src={src}
                 className="h-full w-full border-0"
                 title={`Service panel — port ${port}`}
-                // SECURITY: allow-same-origin is needed because tunnel content is same-origin. TODO: serve tunnel content from a separate origin to enable full sandbox isolation.
-                sandbox="allow-scripts allow-forms allow-same-origin allow-popups"
+                // SECURITY: same-origin privileges only on the isolated tunnel
+                // origin. Relay-path panels run as an opaque origin (the relay
+                // also sends a CSP sandbox) so they cannot act as PizzaPi.
+                sandbox={tunnelIframeSandbox(isolated)}
                 // Voice capture (e.g. the daily report's feedback Snippet) needs
                 // Permissions-Policy delegation; without `allow=`, getUserMedia
                 // is silently blocked in framed panels even with OS mic access.

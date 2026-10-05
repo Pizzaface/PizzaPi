@@ -253,7 +253,9 @@ describe("passthrough proxy mode (basePath \"\")", () => {
 
     test("marks the response for cross-origin framing", async () => {
         const res = await runProxy("ok", "text/plain");
-        expect(res.headers.get("x-pizzapi-tunnel")).toBe("1");
+        // "host" marks the isolated origin — the only tunnel kind that is not
+        // CSP-sandboxed by withSecurityHeaders.
+        expect(res.headers.get("x-pizzapi-tunnel")).toBe("host");
         expect(res.headers.get("x-pizzapi-tunnel-frame")).toBe("cross-origin");
     });
 });

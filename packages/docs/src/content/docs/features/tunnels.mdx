@@ -45,6 +45,39 @@ and otherwise returning a signed `/api/tunnel/auth/<token>/…` path. Those work
 any browser, on any device, with no cookie — the URL itself is the credential, so
 treat it as a secret and expect it to expire.
 
+### Origin isolation
+
+Tunnelled content is controlled by whatever runs on the runner's port, so it
+never executes as the PizzaPi relay origin (where it could drive your signed-in
+UI and API):
+
+- **Path-prefix responses are sandboxed.** The relay serves every
+  `/api/tunnel/…` response with `Content-Security-Policy: sandbox allow-scripts
+  allow-forms allow-popups allow-modals allow-downloads`. There is no
+  `allow-same-origin`, so the document gets an opaque origin, both in the web
+  UI's iframe and when opened in a new tab.
+- **Browsers load the signed path.** In an opaque-origin document, subresource
+  requests carry no relay cookie. The web UI, the mobile app, and "open in new
+  tab" therefore mint a signed `/api/tunnel/auth/<token>/…` URL (valid 24 hours).
+  A browser navigation to a cookie path (`/api/tunnel/runner/…` or
+  `/api/tunnel/<sessionId>/…`) is redirected to an equivalent signed path. API
+  clients that do not navigate (curl, `fetch` from the UI) are served directly.
+  The signed path answers CORS for the sandbox's `null` origin, so the app's own
+  `fetch`, module scripts, and fonts keep working.
+- **Storage is per page load.** `localStorage`, `sessionStorage`, and
+  `document.cookie` throw in an opaque origin. The relay's injected script
+  replaces them with in-memory versions, so apps keep running, but nothing
+  persists across reloads.
+- **No fallback.** If the UI cannot mint a URL, the panel shows an error. It
+  does not fall back to the relay origin.
+
+Set `PIZZAPI_TUNNEL_DOMAIN` (below) and previews and service panels load on
+the dedicated tunnel origin instead. That origin is a separate site, so it
+keeps normal same-origin privileges: persistent storage, its own cookies, and
+SPA routing. The UI uses the tunnel origin only when the viewer can reach it:
+no mixed content, and a `*.localhost` domain only when the UI itself is opened
+on localhost. Otherwise it uses the sandboxed signed path.
+
 ### Dedicated tunnel origin (recommended for SPAs)
 
 The path-prefix schemes above share the relay's origin, so a tunnelled app sees

@@ -62,7 +62,17 @@ mock.module("@/hooks/useServiceChannel", () => ({
 
 // Restore all module mocks after this file so they don't bleed into other
 // test files running in the same Bun worker process.
-afterAll(() => mock.restore());
+const originalFetch = globalThis.fetch;
+afterAll(() => {
+    mock.restore();
+    globalThis.fetch = originalFetch;
+});
+
+// Previews always mint a signed tunnel URL (no relay-origin fallback).
+globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+    const { port } = JSON.parse(String(init?.body ?? "{}")) as { port: number };
+    return new Response(JSON.stringify({ url: `/api/tunnel/auth/tok/sess/${port}/` }), { status: 200 });
+}) as typeof fetch;
 
 // Import AFTER mock is registered
 const { TunnelPanel } = await import("./TunnelPanel");
@@ -187,6 +197,23 @@ describe("TunnelPanel — stale tunnel state fix", () => {
 
         // previewPort was cleared on disconnect, so no iframe yet
         expect(getIframes(container).length).toBe(0);
+    });
+});
+
+describe("TunnelPanel — origin isolation", () => {
+    test("relay-path previews never get same-origin privileges", async () => {
+        channelState.available = true;
+        let container!: HTMLElement;
+        await act(async () => {
+            ({ container } = render(<TunnelPanel sessionId="sess" />));
+        });
+        await act(async () => {
+            capturedOnMessage?.("tunnel_list_result", { tunnels: [makeTunnel(3000)] });
+        });
+        const iframe = getIframes(container)[0]!;
+        expect(iframe.getAttribute("src")).toBe("/api/tunnel/auth/tok/sess/3000/");
+        expect(iframe.getAttribute("sandbox")).toContain("allow-scripts");
+        expect(iframe.getAttribute("sandbox")).not.toContain("allow-same-origin");
     });
 });
 

@@ -228,6 +228,36 @@ describe("tunnel route HTML rewriting", () => {
         expect(capturedUrls).toEqual(["wss://jordans-mac-mini.tail65556b.ts.net/api/tunnel/s-1/3000/"]);
     });
 
+    test("interceptor gives sandboxed (opaque-origin) documents in-memory storage and cookies", () => {
+        const rewritten = rewriteTunnelHtml("<html><head></head></html>", "s-1", 3000);
+        const scriptBody = rewritten.match(/<script data-pizzapi-tunnel-intercept>\n([\s\S]*?)<\/script>/)![1];
+        const denied = () => { throw new Error("SecurityError: sandboxed"); };
+        const mockWindow: Record<string, unknown> = {
+            fetch: () => Promise.resolve(new Response(null)),
+            WebSocket: Object.assign(function () {}, { prototype: {} }),
+        };
+        Object.defineProperty(mockWindow, "localStorage", { get: denied, configurable: true });
+        Object.defineProperty(mockWindow, "sessionStorage", { get: denied, configurable: true });
+        const mockDocument: Record<string, unknown> = {};
+        Object.defineProperty(mockDocument, "cookie", { get: denied, set: denied, configurable: true });
+        class MockXHR { open(): void {} }
+
+        new Function("window", "document", "location", "history", "XMLHttpRequest", "Request", scriptBody)(
+            mockWindow, mockDocument, { protocol: "https:", host: "relay.example" }, {}, MockXHR, Request,
+        );
+
+        const storage = mockWindow.localStorage as Storage;
+        storage.setItem("theme", "dark");
+        expect(storage.getItem("theme")).toBe("dark");
+        expect(storage.length).toBe(1);
+        storage.clear();
+        expect(storage.getItem("theme")).toBeNull();
+        expect((mockWindow.sessionStorage as Storage).getItem("x")).toBeNull();
+        mockDocument.cookie = "a=1; Path=/";
+        mockDocument.cookie = "b=2";
+        expect(mockDocument.cookie).toBe("a=1; b=2");
+    });
+
     test("rewriteTunnelHtml fetch/XHR interceptor rewrites same-origin and localhost full URLs", () => {
         const html = `<!doctype html><html><head></head><body>hello</body></html>`;
         const rewritten = rewriteTunnelHtml(html, "s-1", 8096);

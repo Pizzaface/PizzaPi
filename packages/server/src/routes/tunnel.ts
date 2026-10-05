@@ -30,6 +30,88 @@ const RUNNER_TUNNEL_PATH_RE = /^\/api\/tunnel\/runner\/([^/]+)\/(\d+)(\/.*)?$/;
 /** Pattern: /api/tunnel/:sessionId/:port/<rest> */
 const TUNNEL_PATH_RE = /^\/api\/tunnel\/([^/]+)\/(\d+)(\/.*)?$/;
 
+/** True for the signed-token tunnel route (/api/tunnel/auth/<token>/…). */
+export function isAuthTunnelPath(pathname: string): boolean {
+    return AUTH_TUNNEL_PATH_RE.test(pathname);
+}
+
+/**
+ * CSP applied to every path-based tunnel response (see withSecurityHeaders).
+ * `sandbox` without `allow-same-origin` gives the document an opaque origin,
+ * so runner-controlled scripts cannot act as the relay origin — even when the
+ * URL is opened top-level, outside the UI's sandboxed iframe.
+ */
+export const PATH_TUNNEL_SANDBOX_CSP = "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads";
+
+/**
+ * Lifetime of signed tunnel URLs the relay mints itself when a browser
+ * navigates to a cookie-authenticated tunnel path (see redirectToTokenTunnel).
+ * Matches the default absolute lifetime of host-origin tunnel labels so a
+ * long-open preview does not lose its subresources after an hour.
+ */
+export const TUNNEL_NAVIGATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Browsers attach no relay cookie to subresource requests from an opaque
+ * (sandboxed) document, so a cookie-authenticated path tunnel cannot load its
+ * own assets once it is sandboxed. Navigations to those paths are therefore
+ * redirected to an equivalent signed-token path that carries its auth in the
+ * URL. Non-navigation requests (API clients, curl) are served as before.
+ */
+function isBrowserNavigation(req: Request): boolean {
+    const method = req.method.toUpperCase();
+    return (method === "GET" || method === "HEAD") && req.headers.get("sec-fetch-mode") === "navigate";
+}
+
+function redirectToTokenTunnel(userId: string, scope: string, port: number, url: URL, proxyPath: string): Response {
+    const { token } = createTunnelToken({ userId, sessionId: scope, port, ttlMs: TUNNEL_NAVIGATION_TOKEN_TTL_MS });
+    return new Response(null, {
+        status: 302,
+        headers: {
+            Location: `${getAuthTunnelBasePath(token, scope, port)}${buildPathWithQuery(url, proxyPath)}`,
+            "Cache-Control": "no-store",
+        },
+    });
+}
+
+/**
+ * Sandboxed tunnel documents have an opaque origin, so their own fetch/XHR,
+ * module scripts, fonts and EventSource requests back to the token path are
+ * cross-origin (`Origin: null`). The token route is authenticated by the URL
+ * alone and forwards no relay cookies, so it can safely grant CORS to the
+ * opaque origin — including credentialed mode, which apps using
+ * `credentials: "include"` / `withCredentials` require.
+ */
+function isOpaqueOriginRequest(req: Request): boolean {
+    return req.headers.get("origin") === "null";
+}
+
+function opaqueOriginPreflight(req: Request): Response {
+    const headers = new Headers({
+        "Access-Control-Allow-Origin": "null",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": req.headers.get("access-control-request-method") ?? "GET",
+        "Access-Control-Max-Age": "600",
+        Vary: "Origin",
+    });
+    const requestedHeaders = req.headers.get("access-control-request-headers");
+    if (requestedHeaders) headers.set("Access-Control-Allow-Headers", requestedHeaders);
+    return new Response(null, { status: 204, headers });
+}
+
+function withOpaqueOriginCors(res: Response): Response {
+    const headers = new Headers(res.headers);
+    const exposed: string[] = [];
+    headers.forEach((_value, key) => {
+        if (!key.toLowerCase().startsWith("x-pizzapi-tunnel")) exposed.push(key);
+    });
+    headers.set("Access-Control-Allow-Origin", "null");
+    headers.set("Access-Control-Allow-Credentials", "true");
+    if (exposed.length > 0) headers.set("Access-Control-Expose-Headers", exposed.join(", "));
+    headers.append("Vary", "Origin");
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
 /**
  * decodeURIComponent that returns "" on malformed percent-encoding instead of
  * throwing URIError — callers already 400 on empty path components.
@@ -86,6 +168,31 @@ function buildTunnelInterceptScript(basePath: string): string {
     return `<script data-pizzapi-tunnel-intercept>
 (function(){
   var B="${basePath}";
+  // Path tunnels run in a CSP sandbox (opaque origin), where touching
+  // localStorage/sessionStorage/document.cookie throws SecurityError. Give
+  // apps a per-page in-memory stand-in so they keep working; persistence
+  // needs the isolated tunnel origin (PIZZAPI_TUNNEL_DOMAIN).
+  function mem(){
+    var d=Object.create(null);
+    return {
+      get length(){return Object.keys(d).length},
+      key:function(i){var k=Object.keys(d);return i<k.length?k[i]:null},
+      getItem:function(k){k=String(k);return k in d?d[k]:null},
+      setItem:function(k,v){d[String(k)]=String(v)},
+      removeItem:function(k){delete d[String(k)]},
+      clear:function(){d=Object.create(null)}
+    };
+  }
+  ["localStorage","sessionStorage"].forEach(function(n){
+    try{void window[n].length}catch(_e){try{Object.defineProperty(window,n,{value:mem(),configurable:true})}catch(_x){}}
+  });
+  try{void document.cookie}catch(_e){
+    var jar=Object.create(null);
+    try{Object.defineProperty(document,"cookie",{configurable:true,
+      get:function(){return Object.keys(jar).map(function(k){return k+"="+jar[k]}).join("; ")},
+      set:function(v){var p=String(v).split(";")[0],i=p.indexOf("=");if(i>0)jar[p.slice(0,i).trim()]=p.slice(i+1).trim()}
+    })}catch(_x){}
+  }
   function rw(u){
     if(typeof u!=="string")return u;
     if(u.startsWith(B))return u;
@@ -411,7 +518,9 @@ function applyResponseHeadersByBasePath(responseHeaders: Headers, basePath: stri
             }
         }
     }
-    responseHeaders.set("x-pizzapi-tunnel", "1");
+    // "host" = isolated tunnel origin; "path" = served on the relay origin
+    // (withSecurityHeaders sandboxes everything that is not "host").
+    responseHeaders.set("x-pizzapi-tunnel", basePath === "" ? "host" : "path");
     if (allowCrossOriginFrame) responseHeaders.set("x-pizzapi-tunnel-frame", "cross-origin");
 }
 
@@ -841,8 +950,13 @@ async function handleAuthTunnel(req: Request, url: URL, match: RegExpMatchArray)
         return tunnelErrorResponse(`Runner ${runnerId} not connected`);
     }
 
+    const opaqueOrigin = isOpaqueOriginRequest(req);
+    if (opaqueOrigin && method === "OPTIONS" && req.headers.has("access-control-request-method")) {
+        return opaqueOriginPreflight(req);
+    }
+
     const requestId = crypto.randomUUID();
-    return proxyTunnelRequestViaRelay(
+    const res = await proxyTunnelRequestViaRelay(
         req,
         relay,
         runnerId,
@@ -854,6 +968,7 @@ async function handleAuthTunnel(req: Request, url: URL, match: RegExpMatchArray)
         buildForwardHeaders(req),
         true,
     );
+    return opaqueOrigin ? withOpaqueOriginCors(res) : res;
 }
 
 /**
@@ -931,6 +1046,8 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
     if (!runnerId) {
         return Response.json({ error: "Session has no runner" }, { status: 503 });
     }
+
+    if (isBrowserNavigation(req)) return redirectToTokenTunnel(identity.userId, sessionId, port, url, proxyPath);
 
     // ── Forward headers (strip hop-by-hop and host) ───────────────────────────
     const HOP_BY_HOP = new Set([
@@ -1055,6 +1172,8 @@ async function handleRunnerTunnel(req: Request, url: URL, match: RegExpMatchArra
     if (!runnerData.userId || runnerData.userId !== identity.userId) {
         return Response.json({ error: "Forbidden" }, { status: 403 });
     }
+
+    if (isBrowserNavigation(req)) return redirectToTokenTunnel(identity.userId, `runner:${runnerId}`, port, url, proxyPath);
 
     const relay = getTunnelRelay();
     if (!relay?.hasRunner(runnerId)) {
