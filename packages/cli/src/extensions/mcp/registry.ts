@@ -19,6 +19,7 @@ import { allocateProviderSafeToolName } from "./tool-naming.js";
 import { type McpClient, type McpTool } from "./types.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createElicitationHandler } from "./elicitation.js";
+import { setDynamicToolReadOnly } from "../plan-mode/tool-policy.js";
 
 const log = createLogger("MCP");
 const sandboxLog = createLogger("sandbox/mcp");
@@ -602,6 +603,11 @@ export async function registerMcpTools(
 
             const sourceName = `mcp:${client.name}:${tool.name}`;
             const toolName = allocateProviderSafeToolName(client.name, tool.name, usedToolNames);
+            // Plan mode default-denies MCP tools unless the server annotates
+            // them read-only (MCP ToolAnnotations.readOnlyHint). Recorded
+            // before registration so the classification exists before the
+            // tool can be called.
+            setDynamicToolReadOnly(toolName, tool.annotations?.readOnlyHint === true);
 
             toolCount++;
             toolNames.push(toolName);

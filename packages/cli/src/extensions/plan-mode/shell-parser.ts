@@ -154,6 +154,9 @@ export function hasUnsafeOutputRedirection(segment: string): boolean {
     // Use escape-aware regex so `"he said \"hello\""` is handled correctly.
     stripped = stripped.replace(/"(?:[^"\\]|\\.)*"/g, '""');
 
+    // `<>file` opens the file read-write and creates it if missing.
+    if (/<>/.test(stripped)) return true;
+
     const matches = stripped.matchAll(OUTPUT_REDIRECTION_PATTERN);
     for (const match of matches) {
         const fd = match[2] ?? "";

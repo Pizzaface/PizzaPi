@@ -4,10 +4,20 @@
 
 export type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
 
+/** MCP ToolAnnotations (hints supplied by the configured server). */
+export type McpToolAnnotations = {
+  title?: string;
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+};
+
 export type McpTool = {
   name: string;
   description?: string;
   inputSchema?: Json;
+  annotations?: McpToolAnnotations;
 };
 
 export type McpListToolsResult = { tools: McpTool[] };

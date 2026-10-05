@@ -43,7 +43,7 @@ Use the `plan_mode` tool when you want to outline a multi-step approach and get 
 </section>
 
 <section name="toggle-plan-mode">
-Use the `toggle_plan_mode` tool to enter or exit read-only plan mode. Call with `enabled: true` to enter plan mode — write/edit tools and destructive bash commands are blocked, letting you safely explore the codebase. Call with `enabled: false` to exit and restore full tool access. Use this when you want to read and understand code before making changes.
+Use the `toggle_plan_mode` tool to enter or exit read-only plan mode. Call with `enabled: true` to enter plan mode — write/edit tools, tools not known to be read-only (including MCP tools not annotated read-only), and destructive, network-mutating, or script-interpreter bash commands are blocked, letting you safely explore the codebase. Call with `enabled: false` to exit and restore full tool access. Use this when you want to read and understand code before making changes.
 
 <note>Expected workflow: enter plan mode → explore → call `plan_mode` to present your plan for user review → plan mode exits automatically when the user approves the plan ('Clear Context &amp; Begin' or 'Begin'), so you do NOT need to call `toggle_plan_mode` after approval — just proceed with execution. Do not exit plan mode without first submitting a plan via `plan_mode` unless the task is trivial.</note>
 </section>

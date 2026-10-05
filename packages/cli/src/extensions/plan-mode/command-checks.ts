@@ -244,3 +244,173 @@ export function isDestructivePatchCommand(segment: string): boolean {
 
     return true;
 }
+
+// ── Remote / network mutations ───────────────────────────────────────────────
+
+const HTTP_READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+/**
+ * curl sends a request body (and therefore usually a mutation) with any of
+ * -d/--data*, -F/--form*, -T/--upload-file, --json, a non-GET -X/--request,
+ * or a -K/--config file that may contain any of those. Short flags may be
+ * bundled (`-sSd @body`), so bundles are scanned letter by letter.
+ */
+export function isDestructiveCurlCommand(segment: string): boolean {
+    const words = splitShellWords(segment);
+    if (words.length === 0 || words[0].toLowerCase() !== "curl") return false;
+    for (let i = 1; i < words.length; i++) {
+        const w = words[i];
+        if (w === "--") break;
+        if (w.startsWith("--")) {
+            const eq = w.indexOf("=");
+            const name = eq >= 0 ? w.slice(0, eq) : w;
+            const inlineValue = eq >= 0 ? w.slice(eq + 1) : undefined;
+            if (/^--(?:data(?:-\w+)?|json|form(?:-string)?|upload-file|config)$/i.test(name)) return true;
+            if (name === "--request") {
+                const method = inlineValue ?? words[i + 1] ?? "";
+                if (!HTTP_READ_METHODS.has(method.toUpperCase())) return true;
+            }
+            continue;
+        }
+        if (/^-[A-Za-z0-9#:]+$/.test(w)) {
+            const flags = w.slice(1);
+            for (let j = 0; j < flags.length; j++) {
+                const f = flags[j];
+                if (f === "d" || f === "F" || f === "T" || f === "K") return true;
+                if (f === "X") {
+                    const method = flags.slice(j + 1) || words[i + 1] || "";
+                    if (!HTTP_READ_METHODS.has(method.toUpperCase())) return true;
+                    break;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+const GH_READ_TOP_LEVEL = new Set(["search", "status", "help", "version", "--version", "--help", "-h", "completion"]);
+const GH_READ_VERBS = new Set(["list", "ls", "view", "status", "diff", "checks", "watch", "verify", "help", "--help", "-h"]);
+
+/**
+ * GitHub CLI: only explicitly read-only invocations are allowed. `gh api`
+ * is allowed for GET/HEAD requests without request fields (fields switch it
+ * to POST); everything else (create, edit, merge, delete, comment, run,
+ * workflow dispatch, secret set, auth login, …) is treated as a mutation.
+ */
+export function isDestructiveGhCommand(segment: string): boolean {
+    const words = splitShellWords(segment);
+    if (words.length === 0 || words[0].toLowerCase() !== "gh") return false;
+    // Skip global flags such as `-R owner/repo` / `--repo=owner/repo`.
+    let i = 1;
+    while (i < words.length && words[i].startsWith("-") && !GH_READ_TOP_LEVEL.has(words[i])) {
+        if ((words[i] === "-R" || words[i] === "--repo") && i + 1 < words.length) i++;
+        i++;
+    }
+    const group = (words[i] ?? "").toLowerCase();
+    if (!group || GH_READ_TOP_LEVEL.has(group)) return false;
+    if (group === "api") {
+        for (let j = i + 1; j < words.length; j++) {
+            const w = words[j];
+            if (/^(?:-f|-F|--field|--raw-field|--input)(?:=|$)/.test(w) || /^-[fF]\S/.test(w)) return true;
+            const methodMatch = w.match(/^(?:-X|--method)(?:=(.*))?$/) ?? w.match(/^-X(\S+)$/);
+            if (methodMatch) {
+                const method = methodMatch[1] ?? words[j + 1] ?? "";
+                if (!HTTP_READ_METHODS.has(method.toUpperCase())) return true;
+            }
+        }
+        return false;
+    }
+    const verb = (words[i + 1] ?? "").toLowerCase();
+    return !GH_READ_VERBS.has(verb);
+}
+
+const CONTAINER_READ_SUBCOMMANDS = new Set([
+    "ps", "images", "inspect", "logs", "version", "info", "stats", "top", "history", "port",
+    "diff", "events", "search", "help", "--help", "-h", "--version", "-v",
+]);
+const CONTAINER_GROUP_SUBCOMMANDS = new Set([
+    "container", "image", "volume", "network", "compose", "context", "system", "buildx",
+    "plugin", "node", "service", "stack", "secret", "config", "manifest", "trust",
+]);
+const CONTAINER_READ_SECOND_LEVEL = new Set([
+    "ls", "list", "ps", "inspect", "logs", "history", "top", "port", "config", "images", "version",
+    "df", "info", "help", "--help", "-h",
+]);
+const KUBECTL_READ_SUBCOMMANDS = new Set([
+    "get", "describe", "logs", "explain", "version", "api-resources", "api-versions", "cluster-info",
+    "top", "help", "--help", "-h", "diff", "events",
+]);
+const KUBECTL_READ_CONFIG = new Set(["view", "get-contexts", "get-clusters", "get-users", "current-context"]);
+const HELM_READ_SUBCOMMANDS = new Set([
+    "list", "ls", "status", "get", "history", "show", "search", "version", "env", "template", "lint",
+    "help", "--help", "-h",
+]);
+
+/** docker/podman/nerdctl, kubectl/oc and helm: allowlist of read-only subcommands. */
+export function isDestructiveClusterCommand(segment: string): boolean {
+    const all = splitShellWords(segment);
+    if (all.length === 0) return false;
+    const tool = all[0].toLowerCase();
+    if (!["docker", "podman", "nerdctl", "kubectl", "oc", "helm"].includes(tool)) return false;
+    // Positional words only (flags such as `-n ns` are ignored; this can only
+    // make a flag value look like a subcommand, which fails closed).
+    const words = all.slice(1).filter((w) => !w.startsWith("-") || w === "--help" || w === "-h" || w === "--version");
+    const sub = (words[0] ?? "").toLowerCase();
+    const sub2 = (words[1] ?? "").toLowerCase();
+    if (!sub) return false;
+    if (tool === "docker" || tool === "podman" || tool === "nerdctl") {
+        if (CONTAINER_READ_SUBCOMMANDS.has(sub)) return false;
+        if (CONTAINER_GROUP_SUBCOMMANDS.has(sub)) return !CONTAINER_READ_SECOND_LEVEL.has(sub2);
+        return true;
+    }
+    if (tool === "kubectl" || tool === "oc") {
+        if (sub === "config") return !KUBECTL_READ_CONFIG.has(sub2);
+        if (sub === "auth") return sub2 !== "can-i" && sub2 !== "whoami";
+        return !KUBECTL_READ_SUBCOMMANDS.has(sub);
+    }
+    return !HELM_READ_SUBCOMMANDS.has(sub);
+}
+
+// ── awk / sed command execution ──────────────────────────────────────────────
+
+/**
+ * awk can run shell commands (`system()`, `print | "cmd"`, `"cmd" | getline`,
+ * `|&` coprocesses) and write files (`print > "file"`) from inside a quoted
+ * program, which the shell-level redirection check cannot see.
+ */
+export function isDestructiveAwkProgram(segment: string): boolean {
+    if (!/^\s*(?:awk|gawk|mawk|nawk)\b/i.test(segment)) return false;
+    return /\bsystem\s*\(|\|\s*getline\b|\|&|\bprintf?\b[^;{}]*[|>]/.test(segment);
+}
+
+/**
+ * GNU sed's `e` command / `s///e` flag execute shell commands, and `w`/`W`
+ * (command or `s///w` flag) write files — all from inside a quoted script.
+ */
+export function isDestructiveSedScript(segment: string): boolean {
+    if (!/^\s*(?:sed|gsed)\b/i.test(segment)) return false;
+    const args = segment.replace(/^\s*\S+/, "");
+    return /(?:^|[;{}'"\s])[\d,$]*[eEwW](?:\s|$|['"])/.test(args) ||
+        /\/[gpiImM\d]*[ewW](?:\s|$|['";}])/.test(args);
+}
+
+// ── find -exec ───────────────────────────────────────────────────────────────
+
+/**
+ * Returns the commands run by `find … -exec/-execdir/-ok/-okdir CMD … ;|+`,
+ * or null when the segment is not a `find` with an exec action.
+ */
+export function extractFindExecCommands(segment: string): string[] | null {
+    const words = splitShellWords(segment);
+    if (words.length === 0 || words[0].toLowerCase() !== "find") return null;
+    const commands: string[] = [];
+    for (let i = 1; i < words.length; i++) {
+        if (!/^-(?:exec|execdir|ok|okdir)$/.test(words[i])) continue;
+        const cmd: string[] = [];
+        let j = i + 1;
+        for (; j < words.length && words[j] !== ";" && words[j] !== "+"; j++) cmd.push(words[j]);
+        commands.push(cmd.join(" "));
+        i = j;
+    }
+    return commands.length > 0 ? commands : null;
+}

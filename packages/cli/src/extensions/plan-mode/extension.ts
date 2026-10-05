@@ -2,9 +2,17 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { isSandboxActive, setReadOnlyOverlay } from "@pizzapi/tools";
-import { WRITE_BLOCKED_TOOL_NAMES } from "./patterns.js";
+import { getPlanModeToolBlockReason, TOGGLE_PLAN_MODE_TOOL } from "./tool-policy.js";
 import { isDestructiveCommand } from "./safe-command.js";
 import { PlanTodoItem, extractTodoItems, markCompletedSteps, isAssistantMessage, getTextContent } from "./todo-items.js";
+
+/**
+ * Whether the live bash tool executes through the sandbox's wrapCommand (and
+ * therefore honours the plan-mode read-only overlay). It currently does not:
+ * background-bash.ts spawns the shell directly. Only flip this once the bash
+ * path is wrapped; until then plan mode must not relax its filesystem checks.
+ */
+const BASH_PATH_IS_SANDBOX_WRAPPED = false;
 
 // ── Module-level state for remote extension to read ──────────────────────────
 
@@ -154,7 +162,6 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
     });
 
     // ── toggle_plan_mode tool — lets the agent enter/exit plan mode ─────────
-    const TOGGLE_PLAN_MODE_TOOL = "toggle_plan_mode";
 
     pi.registerTool({
         name: TOGGLE_PLAN_MODE_TOOL,
@@ -214,10 +221,11 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
 
         if (!planModeEnabled) return;
 
-        // Always allow the agent to toggle plan mode off
-        if (event.toolName === TOGGLE_PLAN_MODE_TOOL) return;
-
-        // Block write tools and session-spawning tools.
+        // Default-deny: only tools known to be read-only may run (see
+        // tool-policy.ts). This blocks write tools, session-spawning tools,
+        // MCP tools not annotated `readOnlyHint: true`, and any unknown
+        // extension/overlay tool; toggle_plan_mode is always allowed.
+        //
         // spawn_session is blocked unconditionally — spawned child sessions are
         // independent processes with their own full write access and there is no
         // mechanism to inject plan-mode restrictions into them.
@@ -233,25 +241,20 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
         //   2. Have the subagent runner pass PIZZAPI_PLAN_MODE=1 (or equivalent) into
         //      the spawned agent environment.
         //   3. Load and enforce plan-mode restrictions inside the subagent session.
-        if (WRITE_BLOCKED_TOOL_NAMES.has(event.toolName)) {
-            const isSpawnTool = event.toolName === "subagent" || event.toolName === "spawn_session";
-            return {
-                block: true,
-                reason: isSpawnTool
-                    ? `Plan mode: "${event.toolName}" is blocked — spawning sessions creates child contexts with full write access, bypassing plan mode. Use toggle_plan_mode to exit plan mode first.`
-                    : `Plan mode: "${event.toolName}" is blocked in read-only mode. Use toggle_plan_mode to exit plan mode first.`,
-            };
+        const blockReason = getPlanModeToolBlockReason(event.toolName);
+        if (blockReason) {
+            return { block: true, reason: blockReason };
         }
 
         // Block destructive bash commands in plan mode.
-        // When the OS sandbox is active, its read-only overlay enforces
-        // filesystem write restrictions — so we only check for non-filesystem
-        // side effects (kill, sudo, systemctl, remote mutations, etc.).
-        // When the sandbox is NOT active, we apply the full regex battery
-        // as the only line of defense.
+        // Always apply the full (no-sandbox) battery: the live `bash` tool
+        // (background-bash.ts) spawns commands directly and is NOT routed
+        // through the sandbox's wrapCommand, so the read-only overlay toggled
+        // by setReadOnlyOverlay() does not constrain it. Relaxing filesystem
+        // checks because isSandboxActive() is true would let writes through.
         if (event.toolName === "bash") {
-            const command = (event.input as any).command as string;
-            if (isDestructiveCommand(command, isSandboxActive())) {
+            const command = (event.input as { command?: unknown } | undefined)?.command;
+            if (typeof command !== "string" || isDestructiveCommand(command, BASH_PATH_IS_SANDBOX_WRAPPED)) {
                 return {
                     block: true,
                     reason: `Plan mode: command blocked (matches destructive pattern). Use toggle_plan_mode to exit plan mode first.\nCommand: ${command}`,
@@ -328,9 +331,9 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
 You are in plan mode — a read-only exploration mode for safe code analysis.
 
 Restrictions:
-- You can use: read, bash (read-only commands only), grep, find, ls, and any MCP read tools
-- You CANNOT use: edit, write (file modifications are disabled)
-- Bash is restricted to read-only commands (destructive commands are blocked)
+- You can use: read, bash (read-only commands only), grep, find, ls, and MCP tools annotated read-only
+- You CANNOT use: edit, write, subagent, spawn_session, or any tool not known to be read-only
+- Bash is restricted to read-only commands (destructive, network-mutating, and script-interpreter commands are blocked)
 
 Expected workflow:
 1. Explore the codebase using read-only tools

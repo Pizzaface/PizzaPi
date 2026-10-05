@@ -288,6 +288,10 @@ PizzaPi continues to own MCP configuration, project-trust gating, sandbox URL ch
 
 Pi 1.0's `codemode` and `tool_search` are inactive by default. To opt in to codemode, add `"+codemode"` to `defaultTools` in `~/.pizzapi/settings.json`; codemode can search and call PizzaPi-managed MCP tools with `searchTools()`. Pi's separate `tool_search` can also be enabled through `defaultTools`, but PizzaPi's `toolSearch` setting and `search_tools` remain the supported configuration for PizzaPi-managed deferral and `/mcp` status. These Pi tools do not replace PizzaPi's connection or trust policy.
 
+## MCP tools in plan mode
+
+[Plan mode](/PizzaPi/features/plan-mode/) blocks MCP tools by default. A tool can run in plan mode only if its server marks it read-only (`annotations.readOnlyHint: true` in `tools/list`). It can also run if you list its registered name (`mcp__<server>__<tool>`) in `PIZZAPI_PLAN_MODE_ALLOWED_TOOLS`. Tools without annotations count as mutating, and so do tools annotated `readOnlyHint: false`. Calls made through `codemode` are checked the same way.
+
 ## Tool search and deferred loading
 
 When many MCP tools consume too much model context, enable deferred loading in global `~/.pizzapi/config.json`:
