@@ -3,6 +3,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { exec } from "child_process";
 import { wrapCommand, getSandboxEnv, isSandboxActive, isSandboxRequiredButUnavailable } from "./sandbox.js";
 import { resolvePosixShell } from "./posix-shell.js";
+import { scrubSubprocessEnv } from "./subprocess-env.js";
 
 // ── Internal types for dependency injection (used in tests) ───────────────────
 
@@ -60,7 +61,9 @@ export function createBashTool(deps?: Partial<BashDeps>): AgentTool {
             const maxBuffer = 10 * 1024 * 1024;
 
             let command: string = params.command;
-            let env: NodeJS.ProcessEnv = process.env;
+            // PizzaPi relay/runner credentials stay in the worker; the model's
+            // shell gets everything else (see subprocess-env.ts for the boundary).
+            let env: NodeJS.ProcessEnv = scrubSubprocessEnv(process.env);
 
             // Fail closed: an explicitly required sandbox that could not be
             // enabled must not degrade to running the command directly.
@@ -76,7 +79,7 @@ export function createBashTool(deps?: Partial<BashDeps>): AgentTool {
             if (isSandboxActiveFn()) {
                 try {
                     command = await wrapCommandFn(params.command);
-                    env = { ...process.env, ...getSandboxEnvFn() };
+                    env = { ...env, ...getSandboxEnvFn() };
                 } catch (err) {
                     const reason = err instanceof Error ? err.message : String(err);
                     const text = `❌ Sandbox blocked: ${reason}. To allow, update sandbox config.`;

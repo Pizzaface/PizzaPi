@@ -170,12 +170,24 @@ describe("bashTool", () => {
     // ── Sandbox env injection ──────────────────────────────────────────────
 
     describe("sandbox env injection", () => {
-        test("passes process.env directly when sandbox is inactive", async () => {
+        test("passes the worker env minus PizzaPi credentials when sandbox is inactive", async () => {
             sandboxActive = false;
-            setSuccess("ok");
-            await execBash("echo ok");
-            // Same object reference — no copy is made in the no-sandbox path
-            expect(capturedOpts.env).toBe(process.env);
+            const prev = { key: process.env.PIZZAPI_API_KEY, provider: process.env.ANTHROPIC_API_KEY };
+            process.env.PIZZAPI_API_KEY = "relay-secret";
+            process.env.ANTHROPIC_API_KEY = "provider-key";
+            try {
+                setSuccess("ok");
+                await execBash("echo ok");
+                expect(capturedOpts.env?.PATH).toBe(process.env.PATH);
+                expect(capturedOpts.env?.ANTHROPIC_API_KEY).toBe("provider-key");
+                // F19: the relay credential is not handed to the model's shell.
+                expect(capturedOpts.env?.PIZZAPI_API_KEY).toBeUndefined();
+            } finally {
+                if (prev.key === undefined) delete process.env.PIZZAPI_API_KEY;
+                else process.env.PIZZAPI_API_KEY = prev.key;
+                if (prev.provider === undefined) delete process.env.ANTHROPIC_API_KEY;
+                else process.env.ANTHROPIC_API_KEY = prev.provider;
+            }
         });
 
         test("merges sandbox env vars with process.env when sandbox is active", async () => {
