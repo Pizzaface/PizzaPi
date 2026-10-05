@@ -175,4 +175,20 @@ describe("IframeServicePanel", () => {
         expect(src).toContain("?");
         expect(src).toContain("projectDir=%2Fproject");
     });
+    test("Reload mints a fresh URL instead of reloading a possibly revoked/expired one", async () => {
+        let n = 0;
+        const calls = mockMint(() => ({ url: `/api/tunnel/auth/tok${++n}/sess-123/8080/` }));
+        const { container } = render(
+            React.createElement(IframeServicePanel, { sessionId: "sess-123", port: 8080 }),
+        );
+        const first = await renderedIframe(container);
+        expect(new URL(first.getAttribute("src")!, "http://localhost").pathname).toBe("/api/tunnel/auth/tok1/sess-123/8080/");
+
+        const reload = container.querySelector('button[aria-label="Reload panel"]') as unknown as HTMLButtonElement;
+        reload.click();
+
+        await waitFor(() => expect(new URL(extractSrc(container)!, "http://localhost").pathname)
+            .toBe("/api/tunnel/auth/tok2/sess-123/8080/"));
+        expect(calls).toHaveLength(2);
+    });
 });

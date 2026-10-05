@@ -38,7 +38,11 @@ export function TunnelPanel({ sessionId, runnerId, panelId, onSpawnPanel, runner
     /** Detached panel whose tunnel was closed — keep the tab, show a notice. */
     const [detachedGone, setDetachedGone] = useState(false);
     const [iframeLoading, setIframeLoading] = useState(false);
-    /** Bumped to force iframe reload */
+    /**
+     * Bumped to reload the preview. It also remints the tunnel URL: a minted
+     * URL is bound to the exposure current at mint time and expires, so
+     * reloading the old URL would keep a revoked/expired capability.
+     */
     const [iframeKey, setIframeKey] = useState(0);
     const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
@@ -55,6 +59,9 @@ export function TunnelPanel({ sessionId, runnerId, panelId, onSpawnPanel, runner
                 if (info.pinned) return;
                 setTunnels((prev: TunnelInfo[]) => [...prev.filter((t: TunnelInfo) => t.port !== info.port), info]);
                 if (detachedPort === info.port) setDetachedGone(false);
+                // (Re-)exposure of the previewed port: links minted for an
+                // earlier exposure are refused, so mint a fresh one.
+                if ((detachedPort ?? previewPort) === info.port) setIframeKey(k => k + 1);
             } else if (type === "tunnel_removed") {
                 const port = p.port as number;
                 // pinned tunnels are never in state, so this is a no-op for them — safe to run regardless
@@ -120,6 +127,7 @@ export function TunnelPanel({ sessionId, runnerId, panelId, onSpawnPanel, runner
         port: activePort,
         runnerId,
         enabled: live && activePort !== null,
+        refreshKey: iframeKey,
     });
 
     if (!live) return null;

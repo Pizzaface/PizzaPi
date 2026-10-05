@@ -59,6 +59,9 @@ UI and API):
 - **Browsers load the signed path.** In an opaque-origin document, subresource
   requests carry no relay cookie. The web UI, the mobile app, and "open in new
   tab" therefore mint a signed `/api/tunnel/auth/<token>/…` URL (valid 24 hours).
+  The preview's and service panel's **Reload** button mints a new URL, and a
+  tunnel preview remints when its port is exposed again, so an expired link or
+  one bound to an earlier exposure recovers without reopening the panel.
   A browser navigation to a cookie path (`/api/tunnel/runner/…` or
   `/api/tunnel/<sessionId>/…`) is redirected to an equivalent signed path. API
   clients that do not navigate (curl, `fetch` from the UI) are served directly.
@@ -290,7 +293,7 @@ The relay enforces several security measures:
   - **Key rotation** — set `PIZZAPI_TUNNEL_TOKEN_SECRET_PREVIOUS` to the old secret; tokens signed by it are still accepted until their natural 1-hour TTL expires, then the env var can be removed.
 - **Token claims** — every token carries `aud` (`pizzapi:tunnel`), `iat` (issued-at), `kid` (key identifier derived from the active secret), and `exp`. On verify: `aud`, `kid`, and `exp` are all enforced. A token whose `kid` does not match the active key (or the previous key, if configured) is rejected outright.
 - **Owner verification** — the caller's user ID must match the session/runner owner.
-- **Links are bound to one exposure** — a signed path token or tunnel-origin label works only for the exposure of the port that was current when it was minted. If the port is closed (`close_tunnel`, session end, service stop) and the same port number is exposed again later, older links return `404` instead of reaching the new service. Restarting the runner daemon also starts new exposures. Re-registering a port that is still open (relay reconnect, service restart) keeps existing links valid. Reopen the panel or call `create_tunnel` again to get a fresh link. Tunnel-origin labels minted before this check existed are refused once. Cookie- and API-key-authenticated requests are authorized on every request, so they are unaffected.
+- **Links are bound to one exposure** — a signed path token or tunnel-origin label works only for the exposure of the port that was current when it was minted. If the port is closed (`close_tunnel`, session end, service stop) and the same port number is exposed again later, older links return `404` instead of reaching the new service. Restarting the runner daemon also starts new exposures. Re-registering a port that is still open (relay reconnect, service restart) keeps existing links valid. Use **Reload** in the panel, reopen it, or call `create_tunnel` again to get a fresh link. Tunnel-origin labels minted before this check existed are refused once. Cookie- and API-key-authenticated requests are authorized on every request, so they are unaffected.
 - **Header stripping** — `Cookie`, `Authorization`, `X-API-Key`, and `Referer` headers are never forwarded to the local service, preventing auth-leakage to tunneled apps.
 - **Query param sanitization** — `apiKey` and `tunnelToken` query parameters are stripped before forwarding.
 - **No origin-wide state from path tunnels** — path-prefix responses are served on the relay's own origin, so the relay drops `Set-Cookie`, `Clear-Site-Data`, `Service-Worker-Allowed`, `Strict-Transport-Security`, `Alt-Svc`, `NEL`/`Report-To`/`Reporting-Endpoints`, and `Access-Control-Allow-Credentials` from them. A local app cannot set, shadow, or clear PizzaPi's cookies or storage. Apps that need their own cookies must run on the [dedicated tunnel origin](#dedicated-tunnel-origin-recommended-for-spas), where cookies are kept and forced host-only.

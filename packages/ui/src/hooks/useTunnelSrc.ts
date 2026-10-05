@@ -124,8 +124,15 @@ export function useTunnelSrc(opts: {
     runnerId?: string;
     /** Set false to skip resolution (e.g. no active preview). */
     enabled?: boolean;
+    /**
+     * Change to mint a fresh URL for the same target. A minted URL is bound to
+     * the port's exposure that was current when it was minted and expires
+     * (TUNNEL_EMBED_TTL_HOURS), so Reload, and a re-exposure of the previewed
+     * port, must remint rather than reload the old URL.
+     */
+    refreshKey?: number;
 }): UseTunnelSrcResult {
-    const { sessionId, port, runnerId, enabled = true } = opts;
+    const { sessionId, port, runnerId, enabled = true, refreshKey = 0 } = opts;
     const { apiKey } = getMobileRuntimeConfig();
     // Runner-scoped URLs do not depend on the active/service session. Keeping
     // the session out of the effect identity prevents a same-URL iframe reload
@@ -165,7 +172,7 @@ export function useTunnelSrc(opts: {
                 });
             });
         return () => controller.abort();
-    }, [enabled, apiKey, routingSessionId, port, runnerId]);
+    }, [enabled, apiKey, routingSessionId, port, runnerId, refreshKey]);
 
     return { base: target?.href ?? null, isolated: target?.isolated ?? false, loading, error };
 }

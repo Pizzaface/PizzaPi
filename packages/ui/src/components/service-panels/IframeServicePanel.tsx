@@ -32,13 +32,15 @@ interface IframeServicePanelProps {
 }
 
 export function IframeServicePanel({ sessionId, port, query, fragment, panelParams, cwd, runnerId }: IframeServicePanelProps) {
-    const { base, isolated, error } = useTunnelSrc({ sessionId, port, runnerId });
+    // Bumped to force an iframe remount (reload). It also remints the URL so a
+    // reload recovers from an expired link or one minted for an earlier
+    // exposure of the port (e.g. the service restarted).
+    const [reloadKey, setReloadKey] = useState(0);
+    const { base, isolated, error } = useTunnelSrc({ sessionId, port, runnerId, refreshKey: reloadKey });
     // Heuristic: HTTP failures inside an iframe don't fire onError, so flag a
     // panel that never fires onLoad within a grace window as likely-broken.
     const [loadTimedOut, setLoadTimedOut] = useState(false);
     const [loaded, setLoaded] = useState(false);
-    // Bumped to force an iframe remount (reload).
-    const [reloadKey, setReloadKey] = useState(0);
 
     const src = useMemo(() => {
         if (!base) return null;
