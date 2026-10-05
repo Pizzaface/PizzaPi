@@ -1,5 +1,6 @@
 import { mkdir, rm, access } from "node:fs/promises";
 import path from "node:path";
+import { sql } from "kysely";
 import { getKysely } from "../auth.js";
 import { createLogger } from "@pizzapi/tools";
 
@@ -40,7 +41,9 @@ export const DEFAULT_EXTRACTED_IMAGE_USER_QUOTA_BYTES = 2 * 1024 * 1024 * 1024;
 /**
  * Per-user cap on the total decoded bytes of extracted (relay-ingested)
  * images that are alive at once, including those whose TTL is renewed
- * because a durable session references them.
+ * because a durable session references them. Enforced against the shared
+ * SQLite attachment metadata, so every relay instance using the same
+ * database draws from one budget.
  */
 export function extractedImageUserQuotaBytes(): number {
     const raw = process.env.PIZZAPI_EXTRACTED_IMAGE_USER_QUOTA_BYTES;
@@ -72,10 +75,18 @@ const attachments = new Map<string, StoredAttachment>();
  */
 const extractedImageSessionRefs = new Map<string, Set<string>>();
 
-/** Live extracted-image bytes per owner (mirrors `attachments` system records). */
+/**
+ * Extracted-image bytes per owner held by THIS process (mirrors `attachments`
+ * system records). Informational only: quota enforcement uses the shared
+ * database (see reserveExtractedImageQuota).
+ */
 const extractedBytesByOwner = new Map<string, number>();
-/** Bytes reserved by extracted-image writes that are still in flight. */
-const reservedExtractedBytesByOwner = new Map<string, number>();
+
+/**
+ * Reservations for in-flight extracted-image writes expire after this long so
+ * a relay that crashes mid-write cannot hold quota forever.
+ */
+const EXTRACTED_IMAGE_RESERVATION_TTL_MS = 5 * 60 * 1000;
 
 function adjustOwnerBytes(map: Map<string, number>, ownerUserId: string, delta: number): void {
     const next = (map.get(ownerUserId) ?? 0) + delta;
@@ -94,7 +105,7 @@ function setAttachmentRecord(record: StoredAttachment): void {
     }
 }
 
-/** Live (stored) extracted-image bytes for a user. */
+/** Extracted-image bytes for a user stored by this process. */
 export function extractedImageBytesForUser(ownerUserId: string): number {
     return extractedBytesByOwner.get(ownerUserId) ?? 0;
 }
@@ -298,20 +309,67 @@ export async function storeExtractedImage(input: {
         throw new ExtractedImageRejectedError("invalid", `Extracted image ${attachmentId} is not valid base64`);
     }
     const quota = extractedImageUserQuotaBytes();
-    const committed = extractedImageBytesForUser(ownerUserId) + (reservedExtractedBytesByOwner.get(ownerUserId) ?? 0);
-    if (committed + estimatedBytes > quota) {
+    const reservationId = await reserveExtractedImageQuota(attachmentId, ownerUserId, estimatedBytes, quota);
+    if (!reservationId) {
         throw new ExtractedImageRejectedError(
             "quota_exceeded",
             `Extracted image storage quota (${quota} bytes) exhausted for user`,
         );
     }
 
-    adjustOwnerBytes(reservedExtractedBytesByOwner, ownerUserId, estimatedBytes);
     try {
         return await writeExtractedImage({ attachmentId, sessionId, ownerUserId, mimeType, rawB64 });
     } finally {
-        adjustOwnerBytes(reservedExtractedBytesByOwner, ownerUserId, -estimatedBytes);
+        await releaseExtractedImageQuota(reservationId).catch((err) => {
+            // The reservation expires on its own; until then it only over-counts.
+            log.error("Failed to release extracted image quota reservation:", err);
+        });
     }
+}
+
+/**
+ * Atomically reserve `bytes` of a user's extracted-image quota in the shared
+ * database. Committed usage is the sum of the user's `extracted_attachment`
+ * rows (excluding a row for this same content-addressed ID, which the write
+ * would replace) plus unexpired reservations from in-flight writes on any
+ * relay instance. The check and the insert are one SQL statement, so
+ * concurrent writers — in this process or another — cannot both pass it.
+ * Returns the reservation ID, or null when the quota would be exceeded.
+ */
+async function reserveExtractedImageQuota(
+    attachmentId: string,
+    ownerUserId: string,
+    bytes: number,
+    quota: number,
+): Promise<string | null> {
+    const db = getKysely();
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    await db
+        .deleteFrom("extracted_attachment_reservation" as any)
+        .where("expiresAt", "<=", nowIso)
+        .execute();
+    const reservationId = crypto.randomUUID();
+    const expiresAt = new Date(nowMs + EXTRACTED_IMAGE_RESERVATION_TTL_MS).toISOString();
+    const result = await sql`
+        INSERT INTO extracted_attachment_reservation (reservationId, ownerUserId, bytes, expiresAt)
+        SELECT ${reservationId}, ${ownerUserId}, ${bytes}, ${expiresAt}
+        WHERE (
+            (SELECT COALESCE(SUM(size), 0) FROM extracted_attachment
+                WHERE ownerUserId = ${ownerUserId} AND attachmentId != ${attachmentId})
+            + (SELECT COALESCE(SUM(bytes), 0) FROM extracted_attachment_reservation
+                WHERE ownerUserId = ${ownerUserId} AND expiresAt > ${nowIso})
+            + ${bytes}
+        ) <= ${quota}
+    `.execute(db);
+    return Number(result.numAffectedRows ?? 0) > 0 ? reservationId : null;
+}
+
+async function releaseExtractedImageQuota(reservationId: string): Promise<void> {
+    await getKysely()
+        .deleteFrom("extracted_attachment_reservation" as any)
+        .where("reservationId", "=", reservationId)
+        .execute();
 }
 
 async function writeExtractedImage(input: {
@@ -349,15 +407,18 @@ async function writeExtractedImage(input: {
         filePath: targetPath,
     };
 
+    // Persist before publishing the record. The shared quota is computed from
+    // these rows, so an image whose metadata could not be written must not be
+    // kept (it would be stored outside every instance's quota). It also means
+    // the caller never stores a URL that cannot be rehydrated after a crash.
+    try {
+        await persistExtractedAttachment(record);
+    } catch (err) {
+        await rm(targetPath, { force: true }).catch(() => {});
+        throw err;
+    }
     setAttachmentRecord(record);
     addSessionRef(attachmentId, sessionId);
-    // Await both persists so the record and session reference are durably written
-    // before the caller can store the attachment URL in session state. Without
-    // this, a crash between the file-write and the SQLite commit leaves dangling
-    // /api/attachments/:id URLs in snapshots that can never be rehydrated.
-    await persistExtractedAttachment(record).catch((err) => {
-        log.error("Failed to persist extracted attachment:", err);
-    });
     await persistSessionRef(attachmentId, sessionId).catch(() => {});
     return record;
 }
@@ -585,6 +646,32 @@ export async function ensureExtractedAttachmentTable(): Promise<void> {
         .on("extracted_attachment_session")
         .columns(["attachmentId", "sessionId"])
         .unique()
+        .execute();
+
+    // Shared per-user quota accounting (PIZZAPI_EXTRACTED_IMAGE_USER_QUOTA_BYTES):
+    // usage is summed from extracted_attachment by owner, plus reservations
+    // held by in-flight writes on any relay instance.
+    await getKysely().schema
+        .createIndex("idx_extracted_attachment_owner")
+        .ifNotExists()
+        .on("extracted_attachment")
+        .column("ownerUserId")
+        .execute();
+
+    await getKysely().schema
+        .createTable("extracted_attachment_reservation")
+        .ifNotExists()
+        .addColumn("reservationId", "text", (col) => col.primaryKey())
+        .addColumn("ownerUserId", "text", (col) => col.notNull())
+        .addColumn("bytes", "integer", (col) => col.notNull())
+        .addColumn("expiresAt", "text", (col) => col.notNull())
+        .execute();
+
+    await getKysely().schema
+        .createIndex("idx_extracted_attachment_reservation_owner")
+        .ifNotExists()
+        .on("extracted_attachment_reservation")
+        .column("ownerUserId")
         .execute();
 }
 

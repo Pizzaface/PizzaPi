@@ -277,6 +277,60 @@ describe("extracted image limits (F11)", () => {
         });
     });
 
+    test("the quota is shared by relay instances using the same database (review R9)", async () => {
+        // A second module instance stands in for another relay node: separate
+        // in-memory state, same SQLite database.
+        const nodeB = await (async (specifier: string) => import(specifier))("./store.js?node-b");
+        await withEnv({ PIZZAPI_EXTRACTED_IMAGE_USER_QUOTA_BYTES: "100000" }, async () => {
+            const user = "user-r9-cross-node";
+            const onA = await runWithAuthContext(authContext, () => store.storeExtractedImage({
+                attachmentId: "r9-node-a",
+                sessionId: "s-r9",
+                ownerUserId: user,
+                mimeType: "image/png",
+                base64Data: b64(60_000, "M"),
+            }));
+            const err = await runWithAuthContext(authContext, () => nodeB.storeExtractedImage({
+                attachmentId: "r9-node-b",
+                sessionId: "s-r9",
+                ownerUserId: user,
+                mimeType: "image/png",
+                base64Data: b64(60_000, "N"),
+            })).catch((e: unknown) => e);
+            expect((err as { reason?: string }).reason).toBe("quota_exceeded");
+            expect(nodeB._testGetAttachments().has("r9-node-b")).toBe(false);
+
+            // Concurrent writes split across both nodes cannot overshoot either.
+            await runWithAuthContext(authContext, () => store.deleteStoredAttachment(onA.attachmentId));
+            const results = await runWithAuthContext(authContext, () => Promise.allSettled(
+                ["O", "P", "Q", "R"].map((seed, i) => (i % 2 === 0 ? store : nodeB).storeExtractedImage({
+                    attachmentId: `r9-race-${seed}`,
+                    sessionId: "s-r9",
+                    ownerUserId: user,
+                    mimeType: "image/png",
+                    base64Data: b64(40_000, seed),
+                })),
+            ));
+            expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(2);
+
+            // Deleting on one node frees quota for the other.
+            const winners = ["O", "P", "Q", "R"].filter((_, i) => results[i]!.status === "fulfilled");
+            for (const seed of winners) {
+                const i = ["O", "P", "Q", "R"].indexOf(seed);
+                await runWithAuthContext(authContext, () =>
+                    (i % 2 === 0 ? store : nodeB).deleteStoredAttachment(`r9-race-${seed}`));
+            }
+            await runWithAuthContext(authContext, () => nodeB.storeExtractedImage({
+                attachmentId: "r9-node-b",
+                sessionId: "s-r9",
+                ownerUserId: user,
+                mimeType: "image/png",
+                base64Data: b64(60_000, "N"),
+            }));
+            expect(nodeB._testGetAttachments().has("r9-node-b")).toBe(true);
+        });
+    });
+
     test("relay pipeline stripping replaces quota-rejected images with omitted markers", async () => {
         const { stripImagesFromPipelineEvent } = await import("../ws/strip-images.js");
         await withEnv({ PIZZAPI_EXTRACTED_IMAGE_USER_QUOTA_BYTES: "50000" }, async () => {
