@@ -3,6 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Duplex } from "node:stream";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { WebSocket as NodeWebSocket } from "ws";
 import { DEFAULT_TUNNEL_RELAY_LIMITS } from "@pizzapi/tunnel";
 import { createTestAuthContext } from "./auth.js";
 import {
@@ -63,6 +66,49 @@ describe("handleTunnelRelayUpgrade path matching", () => {
         ).toBe(false);
 
         socket.destroy();
+    });
+});
+
+describe("runner-facing /_tunnel WebSocket server", () => {
+    test("closes the runner link with 1009 when one frame exceeds PIZZAPI_TUNNEL_MAX_BUFFERED_BYTES", async () => {
+        const previous = process.env.PIZZAPI_TUNNEL_MAX_BUFFERED_BYTES;
+        process.env.PIZZAPI_TUNNEL_MAX_BUFFERED_BYTES = "1024";
+        const server = createServer();
+        try {
+            initTunnelRelay(authContext);
+            server.on("upgrade", (req, socket, head) => {
+                if (!handleTunnelRelayUpgrade(req, socket, head)) socket.destroy();
+            });
+            await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+            const { port } = server.address() as AddressInfo;
+
+            const closeCode = async (frameBytes: number): Promise<number | "open"> => {
+                const ws = new NodeWebSocket(`ws://127.0.0.1:${port}/_tunnel`);
+                await new Promise<void>((resolve, reject) => {
+                    ws.once("open", () => resolve());
+                    ws.once("error", reject);
+                });
+                return new Promise((resolve) => {
+                    // An under-limit frame is parsed (invalid JSON is logged and
+                    // ignored), so the link stays open.
+                    let settled = false;
+                    const timer = setTimeout(() => { settled = true; resolve("open"); ws.close(); }, 300);
+                    ws.once("close", (code) => {
+                        if (settled) return;
+                        clearTimeout(timer);
+                        resolve(code);
+                    });
+                    ws.send("x".repeat(frameBytes));
+                });
+            };
+
+            expect(await closeCode(512)).toBe("open");
+            expect(await closeCode(4096)).toBe(1009);
+        } finally {
+            server.close();
+            if (previous === undefined) delete process.env.PIZZAPI_TUNNEL_MAX_BUFFERED_BYTES;
+            else process.env.PIZZAPI_TUNNEL_MAX_BUFFERED_BYTES = previous;
+        }
     });
 });
 

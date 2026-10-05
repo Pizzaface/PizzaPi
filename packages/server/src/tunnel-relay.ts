@@ -67,7 +67,18 @@ function toBrowserMessageData(data: RawData, isBinary: boolean): string | Buffer
     return Buffer.from(data);
 }
 
-function adaptWs(ws: NodeWebSocket): BrowserCompatibleWebSocket {
+function rawDataBytes(data: RawData): number {
+    if (Array.isArray(data)) return data.reduce((n, chunk) => n + chunk.byteLength, 0);
+    return (data as ArrayBuffer | Buffer).byteLength;
+}
+
+/**
+ * @param maxFrameBytes Largest runner frame accepted (0 = unlimited). Bun's
+ *   `ws` compatibility layer does not enforce `maxPayload`, so oversized
+ *   frames are also refused here: the link is closed with 1009 and the frame
+ *   is never parsed or dispatched.
+ */
+function adaptWs(ws: NodeWebSocket, maxFrameBytes = 0): BrowserCompatibleWebSocket {
     return {
         get readyState() {
             return ws.readyState as number;
@@ -84,6 +95,11 @@ function adaptWs(ws: NodeWebSocket): BrowserCompatibleWebSocket {
         addEventListener(type, listener) {
             if (type === "message") {
                 ws.on("message", (data, isBinary) => {
+                    if (maxFrameBytes > 0 && rawDataBytes(data) > maxFrameBytes) {
+                        log.warn(`Closing /_tunnel link: runner frame exceeds ${maxFrameBytes} bytes`);
+                        ws.close(1009, "frame too large");
+                        return;
+                    }
                     listener({
                         data: toBrowserMessageData(data, isBinary),
                     });
@@ -158,7 +174,12 @@ export function initTunnelRelay(context: AuthContext): TunnelRelay {
         },
     });
 
-    wss = new WebSocketServer({ noServer: true });
+    // Bound a single runner frame by the hard buffer ceiling (closed with 1009;
+    // the ws default is 100 MiB). Runners check their serialized frames
+    // against the same ceiling before sending. adaptWs enforces it too, since
+    // Bun's ws layer ignores maxPayload.
+    const maxPayload = relay.limits.maxBufferedBytes;
+    wss = new WebSocketServer({ noServer: true, ...(maxPayload > 0 ? { maxPayload } : {}) });
     wss.on("connection", (ws, req) => {
         const openedAt = Date.now();
         const remote = req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "unknown";
@@ -169,7 +190,7 @@ export function initTunnelRelay(context: AuthContext): TunnelRelay {
         ws.on("error", (err) => {
             log.warn("/_tunnel WebSocket error:", err);
         });
-        relay!.handleConnection(adaptWs(ws) as unknown as WebSocket);
+        relay!.handleConnection(adaptWs(ws, maxPayload) as unknown as WebSocket);
     });
 
     return relay;
