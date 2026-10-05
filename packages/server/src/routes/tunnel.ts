@@ -355,12 +355,50 @@ function shouldBufferTunnelResponse(contentType: string | null): boolean {
         || shouldRewriteTunnelCss(contentType);
 }
 
+/**
+ * Response headers that mutate browser state for the WHOLE origin (cookies,
+ * site data, service-worker scope, HSTS, alt services, reporting policies,
+ * credentialed CORS). Path-based tunnels are served from the relay origin, so
+ * a runner-local service must never be able to emit these: they would set,
+ * shadow, or clear PizzaPi's own cookies/storage or persist policy for the
+ * relay. Local apps that need cookies must use the isolated tunnel origin
+ * (PIZZAPI_TUNNEL_DOMAIN), where they are scoped to the app's own host.
+ */
+export const PATH_TUNNEL_ORIGIN_STATE_HEADERS: readonly string[] = [
+    "set-cookie",
+    "set-cookie2",
+    "clear-site-data",
+    "service-worker-allowed",
+    "strict-transport-security",
+    "alt-svc",
+    "nel",
+    "report-to",
+    "reporting-endpoints",
+    "access-control-allow-credentials",
+];
+
+/** Internal relay markers — an upstream service must never be able to supply them. */
+function stripInternalTunnelMarkers(responseHeaders: Headers): void {
+    const internal: string[] = [];
+    responseHeaders.forEach((_value, key) => {
+        if (key.toLowerCase().startsWith("x-pizzapi-tunnel")) internal.push(key);
+    });
+    for (const key of internal) responseHeaders.delete(key);
+}
+
 function applyResponseHeadersByBasePath(responseHeaders: Headers, basePath: string, allowCrossOriginFrame = false): void {
+    // Upstream-supplied copies of our internal markers (e.g. a forged
+    // x-pizzapi-tunnel-frame: cross-origin to drop X-Frame-Options) are removed
+    // before the relay sets its own.
+    stripInternalTunnelMarkers(responseHeaders);
     const location = responseHeaders.get("location");
     if (location) {
         responseHeaders.set("location", rewriteUrlByBasePath(location, basePath));
     }
-    if (basePath === "") {
+    if (basePath !== "") {
+        // Path-based tunnel: the response is served on the relay origin.
+        for (const header of PATH_TUNNEL_ORIGIN_STATE_HEADERS) responseHeaders.delete(header);
+    } else {
         // Host-based tunnel: force cookies host-only. A malicious local app
         // could otherwise Set-Cookie with Domain=.<tunnel domain> (poisoning
         // sibling tunnels) or a parent registrable domain shared with the

@@ -11,6 +11,7 @@ import {
     rewriteTunnelJsModule,
     rewriteTunnelCss,
     proxyTunnelRequestViaRelay,
+    PATH_TUNNEL_ORIGIN_STATE_HEADERS,
 } from "./tunnel";
 import { safeDecodePathComponent } from "./tunnel";
 
@@ -888,5 +889,88 @@ describe("tunnel auth header forwarding", () => {
         expect(capturedHeaders["x-api-key"]).toBe("mobile-key-123");
         expect(capturedHeaders["cookie"]).toBeUndefined();
         expect(capturedHeaders["authorization"]).toBeUndefined();
+    });
+});
+
+describe("path-based tunnel origin-state headers (F02)", () => {
+    type StartCb = (code: number, statusMessage: string, headers: Record<string, string | string[]>) => void;
+
+    function relayReturning(headers: Record<string, string | string[]>, body = "ok") {
+        return {
+            proxyHttpRequest: (_runnerId: string, _request: unknown, cb: {
+                onResponseStart: StartCb;
+                onResponseData: (data: Buffer) => void;
+                onResponseEnd: () => void;
+            }) => {
+                setTimeout(() => {
+                    cb.onResponseStart(200, "OK", headers);
+                    cb.onResponseData(Buffer.from(body));
+                    cb.onResponseEnd();
+                }, 0);
+                return { cancel() {} };
+            },
+            sendRequestDataEnd() {},
+        };
+    }
+
+    const hostileHeaders = {
+        "set-cookie": ["better-auth.session_token=attacker; Path=/; HttpOnly", "theme=dark; Path=/"],
+        "clear-site-data": "\"cookies\", \"storage\"",
+        "service-worker-allowed": "/",
+        "strict-transport-security": "max-age=63072000; includeSubDomains",
+        "alt-svc": "h3=\"evil.example:443\"",
+        nel: "{\"report_to\":\"x\",\"max_age\":86400}",
+        "report-to": "{\"group\":\"x\"}",
+        "reporting-endpoints": "x=\"https://evil.example/r\"",
+        "access-control-allow-credentials": "true",
+        "x-pizzapi-tunnel-frame": "cross-origin",
+        "x-custom": "kept",
+    };
+
+    async function proxy(basePath: string, contentType: string, allowCrossOriginFrame = false) {
+        return proxyTunnelRequestViaRelay(
+            new Request("http://localhost/api/tunnel/s-1/3000/"),
+            relayReturning({ ...hostileHeaders, "content-type": contentType }) as never,
+            "runner-1",
+            "request-1",
+            basePath,
+            3000,
+            "/",
+            "/",
+            {},
+            allowCrossOriginFrame,
+        );
+    }
+
+    for (const [label, contentType] of [["streamed", "application/octet-stream"], ["buffered/rewritten", "text/html"]] as const) {
+        test(`strips origin-scoped state headers from ${label} path-tunnel responses`, async () => {
+            const res = await proxy("/api/tunnel/s-1/3000", contentType);
+            expect(res.headers.getSetCookie()).toEqual([]);
+            for (const h of PATH_TUNNEL_ORIGIN_STATE_HEADERS) expect(res.headers.get(h)).toBeNull();
+            // Upstream cannot forge the relay's internal framing marker.
+            expect(res.headers.get("x-pizzapi-tunnel-frame")).toBeNull();
+            expect(res.headers.get("x-custom")).toBe("kept");
+            expect(res.headers.get("x-pizzapi-tunnel")).toBeTruthy();
+        });
+    }
+
+    test("token-authenticated path tunnel (cross-origin frame) also strips them", async () => {
+        const res = await proxy("/api/tunnel/auth/tok/s-1/3000", "text/plain", true);
+        expect(res.headers.getSetCookie()).toEqual([]);
+        expect(res.headers.get("clear-site-data")).toBeNull();
+        // The relay's own marker is set for this route, not the upstream one.
+        expect(res.headers.get("x-pizzapi-tunnel-frame")).toBe("cross-origin");
+    });
+
+    test("forged frame marker on a cookie route cannot drop X-Frame-Options", async () => {
+        const { withSecurityHeaders } = await import("../handler");
+        const res = withSecurityHeaders(await proxy("/api/tunnel/runner/r-1/3000", "text/plain"));
+        expect(res.headers.get("X-Frame-Options")).toBe("SAMEORIGIN");
+    });
+
+    test("host-origin tunnels keep app cookies (host-only) on their isolated origin", async () => {
+        const res = await proxy("", "text/plain", true);
+        expect(res.headers.getSetCookie()).toEqual(["better-auth.session_token=attacker; Path=/; HttpOnly", "theme=dark; Path=/"]);
+        expect(res.headers.get("x-pizzapi-tunnel-frame")).toBe("cross-origin");
     });
 });

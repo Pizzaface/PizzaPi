@@ -259,6 +259,7 @@ The relay enforces several security measures:
 - **Owner verification** — the caller's user ID must match the session/runner owner.
 - **Header stripping** — `Cookie`, `Authorization`, `X-API-Key`, and `Referer` headers are never forwarded to the local service, preventing auth-leakage to tunneled apps.
 - **Query param sanitization** — `apiKey` and `tunnelToken` query parameters are stripped before forwarding.
+- **No origin-wide state from path tunnels** — path-prefix responses are served on the relay's own origin, so the relay drops `Set-Cookie`, `Clear-Site-Data`, `Service-Worker-Allowed`, `Strict-Transport-Security`, `Alt-Svc`, `NEL`/`Report-To`/`Reporting-Endpoints`, and `Access-Control-Allow-Credentials` from them. A local app cannot set, shadow, or clear PizzaPi's cookies or storage. Apps that need their own cookies must run on the [dedicated tunnel origin](#dedicated-tunnel-origin-recommended-for-spas), where cookies are kept and forced host-only.
 - **Hop-by-hop header removal** — standard proxy headers (`Connection`, `Transfer-Encoding`, etc.) and `Accept-Encoding` are stripped so responses arrive uncompressed for rewriting.
 
 ---
