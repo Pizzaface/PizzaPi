@@ -124,6 +124,8 @@ function isPublicIPv6(ip: string): boolean {
     if (b[0] === 0x20 && b[1] === 0x01 && (b[2] & 0xfe) === 0x00) return false;
     // 2001:db8::/32 — documentation
     if (b[0] === 0x20 && b[1] === 0x01 && b[2] === 0x0d && b[3] === 0xb8) return false;
+    // 3fff::/20 — documentation (RFC 9637)
+    if (b[0] === 0x3f && b[1] === 0xff && (b[2] & 0xf0) === 0x00) return false;
     // 2002::/16 — 6to4 (embeds arbitrary IPv4, including private ranges)
     if (b[0] === 0x20 && b[1] === 0x02) return false;
     return true;

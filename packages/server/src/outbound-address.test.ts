@@ -8,7 +8,7 @@ import {
 
 describe("isPublicUnicastAddress", () => {
     it("accepts global unicast IPv4 and IPv6", () => {
-        for (const ip of ["8.8.8.8", "142.250.80.10", "1.1.1.1", "2607:f8b0:4005:80a::200a", "[2a00:1450::1]", "::ffff:8.8.8.8"]) {
+        for (const ip of ["8.8.8.8", "142.250.80.10", "1.1.1.1", "2607:f8b0:4005:80a::200a", "[2a00:1450::1]", "::ffff:8.8.8.8", "3fff:1000::1"]) {
             expect(isPublicUnicastAddress(ip)).toBe(true);
         }
     });
@@ -27,7 +27,7 @@ describe("isPublicUnicastAddress", () => {
     it("rejects every reserved/non-global IPv6 class", () => {
         for (const ip of [
             "::", "::1", "[::1]", "::ffff:127.0.0.1", "::ffff:7f00:1", "::ffff:10.0.0.1",
-            "::ffff:169.254.169.254", "64:ff9b::a00:1", "100::1", "2001::1", "2001:db8::1",
+            "::ffff:169.254.169.254", "64:ff9b::a00:1", "100::1", "2001::1", "2001:db8::1", "3fff::1", "3fff:fff:ffff::1",
             "2002:7f00:1::1", "fc00::1", "fd12:3456::1", "fe80::1", "fe80::1%eth0", "fec0::1", "ff02::1",
         ]) {
             expect(isPublicUnicastAddress(ip)).toBe(false);
