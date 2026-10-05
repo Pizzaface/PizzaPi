@@ -320,30 +320,56 @@ function sessionTargetChanged(existing: Route, updated: Route): boolean {
 }
 
 /**
+ * Operator recovery authority for routes whose owner cannot be resolved by any
+ * record (legacy rows the startup backfill could not stamp). Ordinary tenants
+ * never inherit such rows: an unresolved owner is quarantine, not permission.
+ * Read per call so the allowlist tracks the current environment.
+ */
+export function isRouteRecoveryOperator(userId: string): boolean {
+  const raw = process.env.PIZZAPI_ROUTE_RECOVERY_USER_IDS;
+  if (!raw) return false;
+  return raw.split(",").some((id) => id.trim().length > 0 && id.trim() === userId);
+}
+
+/**
+ * How the caller may manage a route: "owner" (ordinary tenant CRUD),
+ * "recovery" (ownerless/unresolvable route and the caller is a configured
+ * recovery operator: list and delete only), or null (not visible).
+ */
+type RouteAccess = "owner" | "recovery" | null;
+
+/**
  * Ownership for route management: session targets resolve through live →
  * persisted → durable-owner fallbacks (schedules outlive their sessions);
- * spawn routes belong to their stamped creator or the runner's owner.
+ * spawn routes belong to their stamped creator or the runner's owner. A route
+ * whose owner resolves to nobody is quarantined for recovery operators.
  */
-async function canManageRoute(route: Route, userId: string): Promise<boolean> {
+async function routeAccess(route: Route, userId: string): Promise<RouteAccess> {
   // Tenant scope wins outright; the fallbacks below only serve legacy rows
   // whose owner could not be backfilled.
-  if (route.ownerUserId !== undefined) return route.ownerUserId === userId;
+  if (route.ownerUserId !== undefined) return route.ownerUserId === userId ? "owner" : null;
   if (route.target.kind === "spawn") {
-    if (route.target.spec.ownerUserId) return route.target.spec.ownerUserId === userId;
+    if (route.target.spec.ownerUserId) return route.target.spec.ownerUserId === userId ? "owner" : null;
     // Live runner state is Redis-only (TTL'd, deleted on disconnect) — offline
     // runners fall back to the durable owner record so their routes never
     // become unmanageable. A runner that never registered since the durable
     // table landed is the only unresolvable case.
     const runner = await getRunnerData(route.target.spec.runnerId).catch(() => null);
-    if (runner) return runner.userId === userId;
+    if (runner) return runner.userId === userId ? "owner" : null;
     const owner = await getRunnerOwner(route.target.spec.runnerId);
-    // Ownerless orphan (runner never registered since runner_owner landed):
-    // manageable by any authenticated user — the alternative is a route that
-    // fires forever with no way to cancel it.
-    return owner === null || owner === userId;
+    if (owner !== null) return owner === userId ? "owner" : null;
+    // Ownerless orphan: such rows never match events (matching is tenant
+    // scoped), so quarantining them is safe; only recovery operators may
+    // see and delete them.
+    return isRouteRecoveryOperator(userId) ? "recovery" : null;
   }
-  if ((await resolveSessionOwner(route.target.sessionId, userId)) !== null) return true;
-  return sessionOwnerUnresolvable(route.target.sessionId);
+  if ((await resolveSessionOwner(route.target.sessionId, userId)) !== null) return "owner";
+  if (!(await sessionOwnerUnresolvable(route.target.sessionId))) return null;
+  return isRouteRecoveryOperator(userId) ? "recovery" : null;
+}
+
+async function canManageRoute(route: Route, userId: string): Promise<boolean> {
+  return (await routeAccess(route, userId)) !== null;
 }
 
 async function runnerBelongsToUser(runnerId: string, userId: string): Promise<boolean> {
@@ -577,16 +603,18 @@ export const handleEventsRoute: RouteHandler = async (req, url) => {
     const identity = await authenticate(req);
     if (identity instanceof Response) return identity;
     const runnerId = decodeURIComponent(runnerRoutes[1]);
-    // Owner auth: live runner state, then the durable owner record. An
-    // ownerless runner (never registered since runner_owner landed) is
-    // manageable by any authenticated user — same stance as canManageRoute,
-    // otherwise its routes fire forever with no way to cancel them.
+    // Owner auth: live runner state, then the durable owner record. For an
+    // ownerless runner (never registered since runner_owner landed) a tenant
+    // may only clean up routes explicitly stamped with their own
+    // ownerUserId; unresolved rows stay quarantined for recovery operators.
     const live = await getRunnerData(runnerId).catch(() => null);
     const owner = live?.userId ?? (await getRunnerOwner(runnerId));
     if (owner !== null && owner !== identity.userId) {
       return Response.json({ error: "Runner not found or not owned by you" }, { status: 404 });
     }
-    const stamped = (await listRoutes()).filter((r) => routeRunnerId(r) === runnerId);
+    const recovery = owner === null && isRouteRecoveryOperator(identity.userId);
+    const stamped = (await listRoutes()).filter((r) => routeRunnerId(r) === runnerId
+      && (owner !== null || recovery || r.ownerUserId === identity.userId));
     // Config routes are read-only (deleteRoute throws); webhook routes belong
     // to the webhooks surface (their webhook row would dangle). Skip both,
     // report them, delete the rest.
@@ -754,7 +782,8 @@ export const handleEventsRoute: RouteHandler = async (req, url) => {
     // Route management must respect the route's owner: session targets resolve
     // through live/persisted/durable ownership (schedules outlive sessions);
     // spawn routes belong to their stamped creator or the runner's owner.
-    if (!(await canManageRoute(existing, identity.userId))) {
+    const access = await routeAccess(existing, identity.userId);
+    if (access === null) {
       return Response.json({ error: "Route not found" }, { status: 404 });
     }
     try {
@@ -774,6 +803,11 @@ export const handleEventsRoute: RouteHandler = async (req, url) => {
       if (existing.origin === "config") {
         return Response.json({ error: "Config-origin routes are read-only; edit the config file" }, { status: 403 });
       }
+      // Recovery authority is delete-only: an operator must never adopt (and
+      // so re-arm) a route whose real owner is unknown.
+      if (access === "recovery") {
+        return Response.json({ error: "Route has no resolvable owner; it can only be deleted" }, { status: 403 });
+      }
       const validationError = validateRouteFields(parsedPatch);
       if (validationError) return badRequest(validationError);
       let patch = parsedPatch as Partial<RouteInput>;
@@ -787,7 +821,7 @@ export const handleEventsRoute: RouteHandler = async (req, url) => {
         patch = { ...patch, target: stamp.target };
       }
       // ownerUserId is never client-writable; a legacy ownerless route gets
-      // adopted by whoever can manage it (already verified above).
+      // adopted by its resolved owner (access === "owner", verified above).
       const { ownerUserId: _ignored, ...safePatch } = patch as Partial<RouteInput> & { ownerUserId?: string };
       const updated = await updateRoute(routeId, { ...safePatch, ownerUserId: existing.ownerUserId ?? identity.userId });
       if (updated) {

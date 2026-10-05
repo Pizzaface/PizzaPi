@@ -1062,7 +1062,10 @@ The `action` must be one of the event's declared contract actions, when any.
 
 Routes are subscriptions (ADR-0002): an event type + a target (a session, or a
 spawn spec for auto-spawn listeners). Query: `eventType`. Only routes the caller
-owns (or ownerless config/legacy routes they can manage) are returned. There is
+owns (directly, or through the route's session or runner owner for legacy rows)
+are returned. Legacy routes whose owner cannot be resolved from any record are
+quarantined: they never match events and are hidden from ordinary users; only
+users listed in `PIZZAPI_ROUTE_RECOVERY_USER_IDS` see them. There is
 no `GET /api/routes/{routeId}` endpoint; list routes and filter client-side when
 you need one route by id.
 
@@ -1084,8 +1087,10 @@ emit an unsubscribe reconcile delta per session route. Config-origin routes
 are skipped and counted. Intended for cleaning up after a dead runner.
 
 **Auth:** API key or session cookie; the caller must own the runner (live state
-or the durable owner record). Runners with no resolvable owner are cleanable by
-any authenticated user.
+or the durable owner record). For a runner with no resolvable owner, a caller
+removes only routes stamped with their own `ownerUserId`; unstamped routes on
+such a runner can be removed only by a user listed in
+`PIZZAPI_ROUTE_RECOVERY_USER_IDS`.
 
 **Response:**
 
@@ -1167,7 +1172,10 @@ session target must be owned by the caller.
 
 Unsubscribe. Sessions that have ended remain manageable: authorization falls
 back through the route's stamped runner owner, so a standing schedule is
-always cancellable.
+always cancellable by its owner. A legacy route with no resolvable owner
+returns `404` to ordinary users; a user listed in
+`PIZZAPI_ROUTE_RECOVERY_USER_IDS` may delete it (but `PUT` on such a route
+returns `403`, so recovery never adopts or re-arms it).
 
 **Auth:** API key or session cookie.
 

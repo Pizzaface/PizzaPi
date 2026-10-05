@@ -953,12 +953,104 @@ describe("dead-runner route cleanup", () => {
     expect(denied!.status).toBe(404);
     expect(await store.listRoutes()).toHaveLength(1);
 
-    // Never registered since runner_owner landed → any authenticated user may clean up.
+    // Never registered since runner_owner landed → a tenant may clean up the
+    // routes explicitly stamped with their own ownerUserId.
     await store.createRoute({
       eventType: "hook:b", target: { kind: "spawn", spec: { runnerId: "runner-orphan" } },
       deliverAs: "steer", origin: "agent", ownerUserId: "u1",
     });
     const ok = await call(routes, "DELETE", "/api/runners/runner-orphan/routes");
     expect(await ok!.json()).toEqual({ ok: true, removed: 1, skipped: 0 });
+  });
+
+  describe("ownerless legacy routes are quarantined (F13)", () => {
+    const prevRecovery = process.env.PIZZAPI_ROUTE_RECOVERY_USER_IDS;
+    beforeAll(async () => {
+      // Minimal persisted-session table so ownership falls through every
+      // record (live → persisted → runner) and resolves to nobody.
+      await memDb.schema.createTable("relay_session").ifNotExists()
+        .addColumn("id", "text", (c) => c.primaryKey())
+        .addColumn("userId", "text")
+        .addColumn("runnerId", "text")
+        .addColumn("cwd", "text")
+        .execute();
+    });
+    afterEach(() => {
+      if (prevRecovery === undefined) delete process.env.PIZZAPI_ROUTE_RECOVERY_USER_IDS;
+      else process.env.PIZZAPI_ROUTE_RECOVERY_USER_IDS = prevRecovery;
+    });
+
+    /** Legacy rows the startup backfill could not stamp: no owner by any record. */
+    async function seedOrphans() {
+      const session = await store.createRoute({
+        eventType: "time:cron", target: { kind: "session", sessionId: "ghost-session" },
+        deliverAs: "followUp", origin: "agent",
+      });
+      const spawn = await store.createRoute({
+        eventType: "hook:legacy", target: { kind: "spawn", spec: { runnerId: "runner-orphan" } },
+        deliverAs: "steer", origin: "agent",
+      });
+      return { session, spawn };
+    }
+
+    it("ordinary tenants cannot list, adopt, retarget, or delete them", async () => {
+      delete process.env.PIZZAPI_ROUTE_RECOVERY_USER_IDS;
+      const { session, spawn } = await seedOrphans();
+
+      const listed = (await (await call(routes, "GET", "/api/routes"))!.json()) as { routes: Array<{ routeId: string }> };
+      expect(listed.routes.map((r) => r.routeId)).not.toContain(session.routeId);
+      expect(listed.routes.map((r) => r.routeId)).not.toContain(spawn.routeId);
+
+      for (const route of [session, spawn]) {
+        const adopt = await call(routes, "PUT", `/api/routes/${route.routeId}`, { deliverAs: "steer" });
+        expect(adopt!.status).toBe(404);
+        const retarget = await call(routes, "PUT", `/api/routes/${route.routeId}`, {
+          target: { kind: "session", sessionId: "owned" },
+        });
+        expect(retarget!.status).toBe(404);
+        const del = await call(routes, "DELETE", `/api/routes/${route.routeId}`);
+        expect(del!.status).toBe(404);
+        const after = await store.getRoute(route.routeId);
+        expect(after?.ownerUserId).toBeUndefined();
+        expect(after?.deliverAs).toBe(route.deliverAs);
+      }
+
+      // Bulk cleanup of the ownerless runner leaves the unstamped row alone.
+      const bulk = await call(routes, "DELETE", "/api/runners/runner-orphan/routes");
+      expect(await bulk!.json()).toEqual({ ok: true, removed: 0, skipped: 0 });
+      expect(await store.getRoute(spawn.routeId)).not.toBeNull();
+      expect(mirrored).toHaveLength(0);
+    });
+
+    it("a configured recovery operator can list and delete them but never adopt them", async () => {
+      process.env.PIZZAPI_ROUTE_RECOVERY_USER_IDS = "someone-else, u1";
+      const { session, spawn } = await seedOrphans();
+
+      const listed = (await (await call(routes, "GET", "/api/routes"))!.json()) as { routes: Array<{ routeId: string }> };
+      expect(listed.routes.map((r) => r.routeId)).toEqual(expect.arrayContaining([session.routeId, spawn.routeId]));
+
+      const adopt = await call(routes, "PUT", `/api/routes/${session.routeId}`, { deliverAs: "steer" });
+      expect(adopt!.status).toBe(403);
+      expect((await store.getRoute(session.routeId))?.ownerUserId).toBeUndefined();
+
+      const del = await call(routes, "DELETE", `/api/routes/${session.routeId}`);
+      expect(del!.status).toBe(200);
+      expect(await store.getRoute(session.routeId)).toBeNull();
+
+      const bulk = await call(routes, "DELETE", "/api/runners/runner-orphan/routes");
+      expect(await bulk!.json()).toEqual({ ok: true, removed: 1, skipped: 0 });
+      expect(await store.getRoute(spawn.routeId)).toBeNull();
+    });
+
+    it("recovery authority never extends to routes with a resolvable owner", async () => {
+      process.env.PIZZAPI_ROUTE_RECOVERY_USER_IDS = "u1";
+      const theirs = await store.createRoute({
+        eventType: "hook:theirs", target: { kind: "spawn", spec: { runnerId: "runner-other" } },
+        deliverAs: "steer", origin: "agent",
+      });
+      const del = await call(routes, "DELETE", `/api/routes/${theirs.routeId}`);
+      expect(del!.status).toBe(404);
+      expect(await store.getRoute(theirs.routeId)).not.toBeNull();
+    });
   });
 });
