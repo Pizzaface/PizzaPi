@@ -103,19 +103,32 @@ describe("spawn route management with offline runner", () => {
     expect(await store.getRoute(route.routeId)).toBeNull();
   });
 
-  it("deletes a fully ownerless orphan route (no durable record, runner offline)", async () => {
-    const route = await store.createRoute(
-      {
-        eventType: "github:pr_comment",
-        target: { kind: "spawn", spec: { runnerId: "runner-never-registered" } },
-        deliverAs: "followUp",
-        origin: "api",
-      },
-      { routeId: "listener:orphan:1" },
-    );
-    const res = await call(routes, "DELETE", `/api/routes/${route.routeId}`);
-    expect(res.status).toBe(200);
-    expect(await store.getRoute(route.routeId)).toBeNull();
+  it("quarantines a fully ownerless orphan route (no durable record, runner offline) from ordinary users", async () => {
+    const prev = process.env.PIZZAPI_ROUTE_RECOVERY_USER_IDS;
+    try {
+      delete process.env.PIZZAPI_ROUTE_RECOVERY_USER_IDS;
+      const route = await store.createRoute(
+        {
+          eventType: "github:pr_comment",
+          target: { kind: "spawn", spec: { runnerId: "runner-never-registered" } },
+          deliverAs: "followUp",
+          origin: "api",
+        },
+        { routeId: "listener:orphan:1" },
+      );
+      const denied = await call(routes, "DELETE", `/api/routes/${route.routeId}`);
+      expect(denied.status).toBe(404);
+      expect(await store.getRoute(route.routeId)).not.toBeNull();
+
+      // A configured recovery operator may delete it.
+      process.env.PIZZAPI_ROUTE_RECOVERY_USER_IDS = "u1";
+      const res = await call(routes, "DELETE", `/api/routes/${route.routeId}`);
+      expect(res.status).toBe(200);
+      expect(await store.getRoute(route.routeId)).toBeNull();
+    } finally {
+      if (prev === undefined) delete process.env.PIZZAPI_ROUTE_RECOVERY_USER_IDS;
+      else process.env.PIZZAPI_ROUTE_RECOVERY_USER_IDS = prev;
+    }
   });
 
   it("GET /api/routes only lists routes the caller can manage", async () => {
@@ -129,14 +142,15 @@ describe("spawn route management with offline runner", () => {
       { eventType: "a:b", target: { kind: "spawn", spec: { runnerId: "runner-theirs" } }, deliverAs: "followUp", origin: "api" },
       { routeId: "r-theirs" },
     );
-    const orphan = await store.createRoute(
+    // Unresolvable owner: quarantined, not listed to ordinary users.
+    await store.createRoute(
       { eventType: "a:b", target: { kind: "spawn", spec: { runnerId: "runner-ghost" } }, deliverAs: "followUp", origin: "api" },
       { routeId: "r-orphan" },
     );
     const res = await call(routes, "GET", "/api/routes");
     expect(res.status).toBe(200);
     const ids = ((await res.json()).routes as Array<{ routeId: string }>).map((r) => r.routeId).sort();
-    expect(ids).toEqual([mine.routeId, orphan.routeId].sort());
+    expect(ids).toEqual([mine.routeId]);
   });
 
   it("another user still cannot manage an offline runner's routes", async () => {
