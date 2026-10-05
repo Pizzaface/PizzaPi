@@ -976,7 +976,7 @@ describe("path-based tunnel origin-state headers (F02)", () => {
     async function proxy(basePath: string, contentType: string, allowCrossOriginFrame = false) {
         return proxyTunnelRequestViaRelay(
             new Request("http://localhost/api/tunnel/s-1/3000/"),
-            relayReturning({ ...hostileHeaders, "content-type": contentType }) as never,
+            fakeRelay(relayReturning({ ...hostileHeaders, "content-type": contentType })),
             "runner-1",
             "request-1",
             basePath,
