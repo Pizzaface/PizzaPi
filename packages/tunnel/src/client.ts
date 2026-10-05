@@ -475,6 +475,22 @@ export class TunnelClient extends EventEmitter {
     }
   }
 
+  /**
+   * Send a data frame only if it fits under the hard ceiling: bytes already
+   * queued on the relay socket PLUS this frame's serialized size. Returns
+   * false (nothing sent) when it would cross the ceiling; callers terminate
+   * the stream.
+   */
+  private sendWithinCeiling(msg: TunnelClientMessage): boolean {
+    const payload = JSON.stringify(msg);
+    if (this.maxBufferedBytes > 0
+      && this.relayBufferedAmount() + Buffer.byteLength(payload, "utf8") > this.maxBufferedBytes) {
+      return false;
+    }
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(payload);
+    return true;
+  }
+
   private handleMessage(raw: string | Buffer | ArrayBuffer | ArrayBufferView): void {
     let msg: TunnelServerMessage;
     try {
@@ -654,7 +670,10 @@ export class TunnelClient extends EventEmitter {
 
         response.on("data", (chunk: Buffer) => {
           if (this.activeRequests.get(id) !== active || responseSettled) return;
-          this.send({ type: "response-data", id, data: chunk.toString("binary") });
+          if (!this.sendWithinCeiling({ type: "response-data", id, data: chunk.toString("binary") })) {
+            this.failActiveRequest(id, active, "tunnel buffer limit exceeded");
+            return;
+          }
           this.applyRelaySocketBackpressure(id, active);
         });
         // Apply flow state that arrived before the headers (a response-pause

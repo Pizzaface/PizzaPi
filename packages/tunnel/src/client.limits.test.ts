@@ -165,6 +165,56 @@ describe("TunnelClient response backpressure", () => {
   });
 });
 
+describe("TunnelClient response hard ceiling", () => {
+  test("terminates a response whose next chunk would push the relay socket past maxBufferedBytes", async () => {
+    const { server, port } = await startStreamingServer(4);
+    try {
+      // Queue is empty, but a 1 KiB chunk (plus framing) does not fit in 100 bytes.
+      const client = newClient(100);
+      client.exposePort(port);
+      const { sent } = attachMockRelay(client);
+      startGet(client, "r-ceil", port);
+      await waitUntil(() => decode(sent).some((m) => m.id === "r-ceil" && m.type === "response-data-abort"));
+      expect(dataBytes(sent, "r-ceil")).toBe(0);
+      expect((client as any).activeRequests.has("r-ceil")).toBe(false);
+      expect(decode(sent).some((m) => m.id === "r-ceil" && m.type === "response-data-end")).toBe(false);
+    } finally {
+      server.close();
+    }
+  });
+
+  test("counts serialized framing, not only raw body bytes", async () => {
+    const { server, port } = await startStreamingServer(1);
+    try {
+      // 1 KiB of body fits under 1100 raw bytes, but with 50 bytes already
+      // queued plus JSON framing the frame does not.
+      const client = newClient(1100);
+      client.exposePort(port);
+      const { sent, relay } = attachMockRelay(client);
+      relay.bufferedAmount = 50;
+      startGet(client, "r-frame", port);
+      await waitUntil(() => decode(sent).some((m) => m.id === "r-frame" && m.type === "response-data-abort"));
+      expect(dataBytes(sent, "r-frame")).toBe(0);
+    } finally {
+      server.close();
+    }
+  });
+
+  test("streams normally while chunks fit under the ceiling", async () => {
+    const { server, port } = await startStreamingServer(4);
+    try {
+      const client = newClient(64 * 1024);
+      client.exposePort(port);
+      const { sent } = attachMockRelay(client);
+      startGet(client, "r-ok", port);
+      await waitUntil(() => decode(sent).some((m) => m.id === "r-ok" && m.type === "response-data-end"));
+      expect(dataBytes(sent, "r-ok")).toBe(4 * 1024);
+    } finally {
+      server.close();
+    }
+  });
+});
+
 describe("TunnelClient request-body backpressure and limits", () => {
   function fakeRequest() {
     const req = new EventEmitter() as EventEmitter & {
