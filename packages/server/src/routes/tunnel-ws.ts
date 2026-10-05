@@ -5,8 +5,8 @@ import { getAuth, getTrustedOrigins } from "../auth.js";
 import { getTunnelRelay } from "../tunnel-relay.js";
 import { getSession } from "../ws/sio-state/index.js";
 import { getRunnerData } from "../ws/sio-registry.js";
-import { assertTunnelTokenStillValid, verifyTunnelToken } from "./tunnel-token.js";
-import { authorizeTunnelLabel, matchTunnelHost } from "./tunnel-host.js";
+import { assertTunnelTokenStillValid, tunnelTokenAgeMs, verifyTunnelToken } from "./tunnel-token.js";
+import { authorizeTunnelLabel, matchTunnelHost, tunnelLabelAgeMs } from "./tunnel-host.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("tunnel-ws");
@@ -119,6 +119,7 @@ async function handleHostUpgradeAsync(
         auth.runnerId,
         fullUrl,
         req.headers.host,
+        tunnelLabelAgeMs(auth.record),
     );
 }
 
@@ -179,6 +180,9 @@ async function handleAuthUpgradeAsync(
         fullUrl,
         payload.userId,
         preauthenticatedRunnerId,
+        undefined,
+        undefined,
+        tunnelTokenAgeMs(payload),
     );
 }
 
@@ -192,6 +196,7 @@ async function handleUpgradeAsync(
     preauthenticatedRunnerId?: string,
     rawPathWithQuery?: string,
     tunnelHost?: string,
+    capabilityAgeMs?: number,
 ): Promise<void> {
     let sessionId: string;
     try {
@@ -347,6 +352,7 @@ async function handleUpgradeAsync(
             headers: forwardHeaders,
             preserveAuth: isHostTunnel || undefined,
             host: tunnelHost,
+            capabilityAgeMs,
         },
         {
             onOpened: (protocol) => {

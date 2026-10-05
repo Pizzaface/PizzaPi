@@ -24,6 +24,7 @@ const {
     verifyTunnelToken,
     assertTunnelTokenStillValid,
     TUNNEL_TOKEN_AUD,
+    tunnelTokenAgeMs,
 } = await import("./tunnel-token.js");
 
 // Helpers to manipulate env vars during a test
@@ -308,5 +309,24 @@ describe("assertTunnelTokenStillValid", () => {
                 exp: 1_000_000,
             }),
         ).rejects.toThrow("Tunnel token revoked");
+    });
+});
+
+describe("tunnelTokenAgeMs (F04 exposure binding)", () => {
+    test("measures age from iat so the runner can reject tokens minted for an earlier exposure", () => {
+        const ctx = createTestAuthContext({ dbPath: ":memory:" });
+        runWithAuthContext(ctx, () => {
+            const { token } = createTunnelToken({ userId: "u-1", sessionId: "s-1", port: 3000 }, 10_000_000);
+            const payload = verifyTunnelToken(token, 10_000_000)!;
+            expect(tunnelTokenAgeMs(payload, 10_000_000 + 90_000)).toBe(90_000);
+        });
+    });
+
+    test("legacy tokens without iat are aged from their fixed 1 h lifetime", () => {
+        expect(tunnelTokenAgeMs({ v: 1, userId: "u", sessionId: "s", port: 1, exp: 7_200 }, 7_200_000)).toBe(3_600_000);
+    });
+
+    test("never reports a negative age", () => {
+        expect(tunnelTokenAgeMs({ v: 1, userId: "u", sessionId: "s", port: 1, exp: 99_999, iat: 5_000 }, 1_000)).toBe(0);
     });
 });

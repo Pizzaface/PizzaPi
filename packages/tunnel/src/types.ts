@@ -45,6 +45,16 @@ export interface TunnelRequestStartMessage {
    * Absent for path-based tunnels — those keep "127.0.0.1:<port>".
    */
   host?: string;
+  /**
+   * Capability-authenticated requests (signed tunnel token or host label):
+   * milliseconds since the relay minted that capability. The runner rejects
+   * the request when the port's current exposure began after the capability
+   * was issued — an unexposed-then-reused port must not revive old links.
+   * Relative age (not a timestamp) keeps this immune to relay/runner clock
+   * skew. Absent for cookie/API-key requests, which are authorized live.
+   * Old runners ignore it.
+   */
+  capabilityAgeMs?: number;
 }
 
 export interface TunnelRequestDataMessage {
@@ -109,6 +119,8 @@ export interface TunnelWsOpenMessage {
   preserveAuth?: boolean;
   /** See TunnelRequestStartMessage.host. */
   host?: string;
+  /** See TunnelRequestStartMessage.capabilityAgeMs. */
+  capabilityAgeMs?: number;
 }
 
 export interface TunnelWsOpenedMessage {

@@ -172,6 +172,19 @@ export async function assertTunnelTokenStillValid(payload: TunnelTokenPayload): 
     }
 }
 
+/**
+ * How long ago a verified token was minted. Sent to the runner as
+ * `capabilityAgeMs` so it can refuse tokens minted for an earlier exposure of
+ * a since-reused port. Legacy tokens (no `iat`) had a fixed 1 h lifetime, so
+ * their issue time is exp − 1 h.
+ */
+export function tunnelTokenAgeMs(payload: TunnelTokenPayload, nowMs = Date.now()): number {
+    const issuedAtSec = typeof payload.iat === "number" && Number.isFinite(payload.iat)
+        ? payload.iat
+        : payload.exp - TUNNEL_TOKEN_TTL_MS / 1000;
+    return Math.max(0, nowMs - issuedAtSec * 1000);
+}
+
 export function getAuthTunnelBasePath(token: string, sessionId: string, port: number): string {
     return `/api/tunnel/auth/${encodeURIComponent(token)}/${encodeURIComponent(sessionId)}/${port}`;
 }

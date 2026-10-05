@@ -12,7 +12,7 @@
 
 import type { TunnelRelay } from "@pizzapi/tunnel";
 import { requireSession } from "../middleware.js";
-import { assertTunnelTokenStillValid, createTunnelToken, getAuthTunnelBasePath, verifyTunnelToken } from "./tunnel-token.js";
+import { assertTunnelTokenStillValid, createTunnelToken, getAuthTunnelBasePath, tunnelTokenAgeMs, verifyTunnelToken } from "./tunnel-token.js";
 import { getTunnelRelay } from "../tunnel-relay.js";
 import { getSession } from "../ws/sio-state/index.js";
 import { getRunnerData } from "../ws/sio-registry.js";
@@ -621,6 +621,8 @@ function proxyTunnelRequestViaRelay(
     forwardHeaders: Record<string, string>,
     allowCrossOriginFrame = false,
     tunnelHost?: string,
+    /** Set for capability-authenticated routes (token/label) — see TunnelRequestStartMessage. */
+    capabilityAgeMs?: number,
 ): Promise<Response> {
     return new Promise<Response>((resolve) => {
         const bodyAbortController = new AbortController();
@@ -697,6 +699,7 @@ function proxyTunnelRequestViaRelay(
                 // Host-based tunnels forward the app's own credentials end-to-end.
                 preserveAuth: basePath === "" || undefined,
                 host: tunnelHost,
+                capabilityAgeMs,
             },
             {
                 onResponseStart: (code, _statusMessage, headers) => {
@@ -967,6 +970,8 @@ async function handleAuthTunnel(req: Request, url: URL, match: RegExpMatchArray)
         buildPathWithQuery(url, proxyPath),
         buildForwardHeaders(req),
         true,
+        undefined,
+        tunnelTokenAgeMs(payload),
     );
     return opaqueOrigin ? withOpaqueOriginCors(res) : res;
 }

@@ -13,7 +13,7 @@ import { Duplex } from "node:stream";
 const RUNNER_ID = "runner-1";
 const OFFLINE_RUNNER_ID = "runner-offline";
 let ownerUserId = "";
-let lastProxied: { path: string; headers: Record<string, string>; method: string } | null = null;
+let lastProxied: { path: string; headers: Record<string, string>; method: string; capabilityAgeMs?: number } | null = null;
 
 const actualRegistry = await import("../ws/sio-registry.js");
 mock.module("../ws/sio-registry.js", () => ({
@@ -27,14 +27,14 @@ mock.module("../tunnel-relay.js", () => ({
         hasRunner: (id: string) => id === RUNNER_ID,
         proxyHttpRequest: (
             _runnerId: string,
-            request: { method: string; url: string; headers: Record<string, string> },
+            request: { method: string; url: string; headers: Record<string, string>; capabilityAgeMs?: number },
             cb: {
                 onResponseStart: (code: number, message: string, headers: Record<string, string>) => void;
                 onResponseData: (data: Buffer) => void;
                 onResponseEnd: () => void;
             },
         ) => {
-            lastProxied = { path: request.url, headers: request.headers, method: request.method };
+            lastProxied = { path: request.url, headers: request.headers, method: request.method, capabilityAgeMs: request.capabilityAgeMs };
             setTimeout(() => {
                 cb.onResponseStart(200, "OK", { "content-type": "text/html" });
                 cb.onResponseData(Buffer.from('<html><body><a href="/pic/a.png">p</a><img src="/r/x.html"></body></html>'));
@@ -231,6 +231,23 @@ describe("runner tunnel auth", () => {
             body: "{}",
         }), authContext);
         expect(cookiePost.status).toBe(403);
+    });
+
+    test("token routes tell the runner the capability's age; cookie routes do not (F04)", async () => {
+        const mint = await call("http://localhost:7492/api/tunnel-token", {
+            method: "POST",
+            headers: { cookie, "content-type": "application/json" },
+            body: JSON.stringify({ runnerId: RUNNER_ID, port: 8477 }),
+        });
+        const { url } = (await mint.json()) as { url: string };
+        await call(`http://localhost:7492${url}`);
+        expect(typeof lastProxied!.capabilityAgeMs).toBe("number");
+        // iat has whole-second granularity.
+        expect(lastProxied!.capabilityAgeMs!).toBeGreaterThanOrEqual(0);
+        expect(lastProxied!.capabilityAgeMs!).toBeLessThan(5_000);
+
+        await call(`${BASE}/`, { headers: { cookie } });
+        expect(lastProxied!.capabilityAgeMs).toBeUndefined();
     });
 
     test("isTunnelPath covers runner- and token-scoped paths (no body buffering/cap)", () => {

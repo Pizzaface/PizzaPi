@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { createServer, type Server } from "node:http";
 import https from "node:https";
 import { describe, expect, test, jest, afterEach } from "bun:test";
-import { TunnelClient } from "./client.js";
+import { CAPABILITY_EXPOSURE_GRACE_MS, TunnelClient } from "./client.js";
 
 function attachMockRelay(client: TunnelClient) {
   const sent: string[] = [];
@@ -929,4 +929,125 @@ describe("TunnelClient mid-stream local HTTP failure", () => {
     }
   });
 });
+});
+
+describe("TunnelClient exposure-bound capabilities (F04)", () => {
+  const T0 = 1_700_000_000_000;
+  let now = T0;
+  let nowSpy: ReturnType<typeof jest.spyOn> | undefined;
+
+  function withClock(): void {
+    now = T0;
+    nowSpy = jest.spyOn(Date, "now").mockImplementation(() => now);
+  }
+
+  afterEach(() => {
+    nowSpy?.mockRestore();
+    nowSpy = undefined;
+  });
+
+  function newClient() {
+    const client = new TunnelClient({ runnerId: "r1", apiKey: "k", relayUrl: "ws://localhost:9999/_tunnel", autoReconnect: false });
+    return { client, sent: attachMockRelay(client) };
+  }
+
+  function requestStart(client: TunnelClient, id: string, port: number, capabilityAgeMs?: number) {
+    (client as any).handleMessage(JSON.stringify({
+      type: "request-start", id, port, method: "GET", url: "/", headers: {},
+      ...(capabilityAgeMs === undefined ? {} : { capabilityAgeMs }),
+    }));
+    (client as any).handleMessage(JSON.stringify({ type: "request-data-end", id }));
+  }
+
+  test("a capability minted for an earlier exposure cannot reach a later service on the reused port", async () => {
+    let hits = 0;
+    const { server, port } = await startHttpServer((_req, res) => { hits++; res.end("new service"); });
+    try {
+      withClock();
+      const { client, sent } = newClient();
+      client.exposePort(port);                 // exposure #1 at T0
+      now = T0 + 60_000;
+      const mintedAt = now;                    // relay mints a token/label for exposure #1
+
+      client.unexposePort(port);               // closed…
+      now = T0 + 10 * 60_000;
+      client.exposePort(port);                 // …and the numeric port is reused later
+
+      now += 1_000;
+      requestStart(client, "stale", port, now - mintedAt);
+      const messages = decodeSent(sent).filter((m) => m.id === "stale");
+      expect(messages[0]).toMatchObject({ type: "response-start", statusCode: 404 });
+      expect(messages.find((m) => m.type === "response-data")?.data).toContain("predates the current exposure");
+      expect(messages.at(-1)).toEqual({ type: "response-data-end", id: "stale" });
+      expect(hits).toBe(0);
+
+      // A capability minted for the current exposure works.
+      requestStart(client, "fresh", port, 500);
+      await waitUntil(() => decodeSent(sent).some((m) => m.id === "fresh" && m.type === "response-data-end"));
+      expect(decodeSent(sent).find((m) => m.id === "fresh" && m.type === "response-start")).toMatchObject({ statusCode: 200 });
+      expect(hits).toBe(1);
+    } finally {
+      await stopHttpServer(server);
+    }
+  });
+
+  test("stale capabilities are also refused for WebSocket opens", () => {
+    withClock();
+    const { client, sent } = newClient();
+    client.exposePort(4321);
+    const mintedAt = now;
+    client.unexposePort(4321);
+    now += 5 * 60_000;
+    client.exposePort(4321);
+    (client as any).handleMessage(JSON.stringify({
+      type: "ws-open", id: "ws-stale", port: 4321, path: "/", headers: {}, capabilityAgeMs: now - mintedAt,
+    }));
+    expect(decodeSent(sent)).toEqual([
+      { type: "ws-error", id: "ws-stale", message: "Tunnel link predates the current exposure of port 4321" },
+    ]);
+  });
+
+  test("re-registering an already exposed port (relay reconnect, service restart) keeps old capabilities valid", () => {
+    withClock();
+    const { client } = newClient();
+    client.exposePort(5000);
+    now += 60_000;
+    const mintedAt = now;
+    now += 60 * 60_000;
+    client.exposePort(5000); // setTunnelClient / registerPort re-run: same exposure
+    expect((client as any).isStaleCapability(5000, now - mintedAt)).toBe(false);
+  });
+
+  test("tolerates a capability minted just before the runner processed the expose", () => {
+    withClock();
+    const { client } = newClient();
+    const mintedAt = now;            // UI mints while tunnel_expose is in flight
+    now += 2_000;
+    client.exposePort(6000);
+    expect((client as any).isStaleCapability(6000, now - mintedAt)).toBe(false);
+    // …but not one minted well before (outside the grace window).
+    client.unexposePort(6000);
+    now += CAPABILITY_EXPOSURE_GRACE_MS + 1_000;
+    client.exposePort(6000);
+    expect((client as any).isStaleCapability(6000, now - mintedAt)).toBe(true);
+  });
+
+  test("cookie/API-key requests (no capability age) are authorized live and unaffected", () => {
+    withClock();
+    const { client } = newClient();
+    client.exposePort(7000);
+    expect((client as any).isStaleCapability(7000, undefined)).toBe(false);
+  });
+
+  test("drops relay frames with a malformed capability age", () => {
+    const { client, sent } = newClient();
+    client.exposePort(7001);
+    (client as any).handleMessage(JSON.stringify({
+      type: "request-start", id: "bad", port: 7001, method: "GET", url: "/", headers: {}, capabilityAgeMs: "old",
+    }));
+    (client as any).handleMessage(JSON.stringify({
+      type: "request-start", id: "neg", port: 7001, method: "GET", url: "/", headers: {}, capabilityAgeMs: -1,
+    }));
+    expect(decodeSent(sent)).toEqual([]);
+  });
 });

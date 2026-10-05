@@ -117,6 +117,18 @@ function isOptionalBoolean(value: unknown): boolean {
   return value === undefined || typeof value === "boolean";
 }
 
+function isOptionalAge(value: unknown): boolean {
+  return value === undefined || (typeof value === "number" && Number.isFinite(value) && value >= 0);
+}
+
+/**
+ * Slack for {@link TunnelClient.isStaleCapability}: a capability minted a
+ * moment before the runner processed the matching expose (UI previews mint
+ * while tunnel_expose is still in flight) must stay valid. Also absorbs the
+ * relay's whole-second `iat` granularity and transit latency.
+ */
+export const CAPABILITY_EXPOSURE_GRACE_MS = 30_000;
+
 function isTunnelServerMessage(value: unknown): value is TunnelServerMessage {
   if (!isRecord(value) || typeof value.type !== "string") return false;
   switch (value.type) {
@@ -124,12 +136,13 @@ function isTunnelServerMessage(value: unknown): value is TunnelServerMessage {
     case "error": return typeof value.message === "string";
     case "request-start": return typeof value.id === "string" && typeof value.port === "number" && Number.isFinite(value.port)
       && typeof value.method === "string" && typeof value.url === "string" && isStringRecord(value.headers)
-      && isOptionalBoolean(value.preserveAuth);
+      && isOptionalBoolean(value.preserveAuth) && isOptionalAge(value.capabilityAgeMs);
     case "request-data": return typeof value.id === "string" && typeof value.data === "string";
     case "request-data-end":
     case "request-end": return typeof value.id === "string";
     case "ws-open": return typeof value.id === "string" && typeof value.port === "number" && Number.isFinite(value.port)
       && typeof value.path === "string" && isStringRecord(value.headers) && isOptionalBoolean(value.preserveAuth)
+      && isOptionalAge(value.capabilityAgeMs)
       && (value.protocols === undefined || (Array.isArray(value.protocols) && value.protocols.every((protocol) => typeof protocol === "string")));
     case "ws-data": return typeof value.id === "string" && typeof value.data === "string" && isOptionalBoolean(value.binary);
     case "ws-close": return typeof value.id === "string" && isOptionalCloseCode(value.code) && isOptionalCloseReason(value.reason);
@@ -150,6 +163,13 @@ export class TunnelClient extends EventEmitter {
 
   private ws: WebSocket | null = null;
   private exposedPorts = new Set<number>();
+  /**
+   * When each port's CURRENT exposure began (runner clock). Survives relay
+   * reconnects (same client instance, exposePort is idempotent) and is reset
+   * only when the port is unexposed — so a later, possibly unrelated service
+   * on the same port is a new exposure that old capabilities cannot reach.
+   */
+  private exposedSince = new Map<number, number>();
   private disposed = false;
   /** Prevents stale close handlers from interfering after dispose/reconnect. */
   private connectionGeneration = 0;
@@ -307,13 +327,28 @@ export class TunnelClient extends EventEmitter {
   }
 
   exposePort(port: number): void {
+    if (!this.exposedPorts.has(port)) this.exposedSince.set(port, Date.now());
     this.exposedPorts.add(port);
     this.probeProtocol(port);
   }
 
   unexposePort(port: number): void {
     this.exposedPorts.delete(port);
+    this.exposedSince.delete(port);
     this.portProtocol.delete(port);
+  }
+
+  /**
+   * True when a capability (signed token / host label) of the given age was
+   * issued before the port's current exposure began, i.e. it was minted for an
+   * earlier exposure of the same numeric port and must not reach this one.
+   */
+  private isStaleCapability(port: number, capabilityAgeMs: number | undefined): boolean {
+    if (capabilityAgeMs === undefined) return false;
+    const since = this.exposedSince.get(port);
+    if (since === undefined) return true;
+    const issuedAt = Date.now() - capabilityAgeMs;
+    return since > issuedAt + CAPABILITY_EXPOSURE_GRACE_MS;
   }
 
   /**
@@ -466,12 +501,20 @@ export class TunnelClient extends EventEmitter {
   }
 
   private handleRequestStart(msg: TunnelRequestStartMessage): void {
-    const { id, port, method, url: requestUrl, headers, preserveAuth, host: tunnelHost } = msg;
+    const { id, port, method, url: requestUrl, headers, preserveAuth, host: tunnelHost, capabilityAgeMs } = msg;
 
     if (!this.exposedPorts.has(port)) {
       this.log.warn("[tunnel-client] Request for unexposed port", port);
       this.send({ type: "response-start", id, statusCode: 404, statusMessage: "Not Found", headers: {} });
       this.send({ type: "response-data", id, data: `Port ${port} is not exposed` });
+      this.send({ type: "response-data-end", id });
+      return;
+    }
+
+    if (this.isStaleCapability(port, capabilityAgeMs)) {
+      this.log.warn("[tunnel-client] Rejected tunnel link minted before the current exposure of port", port);
+      this.send({ type: "response-start", id, statusCode: 404, statusMessage: "Not Found", headers: { "content-type": "text/plain" } });
+      this.send({ type: "response-data", id, data: `This tunnel link predates the current exposure of port ${port} — reopen it` });
       this.send({ type: "response-data-end", id });
       return;
     }
@@ -672,10 +715,15 @@ export class TunnelClient extends EventEmitter {
   }
 
   private handleWsOpen(msg: TunnelWsOpenMessage): void {
-    const { id, port, path, protocols, headers, preserveAuth, host: tunnelHost } = msg;
+    const { id, port, path, protocols, headers, preserveAuth, host: tunnelHost, capabilityAgeMs } = msg;
 
     if (!this.exposedPorts.has(port)) {
       this.send({ type: "ws-error", id, message: `Port ${port} is not exposed` });
+      return;
+    }
+
+    if (this.isStaleCapability(port, capabilityAgeMs)) {
+      this.send({ type: "ws-error", id, message: `Tunnel link predates the current exposure of port ${port}` });
       return;
     }
 

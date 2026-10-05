@@ -6,6 +6,7 @@ import {
     resolveTunnelLabel,
     handleTunnelHostRequest,
     _injectRedisForTesting,
+    tunnelLabelAgeMs,
 } from "./tunnel-host";
 import { proxyTunnelRequestViaRelay } from "./tunnel";
 
@@ -114,6 +115,23 @@ describe("mint + resolve labels", () => {
         const record = await resolveTunnelLabel(minted!.label);
         expect(record).toMatchObject({ userId: "u1", scope: "runner:r1", port: 3000 });
         expect(record!.maxExp).toBeGreaterThan(Math.floor(Date.now() / 1000));
+    });
+
+    test("binds labels to their mint time and refuses legacy records without one (F04)", async () => {
+        process.env.PIZZAPI_TUNNEL_DOMAIN = "t.localhost";
+        const { client, store } = fakeRedis();
+        _injectRedisForTesting(client);
+        const before = Date.now();
+        const minted = await mintTunnelLabel({ userId: "u1", scope: "runner:r1", port: 3000 });
+        const record = await resolveTunnelLabel(minted!.label);
+        expect(record!.iat).toBeGreaterThanOrEqual(before);
+        expect(tunnelLabelAgeMs(record!, record!.iat! + 1234)).toBe(1234);
+
+        const legacy = "b".repeat(32);
+        store.set(`tunnel-host-label:${legacy}`, JSON.stringify({
+            userId: "u1", scope: "runner:r1", port: 3000, maxExp: Math.floor(Date.now() / 1000) + 60,
+        }));
+        expect(await resolveTunnelLabel(legacy)).toBeNull();
     });
 
     test("rejects and deletes labels past their absolute expiry", async () => {
