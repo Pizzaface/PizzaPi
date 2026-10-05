@@ -14,7 +14,43 @@ export {
     validateSandboxOverride,
     resolveSandboxConfig,
     mergeSandboxConfig,
+    shouldSandboxFailClosed,
+    SANDBOX_ALLOW_UNSANDBOXED_ENV,
 };
+
+/**
+ * Opt-out for fail-closed sandbox startup. When set to `1`/`true`, an
+ * explicitly requested sandbox that cannot be enabled degrades to running
+ * unsandboxed with a warning (the pre-fail-closed behaviour).
+ */
+const SANDBOX_ALLOW_UNSANDBOXED_ENV = "PIZZAPI_SANDBOX_ALLOW_UNSANDBOXED";
+
+/**
+ * Decide whether a sandbox that cannot be enabled must abort startup.
+ *
+ * Fail closed when the user *explicitly* requested isolation — a
+ * `--sandbox`/`PIZZAPI_SANDBOX` override of `basic`/`full`, or `sandbox.mode`
+ * set to `basic`/`full` in the global `~/.pizzapi/config.json` (which is also
+ * what the web UI's sandbox settings write). The implicit `basic` default
+ * keeps degrading with a warning so unsupported platforms (e.g. Windows) and
+ * hosts without bubblewrap keep working out of the box. Project-local config
+ * cannot make a session fail closed; it can only escalate the mode.
+ */
+function shouldSandboxFailClosed(opts: {
+    /** Effective mode after config resolution and overrides. */
+    effectiveMode: SandboxMode;
+    /** Validated `PIZZAPI_SANDBOX` / `--sandbox` override, if any. */
+    override: SandboxMode | undefined;
+    /** Raw `sandbox.mode` from the global config file (unvalidated). */
+    globalMode: unknown;
+    env: Record<string, string | undefined>;
+}): boolean {
+    if (opts.effectiveMode === "none") return false;
+    const optOut = opts.env[SANDBOX_ALLOW_UNSANDBOXED_ENV]?.trim().toLowerCase();
+    if (optOut === "1" || optOut === "true") return false;
+    if (opts.override === "basic" || opts.override === "full") return true;
+    return opts.globalMode === "basic" || opts.globalMode === "full";
+}
 
 // ── Sensitive paths blocked by all non-none presets ───────────────────────────
 

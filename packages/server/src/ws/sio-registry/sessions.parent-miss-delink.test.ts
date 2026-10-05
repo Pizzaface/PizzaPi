@@ -122,6 +122,14 @@ mock.module("../../sessions/store.js", () => ({
     touchRelaySession: async () => {},
 }));
 
+// Durable trigger-record tenant probe (recycled-id guard): no foreign
+// references in these parent-resolution scenarios.
+mock.module("../../events/store.js", () => ({
+    deleteSessionRoutes: async () => [],
+    listRoutes: async () => [],
+    sessionReferencedByOtherTenant: async () => false,
+}));
+
 mock.module("../sio-state/index.js", () => ({
     acquireSessionOwnershipLock: async () => {},
     releaseSessionOwnershipLock: async () => {},

@@ -16,7 +16,7 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { getCachedOllamaCloudModels, registerOllamaCloudProvider, toOllamaCloudRuntimeModel } from "../ollama-cloud-models.js";
 import { registerNvidiaProvider } from "../nvidia-models.js";
 import { registerOpenRouterProvider } from "../openrouter-models.js";
-import { TunnelService } from "./services/tunnel-service.js";
+import { TunnelService, tunnelMaxBufferedBytesFromEnv } from "./services/tunnel-service.js";
 import { ProcessService } from "./services/process-service.js";
 import { MemoryService } from "./services/memory-service.js";
 import { TimeService, TIME_TRIGGER_DEFS, TIME_SIGIL_DEFS } from "./services/time-service.js";
@@ -46,6 +46,7 @@ import { startUsageRefreshLoop, stopUsageRefreshLoop } from "./runner-usage-cach
 import { startOllamaModelsRefreshLoop, stopOllamaModelsRefreshLoop } from "./runner-ollama-models-cache.js";
 import { getWorkspaceRoots } from "./workspace.js";
 import { type RunnerSession, spawnSession, killSessionProcessGroup, notifyWorkersOfRestart } from "./session-spawner.js";
+import type { WorkerStartupResult } from "./worker-startup.js";
 import { pruneSessionCloseMetadata, type SessionCloseMetadata } from "./session-close-metadata.js";
 import { removeSessionProcFile, readRecordedGroupPids, sessionProcFilePath } from "./session-procs.js";
 
@@ -905,6 +906,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 runnerId: identity.runnerId,
                 apiKey,
                 relayUrl: tunnelRelayUrl,
+                maxBufferedBytes: tunnelMaxBufferedBytesFromEnv(),
                 log: {
                     info: (...args) => logInfo(formatTunnelLog(...args)),
                     debug: (...args) => logInfo(formatTunnelLog(...args)),
@@ -1228,10 +1230,6 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             // Reaching "connect" means the auth middleware accepted us — clear any
             // earlier rejection so `runner status` stops reporting it as stale.
             patchRunnerState(statePath, { authRejected: false });
-            if (tunnelClient && !tunnelClientStarted) {
-                tunnelClientStarted = true;
-                tunnelClient.connect();
-            }
             const verb = isFirstConnect ? "connected" : "reconnected";
             isFirstConnect = false;
             logInfo(`${verb}. Registering as ${identity.runnerId}…`);
@@ -1290,6 +1288,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     logWarn(`server assigned unexpected ID ${runnerId} (expected ${identity.runnerId})`);
                 }
                 logInfo(`registered as ${runnerId}`);
+                // Start the tunnel only after the secret-validated Socket.IO
+                // registration recorded this runner's owner: the relay refuses
+                // tunnel registration for a runner ID it does not know yet.
+                if (tunnelClient && !tunnelClientStarted) {
+                    tunnelClientStarted = true;
+                    tunnelClient.connect();
+                }
                 patchRunnerState(statePath, {
                     connected: true,
                     connectedAt: new Date().toISOString(),
@@ -1837,19 +1842,30 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             let isFirstSpawn = true;
             const doSpawn = () => {
                 try {
+                    // Report session_ready only once the worker confirms its
+                    // full startup chain succeeded; a worker that refuses
+                    // to start (fail-closed sandbox, or any later fatal boot error) yields session_error.
+                    const onStartup = (result: WorkerStartupResult) => {
+                        if (result.ok) {
+                            socket.emit("session_ready", { sessionId });
+                        } else {
+                            logWarn(`session ${sessionId} failed to start: ${result.message}`);
+                            socket.emit("session_error", { sessionId, message: result.message });
+                        }
+                    };
                     // Only pass initial prompt/model on the first spawn.
                     // On restart (exit code 43), the session already has
                     // the prompt in its history — re-sending would duplicate it.
                     const spawnOpts = isFirstSpawn
-                        ? { prompt: requestedPrompt, imageUrls: Array.isArray(requestedImageUrls) ? requestedImageUrls : undefined, model: requestedModel, effort: requestedEffort, hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, resumePath: resolvedResumePath, autoClose: requestedAutoClose === true, onSessionExit: cleanupSessionServices }
-                        : { hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, autoClose: requestedAutoClose === true, onSessionExit: cleanupSessionServices }; // Always pass agent + hidden models + parent + autoClose on restart
+                        ? { prompt: requestedPrompt, imageUrls: Array.isArray(requestedImageUrls) ? requestedImageUrls : undefined, model: requestedModel, effort: requestedEffort, hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, resumePath: resolvedResumePath, autoClose: requestedAutoClose === true, onSessionExit: cleanupSessionServices, onStartup }
+                        : { hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, autoClose: requestedAutoClose === true, onSessionExit: cleanupSessionServices, onStartup }; // Always pass agent + hidden models + parent + autoClose on restart
                     isFirstSpawn = false;
                     spawnSession(sessionId, apiKey!, relayRaw, requestedCwd, runningSessions, restartingSessions, killedSessions, doSpawn, spawnOpts);
                     setSessionCloseMetadata(sessionId, {
                         cwd: requestedCwd ?? process.cwd(),
                         ...(resolvedResumePath ? { sessionFile: resolvedResumePath } : {}),
                     });
-                    socket.emit("session_ready", { sessionId });
+                    // session_ready / session_error is emitted by onStartup.
                     // No need to re-emit service_announce here — the server
                     // persists the announce data in Redis and sends it to
                     // viewers automatically when they connect to a session.

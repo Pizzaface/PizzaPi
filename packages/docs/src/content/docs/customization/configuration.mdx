@@ -157,7 +157,7 @@ A documented subset of settings can also be overridden with **environment variab
 | `agentDir` | `string` | `~/.pizzapi` | Agent config directory (skills, extensions, etc.) |
 | `skills` | `string[]` | `[]` | Additional skill directories. Supports `~` expansion. |
 | `hooks` | `object` | — | Lifecycle hook scripts. See [Hooks](/PizzaPi/customization/hooks/). |
-| `envOverrides` | `Record<string, string>` | — | Environment variables to inject into runner worker sessions. |
+| `envOverrides` | `Record<string, string>` | — | Environment variables to inject into runner worker sessions. Keys that relax a protection (`PIZZAPI_SANDBOX`, `PIZZAPI_NO_SANDBOX`, `PIZZAPI_SANDBOX_ALLOW_UNSANDBOXED`, `PIZZAPI_SANDBOX_ACTIVE`, `PIZZAPI_SANDBOX_MODE`, `PIZZAPI_PLAN_MODE_ALLOWED_TOOLS`, `PIZZAPI_BASH_PASSTHROUGH_ENV`, `PIZZAPI_ALLOW_PROJECT_HOOKS`, `PIZZAPI_ALLOW_PROJECT_MCP`) are honoured only from the global `~/.pizzapi/config.json`; a project config cannot set or change them. |
 | `allowProjectHooks` | `boolean` | `false` | Trust gate: allow project-local hooks to run. **Global config only.** |
 | `allowProjectMcp` | `boolean` | `false` | Allows project-local MCP server definitions to load; otherwise they are excluded. **Global config only.** |
 | `trustedPlugins` | `string[]` | `[]` | Trusted Claude Code plugin paths. **Global config only.** Managed via `pizza plugins trust`. |
@@ -239,6 +239,28 @@ Setting `run_in_background: true` skips the foreground wait entirely.
 Override per-process with `PIZZAPI_BASH_BACKGROUND_SECONDS`. Users can also background a
 running command manually with <kbd>ctrl+shift+b</kbd>, `/background`, or the web UI's
 background button.
+
+### Shell environment
+
+Commands run by the `bash` tool inherit the session's environment **except PizzaPi's own
+credentials**. Removed variables are `PIZZAPI_API_KEY`, `PIZZAPI_API_TOKEN`,
+`PIZZAPI_RUNNER_API_KEY`, `PIZZAPI_RUNNER_TOKEN`, `PIZZAPI_AUTH_TOKEN`, relay-server secrets
+(`BETTER_AUTH_SECRET`, `VAPID_PRIVATE_KEY`, `PIZZAPI_TUNNEL_TOKEN_SECRET*`,
+`PIZZAPI_NTFY_PUBLISH_TOKEN`, `PIZZAPI_CADDY_DNS_TOKEN`, `PIZZAPI_WEBHOOK_SECRET`), and any other
+`PIZZAPI_*` variable whose name ends in `_KEY`, `_TOKEN`, `_SECRET`, or `_PASSWORD`. A
+`<NAME>_FILE` pointer to any of these (such as `PIZZAPI_API_KEY_FILE`) is removed as well, so
+a command cannot follow it to the file-backed secret. The session process keeps the
+credentials for its own relay connection and tools.
+
+Your own variables, such as provider API keys, `GITHUB_TOKEN`, and cloud credentials, are passed
+through unchanged so the tools you run in a shell keep working. Non-secret PizzaPi variables such
+as `PIZZAPI_RELAY_URL` are also kept. To deliberately expose a stripped variable to shell
+commands, list it in `PIZZAPI_BASH_PASSTHROUGH_ENV` (comma-separated) in the runner's or CLI's
+environment.
+
+This keeps credentials out of the shell environment only. A command can still read files that
+contain secrets, such as `~/.pizzapi/config.json`, unless the [sandbox](/PizzaPi/security/sandbox/)
+denies the path.
 
 ---
 
@@ -385,11 +407,14 @@ Only the settings listed here have environment-variable overrides. Overrides app
 | `PIZZAPI_DISABLED_RUNNER_SERVICES` | `disabledRunnerServices` | Comma-separated list of service IDs to skip (e.g. `git,time`) |
 | `PIZZAPI_SANDBOX` | `sandbox.mode` | Override sandbox mode: `none`, `basic`, or `full` ([Sandbox](/PizzaPi/security/sandbox/)) |
 | `PIZZAPI_NO_SANDBOX` | — | Set to `1` to disable sandbox (shorthand for `none`) ([Sandbox](/PizzaPi/security/sandbox/)) |
+| `PIZZAPI_BASH_PASSTHROUGH_ENV` | unset | Comma-separated variable names to pass to `bash` tool commands even though they are PizzaPi credentials that are stripped by default ([Shell environment](#shell-environment)) |
+| `PIZZAPI_SANDBOX_ALLOW_UNSANDBOXED` | unset | Set to `1` or `true` to let an explicitly requested sandbox (`--sandbox`, `PIZZAPI_SANDBOX`, or `sandbox.mode` in `~/.pizzapi/config.json`) degrade to unsandboxed execution when it cannot be enabled, instead of refusing to start ([Sandbox](/PizzaPi/security/sandbox/#when-the-sandbox-cannot-be-enabled)) |
 | `PIZZAPI_DEBUG` | — | Set to `1` for debug-level PizzaPi CLI logging, including de-duplicated config warnings. |
 | `PIZZAPI_LOG_PROVIDER_REQUEST` | — | Set to `1` to log summarized outbound Anthropic `/v1/messages` request data for diagnostics. Authorization headers are fingerprinted, not printed raw. |
 | `PIZZAPI_HIDDEN_MODELS` | — | JSON array of `provider/modelId` keys hidden from model listing/switching in worker sessions. Usually seeded and updated by the relay from the user's web preferences. |
 | `PIZZAPI_SUBAGENT_MODEL` | — | Default subagent/workflow model as `provider/modelId`; empty/unset means auto-select. Usually managed by the web UI. |
 | `PIZZAPI_SANDBOX_MODE` | — | Internal status set after sandbox initialization to the active resolved mode (`basic` or `full`). Use `PIZZAPI_SANDBOX` to request a mode. |
+| `PIZZAPI_TUNNEL_MAX_BUFFERED_BYTES` | — | Runner-side tunnel buffer ceiling in bytes (default 64 MiB; `0` disables). A local request body, local WebSocket, or relay link that falls this far behind is terminated instead of queueing without bound. For the relay link, the check includes the frame about to be sent (with its encoding overhead): a tunnelled HTTP response or WebSocket whose next frame would push the queue past the ceiling is terminated, so a single oversized frame cannot slip through. Invalid values are ignored. The relay reads the same variable for its side ([Self-Hosting](/PizzaPi/deployment/self-hosting/)). |
 | `PIZZAPI_RUNNER_STATE_PATH` | — | Override runner daemon state/lock file. Default: `~/.pizzapi/runner.json`. |
 | `PIZZAPI_RUNNER_USAGE_CACHE_PATH` | — | Override the runner-wide provider-usage cache file inherited by workers. Normally set by the daemon. |
 | `PIZZAPI_MCP_AUTH_DIR` | — | Override MCP OAuth token/client storage directory. Default: `~/.pizzapi/mcp-auth`. Useful for tests or isolated installs. |

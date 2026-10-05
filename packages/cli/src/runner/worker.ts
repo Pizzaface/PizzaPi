@@ -2,7 +2,7 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, readStoredCred
 import { SHELL_PROC_CAPTURE_PREFIX } from "./session-procs.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv, resolveExplicitProjectTrust } from "../config.js";
+import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, shouldSandboxFailClosed, loadGlobalConfig, applyProviderSettingsEnv, resolveExplicitProjectTrust } from "../config.js";
 import { buildSkillPaths, buildPromptTemplatePaths, createAgentsFilesOverride, loadRules } from "../skills.js";
 import { getPluginSkillPaths, getPluginPromptTemplatePaths } from "../extensions/claude-plugins.js";
 import { setRegisteredCommandsProvider } from "../extensions/command-introspection.js";
@@ -190,6 +190,7 @@ import { forwardCliError } from "../extensions/remote.js";
 import { buildPizzaPiExtensionFactories } from "../extensions/factories.js";
 import { armWorkerStartupGate, markWorkerStartupComplete } from "../extensions/worker-startup-gate.js";
 import { runWorkerShutdownHooks } from "../extensions/shutdown-hooks.js";
+import { reportWorkerStartupError, reportWorkerStartupReady } from "./worker-startup.js";
 
 // ── Session metadata / context tracking ──────────────────────────────────
 
@@ -298,7 +299,9 @@ async function main(): Promise<void> {
     try {
         process.chdir(cwd);
     } catch (err) {
-        logError(`failed to chdir to ${cwd}: ${err instanceof Error ? err.message : String(err)}`);
+        const message = `failed to chdir to ${cwd}: ${err instanceof Error ? err.message : String(err)}`;
+        logError(message);
+        await reportWorkerStartupError(message);
         process.exit(1);
     }
 
@@ -340,10 +343,26 @@ async function main(): Promise<void> {
         sandboxConfig.srtConfig = overridden.srtConfig;
     }
 
+    // An explicitly requested sandbox fails closed: if it cannot be enabled
+    // the worker aborts instead of letting bash run with runner-account
+    // authority. PIZZAPI_SANDBOX_ALLOW_UNSANDBOXED=1 restores degradation.
+    const sandboxFailClosed = shouldSandboxFailClosed({
+        effectiveMode: sandboxConfig.mode,
+        override: sandboxOverride,
+        globalMode: loadGlobalConfig().sandbox?.mode,
+        env: process.env,
+    });
     try {
-        await initSandbox(sandboxConfig);
+        await initSandbox(sandboxConfig, { failClosed: sandboxFailClosed });
     } catch (err) {
-        logWarn(`sandbox init failed, continuing unsandboxed: ${err instanceof Error ? err.message : String(err)}`);
+        const msg = err instanceof Error ? err.message : String(err);
+        if (sandboxFailClosed) {
+            throw new Error(
+                `Refusing to start: ${msg}. The sandbox was explicitly requested, so the session will not run unsandboxed. ` +
+                "Fix the sandbox dependencies, choose sandbox mode \"none\", or set PIZZAPI_SANDBOX_ALLOW_UNSANDBOXED=1 to allow running unsandboxed.",
+            );
+        }
+        logWarn(`sandbox init failed, continuing unsandboxed: ${msg}`);
     }
     if (isSandboxActive()) {
         process.env.PIZZAPI_SANDBOX_ACTIVE = "1";
@@ -879,11 +898,21 @@ async function main(): Promise<void> {
         void shutdown();
     });
 
+    // Tell the daemon the whole boot chain (sandbox, project trust, resource
+    // and plugin loading, model runtime, session creation, extension/relay
+    // binding) succeeded, so it can report session_ready to the relay. Any
+    // earlier fatal error is reported as a startup error instead (see
+    // main().catch and worker-startup.ts).
+    reportWorkerStartupReady();
+
     // Keep the process alive; work happens via relay/websocket events.
     await new Promise<void>(() => {});
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
     logError(err instanceof Error ? err.stack ?? err.message : String(err));
+    // Before readiness was reported, surface the reason to the daemon (and
+    // from there to the relay as session_error) instead of only stderr.
+    await reportWorkerStartupError(err);
     process.exit(1);
 });

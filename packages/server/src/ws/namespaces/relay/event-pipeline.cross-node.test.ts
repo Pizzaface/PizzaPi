@@ -40,6 +40,7 @@ mock.module("../../sio-registry.js", () => ({
     touchSessionActivity: async () => {},
     updateSessionHeartbeat: async () => {},
     getSharedSession: async () => null,
+    emitToRelaySession: () => {},
     getSharedSessionSummary: async () => null,
     broadcastSessionEventToViewers: async (sessionId: string) => { broadcasts.push(sessionId); },
     publishSessionEvent: async (sessionId: string, event: unknown) => {
@@ -122,7 +123,7 @@ mock.module("@pizzapi/protocol", () => ({
 
 afterAll(() => mock.restore());
 
-const { registerEventHandler, sessionEventQueues } = await import("./event-pipeline.js");
+const { registerEventHandler, sessionEventQueues, pendingChunkedStates } = await import("./event-pipeline.js");
 
 async function drainPipeline(sessionId: string): Promise<void> {
     await sessionEventQueues.get(sessionId);
@@ -266,5 +267,82 @@ describe("A2-017: event pipeline stale cross-node socket rejection", () => {
 
         expect(stateUpdates).toHaveLength(0);
         expect(broadcasts).toHaveLength(0);
+    });
+});
+
+describe("F10: chunked snapshot bounds through the event handler", () => {
+    beforeEach(() => {
+        stateUpdates.length = 0;
+        broadcasts.length = 0;
+        publishedEvents.length = 0;
+        redisOwnerToken = "token-node-a";
+        tokenReadShouldThrow = false;
+        lockHeld = false;
+        rotateOwnershipDuringUpdate = false;
+        replacementWaiting = false;
+        mutationOwnerTokens.length = 0;
+        pendingChunkedStates.clear();
+    });
+
+    async function startSnapshot(fire: (e: string, d?: unknown) => Promise<void>, snapshotId: string) {
+        await fire("event", {
+            token: "token-node-a",
+            seq: 1,
+            event: { type: "session_active", state: { chunked: true, snapshotId, messages: [] } },
+        });
+        await drainPipeline("sess-chunks");
+        expect(pendingChunkedStates.has("sess-chunks")).toBe(true);
+    }
+
+    it("aborts the snapshot on an attacker-sized chunkIndex without allocating", async () => {
+        const { socket, fire } = makeSocket("sess-chunks", "token-node-a");
+        registerEventHandler(socket);
+        await startSnapshot(fire, "snap-huge");
+        const pending = pendingChunkedStates.get("sess-chunks");
+        expect(pending).toBeDefined();
+
+        await fire("event", {
+            token: "token-node-a",
+            seq: 2,
+            event: {
+                type: "session_messages_chunk",
+                snapshotId: "snap-huge",
+                chunkIndex: 4_294_967_294,
+                totalChunks: 4_294_967_295,
+                messages: [{ role: "user" }],
+                final: true,
+            },
+        });
+        await drainPipeline("sess-chunks");
+
+        expect(pending?.chunks.length).toBe(0);
+        expect(pendingChunkedStates.has("sess-chunks")).toBe(false);
+        expect(stateUpdates).toHaveLength(0);
+        expect(publishedEvents).toHaveLength(0);
+    });
+
+    it("aborts the snapshot when the deferred-event budget is exhausted, preserving event order", async () => {
+        const saved = process.env.PIZZAPI_RELAY_SNAPSHOT_MAX_DEFERRED_EVENTS;
+        process.env.PIZZAPI_RELAY_SNAPSHOT_MAX_DEFERRED_EVENTS = "2";
+        try {
+            const { socket, fire } = makeSocket("sess-chunks", "token-node-a");
+            registerEventHandler(socket);
+            await startSnapshot(fire, "snap-deferred");
+
+            for (let i = 0; i < 3; i++) {
+                await fire("event", {
+                    token: "token-node-a",
+                    seq: 2 + i,
+                    event: { type: "message_start", n: i },
+                });
+            }
+            await drainPipeline("sess-chunks");
+
+            expect(pendingChunkedStates.has("sess-chunks")).toBe(false);
+            expect(publishedEvents.map((e) => (e as { n: number }).n)).toEqual([0, 1, 2]);
+        } finally {
+            if (saved === undefined) delete process.env.PIZZAPI_RELAY_SNAPSHOT_MAX_DEFERRED_EVENTS;
+            else process.env.PIZZAPI_RELAY_SNAPSHOT_MAX_DEFERRED_EVENTS = saved;
+        }
     });
 });

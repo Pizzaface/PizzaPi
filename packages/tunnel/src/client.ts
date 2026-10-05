@@ -9,6 +9,8 @@ import type {
   TunnelRequestDataMessage,
   TunnelRequestEndMessage,
   TunnelRequestStartMessage,
+  TunnelResponsePauseMessage,
+  TunnelResponseResumeMessage,
   TunnelServerMessage,
   TunnelWsCloseMessage,
   TunnelWsDataMessage,
@@ -30,7 +32,20 @@ export interface TunnelClientOptions {
   maxReconnectDelayMs?: number;
   /** Stop reconnecting after this many consecutive failures. Default 10. */
   maxConsecutiveFailures?: number;
+  /**
+   * Hard ceiling on bytes queued for any single slow consumer on the runner
+   * side (relay socket send buffer, local request body, local WebSocket).
+   * Producers are paused well before this; exceeding it terminates that
+   * stream. 0 disables the ceiling. Default 64 MiB.
+   */
+  maxBufferedBytes?: number;
 }
+
+/** Default {@link TunnelClientOptions.maxBufferedBytes}. */
+export const DEFAULT_TUNNEL_CLIENT_MAX_BUFFERED_BYTES = 64 * 1024 * 1024;
+/** Pause reading local responses while the relay socket holds more than this. */
+const RELAY_SEND_HIGH_WATER_BYTES = 1024 * 1024;
+const DRAIN_POLL_MS = 10;
 
 export interface TunnelClientLogger {
   info(...args: unknown[]): void;
@@ -75,6 +90,14 @@ type ActiveRequest = {
   bodyBytes: number;
   bodyEnded: boolean;
   responseStarted: boolean;
+  /** Local response being streamed to the relay (set once headers arrive). */
+  response: http.IncomingMessage | null;
+  /** Relay asked us to pause (viewer is not draining). */
+  relayPaused: boolean;
+  /** Paused because the relay socket send buffer is above the high-water mark. */
+  socketPaused: boolean;
+  /** We asked the relay to stop sending request-data (local service is slow). */
+  requestPaused: boolean;
 };
 
 function otherLoopback(host: LoopbackHost): LoopbackHost {
@@ -117,6 +140,23 @@ function isOptionalBoolean(value: unknown): boolean {
   return value === undefined || typeof value === "boolean";
 }
 
+function isOptionalAge(value: unknown): boolean {
+  return value === undefined || (typeof value === "number" && Number.isFinite(value) && value >= 0);
+}
+
+/**
+ * Slack for {@link TunnelClient.isStaleCapability}: a capability minted a
+ * moment before the runner processed the matching expose (UI previews mint
+ * while tunnel_expose is still in flight) must stay valid. Also absorbs the
+ * relay's whole-second `iat` granularity and transit latency.
+ *
+ * The grace never reaches back across a close: a capability minted before
+ * the port was last unexposed (or before this client existed) is refused
+ * outright, so a link for a closed exposure cannot reach a replacement
+ * exposed moments later on the same port.
+ */
+export const CAPABILITY_EXPOSURE_GRACE_MS = 30_000;
+
 function isTunnelServerMessage(value: unknown): value is TunnelServerMessage {
   if (!isRecord(value) || typeof value.type !== "string") return false;
   switch (value.type) {
@@ -124,12 +164,15 @@ function isTunnelServerMessage(value: unknown): value is TunnelServerMessage {
     case "error": return typeof value.message === "string";
     case "request-start": return typeof value.id === "string" && typeof value.port === "number" && Number.isFinite(value.port)
       && typeof value.method === "string" && typeof value.url === "string" && isStringRecord(value.headers)
-      && isOptionalBoolean(value.preserveAuth);
+      && isOptionalBoolean(value.preserveAuth) && isOptionalAge(value.capabilityAgeMs);
     case "request-data": return typeof value.id === "string" && typeof value.data === "string";
     case "request-data-end":
-    case "request-end": return typeof value.id === "string";
+    case "request-end":
+    case "response-pause":
+    case "response-resume": return typeof value.id === "string";
     case "ws-open": return typeof value.id === "string" && typeof value.port === "number" && Number.isFinite(value.port)
       && typeof value.path === "string" && isStringRecord(value.headers) && isOptionalBoolean(value.preserveAuth)
+      && isOptionalAge(value.capabilityAgeMs)
       && (value.protocols === undefined || (Array.isArray(value.protocols) && value.protocols.every((protocol) => typeof protocol === "string")));
     case "ws-data": return typeof value.id === "string" && typeof value.data === "string" && isOptionalBoolean(value.binary);
     case "ws-close": return typeof value.id === "string" && isOptionalCloseCode(value.code) && isOptionalCloseReason(value.reason);
@@ -147,9 +190,25 @@ export class TunnelClient extends EventEmitter {
   private reconnectDelayMs: number;
   private maxReconnectDelayMs: number;
   private maxConsecutiveFailures: number;
+  private maxBufferedBytes: number;
 
   private ws: WebSocket | null = null;
   private exposedPorts = new Set<number>();
+  /**
+   * When each port's CURRENT exposure began (runner clock). Survives relay
+   * reconnects (same client instance, exposePort is idempotent) and is reset
+   * only when the port is unexposed — so a later, possibly unrelated service
+   * on the same port is a new exposure that old capabilities cannot reach.
+   */
+  private exposedSince = new Map<number, number>();
+  /**
+   * When each port was last unexposed (runner clock). Every capability for an
+   * earlier exposure was minted before this instant, so anything older is
+   * refused regardless of the expose grace (rapid port reuse).
+   */
+  private unexposedAt = new Map<number, number>();
+  /** Construction time: no exposure of this process predates it (daemon restart). */
+  private readonly createdAt = Date.now();
   private disposed = false;
   /** Prevents stale close handlers from interfering after dispose/reconnect. */
   private connectionGeneration = 0;
@@ -186,6 +245,11 @@ export class TunnelClient extends EventEmitter {
     this.reconnectDelayMs = options.reconnectDelayMs ?? 3000;
     this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? 60_000;
     this.maxConsecutiveFailures = options.maxConsecutiveFailures ?? 10;
+    const maxBuffered = options.maxBufferedBytes ?? DEFAULT_TUNNEL_CLIENT_MAX_BUFFERED_BYTES;
+    if (!Number.isFinite(maxBuffered) || maxBuffered < 0) {
+      throw new Error("TunnelClient: maxBufferedBytes must be a non-negative finite number");
+    }
+    this.maxBufferedBytes = Math.floor(maxBuffered);
   }
 
   /** Current reconnect delay (increases with consecutive failures). */
@@ -307,13 +371,37 @@ export class TunnelClient extends EventEmitter {
   }
 
   exposePort(port: number): void {
+    if (!this.exposedPorts.has(port)) this.exposedSince.set(port, Date.now());
     this.exposedPorts.add(port);
     this.probeProtocol(port);
   }
 
   unexposePort(port: number): void {
     this.exposedPorts.delete(port);
+    this.exposedSince.delete(port);
+    this.unexposedAt.set(port, Date.now());
     this.portProtocol.delete(port);
+  }
+
+  /**
+   * True when a capability (signed token / host label) of the given age was
+   * issued before the port's current exposure began, i.e. it was minted for an
+   * earlier exposure of the same numeric port and must not reach this one.
+   *
+   * Two checks: a hard boundary at the port's last close (or this client's
+   * creation), which the grace never crosses, and the expose grace for links
+   * minted while the current expose was in flight. Transit latency and the
+   * relay's whole-second token `iat` only make a capability look OLDER, so
+   * the hard boundary errs toward refusing (the viewer reopens the link).
+   */
+  private isStaleCapability(port: number, capabilityAgeMs: number | undefined): boolean {
+    if (capabilityAgeMs === undefined) return false;
+    const since = this.exposedSince.get(port);
+    if (since === undefined) return true;
+    const issuedAt = Date.now() - capabilityAgeMs;
+    const boundary = Math.max(this.createdAt, this.unexposedAt.get(port) ?? 0);
+    if (issuedAt < boundary) return true;
+    return since > issuedAt + CAPABILITY_EXPOSURE_GRACE_MS;
   }
 
   /**
@@ -409,6 +497,22 @@ export class TunnelClient extends EventEmitter {
     }
   }
 
+  /**
+   * Send a data frame only if it fits under the hard ceiling: bytes already
+   * queued on the relay socket PLUS this frame's serialized size. Returns
+   * false (nothing sent) when it would cross the ceiling; callers terminate
+   * the stream.
+   */
+  private sendWithinCeiling(msg: TunnelClientMessage): boolean {
+    const payload = JSON.stringify(msg);
+    if (this.maxBufferedBytes > 0
+      && this.relayBufferedAmount() + Buffer.byteLength(payload, "utf8") > this.maxBufferedBytes) {
+      return false;
+    }
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(payload);
+    return true;
+  }
+
   private handleMessage(raw: string | Buffer | ArrayBuffer | ArrayBufferView): void {
     let msg: TunnelServerMessage;
     try {
@@ -450,6 +554,10 @@ export class TunnelClient extends EventEmitter {
       case "request-end":
         this.handleRequestEnd(msg);
         break;
+      case "response-pause":
+      case "response-resume":
+        this.handleResponseFlow(msg);
+        break;
       case "ws-open":
         this.handleWsOpen(msg);
         break;
@@ -466,12 +574,20 @@ export class TunnelClient extends EventEmitter {
   }
 
   private handleRequestStart(msg: TunnelRequestStartMessage): void {
-    const { id, port, method, url: requestUrl, headers, preserveAuth, host: tunnelHost } = msg;
+    const { id, port, method, url: requestUrl, headers, preserveAuth, host: tunnelHost, capabilityAgeMs } = msg;
 
     if (!this.exposedPorts.has(port)) {
       this.log.warn("[tunnel-client] Request for unexposed port", port);
       this.send({ type: "response-start", id, statusCode: 404, statusMessage: "Not Found", headers: {} });
       this.send({ type: "response-data", id, data: `Port ${port} is not exposed` });
+      this.send({ type: "response-data-end", id });
+      return;
+    }
+
+    if (this.isStaleCapability(port, capabilityAgeMs)) {
+      this.log.warn("[tunnel-client] Rejected tunnel link minted before the current exposure of port", port);
+      this.send({ type: "response-start", id, statusCode: 404, statusMessage: "Not Found", headers: { "content-type": "text/plain" } });
+      this.send({ type: "response-data", id, data: `This tunnel link predates the current exposure of port ${port} — reopen it` });
       this.send({ type: "response-data-end", id });
       return;
     }
@@ -554,6 +670,7 @@ export class TunnelClient extends EventEmitter {
         this.loopbackHost.set(port, hostname);
         active.bodyChunks = null; // connected — replay buffer no longer needed
         active.responseStarted = true;
+        active.response = response;
         const responseHeaders: Record<string, string | string[]> = {};
         for (const [key, value] of Object.entries(response.headers)) {
           if (value === undefined) continue;
@@ -575,8 +692,15 @@ export class TunnelClient extends EventEmitter {
 
         response.on("data", (chunk: Buffer) => {
           if (this.activeRequests.get(id) !== active || responseSettled) return;
-          this.send({ type: "response-data", id, data: chunk.toString("binary") });
+          if (!this.sendWithinCeiling({ type: "response-data", id, data: chunk.toString("binary") })) {
+            this.failActiveRequest(id, active, "tunnel buffer limit exceeded");
+            return;
+          }
+          this.applyRelaySocketBackpressure(id, active);
         });
+        // Apply flow state that arrived before the headers (a response-pause
+        // from the relay) now that there is a local response to pause.
+        this.updateResponseFlow(active);
 
         response.on("end", () => finalizeResponse());
         response.on("error", (error) => finalizeResponse(error instanceof Error ? error : new Error(String(error))));
@@ -610,6 +734,11 @@ export class TunnelClient extends EventEmitter {
         active.req = retryReq;
         for (const chunk of active.bodyChunks) retryReq.write(chunk);
         if (active.bodyEnded) retryReq.end();
+        if (active.requestPaused) {
+          // The drain listener was on the failed request — un-pause the relay.
+          active.requestPaused = false;
+          this.send({ type: "request-resume", id });
+        }
         return;
       }
       this.activeRequests.delete(id);
@@ -637,7 +766,18 @@ export class TunnelClient extends EventEmitter {
     };
 
     const req = attempt(this.loopbackHost.get(port) ?? "127.0.0.1", true);
-    active = { controller, req, bodyChunks: [], bodyBytes: 0, bodyEnded: false, responseStarted: false };
+    active = {
+      controller,
+      req,
+      bodyChunks: [],
+      bodyBytes: 0,
+      bodyEnded: false,
+      responseStarted: false,
+      response: null,
+      relayPaused: false,
+      socketPaused: false,
+      requestPaused: false,
+    };
     this.replaceActiveRequest(id, active);
   }
 
@@ -653,7 +793,88 @@ export class TunnelClient extends EventEmitter {
         active.bodyChunks.push(chunk);
       }
     }
-    active.req.write(chunk);
+    const req = active.req;
+    const accepted = req.write(chunk);
+    const queued = typeof req.writableLength === "number" ? req.writableLength : 0;
+    if (this.maxBufferedBytes > 0 && queued > this.maxBufferedBytes) {
+      this.failActiveRequest(msg.id, active, "Local service is not reading the request body (buffer limit exceeded)");
+      return;
+    }
+    if (!accepted && !active.requestPaused) {
+      // Backpressure: ask the relay to stop sending until the local service drains.
+      active.requestPaused = true;
+      this.send({ type: "request-pause", id: msg.id });
+      req.once("drain", () => {
+        if (this.activeRequests.get(msg.id) !== active || active.req !== req || !active.requestPaused) return;
+        active.requestPaused = false;
+        this.send({ type: "request-resume", id: msg.id });
+      });
+    }
+  }
+
+  private handleResponseFlow(msg: TunnelResponsePauseMessage | TunnelResponseResumeMessage): void {
+    const active = this.activeRequests.get(msg.id);
+    if (!active) return;
+    active.relayPaused = msg.type === "response-pause";
+    this.updateResponseFlow(active);
+  }
+
+  private relayBufferedAmount(): number {
+    const amount = this.ws?.bufferedAmount;
+    return typeof amount === "number" && Number.isFinite(amount) ? amount : 0;
+  }
+
+  private updateResponseFlow(active: ActiveRequest): void {
+    const response = active.response;
+    if (!response || response.destroyed) return;
+    if (active.relayPaused || active.socketPaused) response.pause();
+    else response.resume();
+  }
+
+  /** Pause reading the local response while the relay socket send buffer is above the high-water mark. */
+  private applyRelaySocketBackpressure(id: string, active: ActiveRequest): void {
+    if (active.socketPaused || this.relayBufferedAmount() <= RELAY_SEND_HIGH_WATER_BYTES) return;
+    active.socketPaused = true;
+    this.updateResponseFlow(active);
+    const poll = (): void => {
+      if (this.activeRequests.get(id) !== active) return;
+      if (this.ws && this.relayBufferedAmount() > RELAY_SEND_HIGH_WATER_BYTES) {
+        setTimeout(poll, DRAIN_POLL_MS);
+        return;
+      }
+      active.socketPaused = false;
+      this.updateResponseFlow(active);
+    };
+    setTimeout(poll, DRAIN_POLL_MS);
+  }
+
+  /** Terminate a local request deterministically and tell the relay why. */
+  private failActiveRequest(id: string, active: ActiveRequest, message: string): void {
+    if (this.activeRequests.get(id) !== active) return;
+    this.activeRequests.delete(id);
+    this.log.warn(`[tunnel-client] Aborting tunnel request ${id}: ${message}`);
+    active.controller.abort();
+    active.req.destroy();
+    if (active.responseStarted) {
+      this.send({ type: "response-data-abort", id, reason: message });
+      return;
+    }
+    this.send({ type: "response-start", id, statusCode: 502, statusMessage: "Bad Gateway", headers: {} });
+    this.send({ type: "response-data", id, data: message });
+    this.send({ type: "response-data-end", id });
+  }
+
+  /** Close a local WebSocket that exceeded a buffer limit and report it to the relay once. */
+  private abortLocalWs(id: string, ws: WebSocket, reason: string): void {
+    if (this.activeWs.get(id) !== ws) return;
+    this.activeWs.delete(id);
+    this.log.warn(`[tunnel-client] Closing tunnel WebSocket ${id}: ${reason}`);
+    try {
+      ws.close(1013, reason);
+    } catch {
+      // ignore close errors
+    }
+    this.send({ type: "ws-close", id, code: 1013, reason });
   }
 
   private handleRequestDataEnd(msg: TunnelRequestDataEndMessage): void {
@@ -672,10 +893,15 @@ export class TunnelClient extends EventEmitter {
   }
 
   private handleWsOpen(msg: TunnelWsOpenMessage): void {
-    const { id, port, path, protocols, headers, preserveAuth, host: tunnelHost } = msg;
+    const { id, port, path, protocols, headers, preserveAuth, host: tunnelHost, capabilityAgeMs } = msg;
 
     if (!this.exposedPorts.has(port)) {
       this.send({ type: "ws-error", id, message: `Port ${port} is not exposed` });
+      return;
+    }
+
+    if (this.isStaleCapability(port, capabilityAgeMs)) {
+      this.send({ type: "ws-error", id, message: `Tunnel link predates the current exposure of port ${port}` });
       return;
     }
 
@@ -744,7 +970,9 @@ export class TunnelClient extends EventEmitter {
         if (this.activeWs.get(id) !== ws) return;
         const data = event.data;
         const isBinary = data instanceof ArrayBuffer || ArrayBuffer.isView(data);
-        this.send({
+        // A WebSocket cannot be paused: if this frame would push the relay
+        // socket past the hard ceiling, terminate instead of queueing it.
+        const sent = this.sendWithinCeiling({
           type: "ws-data",
           id,
           data: isBinary
@@ -752,6 +980,7 @@ export class TunnelClient extends EventEmitter {
             : String(data),
           binary: isBinary || undefined,
         });
+        if (!sent) this.abortLocalWs(id, ws, "tunnel buffer limit exceeded");
       });
 
       ws.addEventListener("close", (event: CloseEvent) => {
@@ -788,12 +1017,15 @@ export class TunnelClient extends EventEmitter {
   private handleWsData(msg: TunnelWsDataMessage): void {
     const ws = this.activeWs.get(msg.id);
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const frame = msg.binary ? Buffer.from(msg.data, "base64") : msg.data;
+    const frameBytes = typeof frame === "string" ? Buffer.byteLength(frame, "utf8") : frame.length;
+    // Count the frame being delivered, not only what is already queued.
+    if (this.maxBufferedBytes > 0 && ws.bufferedAmount + frameBytes > this.maxBufferedBytes) {
+      this.abortLocalWs(msg.id, ws, "local WebSocket buffer limit exceeded");
+      return;
+    }
     try {
-      if (msg.binary) {
-        ws.send(Buffer.from(msg.data, "base64"));
-      } else {
-        ws.send(msg.data);
-      }
+      ws.send(frame);
     } catch {
       // ignore send errors
     }

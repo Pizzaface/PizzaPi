@@ -1011,11 +1011,14 @@ describe("isDestructiveCommand (sandboxActive=true)", () => {
         expect(isDestructiveCommand("find . -type f -exec wc -l {} +", true)).toBe(false);
     });
 
-    test("allows script interpreters when sandbox active", () => {
-        expect(isDestructiveCommand("python3 analyze.py", true)).toBe(false);
-        expect(isDestructiveCommand("python -c 'print(1+1)'", true)).toBe(false);
-        expect(isDestructiveCommand("node script.js", true)).toBe(false);
-        expect(isDestructiveCommand("ruby script.rb", true)).toBe(false);
+    // The read-only overlay only covers filesystem writes; interpreters can
+    // still make network requests or signal processes (F20).
+    test("blocks script interpreters even when sandbox active", () => {
+        expect(isDestructiveCommand("python3 analyze.py", true)).toBe(true);
+        expect(isDestructiveCommand("python -c 'print(1+1)'", true)).toBe(true);
+        expect(isDestructiveCommand("node script.js", true)).toBe(true);
+        expect(isDestructiveCommand("ruby script.rb", true)).toBe(true);
+        expect(isDestructiveCommand("python3 --version", true)).toBe(false);
     });
 
     test("allows make when sandbox active", () => {

@@ -80,10 +80,23 @@ export function resolveMobileUrl(path: string): string {
     return `${base}${path}`;
 }
 
+/** Thrown when a scoped attachment token could not be minted. */
+export class MobileMediaTokenError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "MobileMediaTokenError";
+    }
+}
+
 /**
  * Resolve a relative attachment path for use as an <img>/<video> src in the
- * bundled mobile app by minting a short-lived HMAC token via
- * POST /api/attachments/:id/token. Falls back to the raw path on web.
+ * bundled mobile app by minting a short-lived, attachment-scoped HMAC token via
+ * POST /api/attachments/:id/token. Returns the raw path on web.
+ *
+ * The durable API key is NEVER placed in the URL: if minting fails (network
+ * error or non-OK response) this rejects with {@link MobileMediaTokenError}
+ * so the caller can show an error/retry state. Non-attachment relative paths
+ * are resolved against the server URL without any credential.
  *
  * Callers should use this inside a useEffect / async context and update state.
  */
@@ -91,45 +104,32 @@ export async function resolveMobileMediaUrlAsync(path: string): Promise<string> 
     if (!path.startsWith("/")) return path;
     const { serverUrl, isMobileBundled } = getMobileRuntimeConfig();
     if (!isMobileBundled || !serverUrl) return path;
+    const base = serverUrl.replace(/\/+$/, "");
 
     // Extract attachment ID from /api/attachments/:id paths.
     const match = path.match(/^\/api\/attachments\/([^/?#]+)/);
-    if (match) {
-        const attachmentId = match[1];
-        try {
-            const base = serverUrl.replace(/\/+$/, "");
-            const res = await fetch(`${base}/api/attachments/${encodeURIComponent(attachmentId)}/token`, {
-                method: "POST",
-                // mobile fetch patch injects x-api-key header automatically
-            });
-            if (res.ok) {
-                const { token } = (await res.json()) as { token: string };
-                const url = new URL(`${base}${path}`);
-                url.searchParams.set("token", token);
-                return url.toString();
-            }
-        } catch {
-            // fall through to deprecated path
-        }
+    if (!match) return `${base}${path}`;
+
+    const attachmentId = match[1];
+    let res: Response;
+    try {
+        res = await fetch(`${base}/api/attachments/${encodeURIComponent(attachmentId)}/token`, {
+            method: "POST",
+            // mobile fetch patch injects x-api-key header automatically
+        });
+    } catch {
+        throw new MobileMediaTokenError("Could not reach the relay to authorize this attachment");
     }
-
-    // ponytail: deprecated fallback; remove after mobile clients fully migrate
-    return resolveMobileMediaUrl(path);
-}
-
-/**
- * @deprecated Use resolveMobileMediaUrlAsync. This leaks the durable API key
- * into URLs, logs, and proxies. Kept for one transition cycle.
- *
- * Resolve a relative media path for use as an <img>/<video> src in the bundled
- * mobile app by appending ?apiKey= to the URL. No-op on web.
- */
-export function resolveMobileMediaUrl(path: string): string {
-    if (!path.startsWith("/")) return path;
-    const { serverUrl, apiKey, isMobileBundled } = getMobileRuntimeConfig();
-    if (!isMobileBundled || !serverUrl) return path;
-    const url = new URL(`${serverUrl.replace(/\/+$/, "")}${path}`);
-    if (apiKey && !url.searchParams.has("apiKey")) url.searchParams.set("apiKey", apiKey);
+    if (!res.ok) {
+        throw new MobileMediaTokenError(`Attachment authorization failed (HTTP ${res.status})`);
+    }
+    const body = (await res.json().catch(() => null)) as { token?: unknown } | null;
+    if (!body || typeof body.token !== "string" || !body.token) {
+        throw new MobileMediaTokenError("Attachment authorization returned no token");
+    }
+    const url = new URL(`${base}${path}`);
+    url.searchParams.delete("apiKey");
+    url.searchParams.set("token", body.token);
     return url.toString();
 }
 

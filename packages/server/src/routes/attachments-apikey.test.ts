@@ -1,9 +1,9 @@
 /**
  * Regression tests for GET /api/attachments/:id — ?apiKey= query-parameter auth.
  *
- * These tests verify that the handler routes through validateApiKey (not
- * requireSession) when the caller provides an API key via the ?apiKey= URL
- * query parameter, restoring backward-compat with the documented auth behavior.
+ * These tests verify auth-path selection. A durable API key in the URL is
+ * refused by default (F17); PIZZAPI_ALLOW_ATTACHMENT_QUERY_API_KEY=true
+ * restores the deprecated ?apiKey= path for old mobile builds.
  *
  * Module mocking is necessary because validateApiKey / requireSession both call
  * getAuth(), which is not initialized in unit tests.  Mocking lets us track
@@ -85,15 +85,33 @@ describe("GET /api/attachments/:id — auth path selection", () => {
         expect(requireSessionCalls.length).toBe(0);
     });
 
-    test("with ?apiKey= query parameter, calls validateApiKey (restored backward-compat)", async () => {
+    test("with ?apiKey= query parameter, rejects by default without validating the key or falling back to session", async () => {
+        delete process.env.PIZZAPI_ALLOW_ATTACHMENT_QUERY_API_KEY;
         const req = new Request("http://localhost/api/attachments/test-id?apiKey=my-api-key", {
             method: "GET",
         });
         const url = new URL(req.url);
-        await handleAttachmentsRoute(req, url);
-        expect(validateApiKeyCalls.length).toBe(1);
-        expect(validateApiKeyCalls[0]?.key).toBe("my-api-key");
+        const res = await handleAttachmentsRoute(req, url);
+        expect(res?.status).toBe(401);
+        expect(res?.headers.get("cache-control")).toBe("private, no-store");
+        expect(validateApiKeyCalls.length).toBe(0);
         expect(requireSessionCalls.length).toBe(0);
+    });
+
+    test("with ?apiKey= and PIZZAPI_ALLOW_ATTACHMENT_QUERY_API_KEY=true, calls validateApiKey (compat opt-in)", async () => {
+        process.env.PIZZAPI_ALLOW_ATTACHMENT_QUERY_API_KEY = "true";
+        try {
+            const req = new Request("http://localhost/api/attachments/test-id?apiKey=my-api-key", {
+                method: "GET",
+            });
+            const url = new URL(req.url);
+            await handleAttachmentsRoute(req, url);
+            expect(validateApiKeyCalls.length).toBe(1);
+            expect(validateApiKeyCalls[0]?.key).toBe("my-api-key");
+            expect(requireSessionCalls.length).toBe(0);
+        } finally {
+            delete process.env.PIZZAPI_ALLOW_ATTACHMENT_QUERY_API_KEY;
+        }
     });
 
     test("x-api-key header takes priority over ?apiKey= query param when both are present", async () => {

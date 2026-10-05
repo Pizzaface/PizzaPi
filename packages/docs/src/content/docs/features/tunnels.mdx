@@ -45,6 +45,47 @@ and otherwise returning a signed `/api/tunnel/auth/<token>/…` path. Those work
 any browser, on any device, with no cookie — the URL itself is the credential, so
 treat it as a secret and expect it to expire.
 
+### Origin isolation
+
+Tunnelled content is controlled by whatever runs on the runner's port, so it
+never executes as the PizzaPi relay origin (where it could drive your signed-in
+UI and API):
+
+- **Path-prefix responses are sandboxed.** The relay serves every
+  `/api/tunnel/…` response with `Content-Security-Policy: sandbox allow-scripts
+  allow-forms allow-popups allow-modals allow-downloads`. There is no
+  `allow-same-origin`, so the document gets an opaque origin, both in the web
+  UI's iframe and when opened in a new tab. The app's own
+  `Content-Security-Policy` is kept alongside the sandbox. On signed paths and
+  the dedicated tunnel origin, which the UI frames cross-origin, the relay
+  drops `X-Frame-Options` and removes only the `frame-ancestors` directive
+  from the app's CSP. Every other directive (`script-src`, `connect-src`, …)
+  still applies.
+- **Browsers load the signed path.** In an opaque-origin document, subresource
+  requests carry no relay cookie. The web UI, the mobile app, and "open in new
+  tab" therefore mint a signed `/api/tunnel/auth/<token>/…` URL (valid 24 hours).
+  The preview's and service panel's **Reload** button mints a new URL, and a
+  tunnel preview remints when its port is exposed again, so an expired link or
+  one bound to an earlier exposure recovers without reopening the panel.
+  A browser navigation to a cookie path (`/api/tunnel/runner/…` or
+  `/api/tunnel/<sessionId>/…`) is redirected to an equivalent signed path. API
+  clients that do not navigate (curl, `fetch` from the UI) are served directly.
+  The signed path answers CORS for the sandbox's `null` origin, so the app's own
+  `fetch`, module scripts, and fonts keep working.
+- **Storage is per page load.** `localStorage`, `sessionStorage`, and
+  `document.cookie` throw in an opaque origin. The relay's injected script
+  replaces them with in-memory versions, so apps keep running, but nothing
+  persists across reloads.
+- **No fallback.** If the UI cannot mint a URL, the panel shows an error. It
+  does not fall back to the relay origin.
+
+Set `PIZZAPI_TUNNEL_DOMAIN` (below) and previews and service panels load on
+the dedicated tunnel origin instead. That origin is a separate site, so it
+keeps normal same-origin privileges: persistent storage, its own cookies, and
+SPA routing. The UI uses the tunnel origin only when the viewer can reach it:
+no mixed content, and a `*.localhost` domain only when the UI itself is opened
+on localhost. Otherwise it uses the sandboxed signed path.
+
 ### Dedicated tunnel origin (recommended for SPAs)
 
 The path-prefix schemes above share the relay's origin, so a tunnelled app sees
@@ -254,11 +295,13 @@ The relay enforces several security measures:
 
 - **Auth-only access** — every tunnel request requires a valid session cookie or API key, or a short-lived signed path token minted by the runner/session owner for mobile/cross-origin iframe access.
 - **Dedicated signing secret** — tunnel tokens are signed with `PIZZAPI_TUNNEL_TOKEN_SECRET` (distinct from the Better Auth session secret). When unset, the relay falls back to `BETTER_AUTH_SECRET` so unconfigured deployments keep working. Set it to allow independent rotation: rotating the tunnel secret does not invalidate existing auth sessions.
-  - **Key rotation** — set `PIZZAPI_TUNNEL_TOKEN_SECRET_PREVIOUS` to the old secret; tokens signed by it are still accepted until their natural 1-hour TTL expires, then the env var can be removed.
+  - **Key rotation** — set `PIZZAPI_TUNNEL_TOKEN_SECRET_PREVIOUS` to the old secret; tokens signed by it are still accepted until they expire. Keep it for at least the longest lifetime the relay issues before removing it: path tokens default to 1 hour, the web UI, mobile app, and browser-navigation redirects mint 24-hour tokens, and `create_tunnel`/`list_tunnels` (or `POST /api/tunnel-token` with `ttlHours`) can request up to **168 hours (7 days)**. Removing the previous secret sooner immediately invalidates every still-unexpired link signed with it; those viewers must press **Reload** or request a new link. Tunnel-origin labels are stored in Redis, not signed, so rotation does not affect them.
 - **Token claims** — every token carries `aud` (`pizzapi:tunnel`), `iat` (issued-at), `kid` (key identifier derived from the active secret), and `exp`. On verify: `aud`, `kid`, and `exp` are all enforced. A token whose `kid` does not match the active key (or the previous key, if configured) is rejected outright.
 - **Owner verification** — the caller's user ID must match the session/runner owner.
+- **Links are bound to one exposure** — a signed path token or tunnel-origin label works only for the exposure of the port that was current when it was minted. If the port is closed (`close_tunnel`, session end, service stop) and the same port number is exposed again later, older links return `404` instead of reaching the new service — even when the port is reused immediately: a link minted before the port was last closed never reaches a later exposure. A link minted after the close (for example while the new exposure is still being set up) works. Restarting the runner daemon also starts new exposures, and links minted before the restart are refused. The runner compares the link's age with when it closed the port, so on a multi-instance relay with skewed clocks a link minted within that skew of a close can be misjudged; keep relay clocks synchronized (NTP). Re-registering a port that is still open (relay reconnect, service restart) keeps existing links valid. Use **Reload** in the panel, reopen it, or call `create_tunnel` again to get a fresh link. Tunnel-origin labels minted before this check existed are refused once. Cookie- and API-key-authenticated requests are authorized on every request, so they are unaffected.
 - **Header stripping** — `Cookie`, `Authorization`, `X-API-Key`, and `Referer` headers are never forwarded to the local service, preventing auth-leakage to tunneled apps.
 - **Query param sanitization** — `apiKey` and `tunnelToken` query parameters are stripped before forwarding.
+- **No origin-wide state from path tunnels** — path-prefix responses are served on the relay's own origin, so the relay drops `Set-Cookie`, `Clear-Site-Data`, `Service-Worker-Allowed`, `Strict-Transport-Security`, `Alt-Svc`, `NEL`/`Report-To`/`Reporting-Endpoints`, and `Access-Control-Allow-Credentials` from them. A local app cannot set, shadow, or clear PizzaPi's cookies or storage. Apps that need their own cookies must run on the [dedicated tunnel origin](#dedicated-tunnel-origin-recommended-for-spas), where cookies are kept and forced host-only.
 - **Hop-by-hop header removal** — standard proxy headers (`Connection`, `Transfer-Encoding`, etc.) and `Accept-Encoding` are stripped so responses arrive uncompressed for rewriting.
 
 ---
@@ -331,4 +374,5 @@ Agent:
 - **Request timeout** — service message round-trips time out after **10 seconds**. If the runner daemon is unresponsive, tunnel creation fails with a timeout error.
 - **Single-user access** — only the session/runner owner can access tunnel URLs. There is no sharing with other authenticated users.
 - **Content rewriting limits** (path-prefix mode only) — while the proxy rewrites HTML, JS modules, and CSS, some edge cases (e.g. paths constructed entirely at runtime from string concatenation, SPA routers reading `location.pathname`) may not be intercepted. Configure `PIZZAPI_TUNNEL_DOMAIN` to bypass rewriting entirely — apps on a dedicated tunnel origin run unmodified.
+- **Resource limits** — the relay bounds tunnel traffic: request bodies are capped at 100 MiB per request (`413` above that), each runner serves at most 256 concurrent tunnelled requests and WebSockets (`503` above that), and slow consumers apply backpressure — when the viewer stops reading, the runner pauses the local service's response; when the local service stops reading an upload, the runner asks the relay to pause it (where the runtime reports write backpressure). A stream whose queued data still exceeds 64 MiB is terminated (WebSockets close with code `1013`). Self-hosters can tune these with the `PIZZAPI_TUNNEL_*` variables in [Self-Hosting](/PizzaPi/deployment/self-hosting/).
 - **Local HTTPS targets** — the runner probes each exposed port and speaks TLS to local HTTPS services automatically (self-signed certs accepted, loopback only).

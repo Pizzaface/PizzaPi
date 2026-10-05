@@ -5,8 +5,8 @@ import { getAuth, getTrustedOrigins } from "../auth.js";
 import { getTunnelRelay } from "../tunnel-relay.js";
 import { getSession } from "../ws/sio-state/index.js";
 import { getRunnerData } from "../ws/sio-registry.js";
-import { assertTunnelTokenStillValid, verifyTunnelToken } from "./tunnel-token.js";
-import { authorizeTunnelLabel, matchTunnelHost } from "./tunnel-host.js";
+import { assertTunnelTokenStillValid, tunnelTokenAgeMs, verifyTunnelToken } from "./tunnel-token.js";
+import { authorizeTunnelLabel, matchTunnelHost, tunnelLabelAgeMs } from "./tunnel-host.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("tunnel-ws");
@@ -33,7 +33,70 @@ const HOP_BY_HOP = new Set([
     "host",
 ]);
 
-const tunnelProxyWss = new WebSocketServer({ noServer: true });
+type TunnelRelayInstance = NonNullable<ReturnType<typeof getTunnelRelay>>;
+
+let proxyWss: WebSocketServer | null = null;
+
+/**
+ * Viewer-facing WebSocket server, created on first use so a single viewer
+ * frame is bounded by the relay's hard buffer ceiling (ws closes with 1009
+ * instead of buffering an oversized message; the ws default is 100 MiB).
+ */
+function tunnelProxyWss(relay: TunnelRelayInstance): WebSocketServer {
+    if (!proxyWss) {
+        const limit = relay.limits.maxBufferedBytes;
+        proxyWss = new WebSocketServer({ noServer: true, ...(limit > 0 ? { maxPayload: limit } : {}) });
+    }
+    return proxyWss;
+}
+
+/**
+ * Viewer → runner: forward a frame, then pause reading from the viewer while
+ * the runner socket is congested (real backpressure — ws pauses the TCP read).
+ */
+export function forwardViewerWsFrame(
+    relay: TunnelRelayInstance,
+    runnerId: string,
+    tunnelWsId: string,
+    viewerWs: NodeWebSocket,
+    data: string,
+    binary: true | undefined,
+): void {
+    // Refused (and the stream closed) when this frame would cross the hard ceiling.
+    if (!relay.sendWsData(runnerId, tunnelWsId, data, binary)) return;
+    if (viewerWs.isPaused || !relay.isRunnerCongested(runnerId)) return;
+    viewerWs.pause();
+    void relay.waitForRunnerDrain(runnerId).then(() => {
+        if (viewerWs.readyState === NodeWebSocket.OPEN) viewerWs.resume();
+    });
+}
+
+/**
+ * Runner → viewer: a WebSocket cannot ask the runner to slow down, so a viewer
+ * that stops draining is disconnected once its send buffer exceeds the hard
+ * limit instead of queueing without bound. Returns false when it closed.
+ */
+export function deliverRunnerWsFrame(
+    relay: TunnelRelayInstance,
+    runnerId: string,
+    tunnelWsId: string,
+    viewerWs: NodeWebSocket,
+    data: string,
+    binary: boolean | undefined,
+): boolean {
+    const limit = relay.limits.maxBufferedBytes;
+    const frame = binary ? Buffer.from(data, "base64") : data;
+    const frameBytes = typeof frame === "string" ? Buffer.byteLength(frame, "utf8") : frame.length;
+    // Count the frame being delivered, not only what is already queued.
+    if (limit > 0 && viewerWs.bufferedAmount + frameBytes > limit) {
+        log.warn(`Closing tunnel WebSocket ${tunnelWsId}: viewer send buffer would exceed ${limit} bytes`);
+        // Notifies the runner and routes through onClose → viewerWs.close(1013).
+        relay.sendWsClose(runnerId, tunnelWsId, 1013, "tunnel buffer limit exceeded");
+        return false;
+    }
+    viewerWs.send(frame);
+    return true;
+}
 
 /**
  * Handle an HTTP upgrade request that might be a tunnel WebSocket.
@@ -119,6 +182,7 @@ async function handleHostUpgradeAsync(
         auth.runnerId,
         fullUrl,
         req.headers.host,
+        tunnelLabelAgeMs(auth.record),
     );
 }
 
@@ -179,6 +243,9 @@ async function handleAuthUpgradeAsync(
         fullUrl,
         payload.userId,
         preauthenticatedRunnerId,
+        undefined,
+        undefined,
+        tunnelTokenAgeMs(payload),
     );
 }
 
@@ -192,6 +259,7 @@ async function handleUpgradeAsync(
     preauthenticatedRunnerId?: string,
     rawPathWithQuery?: string,
     tunnelHost?: string,
+    capabilityAgeMs?: number,
 ): Promise<void> {
     let sessionId: string;
     try {
@@ -306,13 +374,15 @@ async function handleUpgradeAsync(
         }
 
         handshakeComplete = true;
-        tunnelProxyWss.handleUpgrade(req, rawSocket, head, (ws) => {
+        tunnelProxyWss(relay).handleUpgrade(req, rawSocket, head, (ws) => {
             viewerWs = ws;
 
             ws.on("message", (data, isBinary) => {
-                relay.sendWsData(
+                forwardViewerWsFrame(
+                    relay,
                     runnerId,
                     tunnelWsId,
+                    ws,
                     isBinary ? Buffer.from(data as Buffer).toString("base64") : data.toString(),
                     isBinary || undefined,
                 );
@@ -347,6 +417,7 @@ async function handleUpgradeAsync(
             headers: forwardHeaders,
             preserveAuth: isHostTunnel || undefined,
             host: tunnelHost,
+            capabilityAgeMs,
         },
         {
             onOpened: (protocol) => {
@@ -354,7 +425,7 @@ async function handleUpgradeAsync(
             },
             onData: (data, binary) => {
                 if (!viewerWs || viewerWs.readyState !== NodeWebSocket.OPEN) return;
-                viewerWs.send(binary ? Buffer.from(data, "base64") : data);
+                deliverRunnerWsFrame(relay, runnerId, tunnelWsId, viewerWs, data, binary);
             },
             onClose: (code, reason) => {
                 if (!handshakeComplete) {
@@ -486,10 +557,10 @@ async function handleRunnerUpgradeAsync(
         }
         if (protocol) req.headers["sec-websocket-protocol"] = protocol;
         handshakeComplete = true;
-        tunnelProxyWss.handleUpgrade(req, rawSocket, head, (ws) => {
+        tunnelProxyWss(relay).handleUpgrade(req, rawSocket, head, (ws) => {
             viewerWs = ws;
             ws.on("message", (data, isBinary) => {
-                relay.sendWsData(runnerId, tunnelWsId, isBinary ? Buffer.from(data as Buffer).toString("base64") : data.toString(), isBinary || undefined);
+                forwardViewerWsFrame(relay, runnerId, tunnelWsId, ws, isBinary ? Buffer.from(data as Buffer).toString("base64") : data.toString(), isBinary || undefined);
             });
             ws.on("close", (code, reason) => {
                 if (!closingFromRelay) relay.sendWsClose(runnerId, tunnelWsId, code, reason.toString());
@@ -512,7 +583,7 @@ async function handleRunnerUpgradeAsync(
             onOpened: (protocol) => finalizeUpgrade(protocol),
             onData: (data, binary) => {
                 if (!viewerWs || viewerWs.readyState !== NodeWebSocket.OPEN) return;
-                viewerWs.send(binary ? Buffer.from(data, "base64") : data);
+                deliverRunnerWsFrame(relay, runnerId, tunnelWsId, viewerWs, data, binary);
             },
             onClose: (code, reason) => {
                 if (!handshakeComplete) { closePendingSocket(502, reason || "Tunnel WebSocket closed"); return; }

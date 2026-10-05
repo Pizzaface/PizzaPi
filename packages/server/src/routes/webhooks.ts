@@ -11,13 +11,19 @@
  * Fire endpoint (no auth cookie — validated via HMAC):
  *   POST /api/webhooks/:id/fire     — spawn a new session + fire trigger
  *
- * HMAC validation (two modes, auto-detected):
- *   Enhanced: SHA-256 of `${timestamp}.${nonce}.${rawBody}` — requires X-Webhook-Timestamp
- *             and X-Webhook-Nonce headers; includes replay protection.
- *   Legacy:   SHA-256 of raw body only — used when the enhanced headers are absent.
- * Caller must always send:
+ * HMAC validation:
+ *   Enhanced (default, required): SHA-256 of `${timestamp}.${nonce}.${rawBody}` —
+ *             requires X-Webhook-Timestamp and X-Webhook-Nonce headers; includes
+ *             a freshness window and single-use nonce (replay protection).
+ *   Legacy:   SHA-256 of raw body only — DISABLED by default because a captured
+ *             request is replayable. Operators can re-enable it with
+ *             PIZZAPI_WEBHOOK_ALLOW_LEGACY_SIGNATURES=true; accepted legacy
+ *             requests are then deduplicated per webhook for
+ *             LEGACY_WEBHOOK_DEDUPE_WINDOW_MS (identical signed bodies → 409).
+ *   A request carrying only one of the two freshness headers is rejected
+ *   (no silent downgrade to legacy mode).
+ * Caller must send:
  *   - X-Webhook-Signature (hex digest)
- * Optional for enhanced mode (enables replay protection):
  *   - X-Webhook-Timestamp (ISO string or RFC3339 date)
  *   - X-Webhook-Nonce (unique per delivery)
  *
@@ -38,7 +44,7 @@ import type { RouteInput } from "@pizzapi/protocol";
 import type { Webhook } from "../webhooks/store.js";
 import { createHmac, timingSafeEqual } from "crypto";
 import { createLogger } from "@pizzapi/tools";
-import { consumeNonceOnce } from "../redis-kv-store.js";
+import { consumeNonceOnce, releaseNonce } from "../redis-kv-store.js";
 import {
     createWebhook,
     getWebhook,
@@ -56,6 +62,22 @@ const log = createLogger("webhooks-api");
 const WEBHOOK_REPLAY_WINDOW_MS = 5 * 60 * 1000;
 /** Allow up to 30s of clock skew (NTP drift) before rejecting as "future". */
 const WEBHOOK_CLOCK_SKEW_MS = 30 * 1000;
+/**
+ * When legacy (body-only) signatures are explicitly allowed, an identical
+ * signed body is accepted at most once per webhook within this window.
+ */
+export const LEGACY_WEBHOOK_DEDUPE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Legacy body-only HMAC signatures have no replay protection, so they are
+ * rejected unless the operator opts back in. Read per request so the setting
+ * can be toggled in tests and takes effect without code changes.
+ */
+export function legacyWebhookSignaturesAllowed(): boolean {
+    const raw = process.env.PIZZAPI_WEBHOOK_ALLOW_LEGACY_SIGNATURES;
+    if (!raw) return false;
+    return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
+}
 
 // ── HMAC helpers ─────────────────────────────────────────────────────────────
 
@@ -428,6 +450,18 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
         const nonceHeader = req.headers.get("x-webhook-nonce");
         const useEnhanced = !!(timestampHeader && nonceHeader);
 
+        if (!useEnhanced && (timestampHeader || nonceHeader)) {
+            // A partial freshness header set must never downgrade to the
+            // replayable body-only mode.
+            return Response.json(
+                { error: "Both X-Webhook-Timestamp and X-Webhook-Nonce headers are required" },
+                { status: 401 },
+            );
+        }
+
+        // Legacy dedupe reservation, released below when the attempt fails in
+        // a retryable way (see after deliverFire()).
+        let legacyReservation: string | null = null;
         if (useEnhanced) {
             // Enhanced verification: HMAC of `${timestamp}.${nonce}.${rawBody}` with replay protection.
             const timestampMs = Date.parse(timestampHeader!);
@@ -463,92 +497,138 @@ export const handleWebhooksRoute: RouteHandler = async (req, url) => {
                 return Response.json({ error: "Webhook nonce has already been used" }, { status: 409 });
             }
         } else {
-            // Legacy verification: HMAC of raw body only (no replay protection).
+            // Legacy verification: HMAC of raw body only. It carries no
+            // freshness, so it is opt-in and deduplicated when enabled.
+            if (!legacyWebhookSignaturesAllowed()) {
+                return Response.json(
+                    {
+                        error: "Missing X-Webhook-Timestamp and X-Webhook-Nonce headers: legacy body-only "
+                            + "signatures are disabled. Sign `${timestamp}.${nonce}.${rawBody}` instead.",
+                    },
+                    { status: 401 },
+                );
+            }
             const expected = computeHmac(webhook.secret, rawBodyText);
             if (!hmacEqual(signature, expected)) {
                 log.warn(`Invalid HMAC (legacy) for webhook ${webhookId}`);
                 return Response.json({ error: "Invalid signature" }, { status: 401 });
             }
-        }
-
-        // Parse body JSON
-        let body: Record<string, unknown>;
-        try {
-            body = JSON.parse(rawBodyText) as Record<string, unknown>;
-        } catch {
-            return Response.json({ error: "Invalid JSON body" }, { status: 400 });
-        }
-
-        // Check event filter
-        const eventType = (body.type as string | undefined) ?? "webhook";
-
-        if (webhook.eventFilter && webhook.eventFilter.length > 0) {
-            if (!webhook.eventFilter.includes(eventType)) {
-                // Event filtered — silently accept but don't fire
-                return Response.json({ ok: true, filtered: true });
-            }
-        }
-
-        // Unified trigger system (ADR-0002): a webhook is a Source publishing
-        // `webhook:<slug>` events; routing decides the target. A default
-        // spawn-spec route is ensured lazily from the webhook's spawn config,
-        // and users can repoint/extend routes via /api/routes.
-        // SECURITY: fail-closed — never spawn on a runner the webhook owner no
-        // longer owns (runner reclaimed by another user after webhook creation).
-        if (webhook.runnerId) {
-            const runnerData = await getRunnerData(webhook.runnerId).catch(() => null);
-            if (!runnerData || runnerData.userId !== webhook.userId) {
-                return Response.json({ error: "Runner is not available for this webhook" }, { status: 403 });
-            }
-        }
-
-        const routeType = webhookEventType(webhook.name);
-        const configRoute = await getRoute(webhookRouteId(webhook.id));
-        if (webhook.runnerId && !configRoute) {
-            // Ensure this webhook's config-backed route even when unrelated
-            // routes already exist for the same event type.
-            await syncWebhookRoute(webhook).catch((err) => log.warn("webhook route sync failed:", err));
-        } else if (!webhook.runnerId) {
-            const existingRoutes = await listRoutes({ eventType: routeType, ownerUserId: webhook.userId });
-            if (existingRoutes.length === 0) {
-                return Response.json(
-                    { error: "Webhook has no runner assigned and no routes configured" },
-                    { status: 500 },
-                );
-            }
-        }
-
-        try {
-            const outcome = await publishEvent(
-                {
-                    type: routeType,
-                    payload: { ...(body as Record<string, JsonValue>), externalType: eventType },
-                    summary: `Webhook ${webhook.name}`,
-                },
-                // Tenant scope: the webhook's owner. Only their routes match, so
-                // two users' equivalently named webhooks can never cross-fire.
-                { kind: "webhook", id: webhook.id, name: webhook.name, auth: "hmac", userId: webhook.userId },
-                createEngineDeps(),
+            const firstUse = await consumeNonceOnce(
+                "webhook-legacy",
+                `${webhookId}:${expected}`,
+                LEGACY_WEBHOOK_DEDUPE_WINDOW_MS,
             );
-            log.info(`Webhook ${webhookId} published ${outcome.event.eventId} (${outcome.deliveries.length} deliveries, ${outcome.spawnedSessions.length} spawns)`);
-            if (outcome.deliveries.length === 0) {
-                // 503: routes exist but nothing accepted the delivery (runner
-                // offline, spawn rejected) — the sender should retry.
+            if (!firstUse) {
                 return Response.json(
-                    { error: "Webhook event published but no route delivered it — retry" },
-                    { status: 503 },
+                    { error: "Duplicate legacy webhook delivery (identical signed body already accepted)" },
+                    { status: 409 },
                 );
             }
-            return Response.json({
-                ok: true,
-                eventId: outcome.event.eventId,
-                sessionIds: outcome.deliveries.map((d) => d.sessionId),
-                spawnedSessions: outcome.spawnedSessions,
-            });
-        } catch (err) {
-            log.error(`Webhook ${webhookId} publish failed:`, err);
-            return Response.json({ error: "Failed to publish webhook event" }, { status: 500 });
+            legacyReservation = `${webhookId}:${expected}`;
+            log.warn(
+                `Webhook ${webhookId} fired with a deprecated legacy body-only signature; `
+                + "migrate the caller to X-Webhook-Timestamp/X-Webhook-Nonce signing.",
+            );
         }
+
+        const deliverFire = async (): Promise<Response> => {
+            // Parse body JSON
+            let body: Record<string, unknown>;
+            try {
+                body = JSON.parse(rawBodyText) as Record<string, unknown>;
+            } catch {
+                return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+            }
+
+            // Check event filter
+            const eventType = (body.type as string | undefined) ?? "webhook";
+
+            if (webhook.eventFilter && webhook.eventFilter.length > 0) {
+                if (!webhook.eventFilter.includes(eventType)) {
+                    // Event filtered — silently accept but don't fire
+                    return Response.json({ ok: true, filtered: true });
+                }
+            }
+
+            // Unified trigger system (ADR-0002): a webhook is a Source publishing
+            // `webhook:<slug>` events; routing decides the target. A default
+            // spawn-spec route is ensured lazily from the webhook's spawn config,
+            // and users can repoint/extend routes via /api/routes.
+            // SECURITY: fail-closed — never spawn on a runner the webhook owner no
+            // longer owns (runner reclaimed by another user after webhook creation).
+            if (webhook.runnerId) {
+                const runnerData = await getRunnerData(webhook.runnerId).catch(() => null);
+                if (!runnerData || runnerData.userId !== webhook.userId) {
+                    return Response.json({ error: "Runner is not available for this webhook" }, { status: 403 });
+                }
+            }
+
+            const routeType = webhookEventType(webhook.name);
+            const configRoute = await getRoute(webhookRouteId(webhook.id));
+            if (webhook.runnerId && !configRoute) {
+                // Ensure this webhook's config-backed route even when unrelated
+                // routes already exist for the same event type.
+                await syncWebhookRoute(webhook).catch((err) => log.warn("webhook route sync failed:", err));
+            } else if (!webhook.runnerId) {
+                const existingRoutes = await listRoutes({ eventType: routeType, ownerUserId: webhook.userId });
+                if (existingRoutes.length === 0) {
+                    return Response.json(
+                        { error: "Webhook has no runner assigned and no routes configured" },
+                        { status: 500 },
+                    );
+                }
+            }
+
+            try {
+                const outcome = await publishEvent(
+                    {
+                        type: routeType,
+                        payload: { ...(body as Record<string, JsonValue>), externalType: eventType },
+                        summary: `Webhook ${webhook.name}`,
+                    },
+                    // Tenant scope: the webhook's owner. Only their routes match, so
+                    // two users' equivalently named webhooks can never cross-fire.
+                    { kind: "webhook", id: webhook.id, name: webhook.name, auth: "hmac", userId: webhook.userId },
+                    createEngineDeps(),
+                );
+                log.info(`Webhook ${webhookId} published ${outcome.event.eventId} (${outcome.deliveries.length} deliveries, ${outcome.spawnedSessions.length} spawns)`);
+                if (outcome.deliveries.length === 0) {
+                    // 503: routes exist but nothing accepted the delivery (runner
+                    // offline, spawn rejected) — the sender should retry.
+                    return Response.json(
+                        { error: "Webhook event published but no route delivered it — retry" },
+                        { status: 503 },
+                    );
+                }
+                return Response.json({
+                    ok: true,
+                    eventId: outcome.event.eventId,
+                    sessionIds: outcome.deliveries.map((d) => d.sessionId),
+                    spawnedSessions: outcome.spawnedSessions,
+                });
+            } catch (err) {
+                log.error(`Webhook ${webhookId} publish failed:`, err);
+                return Response.json({ error: "Failed to publish webhook event" }, { status: 500 });
+            }
+        };
+
+        let fired: Response;
+        try {
+            fired = await deliverFire();
+        } catch (err) {
+            if (legacyReservation) await releaseNonce("webhook-legacy", legacyReservation);
+            throw err;
+        }
+        // A legacy body-only signature cannot be re-signed with a fresh nonce,
+        // so a retryable failure (runner unavailable, no routes, nothing
+        // delivered, publish error) must not consume the dedupe slot: the
+        // sender's retry of the identical body would otherwise get 409 for the
+        // whole dedupe window. Successful, filtered, and malformed-body
+        // outcomes stay consumed.
+        if (legacyReservation && (fired.status >= 500 || fired.status === 403)) {
+            await releaseNonce("webhook-legacy", legacyReservation);
+        }
+        return fired;
     }
 
     return undefined;

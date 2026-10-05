@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { watch } from "node:fs";
 import { rm } from "node:fs/promises";
 import { promisify } from "node:util";
-import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
+import nodePath, { dirname, isAbsolute, normalize, resolve } from "node:path";
 import type { Socket } from "socket.io-client";
 import type { ServiceHandler, ServiceInitOptions, ServiceEnvelope } from "../service-handler.js";
 import type { ServiceSigilDef } from "@pizzapi/protocol";
@@ -24,6 +24,8 @@ type GitExec = (
 ) => Promise<{ stdout: string; stderr: string }>;
 
 type GitRm = (path: string, options: { force: boolean; recursive: boolean }) => Promise<void>;
+/** The parts of a `node:path` implementation (posix or win32) used for worktree targets. */
+type PlatformPath = Pick<typeof nodePath, "sep" | "isAbsolute">;
 
 type GitStatusResultPayload = {
     ok: true;
@@ -168,6 +170,28 @@ function isValidPath(p: string): boolean {
     return true;
 }
 
+/**
+ * Resolve a caller-supplied `git worktree add/remove` target against `cwd`
+ * into the path whose containment must be checked, using the platform's own
+ * notion of "absolute" (review R2-3): on Windows `D:\wt` and `\\host\share\wt`
+ * are absolute and git uses them as-is, so they must be validated as-is, not
+ * as `${cwd}/D:\wt`. Relative targets are concatenated, not join()ed: join
+ * collapses ".." lexically, whereas git (via the kernel) applies ".." after
+ * following symlinks, so `link/../wt` must be judged where git will create it.
+ *
+ * Returns null (refuse) for Windows drive-relative (`C:wt`) and drive-less
+ * rooted (`\wt`) targets: they resolve against per-drive state rather
+ * than `cwd`, so the checked path could differ from the one git uses.
+ */
+export function resolveWorktreeTarget(cwd: string, target: string, pathImpl: PlatformPath = nodePath): string | null {
+    if (pathImpl.sep === "\\") {
+        if (/^[A-Za-z]:(?![\\/])/.test(target)) return null;
+        if (/^[\\/](?![\\/])/.test(target)) return null;
+    }
+    if (pathImpl.isAbsolute(target)) return target;
+    return `${cwd}${pathImpl.sep}${target}`;
+}
+
 // ── Sigils ──────────────────────────────────────────────────────────────────
 
 /**
@@ -219,6 +243,10 @@ export class GitService implements ServiceHandler {
     private readonly _clearTimeout: ClearTimeoutFn;
     private readonly _now: () => number;
     private readonly _rm: GitRm;
+    /** Path semantics for worktree targets (injectable to test Windows semantics). */
+    private readonly _pathImpl: PlatformPath;
+    /** Containment check for worktree targets (injectable for tests). */
+    private readonly _isPathAllowed: (path: string) => boolean;
     /** Optional model-backed commit-message generator. Falls back to heuristic when absent. */
     private readonly _generateCommitMessage: (diff: string) => Promise<{ subject: string; body: string } | null>;
     private readonly _statusCache = new Map<string, { expiresAt: number; snapshot: GitStatusSnapshot }>();
@@ -259,7 +287,11 @@ export class GitService implements ServiceHandler {
         generateCommitMessage?: (diff: string) => Promise<{ subject: string; body: string } | null>;
         getSessionCwd?: (sessionId: string) => string | null;
         getActiveSessionCwds?: () => string[];
+        pathImpl?: PlatformPath;
+        isPathAllowed?: (path: string) => boolean;
     }) {
+        this._pathImpl = options?.pathImpl ?? nodePath;
+        this._isPathAllowed = options?.isPathAllowed ?? isCwdAllowed;
         this._getSessionCwd = options?.getSessionCwd ?? null;
         this._getActiveSessionCwds = options?.getActiveSessionCwds ?? null;
         this._execGit = options?.execGit ?? ((args, execOptions) => execFileAsync("git", args, execOptions));
@@ -2178,9 +2210,10 @@ export class GitService implements ServiceHandler {
             return;
         }
 
-        // Validate the resolved worktree path is within allowed roots
-        const resolvedPath = path.startsWith("/") ? path : join(cwd, path);
-        if (!isCwdAllowed(resolvedPath)) {
+        // Validate the resolved worktree path is within allowed roots (see
+        // resolveWorktreeTarget for the ".." and Windows-path semantics).
+        const resolvedPath = resolveWorktreeTarget(cwd, path, this._pathImpl);
+        if (resolvedPath === null || !this._isPathAllowed(resolvedPath)) {
             this.emitError("git_worktree_add_result", "Worktree path outside allowed roots", requestId, sessionId);
             return;
         }
@@ -2189,6 +2222,16 @@ export class GitService implements ServiceHandler {
         if (!mutation) return;
 
         try {
+            // Revalidate after the async mutation lock: an ancestor of the
+            // prospective worktree path may have been swapped for a symlink
+            // while we waited. isCwdAllowed canonicalizes through the nearest
+            // existing ancestor, so a symlinked parent pointing outside the
+            // roots is rejected before git can populate it.
+            if (!this._isPathAllowed(resolvedPath)) {
+                this.emitError("git_worktree_add_result", "Worktree path outside allowed roots", requestId, sessionId);
+                return;
+            }
+
             let args: string[];
             let resultBranch = branch;
 
@@ -2254,8 +2297,8 @@ export class GitService implements ServiceHandler {
         }
 
         // Validate the resolved worktree path is within allowed roots
-        const resolvedPath = worktreePath.startsWith("/") ? worktreePath : join(cwd, worktreePath);
-        if (!isCwdAllowed(resolvedPath)) {
+        const resolvedPath = resolveWorktreeTarget(cwd, worktreePath, this._pathImpl);
+        if (resolvedPath === null || !this._isPathAllowed(resolvedPath)) {
             this.emitError("git_worktree_remove_result", "Worktree path outside allowed roots", requestId, sessionId);
             return;
         }

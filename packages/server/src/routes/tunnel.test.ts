@@ -11,8 +11,25 @@ import {
     rewriteTunnelJsModule,
     rewriteTunnelCss,
     proxyTunnelRequestViaRelay,
+    PATH_TUNNEL_ORIGIN_STATE_HEADERS,
 } from "./tunnel";
 import { safeDecodePathComponent } from "./tunnel";
+
+/** Fill in the TunnelRelay surface the proxy uses beyond what a test fakes (no limits, no backpressure). */
+function fakeRelay(relay: object): never {
+    const original = (relay as { sendRequestData?: (...args: unknown[]) => unknown }).sendRequestData;
+    return {
+        limits: { maxRequestBodyBytes: 0, maxResponseBodyBytes: 0, maxInFlightPerRunner: 0, maxBufferedBytes: 0 },
+        waitForRequestCapacity: async () => {},
+        pauseResponse() {},
+        resumeResponse() {},
+        ...relay,
+        sendRequestData: (...args: unknown[]) => {
+            original?.(...args);
+            return true;
+        },
+    } as never;
+}
 
 describe("safeDecodePathComponent", () => {
     test("decodes valid percent-encoding", () => {
@@ -225,6 +242,36 @@ describe("tunnel route HTML rewriting", () => {
         new mockWindow.WebSocket("ws://jordans-mac-mini.tail65556b.ts.net");
 
         expect(capturedUrls).toEqual(["wss://jordans-mac-mini.tail65556b.ts.net/api/tunnel/s-1/3000/"]);
+    });
+
+    test("interceptor gives sandboxed (opaque-origin) documents in-memory storage and cookies", () => {
+        const rewritten = rewriteTunnelHtml("<html><head></head></html>", "s-1", 3000);
+        const scriptBody = rewritten.match(/<script data-pizzapi-tunnel-intercept>\n([\s\S]*?)<\/script>/)![1];
+        const denied = () => { throw new Error("SecurityError: sandboxed"); };
+        const mockWindow: Record<string, unknown> = {
+            fetch: () => Promise.resolve(new Response(null)),
+            WebSocket: Object.assign(function () {}, { prototype: {} }),
+        };
+        Object.defineProperty(mockWindow, "localStorage", { get: denied, configurable: true });
+        Object.defineProperty(mockWindow, "sessionStorage", { get: denied, configurable: true });
+        const mockDocument: Record<string, unknown> = {};
+        Object.defineProperty(mockDocument, "cookie", { get: denied, set: denied, configurable: true });
+        class MockXHR { open(): void {} }
+
+        new Function("window", "document", "location", "history", "XMLHttpRequest", "Request", scriptBody)(
+            mockWindow, mockDocument, { protocol: "https:", host: "relay.example" }, {}, MockXHR, Request,
+        );
+
+        const storage = mockWindow.localStorage as Storage;
+        storage.setItem("theme", "dark");
+        expect(storage.getItem("theme")).toBe("dark");
+        expect(storage.length).toBe(1);
+        storage.clear();
+        expect(storage.getItem("theme")).toBeNull();
+        expect((mockWindow.sessionStorage as Storage).getItem("x")).toBeNull();
+        mockDocument.cookie = "a=1; Path=/";
+        mockDocument.cookie = "b=2";
+        expect(mockDocument.cookie).toBe("a=1; b=2");
     });
 
     test("rewriteTunnelHtml fetch/XHR interceptor rewrites same-origin and localhost full URLs", () => {
@@ -678,7 +725,7 @@ describe("tunnel route streaming proxy", () => {
                 // @ts-expect-error Bun supports duplex
                 duplex: "half",
             }),
-            relay as never,
+            fakeRelay(relay),
             "runner-1", "request-1", "/api/tunnel/s-1/3000", 3000, "/data", "/data", {},
         );
         expect(response.status).toBe(504);
@@ -708,7 +755,7 @@ describe("tunnel route streaming proxy", () => {
                 // @ts-expect-error Bun supports duplex
                 duplex: "half",
             }),
-            relay as never,
+            fakeRelay(relay),
             "runner-1", "request-1", "/api/tunnel/s-1/3000", 3000, "/data", "/data", {},
         );
         await new Promise<void>((resolve) => queueMicrotask(resolve));
@@ -749,7 +796,7 @@ describe("tunnel route streaming proxy", () => {
                 // @ts-expect-error Bun supports duplex
                 duplex: "half",
             }),
-            relay as never,
+            fakeRelay(relay),
             "runner-1", "request-1", "/api/tunnel/s-1/3000", 3000, "/data", "/data", {},
         );
         callbacks!.onResponseStart(200, "OK", { "content-type": "text/plain" });
@@ -783,7 +830,7 @@ describe("tunnel route streaming proxy", () => {
 
         const responsePromise = proxyTunnelRequestViaRelay(
             new Request("http://localhost/api/tunnel/s-1/3000/data"),
-            relay as never,
+            fakeRelay(relay),
             "runner-1",
             "request-1",
             "/api/tunnel/s-1/3000",
@@ -872,7 +919,7 @@ describe("tunnel auth header forwarding", () => {
 
         const response = await proxyTunnelRequestViaRelay(
             req,
-            relay as never,
+            fakeRelay(relay),
             "runner-1",
             "request-1",
             "/api/tunnel/s-1/3000",
@@ -888,5 +935,110 @@ describe("tunnel auth header forwarding", () => {
         expect(capturedHeaders["x-api-key"]).toBe("mobile-key-123");
         expect(capturedHeaders["cookie"]).toBeUndefined();
         expect(capturedHeaders["authorization"]).toBeUndefined();
+    });
+});
+
+describe("path-based tunnel origin-state headers (F02)", () => {
+    type StartCb = (code: number, statusMessage: string, headers: Record<string, string | string[]>) => void;
+
+    function relayReturning(headers: Record<string, string | string[]>, body = "ok") {
+        return {
+            proxyHttpRequest: (_runnerId: string, _request: unknown, cb: {
+                onResponseStart: StartCb;
+                onResponseData: (data: Buffer) => void;
+                onResponseEnd: () => void;
+            }) => {
+                setTimeout(() => {
+                    cb.onResponseStart(200, "OK", headers);
+                    cb.onResponseData(Buffer.from(body));
+                    cb.onResponseEnd();
+                }, 0);
+                return { cancel() {} };
+            },
+            sendRequestDataEnd() {},
+        };
+    }
+
+    const hostileHeaders = {
+        "set-cookie": ["better-auth.session_token=attacker; Path=/; HttpOnly", "theme=dark; Path=/"],
+        "clear-site-data": "\"cookies\", \"storage\"",
+        "service-worker-allowed": "/",
+        "strict-transport-security": "max-age=63072000; includeSubDomains",
+        "alt-svc": "h3=\"evil.example:443\"",
+        nel: "{\"report_to\":\"x\",\"max_age\":86400}",
+        "report-to": "{\"group\":\"x\"}",
+        "reporting-endpoints": "x=\"https://evil.example/r\"",
+        "access-control-allow-credentials": "true",
+        "x-pizzapi-tunnel-frame": "cross-origin",
+        "x-custom": "kept",
+    };
+
+    async function proxy(basePath: string, contentType: string, allowCrossOriginFrame = false) {
+        return proxyTunnelRequestViaRelay(
+            new Request("http://localhost/api/tunnel/s-1/3000/"),
+            fakeRelay(relayReturning({ ...hostileHeaders, "content-type": contentType })),
+            "runner-1",
+            "request-1",
+            basePath,
+            3000,
+            "/",
+            "/",
+            {},
+            allowCrossOriginFrame,
+        );
+    }
+
+    for (const [label, contentType] of [["streamed", "application/octet-stream"], ["buffered/rewritten", "text/html"]] as const) {
+        test(`strips origin-scoped state headers from ${label} path-tunnel responses`, async () => {
+            const res = await proxy("/api/tunnel/s-1/3000", contentType);
+            expect(res.headers.getSetCookie()).toEqual([]);
+            for (const h of PATH_TUNNEL_ORIGIN_STATE_HEADERS) expect(res.headers.get(h)).toBeNull();
+            // Upstream cannot forge the relay's internal framing marker.
+            expect(res.headers.get("x-pizzapi-tunnel-frame")).toBeNull();
+            expect(res.headers.get("x-custom")).toBe("kept");
+            expect(res.headers.get("x-pizzapi-tunnel")).toBeTruthy();
+        });
+    }
+
+    test("token-authenticated path tunnel (cross-origin frame) also strips them", async () => {
+        const res = await proxy("/api/tunnel/auth/tok/s-1/3000", "text/plain", true);
+        expect(res.headers.getSetCookie()).toEqual([]);
+        expect(res.headers.get("clear-site-data")).toBeNull();
+        // The relay's own marker is set for this route, not the upstream one.
+        expect(res.headers.get("x-pizzapi-tunnel-frame")).toBe("cross-origin");
+    });
+
+    test("forged frame marker on a cookie route cannot drop X-Frame-Options", async () => {
+        const { withSecurityHeaders } = await import("../handler");
+        const res = withSecurityHeaders(await proxy("/api/tunnel/runner/r-1/3000", "text/plain"));
+        expect(res.headers.get("X-Frame-Options")).toBe("SAMEORIGIN");
+    });
+
+    test("token-authenticated (cross-origin frame) responses keep the app's CSP minus frame-ancestors", async () => {
+        const { withSecurityHeaders } = await import("../handler");
+        const upstreamCsp = "default-src 'self'; script-src 'self'; frame-ancestors 'self'; connect-src 'self'";
+        const res = withSecurityHeaders(await proxyTunnelRequestViaRelay(
+            new Request("http://localhost/api/tunnel/auth/tok/s-1/3000/"),
+            fakeRelay(relayReturning({ "content-type": "text/plain", "content-security-policy": upstreamCsp })),
+            "runner-1",
+            "request-1",
+            "/api/tunnel/auth/tok/s-1/3000",
+            3000,
+            "/",
+            "/",
+            {},
+            true,
+        ));
+        expect(res.headers.get("X-Frame-Options")).toBeNull();
+        const csp = res.headers.get("content-security-policy")!;
+        expect(csp).toContain("default-src 'self'; script-src 'self'; connect-src 'self'");
+        expect(csp).not.toContain("frame-ancestors");
+        expect(csp).toContain("sandbox allow-scripts");
+    });
+
+    test("host-origin tunnels keep app cookies (host-only) on their isolated origin", async () => {
+        const res = await proxy("", "text/plain", true);
+        expect(res.headers.getSetCookie()).toEqual(["better-auth.session_token=attacker; Path=/; HttpOnly", "theme=dark; Path=/"]);
+        expect(res.headers.get("x-pizzapi-tunnel-frame")).toBe("cross-origin");
     });
 });

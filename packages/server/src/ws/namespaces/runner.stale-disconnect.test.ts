@@ -15,8 +15,9 @@
 // no cross-file bleed (see TODO(ltl2EKmU)).
 // ============================================================================
 
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { createTestAuthContext } from "../../auth.js";
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from "bun:test";
+import { createTestAuthContext, runWithAuthContext } from "../../auth.js";
+import { ensureRunnerOwnerTable } from "../../runner-owner.js";
 import { _injectRedisForTesting } from "../../redis-kv-store.js";
 import {
     initSioRegistry,
@@ -28,7 +29,7 @@ import {
     getRunnerSecret,
 } from "../sio-registry/context.js";
 import { initStateRedis, getRunner } from "../sio-state/index.js";
-import { registerRunner } from "../sio-registry/runners.js";
+import { registerRunner as registerRunnerRaw } from "../sio-registry/runners.js";
 import { registerTerminal, getTerminalIdsForRunner, getTerminalEntry } from "../sio-registry/terminals.js";
 import { registerRunnerNamespace } from "./runner.js";
 
@@ -196,9 +197,19 @@ const REGISTRATION = {
     userName: "User One",
 };
 
+// Registration consults the durable runner_owner table (fail-closed), so run
+// it inside a disposable in-memory auth context that has the table.
+const authCtx = createTestAuthContext({ dbPath: ":memory:" });
+const registerRunner = (...args: Parameters<typeof registerRunnerRaw>) =>
+    runWithAuthContext(authCtx, () => registerRunnerRaw(...args));
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe("runner stale disconnect after replacement (B-014)", () => {
+    beforeAll(async () => {
+        await runWithAuthContext(authCtx, () => ensureRunnerOwnerTable());
+    });
+
     beforeEach(() => {
         hashes.clear();
         strings.clear();
@@ -225,7 +236,7 @@ describe("runner stale disconnect after replacement (B-014)", () => {
         // there too so validateAndPersistRunnerSecret never hits real Redis.
         _injectRedisForTesting(mockRedis);
 
-        registerRunnerNamespace(io as never, createTestAuthContext({ dbPath: ":memory:" }));
+        registerRunnerNamespace(io as never, authCtx);
         const connection = getConnectionHandler();
         expect(connection).toBeDefined();
 
@@ -278,7 +289,7 @@ describe("runner stale disconnect after replacement (B-014)", () => {
         await initStateRedis(mockRedis as never);
         _injectRedisForTesting(mockRedis);
 
-        registerRunnerNamespace(io as never, createTestAuthContext({ dbPath: ":memory:" }));
+        registerRunnerNamespace(io as never, authCtx);
         const connection = getConnectionHandler()!;
 
         const sock1 = makeSocket("sock-1");

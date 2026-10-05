@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { toggleMcpServer, loadConfig, _setGlobalConfigDir, resolveSandboxConfig, validateSandboxOverride, saveGlobalConfig, applyProviderSettingsEnv, isProjectMcpTrusted, expandVars, expandVarsDeep, resolvePizzaPiVar, PIZZAPI_VARS_HELP, type PizzaPiConfig } from "./config.js";
+import { toggleMcpServer, loadConfig, _setGlobalConfigDir, resolveSandboxConfig, validateSandboxOverride, shouldSandboxFailClosed, saveGlobalConfig, applyProviderSettingsEnv, isProjectMcpTrusted, expandVars, expandVarsDeep, resolvePizzaPiVar, PIZZAPI_VARS_HELP, type PizzaPiConfig } from "./config.js";
 
 describe("toggleMcpServer", () => {
   let tempDir: string;
@@ -456,6 +456,48 @@ describe("resolveSandboxConfig", () => {
       },
     } as any);
     expect(result.srtConfig!.network!.allowedDomains).toEqual(["example.com"]);
+  });
+});
+
+// F18: explicitly requested isolation must fail closed when unavailable.
+describe("shouldSandboxFailClosed", () => {
+  const base = { override: undefined, globalMode: undefined, env: {} } as const;
+
+  test("implicit default basic degrades (no explicit request)", () => {
+    expect(shouldSandboxFailClosed({ ...base, effectiveMode: "basic" })).toBe(false);
+  });
+
+  test("global config mode basic/full fails closed", () => {
+    expect(shouldSandboxFailClosed({ ...base, effectiveMode: "basic", globalMode: "basic" })).toBe(true);
+    expect(shouldSandboxFailClosed({ ...base, effectiveMode: "full", globalMode: "full" })).toBe(true);
+    // A project escalation to full still fails closed when the user asked for basic.
+    expect(shouldSandboxFailClosed({ ...base, effectiveMode: "full", globalMode: "basic" })).toBe(true);
+  });
+
+  test("project-only escalation does not make startup fail closed", () => {
+    expect(shouldSandboxFailClosed({ ...base, effectiveMode: "full", globalMode: undefined })).toBe(false);
+  });
+
+  test("--sandbox / PIZZAPI_SANDBOX override of basic/full fails closed", () => {
+    expect(shouldSandboxFailClosed({ ...base, effectiveMode: "basic", override: "basic" })).toBe(true);
+    expect(shouldSandboxFailClosed({ ...base, effectiveMode: "full", override: "full" })).toBe(true);
+  });
+
+  test("mode none never fails closed", () => {
+    expect(shouldSandboxFailClosed({ ...base, effectiveMode: "none", override: "none", globalMode: "full" })).toBe(false);
+  });
+
+  test("PIZZAPI_SANDBOX_ALLOW_UNSANDBOXED opts out", () => {
+    for (const v of ["1", "true", "TRUE"]) {
+      expect(shouldSandboxFailClosed({
+        ...base, effectiveMode: "full", override: "full",
+        env: { PIZZAPI_SANDBOX_ALLOW_UNSANDBOXED: v },
+      })).toBe(false);
+    }
+    expect(shouldSandboxFailClosed({
+      ...base, effectiveMode: "full", override: "full",
+      env: { PIZZAPI_SANDBOX_ALLOW_UNSANDBOXED: "0" },
+    })).toBe(true);
   });
 });
 

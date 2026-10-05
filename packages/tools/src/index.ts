@@ -1,6 +1,7 @@
 export { createLogger } from "./log.js";
 export type { Logger } from "./log.js";
 export { bashTool } from "./bash.js";
+export { scrubSubprocessEnv, isStrippedSubprocessEnvName, BASH_PASSTHROUGH_ENV } from "./subprocess-env.js";
 export { readFileTool } from "./read-file.js";
 export { writeFileTool } from "./write-file.js";
 export { searchTool } from "./search.js";
@@ -12,6 +13,8 @@ export {
     validatePath,
     getSandboxEnv,
     isSandboxActive,
+    isSandboxRequiredButUnavailable,
+    SandboxUnavailableError,
     setReadOnlyOverlay,
     isReadOnlyOverlay,
     getSandboxMode,

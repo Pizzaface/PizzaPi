@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { createTestAuthContext, runWithAuthContext } from "../auth.js";
 import { runAllMigrations } from "../migrations.js";
 import { createSetupClaim, approveSetupClaim } from "../setup-claims.js";
-import { handleSetupClaimsRoute } from "./setup-claims.js";
+import { handleSetupClaimsRoute, SETUP_CLAIM_CREATE_LIMIT_PER_CLIENT } from "./setup-claims.js";
 
 const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-setup-claims-routes-"));
 const dbPath = join(tmpDir, "test.db");
@@ -107,6 +107,63 @@ describe("setup-claim routes", () => {
             const infoBody = (await infoRes!.json()) as { status: string; apiKey?: string };
             expect(infoBody.apiKey).toBeUndefined();
             expect(infoBody.status).toBe("approved");
+        });
+    });
+});
+
+// F08: POST /api/setup-claim is an unauthenticated durable write.
+describe("POST /api/setup-claim admission", () => {
+    function post(body: unknown, ip: string): { req: Request; url: URL } {
+        const url = new URL("http://localhost:7492/api/setup-claim");
+        return {
+            req: new Request(url, {
+                method: "POST",
+                headers: { "content-type": "application/json", "x-pizzapi-client-ip": ip },
+                body: typeof body === "string" ? body : JSON.stringify(body),
+            }),
+            url,
+        };
+    }
+    async function countRows(): Promise<number> {
+        const { getKysely } = await import("../auth.js");
+        return (await getKysely().selectFrom("setup_claim").select("id").execute()).length;
+    }
+
+    test("rejects invalid or oversized relayUrl values with 400 and no row", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const before = await countRows();
+            for (const relayUrl of ["ftp://relay.example.com", "javascript:alert(1)", `https://x.example.com/${"a".repeat(5000)}`, 42]) {
+                const { req, url } = post({ relayUrl }, "198.51.100.10");
+                const res = await handleSetupClaimsRoute(req, url);
+                expect(res!.status).toBe(400);
+            }
+            expect(await countRows()).toBe(before);
+        });
+    });
+
+    test("rate-limits claim creation per client and writes no row once limited", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const ip = "198.51.100.77";
+            let created = 0;
+            let limited: Response | undefined;
+            for (let i = 0; i < SETUP_CLAIM_CREATE_LIMIT_PER_CLIENT + 5; i++) {
+                const { req, url } = post({ relayUrl: "https://relay.example.com" }, ip);
+                const res = (await handleSetupClaimsRoute(req, url))!;
+                if (res.status === 200) created++;
+                else { limited = res; break; }
+            }
+            expect(created).toBe(SETUP_CLAIM_CREATE_LIMIT_PER_CLIENT);
+            expect(limited?.status).toBe(429);
+            expect(Number(limited?.headers.get("Retry-After"))).toBeGreaterThan(0);
+
+            const before = await countRows();
+            const again = post({ relayUrl: "https://relay.example.com" }, ip);
+            expect((await handleSetupClaimsRoute(again.req, again.url))!.status).toBe(429);
+            expect(await countRows()).toBe(before);
+
+            // A different client is unaffected.
+            const other = post({ relayUrl: "https://relay.example.com" }, "198.51.100.78");
+            expect((await handleSetupClaimsRoute(other.req, other.url))!.status).toBe(200);
         });
     });
 });

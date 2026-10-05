@@ -103,3 +103,27 @@ describe("seedAuthFileIfNeeded", () => {
         expect(() => readFileSync(join(agentDir, "auth.json"), "utf-8")).toThrow();
     });
 });
+
+describe("file-backed relay credentials never reach shell commands (review R1)", () => {
+    test("expanded PIZZAPI_API_KEY_FILE cannot be recovered from a scrubbed bash environment", async () => {
+        const { scrubSubprocessEnv } = await import("@pizzapi/tools");
+        const { spawnSync } = await import("node:child_process");
+        const secretPath = join(tmpDir, "pizzapi_api_key");
+        writeFileSync(secretPath, "pk-file-backed-secret\n");
+        const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, PIZZAPI_API_KEY_FILE: secretPath };
+
+        // Startup: the CLI entrypoint expands the pointer into the credential.
+        expandFileBackedEnv(env);
+        expect(env.PIZZAPI_API_KEY).toBe("pk-file-backed-secret");
+
+        // The model-controlled shell runs with the scrubbed environment.
+        const result = spawnSync(
+            "/bin/sh",
+            ["-c", 'printf "%s|" "$PIZZAPI_API_KEY" "$PIZZAPI_API_KEY_FILE"; [ -n "$PIZZAPI_API_KEY_FILE" ] && cat "$PIZZAPI_API_KEY_FILE"; true'],
+            { env: scrubSubprocessEnv(env, {}), encoding: "utf-8" },
+        );
+        expect(result.status).toBe(0);
+        expect(result.stdout).toBe("||");
+        expect(result.stdout).not.toContain("pk-file-backed-secret");
+    });
+});

@@ -262,7 +262,8 @@ export async function migrateLegacyTriggerData(): Promise<{ subs: number; listen
  * Tenant-scope backfill: every non-config route needs an ownerUserId or it
  * matches nothing. Resolve from the durable records we have (spawn spec owner,
  * persisted session owner, runner owner). Idempotent — only ownerless rows.
- * Unresolvable rows stay ownerless: they never fire but remain deletable.
+ * Unresolvable rows stay ownerless: they never fire and are quarantined —
+ * only users in PIZZAPI_ROUTE_RECOVERY_USER_IDS may list/delete them.
  */
 export async function backfillRouteOwners(): Promise<{ stamped: number; unresolved: number }> {
     let stamped = 0;
@@ -290,7 +291,7 @@ export async function backfillRouteOwners(): Promise<{ stamped: number; unresolv
                 stamped++;
             } else {
                 unresolved++;
-                log.warn(`route owner backfill: ${route.routeId} (${route.eventType}) has no resolvable owner — it will not match events until deleted/recreated`);
+                log.warn(`route owner backfill: ${route.routeId} (${route.eventType}) has no resolvable owner — it will not match events; delete it as a PIZZAPI_ROUTE_RECOVERY_USER_IDS operator`);
             }
         } catch (err) {
             unresolved++;

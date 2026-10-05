@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
+    abortChunkedSnapshot,
     applyChunkToPendingState,
     applySnapshotPatchToPendingState,
     canFinalizeChunkedSnapshot,
@@ -10,7 +11,10 @@ import {
     resetPerSessionRelayState,
     CHUNK_STREAM_STALE_MS,
     sessionEventQueues,
+    getChunkedSnapshotLimits,
+    DEFAULT_SNAPSHOT_MAX_CHUNKS,
     type ChunkedSessionState,
+    type ChunkedSnapshotLimits,
 } from "./event-pipeline.js";
 import {
     thinkingStartTimes,
@@ -115,8 +119,8 @@ describe("chunked snapshot assembly", () => {
             isFinalChunk: true,
         });
 
-        expect(firstInsert).toBe(true);
-        expect(duplicateInsert).toBe(false);
+        expect(firstInsert).toEqual({ status: "applied" });
+        expect(duplicateInsert).toEqual({ status: "duplicate" });
         expect(Array.from(pending.receivedChunkIndexes)).toEqual([0]);
         expect(pending.chunks[0]).toEqual([{ id: "m1" }]);
         expect(pending.totalChunks).toBe(2);
@@ -278,6 +282,182 @@ describe("chunked snapshot assembly", () => {
             { event: { type: "message_end" }, opts: undefined },
         ]);
         expect(pending.deferredEvents).toEqual([]);
+    });
+});
+
+describe("chunked snapshot resource limits (F10)", () => {
+    const limits: ChunkedSnapshotLimits = {
+        maxChunks: 4,
+        maxMessages: 5,
+        maxBytes: 1_000,
+        maxDeferredEvents: 2,
+    };
+
+    function apply(pending: ChunkedSessionState, chunkIndex: number, totalChunks: number, msgs: unknown[] = ["m"]) {
+        return applyChunkToPendingState(pending, {
+            chunkIndex,
+            chunkMessages: msgs,
+            totalChunks,
+            isFinalChunk: false,
+        }, limits);
+    }
+
+    test.each([
+        ["negative", -1],
+        ["fractional", 1.5],
+        ["NaN", Number.NaN],
+        ["Infinity", Number.POSITIVE_INFINITY],
+        ["unsafe integer", Number.MAX_SAFE_INTEGER + 2],
+        ["huge", 4_294_967_294],
+        ["at the chunk cap", 4],
+    ])("rejects a %s chunkIndex before allocating", (_label, chunkIndex) => {
+        const pending = createPendingState();
+        const result = apply(pending, chunkIndex, 4);
+        expect(result.status).toBe("rejected");
+        expect(pending.chunks.length).toBe(0);
+        expect(pending.receivedChunkIndexes.size).toBe(0);
+        expect(pending.totalChunks).toBe(0);
+    });
+
+    test("rejects chunkIndex >= totalChunks", () => {
+        const pending = createPendingState();
+        expect(apply(pending, 2, 2).status).toBe("rejected");
+        expect(pending.chunks.length).toBe(0);
+    });
+
+    test.each([
+        ["zero", 0],
+        ["fractional", 2.5],
+        ["above the cap", 5],
+        ["unsafe", Number.MAX_SAFE_INTEGER + 2],
+    ])("rejects a %s totalChunks", (_label, totalChunks) => {
+        const pending = createPendingState();
+        expect(apply(pending, 0, totalChunks).status).toBe("rejected");
+        expect(pending.receivedChunkIndexes.size).toBe(0);
+    });
+
+    test("rejects a totalChunks that changes mid-stream", () => {
+        const pending = createPendingState();
+        expect(apply(pending, 0, 3).status).toBe("applied");
+        expect(apply(pending, 1, 4).status).toBe("rejected");
+        expect(pending.totalChunks).toBe(3);
+        expect(Array.from(pending.receivedChunkIndexes)).toEqual([0]);
+    });
+
+    test("enforces the aggregate message budget", () => {
+        const pending = createPendingState();
+        expect(apply(pending, 0, 3, ["a", "b", "c"]).status).toBe("applied");
+        expect(apply(pending, 1, 3, ["d", "e", "f"]).status).toBe("rejected");
+        expect(pending.receivedMessages).toBe(3);
+        expect(pending.chunks[1]).toBeUndefined();
+    });
+
+    test("enforces the aggregate byte budget", () => {
+        const pending = createPendingState();
+        expect(apply(pending, 0, 3, ["x".repeat(600)]).status).toBe("applied");
+        expect(apply(pending, 1, 3, ["y".repeat(600)]).status).toBe("rejected");
+        expect(pending.receivedBytes).toBeLessThanOrEqual(limits.maxBytes);
+    });
+
+    test("a legitimate in-budget stream still finalizes", () => {
+        const pending = createPendingState();
+        expect(apply(pending, 1, 2, ["b"]).status).toBe("applied");
+        expect(applyChunkToPendingState(pending, {
+            chunkIndex: 0, chunkMessages: ["a"], totalChunks: 2, isFinalChunk: true,
+        }, limits).status).toBe("applied");
+        expect(canFinalizeChunkedSnapshot(pending)).toBe(true);
+        expect(pending.chunks.flat()).toEqual(["a", "b"]);
+    });
+
+    test("limits come from PIZZAPI_RELAY_SNAPSHOT_* env vars with safe fallbacks", () => {
+        const saved = process.env.PIZZAPI_RELAY_SNAPSHOT_MAX_CHUNKS;
+        try {
+            process.env.PIZZAPI_RELAY_SNAPSHOT_MAX_CHUNKS = "25";
+            expect(getChunkedSnapshotLimits().maxChunks).toBe(25);
+            for (const bad of ["0", "-3", "1.5", "abc", "1e400"]) {
+                process.env.PIZZAPI_RELAY_SNAPSHOT_MAX_CHUNKS = bad;
+                expect(getChunkedSnapshotLimits().maxChunks).toBe(DEFAULT_SNAPSHOT_MAX_CHUNKS);
+            }
+        } finally {
+            if (saved === undefined) delete process.env.PIZZAPI_RELAY_SNAPSHOT_MAX_CHUNKS;
+            else process.env.PIZZAPI_RELAY_SNAPSHOT_MAX_CHUNKS = saved;
+        }
+    });
+
+    test("abortChunkedSnapshot drops the pending entry and flushes deferred events in order", async () => {
+        const pending = createPendingState();
+        apply(pending, 0, 3, ["a"]);
+        pending.deferredEvents = [{ type: "message_start" }, { type: "message_end" }];
+        pendingChunkedStates.set("sess-abort", pending);
+        const published: unknown[] = [];
+        const marked: string[] = [];
+        const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+        try {
+            await abortChunkedSnapshot("sess-abort", pending, "test", {
+                publishSessionEvent: (async (_sid: string, evt: unknown) => {
+                    published.push(evt);
+                    return published.length;
+                }) as any,
+                markSnapshotRejected: async (sid: string) => { marked.push(sid); },
+            });
+        } finally {
+            warnSpy.mockRestore();
+            pendingChunkedStates.clear();
+        }
+        expect(pendingChunkedStates.has("sess-abort")).toBe(false);
+        expect(published).toEqual([{ type: "message_start" }, { type: "message_end" }]);
+        // Review R10: the rejection is recorded durably for viewer recovery.
+        expect(marked).toEqual(["sess-abort"]);
+        expect(pending.chunks).toEqual([]);
+        expect(pending.deferredEvents).toEqual([]);
+    });
+
+    test("a transiently failing marker write is retried, not dropped (review R2-6)", async () => {
+        const pending = createPendingState();
+        let attempts = 0;
+        const signals: string[] = [];
+        const errSpy = spyOn(console, "error").mockImplementation(() => {});
+        const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+        try {
+            await abortChunkedSnapshot("sess-retry", pending, "test", {
+                publishSessionEvent: (async () => 1) as any,
+                markSnapshotRejected: async () => {
+                    attempts++;
+                    if (attempts < 3) throw new Error("redis down");
+                },
+                requestRunnerSnapshot: (sid) => { signals.push(sid); },
+                markRetryDelaysMs: [1, 1],
+            });
+        } finally {
+            errSpy.mockRestore();
+            warnSpy.mockRestore();
+        }
+        expect(attempts).toBe(3);
+        expect(signals).toEqual([]);
+    });
+
+    test("a persistently failing marker write asks the runner for a fresh snapshot (review R2-6)", async () => {
+        const pending = createPendingState();
+        pending.deferredEvents = [{ type: "message_start" }];
+        let attempts = 0;
+        const signals: string[] = [];
+        const published: unknown[] = [];
+        const errSpy = spyOn(console, "error").mockImplementation(() => {});
+        const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+        try {
+            await abortChunkedSnapshot("sess-fail", pending, "test", {
+                publishSessionEvent: (async (_sid: string, evt: unknown) => { published.push(evt); return 1; }) as any,
+                markSnapshotRejected: async () => { attempts++; throw new Error("redis down"); },
+                requestRunnerSnapshot: (sid) => { signals.push(sid); },
+                markRetryDelaysMs: [1, 1],
+            });
+        } finally {
+            errSpy.mockRestore();
+            warnSpy.mockRestore();
+        }
+        expect(attempts).toBe(3);
+        expect(signals).toEqual(["sess-fail"]);
+        expect(published).toEqual([{ type: "message_start" }]);
     });
 });
 

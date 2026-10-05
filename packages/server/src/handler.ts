@@ -2,6 +2,7 @@ import { getAuth, getTrustedOrigins, isSignupAllowed, runWithAuthContext, type A
 import { isValidPassword, PASSWORD_REQUIREMENTS_SUMMARY } from "@pizzapi/protocol";
 import { handleApi } from "./routes/index.js";
 import { getTunnelHostConfig, handleTunnelHostRequest } from "./routes/tunnel-host.js";
+import { isAuthTunnelPath, PATH_TUNNEL_SANDBOX_CSP } from "./routes/tunnel.js";
 import { serveStaticFile } from "./static.js";
 import { getClientIp, verifyCsrfOrigin } from "./security.js";
 import { createLogger } from "@pizzapi/tools";
@@ -58,7 +59,9 @@ export async function enforceBodySizeLimit(req: Request, url: URL): Promise<Resp
 
     if (isTunnelPath(url.pathname)) {
         // Tunnel routes stream request bodies directly to the runner relay.
-        // Do not pre-buffer or size-cap them here.
+        // Do not pre-buffer them here: the tunnel proxy enforces its own
+        // (larger, configurable) Content-Length and streamed-byte limit plus
+        // backpressure — see PIZZAPI_TUNNEL_MAX_REQUEST_BODY_BYTES.
         return req;
     }
 
@@ -168,9 +171,33 @@ export async function enforceBodySizeLimit(req: Request, url: URL): Promise<Resp
  *
  * Exported for testing.
  */
+/**
+ * Remove every `frame-ancestors` directive from the response's
+ * Content-Security-Policy, keeping all other directives and policies.
+ * `Headers.get` joins multiple CSP header fields with ", ", and a comma always
+ * separates policies (it cannot occur inside one), so each comma-separated
+ * policy is filtered and re-emitted as its own header field. A policy left
+ * with no directives is dropped.
+ */
+function stripFrameAncestors(headers: Headers): void {
+    const combined = headers.get("Content-Security-Policy");
+    if (combined === null) return;
+    headers.delete("Content-Security-Policy");
+    for (const policy of combined.split(",")) {
+        const kept = policy
+            .split(";")
+            .map((directive) => directive.trim())
+            .filter((directive) => directive && directive.split(/\s+/, 1)[0].toLowerCase() !== "frame-ancestors");
+        if (kept.length > 0) headers.append("Content-Security-Policy", kept.join("; "));
+    }
+}
+
 export function withSecurityHeaders(res: Response): Response {
     const headers = new Headers(res.headers);
     const isTunnel = headers.has("x-pizzapi-tunnel");
+    // Only the relay's host-origin route marks itself "host"; every other
+    // tunnel response is served on the relay origin (fail-closed default).
+    const isIsolatedHostTunnel = headers.get("x-pizzapi-tunnel") === "host";
     const allowCrossOriginTunnelFrame = headers.get("x-pizzapi-tunnel-frame") === "cross-origin";
     // Strip internal markers before sending to client
     headers.delete("x-pizzapi-tunnel");
@@ -194,16 +221,26 @@ export function withSecurityHeaders(res: Response): Response {
         headers.set("Referrer-Policy", "no-referrer");
         // Tunnel responses: allow same-origin framing for the web UI iframe.
         // Token-authenticated mobile iframes are cross-origin (https://localhost → relay),
-        // so omit frame/CSP blockers only for that scoped tunnel-token path.
+        // so omit frame blockers only for that scoped tunnel-token path. The
+        // app's own CSP is otherwise preserved: only `frame-ancestors` (the
+        // directive that would refuse the cross-origin frame) is removed.
         if (allowCrossOriginTunnelFrame) {
             headers.delete("X-Frame-Options");
-            headers.delete("Content-Security-Policy");
+            stripFrameAncestors(headers);
         } else {
             headers.set("X-Frame-Options", "SAMEORIGIN");
         }
-        // Intentionally omit our own Content-Security-Policy — the tunneled app may need
+        // Intentionally omit our own restrictive policy — the tunneled app may need
         // inline scripts, external CDN resources, etc. that PizzaPi's strict CSP
-        // would block. The iframe sandbox attribute provides defence-in-depth.
+        // would block.
+        if (!isIsolatedHostTunnel) {
+            // Path-based tunnels are served on the relay origin. Runner-controlled
+            // active content must never execute AS that origin (it could drive
+            // the signed-in UI and its API), so force an opaque origin with a
+            // CSP sandbox. This holds for top-level navigation too, where no
+            // iframe sandbox applies. Appended, so any upstream CSP still applies.
+            headers.append("Content-Security-Policy", PATH_TUNNEL_SANDBOX_CSP);
+        }
     } else {
         headers.set("X-Frame-Options", "DENY");
         // When host-based tunnels are configured, the UI iframes the tunnel
@@ -314,7 +351,11 @@ async function _handleFetch(req: Request): Promise<Response> {
     // Cookie-authenticated state-changing API requests must come from a
     // trusted origin. /api/auth/* is exempt (better-auth handles its own
     // origin checking above); API-key requests are exempt inside the gate.
-    if (url.pathname.startsWith("/api/")) {
+    // The signed-token tunnel route is exempt: it is authenticated by the
+    // token in its path, never by cookies (they are stripped before the
+    // request reaches the runner), and its sandboxed documents send
+    // `Origin: null`, which the gate would otherwise reject.
+    if (url.pathname.startsWith("/api/") && !isAuthTunnelPath(url.pathname)) {
         const csrfRejection = verifyCsrfOrigin(req, getTrustedOrigins());
         if (csrfRejection) return csrfRejection;
     }

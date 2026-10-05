@@ -146,6 +146,44 @@ export function isProjectMcpTrusted(globalConfig: Partial<PizzaPiConfig>): boole
     return globalConfig.allowProjectMcp === true;
 }
 
+/**
+ * `envOverrides` keys that weaken a security control. A project's
+ * `.pizzapi/config.json` can neither set nor change them; only the user's
+ * global config (or the real process environment) can.
+ */
+export const GLOBAL_ONLY_ENV_OVERRIDES: ReadonlySet<string> = new Set([
+    // Every env var the worker consults when resolving its sandbox
+    // (worker.ts: PIZZAPI_NO_SANDBOX=1 is shorthand for PIZZAPI_SANDBOX=off).
+    "PIZZAPI_SANDBOX",
+    "PIZZAPI_NO_SANDBOX",
+    "PIZZAPI_SANDBOX_ALLOW_UNSANDBOXED",
+    "PIZZAPI_SANDBOX_ACTIVE",
+    "PIZZAPI_SANDBOX_MODE",
+    "PIZZAPI_PLAN_MODE_ALLOWED_TOOLS",
+    "PIZZAPI_BASH_PASSTHROUGH_ENV",
+    "PIZZAPI_ALLOW_PROJECT_HOOKS",
+    "PIZZAPI_ALLOW_PROJECT_MCP",
+]);
+
+/**
+ * Merge project `envOverrides` over global ones. The project still replaces
+ * ordinary keys wholesale (existing behaviour), but keys in
+ * {@link GLOBAL_ONLY_ENV_OVERRIDES} always come from the global config.
+ */
+export function mergeEnvOverrides(
+    globalOverrides: Record<string, string> | undefined,
+    projectOverrides: Record<string, string>,
+): Record<string, string> {
+    const merged: Record<string, string> = {};
+    for (const [key, val] of Object.entries(projectOverrides)) {
+        if (!GLOBAL_ONLY_ENV_OVERRIDES.has(key)) merged[key] = val;
+    }
+    for (const [key, val] of Object.entries(globalOverrides ?? {})) {
+        if (GLOBAL_ONLY_ENV_OVERRIDES.has(key)) merged[key] = val;
+    }
+    return merged;
+}
+
 // ── Config loading ────────────────────────────────────────────────────────────
 
 /**
@@ -190,6 +228,12 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
     const config = { ...global, ...project };
     if (hooks) config.hooks = hooks;
     else delete config.hooks;
+
+    // envOverrides that relax a protection are honoured only from the global
+    // config — a cloned repository must not be able to switch them off.
+    if (project.envOverrides && typeof project.envOverrides === "object") {
+        config.envOverrides = mergeEnvOverrides(global.envOverrides, project.envOverrides);
+    }
 
     // Obsolete extension-provider config (overlay spec §12.4). The provider
     // layer is gone, so these keys now do nothing at all — say so explicitly

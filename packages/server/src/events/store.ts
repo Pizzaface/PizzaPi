@@ -21,6 +21,7 @@ import type {
   RouteInput,
   TriggerEvent,
 } from "@pizzapi/protocol";
+import { deliveryRecipientFor } from "@pizzapi/protocol";
 import { createLogger } from "@pizzapi/tools";
 import { getKysely } from "../auth.js";
 
@@ -202,6 +203,54 @@ export async function ensureEventTables(): Promise<void> {
     .on(DELIVERY_TABLE)
     .columns(["sessionId", "updatedAt"])
     .execute();
+  // Recipient principal, persisted on the Delivery so a config route's target
+  // binding survives the route's removal or re-hashing (the JSON field is the
+  // source of truth; NULL here = nobody or unstamped — see deliveryJson).
+  if (!(await hasColumn(DELIVERY_TABLE, "recipientUserId"))) {
+    await db.schema.alterTable(DELIVERY_TABLE).addColumn("recipientUserId", "text").execute();
+  }
+  await backfillDeliveryRecipients();
+}
+
+/** Deterministic id prefix of config-file routes (see syncConfigRoutes). */
+export const CONFIG_ROUTE_ID_PREFIX = "rt_cfg_";
+
+/**
+ * Stamp the recipient principal on pre-upgrade pending/inflight rows from
+ * their route. Rows whose config route is already gone are unresolvable and
+ * stay unstamped (the engine treats them as deliverable to nobody).
+ */
+async function backfillDeliveryRecipients(): Promise<void> {
+  const db = getKysely();
+  const rows = await db.executeQuery(
+    sql<{ id: string; deliveryJson: string; ownerUserId: string | null }>`
+      SELECT d.id, d.deliveryJson, e.ownerUserId FROM ${sql.table(DELIVERY_TABLE)} d
+      JOIN ${sql.table(EVENT_TABLE)} e ON e.id = d.eventId
+      WHERE d.status IN ('pending', 'inflight')
+        AND json_type(d.deliveryJson, '$.recipientUserId') IS NULL
+        AND json_type(d.deliveryJson, '$.recipientBound') IS NULL
+    `.compile(db),
+  );
+  let stamped = 0;
+  for (const row of rows.rows) {
+    const delivery = parseJson<Delivery>(row.deliveryJson, "delivery");
+    if (!delivery) continue;
+    const routeId = delivery.routeId ?? delivery.spawnRouteId;
+    const route = routeId ? await getRoute(routeId) : null;
+    if (routeId && !route && routeId.startsWith(CONFIG_ROUTE_ID_PREFIX)) continue;
+    const recipient = deliveryRecipientFor(route, row.ownerUserId ?? undefined);
+    if (recipient.recipientUserId === undefined && recipient.recipientBound === undefined) continue;
+    await db
+      .updateTable(DELIVERY_TABLE)
+      .set({
+        recipientUserId: recipient.recipientUserId ?? null,
+        deliveryJson: JSON.stringify({ ...delivery, ...recipient }),
+      })
+      .where("id", "=", row.id)
+      .execute();
+    stamped++;
+  }
+  if (stamped > 0) log.info(`Backfilled the recipient principal on ${stamped} queued delivery row(s)`);
 }
 
 // ── Events ───────────────────────────────────────────────────────────────────
@@ -222,6 +271,8 @@ export interface PlannedDelivery {
   deliverAs: DeliverAs;
   expiresAt?: string;
   spawnRouteId?: string;
+  recipientUserId?: string | null;
+  recipientBound?: boolean;
 }
 
 /** Insert an event row and ALL its planned delivery rows (status pending) in
@@ -316,6 +367,8 @@ export async function insertEventWithPlan(
         status: "pending",
         createdAt: full.ts,
         ...(p.expiresAt ? { expiresAt: p.expiresAt } : {}),
+        ...(p.recipientUserId !== undefined ? { recipientUserId: p.recipientUserId } : {}),
+        ...(p.recipientBound !== undefined ? { recipientBound: p.recipientBound } : {}),
       };
       try {
         await trx
@@ -327,6 +380,7 @@ export async function insertEventWithPlan(
             status: delivery.status,
             deliveryJson: JSON.stringify(delivery),
             updatedAt: delivery.createdAt,
+            recipientUserId: delivery.recipientUserId ?? null,
             ...(delivery.expiresAt ? { expiresAt: delivery.expiresAt } : {}),
           })
           .execute();
@@ -472,14 +526,20 @@ export async function checkpointWal(): Promise<void> {
   await db.executeQuery(sql`PRAGMA wal_checkpoint(TRUNCATE)`.compile(db));
 }
 
-/** Look up an Event by its publisher-supplied idempotency key. */
-export async function getEventByFireId(fireId: string): Promise<TriggerEvent | null> {
+/**
+ * Look up an Event by its publisher-supplied idempotency key. fireIds are
+ * unique only per owner (trigger_event_owner_fire_idx), so the lookup is
+ * always tenant scoped — a global lookup could resolve another tenant's event.
+ */
+export async function getEventByFireId(fireId: string, ownerUserId: string): Promise<TriggerEvent | null> {
   const row = await getKysely()
     .selectFrom(EVENT_TABLE)
     .select(["eventJson"])
     .where("fireId", "=", fireId)
+    .where("ownerUserId", "=", ownerUserId)
     .executeTakeFirst();
-  return row ? parseJson<TriggerEvent>(row.eventJson, "event") : null;
+  const event = row ? parseJson<TriggerEvent>(row.eventJson, "event") : null;
+  return event && event.source.userId === ownerUserId ? event : null;
 }
 
 // ── Routes ───────────────────────────────────────────────────────────────────
@@ -587,7 +647,7 @@ export async function syncConfigRoutes(desired: RouteInput[]): Promise<void> {
         ...input,
         origin: "config",
         // Deterministic id so re-syncs are stable for UI references.
-        routeId: `rt_cfg_${crypto.createHash("sha256").update(JSON.stringify(input)).digest("base64url").slice(0, 16)}`,
+        routeId: `${CONFIG_ROUTE_ID_PREFIX}${crypto.createHash("sha256").update(JSON.stringify(input)).digest("base64url").slice(0, 16)}`,
         createdAt: new Date().toISOString(),
       };
       await trx
@@ -631,6 +691,7 @@ export async function createDelivery(
         status: delivery.status,
         deliveryJson: JSON.stringify(delivery),
         updatedAt: delivery.createdAt,
+        recipientUserId: delivery.recipientUserId ?? null,
         ...(delivery.expiresAt ? { expiresAt: delivery.expiresAt } : {}),
       })
       .execute();
@@ -801,6 +862,82 @@ export async function listPendingWakeDeliveries(
   return rows
     .map((r) => parseJson<Delivery>(r.deliveryJson, "delivery"))
     .filter((d): d is Delivery => d !== null);
+}
+
+/**
+ * True when durable trigger records still reference `sessionId` on behalf of
+ * a tenant other than `userId`: a delivery stamped for another recipient
+ * principal (or for nobody), an unstamped (pre-upgrade) delivery of another
+ * owner's event (config routes excepted — they are operator-level and
+ * deliver every tenant's events to an operator-chosen session), an event another owner published
+ * as that session, another owner's session route targeting it, or a config
+ * session route whose target is bound to a different principal (or to none).
+ *
+ * Deliveries and events outlive the relay_session ownership row (ephemeral
+ * sessions are pruned within minutes), so this is the ownership tombstone
+ * that stops a different user from registering a recycled id and draining
+ * or receiving the previous owner's durable records. A null `userId` treats
+ * every owned reference as foreign (fail closed).
+ */
+export async function sessionReferencedByOtherTenant(sessionId: string, userId: string | null): Promise<boolean> {
+  const db = getKysely();
+  const otherOwner = (column: string) => userId === null
+    ? sql`${sql.ref(column)} IS NOT NULL`
+    : sql`${sql.ref(column)} IS NOT NULL AND ${sql.ref(column)} <> ${userId}`;
+  const delivery = await db.executeQuery(
+    sql<{ one: number }>`
+      SELECT 1 AS one FROM ${sql.table(DELIVERY_TABLE)} d
+      JOIN ${sql.table(EVENT_TABLE)} e ON e.id = d.eventId
+      LEFT JOIN ${sql.table(ROUTE_TABLE)} r ON r.id = json_extract(d.deliveryJson, '$.routeId')
+      WHERE d.sessionId = ${sessionId}
+        AND CASE
+          WHEN json_type(d.deliveryJson, '$.recipientUserId') IS NOT NULL
+            THEN ${userId === null ? sql`1 = 1` : sql`(d.recipientUserId IS NULL OR d.recipientUserId <> ${userId})`}
+          WHEN json_type(d.deliveryJson, '$.recipientBound') IS NOT NULL THEN 0
+          ELSE (${otherOwner("e.ownerUserId")} AND (r.origin IS NULL OR r.origin <> 'config'))
+        END
+      LIMIT 1
+    `.compile(db),
+  );
+  if (delivery.rows.length > 0) return true;
+  const sourced = await db.executeQuery(
+    sql<{ one: number }>`
+      SELECT 1 AS one FROM ${sql.table(EVENT_TABLE)} e
+      WHERE e.sourceId = ${sessionId}
+        AND json_extract(e.eventJson, '$.source.kind') = 'session'
+        AND ${otherOwner("e.ownerUserId")}
+      LIMIT 1
+    `.compile(db),
+  );
+  if (sourced.rows.length > 0) return true;
+  const routed = await db.executeQuery(
+    sql<{ one: number }>`
+      SELECT 1 AS one FROM ${sql.table(ROUTE_TABLE)} r
+      WHERE json_extract(r.routeJson, '$.target.kind') = 'session'
+        AND json_extract(r.routeJson, '$.target.sessionId') = ${sessionId}
+        AND r.origin <> 'config'
+        AND ${otherOwner("r.ownerUserId")}
+      LIMIT 1
+    `.compile(db),
+  );
+  if (routed.rows.length > 0) return true;
+  // Config session routes reserve their target for the bound principal
+  // (target.ownerUserId, else the route's ownerUserId). An unbound row
+  // reserves it for nobody (fail closed).
+  const configured = await db.executeQuery(
+    sql<{ one: number }>`
+      SELECT 1 AS one FROM ${sql.table(ROUTE_TABLE)} r
+      WHERE r.origin = 'config'
+        AND json_extract(r.routeJson, '$.target.kind') = 'session'
+        AND json_extract(r.routeJson, '$.target.sessionId') = ${sessionId}
+        AND (
+          coalesce(json_extract(r.routeJson, '$.target.ownerUserId'), r.ownerUserId) IS NULL
+          OR ${userId === null ? sql`1 = 1` : sql`coalesce(json_extract(r.routeJson, '$.target.ownerUserId'), r.ownerUserId) <> ${userId}`}
+        )
+      LIMIT 1
+    `.compile(db),
+  );
+  return configured.rows.length > 0;
 }
 
 /**

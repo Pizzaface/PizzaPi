@@ -10,13 +10,15 @@ import {
     getSubscriptionsForUser,
     updateEnabledEvents,
     updateSuppressChildNotifications,
-    isValidPushEndpoint,
     isNtfyConfigured,
     getNtfyPublicUrl,
     registerNativePush,
     unregisterNativePush,
     updateNativeSuppressChildNotifications,
 } from "../push.js";
+// Imported directly (not via push.js) so the validator is shared by delivery
+// and subscribe, and route tests exercise the real implementation.
+import { pushEndpointRejectionReason } from "../push-endpoint.js";
 import { getSharedSession, getLocalTuiSocket } from "../ws/sio-registry.js";
 import { getPushPendingQuestion, consumePushPendingQuestionIfMatches } from "../ws/sio-state/index.js";
 import type { RouteHandler } from "./types.js";
@@ -43,11 +45,9 @@ export const handlePushRoute: RouteHandler = async (req, url) => {
             );
         }
 
-        if (!isValidPushEndpoint(body.endpoint)) {
-            return Response.json(
-                { error: "Invalid push endpoint: must be an https:// URL not targeting private/loopback addresses" },
-                { status: 400 },
-            );
+        const endpointRejection = pushEndpointRejectionReason(body.endpoint);
+        if (endpointRejection) {
+            return Response.json({ error: endpointRejection }, { status: 400 });
         }
 
         const id = await subscribePush({

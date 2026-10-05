@@ -291,6 +291,12 @@ PizzaPi searches for plugins in these directories:
 
 A plugin folder placed directly in `~/.claude/plugins/` without a matching `installed_plugins.json` entry will **not** be discovered.
 
+`enabledPlugins` is read from `~/.claude/settings.json`, then `<cwd>/.claude/settings.json`, then
+`<cwd>/.claude/settings.local.json`. Project files may disable a plugin, but they **cannot re-enable**
+a plugin that `~/.claude/settings.json` sets to `false`. Repository-controlled settings must not turn
+your globally disabled plugin's hooks or MCP servers back on. To use the plugin again, enable it in
+user-level settings with `pizza plugins enable`.
+
 ---
 
 ## Marketplaces

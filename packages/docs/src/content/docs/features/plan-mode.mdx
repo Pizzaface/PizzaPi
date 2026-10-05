@@ -5,7 +5,7 @@ description: Read-only exploration and structured plan review for careful, step-
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-Plan mode puts the agent into a **read-only exploration state** where file writes and destructive commands are blocked at the tool level (and at the OS level when [sandbox](/PizzaPi/security/sandbox/) is active). The agent can read code, search, and analyze — but cannot modify anything until a plan is reviewed and approved.
+Plan mode puts the agent into a **read-only exploration state** where file writes and destructive commands are blocked at the tool level. The agent can read code, search, and analyze — but cannot modify anything until a plan is reviewed and approved.
 
 ---
 
@@ -34,36 +34,63 @@ Plan mode enforces read-only access through two layers:
 
 ### Tool-level blocking
 
-The following tools are **completely blocked** while plan mode is active:
+Tool access in plan mode is an **allowlist**: a tool runs only if it is known to be read-only. Everything else is blocked until plan mode is exited.
 
-- `edit` — file editing
-- `write` — file creation/overwrite
-- `write_file` — custom write tool
-- `subagent` — spawns a subagent process with full write access
-- `spawn_session` — spawns an independent child session with full write access
+**Allowed:**
 
-The agent can still use `read`, `bash` (with restrictions), `grep`, `find`, `ls`, and **all MCP tools**. Plan mode does not inspect MCP tools for read/write semantics, so MCP write tools are allowed.
+- Built-in read tools: `read`, `grep`, `find`, `ls`, and `bash` (with the command restrictions below)
+- Plan and interaction tools: `toggle_plan_mode`, `plan_mode`, `AskUserQuestion`, `update_todo`
+- Read-only PizzaPi tools: for example `bash_output`, `memory_read`, `memory_list`, `list_tunnels`, `list_models`, `list_workflows`, `check_messages`, `web_search`, `web_fetch`
+- Tool discovery and `codemode`. Every tool call nested inside `codemode` goes through the same plan-mode check.
+- **MCP tools that the server annotates as read-only** (`annotations.readOnlyHint: true` in the MCP tool listing)
+
+**Blocked:**
+
+- `edit`, `write`, `write_file`: file modification
+- `subagent`, `spawn_session`: spawn child contexts with full write access
+- **MCP tools without `readOnlyHint: true`**, including tools with no annotations
+- Any other tool that is not known to be read-only. This includes tools that mutate state (`kill_shell`, `create_tunnel`, `memory_save`, `send_message`, `run_workflow`, and so on), `powershell`, and tools from plugins or overlay packages.
+
+MCP annotations come from the configured server, so PizzaPi trusts them to the same degree that it trusts the server. To allow a specific tool that you trust to be read-only, list its registered name in `PIZZAPI_PLAN_MODE_ALLOWED_TOOLS`. MCP tools are registered as `mcp__<server>__<tool>`.
+
+```bash
+PIZZAPI_PLAN_MODE_ALLOWED_TOOLS="mcp__linear__search_issues,my_overlay_lookup"
+```
+
+The variable takes a comma-separated list and is empty by default. It cannot re-enable `edit`, `write`, `write_file`, `subagent`, or `spawn_session`.
 
 ### Bash command restrictions
 
-Bash commands go through a destructive-command detector that blocks:
+Bash commands go through a destructive-command detector. It normalizes each command segment before matching: paths and quotes are stripped from the executable (`/usr/bin/curl`, `\kill`, `'rm'`), and it looks past leading `(`, `{`, `!`, `if`/`then`/`do`, variable assignments, and redirections. If the shell cannot know which executable runs, the segment is blocked. That covers `$cmd`, `${X}`, `$'…'`, globs in the command word, function definitions, `case`, `trap`, and `hash`.
+
+**Blocked commands:**
+
+- **Command, backtick, and process substitution**, multi-line commands, and `/dev/tcp` / `/dev/udp` redirection
+- **Process and system control**: `sudo`, `doas`, `kill`, `pkill`, `killall`, `reboot`, mutating `systemctl` / `service` / `launchctl`, `crontab`, `at`, `open` / `xdg-open`
+- **Opaque code execution**: `python`, `node`, `ruby`, `perl`, `php`, `deno`, `tsx`, and other interpreters (except bare `--version` / `--help`); `bash script.sh`; `eval` / `source`; `npx`, `bunx`, `uvx`, `bun -e`, `npm exec`, `pnpm dlx`, `go run`, `cargo run`; `parallel`
+- **Network and remote mutations**: `ssh`, `scp`, `rsync`, `nc`, `socat`, `telnet`; `curl` with a request body, a form, an upload, a config file, or a non-GET method; `wget --post-*` / `--method`; HTTPie writes; any `gh` command except read-only ones (`list`, `view`, `status`, `diff`, `checks`, `search`, and `gh api` GET requests without fields); `docker` / `podman` / `nerdctl`, `kubectl` / `oc`, and `helm` except read-only subcommands (known global options such as `-n default`, `--context prod`, or `docker compose -f file.yml` are skipped with their values; an unrecognised option written as a separate word before the subcommand is blocked, because it might take a value that hides the real subcommand; use the `--option=value` form for options plan mode does not know; `kubectl` / `oc` with `--profile` (other than `none`), `--profile-output`, `--log-file`, or `--log-dir` is blocked because it writes local files); `npm publish` and similar registry commands
+- **Hidden execution**: `awk` `system()` and pipes, `sed` `e` and `w` commands, and `find -exec` / `xargs` / `watch` running a blocked command
+- **Dangerous inline environment variables**: `PATH=…`, `LD_PRELOAD=…`, `GIT_*=…`, `*PAGER=…` (except `cat`), `NODE_OPTIONS=…`, and others, whether set as `VAR=x cmd`, `env VAR=x cmd`, or `export VAR=x`
+- **Git mutations**: only read-only git subcommands are allowed (`status`, `log`, `diff`, `show`, `blame`, `grep`, `branch` (listing), `ls-files`, etc.). Mutating operations like `git commit`, `git push`, `git checkout`, and `git stash push` are blocked.
 
 - **File-mutating commands**: `rm`, `mv`, `cp`, `mkdir`, `touch`, `chmod`, `ln`, `tee`, `truncate`, `dd`, `sed -i`, etc.
-- **Process/system control**: `sudo`, `kill`, `pkill`, `reboot`, `systemctl start/stop`, etc.
 - **Package managers**: `npm install`, `bun add`, `pip install`, `brew install`, etc.
-- **Output redirection**: `>` and `>>` (except `2>/dev/null`)
-- **Script interpreters**: `python`, `ruby`, `node` (running scripts, not `--version`/`--help`)
-- **Git mutations**: only read-only git subcommands are allowed (`status`, `log`, `diff`, `show`, `blame`, `grep`, `branch` (listing), `ls-files`, etc.). Mutating operations like `git commit`, `git push`, `git checkout`, `git stash push` are blocked.
+- **Output redirection**: `>`, `>>`, and `<>` (except `2>/dev/null`)
+- `make` (without `-n`), and `find -exec` / `-delete`
 
-<Aside type="tip" title="Sandbox enforcement">
-  When the [sandbox](/PizzaPi/security/sandbox/) is active, plan mode activates an **OS-level read-only overlay** via `setReadOnlyOverlay()`. This means the filesystem itself is write-protected — even if a command somehow bypasses the regex checks, the OS blocks the write. Without sandbox, tool-level restrictions apply, but they do not provide equivalent OS enforcement.
+<Aside type="caution" title="Known limits">
+  The bash check is a static analysis of the command text. It does not cover every program that can cause side effects. Project scripts that run arbitrary code are still allowed, such as `npm test`, `bun test`, and `npm run …`. Plan mode is a guard against accidental changes, not a hard security boundary.
+</Aside>
+
+<Aside type="note" title="Sandbox overlay">
+  When the [sandbox](/PizzaPi/security/sandbox/) is active, plan mode also turns on a read-only overlay via `setReadOnlyOverlay()`. Only commands that run through the sandbox's command wrapper get this overlay. The agent's `bash` tool currently spawns commands directly, so the full command check above applies whether or not the sandbox is active. Even where the overlay applies, it does not restrict network access, process signals, or credential reads.
 </Aside>
 
 ### What the agent _can_ do
 
 - Read any file (`read` tool)
-- Run read-only bash commands (`ls`, `find`, `grep`, `rg`, `cat`, `head`, `wc`, `git log`, `git diff`, etc.)
-- Use MCP tools (both read and write MCP tools are allowed)
+- Run read-only bash commands (`ls`, `find`, `grep`, `rg`, `cat`, `head`, `wc`, `git log`, `git diff`, `curl -s <url>`, `gh pr view`, etc.)
+- Use MCP tools annotated `readOnlyHint: true`, and tools listed in `PIZZAPI_PLAN_MODE_ALLOWED_TOOLS`
 - Call `toggle_plan_mode` to exit plan mode
 - Call `plan_mode` to submit a structured plan for review
 
@@ -202,8 +229,8 @@ If the agent exits plan mode without ever submitting a plan via `plan_mode`, it 
 
 ## Session Behavior
 
-- **State does not persist across resumes** — resuming a session currently starts with plan mode off and the sandbox overlay cleared. Any in-progress execution steps are not restored.
-- **State resets on session switch** — switching to a different session clears plan mode so the new session starts with full access. The sandbox overlay is also cleared.
+- **State persists across resumes.** Plan-mode state is saved in the session transcript. When the session starts, resumes, reloads, or forks (from the TUI, from `--continue`, or from the web UI's in-place switch), PizzaPi restores the latest saved state. It also reapplies the sandbox read-only overlay before any tool call can run. A session that was in plan mode stays read-only until plan mode is exited. In-progress execution steps are restored as well.
+- **New sessions start with plan mode off.** A new session has no saved state, so `/new` and switching to a session that never used plan mode start with full access and clear the sandbox overlay. Plan mode from the previous session does not carry over.
 - **Context filtering** — when plan mode is off, the `[PLAN MODE ACTIVE]` context messages are automatically stripped from the conversation to keep the context window clean.
 
 ---

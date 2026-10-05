@@ -1041,6 +1041,8 @@ Panels render inside an iframe in the PizzaPi web interface. The bottom dock is 
 - **Polling for live data** — use `setInterval` + `fetch` (typically 3–5s intervals)
 - **Keep panels self-contained** — external resources may fail depending on CSP/network
 - **CORS headers** — API responses need `Access-Control-Allow-Origin: *`
+- **Opaque origin unless a tunnel domain is set** — panels never run as the PizzaPi origin. Without [`PIZZAPI_TUNNEL_DOMAIN`](/PizzaPi/features/tunnels/#dedicated-tunnel-origin-recommended-for-spas) they load from a signed relay path inside a sandbox with an opaque origin: `localStorage`, `sessionStorage`, and `document.cookie` are in-memory for that page load only, `Set-Cookie` is dropped, and there is no access to the parent window. Configure a tunnel domain if a panel must persist browser state.
+- **Panel loads are cross-site** — the iframe navigation that loads your panel arrives with `Sec-Fetch-Site: cross-site`, and on the signed relay path the panel's own requests carry `Origin: null`. Don't reject reads on origin checks; apply CSRF checks only to state-changing methods (POST/PUT/DELETE), and on the signed path authenticate those some other way than `Origin`.
 
 ---
 

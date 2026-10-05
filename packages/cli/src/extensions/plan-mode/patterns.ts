@@ -97,32 +97,73 @@ export const GIT_SAFE_SUBCOMMAND_DESTRUCTIVE_OVERRIDES: RegExp[] = [
  * These cause non-filesystem side effects (process control, privilege
  * escalation, system management) that the OS sandbox does NOT prevent.
  *
- * When the sandbox IS active, only these patterns are checked — the sandbox's
- * read-only overlay handles filesystem write protection at the OS level.
+ * These are checked in BOTH modes (the name is historical): with the sandbox
+ * active they are the main command check, and without it they run alongside
+ * the filesystem-oriented patterns below. Patterns are matched against the
+ * normalized segment (see `normalizeSegment` in safe-command.ts), whose
+ * command word has been unquoted and reduced to its basename, so
+ * `/usr/bin/kill` and `\kill` are caught by `^\s*kill\b`.
  */
 export const SANDBOX_ONLY_CMD_PATTERNS = [
     // Process control & privilege escalation
-    /^\s*sudo\b/i, /^\s*su\b/i,
-    /^\s*kill\b/i, /^\s*pkill\b/i, /^\s*killall\b/i,
-    /^\s*reboot\b/i, /^\s*shutdown\b/i,
-    /^\s*systemctl\s+(start|stop|restart|enable|disable)/i,
-    /^\s*service\s+\S+\s+(start|stop|restart)/i,
+    /^\s*sudo\b/i, /^\s*su\b/i, /^\s*doas\b/i, /^\s*pkexec\b/i, /^\s*runuser\b/i,
+    /^\s*kill\b/i, /^\s*pkill\b/i, /^\s*killall\d*\b/i, /^\s*skill\b/i,
+    /^\s*reboot\b/i, /^\s*shutdown\b/i, /^\s*halt\b/i, /^\s*poweroff\b/i,
+    /^\s*systemctl\s+(start|stop|restart|reload|try-restart|reload-or-restart|enable|disable|reenable|mask|unmask|kill|isolate|daemon-reload|daemon-reexec|set-property|edit|link|preset|reset-failed|set-default|set-environment|unset-environment|poweroff|reboot|halt|suspend|hibernate|kexec)\b/i,
+    /^\s*service\s+\S+\s+(start|stop|restart|reload|force-reload)/i,
+    /^\s*launchctl\s+(?!(?:list|print|print-disabled|blame|help|version)\b)\S/i,
+    /^\s*crontab\b(?!\s+-l\s*$)/i,
+    /^\s*(?:at|batch)\b/i,
+    // Launching applications / URLs has side effects outside the shell.
+    /^\s*(?:open|xdg-open)\b/i,
     // Shell builtins that execute dynamic/opaque code — block in sandbox too
     // (sandbox only protects the filesystem, not arbitrary code evaluation).
     /^\s*eval\b/i,
     /^\s*source\b/i,
     /^\s*\.\s+/,   // dot-source builtin
+    /^\s*trap\b/i, // trap 'CMD' SIG — runs an opaque string later
+    /^\s*(?:hash|enable|alias)\b/i, // re-point or load commands (hash -p, enable -f)
+    /^\s*parallel\b/i, // GNU parallel — opaque command templating
     // Remote / network side effects — sandbox only protects local filesystem
-    // (Git commands are handled separately via the GIT_SAFE_SUBCOMMANDS allowlist)
-    /^\s*npm\s+publish\b/i,
+    // (Git commands are handled separately via the GIT_SAFE_SUBCOMMANDS allowlist;
+    // curl, gh, docker/podman, kubectl and helm get argument-aware checks in
+    // command-checks.ts).
+    /^\s*(?:npm|yarn|pnpm|bun)\s+(?:publish|unpublish|deprecate|dist-tag|owner|access|adduser|login|logout|token|star|unstar|team|org|hook)\b/i,
     /^\s*npx\b/i,
-    /^\s*docker\s+push\b/i,
-    /^\s*gh\s+(issue|pr|release)\s+(create|edit|close|merge|delete|comment)\b/i,
+    // Raw network clients and remote shells — arbitrary remote side effects.
+    /^\s*(?:ssh|scp|sftp|rsync|nc|ncat|netcat|socat|telnet|ftp|tftp|lftp)\b/i,
     // HTTP write verbs — sandbox protects local filesystem but NOT the network.
-    // These send mutations to remote servers regardless of sandbox state.
-    /^\s*curl\b.*\s(?:-X\s*(?:POST|PUT|DELETE|PATCH)\b|--request(?:=|\s+)(?:POST|PUT|DELETE|PATCH)\b|-d\b|--data(?:\s|=|-\w)|--json\b)/i,
     /^\s*wget\b.*\s--post-(?:data|file)(?:\s|=|\b)/i,
+    /^\s*wget\b.*\s--(?:method|body-data|body-file)(?:\s|=)/i,
+    /^\s*(?:http|https|xh|xhs)\s+(?:-\S+\s+)*(?:POST|PUT|PATCH|DELETE)\b/,
 ];
+
+/**
+ * Interpreters and ad-hoc package executors run code whose effects cannot be
+ * statically analysed. The filesystem read-only overlay does NOT stop them
+ * from making network requests, signalling processes, or reading
+ * credentials, so these are blocked in plan mode whether or not the sandbox
+ * is active (only bare `--version` / `--help` probes pass). Matched against
+ * the normalized segment (command word reduced to its basename).
+ */
+export const OPAQUE_INTERPRETER_PATTERNS = [
+    /^\s*(?:python[\d.]*|pypy[\d.]*|ruby|irb|node|nodejs|perl|php|lua|luajit|rscript|osascript|tclsh|wish|pwsh|powershell|deno|tsx|ts-node|jshell|groovy|scala|swift|julia)\s+(?!--?(?:version|help)\s*$)\S/i,
+    /^\s*(?:npx|bunx|pnpx|uvx)\b/i,
+    /^\s*bun\s+(?:-e|--eval|-p|--print|x|exec)\b/i,
+    /^\s*bun\s+(?:\S+\/)?[^\s/]+\.(?:[cm]?[jt]sx?)(?:\s|$)/i,
+    /^\s*npm\s+(?:exec|x)\b/i,
+    /^\s*(?:pnpm|yarn)\s+(?:dlx|exec)\b/i,
+    /^\s*(?:uv|pipx|go|cargo)\s+run\b/i,
+];
+
+/**
+ * Environment variables that, when set inline (`VAR=x cmd`, `env VAR=x cmd`,
+ * `export VAR=x`), make an otherwise read-only command execute different or
+ * attacker-chosen code (library preloading, PATH hijack, git/pager/editor
+ * hooks, interpreter start-up hooks).
+ */
+export const DANGEROUS_ENV_NAME_PATTERN =
+    /^(?:LD_\w*|DYLD_\w*|PATH|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|PS4|PROMPT_COMMAND|IFS|BASH_FUNC_\S*|GIT_\w*|\w*PAGER|EDITOR|VISUAL|LESSOPEN|LESSCLOSE|NODE_OPTIONS|NODE_PATH|PYTHONSTARTUP|PYTHONPATH|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|BROWSER|SSH_ASKPASS|SUDO_ASKPASS|GCONV_PATH|HOSTALIASES|LOCALDOMAIN)$/i;
 
 /**
  * DESTRUCTIVE_FLAG_PATTERNS are checked against the full command string.

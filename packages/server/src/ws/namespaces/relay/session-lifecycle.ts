@@ -95,14 +95,17 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
 
         // Unified event engine (ADR-0002): deliver Events that queued while
         // this session was offline (or during a wake). FIFO by event time.
-        void drainPendingDeliveries(sessionId, createEngineDeps()).catch((err) => {
+        // Drains are scoped to the registering owner: durable rows outlive the
+        // session's ownership row, so a recycled id must not inherit them.
+        const drainOwner = socket.data.userId ?? null;
+        void drainPendingDeliveries(sessionId, createEngineDeps(), drainOwner).catch((err) => {
             // Never block registration on the drain; failures retry next time.
             // ponytail: surface via log only — the pending rows survive.
             log.error(`pending-delivery drain failed for ${sessionId}:`, err);
         });
         // Re-relay responses recorded while this session (as an event SOURCE)
         // was unreachable — its waiters are still parked on trigger_response.
-        void drainPendingResponseRelays(sessionId, createEngineDeps()).catch((err) => {
+        void drainPendingResponseRelays(sessionId, createEngineDeps(), drainOwner).catch((err) => {
             log.error(`pending-response-relay drain failed for ${sessionId}:`, err);
         });
     });

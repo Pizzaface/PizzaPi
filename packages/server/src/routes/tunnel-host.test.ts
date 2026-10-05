@@ -6,8 +6,26 @@ import {
     resolveTunnelLabel,
     handleTunnelHostRequest,
     _injectRedisForTesting,
+    tunnelLabelAgeMs,
 } from "./tunnel-host";
 import { proxyTunnelRequestViaRelay } from "./tunnel";
+
+/** Fill in the TunnelRelay surface the proxy uses beyond what a test fakes (no limits, no backpressure). */
+function fakeRelay(relay: object): never {
+    const original = (relay as { sendRequestData?: (...args: unknown[]) => unknown }).sendRequestData;
+    return {
+        limits: { maxRequestBodyBytes: 0, maxResponseBodyBytes: 0, maxInFlightPerRunner: 0, maxBufferedBytes: 0 },
+        waitForRequestCapacity: async () => {},
+        pauseResponse() {},
+        resumeResponse() {},
+        ...relay,
+        sendRequestData: (...args: unknown[]) => {
+            original?.(...args);
+            return true;
+        },
+    } as never;
+}
+
 
 const ORIGINAL_DOMAIN = process.env.PIZZAPI_TUNNEL_DOMAIN;
 const ORIGINAL_BASE_URL = process.env.PIZZAPI_BASE_URL;
@@ -116,6 +134,23 @@ describe("mint + resolve labels", () => {
         expect(record!.maxExp).toBeGreaterThan(Math.floor(Date.now() / 1000));
     });
 
+    test("binds labels to their mint time and refuses legacy records without one (F04)", async () => {
+        process.env.PIZZAPI_TUNNEL_DOMAIN = "t.localhost";
+        const { client, store } = fakeRedis();
+        _injectRedisForTesting(client);
+        const before = Date.now();
+        const minted = await mintTunnelLabel({ userId: "u1", scope: "runner:r1", port: 3000 });
+        const record = await resolveTunnelLabel(minted!.label);
+        expect(record!.iat).toBeGreaterThanOrEqual(before);
+        expect(tunnelLabelAgeMs(record!, record!.iat! + 1234)).toBe(1234);
+
+        const legacy = "b".repeat(32);
+        store.set(`tunnel-host-label:${legacy}`, JSON.stringify({
+            userId: "u1", scope: "runner:r1", port: 3000, maxExp: Math.floor(Date.now() / 1000) + 60,
+        }));
+        expect(await resolveTunnelLabel(legacy)).toBeNull();
+    });
+
     test("rejects and deletes labels past their absolute expiry", async () => {
         process.env.PIZZAPI_TUNNEL_DOMAIN = "t.localhost";
         const { client, store } = fakeRedis();
@@ -198,7 +233,7 @@ describe("passthrough proxy mode (basePath \"\")", () => {
 
         const responsePromise = proxyTunnelRequestViaRelay(
             new Request("http://abc.t.localhost/app/route"),
-            relay as never,
+            fakeRelay(relay),
             "runner-1",
             "req-1",
             "", // basePath "" → passthrough
@@ -253,7 +288,9 @@ describe("passthrough proxy mode (basePath \"\")", () => {
 
     test("marks the response for cross-origin framing", async () => {
         const res = await runProxy("ok", "text/plain");
-        expect(res.headers.get("x-pizzapi-tunnel")).toBe("1");
+        // "host" marks the isolated origin — the only tunnel kind that is not
+        // CSP-sandboxed by withSecurityHeaders.
+        expect(res.headers.get("x-pizzapi-tunnel")).toBe("host");
         expect(res.headers.get("x-pizzapi-tunnel-frame")).toBe("cross-origin");
     });
 });
@@ -275,7 +312,7 @@ describe("host header forwarding", () => {
 
             proxyTunnelRequestViaRelay(
                 new Request("http://abc.t.localhost/path"),
-                relay as never,
+                fakeRelay(relay),
                 "runner-1",
                 "req-capture",
                 "", // basePath "" → host-based passthrough
@@ -307,7 +344,7 @@ describe("host header forwarding", () => {
 
         await proxyTunnelRequestViaRelay(
             new Request("http://example.com/path"),
-            relay as never,
+            fakeRelay(relay),
             "runner-1",
             "req-path",
             "/tunnel/session/3000", // non-empty basePath → path-based

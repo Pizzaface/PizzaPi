@@ -1,14 +1,16 @@
 import { Type } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { exec } from "child_process";
-import { wrapCommand, getSandboxEnv, isSandboxActive } from "./sandbox.js";
+import { wrapCommand, getSandboxEnv, isSandboxActive, isSandboxRequiredButUnavailable } from "./sandbox.js";
 import { resolvePosixShell } from "./posix-shell.js";
+import { scrubSubprocessEnv } from "./subprocess-env.js";
 
 // ── Internal types for dependency injection (used in tests) ───────────────────
 
 export interface BashDeps {
     execFn: typeof exec;
     isSandboxActiveFn: () => boolean;
+    isSandboxRequiredButUnavailableFn: () => boolean;
     getSandboxEnvFn: () => Record<string, string>;
     wrapCommandFn: (cmd: string) => Promise<string>;
 }
@@ -18,6 +20,7 @@ export interface BashDeps {
 export function createBashTool(deps?: Partial<BashDeps>): AgentTool {
     const execFn = deps?.execFn ?? exec;
     const isSandboxActiveFn = deps?.isSandboxActiveFn ?? isSandboxActive;
+    const isSandboxRequiredButUnavailableFn = deps?.isSandboxRequiredButUnavailableFn ?? isSandboxRequiredButUnavailable;
     const getSandboxEnvFn = deps?.getSandboxEnvFn ?? getSandboxEnv;
     const wrapCommandFn = deps?.wrapCommandFn ?? wrapCommand;
 
@@ -58,13 +61,25 @@ export function createBashTool(deps?: Partial<BashDeps>): AgentTool {
             const maxBuffer = 10 * 1024 * 1024;
 
             let command: string = params.command;
-            let env: NodeJS.ProcessEnv = process.env;
+            // PizzaPi relay/runner credentials stay in the worker; the model's
+            // shell gets everything else (see subprocess-env.ts for the boundary).
+            let env: NodeJS.ProcessEnv = scrubSubprocessEnv(process.env);
+
+            // Fail closed: an explicitly required sandbox that could not be
+            // enabled must not degrade to running the command directly.
+            if (isSandboxRequiredButUnavailableFn()) {
+                const text = "❌ Sandbox blocked: the sandbox was required but is not active, so commands cannot run.";
+                return {
+                    content: [{ type: "text" as const, text }],
+                    details: { command: params.command, stdout: "", stderr: text, sandboxBlocked: true },
+                };
+            }
 
             // Sandbox integration: wrap command and inject proxy env vars
             if (isSandboxActiveFn()) {
                 try {
                     command = await wrapCommandFn(params.command);
-                    env = { ...process.env, ...getSandboxEnvFn() };
+                    env = { ...env, ...getSandboxEnvFn() };
                 } catch (err) {
                     const reason = err instanceof Error ? err.message : String(err);
                     const text = `❌ Sandbox blocked: ${reason}. To allow, update sandbox config.`;

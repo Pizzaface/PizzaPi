@@ -117,6 +117,17 @@ export function encodeHeaderFilename(value: string): string {
 
 const NO_STORE_HEADERS = { "cache-control": "private, no-store" } as const;
 
+/**
+ * Compatibility escape hatch for mobile app builds that predate scoped
+ * attachment tokens and still put the durable API key in `?apiKey=`.
+ * Off by default; read per request so it can be toggled without a rebuild.
+ */
+export function attachmentQueryApiKeyAllowed(): boolean {
+    const raw = process.env.PIZZAPI_ALLOW_ATTACHMENT_QUERY_API_KEY;
+    if (!raw) return false;
+    return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
+}
+
 export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
     // ── Upload: POST /api/sessions/:id/attachments ─────────────────────
     if (
@@ -257,14 +268,24 @@ export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
             });
         }
 
-        // ── Legacy API-key auth (deprecated — logs warning) ──
+        // ── API-key header / session auth ──
+        // A durable API key in the URL leaks into proxy/access logs, history,
+        // and diagnostics, so ?apiKey= is refused unless the operator opts in
+        // for old mobile builds. URLs may only carry the short-lived ?token=.
         const headerApiKey = req.headers.get("x-api-key") || undefined;
-        const queryApiKey = url.searchParams.get("apiKey") || undefined;
-        const providedApiKey = headerApiKey ?? queryApiKey;
-        if (queryApiKey) {
-            // ponytail: one-cycle deprecation shim; remove after mobile clients migrate
-            log.warn("[deprecated] ?apiKey= on attachment download; use POST /api/attachments/:id/token instead");
+        let queryApiKey = url.searchParams.get("apiKey") || undefined;
+        if (queryApiKey && !headerApiKey) {
+            if (!attachmentQueryApiKeyAllowed()) {
+                return Response.json(
+                    { error: "API keys are not accepted in URLs; use the x-api-key header or a ?token= from POST /api/attachments/:id/token" },
+                    { status: 401, headers: NO_STORE_HEADERS },
+                );
+            }
+            log.warn("[deprecated] ?apiKey= on attachment download (PIZZAPI_ALLOW_ATTACHMENT_QUERY_API_KEY); use POST /api/attachments/:id/token instead");
+        } else {
+            queryApiKey = undefined;
         }
+        const providedApiKey = headerApiKey ?? queryApiKey;
         const identity = providedApiKey
             ? await validateApiKey(req, providedApiKey)
             : await requireSession(req);
