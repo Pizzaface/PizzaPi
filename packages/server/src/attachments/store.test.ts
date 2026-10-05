@@ -162,3 +162,146 @@ describe("attachment metadata persistence", () => {
         });
     });
 });
+
+describe("extracted image limits (F11)", () => {
+    function b64(decodedBytes: number, seed: string): string {
+        return seed + "A".repeat(Math.ceil((decodedBytes * 4) / 3) - 1);
+    }
+
+    function withEnv<T>(vars: Record<string, string>, fn: () => Promise<T>): Promise<T> {
+        const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+        Object.assign(process.env, vars);
+        return fn().finally(() => {
+            for (const [k, v] of Object.entries(saved)) {
+                if (v === undefined) delete process.env[k];
+                else process.env[k] = v;
+            }
+        });
+    }
+
+    test("rejects an over-limit image before decoding or writing", async () => {
+        await withEnv({ PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES: "50000" }, async () => {
+            const err = await runWithAuthContext(authContext, () => store.storeExtractedImage({
+                attachmentId: "f11-too-large",
+                sessionId: "s-f11",
+                ownerUserId: "user-f11-size",
+                mimeType: "image/png",
+                base64Data: b64(60_000, "B"),
+            })).catch((e: unknown) => e);
+            expect(err).toBeInstanceOf(store.ExtractedImageRejectedError);
+            expect((err as InstanceType<typeof store.ExtractedImageRejectedError>).reason).toBe("too_large");
+            expect(store._testGetAttachments().has("f11-too-large")).toBe(false);
+            expect(store.extractedImageBytesForUser("user-f11-size")).toBe(0);
+        });
+    });
+
+    test("rejects non-base64 payloads", async () => {
+        const err = await runWithAuthContext(authContext, () => store.storeExtractedImage({
+            attachmentId: "f11-invalid",
+            sessionId: "s-f11",
+            ownerUserId: "user-f11-invalid",
+            mimeType: "image/png",
+            base64Data: "<html>" + "A".repeat(20_000),
+        })).catch((e: unknown) => e);
+        expect((err as InstanceType<typeof store.ExtractedImageRejectedError>).reason).toBe("invalid");
+    });
+
+    test("enforces the per-user quota, including durable-retained images, and frees it on delete", async () => {
+        await withEnv({ PIZZAPI_EXTRACTED_IMAGE_USER_QUOTA_BYTES: "100000" }, async () => {
+            const user = "user-f11-quota";
+            const first = await runWithAuthContext(authContext, () => store.storeExtractedImage({
+                attachmentId: "f11-quota-1",
+                sessionId: "s-f11",
+                ownerUserId: user,
+                mimeType: "image/png",
+                base64Data: b64(60_000, "B"),
+            }));
+            expect(store.extractedImageBytesForUser(user)).toBe(first.size);
+
+            // Re-storing identical content dedupes and does not consume quota.
+            await runWithAuthContext(authContext, () => store.storeExtractedImage({
+                attachmentId: "f11-quota-1",
+                sessionId: "s-f11-other",
+                ownerUserId: user,
+                mimeType: "image/png",
+                base64Data: b64(60_000, "B"),
+            }));
+            expect(store.extractedImageBytesForUser(user)).toBe(first.size);
+
+            const err = await runWithAuthContext(authContext, () => store.storeExtractedImage({
+                attachmentId: "f11-quota-2",
+                sessionId: "s-f11",
+                ownerUserId: user,
+                mimeType: "image/png",
+                base64Data: b64(60_000, "C"),
+            })).catch((e: unknown) => e);
+            expect((err as InstanceType<typeof store.ExtractedImageRejectedError>).reason).toBe("quota_exceeded");
+            expect(store._testGetAttachments().has("f11-quota-2")).toBe(false);
+
+            // Another user is unaffected.
+            await runWithAuthContext(authContext, () => store.storeExtractedImage({
+                attachmentId: "f11-quota-other-user",
+                sessionId: "s-f11",
+                ownerUserId: "user-f11-quota-b",
+                mimeType: "image/png",
+                base64Data: b64(60_000, "C"),
+            }));
+
+            await runWithAuthContext(authContext, () => store.deleteStoredAttachment("f11-quota-1"));
+            expect(store.extractedImageBytesForUser(user)).toBe(0);
+            await runWithAuthContext(authContext, () => store.storeExtractedImage({
+                attachmentId: "f11-quota-2",
+                sessionId: "s-f11",
+                ownerUserId: user,
+                mimeType: "image/png",
+                base64Data: b64(60_000, "C"),
+            }));
+            expect(store._testGetAttachments().has("f11-quota-2")).toBe(true);
+        });
+    });
+
+    test("concurrent stores cannot overshoot the quota", async () => {
+        await withEnv({ PIZZAPI_EXTRACTED_IMAGE_USER_QUOTA_BYTES: "100000" }, async () => {
+            const user = "user-f11-race";
+            const results = await runWithAuthContext(authContext, () => Promise.allSettled(
+                ["D", "E", "F", "G"].map((seed) => store.storeExtractedImage({
+                    attachmentId: `f11-race-${seed}`,
+                    sessionId: "s-f11",
+                    ownerUserId: user,
+                    mimeType: "image/png",
+                    base64Data: b64(40_000, seed),
+                })),
+            ));
+            expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(2);
+            expect(store.extractedImageBytesForUser(user)).toBeLessThanOrEqual(100_000);
+        });
+    });
+
+    test("relay pipeline stripping replaces quota-rejected images with omitted markers", async () => {
+        const { stripImagesFromPipelineEvent } = await import("../ws/strip-images.js");
+        await withEnv({ PIZZAPI_EXTRACTED_IMAGE_USER_QUOTA_BYTES: "50000" }, async () => {
+            const event = {
+                type: "agent_end",
+                messages: [{
+                    role: "user",
+                    content: [
+                        { type: "image", source: { type: "base64", media_type: "image/png", data: b64(40_000, "H") } },
+                        { type: "image", source: { type: "base64", media_type: "image/png", data: b64(40_000, "I") } },
+                    ],
+                }],
+            };
+            const out = await runWithAuthContext(authContext, () =>
+                stripImagesFromPipelineEvent(event, "s-f11-pipe", "user-f11-pipe")) as any;
+            const blocks = out.messages[0].content;
+            const stored = blocks.filter((b: any) => b.source.extracted === true);
+            const omitted = blocks.filter((b: any) => b.source.omitted === true);
+            expect(stored).toHaveLength(1);
+            expect(omitted).toHaveLength(1);
+            expect(omitted[0].source.omittedReason).toBe("quota_exceeded");
+            expect(omitted[0].source.data).toBeUndefined();
+            expect(omitted[0].source.url).toBeUndefined();
+            expect(out._imagesStripped).toBe(true);
+            expect(store.extractedImageBytesForUser("user-f11-pipe")).toBeLessThanOrEqual(50_000);
+        });
+    });
+});

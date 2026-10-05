@@ -11,7 +11,12 @@
 // ============================================================================
 
 import { createHash } from "node:crypto";
-import { storeExtractedImage, getExtractedImageUrl } from "../attachments/store.js";
+import {
+    storeExtractedImage,
+    getExtractedImageUrl,
+    attachmentMaxFileSizeBytes,
+    ExtractedImageRejectedError,
+} from "../attachments/store.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("strip-images");
@@ -32,10 +37,49 @@ export interface ExtractedImage {
 export interface ExtractionResult {
     /** The messages array with base64 data replaced by URL references */
     messages: unknown[];
-    /** Images that were extracted and need to be stored */
+    /** Unique images that were extracted and need to be stored */
     extracted: ExtractedImage[];
     /** Total bytes of base64 data that was removed */
     savedBytes: number;
+    /** Images dropped (not stored, data removed) because they exceeded a limit */
+    omitted: number;
+}
+
+export type OmittedImageReason =
+    | "too_large"
+    | "too_many_images"
+    | "event_budget_exceeded"
+    | "quota_exceeded"
+    | "invalid"
+    | "store_failed";
+
+export interface ImageExtractionLimits {
+    /** Max decoded bytes of a single image (the attachment upload limit). */
+    maxImageBytes: number;
+    /** Max unique images extracted from one event. */
+    maxImagesPerEvent: number;
+    /** Max aggregate decoded bytes of unique images extracted from one event. */
+    maxEventBytes: number;
+}
+
+export const DEFAULT_RELAY_IMAGE_MAX_PER_EVENT = 500;
+export const DEFAULT_RELAY_IMAGE_MAX_EVENT_BYTES = 128 * 1024 * 1024;
+/** Images written to disk concurrently per event. */
+const STORE_CONCURRENCY = 4;
+
+function positiveIntEnv(name: string, fallback: number): number {
+    const raw = process.env[name];
+    if (raw === undefined || raw.trim() === "") return fallback;
+    const value = Number(raw);
+    return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+export function getImageExtractionLimits(): ImageExtractionLimits {
+    return {
+        maxImageBytes: attachmentMaxFileSizeBytes(),
+        maxImagesPerEvent: positiveIntEnv("PIZZAPI_RELAY_IMAGE_MAX_PER_EVENT", DEFAULT_RELAY_IMAGE_MAX_PER_EVENT),
+        maxEventBytes: positiveIntEnv("PIZZAPI_RELAY_IMAGE_MAX_EVENT_BYTES", DEFAULT_RELAY_IMAGE_MAX_EVENT_BYTES),
+    };
 }
 
 // ── Minimum size threshold ───────────────────────────────────────────────────
@@ -79,8 +123,9 @@ function contentHash(data: string, userId: string): string {
  * Estimate decoded byte size of a base64 string (with or without data URI prefix).
  */
 export function estimateBase64Bytes(data: string): number {
-    // Strip data URI prefix if present
-    const b64 = data.includes(",") ? data.split(",").pop() ?? "" : data;
+    // Strip data URI prefix if present (lastIndexOf avoids splitting a
+    // potentially huge attacker-controlled string into an array).
+    const b64 = data.slice(data.lastIndexOf(",") + 1);
     if (!b64) return 0;
     const padding = b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0;
     return Math.floor((b64.length * 3) / 4) - padding;
@@ -95,22 +140,60 @@ export function estimateBase64Bytes(data: string): number {
  * This is a pure function — no I/O. Call storeAndReplaceImages() for the
  * full async pipeline.
  */
-export function extractImages(messages: unknown[], sessionId: string, userId: string = "unknown"): ExtractionResult {
-    const extracted: ExtractedImage[] = [];
-    let savedBytes = 0;
+export function extractImages(
+    messages: unknown[],
+    sessionId: string,
+    userId: string = "unknown",
+    limits: ImageExtractionLimits = getImageExtractionLimits(),
+): ExtractionResult {
+    const ctx: ExtractionContext = {
+        userId,
+        limits,
+        extracted: [],
+        seen: new Set(),
+        eventBytes: 0,
+        savedBytes: 0,
+        omitted: 0,
+    };
 
-    const processedMessages = messages.map((msg) => processMessage(msg, sessionId, userId, extracted, (bytes) => { savedBytes += bytes; }));
+    const processedMessages = messages.map((msg) => processMessage(msg, ctx));
 
-    return { messages: processedMessages, extracted, savedBytes };
+    return { messages: processedMessages, extracted: ctx.extracted, savedBytes: ctx.savedBytes, omitted: ctx.omitted };
 }
 
-function processMessage(
-    msg: unknown,
-    sessionId: string,
-    userId: string,
-    extracted: ExtractedImage[],
-    addSaved: (bytes: number) => void,
-): unknown {
+interface ExtractionContext {
+    userId: string;
+    limits: ImageExtractionLimits;
+    extracted: ExtractedImage[];
+    /** Attachment IDs already queued for this event (dedupe within event). */
+    seen: Set<string>;
+    eventBytes: number;
+    savedBytes: number;
+    omitted: number;
+}
+
+/**
+ * Replace an image block's inline data with a marker explaining why it was
+ * not kept. The block keeps its non-data fields and is never re-extracted.
+ */
+function omittedImageBlock(b: Record<string, unknown>, reason: OmittedImageReason, sizeBytes: number): Record<string, unknown> {
+    const source = (b.source && typeof b.source === "object" ? b.source : {}) as Record<string, unknown>;
+    const newSource: Record<string, unknown> = {
+        ...source,
+        type: "omitted",
+        omitted: true,
+        omittedReason: reason,
+        originalSizeBytes: sizeBytes,
+    };
+    delete newSource.data;
+    delete newSource.url;
+    delete newSource.extracted;
+    const newBlock: Record<string, unknown> = { ...b, source: newSource };
+    delete newBlock.data;
+    return newBlock;
+}
+
+function processMessage(msg: unknown, ctx: ExtractionContext): unknown {
     if (!msg || typeof msg !== "object") return msg;
     const m = msg as Record<string, unknown>;
 
@@ -135,6 +218,14 @@ function processMessage(
         const sizeBytes = estimateBase64Bytes(data);
         if (sizeBytes < MIN_EXTRACT_SIZE_BYTES) return block;
 
+        // Enforce limits on the encoded length, before hashing or decoding.
+        if (sizeBytes > ctx.limits.maxImageBytes) {
+            ctx.omitted++;
+            ctx.savedBytes += data.length;
+            changed = true;
+            return omittedImageBlock(b, "too_large", sizeBytes);
+        }
+
         // Determine MIME type
         const mimeType = typeof b.mimeType === "string"
             ? b.mimeType
@@ -148,9 +239,25 @@ function processMessage(
         // so repeated state updates with the same image don't create duplicate
         // files, but different users get separate records (attachment downloads
         // enforce ownerUserId matching).
-        const attachmentId = contentHash(data, userId);
-        extracted.push({ attachmentId, mimeType, base64Data: data, sizeBytes });
-        addSaved(data.length); // Save the base64 string length (chars ≈ bytes for ASCII)
+        const attachmentId = contentHash(data, ctx.userId);
+        if (!ctx.seen.has(attachmentId)) {
+            if (ctx.extracted.length >= ctx.limits.maxImagesPerEvent) {
+                ctx.omitted++;
+                ctx.savedBytes += data.length;
+                changed = true;
+                return omittedImageBlock(b, "too_many_images", sizeBytes);
+            }
+            if (ctx.eventBytes + sizeBytes > ctx.limits.maxEventBytes) {
+                ctx.omitted++;
+                ctx.savedBytes += data.length;
+                changed = true;
+                return omittedImageBlock(b, "event_budget_exceeded", sizeBytes);
+            }
+            ctx.seen.add(attachmentId);
+            ctx.eventBytes += sizeBytes;
+            ctx.extracted.push({ attachmentId, mimeType, base64Data: data, sizeBytes });
+        }
+        ctx.savedBytes += data.length; // Save the base64 string length (chars ≈ bytes for ASCII)
 
         changed = true;
 
@@ -179,6 +286,97 @@ function processMessage(
 // ── Async store + replace pipeline ───────────────────────────────────────────
 
 /**
+ * Store extracted images with bounded concurrency. Returns the IDs that
+ * could not be stored (with the reason) so their URL placeholders can be
+ * replaced with omitted markers instead of dangling attachment links.
+ */
+export async function storeExtractedImages(
+    images: ExtractedImage[],
+    sessionId: string,
+    userId: string,
+    concurrency: number = STORE_CONCURRENCY,
+): Promise<Map<string, OmittedImageReason>> {
+    const failed = new Map<string, OmittedImageReason>();
+    let next = 0;
+    const worker = async () => {
+        while (next < images.length) {
+            const img = images[next++];
+            if (!img) break;
+            try {
+                await storeExtractedImage({
+                    attachmentId: img.attachmentId,
+                    sessionId,
+                    ownerUserId: userId,
+                    mimeType: img.mimeType,
+                    base64Data: img.base64Data,
+                });
+            } catch (err) {
+                if (err instanceof ExtractedImageRejectedError) {
+                    failed.set(img.attachmentId, err.reason);
+                    log.warn(`Dropped extracted image for session ${sessionId}: ${err.message}`);
+                } else {
+                    failed.set(img.attachmentId, "store_failed");
+                    log.error(`Failed to store extracted image for session ${sessionId}:`, err);
+                }
+            }
+        }
+    };
+    const workers = Math.max(1, Math.min(concurrency, images.length));
+    await Promise.all(Array.from({ length: workers }, worker));
+    return failed;
+}
+
+/** Swap URL placeholders for images that failed to store with omitted markers. */
+function replaceFailedImages(messages: unknown[], failed: Map<string, OmittedImageReason>): unknown[] {
+    if (failed.size === 0) return messages;
+    const urlToReason = new Map<string, OmittedImageReason>();
+    for (const [id, reason] of failed) urlToReason.set(getExtractedImageUrl(id), reason);
+    return messages.map((msg) => {
+        if (!msg || typeof msg !== "object") return msg;
+        const m = msg as Record<string, unknown>;
+        if (!Array.isArray(m.content)) return msg;
+        let changed = false;
+        const content = m.content.map((block: unknown) => {
+            if (!block || typeof block !== "object") return block;
+            const b = block as Record<string, unknown>;
+            const source = b.source as Record<string, unknown> | undefined;
+            if (b.type !== "image" || source?.extracted !== true || typeof source.url !== "string") return block;
+            const reason = urlToReason.get(source.url);
+            if (!reason) return block;
+            changed = true;
+            const size = typeof source.originalSizeBytes === "number" ? source.originalSizeBytes : 0;
+            return omittedImageBlock(b, reason, size);
+        });
+        return changed ? { ...m, content } : msg;
+    });
+}
+
+/**
+ * Extract, store (bounded), and rewrite one messages array. Returns null when
+ * nothing changed so callers can return the original object untouched.
+ */
+async function extractAndStore(
+    messages: unknown[],
+    sessionId: string,
+    userId: string,
+    label: string,
+): Promise<unknown[] | null> {
+    const result = extractImages(messages, sessionId, userId);
+    if (result.extracted.length === 0 && result.omitted === 0) return null;
+
+    const failed = await storeExtractedImages(result.extracted, sessionId, userId);
+    const finalMessages = replaceFailedImages(result.messages, failed);
+    const omitted = result.omitted + failed.size;
+
+    log.info(
+        `${label}: extracted ${result.extracted.length - failed.size} image(s) for session ${sessionId}` +
+        (omitted > 0 ? `, omitted ${omitted} over-limit/failed image(s)` : "") +
+        `, saved ~${(result.savedBytes / 1024 / 1024).toFixed(1)} MB`,
+    );
+    return finalMessages;
+}
+
+/**
  * Extract inline images from a session state object, store them as
  * attachments, and return the modified state with URL references.
  *
@@ -198,28 +396,10 @@ export async function storeAndReplaceImages(
 
     if (!Array.isArray(s.messages) || s.messages.length === 0) return state;
 
-    const result = extractImages(s.messages, sessionId, userId);
-    if (result.extracted.length === 0) return state;
+    const messages = await extractAndStore(s.messages, sessionId, userId, "state payload");
+    if (!messages) return state;
 
-    // Store all extracted images as attachments (fire concurrently)
-    await Promise.all(
-        result.extracted.map((img) =>
-            storeExtractedImage({
-                attachmentId: img.attachmentId,
-                sessionId,
-                ownerUserId: userId,
-                mimeType: img.mimeType,
-                base64Data: img.base64Data,
-            }),
-        ),
-    );
-
-    log.info(
-        `Extracted ${result.extracted.length} image(s) from session ${sessionId}, ` +
-        `saved ~${(result.savedBytes / 1024 / 1024).toFixed(1)} MB from state payload`,
-    );
-
-    return { ...s, messages: result.messages };
+    return { ...s, messages };
 }
 
 /**
@@ -239,27 +419,10 @@ export async function storeAndReplaceImagesInEvent(
 
     if (evt.type !== "agent_end" || !Array.isArray(evt.messages)) return event;
 
-    const result = extractImages(evt.messages, sessionId, userId);
-    if (result.extracted.length === 0) return event;
+    const messages = await extractAndStore(evt.messages, sessionId, userId, "agent_end");
+    if (!messages) return event;
 
-    await Promise.all(
-        result.extracted.map((img) =>
-            storeExtractedImage({
-                attachmentId: img.attachmentId,
-                sessionId,
-                ownerUserId: userId,
-                mimeType: img.mimeType,
-                base64Data: img.base64Data,
-            }),
-        ),
-    );
-
-    log.info(
-        `Extracted ${result.extracted.length} image(s) from agent_end for session ${sessionId}, ` +
-        `saved ~${(result.savedBytes / 1024 / 1024).toFixed(1)} MB`,
-    );
-
-    return { ...evt, messages: result.messages };
+    return { ...evt, messages };
 }
 
 // ── Pipeline-level image stripping ───────────────────────────────────────────
@@ -295,53 +458,19 @@ export async function stripImagesFromPipelineEvent(
         const state = evt.state as Record<string, unknown> | undefined;
         if (!state || !Array.isArray(state.messages) || state.messages.length === 0) return event;
 
-        const result = extractImages(state.messages, sessionId, userId);
-        if (result.extracted.length === 0) return event;
+        const messages = await extractAndStore(state.messages, sessionId, userId, "[pipeline] session_active");
+        if (!messages) return event;
 
-        await Promise.all(
-            result.extracted.map((img) =>
-                storeExtractedImage({
-                    attachmentId: img.attachmentId,
-                    sessionId,
-                    ownerUserId: userId,
-                    mimeType: img.mimeType,
-                    base64Data: img.base64Data,
-                }),
-            ),
-        );
-
-        log.info(
-            `[pipeline] Extracted ${result.extracted.length} image(s) from session_active for ${sessionId}, ` +
-            `saved ~${(result.savedBytes / 1024 / 1024).toFixed(1)} MB`,
-        );
-
-        return { ...evt, state: { ...state, messages: result.messages }, _imagesStripped: true };
+        return { ...evt, state: { ...state, messages }, _imagesStripped: true };
     }
 
     if (eventType === "agent_end" || eventType === "session_messages_chunk") {
         if (!Array.isArray(evt.messages) || evt.messages.length === 0) return event;
 
-        const result = extractImages(evt.messages as unknown[], sessionId, userId);
-        if (result.extracted.length === 0) return event;
+        const messages = await extractAndStore(evt.messages as unknown[], sessionId, userId, `[pipeline] ${String(eventType)}`);
+        if (!messages) return event;
 
-        await Promise.all(
-            result.extracted.map((img) =>
-                storeExtractedImage({
-                    attachmentId: img.attachmentId,
-                    sessionId,
-                    ownerUserId: userId,
-                    mimeType: img.mimeType,
-                    base64Data: img.base64Data,
-                }),
-            ),
-        );
-
-        log.info(
-            `[pipeline] Extracted ${result.extracted.length} image(s) from ${eventType} for ${sessionId}, ` +
-            `saved ~${(result.savedBytes / 1024 / 1024).toFixed(1)} MB`,
-        );
-
-        return { ...evt, messages: result.messages, _imagesStripped: true };
+        return { ...evt, messages, _imagesStripped: true };
     }
 
     return event;

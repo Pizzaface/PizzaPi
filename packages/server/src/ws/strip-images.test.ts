@@ -1,5 +1,12 @@
 import { describe, test, expect } from "bun:test";
-import { extractImages, estimateBase64Bytes, stripDataUriPrefix } from "./strip-images.js";
+import {
+    extractImages,
+    estimateBase64Bytes,
+    stripDataUriPrefix,
+    getImageExtractionLimits,
+    DEFAULT_RELAY_IMAGE_MAX_PER_EVENT,
+    type ImageExtractionLimits,
+} from "./strip-images.js";
 
 // ── estimateBase64Bytes ──────────────────────────────────────────────────────
 
@@ -341,6 +348,99 @@ describe("_imagesStripped flag skip", () => {
         ];
         const result = extractImages(messages, "session-1", "user-1");
         expect(result.extracted).toHaveLength(1);
+    });
+});
+
+// ── Extraction limits (F11) ─────────────────────────────────────────────────
+
+describe("extractImages limits", () => {
+    const limits: ImageExtractionLimits = {
+        maxImageBytes: 100_000,
+        maxImagesPerEvent: 2,
+        maxEventBytes: 150_000,
+    };
+
+    function imageMsg(...datas: string[]) {
+        return {
+            role: "user",
+            content: datas.map((data) => ({ type: "image", source: { type: "base64", media_type: "image/png", data } })),
+        };
+    }
+
+    // Distinct content of a given decoded size (different leading char).
+    function distinct(decodedBytes: number, seed: string): string {
+        return seed + fakeBase64(decodedBytes).slice(1);
+    }
+
+    test("omits a single over-limit image without queuing it for decode", () => {
+        const result = extractImages([imageMsg(fakeBase64(200_000))], "s", "u", limits);
+        expect(result.extracted).toHaveLength(0);
+        expect(result.omitted).toBe(1);
+        const block = (result.messages[0] as any).content[0];
+        expect(block.source.data).toBeUndefined();
+        expect(block.source.url).toBeUndefined();
+        expect(block.source.omitted).toBe(true);
+        expect(block.source.omittedReason).toBe("too_large");
+        expect(block.source.originalSizeBytes).toBeGreaterThan(limits.maxImageBytes);
+    });
+
+    test("omits images beyond the per-event count", () => {
+        const result = extractImages(
+            [imageMsg(distinct(20_000, "B"), distinct(20_000, "C"), distinct(20_000, "D"))],
+            "s", "u", limits,
+        );
+        expect(result.extracted).toHaveLength(2);
+        expect(result.omitted).toBe(1);
+        const blocks = (result.messages[0] as any).content;
+        expect(blocks[0].source.extracted).toBe(true);
+        expect(blocks[1].source.extracted).toBe(true);
+        expect(blocks[2].source.omittedReason).toBe("too_many_images");
+        expect(blocks[2].source.data).toBeUndefined();
+    });
+
+    test("omits images once the aggregate event budget is exhausted", () => {
+        const result = extractImages(
+            [imageMsg(distinct(90_000, "B"), distinct(90_000, "C"))],
+            "s", "u", limits,
+        );
+        expect(result.extracted).toHaveLength(1);
+        expect((result.messages[0] as any).content[1].source.omittedReason).toBe("event_budget_exceeded");
+    });
+
+    test("repeated identical images in one event are queued (and counted) once", () => {
+        const same = distinct(20_000, "B");
+        const result = extractImages([imageMsg(same, same, same, same)], "s", "u", limits);
+        expect(result.extracted).toHaveLength(1);
+        expect(result.omitted).toBe(0);
+        for (const block of (result.messages[0] as any).content) {
+            expect(block.source.extracted).toBe(true);
+        }
+    });
+
+    test("omitted blocks are not re-processed on a second pass", () => {
+        const first = extractImages([imageMsg(fakeBase64(200_000))], "s", "u", limits);
+        const second = extractImages(first.messages, "s", "u", limits);
+        expect(second.extracted).toHaveLength(0);
+        expect(second.omitted).toBe(0);
+        expect(second.messages[0]).toBe(first.messages[0]);
+    });
+
+    test("limits come from env with safe fallbacks; per-image cap follows the attachment limit", () => {
+        const savedCount = process.env.PIZZAPI_RELAY_IMAGE_MAX_PER_EVENT;
+        const savedSize = process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
+        try {
+            process.env.PIZZAPI_RELAY_IMAGE_MAX_PER_EVENT = "7";
+            process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = "12345";
+            expect(getImageExtractionLimits().maxImagesPerEvent).toBe(7);
+            expect(getImageExtractionLimits().maxImageBytes).toBe(12345);
+            process.env.PIZZAPI_RELAY_IMAGE_MAX_PER_EVENT = "-1";
+            expect(getImageExtractionLimits().maxImagesPerEvent).toBe(DEFAULT_RELAY_IMAGE_MAX_PER_EVENT);
+        } finally {
+            if (savedCount === undefined) delete process.env.PIZZAPI_RELAY_IMAGE_MAX_PER_EVENT;
+            else process.env.PIZZAPI_RELAY_IMAGE_MAX_PER_EVENT = savedCount;
+            if (savedSize === undefined) delete process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
+            else process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = savedSize;
+        }
     });
 });
 
