@@ -318,4 +318,69 @@ describe("TunnelClient WebSocket buffer limits", () => {
     expect((client as any).activeWs.has("w1")).toBe(false);
     expect(decode(sent)).toEqual([{ type: "ws-close", id: "w1", code: 1013, reason: "local WebSocket buffer limit exceeded" }]);
   });
+
+  test("counts the relay frame being delivered: an oversized frame on an empty local socket closes it", () => {
+    const client = newClient(10);
+    const { sent } = attachMockRelay(client);
+    let closedWith: number | undefined;
+    const frames: unknown[] = [];
+    (client as any).activeWs.set("w2", {
+      readyState: WebSocket.OPEN,
+      bufferedAmount: 0,
+      send(data: unknown) {
+        frames.push(data);
+      },
+      close(code: number) {
+        closedWith = code;
+      },
+    });
+
+    (client as any).handleWsData({ type: "ws-data", id: "w2", data: "x".repeat(100) });
+
+    expect(frames).toEqual([]);
+    expect(closedWith).toBe(1013);
+    expect(decode(sent)).toEqual([{ type: "ws-close", id: "w2", code: 1013, reason: "local WebSocket buffer limit exceeded" }]);
+
+    // Binary frames are measured after base64 decoding.
+    const okFrames: unknown[] = [];
+    (client as any).activeWs.set("w3", {
+      readyState: WebSocket.OPEN,
+      bufferedAmount: 0,
+      send(data: unknown) {
+        okFrames.push(data);
+      },
+      close() {},
+    });
+    (client as any).handleWsData({ type: "ws-data", id: "w3", data: Buffer.alloc(8).toString("base64"), binary: true });
+    expect(okFrames).toHaveLength(1);
+  });
+
+  test("closes a local WebSocket whose frame would push the relay socket past the ceiling", async () => {
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(req, srv) {
+        if (srv.upgrade(req)) return undefined;
+        return new Response("no", { status: 400 });
+      },
+      websocket: {
+        open(ws) {
+          ws.send("y".repeat(500));
+        },
+        message() {},
+      },
+    });
+    try {
+      const client = newClient(200);
+      client.exposePort(server.port!);
+      const { sent } = attachMockRelay(client);
+      (client as any).handleMessage(JSON.stringify({ type: "ws-open", id: "w4", port: server.port, path: "/", headers: {} }));
+      await waitUntil(() => decode(sent).some((m) => m.id === "w4" && m.type === "ws-close"));
+      expect(decode(sent).filter((m) => m.id === "w4" && m.type === "ws-data")).toEqual([]);
+      expect(decode(sent).find((m) => m.id === "w4" && m.type === "ws-close")).toMatchObject({ code: 1013 });
+      expect((client as any).activeWs.has("w4")).toBe(false);
+    } finally {
+      server.stop(true);
+    }
+  });
 });

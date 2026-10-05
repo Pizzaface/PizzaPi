@@ -461,10 +461,24 @@ export class TunnelRelay {
     };
   }
 
-  sendWsData(runnerId: string, wsId: string, data: string, binary?: boolean): void {
+  /**
+   * Forward a viewer→runner WebSocket frame. A WebSocket cannot be paused by
+   * the runner, so a frame that would push the runner socket past
+   * `maxBufferedBytes` (queued bytes PLUS this frame's serialized size) is
+   * not sent: the stream is closed with 1013 and false is returned.
+   */
+  sendWsData(runnerId: string, wsId: string, data: string, binary?: boolean): boolean {
     const runner = this.runners.get(runnerId);
-    if (!runner) return;
-    this.send(runner.ws, { type: "ws-data", id: wsId, data, binary });
+    if (!runner) return false;
+    const payload = JSON.stringify({ type: "ws-data", id: wsId, data, binary } satisfies TunnelServerMessage);
+    const limit = this.limits.maxBufferedBytes;
+    if (limit > 0 && socketBufferedAmount(runner.ws) + Buffer.byteLength(payload, "utf8") > limit) {
+      this.log.warn(`[tunnel-relay] Closing tunnel WebSocket ${wsId}: runner send buffer would exceed ${limit} bytes`);
+      this.sendWsClose(runnerId, wsId, 1013, "tunnel buffer limit exceeded");
+      return false;
+    }
+    if (runner.ws.readyState === WebSocket.OPEN) runner.ws.send(payload);
+    return true;
   }
 
   sendWsClose(runnerId: string, wsId: string, code?: number, reason?: string): void {

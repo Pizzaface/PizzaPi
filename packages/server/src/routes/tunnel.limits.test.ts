@@ -196,4 +196,47 @@ describe("tunnel WebSocket bridge limits", () => {
         expect(fast.frames).toEqual(["data"]);
         relay.dispose();
     });
+
+    test("counts the runner frame being delivered: an oversized frame to an idle viewer closes it", async () => {
+        const { relay, messages } = await relayWithRunner({ maxBufferedBytes: 10 });
+        let closed = null as { code?: number } | null;
+        relay.proxyWsOpen("r1", { id: "w4", port: 3000, path: "/", headers: {} }, {
+            onOpened() {},
+            onData() {},
+            onClose(code) {
+                closed = { code };
+            },
+            onError() {},
+        });
+        const viewer = fakeViewer(0);
+        expect(deliverRunnerWsFrame(relay, "r1", "w4", viewer as never, "x".repeat(100), undefined)).toBe(false);
+        expect(viewer.frames).toEqual([]);
+        expect(closed).toEqual({ code: 1013 });
+        expect(messages().at(-1)).toMatchObject({ type: "ws-close", id: "w4", code: 1013 });
+
+        // Binary frames are measured after base64 decoding (8 bytes fit).
+        const ok = fakeViewer(0);
+        expect(deliverRunnerWsFrame(relay, "r1", "w5", ok as never, Buffer.alloc(8).toString("base64"), true)).toBe(true);
+        expect(ok.frames).toHaveLength(1);
+        relay.dispose();
+    });
+
+    test("does not forward a viewer frame that would push the runner link past the ceiling", async () => {
+        const { relay, messages } = await relayWithRunner({ maxBufferedBytes: 64 });
+        let closed = null as { code?: number } | null;
+        relay.proxyWsOpen("r1", { id: "w6", port: 3000, path: "/", headers: {} }, {
+            onOpened() {},
+            onData() {},
+            onClose(code) {
+                closed = { code };
+            },
+            onError() {},
+        });
+        const viewer = fakeViewer(0);
+        forwardViewerWsFrame(relay, "r1", "w6", viewer as never, "x".repeat(100), undefined);
+        expect(messages().filter((m) => m.type === "ws-data")).toEqual([]);
+        expect(closed).toEqual({ code: 1013 });
+        expect(viewer.isPaused).toBe(false);
+        relay.dispose();
+    });
 });

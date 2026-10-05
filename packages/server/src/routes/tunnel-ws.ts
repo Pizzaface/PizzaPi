@@ -33,9 +33,22 @@ const HOP_BY_HOP = new Set([
     "host",
 ]);
 
-const tunnelProxyWss = new WebSocketServer({ noServer: true });
-
 type TunnelRelayInstance = NonNullable<ReturnType<typeof getTunnelRelay>>;
+
+let proxyWss: WebSocketServer | null = null;
+
+/**
+ * Viewer-facing WebSocket server, created on first use so a single viewer
+ * frame is bounded by the relay's hard buffer ceiling (ws closes with 1009
+ * instead of buffering an oversized message; the ws default is 100 MiB).
+ */
+function tunnelProxyWss(relay: TunnelRelayInstance): WebSocketServer {
+    if (!proxyWss) {
+        const limit = relay.limits.maxBufferedBytes;
+        proxyWss = new WebSocketServer({ noServer: true, ...(limit > 0 ? { maxPayload: limit } : {}) });
+    }
+    return proxyWss;
+}
 
 /**
  * Viewer → runner: forward a frame, then pause reading from the viewer while
@@ -49,7 +62,8 @@ export function forwardViewerWsFrame(
     data: string,
     binary: true | undefined,
 ): void {
-    relay.sendWsData(runnerId, tunnelWsId, data, binary);
+    // Refused (and the stream closed) when this frame would cross the hard ceiling.
+    if (!relay.sendWsData(runnerId, tunnelWsId, data, binary)) return;
     if (viewerWs.isPaused || !relay.isRunnerCongested(runnerId)) return;
     viewerWs.pause();
     void relay.waitForRunnerDrain(runnerId).then(() => {
@@ -71,13 +85,16 @@ export function deliverRunnerWsFrame(
     binary: boolean | undefined,
 ): boolean {
     const limit = relay.limits.maxBufferedBytes;
-    if (limit > 0 && viewerWs.bufferedAmount > limit) {
-        log.warn(`Closing tunnel WebSocket ${tunnelWsId}: viewer send buffer exceeded ${limit} bytes`);
+    const frame = binary ? Buffer.from(data, "base64") : data;
+    const frameBytes = typeof frame === "string" ? Buffer.byteLength(frame, "utf8") : frame.length;
+    // Count the frame being delivered, not only what is already queued.
+    if (limit > 0 && viewerWs.bufferedAmount + frameBytes > limit) {
+        log.warn(`Closing tunnel WebSocket ${tunnelWsId}: viewer send buffer would exceed ${limit} bytes`);
         // Notifies the runner and routes through onClose → viewerWs.close(1013).
         relay.sendWsClose(runnerId, tunnelWsId, 1013, "tunnel buffer limit exceeded");
         return false;
     }
-    viewerWs.send(binary ? Buffer.from(data, "base64") : data);
+    viewerWs.send(frame);
     return true;
 }
 
@@ -357,7 +374,7 @@ async function handleUpgradeAsync(
         }
 
         handshakeComplete = true;
-        tunnelProxyWss.handleUpgrade(req, rawSocket, head, (ws) => {
+        tunnelProxyWss(relay).handleUpgrade(req, rawSocket, head, (ws) => {
             viewerWs = ws;
 
             ws.on("message", (data, isBinary) => {
@@ -540,7 +557,7 @@ async function handleRunnerUpgradeAsync(
         }
         if (protocol) req.headers["sec-websocket-protocol"] = protocol;
         handshakeComplete = true;
-        tunnelProxyWss.handleUpgrade(req, rawSocket, head, (ws) => {
+        tunnelProxyWss(relay).handleUpgrade(req, rawSocket, head, (ws) => {
             viewerWs = ws;
             ws.on("message", (data, isBinary) => {
                 forwardViewerWsFrame(relay, runnerId, tunnelWsId, ws, isBinary ? Buffer.from(data as Buffer).toString("base64") : data.toString(), isBinary || undefined);

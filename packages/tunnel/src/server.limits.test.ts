@@ -171,4 +171,31 @@ describe("TunnelRelay limits", () => {
     ]);
     relay.dispose();
   });
+
+  test("viewer→runner WebSocket frames that would cross maxBufferedBytes close the stream instead of queueing", async () => {
+    const { relay, runner } = await registeredRelay({ maxBufferedBytes: 64 });
+    const closes: Array<number | undefined> = [];
+    relay.proxyWsOpen("r1", { id: "v1", port: 3000, path: "/", headers: {} }, {
+      onOpened() {}, onData() {}, onClose(code) { closes.push(code); }, onError() {},
+    });
+    runner.emit({ type: "ws-opened", id: "v1" });
+
+    // Empty runner socket, but the serialized frame alone exceeds the ceiling.
+    expect(relay.sendWsData("r1", "v1", "x".repeat(100))).toBe(false);
+    expect(runner.messages().filter((m) => m.type === "ws-data")).toEqual([]);
+    expect(runner.messages().at(-1)).toMatchObject({ type: "ws-close", id: "v1", code: 1013 });
+    expect(closes).toEqual([1013]);
+
+    // A frame that fits is forwarded.
+    relay.proxyWsOpen("r1", { id: "v2", port: 3000, path: "/", headers: {} }, {
+      onOpened() {}, onData() {}, onClose() {}, onError() {},
+    });
+    expect(relay.sendWsData("r1", "v2", "ok")).toBe(true);
+    expect(runner.messages().filter((m) => m.type === "ws-data")).toEqual([{ type: "ws-data", id: "v2", data: "ok" }]);
+
+    // Already-queued bytes count too.
+    runner.ws.bufferedAmount = 40;
+    expect(relay.sendWsData("r1", "v2", "ok")).toBe(false);
+    relay.dispose();
+  });
 });

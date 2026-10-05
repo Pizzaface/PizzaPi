@@ -946,15 +946,11 @@ export class TunnelClient extends EventEmitter {
 
       ws.addEventListener("message", (event: MessageEvent) => {
         if (this.activeWs.get(id) !== ws) return;
-        // A WebSocket cannot be paused: if the relay socket is this far
-        // behind, terminate instead of queueing without bound.
-        if (this.maxBufferedBytes > 0 && this.relayBufferedAmount() > this.maxBufferedBytes) {
-          this.abortLocalWs(id, ws, "tunnel buffer limit exceeded");
-          return;
-        }
         const data = event.data;
         const isBinary = data instanceof ArrayBuffer || ArrayBuffer.isView(data);
-        this.send({
+        // A WebSocket cannot be paused: if this frame would push the relay
+        // socket past the hard ceiling, terminate instead of queueing it.
+        const sent = this.sendWithinCeiling({
           type: "ws-data",
           id,
           data: isBinary
@@ -962,6 +958,7 @@ export class TunnelClient extends EventEmitter {
             : String(data),
           binary: isBinary || undefined,
         });
+        if (!sent) this.abortLocalWs(id, ws, "tunnel buffer limit exceeded");
       });
 
       ws.addEventListener("close", (event: CloseEvent) => {
@@ -998,16 +995,15 @@ export class TunnelClient extends EventEmitter {
   private handleWsData(msg: TunnelWsDataMessage): void {
     const ws = this.activeWs.get(msg.id);
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    if (this.maxBufferedBytes > 0 && ws.bufferedAmount > this.maxBufferedBytes) {
+    const frame = msg.binary ? Buffer.from(msg.data, "base64") : msg.data;
+    const frameBytes = typeof frame === "string" ? Buffer.byteLength(frame, "utf8") : frame.length;
+    // Count the frame being delivered, not only what is already queued.
+    if (this.maxBufferedBytes > 0 && ws.bufferedAmount + frameBytes > this.maxBufferedBytes) {
       this.abortLocalWs(msg.id, ws, "local WebSocket buffer limit exceeded");
       return;
     }
     try {
-      if (msg.binary) {
-        ws.send(Buffer.from(msg.data, "base64"));
-      } else {
-        ws.send(msg.data);
-      }
+      ws.send(frame);
     } catch {
       // ignore send errors
     }
