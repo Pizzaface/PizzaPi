@@ -488,6 +488,66 @@ describe("F20 — network / remote mutations", () => {
     }
 });
 
+describe("review R18 — cluster/container CLI global options", () => {
+    const allowed = [
+        "kubectl -n default get pods",
+        "kubectl --namespace default get pods",
+        "kubectl --namespace=default get pods",
+        "kubectl -ndefault get pods",
+        "kubectl --context prod -n kube-system describe pod x",
+        "kubectl --kubeconfig ./kc config view",
+        "kubectl -v 6 logs pod/x",
+        "kubectl --insecure-skip-tls-verify get nodes",
+        "kubectl config --kubeconfig ./kc current-context",
+        "oc -n project get pods",
+        "helm -n default list",
+        "helm --kube-context prod --namespace x status rel",
+        "helm --debug list",
+        "docker --context prod ps",
+        "docker -c prod ps",
+        "docker -H tcp://h:2376 images",
+        "docker --log-level debug info",
+        "docker -D ps",
+        "docker --context prod container ls",
+        "docker compose -f compose.yml ps",
+        "docker compose --project-name app -f a.yml -f b.yml ps",
+        "docker compose --env-file .env config",
+        "podman --connection remote ps",
+        "podman --root /var/x images",
+        "nerdctl -n k8s.io ps",
+        "nerdctl --namespace k8s.io images",
+    ];
+    for (const cmd of allowed) {
+        test(`${cmd} → allowed in both modes`, () => expect(bothModes(cmd)).toEqual([false, false]));
+    }
+
+    const blocked = [
+        // A consumed option value must not hide the real subcommand.
+        "kubectl -n default delete pod x",
+        "kubectl --context get delete pod x",
+        "kubectl -n get apply -f x.yml",
+        "kubectl --kubeconfig view config use-context prod",
+        "kubectl config --kubeconfig view delete-context prod",
+        "helm -n list uninstall rel",
+        "helm --kube-context list install rel chart",
+        "docker --context ps rm x",
+        "docker -c ps run alpine",
+        // Boolean flags must not consume the subcommand.
+        "docker -D rm ps",
+        "docker --tls rm ps",
+        "helm --debug uninstall list",
+        "kubectl --insecure-skip-tls-verify delete get",
+        "docker compose -f ps up",
+        "docker compose --dry-run up ps",
+        "nerdctl -n ps rm x",
+        // `--` ends options; what follows is positional.
+        "kubectl -- delete pod x",
+    ];
+    for (const cmd of blocked) {
+        test(`${cmd} → blocked in both modes`, () => expect(bothModes(cmd)).toEqual([true, true]));
+    }
+});
+
 describe("F20 — redirections", () => {
     test("<> read-write redirect creates files → blocked (no-sandbox)", () => {
         expect(noSandbox("cat <>newfile")).toBe(true);

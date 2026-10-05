@@ -346,18 +346,100 @@ const HELM_READ_SUBCOMMANDS = new Set([
     "help", "--help", "-h",
 ]);
 
+/**
+ * Global options that take a separate value (`-n default`, `--context prod`).
+ * Only options that *require* a value belong here: listing a boolean flag
+ * would make it swallow the real subcommand (`docker -D rm ps` must not be
+ * read as `ps`). Attached forms (`--namespace=x`, `-nx`) are a single token
+ * and need no entry. Unknown flags are treated as boolean, so an unlisted
+ * value-taking flag leaves its value in subcommand position, which is then
+ * classified (and normally blocked) as if it were the subcommand.
+ */
+const DOCKER_GLOBAL_VALUE_OPTIONS = [
+    "-c", "--context", "-H", "--host", "-l", "--log-level", "--config",
+    "--tlscacert", "--tlscert", "--tlskey",
+];
+const PODMAN_GLOBAL_VALUE_OPTIONS = [
+    "-c", "--connection", "--url", "--identity", "--log-level", "--root", "--runroot", "--runtime",
+    "--runtime-flag", "--storage-driver", "--storage-opt", "--tmpdir", "--cgroup-manager", "--conmon",
+    "--events-backend", "--hooks-dir", "--imagestore", "--module", "--network-cmd-path",
+    "--network-config-dir", "--volumepath", "--out", "--ssh", "--config",
+];
+const NERDCTL_GLOBAL_VALUE_OPTIONS = [
+    "-n", "--namespace", "-a", "-H", "--address", "--host", "--snapshotter", "--storage-driver",
+    "--cni-path", "--cni-netconfpath", "--data-root", "--cgroup-manager", "--host-gateway-ip",
+    "--hosts-dir", "--bridge-ip",
+];
+const KUBECTL_GLOBAL_VALUE_OPTIONS = [
+    "-n", "--namespace", "--context", "--cluster", "--user", "-s", "--server", "--kubeconfig",
+    "--token", "--as", "--as-group", "--as-uid", "--certificate-authority", "--client-certificate",
+    "--client-key", "--request-timeout", "--tls-server-name", "-v", "--v", "--vmodule", "--cache-dir",
+    "--username", "--password", "--profile", "--profile-output", "--log-file", "--log-dir",
+    "--log-file-max-size", "--log-backtrace-at", "--stderrthreshold", "--kuberc",
+    "--log-flush-frequency", "--config",
+];
+const HELM_GLOBAL_VALUE_OPTIONS = [
+    "-n", "--namespace", "--kube-context", "--kubeconfig", "--kube-apiserver", "--kube-as-group",
+    "--kube-as-user", "--kube-ca-file", "--kube-token", "--kube-tls-server-name", "--registry-config",
+    "--repository-cache", "--repository-config", "--burst-limit", "--qps", "--content-cache",
+];
+/** `docker compose` / `podman compose` options that sit before the compose subcommand. */
+const COMPOSE_VALUE_OPTIONS = [
+    "-f", "--file", "-p", "--project-name", "--profile", "--env-file", "--project-directory",
+    "--ansi", "--parallel", "--progress",
+];
+const CLUSTER_GLOBAL_VALUE_OPTIONS: Record<string, ReadonlySet<string>> = {
+    docker: new Set(DOCKER_GLOBAL_VALUE_OPTIONS),
+    podman: new Set(PODMAN_GLOBAL_VALUE_OPTIONS),
+    nerdctl: new Set(NERDCTL_GLOBAL_VALUE_OPTIONS),
+    kubectl: new Set(KUBECTL_GLOBAL_VALUE_OPTIONS),
+    oc: new Set(KUBECTL_GLOBAL_VALUE_OPTIONS),
+    helm: new Set(HELM_GLOBAL_VALUE_OPTIONS),
+};
+const COMPOSE_VALUE_OPTION_SET: ReadonlySet<string> = new Set(COMPOSE_VALUE_OPTIONS);
+const HELP_VERSION_WORDS = new Set(["--help", "-h", "--version"]);
+
+/**
+ * Return the next positional word at or after `start`, skipping option
+ * flags and consuming the separate value of each option in `valueOptions`.
+ * `--help`/`-h`/`--version` count as positional so they can be classified.
+ */
+function nextClusterPositional(
+    words: string[],
+    start: number,
+    valueOptions: ReadonlySet<string>,
+): { word: string; next: number } {
+    let i = start;
+    while (i < words.length) {
+        const w = words[i];
+        if (w === "--") return { word: words[i + 1] ?? "", next: i + 2 };
+        if (HELP_VERSION_WORDS.has(w)) return { word: w, next: i + 1 };
+        if (w.startsWith("-") && w.length > 1) {
+            i += valueOptions.has(w) ? 2 : 1;
+            continue;
+        }
+        return { word: w, next: i + 1 };
+    }
+    return { word: "", next: i };
+}
+
 /** docker/podman/nerdctl, kubectl/oc and helm: allowlist of read-only subcommands. */
 export function isDestructiveClusterCommand(segment: string): boolean {
     const all = splitShellWords(segment);
     if (all.length === 0) return false;
     const tool = all[0].toLowerCase();
-    if (!["docker", "podman", "nerdctl", "kubectl", "oc", "helm"].includes(tool)) return false;
-    // Positional words only (flags such as `-n ns` are ignored; this can only
-    // make a flag value look like a subcommand, which fails closed).
-    const words = all.slice(1).filter((w) => !w.startsWith("-") || w === "--help" || w === "-h" || w === "--version");
-    const sub = (words[0] ?? "").toLowerCase();
-    const sub2 = (words[1] ?? "").toLowerCase();
+    const globalValueOptions = CLUSTER_GLOBAL_VALUE_OPTIONS[tool];
+    if (!globalValueOptions) return false;
+    // Skip global options (consuming their values) to find the subcommand,
+    // then do the same for a second-level subcommand (`config view`,
+    // `compose -f x.yml ps`). Global options may also appear between them.
+    const first = nextClusterPositional(all, 1, globalValueOptions);
+    const sub = first.word.toLowerCase();
     if (!sub) return false;
+    const secondValueOptions = sub === "compose"
+        ? new Set([...globalValueOptions, ...COMPOSE_VALUE_OPTION_SET])
+        : globalValueOptions;
+    const sub2 = nextClusterPositional(all, first.next, secondValueOptions).word.toLowerCase();
     if (tool === "docker" || tool === "podman" || tool === "nerdctl") {
         if (CONTAINER_READ_SUBCOMMANDS.has(sub)) return false;
         if (CONTAINER_GROUP_SUBCOMMANDS.has(sub)) return !CONTAINER_READ_SECOND_LEVEL.has(sub2);
