@@ -22,7 +22,7 @@ import { createLogger } from "@pizzapi/tools";
 import { requireSession, validateApiKey } from "../middleware.js";
 import { broadcastToSessionViewers, getSharedSession } from "../ws/sio-registry.js";
 import { publishEvent } from "../events/engine.js";
-import { createEngineDeps, emitDeliveryResponseRelay } from "../events/transport.js";
+import { createEngineDeps, emitDeliveryResponseRelay, resolveOriginalTrigger } from "../events/transport.js";
 import {
   createRoute,
   deleteRoute,
@@ -30,7 +30,6 @@ import {
   eventsForIds,
   getDelivery,
   getEvent,
-  getEventByFireId,
   getRoute,
   listDeliveries,
   listEvents,
@@ -727,13 +726,12 @@ export const handleEventsRoute: RouteHandler = async (req, url) => {
     const originalTriggerId = typeof event.payload?.originalTriggerId === "string"
       ? event.payload.originalTriggerId
       : undefined;
-    let originalDelivery: Awaited<ReturnType<typeof getDelivery>> = null;
-    let originalEvent: Awaited<ReturnType<typeof getEvent>> = null;
     if (originalTriggerId) {
-      originalDelivery = await getDelivery(originalTriggerId);
-      originalEvent = originalDelivery
-        ? await getEvent(originalDelivery.eventId)
-        : await getEventByFireId(originalTriggerId);
+      // originalTriggerId is publisher-controlled payload: resolve it only
+      // inside the responder's tenant (and the escalation event's), so a
+      // foreign delivery id / fireId can never be marked responded.
+      const tenant = event.source.userId === identity.userId ? identity.userId : undefined;
+      const { event: originalEvent } = await resolveOriginalTrigger(originalTriggerId, tenant);
       if (originalEvent) {
         const originalDeliveries = await deliveriesForEvents([originalEvent.eventId]);
         await Promise.all(originalDeliveries.map((original) => updateDelivery(original.deliveryId, {

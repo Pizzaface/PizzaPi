@@ -486,6 +486,27 @@ export function createEngineDeps(): EngineDeps {
  * so the parent's received-trigger lookup matches. Shared by the respond
  * route and the drain-on-source-registration path so the two cannot drift.
  */
+/**
+ * Resolve an event payload's `originalTriggerId` (a delivery id, or a legacy
+ * fireId) to the original Delivery/Event — only within `ownerUserId`'s
+ * tenant. The id comes from publisher-controlled payload, so a foreign
+ * delivery or event is treated exactly like an unknown id. Without an
+ * authenticated owner nothing is resolved (fail closed).
+ */
+export async function resolveOriginalTrigger(
+  originalTriggerId: string,
+  ownerUserId: string | undefined,
+): Promise<{ delivery: Delivery | null; event: TriggerEvent | null }> {
+  if (!ownerUserId) return { delivery: null, event: null };
+  const delivery = await getDelivery(originalTriggerId).catch(() => null);
+  if (delivery) {
+    const event = await getEvent(delivery.eventId).catch(() => null);
+    if (event && event.source.userId === ownerUserId) return { delivery, event };
+  }
+  const event = await getEventByFireId(originalTriggerId, ownerUserId).catch(() => null);
+  return { delivery: null, event };
+}
+
 export async function emitDeliveryResponseRelay(delivery: Delivery, event: TriggerEvent): Promise<boolean> {
   if (event.source.kind !== "session" || !event.source.id) return false;
   const originalTriggerId = typeof event.payload?.originalTriggerId === "string"
@@ -495,10 +516,10 @@ export async function emitDeliveryResponseRelay(delivery: Delivery, event: Trigg
   let originalDelivery: Delivery | null = null;
   let originalEvent: TriggerEvent | null = null;
   if (originalTriggerId) {
-    originalDelivery = await getDelivery(originalTriggerId).catch(() => null);
-    originalEvent = originalDelivery
-      ? await getEvent(originalDelivery.eventId).catch(() => null)
-      : await getEventByFireId(originalTriggerId).catch(() => null);
+    ({ delivery: originalDelivery, event: originalEvent } = await resolveOriginalTrigger(
+      originalTriggerId,
+      event.source.userId,
+    ));
     correlationId = originalEvent?.fireId ?? originalTriggerId;
   }
   const isSessionComplete = event.type === "lifecycle:session_complete"

@@ -806,6 +806,54 @@ describe("events HTTP surface", () => {
     expect(originalDelivery?.status).toBe("responded");
   });
 
+  it("escalation originalTriggerId never resolves another tenant's delivery or fireId (F12)", async () => {
+    // Victim (u2) contract-bearing event + completion-style delivery.
+    const victim = await store.insertEvent({
+      type: "lifecycle:session_complete",
+      source: { kind: "session", id: "stranger-child", auth: "cookie", userId: "u2" },
+      payload: {},
+      responseContract: { ttlMs: 60_000 },
+    }, "victim-fire-1");
+    const victimDelivery = await store.createDelivery({
+      eventId: victim.event.eventId,
+      eventType: "lifecycle:session_complete",
+      sessionId: "stranger",
+      deliverAs: "followUp",
+    });
+    expect(victimDelivery).not.toBeNull();
+
+    for (const originalTriggerId of [victimDelivery!.deliveryId, "victim-fire-1"]) {
+      responses.length = 0;
+      const pub = await call(routes, "POST", "/api/events", {
+        type: "lifecycle:escalation",
+        payload: { reason: "probe", originalTriggerId },
+        responseContract: { escalate: false },
+        fireId: `escalate:${originalTriggerId}`,
+        source: { kind: "session", id: "child" },
+        target: { sessionId: "owned" },
+      });
+      expect(pub!.status).toBe(200);
+      const { deliveries } = (await pub!.json()) as any;
+      const res = await call(routes, "POST", `/api/deliveries/${deliveries[0].deliveryId}/response`, {
+        response: "hijack",
+      });
+      expect(res!.status).toBe(200);
+
+      // Victim delivery untouched, and nothing relayed to the victim's session.
+      const after = await store.getDelivery(victimDelivery!.deliveryId);
+      expect(after?.status).toBe("pending");
+      expect(after?.response).toBeUndefined();
+      expect(responses.some((r) => r.sessionId === "stranger" || r.sessionId === "stranger-child")).toBe(false);
+      // The relay stays with the publisher's own source session.
+      const relay = responses.find((r) => r.event === "trigger_response");
+      expect(relay?.sessionId).toBe("child");
+    }
+
+    // A same-tenant fireId still resolves (scoped lookup keeps legacy senders working).
+    expect(await store.getEventByFireId("victim-fire-1", "u2")).not.toBeNull();
+    expect(await store.getEventByFireId("victim-fire-1", "u1")).toBeNull();
+  });
+
   it("feed is scoped to events the caller sourced or received", async () => {
     // Visible: published with a direct target into an owned session.
     const mine = await call(routes, "POST", "/api/events", {

@@ -472,14 +472,20 @@ export async function checkpointWal(): Promise<void> {
   await db.executeQuery(sql`PRAGMA wal_checkpoint(TRUNCATE)`.compile(db));
 }
 
-/** Look up an Event by its publisher-supplied idempotency key. */
-export async function getEventByFireId(fireId: string): Promise<TriggerEvent | null> {
+/**
+ * Look up an Event by its publisher-supplied idempotency key. fireIds are
+ * unique only per owner (trigger_event_owner_fire_idx), so the lookup is
+ * always tenant scoped — a global lookup could resolve another tenant's event.
+ */
+export async function getEventByFireId(fireId: string, ownerUserId: string): Promise<TriggerEvent | null> {
   const row = await getKysely()
     .selectFrom(EVENT_TABLE)
     .select(["eventJson"])
     .where("fireId", "=", fireId)
+    .where("ownerUserId", "=", ownerUserId)
     .executeTakeFirst();
-  return row ? parseJson<TriggerEvent>(row.eventJson, "event") : null;
+  const event = row ? parseJson<TriggerEvent>(row.eventJson, "event") : null;
+  return event && event.source.userId === ownerUserId ? event : null;
 }
 
 // ── Routes ───────────────────────────────────────────────────────────────────
