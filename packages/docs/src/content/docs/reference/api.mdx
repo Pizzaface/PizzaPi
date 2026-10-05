@@ -1702,3 +1702,70 @@ Runner-based tunnel proxy (preferred). Same as above but addressed by runner ID 
 **Auth:** Session cookie (must own the runner).
 
 The request is forwarded to `127.0.0.1:{port}` on the runner. HTML, JS, and CSS responses are rewritten to route absolute paths through the tunnel prefix. Auth headers (`Cookie`, `Authorization`, `x-api-key`, `Referer`) and hop-by-hop headers (`Host`, `Accept-Encoding`, etc.) are stripped before forwarding. `apiKey` and `tunnelToken` query parameters are removed from the forwarded URL.
+
+A browser navigation (not an API call) to either cookie path is redirected to
+the equivalent signed `/api/tunnel/auth/…` path below; see
+[Tunnel origin isolation](/PizzaPi/features/tunnels/#origin-isolation).
+
+---
+
+### `POST /api/tunnel-token`
+
+Mint a self-authenticating tunnel URL for one session or runner port. The web
+UI, the mobile app, and the `create_tunnel`/`list_tunnels` tools use it so a
+tunnel can load without a relay cookie. This path is not under the
+`/api/tunnel/` prefix.
+
+**Auth:** Session cookie or API key (`x-api-key` header). The caller must own
+the session (`sessionId`) or the runner (`runnerId`).
+
+**Request body:**
+
+```json
+{
+  "sessionId": "uuid",   // or "runnerId": "runner-id" (one is required)
+  "port": 3000,           // integer 1–65535
+  "ttlHours": 24          // optional, 1–168
+}
+```
+
+**Response:**
+
+```json
+{
+  "token": "…",
+  "expiresAt": "2026-01-01T00:00:00.000Z",
+  "url": "/api/tunnel/auth/<token>/<scope>/3000/",
+  "hostUrl": "https://<label>.tunnels.example.com/"
+}
+```
+
+The signed token expires after one hour unless `ttlHours` is given. `hostUrl`
+is present only when `PIZZAPI_TUNNEL_DOMAIN` is configured and Redis is
+reachable; that label expires after 6 idle hours (or after `ttlHours` when
+given). Errors: `400` (invalid JSON, missing ID, invalid `port` or `ttlHours`),
+`401` (not signed in), `403` (not the owner), `404` (unknown session or
+runner), `405` (not `POST`), `503` (session has no runner).
+
+Treat `url` and `hostUrl` as secrets: anyone holding them can reach the port
+until they expire.
+
+---
+
+### `* /api/tunnel/auth/{token}/{scope}/{port}/*`
+
+Signed tunnel proxy. `{scope}` is the session ID, or `runner:{runnerId}` for a
+runner-scoped token (URL-encoded), and must match the token together with
+`{port}`.
+
+**Auth:** The token in the path; no cookie or API key. A token is rejected
+with `401` when it is invalid, expired, minted for a different scope or port,
+or when its session has ended or the session/runner no longer belongs to the
+user who minted it.
+
+Forwarding, rewriting, and header stripping match the cookie paths above.
+Responses keep the `sandbox` CSP and may be framed cross-origin: the relay
+drops `X-Frame-Options` and removes only the `frame-ancestors` directive from
+the app's own `Content-Security-Policy`. CORS requests from the sandbox's
+`null` origin are answered so the app's own `fetch`, module scripts, and fonts
+keep working. WebSocket upgrades on this path are proxied the same way.
