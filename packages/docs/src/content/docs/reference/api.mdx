@@ -900,7 +900,7 @@ Upload file attachments to a session (e.g. for the agent to process). Accepts on
 
 Download a previously uploaded attachment. Returns the file with appropriate content headers.
 
-**Auth:** Session cookie or API key (via `x-api-key` header or `?apiKey=` query param).
+**Auth:** Session cookie, API key in the `x-api-key` header, or a short-lived attachment-scoped `?token=` minted by `POST /api/attachments/{attachmentId}/token` (used by the mobile app for `<img>` URLs). A durable API key in the `?apiKey=` query parameter is rejected with `401`, because URLs end up in proxy logs and history. Relays that must still serve mobile builds predating scoped tokens can set `PIZZAPI_ALLOW_ATTACHMENT_QUERY_API_KEY=true` temporarily; each such request is logged as deprecated.
 
 **Response:** Binary file with headers:
 - `Content-Type` — the attachment's MIME type

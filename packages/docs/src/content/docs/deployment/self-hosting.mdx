@@ -139,6 +139,7 @@ Configure the server by setting environment variables in Docker Compose or your 
 | `PIZZAPI_API_KEY_RATE_LIMIT_ENABLED` | `false` | Enable better-auth API-key rate limiting. |
 | `PIZZAPI_API_KEY_RATE_LIMIT_MAX_REQUESTS` | `10` | API-key requests allowed per rate-limit window when enabled. Invalid or non-positive values fall back to the default. |
 | `PIZZAPI_API_KEY_RATE_LIMIT_TIME_WINDOW_MS` | `86400000` | API-key rate-limit window in milliseconds (24 hours). Invalid or non-positive values fall back to the default. |
+| `PIZZAPI_ALLOW_ATTACHMENT_QUERY_API_KEY` | `false` | Temporary compatibility escape hatch: accept a durable API key in `?apiKey=` on `GET /api/attachments/{id}` for old mobile builds. Leaves the key in URLs and proxy logs; current clients use short-lived `?token=` URLs. |
 | `PIZZAPI_WEBHOOK_ALLOW_LEGACY_SIGNATURES` | `false` | Temporary migration escape hatch: accept deprecated body-only webhook signatures (no timestamp/nonce). Identical legacy bodies are rejected for 24 hours, but legacy requests have no freshness guarantee. See [Webhooks](/PizzaPi/features/webhooks/#headers). |
 | `PIZZAPI_EPHEMERAL_TTL_MS` | `600000` | Idle TTL for ephemeral relay sessions and their Redis event data (10 minutes). Invalid or non-positive values fall back to the default. |
 | `PIZZAPI_EPHEMERAL_SWEEP_MS` | `60000` | Interval for pruning expired ephemeral relay sessions (1 minute). Invalid or non-positive values fall back to the default. |

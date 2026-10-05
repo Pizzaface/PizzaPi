@@ -11,8 +11,8 @@ import {
     setMobileApiKey,
     clearMobileApiKey,
     initMobileRuntime,
-    resolveMobileMediaUrl,
     resolveMobileMediaUrlAsync,
+    MobileMediaTokenError,
     _resetMobileRuntimeCache,
     _setMobileRuntimeCache,
 } from "./mobile-runtime";
@@ -78,46 +78,6 @@ describe("mobile-runtime (web no-op path)", () => {
         await expect(initMobileRuntime()).resolves.toBeUndefined();
         expect(getMobileRuntimeConfig().apiKey).toBeNull();
     });
-
-    test("resolveMobileMediaUrl leaves relative paths untouched on web", () => {
-        expect(resolveMobileMediaUrl("/api/attachments/abc")).toBe("/api/attachments/abc");
-    });
-});
-
-describe("resolveMobileMediaUrl (mobile-bundled path)", () => {
-    beforeEach(() => {
-        _resetMobileRuntimeCache();
-        Object.defineProperty(globalThis, "localStorage", {
-            value: makeLocalStorage("https://relay.example.com"),
-            configurable: true,
-            writable: true,
-        });
-    });
-
-    afterEach(() => {
-        _resetMobileRuntimeCache();
-        (globalThis as any).localStorage = origLocalStorage;
-    });
-
-    test("prepends server URL and appends API key for relative media paths", () => {
-        _setMobileRuntimeCache("secret-key");
-        expect(resolveMobileMediaUrl("/api/attachments/abc")).toBe(
-            "https://relay.example.com/api/attachments/abc?apiKey=secret-key",
-        );
-    });
-
-    test("prepends server URL without key when none is cached", () => {
-        expect(resolveMobileMediaUrl("/api/attachments/abc")).toBe(
-            "https://relay.example.com/api/attachments/abc",
-        );
-    });
-
-    test("leaves absolute URLs untouched", () => {
-        _setMobileRuntimeCache("secret-key");
-        expect(resolveMobileMediaUrl("https://cdn.example.com/x.png")).toBe(
-            "https://cdn.example.com/x.png",
-        );
-    });
 });
 
 describe("resolveMobileMediaUrlAsync (web no-op path)", () => {
@@ -174,29 +134,42 @@ describe("resolveMobileMediaUrlAsync (mobile-bundled path)", () => {
         expect(result).toContain("https://relay.example.com");
     });
 
-    test("falls back to deprecated ?apiKey= URL when token fetch fails", async () => {
+    test("rejects (never puts the API key in the URL) when the token fetch throws", async () => {
         (globalThis as any).fetch = async () => { throw new Error("network error"); };
 
-        const result = await resolveMobileMediaUrlAsync("/api/attachments/abc");
-        // Fallback to resolveMobileMediaUrl which uses ?apiKey=
-        expect(result).toContain("?apiKey=secret-key");
+        const err = await resolveMobileMediaUrlAsync("/api/attachments/abc").catch((e) => e);
+        expect(err).toBeInstanceOf(MobileMediaTokenError);
+        expect(String(err)).not.toContain("secret-key");
     });
 
-    test("falls back when fetch returns non-OK status", async () => {
+    test("rejects when the token endpoint returns a non-OK status", async () => {
         (globalThis as any).fetch = async () => new Response("Unauthorized", { status: 401 });
 
-        const result = await resolveMobileMediaUrlAsync("/api/attachments/abc");
-        expect(result).toContain("?apiKey=secret-key");
+        await expect(resolveMobileMediaUrlAsync("/api/attachments/abc")).rejects.toBeInstanceOf(MobileMediaTokenError);
     });
 
-    test("returns non-attachment relative paths via deprecated path", async () => {
+    test("rejects when the token endpoint returns no token", async () => {
+        (globalThis as any).fetch = async () => new Response(JSON.stringify({}), { status: 200 });
+
+        await expect(resolveMobileMediaUrlAsync("/api/attachments/abc")).rejects.toBeInstanceOf(MobileMediaTokenError);
+    });
+
+    test("strips any pre-existing ?apiKey= from attachment URLs", async () => {
+        (globalThis as any).fetch = async () => new Response(JSON.stringify({ token: "tok-1" }), { status: 200 });
+
+        const result = await resolveMobileMediaUrlAsync("/api/attachments/abc?apiKey=leaked");
+        expect(result).not.toContain("apiKey");
+        expect(result).toContain("token=tok-1");
+    });
+
+    test("resolves non-attachment relative paths against the server without a credential", async () => {
         // Non-attachment paths don't hit the token endpoint
         const fetchCalls: string[] = [];
         (globalThis as any).fetch = async (url: string) => { fetchCalls.push(url); throw new Error("should not be called"); };
 
         const result = await resolveMobileMediaUrlAsync("/api/sessions/x");
-        // No attachment match → falls through to resolveMobileMediaUrl
-        expect(result).toContain("https://relay.example.com/api/sessions/x");
+        expect(result).toBe("https://relay.example.com/api/sessions/x");
+        expect(result).not.toContain("apiKey");
         expect(fetchCalls.length).toBe(0);
     });
 });
