@@ -418,6 +418,32 @@ docker compose -f docker/compose.yml up -d
 
 Migrations run automatically when the server starts, so no separate migration step is required.
 
+### Mixed-version upgrades
+
+Two protections need upgraded components on both sides. There is no version
+negotiation, so while old and new components are mixed these protections are
+**not enforced**. Requests still succeed; nothing fails closed.
+
+| Protection | Enforced by | Mixed-version behavior |
+| --- | --- | --- |
+| Tunnel links bound to one port exposure ([details](/PizzaPi/features/tunnels/)) | Relay sends each signed link's age; the runner refuses links minted before the port was last closed | An old runner ignores the age, and an old relay never sends it. Either way, a link minted before a port was closed still reaches a later service on the same port. |
+| Config-route session binding (`target.ownerUserId`, [Routes](/PizzaPi/reference/api/)) and refusal of unbound session targets in `PIZZAPI_ROUTES_FILE` | Every relay instance | An old relay instance loads `target.ownerUserId` but ignores it, accepts unbound session targets, and delivers to whichever session registers the ID. With several relay replicas, every old replica delivers without the check. |
+
+Upgrade order:
+
+1. Before upgrading, bind every session target in `PIZZAPI_ROUTES_FILE`.
+   Set `target.ownerUserId` or the route's `ownerUserId`. A new relay refuses
+   to load a file with an unbound session target.
+2. Upgrade **every relay instance**, and do not keep old and new replicas
+   behind the same load balancer.
+3. Upgrade the runners and restart their daemons. Restarting a daemon starts
+   new port exposures, so signed links minted before the restart stop working.
+   Remint them with **Reload** or `create_tunnel`.
+
+Do not rely on either protection until both steps 2 and 3 are complete.
+Rolling the relay back removes both protections; rolling a runner back removes
+the exposure binding for that runner.
+
 ---
 
 ## Remote access with Tailscale HTTPS
