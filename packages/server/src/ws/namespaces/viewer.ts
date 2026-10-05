@@ -831,7 +831,9 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                     latestSessionSeq: resyncSeq,
                 });
                 if (cacheHydrated) {
-                    if (resyncStaleStream) {
+                    // A rejected chunk stream (review R2-6) leaves the cache on
+                    // a checkpoint older than what the runner believes it sent.
+                    if (resyncStaleStream || resyncSession?.snapshotRejectedAt) {
                         forwardRecoverySignalOrNotify(currentSessionId, socket, resyncGeneration);
                     }
                     return;
@@ -858,9 +860,10 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             // Use emitToRelaySession for cluster-wide reach — the runner may
             // be on a different server node in multi-node deployments.
             const session = await getSharedSession(currentSessionId);
-            if (!session?.lastState || resyncStaleStream) {
+            if (!session?.lastState || resyncStaleStream || session.snapshotRejectedAt) {
                 // No usable checkpoint — or the one we just sent predates a
-                // wedged chunk stream — either way the runner should rebuild.
+                // wedged or rejected chunk stream — either way the runner
+                // should rebuild.
                 emitToRelaySession(currentSessionId, "connected" as string, {});
             }
         });

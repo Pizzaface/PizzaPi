@@ -16,6 +16,7 @@ import {
     publishSessionEvent,
     consumePendingRecovery,
     getSessionOwnerToken,
+    emitToRelaySession,
 } from "../../sio-registry.js";
 import { isDeltaEvent, shouldPublishDelta } from "./viewer-gate.js";
 import { stripImagesFromPipelineEvent } from "../../strip-images.js";
@@ -137,21 +138,35 @@ export async function finalizeChunkedSnapshot(
  * hydration still serves the old snapshot but also asks the runner for a fresh
  * one instead of suppressing recovery. Events that were deferred behind the
  * snapshot are published (in arrival order) so they are not silently lost.
+ *
+ * The chunks were already ACKed, so a failed marker write cannot be undone by
+ * NACKing. It is retried; if it still fails, the runner is asked directly for
+ * a fresh snapshot so recovery does not depend on the marker (review R2-6).
  */
 export interface AbortChunkedSnapshotDeps {
     publishSessionEvent: typeof publishSessionEvent;
     markSnapshotRejected?: (sessionId: string) => Promise<void>;
+    /** Fallback when the marker cannot be persisted: signal the runner to re-emit. */
+    requestRunnerSnapshot?: (sessionId: string) => void;
+    /** Delays (ms) before each retry of a failed marker write. */
+    markRetryDelaysMs?: readonly number[];
 }
 
 async function markSnapshotRejected(sessionId: string): Promise<void> {
     await updateSessionFields(sessionId, { snapshotRejectedAt: new Date().toISOString() });
 }
 
+function requestRunnerSnapshot(sessionId: string): void {
+    emitToRelaySession(sessionId, "connected", {});
+}
+
+const DEFAULT_MARK_RETRY_DELAYS_MS = [50, 250] as const;
+
 export async function abortChunkedSnapshot(
     sessionId: string,
     pending: ChunkedSessionState,
     reason: string,
-    deps: AbortChunkedSnapshotDeps = { ...defaultFinalizeChunkedSnapshotDeps, markSnapshotRejected },
+    deps: AbortChunkedSnapshotDeps = { ...defaultFinalizeChunkedSnapshotDeps, markSnapshotRejected, requestRunnerSnapshot },
 ): Promise<void> {
     log.warn(`Aborting chunked snapshot ${pending.snapshotId.slice(0, 8)} for ${sessionId}: ${reason}`);
     if (pendingChunkedStates.get(sessionId) === pending) {
@@ -160,10 +175,26 @@ export async function abortChunkedSnapshot(
     const deferred = pending.deferredEvents ?? [];
     pending.deferredEvents = [];
     pending.chunks = [];
-    try {
-        await (deps.markSnapshotRejected ?? markSnapshotRejected)(sessionId);
-    } catch (err) {
-        log.error(`Failed to record rejected chunked snapshot for ${sessionId}:`, err);
+    const mark = deps.markSnapshotRejected ?? markSnapshotRejected;
+    const retryDelays = deps.markRetryDelaysMs ?? DEFAULT_MARK_RETRY_DELAYS_MS;
+    let marked = false;
+    for (let attempt = 0; attempt <= retryDelays.length && !marked; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, retryDelays[attempt - 1]));
+        try {
+            await mark(sessionId);
+            marked = true;
+        } catch (err) {
+            log.error(`Failed to record rejected chunked snapshot for ${sessionId} (attempt ${attempt + 1}):`, err);
+        }
+    }
+    if (!marked) {
+        // Without the durable marker, cache hits would suppress recovery; ask
+        // the runner for a fresh snapshot now instead.
+        try {
+            (deps.requestRunnerSnapshot ?? requestRunnerSnapshot)(sessionId);
+        } catch (err) {
+            log.error(`Failed to request a fresh snapshot for ${sessionId}:`, err);
+        }
     }
     for (const evt of deferred) {
         await deps.publishSessionEvent(sessionId, evt);

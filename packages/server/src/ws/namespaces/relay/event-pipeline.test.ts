@@ -411,6 +411,54 @@ describe("chunked snapshot resource limits (F10)", () => {
         expect(pending.chunks).toEqual([]);
         expect(pending.deferredEvents).toEqual([]);
     });
+
+    test("a transiently failing marker write is retried, not dropped (review R2-6)", async () => {
+        const pending = createPendingState();
+        let attempts = 0;
+        const signals: string[] = [];
+        const errSpy = spyOn(console, "error").mockImplementation(() => {});
+        const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+        try {
+            await abortChunkedSnapshot("sess-retry", pending, "test", {
+                publishSessionEvent: (async () => 1) as any,
+                markSnapshotRejected: async () => {
+                    attempts++;
+                    if (attempts < 3) throw new Error("redis down");
+                },
+                requestRunnerSnapshot: (sid) => { signals.push(sid); },
+                markRetryDelaysMs: [1, 1],
+            });
+        } finally {
+            errSpy.mockRestore();
+            warnSpy.mockRestore();
+        }
+        expect(attempts).toBe(3);
+        expect(signals).toEqual([]);
+    });
+
+    test("a persistently failing marker write asks the runner for a fresh snapshot (review R2-6)", async () => {
+        const pending = createPendingState();
+        pending.deferredEvents = [{ type: "message_start" }];
+        let attempts = 0;
+        const signals: string[] = [];
+        const published: unknown[] = [];
+        const errSpy = spyOn(console, "error").mockImplementation(() => {});
+        const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+        try {
+            await abortChunkedSnapshot("sess-fail", pending, "test", {
+                publishSessionEvent: (async (_sid: string, evt: unknown) => { published.push(evt); return 1; }) as any,
+                markSnapshotRejected: async () => { attempts++; throw new Error("redis down"); },
+                requestRunnerSnapshot: (sid) => { signals.push(sid); },
+                markRetryDelaysMs: [1, 1],
+            });
+        } finally {
+            errSpy.mockRestore();
+            warnSpy.mockRestore();
+        }
+        expect(attempts).toBe(3);
+        expect(signals).toEqual(["sess-fail"]);
+        expect(published).toEqual([{ type: "message_start" }]);
+    });
 });
 
 describe("getPendingChunkedSnapshot — stale stream expiry", () => {

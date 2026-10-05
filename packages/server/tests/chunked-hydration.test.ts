@@ -166,3 +166,44 @@ describe("chunked session hydration", () => {
         }
     }, TIMEOUT);
 });
+
+describe("rejected chunk stream recovery on resync (review R2-6)", () => {
+    for (const mode of ["cursor", "cursorless"] as const) {
+        test(`an already-connected viewer's ${mode} resync asks the runner for a fresh snapshot`, async () => {
+            const scenario = new TestScenario();
+            scenario.setServer(server);
+            try {
+                const session = await scenario.addSession({ cwd: `/chunked-rejected-resync-${mode}` });
+                let seq = 0;
+                const emit = (event: unknown) => session.relay.emitEvent(session.sessionId, session.token, event, seq++);
+                let runnerSignals = 0;
+                session.relay.socket.on("connected" as any, () => { runnerSignals++; });
+
+                emit({ type: "session_active", state: { sessionName: "old", messages: [msg(0)] } });
+                await new Promise((r) => setTimeout(r, 200));
+
+                // The viewer hydrates from the (valid) cache BEFORE the rejection.
+                const viewer = await scenario.addViewer(session.sessionId);
+                await viewer.waitForEvent((e) => (e as Evt)?.type === "session_active", 5_000);
+                await new Promise((r) => setTimeout(r, 300));
+
+                // A newer chunked snapshot is rejected after its chunks were ACKed.
+                emit({ type: "session_active", state: { messages: [], chunked: true, snapshotId: "snap-bad", totalMessages: 4 } });
+                emit({ type: "session_messages_chunk", snapshotId: "snap-bad", chunkIndex: 7, totalChunks: 2, totalMessages: 4, messages: [msg(1), msg(2)], final: false });
+                await new Promise((r) => setTimeout(r, 300));
+
+                const signalsBefore = runnerSignals;
+                viewer.clearEvents();
+                // Cursor resync takes the seq-aware cache path; cursorless
+                // takes the lastState snapshot path. Both serve the old
+                // checkpoint, so both must also nudge the runner.
+                viewer.socket.emit("resync", mode === "cursor" ? { lastSeq: 0 } : {});
+                const deadline = Date.now() + 3_000;
+                while (runnerSignals === signalsBefore && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+                expect(runnerSignals).toBeGreaterThan(signalsBefore);
+            } finally {
+                await scenario.reset();
+            }
+        }, TIMEOUT);
+    }
+});
