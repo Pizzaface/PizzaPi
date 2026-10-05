@@ -41,7 +41,7 @@ const STRIPPED_ENV_NAMES: ReadonlySet<string> = new Set([
  * Any PIZZAPI_-prefixed variable whose name ends like a credential is treated
  * as a PizzaPi credential, so new secrets are covered without updating the
  * list above. Matches e.g. PIZZAPI_FOO_TOKEN and PIZZAPI_BAR_SECRET, but not
- * PIZZAPI_API_KEY_RATE_LIMIT_ENABLED or PIZZAPI_API_KEY_FILE.
+ * PIZZAPI_API_KEY_RATE_LIMIT_ENABLED.
  */
 const PIZZAPI_CREDENTIAL_PATTERN = /^PIZZAPI_[A-Z0-9_]*(?:_KEY|_TOKEN|_SECRET|_SECRET_PREVIOUS|_PASSWORD)$/;
 
@@ -52,10 +52,21 @@ const PIZZAPI_CREDENTIAL_PATTERN = /^PIZZAPI_[A-Z0-9_]*(?:_KEY|_TOKEN|_SECRET|_S
  */
 export const BASH_PASSTHROUGH_ENV = "PIZZAPI_BASH_PASSTHROUGH_ENV";
 
-/** True when `name` is a PizzaPi credential that shell commands must not see. */
+function isCredentialName(upper: string): boolean {
+    return STRIPPED_ENV_NAMES.has(upper) || PIZZAPI_CREDENTIAL_PATTERN.test(upper);
+}
+
+/**
+ * True when `name` is a PizzaPi credential that shell commands must not see,
+ * or a Docker/K8s-style `<NAME>_FILE` pointer to one (e.g.
+ * PIZZAPI_API_KEY_FILE): the CLI expands those into `<NAME>` at startup, and
+ * leaving the pointer would let `cat "$PIZZAPI_API_KEY_FILE"` recover the
+ * credential the scrubber just removed.
+ */
 export function isStrippedSubprocessEnvName(name: string): boolean {
     const upper = name.toUpperCase();
-    return STRIPPED_ENV_NAMES.has(upper) || PIZZAPI_CREDENTIAL_PATTERN.test(upper);
+    if (isCredentialName(upper)) return true;
+    return upper.endsWith("_FILE") && isCredentialName(upper.slice(0, -"_FILE".length));
 }
 
 /**

@@ -187,6 +187,13 @@ For automated provisioning where pairing's human-approval step doesn't fit — C
 
 The deliberate `_KEY`/`_TOKEN` scoping matters: a blanket `*_FILE` → bare-name expansion would silently repurpose any unrelated app's own `FOO_FILE` convention (pointing at a config path, a binary DB, whatever) the moment it happened to share a name with something the runner reads — restricting it to credential-shaped suffixes keeps the behavior predictable.
 
+Once expanded, `_FILE` pointers to PizzaPi credentials (for example `PIZZAPI_API_KEY_FILE` or
+`PIZZAPI_RUNNER_TOKEN_FILE`) are not forwarded to session workers, and they are removed from the
+environment of `bash` tool commands along with the credentials themselves. The secret file
+itself is still on disk: a command that knows or guesses its path can read it unless the
+[sandbox](/PizzaPi/security/sandbox/) denies it, so add the secrets mount (for example
+`/run/secrets`) to `sandbox.filesystem.denyRead` when sessions run model-written commands.
+
 ```yaml
 services:
   runner:

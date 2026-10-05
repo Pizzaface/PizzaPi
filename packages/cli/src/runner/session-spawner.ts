@@ -16,6 +16,7 @@ import { recordTranscriptLink } from "./session-transcript-links.js";
 import { isCwdAllowed } from "./workspace.js";
 import { loadConfig } from "../config.js";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { isStrippedSubprocessEnvName } from "@pizzapi/tools";
 
 export interface RunnerSession {
     sessionId: string;
@@ -264,16 +265,29 @@ export function spawnSession(
         "DYLD_FORCE_FLAT_NAMESPACE",
     ]);
 
+    // Docker/K8s `<NAME>_FILE` secret pointers (e.g. PIZZAPI_API_KEY_FILE,
+    // PIZZAPI_RUNNER_TOKEN_FILE) were already expanded by the CLI entrypoint
+    // that started this daemon. A worker never needs them — it gets its own
+    // PIZZAPI_API_KEY below — and forwarding them would let the worker (whose
+    // compiled-binary entrypoint re-runs that expansion) or any process it
+    // starts re-read a daemon credential from disk.
+    const isWorkerEnvDenied = (key: string): boolean => {
+        if (WORKER_ENV_DENYLIST.has(key)) return true;
+        if (!key.toUpperCase().endsWith("_FILE")) return false;
+        const base = key.slice(0, -"_FILE".length);
+        return WORKER_ENV_DENYLIST.has(base.toUpperCase()) || isStrippedSubprocessEnvName(base);
+    };
+
     const baseEnv: Record<string, string> = {};
     for (const [key, val] of Object.entries(process.env)) {
-        if (!WORKER_ENV_DENYLIST.has(key) && typeof val === "string") {
+        if (!isWorkerEnvDenied(key) && typeof val === "string") {
             baseEnv[key] = val;
         }
     }
 
     const envOverrides: Record<string, string> = {};
     for (const [key, val] of Object.entries(loadConfig(effectiveCwd).envOverrides ?? {})) {
-        if (key.startsWith("PIZZAPI_") && !WORKER_ENV_DENYLIST.has(key) && typeof val === "string") {
+        if (key.startsWith("PIZZAPI_") && !isWorkerEnvDenied(key) && typeof val === "string") {
             envOverrides[key] = val;
         }
     }

@@ -247,8 +247,10 @@ credentials**. Removed variables are `PIZZAPI_API_KEY`, `PIZZAPI_API_TOKEN`,
 `PIZZAPI_RUNNER_API_KEY`, `PIZZAPI_RUNNER_TOKEN`, `PIZZAPI_AUTH_TOKEN`, relay-server secrets
 (`BETTER_AUTH_SECRET`, `VAPID_PRIVATE_KEY`, `PIZZAPI_TUNNEL_TOKEN_SECRET*`,
 `PIZZAPI_NTFY_PUBLISH_TOKEN`, `PIZZAPI_CADDY_DNS_TOKEN`, `PIZZAPI_WEBHOOK_SECRET`), and any other
-`PIZZAPI_*` variable whose name ends in `_KEY`, `_TOKEN`, `_SECRET`, or `_PASSWORD`. The session
-process keeps them for its own relay connection and tools.
+`PIZZAPI_*` variable whose name ends in `_KEY`, `_TOKEN`, `_SECRET`, or `_PASSWORD`. A
+`<NAME>_FILE` pointer to any of these (such as `PIZZAPI_API_KEY_FILE`) is removed as well, so
+a command cannot follow it to the file-backed secret. The session process keeps the
+credentials for its own relay connection and tools.
 
 Your own variables, such as provider API keys, `GITHUB_TOKEN`, and cloud credentials, are passed
 through unchanged so the tools you run in a shell keep working. Non-secret PizzaPi variables such

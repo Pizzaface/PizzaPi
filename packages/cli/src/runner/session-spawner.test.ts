@@ -4,6 +4,9 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as realChildProcessNs from "node:child_process";
+
+const realChildProcess = { ...realChildProcessNs };
 
 describe("session-spawner", () => {
     test("spawns workers with the expected env, handles restart/cleanup, and guards killed sessions from re-spawn", () => {
@@ -24,6 +27,11 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as realChildProcessNs from "node:child_process";
+
+// Snapshot the real module so mocks only replace what the spawner uses;
+// transitive imports (e.g. @pizzapi/tools) still need the other exports.
+const realChildProcess = { ...realChildProcessNs };
 
 class FakeChild extends EventEmitter {
     pid = 4321;
@@ -56,6 +64,11 @@ describe("session-spawner child", () => {
         process.env.NODE_OPTIONS = "--require /tmp/pwned.js";
         process.env.BUN_OPTIONS = "--preload /tmp/pwned.ts";
         process.env.LD_PRELOAD = "/tmp/pwned.so";
+        // Docker/K8s secret pointers already expanded by the CLI entrypoint (review R1).
+        process.env.PIZZAPI_API_KEY_FILE = "/run/secrets/pizzapi_api_key";
+        process.env.PIZZAPI_RUNNER_TOKEN_FILE = "/run/secrets/runner_token";
+        process.env.PIZZAPI_RUNNER_API_KEY_FILE = "/run/secrets/runner_api_key";
+        process.env.GH_TOKEN_FILE = "/run/secrets/gh";
 
         let latestChild: FakeChild | null = null;
         let lastSpawnCall:
@@ -73,7 +86,7 @@ describe("session-spawner child", () => {
             return latestChild;
         });
 
-        mock.module("node:child_process", () => ({
+        mock.module("node:child_process", () => ({ ...realChildProcess,
             spawn: spawnMock,
             execFile: mock(() => {}),
         }));
@@ -104,6 +117,7 @@ describe("session-spawner child", () => {
                     PIZZAPI_RELAY_URL: "ignored",
                     ANTHROPIC_API_KEY: "ignored",
                     NODE_OPTIONS: "ignored",
+                    PIZZAPI_RUNNER_TOKEN_FILE: "/tmp/override-pointer",
                 },
             }),
         }));
@@ -171,6 +185,10 @@ describe("session-spawner child", () => {
             expect(lastSpawnCall?.env.NODE_OPTIONS).toBeUndefined();
             expect(lastSpawnCall?.env.BUN_OPTIONS).toBeUndefined();
             expect(lastSpawnCall?.env.LD_PRELOAD).toBeUndefined();
+            expect(lastSpawnCall?.env.PIZZAPI_API_KEY_FILE).toBeUndefined();
+            expect(lastSpawnCall?.env.PIZZAPI_RUNNER_TOKEN_FILE).toBeUndefined();
+            expect(lastSpawnCall?.env.PIZZAPI_RUNNER_API_KEY_FILE).toBeUndefined();
+            expect(lastSpawnCall?.env.GH_TOKEN_FILE).toBe("/run/secrets/gh");
             expect(isCwdAllowed).toHaveBeenCalledWith(tempCwd);
             expect(trackSessionCwd).toHaveBeenCalledWith("sess-main", tempCwd);
             expect(runningSessions.get("sess-main")).toMatchObject({
@@ -258,7 +276,7 @@ describe("session-spawner child", () => {
             return latestChild;
         });
 
-        mock.module("node:child_process", () => ({
+        mock.module("node:child_process", () => ({ ...realChildProcess,
             spawn: spawnMock,
             execFile: mock(() => {}),
         }));
@@ -338,7 +356,7 @@ describe("session-spawner child", () => {
             return latestChild;
         });
 
-        mock.module("node:child_process", () => ({
+        mock.module("node:child_process", () => ({ ...realChildProcess,
             spawn: spawnMock,
             execFile: mock(() => {}),
         }));
@@ -442,7 +460,7 @@ describe("session-spawner child", () => {
             return latestChild;
         });
 
-        mock.module("node:child_process", () => ({
+        mock.module("node:child_process", () => ({ ...realChildProcess,
             spawn: spawnMock,
             execFile: mock(() => {}),
         }));
@@ -520,7 +538,7 @@ describe("session-spawner child", () => {
             return latestChild;
         });
 
-        mock.module("node:child_process", () => ({ spawn: spawnMock, execFile: mock(() => {}) }));
+        mock.module("node:child_process", () => ({ ...realChildProcess, spawn: spawnMock, execFile: mock(() => {}) }));
         mock.module("../extensions/session-attachments.js", () => ({ cleanupSessionAttachments }));
         mock.module("./logger.js", () => ({ logInfo }));
         mock.module("./runner-usage-cache.js", () => ({ runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd, refreshAndWriteRunnerUsageCache: mock(async () => {}) }));
@@ -594,7 +612,7 @@ describe("session-spawner child", () => {
             return latestChild;
         });
 
-        mock.module("node:child_process", () => ({ spawn: spawnMock, execFile: mock(() => {}) }));
+        mock.module("node:child_process", () => ({ ...realChildProcess, spawn: spawnMock, execFile: mock(() => {}) }));
         mock.module("../extensions/session-attachments.js", () => ({ cleanupSessionAttachments }));
         mock.module("./logger.js", () => ({ logInfo }));
         mock.module("./runner-usage-cache.js", () => ({ runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd, refreshAndWriteRunnerUsageCache: mock(async () => {}) }));
@@ -685,7 +703,7 @@ describe("session-spawner child", () => {
 
         // Simulated on-disk pid file shared across worker generations.
         const procFile: number[] = [];
-        mock.module("node:child_process", () => ({ spawn: spawnMock, execFile: mock(() => {}) }));
+        mock.module("node:child_process", () => ({ ...realChildProcess, spawn: spawnMock, execFile: mock(() => {}) }));
         mock.module("../extensions/session-attachments.js", () => ({ cleanupSessionAttachments: mock(async () => {}) }));
         mock.module("./logger.js", () => ({ logInfo }));
         mock.module("./runner-usage-cache.js", () => ({
@@ -786,7 +804,7 @@ describe("session-spawner child", () => {
 
         const spawnMock = mock((_execPath: string, _args: string[], _options: any) => new FakeChild());
 
-        mock.module("node:child_process", () => ({
+        mock.module("node:child_process", () => ({ ...realChildProcess,
             spawn: spawnMock,
             execFile: mock(() => {}),
         }));
