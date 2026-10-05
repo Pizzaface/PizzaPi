@@ -1032,6 +1032,65 @@ describe("TunnelClient exposure-bound capabilities (F04)", () => {
     expect((client as any).isStaleCapability(6000, now - mintedAt)).toBe(true);
   });
 
+  test("rapid port reuse: a capability minted for the closed exposure cannot reach the replacement (HTTP)", async () => {
+    let hits = 0;
+    const { server, port } = await startHttpServer((_req, res) => { hits++; res.end("service B"); });
+    try {
+      withClock();
+      const { client, sent } = newClient();
+      client.exposePort(port);       // service A
+      now += 60_000;
+      const mintedAt = now;          // link minted for A
+      now += 1_000;
+      client.unexposePort(port);     // A closed…
+      now += 1_000;
+      client.exposePort(port);       // …B exposed on the same port 1 s later (well inside the grace window)
+      now += 1_000;
+
+      requestStart(client, "old-link", port, now - mintedAt);
+      const messages = decodeSent(sent).filter((m) => m.id === "old-link");
+      expect(messages[0]).toMatchObject({ type: "response-start", statusCode: 404 });
+      expect(hits).toBe(0);
+
+      // A link minted after A closed (e.g. while B's expose was in flight) works.
+      requestStart(client, "new-link", port, 1_500);
+      await waitUntil(() => decodeSent(sent).some((m) => m.id === "new-link" && m.type === "response-data-end"));
+      expect(decodeSent(sent).find((m) => m.id === "new-link" && m.type === "response-start")).toMatchObject({ statusCode: 200 });
+      expect(hits).toBe(1);
+    } finally {
+      await stopHttpServer(server);
+    }
+  });
+
+  test("rapid port reuse: a capability minted for the closed exposure cannot open a WebSocket to the replacement", () => {
+    withClock();
+    const { client, sent } = newClient();
+    client.exposePort(4322);
+    now += 10_000;
+    const mintedAt = now;
+    now += 100;
+    client.unexposePort(4322);
+    now += 500;
+    client.exposePort(4322);
+    (client as any).handleMessage(JSON.stringify({
+      type: "ws-open", id: "ws-reuse", port: 4322, path: "/", headers: {}, capabilityAgeMs: now - mintedAt,
+    }));
+    expect(decodeSent(sent)).toEqual([
+      { type: "ws-error", id: "ws-reuse", message: "Tunnel link predates the current exposure of port 4322" },
+    ]);
+  });
+
+  test("a capability minted before this runner process started cannot reach its first exposure", () => {
+    withClock();
+    const mintedAt = now;            // minted for the previous daemon's exposure
+    now += 1_000;
+    const { client } = newClient();  // daemon restarted
+    now += 1_000;
+    client.exposePort(6100);
+    expect((client as any).isStaleCapability(6100, now - mintedAt)).toBe(true);
+    expect((client as any).isStaleCapability(6100, 500)).toBe(false);
+  });
+
   test("cookie/API-key requests (no capability age) are authorized live and unaffected", () => {
     withClock();
     const { client } = newClient();

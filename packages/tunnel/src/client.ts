@@ -149,6 +149,11 @@ function isOptionalAge(value: unknown): boolean {
  * moment before the runner processed the matching expose (UI previews mint
  * while tunnel_expose is still in flight) must stay valid. Also absorbs the
  * relay's whole-second `iat` granularity and transit latency.
+ *
+ * The grace never reaches back across a close: a capability minted before
+ * the port was last unexposed (or before this client existed) is refused
+ * outright, so a link for a closed exposure cannot reach a replacement
+ * exposed moments later on the same port.
  */
 export const CAPABILITY_EXPOSURE_GRACE_MS = 30_000;
 
@@ -196,6 +201,14 @@ export class TunnelClient extends EventEmitter {
    * on the same port is a new exposure that old capabilities cannot reach.
    */
   private exposedSince = new Map<number, number>();
+  /**
+   * When each port was last unexposed (runner clock). Every capability for an
+   * earlier exposure was minted before this instant, so anything older is
+   * refused regardless of the expose grace (rapid port reuse).
+   */
+  private unexposedAt = new Map<number, number>();
+  /** Construction time: no exposure of this process predates it (daemon restart). */
+  private readonly createdAt = Date.now();
   private disposed = false;
   /** Prevents stale close handlers from interfering after dispose/reconnect. */
   private connectionGeneration = 0;
@@ -366,6 +379,7 @@ export class TunnelClient extends EventEmitter {
   unexposePort(port: number): void {
     this.exposedPorts.delete(port);
     this.exposedSince.delete(port);
+    this.unexposedAt.set(port, Date.now());
     this.portProtocol.delete(port);
   }
 
@@ -373,12 +387,20 @@ export class TunnelClient extends EventEmitter {
    * True when a capability (signed token / host label) of the given age was
    * issued before the port's current exposure began, i.e. it was minted for an
    * earlier exposure of the same numeric port and must not reach this one.
+   *
+   * Two checks: a hard boundary at the port's last close (or this client's
+   * creation), which the grace never crosses, and the expose grace for links
+   * minted while the current expose was in flight. Transit latency and the
+   * relay's whole-second token `iat` only make a capability look OLDER, so
+   * the hard boundary errs toward refusing (the viewer reopens the link).
    */
   private isStaleCapability(port: number, capabilityAgeMs: number | undefined): boolean {
     if (capabilityAgeMs === undefined) return false;
     const since = this.exposedSince.get(port);
     if (since === undefined) return true;
     const issuedAt = Date.now() - capabilityAgeMs;
+    const boundary = Math.max(this.createdAt, this.unexposedAt.get(port) ?? 0);
+    if (issuedAt < boundary) return true;
     return since > issuedAt + CAPABILITY_EXPOSURE_GRACE_MS;
   }
 

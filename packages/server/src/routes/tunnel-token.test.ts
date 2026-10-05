@@ -353,6 +353,20 @@ describe("tunnelTokenAgeMs (F04 exposure binding)", () => {
         });
     });
 
+    test("ages new tokens with millisecond precision so a link minted just after a close is not mistaken for an older one", () => {
+        const ctx = createTestAuthContext({ dbPath: ":memory:" });
+        runWithAuthContext(ctx, () => {
+            const { token } = createTunnelToken({ userId: "u-1", sessionId: "s-1", port: 3000 }, 10_000_750);
+            const payload = verifyTunnelToken(token, 10_000_750)!;
+            // Whole-second iat alone would report 1 000 ms.
+            expect(tunnelTokenAgeMs(payload, 10_001_000)).toBe(250);
+        });
+    });
+
+    test("ignores an iatMs that disagrees with the whole-second iat", () => {
+        expect(tunnelTokenAgeMs({ v: 1, userId: "u", sessionId: "s", port: 1, exp: 99_999, iat: 10_000, iatMs: 50 }, 10_000_500)).toBe(500);
+    });
+
     test("legacy tokens without iat are aged from their fixed 1 h lifetime", () => {
         expect(tunnelTokenAgeMs({ v: 1, userId: "u", sessionId: "s", port: 1, exp: 7_200 }, 7_200_000)).toBe(3_600_000);
     });

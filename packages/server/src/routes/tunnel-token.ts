@@ -18,6 +18,12 @@ export interface TunnelTokenPayload {
     aud?: string;
     iat?: number;
     kid?: string;
+    /**
+     * Millisecond mint time (same instant as `iat`). The runner refuses a
+     * capability minted before the port was last closed; whole-second `iat`
+     * alone would make a link minted just after a close look older than it is.
+     */
+    iatMs?: number;
 }
 
 function base64url(input: string): string {
@@ -86,6 +92,7 @@ export function createTunnelToken(
         aud: TUNNEL_TOKEN_AUD,
         iat,
         kid,
+        iatMs: Math.floor(nowMs),
     };
     const encodedPayload = base64url(JSON.stringify(payload));
     const signature = signPayload(encodedPayload, secret);
@@ -184,7 +191,13 @@ export function tunnelTokenAgeMs(payload: TunnelTokenPayload, nowMs = Date.now()
     const issuedAtSec = typeof payload.iat === "number" && Number.isFinite(payload.iat)
         ? payload.iat
         : payload.exp - TUNNEL_TOKEN_TTL_MS / 1000;
-    return Math.max(0, nowMs - issuedAtSec * 1000);
+    let issuedAtMs = issuedAtSec * 1000;
+    // Prefer the millisecond mint time when it agrees with the whole-second iat.
+    if (typeof payload.iatMs === "number" && Number.isFinite(payload.iatMs)
+        && Math.floor(payload.iatMs / 1000) === issuedAtSec) {
+        issuedAtMs = payload.iatMs;
+    }
+    return Math.max(0, nowMs - issuedAtMs);
 }
 
 export function getAuthTunnelBasePath(token: string, sessionId: string, port: number): string {
