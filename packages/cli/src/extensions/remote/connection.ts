@@ -724,7 +724,10 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         rctx.setRelayStatus(`Relay error: ${data.message}`);
     });
 
-    sock.on("disconnect", (_reason) => {
+    sock.on("disconnect", (reason, details) => {
+        const d = details as { description?: unknown; context?: { code?: unknown; reason?: unknown } } | undefined;
+        const detail = d ? ` (${[d.description instanceof Error ? d.description.message : d.description, d.context?.code, d.context?.reason].filter((x) => x != null && x !== "").join(" / ")})` : "";
+        log.info(`pizzapi: relay disconnected — ${reason}${detail}`);
         // Discard any pending batched triggers — don't deliver them after
         // disconnect. Also untrack them so a server re-delivery (the ack
         // settle returned the row to pending) is accepted instead of deduped
