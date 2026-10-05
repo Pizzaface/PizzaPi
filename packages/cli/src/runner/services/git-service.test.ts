@@ -2,9 +2,9 @@ import { describe, test, expect } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix as posixPath, win32 as win32Path } from "node:path";
 import type { ServiceEnvelope } from "../service-handler.js";
-import { GitService, GIT_SIGIL_DEFS } from "./git-service.js";
+import { GitService, GIT_SIGIL_DEFS, resolveWorktreeTarget } from "./git-service.js";
 
 describe("GIT_SIGIL_DEFS", () => {
     test("every def has a type, label, and icon with unique types", () => {
@@ -2797,4 +2797,109 @@ describe("GitService worktree add workspace-root containment (F22)", () => {
         expect((r.payload as any).ok).toBe(true);
         expect(adds).toEqual([["worktree", "add", "-b", "feat/z", "--", ".worktrees/z"]]);
     }));
+});
+
+// Review R2-3: on Windows a drive/UNC worktree target is absolute and git uses
+// it as-is, so containment must be judged on that path, not on `${cwd}/D:\x`.
+// Windows path semantics and a Windows-style containment check are injected so
+// the handler runs its real add/remove flow with win32 rules on any host.
+describe("GitService worktree targets with Windows path semantics (review R2-3)", () => {
+    const winCwd = "C:\\work\\repo";
+    const winRoot = "c:\\work\\";
+    function makeWinService(gitCalls: string[][], checked: string[], listOutput = "") {
+        return new GitService({
+            pathImpl: win32Path,
+            isPathAllowed: (p) => {
+                checked.push(p);
+                return win32Path.normalize(p).toLowerCase().startsWith(winRoot);
+            },
+            execGit: async (args) => {
+                gitCalls.push([...args]);
+                if (args[0] === "rev-parse" && args[1] === "--verify") throw new Error("not found");
+                if (args[0] === "worktree" && args[1] === "list") return { stdout: listOutput, stderr: "" };
+                if (args[0] === "rev-parse") return { stdout: `${winCwd}\n`, stderr: "" };
+                return { stdout: "", stderr: "" };
+            },
+        });
+    }
+
+    test("absolute drive, UNC, drive-relative and rooted targets outside the root never reach git worktree add", async () => {
+        const gitCalls: string[][] = [];
+        const checked: string[] = [];
+        const service = makeWinService(gitCalls, checked);
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+        const targets = ["D:\\outside\\wt", "D:/outside/wt", "\\\\evil\\share\\wt", "//evil/share/wt", "C:wt", "\\wt"];
+        for (const [i, path] of targets.entries()) {
+            dispatchServiceMessage(socket, {
+                serviceId: "git", type: "git_worktree_add", requestId: `win-add-${i}`,
+                payload: { cwd: winCwd, branch: `feat/w${i}`, path },
+            });
+            const r = await waitForResult(socket, `win-add-${i}`, "git_worktree_add_result");
+            expect({ path, ok: (r.payload as any).ok }).toEqual({ path, ok: false });
+        }
+        expect(gitCalls.filter((c) => c[0] === "worktree" && c[1] === "add")).toEqual([]);
+        // Absolute targets are validated as themselves, never as `${cwd}\<abs>`.
+        expect(checked).toContain("D:\\outside\\wt");
+        expect(checked).toContain("\\\\evil\\share\\wt");
+    });
+
+    test("in-root relative and absolute targets are still allowed and validated where git creates them", async () => {
+        const gitCalls: string[][] = [];
+        const checked: string[] = [];
+        const service = makeWinService(gitCalls, checked);
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+        const targets = [".worktrees\\x", "C:\\work\\other\\wt"];
+        for (const [i, path] of targets.entries()) {
+            dispatchServiceMessage(socket, {
+                serviceId: "git", type: "git_worktree_add", requestId: `win-ok-${i}`,
+                payload: { cwd: winCwd, branch: `feat/ok${i}`, path },
+            });
+            const r = await waitForResult(socket, `win-ok-${i}`, "git_worktree_add_result");
+            expect({ path, ok: (r.payload as any).ok }).toEqual({ path, ok: true });
+        }
+        expect(checked).toContain("C:\\work\\repo\\.worktrees\\x");
+        expect(checked).toContain("C:\\work\\other\\wt");
+        expect(gitCalls.filter((c) => c[0] === "worktree" && c[1] === "add").length).toBe(2);
+    });
+
+    test("worktree remove refuses a known worktree on another drive", async () => {
+        const gitCalls: string[][] = [];
+        const checked: string[] = [];
+        const service = makeWinService(
+            gitCalls,
+            checked,
+            "worktree C:/work/repo\nHEAD abc\nbranch refs/heads/main\n\nworktree D:/outside/wt\nHEAD def\nbranch refs/heads/feat\n",
+        );
+        const socket = createMockSocket();
+        service.init(socket as any, { isShuttingDown: () => false });
+        dispatchServiceMessage(socket, {
+            serviceId: "git", type: "git_worktree_remove", requestId: "win-rm",
+            payload: { cwd: winCwd, path: "D:/outside/wt" },
+        });
+        const r = await waitForResult(socket, "win-rm", "git_worktree_remove_result");
+        expect((r.payload as any).ok).toBe(false);
+        expect((r.payload as any).message).toContain("outside allowed roots");
+        expect(gitCalls.filter((c) => c[0] === "worktree" && c[1] === "remove")).toEqual([]);
+    });
+});
+
+describe("resolveWorktreeTarget (review R2-3)", () => {
+    test("posix semantics are unchanged", () => {
+        expect(resolveWorktreeTarget("/repo", "/abs/wt", posixPath)).toBe("/abs/wt");
+        expect(resolveWorktreeTarget("/repo", "link/../wt", posixPath)).toBe("/repo/link/../wt");
+        // On posix a backslash path is an ordinary relative name.
+        expect(resolveWorktreeTarget("/repo", "D:\\x", posixPath)).toBe("/repo/D:\\x");
+    });
+
+    test("win32 absolute targets stay absolute; ambiguous ones are refused", () => {
+        expect(resolveWorktreeTarget("C:\\repo", "D:\\x", win32Path)).toBe("D:\\x");
+        expect(resolveWorktreeTarget("C:\\repo", "D:/x", win32Path)).toBe("D:/x");
+        expect(resolveWorktreeTarget("C:\\repo", "\\\\host\\share\\x", win32Path)).toBe("\\\\host\\share\\x");
+        expect(resolveWorktreeTarget("C:\\repo", "wt\\x", win32Path)).toBe("C:\\repo\\wt\\x");
+        expect(resolveWorktreeTarget("C:\\repo", "C:wt", win32Path)).toBeNull();
+        expect(resolveWorktreeTarget("C:\\repo", "\\wt", win32Path)).toBeNull();
+        expect(resolveWorktreeTarget("C:\\repo", "/wt", win32Path)).toBeNull();
+    });
 });
