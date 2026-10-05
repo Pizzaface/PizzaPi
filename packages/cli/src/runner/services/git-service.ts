@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { watch } from "node:fs";
 import { rm } from "node:fs/promises";
 import { promisify } from "node:util";
-import nodePath, { dirname, isAbsolute, join, normalize, resolve } from "node:path";
+import nodePath, { dirname, isAbsolute, normalize, resolve } from "node:path";
 import type { Socket } from "socket.io-client";
 import type { ServiceHandler, ServiceInitOptions, ServiceEnvelope } from "../service-handler.js";
 import type { ServiceSigilDef } from "@pizzapi/protocol";
