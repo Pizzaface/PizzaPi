@@ -1,7 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { sql } from "kysely";
 
 const tempDir = mkdtempSync(join(tmpdir(), "pizzapi-attachments-"));
 process.env.AUTH_DB_PATH = join(tempDir, "auth.db");
@@ -415,5 +416,127 @@ describe("unexpected image-store failures preserve content (review R4)", () => {
         } finally {
             rmSync(blocker, { recursive: true, force: true });
         }
+    });
+});
+
+describe("extracted image quota under failures and races (review R2-8)", () => {
+    function b64(decodedBytes: number, seed: string): string {
+        return seed + "A".repeat(Math.ceil((decodedBytes * 4) / 3) - 1);
+    }
+
+    async function withQuota<T>(bytes: number, fn: () => Promise<T>): Promise<T> {
+        const saved = process.env.PIZZAPI_EXTRACTED_IMAGE_USER_QUOTA_BYTES;
+        process.env.PIZZAPI_EXTRACTED_IMAGE_USER_QUOTA_BYTES = String(bytes);
+        try {
+            return await fn();
+        } finally {
+            if (saved === undefined) delete process.env.PIZZAPI_EXTRACTED_IMAGE_USER_QUOTA_BYTES;
+            else process.env.PIZZAPI_EXTRACTED_IMAGE_USER_QUOTA_BYTES = saved;
+        }
+    }
+
+    test("a reservation table from before the attachmentId key is upgraded in place", async () => {
+        await sql`DROP TABLE extracted_attachment_reservation`.execute(authContext.db);
+        await sql`CREATE TABLE extracted_attachment_reservation (reservationId text primary key,
+            ownerUserId text not null, bytes integer not null, expiresAt text not null)`.execute(authContext.db);
+        await runWithAuthContext(authContext, () => store.ensureExtractedAttachmentTable());
+        await runWithAuthContext(authContext, () => store.ensureExtractedAttachmentTable());
+        const cols = await sql<{ name: string }>`SELECT name FROM pragma_table_info('extracted_attachment_reservation')`
+            .execute(authContext.db);
+        expect(cols.rows.map((c) => c.name)).toContain("attachmentId");
+    });
+
+    test("a partially failing delete rolls back, so the still-served image keeps counting against quota", async () => {
+        await withQuota(100_000, async () => {
+            const user = "user-r2-8-tx";
+            const img = await runWithAuthContext(authContext, () => store.storeExtractedImage({
+                attachmentId: "r2-8-tx", sessionId: "s-r2-8", ownerUserId: user, mimeType: "image/png", base64Data: b64(60_000, "S"),
+            }));
+            // The session-ref delete fails; the metadata delete must not stick.
+            await sql`CREATE TRIGGER r2_8_fail_ref_delete BEFORE DELETE ON extracted_attachment_session
+                WHEN OLD.attachmentId = 'r2-8-tx' BEGIN SELECT RAISE(ABORT, 'injected'); END`.execute(authContext.db);
+            try {
+                const err = await runWithAuthContext(authContext, () => store.deleteStoredAttachment(img.attachmentId))
+                    .catch((e: unknown) => e);
+                expect(err).toBeInstanceOf(Error);
+            } finally {
+                await sql`DROP TRIGGER r2_8_fail_ref_delete`.execute(authContext.db);
+            }
+            // Still served from memory AND still counted by the shared quota.
+            expect(store._testGetAttachments().has("r2-8-tx")).toBe(true);
+            expect(existsSync(img.filePath)).toBe(true);
+            const row = await authContext.db.selectFrom("extracted_attachment").select("attachmentId")
+                .where("attachmentId", "=", "r2-8-tx").executeTakeFirst();
+            expect(row?.attachmentId).toBe("r2-8-tx");
+            const over = await runWithAuthContext(authContext, () => store.storeExtractedImage({
+                attachmentId: "r2-8-tx-2", sessionId: "s-r2-8", ownerUserId: user, mimeType: "image/png", base64Data: b64(60_000, "T"),
+            })).catch((e: unknown) => e);
+            expect((over as { reason?: string }).reason).toBe("quota_exceeded");
+            // Retry after recovery completes the delete.
+            await runWithAuthContext(authContext, () => store.deleteStoredAttachment(img.attachmentId));
+            expect(store._testGetAttachments().has("r2-8-tx")).toBe(false);
+        });
+    });
+
+    test("a writer whose metadata persist fails never removes another writer's file for the same ID", async () => {
+        // A second module instance stands in for another relay node sharing
+        // the database and upload directory.
+        const nodeB = await (async (specifier: string) => import(specifier))("./store.js?r2-8-loser");
+        const user = "user-r2-8-loser";
+        const data = b64(20_000, "U");
+        const winner = await runWithAuthContext(authContext, () => store.storeExtractedImage({
+            attachmentId: "r2-8-shared", sessionId: "s-r2-8-win", ownerUserId: user, mimeType: "image/png", base64Data: data,
+        }));
+        expect(existsSync(winner.filePath)).toBe(true);
+        // Node B has no in-memory record, so it writes the same content-addressed
+        // ID again; its metadata upsert fails.
+        await sql`CREATE TRIGGER r2_8_fail_upsert BEFORE UPDATE ON extracted_attachment
+            WHEN NEW.sessionId = 's-r2-8-lose' BEGIN SELECT RAISE(ABORT, 'injected'); END`.execute(authContext.db);
+        try {
+            const err = await runWithAuthContext(authContext, () => nodeB.storeExtractedImage({
+                attachmentId: "r2-8-shared", sessionId: "s-r2-8-lose", ownerUserId: user, mimeType: "image/png", base64Data: data,
+            })).catch((e: unknown) => e);
+            expect(err).toBeInstanceOf(Error);
+        } finally {
+            await sql`DROP TRIGGER r2_8_fail_upsert`.execute(authContext.db);
+        }
+        expect(existsSync(winner.filePath)).toBe(true);
+        const served = await runWithAuthContext(authContext, () => store.getStoredAttachment("r2-8-shared"));
+        expect(served).not.toBeNull();
+        expect(existsSync(served!.filePath)).toBe(true);
+    });
+
+    test("concurrent same-process writers of one ID store it once", async () => {
+        await withQuota(100_000, async () => {
+            const user = "user-r2-8-same-node";
+            const data = b64(60_000, "V");
+            const results = await runWithAuthContext(authContext, () => Promise.allSettled(
+                ["s1", "s2", "s3"].map((sessionId) => store.storeExtractedImage({
+                    attachmentId: "r2-8-same-node", sessionId, ownerUserId: user, mimeType: "image/png", base64Data: data,
+                })),
+            ));
+            expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled", "fulfilled"]);
+            expect(store.extractedImageBytesForUser(user)).toBe(60_000);
+        });
+    });
+
+    test("relay nodes storing identical content concurrently are not rejected as quota_exceeded", async () => {
+        const nodeB = await (async (specifier: string) => import(specifier))("./store.js?r2-8-identical");
+        await withQuota(100_000, async () => {
+            const user = "user-r2-8-identical";
+            const data = b64(60_000, "W");
+            const results = await runWithAuthContext(authContext, () => Promise.allSettled(
+                [store, nodeB, store, nodeB].map((node, i) => node.storeExtractedImage({
+                    attachmentId: "r2-8-identical", sessionId: `s-ident-${i}`, ownerUserId: user, mimeType: "image/png", base64Data: data,
+                })),
+            ));
+            expect(results.map((r) => (r.status === "rejected" ? String((r.reason as { reason?: string }).reason ?? r.reason) : "ok")))
+                .toEqual(["ok", "ok", "ok", "ok"]);
+            // One copy is committed; a different image still cannot exceed the quota.
+            const over = await runWithAuthContext(authContext, () => store.storeExtractedImage({
+                attachmentId: "r2-8-identical-2", sessionId: "s-ident", ownerUserId: user, mimeType: "image/png", base64Data: b64(60_000, "X"),
+            })).catch((e: unknown) => e);
+            expect((over as { reason?: string }).reason).toBe("quota_exceeded");
+        });
     });
 });
