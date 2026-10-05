@@ -87,6 +87,58 @@ export async function resolveTunnelHref(
 }
 
 /**
+ * "Open in new tab" for a tunnel URL that still has to be minted. Call it
+ * synchronously from the click handler.
+ *
+ * Browsers only allow popups during user activation, which an awaited network
+ * request can outlive, so opening only after the mint would get the tab
+ * blocked. Instead a blank placeholder tab is opened immediately (with its
+ * opener severed) and navigated once the signed URL arrives, or closed if
+ * minting fails. Without a placeholder (popup blocked, or the bundled mobile
+ * app, whose webview hands new windows to the system browser) the minted URL
+ * is opened directly as before.
+ */
+export function openTunnelInNewTab(
+    opts: { sessionId?: string; runnerId?: string; port: number },
+    onError: (err: unknown) => void,
+): void {
+    let placeholder: Window | null = null;
+    if (!getMobileRuntimeConfig().isMobileBundled) {
+        try {
+            placeholder = window.open("about:blank", "_blank");
+        } catch {
+            placeholder = null;
+        }
+        if (placeholder) {
+            try {
+                placeholder.opener = null;
+            } catch {
+                /* best effort */
+            }
+        }
+    }
+    void resolveTunnelHref(opts).then(
+        (url) => {
+            if (!placeholder) {
+                window.open(url, "_blank", "noopener,noreferrer");
+                return;
+            }
+            // The viewer closed the placeholder while waiting: respect that.
+            if (placeholder.closed) return;
+            placeholder.location.replace(url);
+        },
+        (err: unknown) => {
+            try {
+                placeholder?.close();
+            } catch {
+                /* already gone */
+            }
+            onError(err);
+        },
+    );
+}
+
+/**
  * Whether this viewer can plausibly load the tunnel origin. Mobile: https and
  * not *.localhost (which resolves to the phone itself). Web: no mixed content,
  * and a *.localhost tunnel domain only when the UI itself is on localhost
