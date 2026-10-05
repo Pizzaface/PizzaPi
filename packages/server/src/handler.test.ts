@@ -403,6 +403,31 @@ describe("withSecurityHeaders", () => {
         expect(res.headers.get("x-pizzapi-tunnel-frame")).toBeNull();
     });
 
+    test("cross-origin tunnel frames keep the app's CSP and drop only frame-ancestors", () => {
+        const headers = new Headers({
+            "x-pizzapi-tunnel": "path",
+            "x-pizzapi-tunnel-frame": "cross-origin",
+        });
+        headers.append("content-security-policy", "default-src 'self'; Frame-Ancestors 'self'; script-src 'self' https://cdn.example");
+        headers.append("content-security-policy", "frame-ancestors 'none'");
+        headers.append("content-security-policy", "connect-src 'self'");
+        const res = withSecurityHeaders(new Response("ok", { headers }));
+        const csp = res.headers.get("content-security-policy")!;
+        expect(csp.toLowerCase()).not.toContain("frame-ancestors");
+        expect(csp).toContain("default-src 'self'; script-src 'self' https://cdn.example");
+        expect(csp).toContain("connect-src 'self'");
+        expect(csp).toContain(PATH_TUNNEL_SANDBOX_CSP);
+
+        const host = withSecurityHeaders(new Response("ok", {
+            headers: {
+                "x-pizzapi-tunnel": "host",
+                "x-pizzapi-tunnel-frame": "cross-origin",
+                "content-security-policy": "script-src 'self'; frame-ancestors 'self'",
+            },
+        }));
+        expect(host.headers.get("content-security-policy")).toBe("script-src 'self'");
+    });
+
     test("isolated host-origin tunnel responses are not sandboxed", () => {
         const res = withSecurityHeaders(new Response("ok", {
             headers: { "x-pizzapi-tunnel": "host", "x-pizzapi-tunnel-frame": "cross-origin" },

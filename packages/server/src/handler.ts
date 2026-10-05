@@ -171,6 +171,27 @@ export async function enforceBodySizeLimit(req: Request, url: URL): Promise<Resp
  *
  * Exported for testing.
  */
+/**
+ * Remove every `frame-ancestors` directive from the response's
+ * Content-Security-Policy, keeping all other directives and policies.
+ * `Headers.get` joins multiple CSP header fields with ", ", and a comma always
+ * separates policies (it cannot occur inside one), so each comma-separated
+ * policy is filtered and re-emitted as its own header field. A policy left
+ * with no directives is dropped.
+ */
+function stripFrameAncestors(headers: Headers): void {
+    const combined = headers.get("Content-Security-Policy");
+    if (combined === null) return;
+    headers.delete("Content-Security-Policy");
+    for (const policy of combined.split(",")) {
+        const kept = policy
+            .split(";")
+            .map((directive) => directive.trim())
+            .filter((directive) => directive && directive.split(/\s+/, 1)[0].toLowerCase() !== "frame-ancestors");
+        if (kept.length > 0) headers.append("Content-Security-Policy", kept.join("; "));
+    }
+}
+
 export function withSecurityHeaders(res: Response): Response {
     const headers = new Headers(res.headers);
     const isTunnel = headers.has("x-pizzapi-tunnel");
@@ -200,10 +221,12 @@ export function withSecurityHeaders(res: Response): Response {
         headers.set("Referrer-Policy", "no-referrer");
         // Tunnel responses: allow same-origin framing for the web UI iframe.
         // Token-authenticated mobile iframes are cross-origin (https://localhost → relay),
-        // so omit frame/CSP blockers only for that scoped tunnel-token path.
+        // so omit frame blockers only for that scoped tunnel-token path. The
+        // app's own CSP is otherwise preserved: only `frame-ancestors` (the
+        // directive that would refuse the cross-origin frame) is removed.
         if (allowCrossOriginTunnelFrame) {
             headers.delete("X-Frame-Options");
-            headers.delete("Content-Security-Policy");
+            stripFrameAncestors(headers);
         } else {
             headers.set("X-Frame-Options", "SAMEORIGIN");
         }

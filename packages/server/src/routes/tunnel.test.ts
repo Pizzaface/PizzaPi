@@ -1014,6 +1014,28 @@ describe("path-based tunnel origin-state headers (F02)", () => {
         expect(res.headers.get("X-Frame-Options")).toBe("SAMEORIGIN");
     });
 
+    test("token-authenticated (cross-origin frame) responses keep the app's CSP minus frame-ancestors", async () => {
+        const { withSecurityHeaders } = await import("../handler");
+        const upstreamCsp = "default-src 'self'; script-src 'self'; frame-ancestors 'self'; connect-src 'self'";
+        const res = withSecurityHeaders(await proxyTunnelRequestViaRelay(
+            new Request("http://localhost/api/tunnel/auth/tok/s-1/3000/"),
+            fakeRelay(relayReturning({ "content-type": "text/plain", "content-security-policy": upstreamCsp })),
+            "runner-1",
+            "request-1",
+            "/api/tunnel/auth/tok/s-1/3000",
+            3000,
+            "/",
+            "/",
+            {},
+            true,
+        ));
+        expect(res.headers.get("X-Frame-Options")).toBeNull();
+        const csp = res.headers.get("content-security-policy")!;
+        expect(csp).toContain("default-src 'self'; script-src 'self'; connect-src 'self'");
+        expect(csp).not.toContain("frame-ancestors");
+        expect(csp).toContain("sandbox allow-scripts");
+    });
+
     test("host-origin tunnels keep app cookies (host-only) on their isolated origin", async () => {
         const res = await proxy("", "text/plain", true);
         expect(res.headers.getSetCookie()).toEqual(["better-auth.session_token=attacker; Path=/; HttpOnly", "theme=dark; Path=/"]);

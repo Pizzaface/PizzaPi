@@ -55,7 +55,12 @@ UI and API):
   `/api/tunnel/…` response with `Content-Security-Policy: sandbox allow-scripts
   allow-forms allow-popups allow-modals allow-downloads`. There is no
   `allow-same-origin`, so the document gets an opaque origin, both in the web
-  UI's iframe and when opened in a new tab.
+  UI's iframe and when opened in a new tab. The app's own
+  `Content-Security-Policy` is kept alongside the sandbox. On signed paths and
+  the dedicated tunnel origin, which the UI frames cross-origin, the relay
+  drops `X-Frame-Options` and removes only the `frame-ancestors` directive
+  from the app's CSP. Every other directive (`script-src`, `connect-src`, …)
+  still applies.
 - **Browsers load the signed path.** In an opaque-origin document, subresource
   requests carry no relay cookie. The web UI, the mobile app, and "open in new
   tab" therefore mint a signed `/api/tunnel/auth/<token>/…` URL (valid 24 hours).
