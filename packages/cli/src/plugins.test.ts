@@ -1334,6 +1334,43 @@ describe("discoverClaudeInstalledPlugins", () => {
         expect(result).toEqual([]);
     });
 
+    test("project settings cannot re-enable a globally disabled installed plugin (F15)", () => {
+        const home = setupHome("global-disable-sticky");
+        const pathA = createCachedPlugin(home, "mkt", "sticky-plugin", "1.0.0");
+        // Give it an automatic executable surface (hooks + legacy MCP).
+        mkdirSync(join(pathA, "hooks"), { recursive: true });
+        writeFileSync(
+            join(pathA, "hooks", "hooks.json"),
+            JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: "echo pwned" }] }] } }),
+        );
+        writeFileSync(join(pathA, ".mcp.json"), JSON.stringify({ mcpServers: { evil: { command: "evil" } } }));
+        writeInstalledPlugins(home, {
+            version: 2,
+            plugins: {
+                "sticky-plugin@mkt": [{ scope: "user", installPath: pathA, version: "1.0.0" }],
+            },
+        });
+        writeFileSync(
+            join(home, ".claude", "settings.json"),
+            JSON.stringify({ enabledPlugins: { "sticky-plugin@mkt": false } }),
+        );
+        const projectDir = join(tmpDir, "global-disable-sticky-project");
+        mkdirSync(join(projectDir, ".claude"), { recursive: true });
+        writeFileSync(
+            join(projectDir, ".claude", "settings.json"),
+            JSON.stringify({ enabledPlugins: { "sticky-plugin@mkt": true } }),
+        );
+        writeFileSync(
+            join(projectDir, ".claude", "settings.local.json"),
+            JSON.stringify({ enabledPlugins: { "sticky-plugin@mkt": true } }),
+        );
+
+        // Both the marketplace path and the aggregate used by the hook and
+        // legacy-MCP loaders must keep the plugin disabled.
+        expect(discoverClaudeInstalledPlugins(projectDir)).toEqual([]);
+        expect(discoverPlugins(projectDir).map(p => p.name)).not.toContain("sticky-plugin");
+    });
+
     test("all plugins loaded when no enabledPlugins settings exist", () => {
         const home = setupHome("no-enabled-plugins");
         const pathA = createCachedPlugin(home, "mkt", "free-plugin", "1.0.0");
@@ -1386,7 +1423,7 @@ describe("readEnabledPlugins", () => {
         expect(result).toEqual({ "a@mkt": true, "b@mkt": false });
     });
 
-    test("merges user and project settings (project wins)", () => {
+    test("merges user and project settings (project wins, except re-enabling)", () => {
         const home = join(tmpDir, "merge-test");
         mkdirSync(join(home, ".claude"), { recursive: true });
         writeFileSync(
@@ -1403,7 +1440,50 @@ describe("readEnabledPlugins", () => {
         );
 
         const result = readEnabledPlugins(projectDir);
-        expect(result).toEqual({ "a@mkt": true, "b@mkt": true, "c@mkt": false });
+        // b@mkt is globally disabled: the project's `true` must not win (F15).
+        expect(result).toEqual({ "a@mkt": true, "b@mkt": false, "c@mkt": false });
+    });
+
+    test("project settings.local.json cannot re-enable a globally disabled plugin", () => {
+        const home = join(tmpDir, "local-reenable");
+        mkdirSync(join(home, ".claude"), { recursive: true });
+        writeFileSync(
+            join(home, ".claude", "settings.json"),
+            JSON.stringify({ enabledPlugins: { "evil@mkt": false } }),
+        );
+        process.env.HOME = home;
+
+        const projectDir = join(tmpDir, "local-reenable-project");
+        mkdirSync(join(projectDir, ".claude"), { recursive: true });
+        writeFileSync(
+            join(projectDir, ".claude", "settings.json"),
+            JSON.stringify({ enabledPlugins: { "evil@mkt": true } }),
+        );
+        writeFileSync(
+            join(projectDir, ".claude", "settings.local.json"),
+            JSON.stringify({ enabledPlugins: { "evil@mkt": true } }),
+        );
+
+        expect(readEnabledPlugins(projectDir)).toEqual({ "evil@mkt": false });
+    });
+
+    test("project settings can still disable a globally enabled plugin", () => {
+        const home = join(tmpDir, "project-disable");
+        mkdirSync(join(home, ".claude"), { recursive: true });
+        writeFileSync(
+            join(home, ".claude", "settings.json"),
+            JSON.stringify({ enabledPlugins: { "x@mkt": true } }),
+        );
+        process.env.HOME = home;
+
+        const projectDir = join(tmpDir, "project-disable-project");
+        mkdirSync(join(projectDir, ".claude"), { recursive: true });
+        writeFileSync(
+            join(projectDir, ".claude", "settings.local.json"),
+            JSON.stringify({ enabledPlugins: { "x@mkt": false } }),
+        );
+
+        expect(readEnabledPlugins(projectDir)).toEqual({ "x@mkt": false });
     });
 
     test("ignores non-boolean values in enabledPlugins", () => {
