@@ -269,3 +269,30 @@ export function resolveCommandPopoverState(
   // like "/usr/bin/python" or a non-existent command).
   return { open: false, query: "" };
 }
+
+type InboundMessage = { fromSessionId: string; message: string };
+
+function toInboundMessage(value: unknown): InboundMessage | null {
+  const v = value as { fromSessionId?: unknown; message?: unknown } | null | undefined;
+  return typeof v?.fromSessionId === "string" && typeof v.message === "string"
+    ? { fromSessionId: v.fromSessionId, message: v.message }
+    : null;
+}
+
+/** Structured wait_for_message result (tool `details`); null until the tool has finished. */
+export function readWaitForMessageDetails(details: unknown):
+  | { received: InboundMessage | null; timedOut: boolean; cancelled: boolean }
+  | null {
+  const d = details as { received?: unknown; timedOut?: unknown } | null | undefined;
+  if (typeof d?.received !== "boolean") return null;
+  const received = d.received ? toInboundMessage(d) : null;
+  const timedOut = !d.received && d.timedOut === true;
+  return { received, timedOut, cancelled: !d.received && !timedOut };
+}
+
+/** Structured check_messages result (tool `details.messages`); null until the tool has finished. */
+export function readCheckMessagesDetails(details: unknown): InboundMessage[] | null {
+  const messages = (details as { messages?: unknown } | null | undefined)?.messages;
+  if (!Array.isArray(messages)) return null;
+  return messages.map(toInboundMessage).filter((m): m is InboundMessage => m !== null);
+}

@@ -11,6 +11,9 @@ import {
 } from "./rendering";
 import { normalizeToolName } from "./utils";
 import { isTriggerMessage, renderTriggerCard, truncateSessionId } from "./cards/InterAgentCards";
+import { TriggerCard } from "./cards/TriggerCard";
+import { parsedTriggerFromStructured } from "./cards/trigger-parsers";
+import { LINKED_SESSION_MESSAGE_TYPE, TRIGGER_MESSAGE_TYPE, type TriggerMessageDetails } from "@pizzapi/protocol";
 import { Message, MessageContent } from "@/components/ai-elements/message";
 import { MessageCopyButton } from "@/components/ai-elements/conversation";
 import { exportToMarkdown } from "@/lib/export-markdown";
@@ -41,6 +44,7 @@ function LinkedSessionChip({ sessionId }: { sessionId: string }) {
       type="button"
       onClick={() => navigate(`pizzapi://session/${sessionId}`)}
       title={`Open session ${sessionId}`}
+      aria-label={`Open session ${sessionId}`}
       className={cn(
         "max-w-[16rem] truncate rounded bg-violet-500/15 px-1.5 py-0.5 text-[10px] hover:bg-violet-500/30 hover:text-violet-100",
         !name && "font-mono",
@@ -49,6 +53,25 @@ function LinkedSessionChip({ sessionId }: { sessionId: string }) {
       {name ?? truncateSessionId(sessionId)}
     </button>
   );
+}
+
+/** Structured linked-session delivery (pi custom message injected by the relay input path). */
+export function getLinkedSessionMessage(message: Pick<RelayMessage, "role" | "customType" | "details">): { fromSessionId: string; message: string } | null {
+  if (message.role !== "custom" || message.customType !== LINKED_SESSION_MESSAGE_TYPE) return null;
+  const d = message.details as { fromSessionId?: unknown; message?: unknown } | undefined;
+  return typeof d?.fromSessionId === "string" && typeof d.message === "string"
+    ? { fromSessionId: d.fromSessionId, message: d.message }
+    : null;
+}
+
+/** Structured trigger batch (pi custom message injected by the CLI trigger queue). */
+export function getTriggerMessageTriggers(message: Pick<RelayMessage, "role" | "customType" | "details">): TriggerMessageDetails["triggers"] | null {
+  if (message.role !== "custom" || message.customType !== TRIGGER_MESSAGE_TYPE) return null;
+  const triggers = (message.details as Partial<TriggerMessageDetails> | undefined)?.triggers;
+  if (!Array.isArray(triggers)) return null;
+  const valid = triggers.filter((t) =>
+    t && typeof t.triggerId === "string" && typeof t.type === "string" && typeof t.sourceSessionId === "string");
+  return valid.length > 0 ? valid : null;
 }
 
 // ── SessionMessageItem ───────────────────────────────────────────────────────
@@ -213,7 +236,27 @@ export const SessionMessageItem = React.memo(
       );
     }
 
-    // Trigger-injected user messages → TriggerCard instead of blue bubble
+    // Structured trigger batches → one TriggerCard per trigger
+    const triggers = getTriggerMessageTriggers(message);
+    if (triggers) {
+      return (
+        <div className="w-full max-w-3xl mx-auto px-4 py-1.5 flex flex-col gap-2">
+          {triggers.map((t) => (
+            <TriggerCard
+              key={t.triggerId}
+              triggerId={t.triggerId}
+              body={typeof t.text === "string" ? t.text : ""}
+              parsed={parsedTriggerFromStructured(t)}
+              onRespond={onTriggerResponse
+                ? (id, response, action) => onTriggerResponse(id, response, action, t.sourceSessionId)
+                : undefined}
+            />
+          ))}
+        </div>
+      );
+    }
+
+    // Legacy text-injected trigger user messages → TriggerCard instead of blue bubble
     if (
       message.role === "user" &&
       typeof message.content === "string" &&
@@ -227,7 +270,10 @@ export const SessionMessageItem = React.memo(
     }
 
     // Messages injected by a linked (parent/child) session → distinct agent card, not a user bubble
-    const linked = message.role === "user" ? parseLinkedSessionMessage(message.content) : null;
+    const structuredLinked = getLinkedSessionMessage(message);
+    const linked = structuredLinked
+      ? { fromSessionId: structuredLinked.fromSessionId, text: structuredLinked.message }
+      : message.role === "user" ? parseLinkedSessionMessage(message.content) : null;
     if (linked) {
       return (
         <div className="group/msg w-full max-w-3xl mx-auto px-4 py-1.5">
@@ -244,7 +290,9 @@ export const SessionMessageItem = React.memo(
                 className="ml-auto opacity-0 group-hover/msg:opacity-100 focus-visible:opacity-100 transition-opacity"
               />
             </div>
-            {renderContent(linked.text, activeToolCalls, "user", undefined, false, undefined, message.toolCallId ?? message.key)}
+            {structuredLinked
+              ? <div className="min-w-0 break-words whitespace-pre-wrap text-sm">{linked.text}</div>
+              : renderContent(linked.text, activeToolCalls, "user", undefined, false, undefined, message.toolCallId ?? message.key)}
           </div>
         </div>
       );

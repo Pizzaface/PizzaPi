@@ -1,4 +1,5 @@
 import * as React from "react";
+import { readCheckMessagesDetails, readWaitForMessageDetails } from "@/components/session-viewer/utils";
 import type { BundledLanguage } from "shiki";
 
 import {
@@ -265,27 +266,21 @@ export function WaitForMessageCard({
   fromSessionId,
   timeout,
   resultText,
+  details,
   isStreaming,
 }: {
   fromSessionId?: string;
   timeout?: number;
   resultText: string | null;
+  details?: unknown;
   isStreaming: boolean;
 }) {
-  const isTimedOut = resultText?.includes("No message received") ?? false;
-  const isCancelled = resultText === "Wait was cancelled.";
-  const hasMessage = resultText?.startsWith("Message from session") ?? false;
-
-  // Parse received message
-  let senderSessionId: string | null = null;
-  let receivedMessage: string | null = null;
-  if (hasMessage && resultText) {
-    const match = resultText.match(/^Message from session (.+?):\n\n([\s\S]*)$/);
-    if (match) {
-      senderSessionId = match[1];
-      receivedMessage = match[2];
-    }
-  }
+  const result = readWaitForMessageDetails(details);
+  const isTimedOut = result?.timedOut ?? false;
+  const isCancelled = result?.cancelled ?? false;
+  const hasMessage = !!result?.received;
+  const senderSessionId = result?.received?.fromSessionId ?? null;
+  const receivedMessage = result?.received?.message ?? null;
 
   return (
     <ToolCardShell>
@@ -360,27 +355,16 @@ export function WaitForMessageCard({
 
 export function CheckMessagesCard({
   fromSessionId,
-  resultText,
+  details,
   isStreaming,
 }: {
   fromSessionId?: string;
-  resultText: string | null;
+  details?: unknown;
   isStreaming: boolean;
 }) {
-  const isEmpty = resultText === "No pending messages.";
-
-  // Parse multiple messages from result
-  const parsedMessages: Array<{ fromSessionId: string; message: string }> = [];
-  if (resultText && !isEmpty) {
-    const body = resultText.replace(/^\d+ message\(s\) received:\n\n/, "");
-    const parts = body.split(/\n\n(?=\[)/);
-    for (const part of parts) {
-      const match = part.match(/^\[(.+?)\]\s([\s\S]*)$/);
-      if (match) {
-        parsedMessages.push({ fromSessionId: match[1], message: match[2] });
-      }
-    }
-  }
+  const structured = readCheckMessagesDetails(details);
+  const isEmpty = structured?.length === 0;
+  const parsedMessages = structured ?? [];
 
   return (
     <ToolCardShell>
@@ -400,7 +384,7 @@ export function CheckMessagesCard({
             <span className="inline-flex items-center gap-1 rounded-full border border-teal-800/60 bg-teal-900/30 px-2 py-0.5 text-[11px] text-teal-400">
               {parsedMessages.length} message{parsedMessages.length !== 1 ? "s" : ""}
             </span>
-          ) : resultText ? (
+          ) : isEmpty ? (
             <span className="text-[11px] text-zinc-600">Empty</span>
           ) : null}
         </ToolCardActions>

@@ -75,6 +75,16 @@ export function createConnectionHandlers(deps: ConnectionHandlersDeps) {
             await rctx.sessionHost.sendUserMessage(msg as UserMessageContent, opts);
         },
 
+        sendCustomMessage: async (customType, text, details, deliverAs) => {
+            if (!rctx.sessionHost) {
+                throw new Error("pizzapi: no SessionHost available — cannot deliver user message");
+            }
+            await rctx.sessionHost.sendCustomMessage(
+                { customType, content: text, display: true, details },
+                { triggerTurn: true, ...(deliverAs ? { deliverAs } : {}) },
+            );
+        },
+
         // ── Delink handlers ───────────────────────────────────────────────
 
         isPendingDelinkOwnParent: () => state.pendingDelinkOwnParent,

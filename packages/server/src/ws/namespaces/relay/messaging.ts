@@ -31,7 +31,7 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
         const targetSocket = getLocalTuiSocket(targetSessionId);
         const attributedText = `Message from linked session ${fromSessionId}:\n\n${messageText}`;
         const payload = isInput
-            ? { text: attributedText, attachments: [], client: "agent", fromSessionId, deliverAs: inputDelivery }
+            ? { text: attributedText, attachments: [], client: "agent", fromSessionId, message: messageText, deliverAs: inputDelivery }
             : { fromSessionId, message: messageText, ts: new Date().toISOString() };
 
         if (targetSocket?.connected) {
@@ -191,6 +191,10 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
         }
 
         const targetSessionId = trigger.targetSessionId;
+        // Alternate display data is relay-owned, never caller supplied.
+        delete trigger.displayPayload;
+        delete trigger.summary;
+        delete trigger.sourceName;
 
         // Find the target session's relay socket and validate ownership
         const [senderSession, targetSession] = await Promise.all([
@@ -254,6 +258,8 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
             // Escalation to self — keep original sourceSessionId for viewer attribution
         } else {
             trigger.sourceSessionId = sessionId;
+            const senderName = senderSession.sessionName;
+            trigger.sourceName = typeof senderName === "string" && senderName.trim() ? senderName.trim() : "Session";
         }
 
         let delivered = false;

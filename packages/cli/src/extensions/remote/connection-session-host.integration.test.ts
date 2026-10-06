@@ -9,6 +9,7 @@
  * even part of ConnectionHandlersDeps anymore (see connection-handlers-factory.ts).
  */
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { LINKED_SESSION_MESSAGE_TYPE, TRIGGER_MESSAGE_TYPE } from "@pizzapi/protocol";
 import { SessionHost } from "../../runner/session-host.js";
 
 class FakeSocket {
@@ -232,6 +233,52 @@ describe("connection handler -> SessionHost -> AgentSession.prompt integration",
         expect(promptCalls[0].text).toBe("yes");
     });
 
+    test("linked-session input is injected as a structured custom message", async () => {
+        const custom: Array<{ message: any; options: any }> = [];
+        const fakeSession = {
+            prompt: mock(async () => {}),
+            sendCustomMessage: async (message: any, options: any) => { custom.push({ message, options }); },
+        } as any;
+        const host = new SessionHost(() => fakeSession, {
+            newSession: async () => ({ cancelled: false }),
+            switchSession: async () => ({ cancelled: false }),
+            fork: async () => ({ cancelled: false }),
+        });
+        const { rctx } = makeRctx(host);
+        const { connectionHandlers } = createConnectionHandlers({
+            rctx,
+            state: makeState() as any,
+            triggerWaits: { cancelAll: () => 0 } as any,
+            delinkManager: {} as any,
+            cancellationManager: {} as any,
+            followUpGrace: { clearFollowUpGrace: () => {} } as any,
+            setModelFromWeb: async () => {},
+        });
+        const ack = mock((_delivered: boolean) => {});
+
+        connect(rctx, connectionHandlers);
+        lastSocket!.trigger("input", {
+            text: "Message from linked session child-1:\n\nhi",
+            message: "hi",
+            client: "agent",
+            fromSessionId: "child-1",
+            deliverAs: "steer",
+        }, ack);
+        await sleep(30);
+
+        expect(ack).toHaveBeenCalledWith(true);
+        expect(fakeSession.prompt).not.toHaveBeenCalled();
+        expect(custom).toEqual([{
+            message: {
+                customType: LINKED_SESSION_MESSAGE_TYPE,
+                content: "Message from linked session child-1:\n\nhi",
+                display: true,
+                details: { fromSessionId: "child-1", message: "hi" },
+            },
+            options: { triggerTurn: true, deliverAs: "steer" },
+        }]);
+    });
+
     test("acknowledges an interactive response consumed by the runner", async () => {
         const fakeSession = { prompt: mock(async () => {}) } as any;
         const host = new SessionHost(() => fakeSession, {
@@ -259,10 +306,11 @@ describe("connection handler -> SessionHost -> AgentSession.prompt integration",
         expect(fakeSession.prompt).not.toHaveBeenCalled();
     });
 
-    test("trigger batch does NOT opt into prompt-template expansion and uses steer streaming", async () => {
-        const promptCalls: Array<{ text: string; options: any }> = [];
+    test("trigger batch is injected as a structured custom message with steer streaming", async () => {
+        const custom: Array<{ message: any; options: any }> = [];
         const fakeSession = {
-            prompt: async (text: string, options: any) => { promptCalls.push({ text, options }); },
+            prompt: mock(async () => {}),
+            sendCustomMessage: async (message: any, options: any) => { custom.push({ message, options }); },
         } as any;
         const host = new SessionHost(() => fakeSession, {
             newSession: async () => ({ cancelled: false }),
@@ -297,12 +345,14 @@ describe("connection handler -> SessionHost -> AgentSession.prompt integration",
 
         await sleep(120);
 
-        expect(promptCalls).toHaveLength(1);
-        expect(promptCalls[0].options).toEqual({
-            expandPromptTemplates: false,
-            streamingBehavior: "steer",
-            images: undefined,
-            source: "extension",
+        // Never via prompt(): no slash-command / template expansion of trigger text.
+        expect(fakeSession.prompt).not.toHaveBeenCalled();
+        expect(custom).toHaveLength(1);
+        expect(custom[0].options).toEqual({ triggerTurn: true, deliverAs: "steer" });
+        expect(custom[0].message.customType).toBe(TRIGGER_MESSAGE_TYPE);
+        expect(custom[0].message.content).toContain("<!-- trigger:trig_integration_1");
+        expect(custom[0].message.details.triggers[0]).toMatchObject({
+            triggerId: "trig_integration_1", type: "github:pr_comment", payload: { body: "please fix this" },
         });
     });
 

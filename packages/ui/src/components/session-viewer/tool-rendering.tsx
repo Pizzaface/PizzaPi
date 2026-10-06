@@ -870,18 +870,18 @@ export function renderGroupedToolExecution(
         fromSessionId={fromSessionId}
         timeout={timeout}
         resultText={resultText}
+        details={details}
         isStreaming={isStreaming}
       />
     );
   } else if (norm === "check_messages" || norm.endsWith(".check_messages")) {
     const inputArgs = parseToolInputArgs(toolInput);
     const fromSessionId = typeof inputArgs.fromSessionId === "string" ? inputArgs.fromSessionId : undefined;
-    const resultText = hasOutput ? extractTextFromToolContent(content) : null;
 
     card = (
       <CheckMessagesCard
         fromSessionId={fromSessionId}
-        resultText={resultText}
+        details={details}
         isStreaming={isStreaming}
       />
     );

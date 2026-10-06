@@ -4,6 +4,8 @@ import {
   hasVisibleContent,
   normalizeToolName,
   extractTextFromToolContent,
+  readWaitForMessageDetails,
+  readCheckMessagesDetails,
 } from "./utils";
 
 interface PendingToolCall {
@@ -945,32 +947,22 @@ function messageToSubAgentTurn(msg: RelayMessage): SubAgentTurn {
   if (bare === "wait_for_message") {
     const fromSessionId = typeof input.fromSessionId === "string" ? input.fromSessionId : undefined;
     const timeout = typeof input.timeout === "number" ? input.timeout : undefined;
-    const hasMessage = resultText?.startsWith("Message from session") ?? false;
-    const isTimedOut = resultText?.includes("No message received") ?? false;
-    const isCancelled = resultText === "Wait was cancelled.";
-
-    if (hasMessage && resultText) {
-      const match = resultText.match(/^Message from session (.+?):\n\n([\s\S]*)$/);
-      if (match) {
-        return { type: "received", fromSessionId: match[1]!, message: match[2]! };
-      }
-    }
-    return { type: "waiting", fromSessionId, timeout, isTimedOut, isCancelled, isStreaming };
+    const result = readWaitForMessageDetails(msg.details);
+    if (result?.received) return { type: "received", ...result.received };
+    return {
+      type: "waiting",
+      fromSessionId,
+      timeout,
+      isTimedOut: result?.timedOut ?? false,
+      isCancelled: result?.cancelled ?? false,
+      isStreaming,
+    };
   }
 
   // check_messages
   const fromSessionId = typeof input.fromSessionId === "string" ? input.fromSessionId : undefined;
-  const isEmpty = resultText === "No pending messages.";
-  const parsedMessages: Array<{ fromSessionId: string; message: string }> = [];
-  if (resultText && !isEmpty) {
-    const body = resultText.replace(/^\d+ message\(s\) received:\n\n/, "");
-    const parts = body.split(/\n\n(?=\[)/);
-    for (const part of parts) {
-      const match = part.match(/^\[(.+?)\]\s([\s\S]*)$/);
-      if (match) parsedMessages.push({ fromSessionId: match[1]!, message: match[2]! });
-    }
-  }
-  return { type: "check", fromSessionId, messages: parsedMessages, isEmpty, isStreaming };
+  const messages = readCheckMessagesDetails(msg.details);
+  return { type: "check", fromSessionId, messages: messages ?? [], isEmpty: messages?.length === 0, isStreaming };
 }
 
 /**

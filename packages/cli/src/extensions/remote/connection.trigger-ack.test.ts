@@ -10,6 +10,7 @@
 // ============================================================================
 
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import type { ConnectionHandlers } from "./connection.js";
 
 class FakeSocket {
     handlers = new Map<string, Array<(data: any, ack?: any) => void>>();
@@ -145,7 +146,7 @@ function sleep(ms: number) {
 }
 
 function makeHarness() {
-    const sendUserMessage = mock(async () => {});
+    const sendCustomMessage = mock(async (..._args: Parameters<ConnectionHandlers["sendCustomMessage"]>) => {});
     const rctx = {
         shuttingDown: false,
         sioSocket: null,
@@ -163,7 +164,7 @@ function makeHarness() {
     const handlers = {
         clearFollowUpGrace: mock(() => {}),
         setModelFromWeb: mock(async () => {}),
-        sendUserMessage,
+        sendCustomMessage,
         isPendingDelinkOwnParent: () => false,
         setServerClockOffset: mock(() => {}),
         isStaleChild: () => false,
@@ -176,7 +177,7 @@ function makeHarness() {
         onSocketTeardown: mock(() => {}),
         getParentSessionIdForRegister: () => undefined,
     } as any;
-    return { rctx, handlers, sendUserMessage };
+    return { rctx, handlers, sendCustomMessage };
 }
 
 function makeTrigger(triggerId: string) {
@@ -211,7 +212,7 @@ describe("session_trigger receipt acks", () => {
     });
 
     test("handler acks after durably accepting a trigger (tracked + batched)", async () => {
-        const { rctx, handlers, sendUserMessage } = makeHarness();
+        const { rctx, handlers, sendCustomMessage } = makeHarness();
         connect(rctx, handlers);
 
         const ack = mock((_result: { ok: boolean }) => {});
@@ -224,16 +225,29 @@ describe("session_trigger receipt acks", () => {
 
         // The trigger still injects through the normal batch path.
         await sleep(120);
-        expect(sendUserMessage).toHaveBeenCalledTimes(1);
+        expect(sendCustomMessage).toHaveBeenCalledTimes(1);
+    });
+
+    test("preserves original display data, summary, source and response requirements in transcript details", async () => {
+        const { rctx, handlers, sendCustomMessage } = makeHarness();
+        connect(rctx, handlers);
+        lastSocket!.trigger("session_trigger", { trigger: {
+            ...makeTrigger("prompt-marker"), displayPayload: { prompt: "Original event prompt" },
+            summary: "Event summary", sourceName: "GitHub", expectsResponse: true,
+        } });
+        await sleep(120);
+        expect(sendCustomMessage.mock.calls[0]?.[2]).toMatchObject({ triggers: [{
+            displayPayload: { prompt: "Original event prompt" }, summary: "Event summary", sourceName: "GitHub", expectsResponse: true,
+        }] });
     });
 
     test("duplicate re-delivery acks too (already durably accepted)", async () => {
-        const { rctx, handlers, sendUserMessage } = makeHarness();
+        const { rctx, handlers, sendCustomMessage } = makeHarness();
         connect(rctx, handlers);
 
         lastSocket!.trigger("session_trigger", { trigger: makeTrigger("ack_trig_2") });
         await sleep(120);
-        expect(sendUserMessage).toHaveBeenCalledTimes(1);
+        expect(sendCustomMessage).toHaveBeenCalledTimes(1);
 
         // Server redelivered after an ack timeout: the CLI dedups the
         // injection but must STILL ack, or the delivery row never settles.
@@ -242,7 +256,7 @@ describe("session_trigger receipt acks", () => {
         expect(ack).toHaveBeenCalledTimes(1);
         expect(ack.mock.calls[0][0]).toEqual({ ok: true });
         await sleep(120);
-        expect(sendUserMessage).toHaveBeenCalledTimes(1); // no double injection
+        expect(sendCustomMessage).toHaveBeenCalledTimes(1); // no double injection
     });
 
     test("old server without an ack callback is handled safely", () => {
@@ -254,7 +268,7 @@ describe("session_trigger receipt acks", () => {
     });
 
     test("disconnect discards the batch AND untracks for re-delivery", async () => {
-        const { rctx, handlers, sendUserMessage } = makeHarness();
+        const { rctx, handlers, sendCustomMessage } = makeHarness();
         connect(rctx, handlers);
 
         // Batched but not yet flushed.
@@ -269,7 +283,7 @@ describe("session_trigger receipt acks", () => {
         // Server re-delivers the same triggerId after reconnect.
         lastSocket!.trigger("session_trigger", { trigger: makeTrigger("ack_trig_4") });
         await sleep(120);
-        expect(sendUserMessage).toHaveBeenCalledTimes(1);
+        expect(sendCustomMessage).toHaveBeenCalledTimes(1);
     });
 });
 

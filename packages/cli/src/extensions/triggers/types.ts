@@ -9,6 +9,10 @@ export interface ConversationTrigger {
     sourceSessionName?: string;
     targetSessionId: string;
     payload: Record<string, unknown>;
+    /** Original event data when payload contains route-rendered agent instructions. */
+    displayPayload?: Record<string, unknown>;
+    summary?: string;
+    sourceName?: string;
     deliverAs: "steer" | "followUp";
     expectsResponse: boolean;
     triggerId: string;

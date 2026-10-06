@@ -74,8 +74,12 @@ function toWireEnvelope(delivery: Delivery, event: TriggerEvent, route: Route | 
     type: event.type,
     sourceSessionId: sourceLabel(event),
     sourceSessionName: event.summary ?? event.source.name ?? `${event.source.kind} (${event.source.id})`,
+    ...(event.summary !== undefined ? { summary: event.summary } : {}),
+    ...(event.source.name !== undefined ? { sourceName: event.source.name } : {}),
     targetSessionId: delivery.sessionId,
     payload,
+    // Keep the legacy agent payload unchanged while preserving original data for new viewers.
+    ...(rendered ? { displayPayload: event.payload } : {}),
     deliverAs: delivery.deliverAs,
     expectsResponse: event.responseContract !== undefined,
     triggerId: delivery.deliveryId,

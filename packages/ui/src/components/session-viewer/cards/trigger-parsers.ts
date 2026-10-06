@@ -11,7 +11,13 @@ export interface ParsedTriggerQuestion {
 }
 
 export interface ParsedTrigger {
-  type: "ask_user_question" | "plan_review" | "session_complete" | "session_error" | "escalate" | "unknown";
+  type: "ask_user_question" | "plan_review" | "session_complete" | "session_error" | "escalate" | "event" | "unknown";
+  eventType?: string;
+  sourceSessionId?: string;
+  sourceName?: string;
+  payload?: unknown;
+  summary?: string;
+  expectsResponse?: boolean;
   childName?: string;
   question?: string;
   options?: string[];
@@ -88,17 +94,7 @@ function parsAskUserQuestion(body: string): ParsedTrigger {
   }
   if (rawJson) {
     try {
-      const parsed = JSON.parse(rawJson);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        questions = parsed
-          .filter((q: any) => q && typeof q === "object" && typeof q.question === "string")
-          .map((q: any) => ({
-            question: q.question,
-            options: Array.isArray(q.options) ? q.options.filter((o: any) => typeof o === "string") : [],
-            ...(q.type === "checkbox" || q.type === "ranked" ? { type: q.type } : {}),
-          }));
-        if (questions.length === 0) questions = undefined;
-      }
+      questions = normalizeQuestions(JSON.parse(rawJson));
     } catch {
       // Malformed JSON — fall back to legacy parsing
     }
@@ -179,4 +175,75 @@ function parseEscalateTrigger(body: string): ParsedTrigger {
   const reason = reasonMatch?.[1]?.trim();
 
   return { type: "escalate", childName, reason };
+}
+
+function normalizeQuestions(raw: unknown): ParsedTriggerQuestion[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const questions = raw
+    .filter((q: any) => q && typeof q === "object" && typeof q.question === "string")
+    .map((q: any) => ({
+      question: q.question as string,
+      options: Array.isArray(q.options) ? q.options.filter((o: any) => typeof o === "string") : [],
+      ...(q.type === "checkbox" || q.type === "ranked" ? { type: q.type as "checkbox" | "ranked" } : {}),
+    }));
+  return questions.length > 0 ? questions : undefined;
+}
+
+const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+
+/** Map a structured ConversationTrigger (from TRIGGER_MESSAGE_TYPE details) to card props — no text parsing. */
+export function parsedTriggerFromStructured(t: {
+  type: string;
+  sourceSessionId: string;
+  sourceSessionName?: string;
+  payload: unknown;
+  displayPayload?: unknown;
+  summary?: string;
+  sourceName?: string;
+  expectsResponse?: boolean;
+}): ParsedTrigger {
+  const p = t.payload && typeof t.payload === "object" && !Array.isArray(t.payload) ? t.payload as Record<string, unknown> : {};
+  const childName = t.sourceSessionName ?? t.sourceSessionId.slice(0, 8);
+  switch (t.type.replace(/^lifecycle:/, "")) {
+    case "session_complete": {
+      const r = p.exitReason;
+      const exitReason = r === "killed" || r === "error" ? r : "completed";
+      return { type: "session_complete", childName, message: str(p.summary), exitReason, fullOutputPath: str(p.fullOutputPath) };
+    }
+    case "session_error":
+      return { type: "session_error", childName, message: str(p.message) ?? str(p.error) };
+    case "ask_question":
+    case "ask_user_question":
+      return {
+        type: "ask_user_question",
+        childName,
+        question: str(p.question),
+        options: Array.isArray(p.options) ? p.options.filter((o): o is string => typeof o === "string") : [],
+        questions: normalizeQuestions(p.questions),
+      };
+    case "plan_review":
+      return {
+        type: "plan_review",
+        childName,
+        planTitle: str(p.title),
+        planSteps: Array.isArray(p.steps)
+          ? p.steps
+              .filter((s: any) => s && typeof s.title === "string")
+              .map((s: any) => ({ title: s.title as string, description: str(s.description) }))
+          : [],
+      };
+    case "escalation":
+    case "escalate":
+      return { type: "escalate", childName, reason: str(p.reason) };
+    default:
+      return {
+        type: "event",
+        eventType: ["external", "webhook", "service", "cron", "custom"].includes(t.type) ? str(p.eventType) ?? t.type : t.type,
+        sourceSessionId: t.sourceSessionId,
+        sourceName: str(t.sourceName) ?? (t.summary === undefined ? str(t.sourceSessionName) : undefined),
+        payload: t.displayPayload !== undefined ? t.displayPayload : t.payload,
+        ...(typeof t.summary === "string" ? { summary: t.summary } : {}),
+        ...(t.expectsResponse === true ? { expectsResponse: true } : {}),
+      };
+  }
 }

@@ -6,7 +6,7 @@
  */
 
 import { io, type Socket } from "socket.io-client";
-import { SOCKET_PROTOCOL_VERSION, type RelayClientToServerEvents, type RelayServerToClientEvents } from "@pizzapi/protocol";
+import { LINKED_SESSION_MESSAGE_TYPE, SOCKET_PROTOCOL_VERSION, TRIGGER_MESSAGE_TYPE, type RelayClientToServerEvents, type RelayServerToClientEvents, type TriggerMessageDetails } from "@pizzapi/protocol";
 import { createLogger } from "@pizzapi/tools";
 import { loadConfig } from "../../config.js";
 import { RELAY_BACKOFF_DEFAULTS, computeBackoffDelay } from "../../backoff.js";
@@ -97,6 +97,8 @@ export interface ConnectionHandlers {
     setModelFromWeb: (provider: string, modelId: string) => Promise<void>;
     /** Deliver a user message to the agent (called from input and session_trigger handlers). */
     sendUserMessage: (message: unknown, options?: { deliverAs?: "followUp" | "steer"; expandPromptTemplates?: boolean }) => Promise<void>;
+    /** Deliver a structured pi custom message (LLM sees `text`; UI renders from `details`). Always triggers a turn. */
+    sendCustomMessage: (customType: string, text: string, details: unknown, deliverAs?: "followUp" | "steer") => Promise<void>;
 
     // ── Delink handlers (PR #176) ─────────────────────────────────────────
     /** Whether a delink_own_parent is pending (child did /new). */
@@ -346,9 +348,23 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         void (async () => {
             for (const group of groups) {
                 const rendered = renderTriggerBatch(group.items.map((b) => b.trigger));
+                const details: TriggerMessageDetails = {
+                    triggers: group.items.map(({ trigger: t, rendered: text }) => ({
+                        triggerId: t.triggerId,
+                        type: t.type,
+                        sourceSessionId: t.sourceSessionId,
+                        ...(t.sourceSessionName ? { sourceSessionName: t.sourceSessionName } : {}),
+                        payload: t.payload,
+                        ...(t.displayPayload !== undefined ? { displayPayload: t.displayPayload } : {}),
+                        ...(typeof t.summary === "string" ? { summary: t.summary } : {}),
+                        ...(typeof t.sourceName === "string" ? { sourceName: t.sourceName } : {}),
+                        ...(t.expectsResponse === true ? { expectsResponse: true } : {}),
+                        text,
+                    })),
+                };
                 try {
                     await waitForWorkerStartupComplete();
-                    await handlers.sendUserMessage(rendered, { deliverAs: group.deliverAs });
+                    await handlers.sendCustomMessage(TRIGGER_MESSAGE_TYPE, rendered, details, group.deliverAs);
                     // Received → delivered: only now is deduping a redelivery safe.
                     for (const item of group.items) markTriggerDelivered(item.trigger.triggerId);
                 } catch (err) {
@@ -542,6 +558,10 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
             : data.deliverAs === "steer" ? "steer" as const
             : undefined;
         const isSlashCommand = typeof inputText === "string" && inputText.trimStart().startsWith("/");
+        const rawMessage = (data as { message?: unknown }).message;
+        const linkedMessage = isAgentInput && fromSessionId && typeof rawMessage === "string" && !isSlashCommand && attachments.length === 0
+            ? { fromSessionId, message: rawMessage }
+            : null;
         void (async () => {
             try {
                 const httpBase = rctx.relayHttpBaseUrl();
@@ -564,6 +584,11 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                 if (abortForSlashCommand) rctx.pendingSteeringSlashCommands += 1;
                 try {
                     if (abortForSlashCommand) await rctx.sessionHost?.abort();
+                    if (linkedMessage) {
+                        await handlers.sendCustomMessage(LINKED_SESSION_MESSAGE_TYPE, inputText, linkedMessage, effectiveDeliverAs);
+                        settle(true);
+                        return;
+                    }
                     await handlers.sendUserMessage(message, { expandPromptTemplates: true, ...(effectiveDeliverAs ? { deliverAs: effectiveDeliverAs } : {}) });
                     settle(true);
                 } finally {

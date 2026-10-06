@@ -200,6 +200,12 @@ Route targets are either an existing session or a spawn spec:
 
 ---
 
+## Conversation cards
+
+New trigger deliveries render from their structured fields, not the agent-facing prompt text. Lifecycle events keep their question, plan, completion, error, and escalation cards. Other events (including GitHub checks and timer fires) show the event type, summary, source, and payload fields in a generic event card. Contract-bearing events are labeled **Response required**; answer them through the agent's `respond_to_trigger` tool or the Events/Routes feed. HTTP/HTTPS links are labeled with their destination host. Payload fields are paged in groups of 32. Nested objects and arrays are inspected only after expanding **View data (limited preview)**; previews are bounded to five levels, 128 nodes, and 4,096 characters. Long scalar text is explicitly truncated in the preview; the original payload remains stored in the transcript. The event API still requires object payloads; the card also recovers scalar, array, or null values from malformed or historical transcripts without silently dropping them. Empty objects are labeled explicitly. For routed events, the relay carries original display data separately from the legacy agent payload, so route instructions do not replace ordinary event fields named `prompt` in the card. Older relay/runner versions or stored deliveries without that display metadata cannot distinguish injected instructions from original data.
+
+Previously stored text-only triggers keep their legacy rendering. The CLI/TUI still receives the full agent-facing text, including instructions and payload data.
+
 ## Web UI feed
 
 The runner detail view includes an Events/Routes feed. It reads `GET /api/events`, expands deliveries with `GET /api/events/{eventId}/deliveries`, and manages routes through `/api/routes`. The same panel can publish a test Event through a selected route by sending `routeIds: [routeId]`.
