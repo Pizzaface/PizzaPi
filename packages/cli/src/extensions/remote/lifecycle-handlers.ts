@@ -38,7 +38,7 @@ import {
     emitGoalUpdated,
 } from "../remote-meta-events.js";
 import { getAuthSource } from "../remote-auth-source.js";
-import { PLUGIN_COMMAND_RESULT_CHANNEL } from "../plugin-command.js";
+import { PLUGIN_COMMAND_RESULT_CHANNEL } from "../plugin-command-events.js";
 import { clearAndCancelPendingTriggers } from "../triggers/extension.js";
 import { receivedTriggers } from "../triggers/extension.js";
 import { listTriggerSubscriptions, unsubscribeTrigger } from "../trigger-client.js";

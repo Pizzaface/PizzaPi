@@ -35,9 +35,8 @@ import {
     type PluginsOverview,
 } from "../plugins/info.js";
 
-/** pi event-bus channel + relay event type for structured `/plugin` results. */
-export const PLUGIN_COMMAND_RESULT_CHANNEL = "plugin:command_result";
-export const PLUGIN_COMMAND_RESULT_EVENT = "plugin_command_result";
+import { PLUGIN_COMMAND_RESULT_CHANNEL, PLUGIN_COMMAND_RESULT_EVENT } from "./plugin-command-events.js";
+export { PLUGIN_COMMAND_RESULT_CHANNEL, PLUGIN_COMMAND_RESULT_EVENT };
 
 const USAGE = [
     "Usage:",
