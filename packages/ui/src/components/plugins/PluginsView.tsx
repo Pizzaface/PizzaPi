@@ -95,7 +95,7 @@ function Section({ title, count, children, action, collapsible, defaultOpen = tr
   const heading = (
     <>
       {title}
-      {count !== undefined && <span className="font-normal tabular-nums text-muted-foreground/60">{count}</span>}
+      {count !== undefined && <span className="font-normal tabular-nums">{count}</span>}
     </>
   );
   return (
@@ -107,7 +107,7 @@ function Section({ title, count, children, action, collapsible, defaultOpen = tr
               type="button"
               onClick={() => setOpen((v) => !v)}
               aria-expanded={open}
-              className={cn(headingClass, "hover:text-foreground")}
+              className={cn(headingClass, "-mx-1 rounded px-1 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring")}
             >
               <ChevronDown className={cn("size-3 transition-transform", !open && "-rotate-90")} />
               {heading}
@@ -123,15 +123,15 @@ function Section({ title, count, children, action, collapsible, defaultOpen = tr
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-/** "2 commands · 3 skills · 1 hook" — zero counts omitted. */
-function capabilitySummary(p: PluginInfo): string {
+/** ["2 commands", "3 skills", "1 hook"] — zero counts omitted. */
+function capabilitySummary(p: PluginInfo): string[] {
   return ([
     [p.commands.length, "command"],
     [p.skills.length, "skill"],
     [p.agents?.length ?? 0, "agent"],
     [p.hookEvents.length, "hook"],
     [p.rules.length, "rule"],
-  ] as const).filter(([n]) => n > 0).map(([n, w]) => plural(n, w)).join(" · ");
+  ] as const).filter(([n]) => n > 0).map(([n, w]) => plural(n, w));
 }
 
 function sourceLabel(p: PluginInfo): string | null {
@@ -153,10 +153,10 @@ function CopyChip({ text, title }: { text: string; title?: string }) {
           setTimeout(() => setCopied(false), 1200);
         });
       }}
-      className="inline-flex items-center gap-1 rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-foreground/80 hover:bg-muted"
+      className="inline-flex items-center gap-1 rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-foreground/80 hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
     >
       {text}
-      {copied ? <Check className="size-2.5 text-green-500" /> : <Copy className="size-2.5 opacity-50" />}
+      {copied ? <Check className="size-2.5 text-green-600 dark:text-green-500" /> : <Copy className="size-2.5 opacity-50" />}
     </button>
   );
 }
@@ -195,19 +195,23 @@ function PluginRow({ plugin }: { plugin: PluginInfo }) {
           <div className="min-w-0 flex-1">
             <span className="block truncate font-mono text-xs font-medium text-foreground">{plugin.name}</span>
             {plugin.description && <p className={cn("mt-0.5 text-[11px] text-muted-foreground", !open && "line-clamp-1")}>{plugin.description}</p>}
-            {(summary || unadapted) && (
-              <p className="mt-0.5 text-[10px] text-muted-foreground/70">
-                {summary}
+            {(summary.length > 0 || unadapted) && (
+              <p className="mt-0.5 flex flex-wrap gap-x-1 text-[10px] text-muted-foreground">
+                {summary.map((item, i) => (
+                  <span key={item} className="whitespace-nowrap">{i > 0 && "· "}{item}</span>
+                ))}
                 {unadapted && (
-                  <span className="whitespace-nowrap text-amber-500/90" title="Not adapted (Claude Code–only)">
-                    {summary && " · "}<AlertTriangle className="mb-px mr-0.5 inline size-2.5" />{unadapted} not adapted
+                  <span className="whitespace-nowrap text-amber-600 dark:text-amber-500" title="Not adapted (Claude Code–only)">
+                    {summary.length > 0 && "· "}<AlertTriangle className="mb-px mr-0.5 inline size-2.5" />{unadapted} not adapted
                   </span>
                 )}
               </p>
             )}
           </div>
         </button>
-        <ActionButton id={`disable:${key}`} args={["disable", key]} label="Disable" />
+        <div className="-mt-1">
+          <ActionButton id={`disable:${key}`} args={["disable", key]} label="Disable" />
+        </div>
       </div>
       {open && (
         <div className="flex flex-col gap-2 px-6 pb-2.5 pt-0.5">
@@ -232,7 +236,7 @@ function PluginRow({ plugin }: { plugin: PluginInfo }) {
           />
           <NameList label="Rules" names={plugin.rules.map((r) => r.name)} />
           <div className="flex items-center gap-2">
-            <p className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground/70" title={plugin.rootPath}>
+            <p className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground" title={plugin.rootPath}>
               {meta || plugin.rootPath}
             </p>
             {plugin.source === "marketplace" && (
@@ -280,7 +284,7 @@ function SourceForm({ id, placeholder, label, submitLabel, toArgs, localLabel }:
       <div className="ml-auto flex items-center gap-1.5">
         {localLabel && (
           <label className="flex items-center gap-1 text-[11px] text-muted-foreground" title="Install into the project's .pizzapi/settings.json instead of your user settings">
-            <input type="checkbox" checked={local} onChange={(e) => setLocal(e.target.checked)} />
+            <input type="checkbox" className="size-3.5 accent-primary" checked={local} onChange={(e) => setLocal(e.target.checked)} />
             {localLabel}
           </label>
         )}
@@ -349,7 +353,7 @@ export function PluginsView({ data, onCommand, className, sections = ["plugins",
         {data.notice && (
           <p
             role={data.isError ? "alert" : "status"}
-            className={cn("whitespace-pre-wrap px-3 py-2 text-xs", data.isError ? "text-red-400" : "text-green-500")}
+            className={cn("whitespace-pre-wrap px-3 py-2 text-xs", data.isError ? "text-destructive" : "text-green-700 dark:text-green-500")}
           >
             {data.notice}
           </p>
@@ -408,9 +412,9 @@ export function PluginsView({ data, onCommand, className, sections = ["plugins",
           )}
           {overview.marketplaces.map((m) => (
             <li key={m.name} className="flex items-center gap-2 rounded-md px-1.5 py-1 hover:bg-muted/20">
-              <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground" title={m.source}>
-                {m.name}
-                <span className="ml-1.5 font-sans text-[10px] text-muted-foreground">{plural(m.pluginCount, "plugin")}</span>
+              <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
+                <span className="truncate font-mono text-xs text-foreground" title={m.source}>{m.name}</span>
+                <span className="shrink-0 text-[10px] text-muted-foreground">{plural(m.pluginCount, "plugin")}</span>
               </span>
               <ActionButton id={`show:${m.name}`} args={["marketplace", "show", m.name]} label="Browse" />
               {m.source && <ActionButton id={`update:${m.name}`} args={["marketplace", "add", m.source]} label="Update" />}
