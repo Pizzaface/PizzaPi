@@ -14,7 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { parseTriggerBody } from "./trigger-parsers";
-import type { ParsedTriggerQuestion } from "./trigger-parsers";
+import type { ParsedTrigger, ParsedTriggerQuestion } from "./trigger-parsers";
 import { MultipleChoiceQuestions, type MultipleChoiceAnswers } from "@/components/ai-elements/multiple-choice";
 import { formatAnswersForAgent } from "@/lib/ask-user-questions";
 export { parseTriggerBody } from "./trigger-parsers";
@@ -22,7 +22,10 @@ export type { ParsedTrigger } from "./trigger-parsers";
 
 export interface TriggerCardProps {
   triggerId: string;
+  /** Display text; used as the fallback for unknown trigger types. */
   body: string;
+  /** Structured trigger fields. When omitted, `body` is parsed (legacy text-injected triggers). */
+  parsed?: ParsedTrigger;
   onRespond?: (triggerId: string, response: string, action?: string) => boolean | void | Promise<boolean>;
   isResponding?: boolean;
 }
@@ -384,10 +387,11 @@ function EscalateCard({
 export function TriggerCard({
   triggerId,
   body,
+  parsed: structured,
   onRespond,
   isResponding,
 }: TriggerCardProps) {
-  const parsed = parseTriggerBody(body);
+  const parsed = structured ?? parseTriggerBody(body);
 
   switch (parsed.type) {
     case "ask_user_question":

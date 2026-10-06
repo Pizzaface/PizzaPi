@@ -9,7 +9,7 @@
  * even part of ConnectionHandlersDeps anymore (see connection-handlers-factory.ts).
  */
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { LINKED_SESSION_MESSAGE_TYPE } from "@pizzapi/protocol";
+import { LINKED_SESSION_MESSAGE_TYPE, TRIGGER_MESSAGE_TYPE } from "@pizzapi/protocol";
 import { SessionHost } from "../../runner/session-host.js";
 
 class FakeSocket {
@@ -306,10 +306,11 @@ describe("connection handler -> SessionHost -> AgentSession.prompt integration",
         expect(fakeSession.prompt).not.toHaveBeenCalled();
     });
 
-    test("trigger batch does NOT opt into prompt-template expansion and uses steer streaming", async () => {
-        const promptCalls: Array<{ text: string; options: any }> = [];
+    test("trigger batch is injected as a structured custom message with steer streaming", async () => {
+        const custom: Array<{ message: any; options: any }> = [];
         const fakeSession = {
-            prompt: async (text: string, options: any) => { promptCalls.push({ text, options }); },
+            prompt: mock(async () => {}),
+            sendCustomMessage: async (message: any, options: any) => { custom.push({ message, options }); },
         } as any;
         const host = new SessionHost(() => fakeSession, {
             newSession: async () => ({ cancelled: false }),
@@ -344,12 +345,14 @@ describe("connection handler -> SessionHost -> AgentSession.prompt integration",
 
         await sleep(120);
 
-        expect(promptCalls).toHaveLength(1);
-        expect(promptCalls[0].options).toEqual({
-            expandPromptTemplates: false,
-            streamingBehavior: "steer",
-            images: undefined,
-            source: "extension",
+        // Never via prompt(): no slash-command / template expansion of trigger text.
+        expect(fakeSession.prompt).not.toHaveBeenCalled();
+        expect(custom).toHaveLength(1);
+        expect(custom[0].options).toEqual({ triggerTurn: true, deliverAs: "steer" });
+        expect(custom[0].message.customType).toBe(TRIGGER_MESSAGE_TYPE);
+        expect(custom[0].message.content).toContain("<!-- trigger:trig_integration_1");
+        expect(custom[0].message.details.triggers[0]).toMatchObject({
+            triggerId: "trig_integration_1", type: "github:pr_comment", payload: { body: "please fix this" },
         });
     });
 

@@ -12,7 +12,9 @@ import {
 import { normalizeToolName } from "./utils";
 import { isTriggerMessage, renderTriggerCard } from "./cards/InterAgentCards";
 import { SubAgentConversationCard } from "./cards/SubAgentCards";
-import { LINKED_SESSION_MESSAGE_TYPE } from "@pizzapi/protocol";
+import { TriggerCard } from "./cards/TriggerCard";
+import { parsedTriggerFromStructured } from "./cards/trigger-parsers";
+import { LINKED_SESSION_MESSAGE_TYPE, TRIGGER_MESSAGE_TYPE, type TriggerMessageDetails } from "@pizzapi/protocol";
 import { Message, MessageContent } from "@/components/ai-elements/message";
 import { MessageCopyButton } from "@/components/ai-elements/conversation";
 import { exportToMarkdown } from "@/lib/export-markdown";
@@ -27,6 +29,16 @@ export function getLinkedSessionMessage(message: Pick<RelayMessage, "role" | "cu
   return typeof d?.fromSessionId === "string" && typeof d.message === "string"
     ? { fromSessionId: d.fromSessionId, message: d.message }
     : null;
+}
+
+/** Structured trigger batch (pi custom message injected by the CLI trigger queue). */
+export function getTriggerMessageTriggers(message: Pick<RelayMessage, "role" | "customType" | "details">): TriggerMessageDetails["triggers"] | null {
+  if (message.role !== "custom" || message.customType !== TRIGGER_MESSAGE_TYPE) return null;
+  const triggers = (message.details as Partial<TriggerMessageDetails> | undefined)?.triggers;
+  if (!Array.isArray(triggers)) return null;
+  const valid = triggers.filter((t) =>
+    t && typeof t.triggerId === "string" && typeof t.type === "string" && typeof t.sourceSessionId === "string");
+  return valid.length > 0 ? valid : null;
 }
 
 // ── SessionMessageItem ───────────────────────────────────────────────────────
@@ -201,7 +213,27 @@ export const SessionMessageItem = React.memo(
       );
     }
 
-    // Trigger-injected user messages → TriggerCard instead of blue bubble
+    // Structured trigger batches → one TriggerCard per trigger
+    const triggers = getTriggerMessageTriggers(message);
+    if (triggers) {
+      return (
+        <div className="w-full max-w-3xl mx-auto px-4 py-1.5 flex flex-col gap-2">
+          {triggers.map((t) => (
+            <TriggerCard
+              key={t.triggerId}
+              triggerId={t.triggerId}
+              body={typeof t.text === "string" ? t.text : ""}
+              parsed={parsedTriggerFromStructured({ ...t, payload: t.payload ?? {} })}
+              onRespond={onTriggerResponse
+                ? (id, response, action) => onTriggerResponse(id, response, action, t.sourceSessionId)
+                : undefined}
+            />
+          ))}
+        </div>
+      );
+    }
+
+    // Legacy text-injected trigger user messages → TriggerCard instead of blue bubble
     if (
       message.role === "user" &&
       typeof message.content === "string" &&

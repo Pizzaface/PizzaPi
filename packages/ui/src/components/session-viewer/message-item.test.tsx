@@ -153,3 +153,51 @@ describe("SessionMessageItem custom messages", () => {
     expect(view.getByText("• openai/router-model → gpt-6.1-sol")).toBeTruthy();
   });
 });
+
+describe("SessionMessageItem structured inter-session messages", () => {
+  test("renders a trigger batch from details as trigger cards, not a custom bubble", () => {
+    const message: RelayMessage = {
+      key: "trig-1",
+      role: "custom",
+      customType: "pizzapi-trigger",
+      display: true,
+      timestamp: 1_700_000_000_000,
+      content: "<!-- trigger:t1 source:child-1 -->\nignored text",
+      details: {
+        triggers: [{
+          triggerId: "t1",
+          type: "lifecycle:session_complete",
+          sourceSessionId: "child-1",
+          sourceSessionName: "Fixer",
+          payload: { summary: "All *done*", exitReason: "completed" },
+          text: "ignored text",
+        }],
+      },
+    };
+
+    const view = render(<SessionMessageItem message={message} isLast={false} />);
+
+    expect(view.queryByText("Custom")).toBeNull();
+    expect(view.queryByText("ignored text")).toBeNull();
+    expect(view.container.textContent).toContain("\"Fixer\"");
+    expect(view.container.textContent).toContain("All *done*");
+  });
+
+  test("renders a linked-session message from details", () => {
+    const message: RelayMessage = {
+      key: "linked-1",
+      role: "custom",
+      customType: "linked-session-message",
+      display: true,
+      timestamp: 1_700_000_000_000,
+      content: "Message from linked session abc:\n\nhi `x`",
+      details: { fromSessionId: "abc", message: "hi `x`" },
+    };
+
+    const view = render(<SessionMessageItem message={message} isLast={false} />);
+
+    expect(view.queryByText("Custom")).toBeNull();
+    expect(view.getByText("Linked session")).toBeTruthy();
+    expect(view.getByText("hi `x`")).toBeTruthy();
+  });
+});

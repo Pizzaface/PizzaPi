@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { TRIGGER_MESSAGE_TYPE } from "@pizzapi/protocol";
 
 class FakeSocket {
     handlers = new Map<string, Array<(data: any) => void>>();
@@ -154,7 +155,7 @@ describe("remote connection startup gate", () => {
     test("buffers trigger-delivered turns until worker startup completes", async () => {
         armWorkerStartupGate();
 
-        const sendUserMessage = mock(() => {});
+        const sendCustomMessage = mock(() => {});
         const rctx = {
             shuttingDown: false,
             sioSocket: null,
@@ -171,7 +172,7 @@ describe("remote connection startup gate", () => {
         const handlers = {
             clearFollowUpGrace: mock(() => {}),
             setModelFromWeb: mock(async () => {}),
-            sendUserMessage,
+            sendCustomMessage,
             isPendingDelinkOwnParent: () => false,
             setServerClockOffset: mock(() => {}),
             isStaleChild: () => false,
@@ -201,16 +202,22 @@ describe("remote connection startup gate", () => {
         });
 
         await sleep(120);
-        expect(sendUserMessage).not.toHaveBeenCalled();
+        expect(sendCustomMessage).not.toHaveBeenCalled();
 
         markWorkerStartupComplete();
         await Promise.resolve();
         await sleep(0);
 
-        expect(sendUserMessage).toHaveBeenCalledTimes(1);
-        const firstCall = sendUserMessage.mock.calls[0] as unknown as [string, { deliverAs?: "followUp" | "steer" }?];
-        expect(firstCall[0]).toContain("<!-- trigger:trig_1");
-        expect(firstCall[0]).toContain("GitHub");
+        expect(sendCustomMessage).toHaveBeenCalledTimes(1);
+        const [customType, text, details, deliverAs] = sendCustomMessage.mock.calls[0] as unknown as [string, string, any, string];
+        expect(customType).toBe(TRIGGER_MESSAGE_TYPE);
+        expect(text).toContain("<!-- trigger:trig_1");
+        expect(text).toContain("GitHub");
+        expect(details.triggers).toEqual([expect.objectContaining({
+            triggerId: "trig_1", type: "github:pr_comment", sourceSessionId: "external:github",
+            sourceSessionName: "GitHub", payload: { body: "please fix this" },
+        })]);
+        expect(deliverAs).toBe("steer");
     });
 
     test("buffers remote input until worker startup completes", async () => {
@@ -334,7 +341,7 @@ describe("remote connection startup gate", () => {
 
     test("delivers immediately when gate is not armed (normal CLI session)", async () => {
         // Don't arm the gate — simulates a normal interactive CLI session
-        const sendUserMessage = mock(() => {});
+        const sendCustomMessage = mock(() => {});
         const rctx = {
             shuttingDown: false,
             sioSocket: null,
@@ -351,7 +358,7 @@ describe("remote connection startup gate", () => {
         const handlers = {
             clearFollowUpGrace: mock(() => {}),
             setModelFromWeb: mock(async () => {}),
-            sendUserMessage,
+            sendCustomMessage,
             isPendingDelinkOwnParent: () => false,
             setServerClockOffset: mock(() => {}),
             isStaleChild: () => false,
@@ -382,7 +389,7 @@ describe("remote connection startup gate", () => {
 
         // Trigger batch debounce is 80ms
         await sleep(120);
-        expect(sendUserMessage).toHaveBeenCalledTimes(1);
+        expect(sendCustomMessage).toHaveBeenCalledTimes(1);
     });
 
     // NOTE: regression coverage for the "isAgentActive -> default deliverAs"

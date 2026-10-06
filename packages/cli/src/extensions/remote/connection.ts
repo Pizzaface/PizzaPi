@@ -6,7 +6,7 @@
  */
 
 import { io, type Socket } from "socket.io-client";
-import { SOCKET_PROTOCOL_VERSION, type RelayClientToServerEvents, type RelayServerToClientEvents } from "@pizzapi/protocol";
+import { LINKED_SESSION_MESSAGE_TYPE, SOCKET_PROTOCOL_VERSION, TRIGGER_MESSAGE_TYPE, type RelayClientToServerEvents, type RelayServerToClientEvents, type TriggerMessageDetails } from "@pizzapi/protocol";
 import { createLogger } from "@pizzapi/tools";
 import { loadConfig } from "../../config.js";
 import { RELAY_BACKOFF_DEFAULTS, computeBackoffDelay } from "../../backoff.js";
@@ -97,8 +97,8 @@ export interface ConnectionHandlers {
     setModelFromWeb: (provider: string, modelId: string) => Promise<void>;
     /** Deliver a user message to the agent (called from input and session_trigger handlers). */
     sendUserMessage: (message: unknown, options?: { deliverAs?: "followUp" | "steer"; expandPromptTemplates?: boolean }) => Promise<void>;
-    /** Deliver a linked-session message as a structured custom message. */
-    sendLinkedSessionMessage: (text: string, details: { fromSessionId: string; message: string }, deliverAs?: "followUp" | "steer") => Promise<void>;
+    /** Deliver a structured pi custom message (LLM sees `text`; UI renders from `details`). Always triggers a turn. */
+    sendCustomMessage: (customType: string, text: string, details: unknown, deliverAs?: "followUp" | "steer") => Promise<void>;
 
     // ── Delink handlers (PR #176) ─────────────────────────────────────────
     /** Whether a delink_own_parent is pending (child did /new). */
@@ -348,9 +348,19 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         void (async () => {
             for (const group of groups) {
                 const rendered = renderTriggerBatch(group.items.map((b) => b.trigger));
+                const details: TriggerMessageDetails = {
+                    triggers: group.items.map(({ trigger: t, rendered: text }) => ({
+                        triggerId: t.triggerId,
+                        type: t.type,
+                        sourceSessionId: t.sourceSessionId,
+                        ...(t.sourceSessionName ? { sourceSessionName: t.sourceSessionName } : {}),
+                        payload: t.payload,
+                        text,
+                    })),
+                };
                 try {
                     await waitForWorkerStartupComplete();
-                    await handlers.sendUserMessage(rendered, { deliverAs: group.deliverAs });
+                    await handlers.sendCustomMessage(TRIGGER_MESSAGE_TYPE, rendered, details, group.deliverAs);
                     // Received → delivered: only now is deduping a redelivery safe.
                     for (const item of group.items) markTriggerDelivered(item.trigger.triggerId);
                 } catch (err) {
@@ -571,7 +581,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                 try {
                     if (abortForSlashCommand) await rctx.sessionHost?.abort();
                     if (linkedMessage) {
-                        await handlers.sendLinkedSessionMessage(inputText, linkedMessage, effectiveDeliverAs);
+                        await handlers.sendCustomMessage(LINKED_SESSION_MESSAGE_TYPE, inputText, linkedMessage, effectiveDeliverAs);
                         settle(true);
                         return;
                     }

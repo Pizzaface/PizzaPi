@@ -11,6 +11,21 @@ import type { Attachment, SocketClientMetadata } from "./shared.js";
 /** pi customType for linked-session send_message deliveries (details: { fromSessionId, message }). */
 export const LINKED_SESSION_MESSAGE_TYPE = "linked-session-message";
 
+/** pi customType for injected conversation-trigger batches (details: TriggerMessageDetails). */
+export const TRIGGER_MESSAGE_TYPE = "pizzapi-trigger";
+
+export interface TriggerMessageDetails {
+  triggers: Array<{
+    triggerId: string;
+    type: string;
+    sourceSessionId: string;
+    sourceSessionName?: string;
+    payload: Record<string, unknown>;
+    /** Agent-facing rendered text for this trigger (display fallback for non-lifecycle types). */
+    text: string;
+  }>;
+}
+
 export interface RelayClientToServerEvents {
   /** TUI registers a new or existing session */
   register: (data: {
