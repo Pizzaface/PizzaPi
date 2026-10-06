@@ -109,7 +109,7 @@ import {
 import { broadcastToHub } from "./hub.js";
 import { createLogger } from "@pizzapi/tools";
 import { pushTriggerHistory } from "../../sessions/trigger-store.js";
-import { deleteSessionRoutes, listPendingWakeDeliveries, sessionReferencedByOtherTenant, updateDelivery } from "../../events/store.js";
+import { deleteSessionRoutes, expireUndeliverable, sessionReferencedByOtherTenant } from "../../events/store.js";
 import { routeToSubscription } from "../../events/reconcile.js";
 
 export { markPendingRecovery, consumePendingRecovery, hasPendingRecovery, _resetPendingRecoveriesForTesting } from "./viewer-recovery.js";
@@ -1110,11 +1110,9 @@ async function endSharedSessionUnlocked(
     if (reason !== "Session reconnected" && opts.confirmedTerminal && !opts.preserveSubscriptions) {
         try {
             const deletedRoutes = await deleteSessionRoutes(sessionId, { preserveDurable: false });
-            // Pending wakes for a closed session would otherwise be retried by
-            // sweepFailedWakes every 5 min, resurrecting the killed session.
-            for (const d of await listPendingWakeDeliveries({ sessionIds: [sessionId] })) {
-                await updateDelivery(d.deliveryId, { status: "expired" }, { guard: ["pending"] }).catch(() => null);
-            }
+            // Nothing pending can reach a closed session; wake-marked rows would
+            // otherwise be retried by sweepFailedWakes, resurrecting it.
+            await expireUndeliverable({ sessionId });
             if (deletedRoutes.length > 0) {
                 // Dynamic import avoids runner.ts → sio-registry → sessions.ts
                 // initialization cycles. Reconcile is best-effort on teardown.

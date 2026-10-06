@@ -194,6 +194,26 @@ describe("event store", () => {
     expect(remaining).toHaveLength(3);
   });
 
+  it("expires pending deliveries when their route is deleted or their session closes", async () => {
+    const route = await store.createRoute({
+      eventType: "t:orphan", target: { kind: "session", sessionId: "s-orph" }, deliverAs: "followUp", origin: "agent",
+    });
+    const e1 = (await store.insertEvent(eventInput("t:orphan"))).event;
+    const e2 = (await store.insertEvent(eventInput("t:orphan"))).event;
+    const routed = await store.createDelivery({ eventId: e1.eventId, eventType: e1.type, sessionId: "s-orph", routeId: route.routeId, deliverAs: "followUp" });
+    const delivered = await store.createDelivery({ eventId: e2.eventId, eventType: e2.type, sessionId: "s-orph", routeId: route.routeId, deliverAs: "followUp" });
+    await store.updateDelivery(delivered!.deliveryId, { status: "delivered" });
+    const direct = await store.createDelivery({ eventId: e2.eventId, eventType: e2.type, sessionId: "s-closed", deliverAs: "steer" });
+
+    await store.deleteRoute(route.routeId);
+    expect((await store.getDelivery(routed!.deliveryId))?.status).toBe("expired");
+    expect((await store.getDelivery(delivered!.deliveryId))?.status).toBe("delivered"); // only pending touched
+    expect((await store.getDelivery(direct!.deliveryId))?.status).toBe("pending");
+
+    expect(await store.expireUndeliverable({ sessionId: "s-closed" })).toBe(1);
+    expect((await store.getDelivery(direct!.deliveryId))?.status).toBe("expired");
+  });
+
   it("deliveries are exactly-once per (event, session)", async () => {
     const { event } = await store.insertEvent(eventInput());
     const d1 = await store.createDelivery({ eventId: event.eventId, eventType: event.type, sessionId: "s1", deliverAs: "steer" });
