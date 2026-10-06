@@ -125,8 +125,7 @@ mock.module("../../sessions/store.js", () => ({
 // Durable trigger-record tenant probe (recycled-id guard): no foreign
 // references in these parent-resolution scenarios.
 mock.module("../../events/store.js", () => ({
-    listPendingWakeDeliveries: async () => [],
-    updateDelivery: async () => null,
+    expireUndeliverable: async () => 0,
     deleteSessionRoutes: async () => [],
     listRoutes: async () => [],
     sessionReferencedByOtherTenant: async () => false,

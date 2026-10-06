@@ -599,7 +599,32 @@ export async function deleteRoute(routeId: string): Promise<boolean> {
     throw new Error("Config-origin routes are read-only; edit the config file");
   }
   const res = await getKysely().deleteFrom(ROUTE_TABLE).where("id", "=", routeId).execute();
-  return res.some((r) => (r.numDeletedRows ?? 0n) > 0n);
+  const deleted = res.some((r) => (r.numDeletedRows ?? 0n) > 0n);
+  if (deleted) await expireUndeliverable({ routeIds: [routeId] });
+  return deleted;
+}
+
+/**
+ * Expire pending deliveries that can never be delivered: their route was
+ * deleted, or their session was terminally closed. Otherwise they sit
+ * `pending` forever (and wake-marked ones keep resurrecting the session).
+ * Spawn intents (sessionId "") are left to sweepUnresolvedSpawnIntents.
+ */
+export async function expireUndeliverable(by: { routeIds?: string[]; sessionId?: string }): Promise<number> {
+  if (!by.sessionId && !by.routeIds?.length) return 0;
+  let q = getKysely()
+    .updateTable(DELIVERY_TABLE)
+    .set({
+      status: "expired",
+      deliveryJson: sql<string>`json_set(deliveryJson, '$.status', 'expired')`,
+      updatedAt: new Date().toISOString(),
+    })
+    .where("status", "=", "pending")
+    .where("sessionId", "<>", "");
+  if (by.sessionId) q = q.where("sessionId", "=", by.sessionId);
+  if (by.routeIds?.length) q = q.where(sql<string>`json_extract(deliveryJson, '$.routeId')`, "in", by.routeIds);
+  const res = await q.execute();
+  return Number(res.reduce((n, r) => n + (r.numUpdatedRows ?? 0n), 0n));
 }
 
 export async function listRoutes(opts?: { eventType?: string; ownerUserId?: string }): Promise<Route[]> {
@@ -628,6 +653,7 @@ export async function deleteSessionRoutes(
     const result = await getKysely().deleteFrom(ROUTE_TABLE).where("id", "=", route.routeId).execute();
     if (result.some((row) => (row.numDeletedRows ?? 0n) > 0n)) deleted.push(route);
   }
+  if (deleted.length) await expireUndeliverable({ routeIds: deleted.map((r) => r.routeId) });
   return deleted;
 }
 
