@@ -6,23 +6,7 @@
  * `onCommand` the view is read-only.
  */
 import * as React from "react";
-import {
-  AlertTriangle,
-  BookOpen,
-  Bot,
-  Check,
-  ChevronDown,
-  Copy,
-  FileText,
-  Loader2,
-  Package,
-  Puzzle,
-  Server,
-  Store,
-  Terminal,
-  Zap,
-} from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { AlertTriangle, Check, ChevronDown, Copy, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -59,7 +43,7 @@ const ActionContext = React.createContext<{
  * Button that runs a `/plugin` command. `confirm` makes it two-click for
  * destructive actions. Renders nothing in read-only views.
  */
-function ActionButton({ id, args, label, confirm, variant = "outline" }: {
+function ActionButton({ id, args, label, confirm, variant = "ghost" }: {
   id: string;
   args: string[];
   label: string;
@@ -80,7 +64,7 @@ function ActionButton({ id, args, label, confirm, variant = "outline" }: {
       type="button"
       size="sm"
       variant={armed ? "destructive" : variant}
-      className="h-6 px-2 text-[11px]"
+      className={cn("h-6 px-2 text-[11px]", variant === "ghost" && !armed && "text-muted-foreground hover:text-foreground")}
       disabled={ctx.pending !== null}
       onClick={(e) => {
         e.stopPropagation();
@@ -97,9 +81,8 @@ function ActionButton({ id, args, label, confirm, variant = "outline" }: {
 
 // ── Pieces ───────────────────────────────────────────────────────────────────
 
-function Section({ title, icon: Icon, count, children, action, collapsible, defaultOpen = true }: {
+function Section({ title, count, children, action, collapsible, defaultOpen = true }: {
   title: string;
-  icon: React.ElementType;
   count?: number;
   children: React.ReactNode;
   action?: React.ReactNode;
@@ -108,19 +91,16 @@ function Section({ title, icon: Icon, count, children, action, collapsible, defa
   defaultOpen?: boolean;
 }) {
   const [open, setOpen] = React.useState(defaultOpen || !collapsible);
+  const headingClass = "flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
   const heading = (
     <>
-      <Icon className="size-3" />
       {title}
-      {count !== undefined && (
-        <Badge variant="secondary" className="h-4 rounded-sm px-1.5 font-mono text-[10px]">{count}</Badge>
-      )}
+      {count !== undefined && <span className="font-normal tabular-nums text-muted-foreground/60">{count}</span>}
     </>
   );
-  const headingClass = "flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
   return (
-    <section className="py-2">
-      <div className={cn("flex items-center justify-between px-3", open && "pb-1.5")}>
+    <section className="py-2.5">
+      <div className={cn("flex min-h-6 items-center justify-between px-3", open && "pb-1")}>
         <h4 className={headingClass}>
           {collapsible ? (
             <button
@@ -136,29 +116,29 @@ function Section({ title, icon: Icon, count, children, action, collapsible, defa
         </h4>
         {open && action}
       </div>
-      {open && <ul className="flex flex-col gap-1 px-2">{children}</ul>}
+      {open && <ul className="flex flex-col px-1.5">{children}</ul>}
     </section>
   );
 }
 
-function CapCount({ icon: Icon, n, label }: { icon: React.ElementType; n: number; label: string }) {
-  if (n === 0) return null;
-  return (
-    <span className="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground">
-      <Icon className="size-2.5" />
-      {n} {label}{n === 1 ? "" : "s"}
-    </span>
-  );
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** "2 commands · 3 skills · 1 hook" — zero counts omitted. */
+function capabilitySummary(p: PluginInfo): string {
+  return ([
+    [p.commands.length, "command"],
+    [p.skills.length, "skill"],
+    [p.agents?.length ?? 0, "agent"],
+    [p.hookEvents.length, "hook"],
+    [p.rules.length, "rule"],
+  ] as const).filter(([n]) => n > 0).map(([n, w]) => plural(n, w)).join(" · ");
 }
 
-function SourceBadge({ plugin }: { plugin: PluginInfo }) {
-  const label = plugin.source === "marketplace"
-    ? `@${plugin.marketplace ?? "marketplace"}`
-    : plugin.source === "project" ? "project" : plugin.source === "directory" ? "local dir" : null;
-  if (!label) return null;
-  return (
-    <Badge variant="outline" className="h-4 px-1 font-mono text-[9px]" title={plugin.rootPath}>{label}</Badge>
-  );
+function sourceLabel(p: PluginInfo): string | null {
+  if (p.source === "marketplace") return `@${p.marketplace ?? "marketplace"}`;
+  if (p.source === "project") return "project";
+  if (p.source === "directory") return "local dir";
+  return null;
 }
 
 function CopyChip({ text, title }: { text: string; title?: string }) {
@@ -181,13 +161,11 @@ function CopyChip({ text, title }: { text: string; title?: string }) {
   );
 }
 
-function NameList({ label, icon: Icon, names }: { label: string; icon: React.ElementType; names: string[] }) {
+function NameList({ label, names }: { label: string; names: string[] }) {
   if (names.length === 0) return null;
   return (
     <div>
-      <p className="mb-1 flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
-        <Icon className="size-2.5" /> {label}
-      </p>
+      <p className="mb-1 text-[10px] font-medium text-muted-foreground">{label}</p>
       <div className="flex flex-wrap gap-1">
         {names.map((n) => (
           <span key={n} className="rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-foreground/80">{n}</span>
@@ -200,55 +178,42 @@ function NameList({ label, icon: Icon, names }: { label: string; icon: React.Ele
 function PluginRow({ plugin }: { plugin: PluginInfo }) {
   const [open, setOpen] = React.useState(false);
   const key = plugin.key ?? plugin.name;
+  const summary = capabilitySummary(plugin);
+  const unadapted = [plugin.hasMcp && "MCP", plugin.hasLsp && "LSP"].filter(Boolean).join(" + ");
+  const meta = [plugin.version && `v${plugin.version}`, sourceLabel(plugin), plugin.author && `by ${plugin.author}`].filter(Boolean).join(" · ");
   return (
-    <li className="rounded-md border border-border/40 bg-muted/20">
-      <div className="flex items-start gap-2 px-2.5 py-2">
+    <li className={cn("rounded-md", open && "bg-muted/20")}>
+      <div className="flex items-start gap-2 px-1.5 py-1.5">
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
           aria-label={`${open ? "Hide" : "Show"} details for ${plugin.name}`}
-          className="flex min-w-0 flex-1 items-start gap-2 text-left"
+          className="flex min-w-0 flex-1 items-start gap-1.5 rounded text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
-          <Puzzle className="mt-0.5 size-3.5 shrink-0 text-primary/60" />
+          <ChevronDown className={cn("mt-0.5 size-3 shrink-0 text-muted-foreground transition-transform", !open && "-rotate-90")} />
           <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="truncate font-mono text-xs font-semibold text-foreground">{plugin.name}</span>
-              {plugin.version && <Badge variant="outline" className="h-4 px-1 font-mono text-[9px]">v{plugin.version}</Badge>}
-              <SourceBadge plugin={plugin} />
-              {plugin.author && <span className="text-[10px] text-muted-foreground">by {plugin.author}</span>}
-            </div>
-            {plugin.description && <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">{plugin.description}</p>}
-            <div className="mt-1 flex flex-wrap items-center gap-2">
-              <CapCount icon={Terminal} n={plugin.commands.length} label="cmd" />
-              <CapCount icon={BookOpen} n={plugin.skills.length} label="skill" />
-              <CapCount icon={Bot} n={plugin.agents?.length ?? 0} label="agent" />
-              <CapCount icon={Zap} n={plugin.hookEvents.length} label="hook" />
-              <CapCount icon={FileText} n={plugin.rules.length} label="rule" />
-              {(plugin.hasMcp || plugin.hasLsp) && (
-                <span className="inline-flex items-center gap-0.5 text-[10px] text-amber-500/80" title="Not adapted (Claude Code–only)">
-                  <AlertTriangle className="size-2.5" />
-                  {[plugin.hasMcp && "MCP", plugin.hasLsp && "LSP"].filter(Boolean).join(" + ")}
-                </span>
-              )}
-            </div>
+            <span className="block truncate font-mono text-xs font-medium text-foreground">{plugin.name}</span>
+            {plugin.description && <p className={cn("mt-0.5 text-[11px] text-muted-foreground", !open && "line-clamp-1")}>{plugin.description}</p>}
+            {(summary || unadapted) && (
+              <p className="mt-0.5 text-[10px] text-muted-foreground/70">
+                {summary}
+                {unadapted && (
+                  <span className="whitespace-nowrap text-amber-500/90" title="Not adapted (Claude Code–only)">
+                    {summary && " · "}<AlertTriangle className="mb-px mr-0.5 inline size-2.5" />{unadapted} not adapted
+                  </span>
+                )}
+              </p>
+            )}
           </div>
-          <ChevronDown className={cn("mt-0.5 size-3.5 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
         </button>
-        <div className="flex shrink-0 gap-1">
-          <ActionButton id={`disable:${key}`} args={["disable", key]} label="Disable" />
-          {plugin.source === "marketplace" && (
-            <ActionButton id={`uninstall:${key}`} args={["uninstall", key]} label="Uninstall" confirm />
-          )}
-        </div>
+        <ActionButton id={`disable:${key}`} args={["disable", key]} label="Disable" />
       </div>
       {open && (
-        <div className="flex flex-col gap-2 border-t border-border/30 px-3 py-2">
+        <div className="flex flex-col gap-2 px-6 pb-2.5 pt-0.5">
           {plugin.commands.length > 0 && (
             <div>
-              <p className="mb-1 flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
-                <Terminal className="size-2.5" /> Commands
-              </p>
+              <p className="mb-1 text-[10px] font-medium text-muted-foreground">Commands</p>
               <div className="flex flex-wrap gap-1">
                 {plugin.commands.map((c) => (
                   <CopyChip key={c.name} text={`/${plugin.name}:${c.name}`} title={[c.argumentHint, c.description].filter(Boolean).join(" — ")} />
@@ -256,18 +221,24 @@ function PluginRow({ plugin }: { plugin: PluginInfo }) {
               </div>
             </div>
           )}
-          <NameList label="Skills" icon={BookOpen} names={plugin.skills.map((s) => s.name)} />
-          <NameList label="Agents" icon={Bot} names={(plugin.agents ?? []).map((a) => a.name)} />
+          <NameList label="Skills" names={plugin.skills.map((s) => s.name)} />
+          <NameList label="Agents" names={(plugin.agents ?? []).map((a) => a.name)} />
           <NameList
             label="Hooks"
-            icon={Zap}
             names={plugin.hookEvents.map((e) => {
               const mapped = HOOK_EVENT_MAPPING[e];
               return mapped ? `${e} → ${mapped}` : `${e} (not adapted)`;
             })}
           />
-          <NameList label="Rules" icon={FileText} names={plugin.rules.map((r) => r.name)} />
-          <p className="truncate font-mono text-[10px] text-muted-foreground/70" title={plugin.rootPath}>{plugin.rootPath}</p>
+          <NameList label="Rules" names={plugin.rules.map((r) => r.name)} />
+          <div className="flex items-center gap-2">
+            <p className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground/70" title={plugin.rootPath}>
+              {meta || plugin.rootPath}
+            </p>
+            {plugin.source === "marketplace" && (
+              <ActionButton id={`uninstall:${key}`} args={["uninstall", key]} label="Uninstall" confirm />
+            )}
+          </div>
         </div>
       )}
     </li>
@@ -291,7 +262,7 @@ function SourceForm({ id, placeholder, label, submitLabel, toArgs, localLabel }:
   const source = value.trim();
   return (
     <form
-      className="flex flex-wrap items-center gap-1.5 px-2 pt-1.5"
+      className="flex flex-wrap items-center gap-1.5 px-1.5 pt-2"
       onSubmit={(e) => {
         e.preventDefault();
         if (!source) return;
@@ -304,40 +275,41 @@ function SourceForm({ id, placeholder, label, submitLabel, toArgs, localLabel }:
         onChange={(e) => setValue(e.target.value)}
         placeholder={placeholder}
         aria-label={label}
-        className="h-7 min-w-0 flex-1 text-xs"
+        className="h-7 min-w-48 flex-1 text-xs"
       />
-      {localLabel && (
-        <label className="flex items-center gap-1 text-[11px] text-muted-foreground" title="Install into the project's .pizzapi/settings.json instead of your user settings">
-          <input type="checkbox" checked={local} onChange={(e) => setLocal(e.target.checked)} />
-          {localLabel}
-        </label>
-      )}
-      <Button type="submit" size="sm" className="h-7 px-2.5 text-xs" disabled={!source || ctx.pending !== null}>
-        {ctx.pending === id && <Loader2 className="size-3 animate-spin" />}
-        {submitLabel}
-      </Button>
+      <div className="ml-auto flex items-center gap-1.5">
+        {localLabel && (
+          <label className="flex items-center gap-1 text-[11px] text-muted-foreground" title="Install into the project's .pizzapi/settings.json instead of your user settings">
+            <input type="checkbox" checked={local} onChange={(e) => setLocal(e.target.checked)} />
+            {localLabel}
+          </label>
+        )}
+        <Button type="submit" size="sm" className="h-7 px-2.5 text-xs" disabled={!source || ctx.pending !== null}>
+          {ctx.pending === id && <Loader2 className="size-3 animate-spin" />}
+          {submitLabel}
+        </Button>
+      </div>
     </form>
   );
 }
 
 function PackageRow({ pkg }: { pkg: PiPackageInfo }) {
   const scopeArgs = pkg.scope === "project" ? ["--local"] : [];
+  const tags = [pkg.scope === "project" && "project", pkg.filtered && "filtered"].filter(Boolean).join(" · ");
   return (
-    <li className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted/20">
-      <Package className="size-3 shrink-0 text-muted-foreground" />
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="truncate font-mono text-xs text-foreground" title={pkg.source}>{pkg.source}</span>
-          <Badge variant="outline" className="h-4 px-1 font-mono text-[9px]">{pkg.scope}</Badge>
-          {pkg.filtered && (
-            <Badge variant="outline" className="h-4 px-1 text-[9px]" title="Only some of this package's resources are enabled">filtered</Badge>
-          )}
-        </div>
-        {pkg.installedPath && (
-          <p className="truncate font-mono text-[10px] text-muted-foreground/70" title={pkg.installedPath}>{pkg.installedPath}</p>
+    <li className="flex items-center gap-2 rounded-md px-1.5 py-1 hover:bg-muted/20">
+      <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
+        <span className="truncate font-mono text-xs text-foreground" title={pkg.installedPath ?? pkg.source}>{pkg.source}</span>
+        {tags && (
+          <span
+            className="shrink-0 text-[10px] text-muted-foreground"
+            title={pkg.filtered ? "Only some of this package's resources are enabled" : undefined}
+          >
+            {tags}
+          </span>
         )}
-      </div>
-      <ActionButton id={`pkg-update:${pkg.scope}:${pkg.source}`} args={["package", "update", pkg.source]} label="Update" variant="ghost" />
+      </span>
+      <ActionButton id={`pkg-update:${pkg.scope}:${pkg.source}`} args={["package", "update", pkg.source]} label="Update" />
       <ActionButton id={`pkg-remove:${pkg.scope}:${pkg.source}`} args={["package", "remove", pkg.source, ...scopeArgs]} label="Remove" confirm />
     </li>
   );
@@ -384,21 +356,19 @@ export function PluginsView({ data, onCommand, className, sections = ["plugins",
         )}
 
         {catalog && (
-          <Section title={`Marketplace: ${catalog.name}`} icon={Store} count={catalog.plugins.length}>
-            {catalog.description && <p className="px-1 pb-1 text-[11px] text-muted-foreground">{catalog.description}</p>}
+          <Section title={`Marketplace: ${catalog.name}`} count={catalog.plugins.length}>
+            {catalog.description && <p className="px-1.5 pb-1 text-[11px] text-muted-foreground">{catalog.description}</p>}
             {catalog.plugins.map((p) => (
-              <li key={p.key} className="flex items-start gap-2 rounded-md px-2 py-1.5 hover:bg-muted/20">
+              <li key={p.key} className="flex items-start gap-2 rounded-md px-1.5 py-1.5 hover:bg-muted/20">
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-mono text-xs text-foreground">{p.name}</span>
-                    {p.category && <Badge variant="outline" className="h-4 px-1 text-[9px]">{p.category}</Badge>}
-                  </div>
-                  {p.description && <p className="line-clamp-2 text-[11px] text-muted-foreground">{p.description}</p>}
+                  <span className="font-mono text-xs text-foreground">{p.name}</span>
+                  {p.category && <span className="ml-1.5 text-[10px] text-muted-foreground">{p.category}</span>}
+                  {p.description && <p className="line-clamp-1 text-[11px] text-muted-foreground" title={p.description}>{p.description}</p>}
                 </div>
                 {!p.installed ? (
-                  <ActionButton id={`install:${p.key}`} args={["install", p.key]} label="Install" variant="default" />
+                  <ActionButton id={`install:${p.key}`} args={["install", p.key]} label="Install" variant="outline" />
                 ) : p.enabled ? (
-                  <Badge variant="secondary" className="h-5 text-[10px]"><Check className="mr-0.5 size-2.5" />Installed</Badge>
+                  <span className="inline-flex h-6 items-center gap-1 px-2 text-[11px] text-muted-foreground"><Check className="size-3" />Installed</span>
                 ) : (
                   <ActionButton id={`enable:${p.key}`} args={["enable", p.key]} label="Enable" />
                 )}
@@ -408,9 +378,9 @@ export function PluginsView({ data, onCommand, className, sections = ["plugins",
         )}
 
         {showPlugins && (<>
-        <Section title="Claude plugins" icon={Puzzle} count={overview.plugins.length}>
+        <Section title="Claude plugins" count={overview.plugins.length}>
           {overview.plugins.length === 0 ? (
-            <li className="px-1 py-1 text-[11px] text-muted-foreground">
+            <li className="px-1.5 py-1 text-[11px] text-muted-foreground">
               No plugins loaded. Add a marketplace below, or drop plugins into <span className="font-mono">~/.pizzapi/plugins/</span>.
             </li>
           ) : (
@@ -419,9 +389,9 @@ export function PluginsView({ data, onCommand, className, sections = ["plugins",
         </Section>
 
         {overview.disabled.length > 0 && (
-          <Section title="Disabled" icon={Puzzle} count={overview.disabled.length}>
+          <Section title="Disabled" count={overview.disabled.length}>
             {overview.disabled.map((p) => (
-              <li key={p.key} className="flex items-center gap-2 rounded-md px-2 py-1.5 opacity-80">
+              <li key={p.key} className="flex items-center gap-2 rounded-md px-1.5 py-1 hover:bg-muted/20">
                 <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
                   {p.name}{p.marketplace && <span className="opacity-60">@{p.marketplace}</span>}
                 </span>
@@ -432,20 +402,18 @@ export function PluginsView({ data, onCommand, className, sections = ["plugins",
           </Section>
         )}
 
-        <Section title="Marketplaces" icon={Store} count={overview.marketplaces.length}>
+        <Section title="Marketplaces" count={overview.marketplaces.length}>
           {overview.marketplaces.length === 0 && (
-            <li className="px-1 py-1 text-[11px] text-muted-foreground">No marketplaces added.</li>
+            <li className="px-1.5 py-1 text-[11px] text-muted-foreground">No marketplaces added.</li>
           )}
           {overview.marketplaces.map((m) => (
-            <li key={m.name} className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted/20">
-              <Server className="size-3 shrink-0 text-muted-foreground" />
-              <div className="min-w-0 flex-1">
-                <span className="font-mono text-xs text-foreground">{m.name}</span>
-                <span className="ml-1.5 text-[10px] text-muted-foreground">{m.pluginCount} plugin{m.pluginCount === 1 ? "" : "s"}</span>
-                {m.source && <p className="truncate font-mono text-[10px] text-muted-foreground/70" title={m.source}>{m.source}</p>}
-              </div>
-              <ActionButton id={`show:${m.name}`} args={["marketplace", "show", m.name]} label="Browse" variant="ghost" />
-              {m.source && <ActionButton id={`update:${m.name}`} args={["marketplace", "add", m.source]} label="Update" variant="ghost" />}
+            <li key={m.name} className="flex items-center gap-2 rounded-md px-1.5 py-1 hover:bg-muted/20">
+              <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground" title={m.source}>
+                {m.name}
+                <span className="ml-1.5 font-sans text-[10px] text-muted-foreground">{plural(m.pluginCount, "plugin")}</span>
+              </span>
+              <ActionButton id={`show:${m.name}`} args={["marketplace", "show", m.name]} label="Browse" />
+              {m.source && <ActionButton id={`update:${m.name}`} args={["marketplace", "add", m.source]} label="Update" />}
               <ActionButton id={`remove:${m.name}`} args={["marketplace", "remove", m.name]} label="Remove" confirm />
             </li>
           ))}
@@ -461,17 +429,16 @@ export function PluginsView({ data, onCommand, className, sections = ["plugins",
 
         {showPackages && (
           <Section
-            title="Pi packages"
-            icon={Package}
+            title={showPlugins ? "Pi packages" : "Installed"}
             count={overview.packages.length}
-            collapsible
+            collapsible={showPlugins}
             defaultOpen={!showPlugins}
             action={overview.packages.length > 0
-              ? <ActionButton id="pkg-update-all" args={["package", "update"]} label="Update all" variant="ghost" />
+              ? <ActionButton id="pkg-update-all" args={["package", "update"]} label="Update all" />
               : undefined}
           >
             {overview.packages.length === 0 && (
-              <li className="px-1 py-1 text-[11px] text-muted-foreground">No pi packages configured.</li>
+              <li className="px-1.5 py-1 text-[11px] text-muted-foreground">No pi packages configured.</li>
             )}
             {overview.packages.map((p) => <PackageRow key={`${p.scope}:${p.source}`} pkg={p} />)}
             <SourceForm

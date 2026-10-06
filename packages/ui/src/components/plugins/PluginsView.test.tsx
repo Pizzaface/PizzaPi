@@ -52,7 +52,8 @@ describe("PluginsView", () => {
     test("renders overview sections and plugin details", () => {
         const { container, getByText, getAllByText } = render(<PluginsView data={data} />);
         expect(getByText("Installed demo@market")).toBeTruthy();
-        expect(getAllByText("@market").length).toBe(2);
+        // Disabled row shows its marketplace; the loaded plugin's source lives in its details.
+        expect(getAllByText("@market").length).toBe(1);
         expect(getByText("fresh")).toBeTruthy();
         // Read-only: no action buttons.
         expect([...container.querySelectorAll("button")].some((b) => b.textContent === "Install")).toBe(false);
@@ -63,6 +64,7 @@ describe("PluginsView", () => {
         expect(getByText("helper")).toBeTruthy();
         expect(getByText("PreToolUse → tool_call")).toBeTruthy();
         expect(getByText("Notification (not adapted)")).toBeTruthy();
+        expect(getAllByText("@market").length).toBe(2);
     });
 
     test("actions dispatch /plugin args; destructive ones need a second click", async () => {

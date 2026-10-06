@@ -455,25 +455,12 @@ function PluginsCard({ data: raw }: { data: PluginsResultData }) {
   const onCommand = React.useContext(PluginCommandContext);
   // Normalize: cached transcripts may hold the pre-overview card shape.
   const data = React.useMemo(() => toPluginsViewData(raw), [raw]);
-  const { plugins, disabled, marketplaces, packages } = data.overview;
   return (
     <ToolCardShell>
       <ToolCardHeader>
         <ToolCardTitle icon={<Puzzle className="size-4 shrink-0 text-zinc-400" />}>
           <span className="text-sm font-medium text-zinc-300">Plugins</span>
         </ToolCardTitle>
-        <div className="flex items-center gap-1.5">
-          <StatusPill variant={plugins.length > 0 ? "success" : "neutral"}>{plugins.length} loaded</StatusPill>
-          {disabled.length > 0 && <StatusPill variant="neutral">{disabled.length} disabled</StatusPill>}
-          {packages.length > 0 && (
-            <StatusPill variant="neutral">{packages.length} pi package{packages.length !== 1 ? "s" : ""}</StatusPill>
-          )}
-          {marketplaces.length > 0 && (
-            <StatusPill variant="neutral">
-              {marketplaces.length} marketplace{marketplaces.length !== 1 ? "s" : ""}
-            </StatusPill>
-          )}
-        </div>
       </ToolCardHeader>
       {/* Tool cards are always dark; scope dark theme tokens to the shared view. */}
       <React.Suspense fallback={<div className="px-4 py-3 text-xs text-zinc-500">Loading…</div>}>
