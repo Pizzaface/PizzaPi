@@ -649,6 +649,27 @@ describe("failed-wake retry sweep (multi-node)", () => {
     expect(runnerEmits).toHaveLength(2);
   });
 
+  it("expires instead of re-waking when the delivery's route was deleted", async () => {
+    relayVerified = false;
+    const route = await store.createRoute({
+      eventType: "time:cron", target: { kind: "session", sessionId: "s-gone", wake: true },
+      deliverAs: "followUp", origin: "agent", ownerUserId: "u1",
+    });
+    const source = { kind: "api" as const, id: "sched", auth: "api-key" as const, userId: "u1" };
+    const outcome = await engine.publishEvent({ type: "time:cron", routeIds: [route.routeId] }, source, transport.createEngineDeps());
+    const deliveryId = outcome.deliveries[0].deliveryId;
+    await new Promise((r) => setTimeout(r, 20));
+    expect(runnerEmits).toHaveLength(1);
+
+    await store.updateDelivery(deliveryId, { lastWakeAttemptAt: OLD });
+    await store.deleteRoute(route.routeId);
+
+    expect(await transport.sweepFailedWakes()).toBe(0);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(runnerEmits).toHaveLength(1); // no resurrection
+    expect((await store.getDelivery(deliveryId))?.status).toBe("expired");
+  });
+
   it("never retries a delivered or inflight row (claim guards win)", async () => {
     relayVerified = false;
     const deliveredId = await wakeFire("s-delivered");

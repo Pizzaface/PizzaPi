@@ -29,6 +29,8 @@ mock.module("../../sessions/trigger-store.js", () => ({
 }));
 
 mock.module("../../events/store.js", () => ({
+    listPendingWakeDeliveries: async () => [],
+    updateDelivery: async () => null,
     deleteSessionRoutes: async (sessionId: string, opts?: { preserveDurable?: boolean }) => {
         deletedRouteOptions.push({ sessionId, preserveDurable: opts?.preserveDurable });
         return [];

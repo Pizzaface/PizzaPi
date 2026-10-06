@@ -33,7 +33,7 @@ import { isHiddenModel } from "../routes/model-guard.js";
 import { pushTriggerHistory } from "../sessions/trigger-store.js";
 import { resolveSessionRunner } from "../sessions/ownership.js";
 import { sendPushToUser } from "../push.js";
-import { getDelivery, getEvent, getEventByFireId, listPendingWakeDeliveries, updateDelivery } from "./store.js";
+import { getDelivery, getEvent, getEventByFireId, getRoute, listPendingWakeDeliveries, updateDelivery } from "./store.js";
 import { settleDeliveryAck, type DeliverOutcome, type EngineDeps } from "./engine.js";
 import { getEventsRedis } from "./redis.js";
 import { getAuthContext, runWithAuthContext } from "../auth.js";
@@ -289,6 +289,12 @@ export async function sweepFailedWakes(): Promise<number> {
   const candidates = await listPendingWakeDeliveries({ retryNotBefore: cutoff });
   let retried = 0;
   for (const delivery of candidates) {
+    // Route deleted since the fire → the wake intent is void. Without this a
+    // removed trigger keeps resuming its (possibly killed) session forever.
+    if (delivery.routeId && !(await getRoute(delivery.routeId).catch(() => null))) {
+      await updateDelivery(delivery.deliveryId, { status: "expired" }, { guard: ["pending"] }).catch(() => null);
+      continue;
+    }
     // Guarded mark-then-wake: the update doubles as the retry bound (1 per 5
     // min) and as the claim guard (lost guard = drain won, skip the wake).
     const won = await updateDelivery(
