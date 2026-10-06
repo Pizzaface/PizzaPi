@@ -28,8 +28,6 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 import {
-  type DisabledPluginInfo,
-  type MarketplaceInfo,
   type PiPackageInfo,
   type PluginCommandHandler,
   type PluginInfo,
