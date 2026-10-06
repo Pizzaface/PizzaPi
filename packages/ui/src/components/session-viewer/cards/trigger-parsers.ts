@@ -11,7 +11,13 @@ export interface ParsedTriggerQuestion {
 }
 
 export interface ParsedTrigger {
-  type: "ask_user_question" | "plan_review" | "session_complete" | "session_error" | "escalate" | "unknown";
+  type: "ask_user_question" | "plan_review" | "session_complete" | "session_error" | "escalate" | "event" | "unknown";
+  eventType?: string;
+  sourceSessionId?: string;
+  sourceName?: string;
+  payload?: unknown;
+  summary?: string;
+  expectsResponse?: boolean;
   childName?: string;
   question?: string;
   options?: string[];
@@ -190,9 +196,13 @@ export function parsedTriggerFromStructured(t: {
   type: string;
   sourceSessionId: string;
   sourceSessionName?: string;
-  payload: Record<string, unknown>;
+  payload: unknown;
+  displayPayload?: unknown;
+  summary?: string;
+  sourceName?: string;
+  expectsResponse?: boolean;
 }): ParsedTrigger {
-  const p = t.payload ?? {};
+  const p = t.payload && typeof t.payload === "object" && !Array.isArray(t.payload) ? t.payload as Record<string, unknown> : {};
   const childName = t.sourceSessionName ?? t.sourceSessionId.slice(0, 8);
   switch (t.type.replace(/^lifecycle:/, "")) {
     case "session_complete": {
@@ -226,6 +236,14 @@ export function parsedTriggerFromStructured(t: {
     case "escalate":
       return { type: "escalate", childName, reason: str(p.reason) };
     default:
-      return { type: "unknown" };
+      return {
+        type: "event",
+        eventType: ["external", "webhook", "service", "cron", "custom"].includes(t.type) ? str(p.eventType) ?? t.type : t.type,
+        sourceSessionId: t.sourceSessionId,
+        sourceName: str(t.sourceName) ?? (t.summary === undefined ? str(t.sourceSessionName) : undefined),
+        payload: t.displayPayload !== undefined ? t.displayPayload : t.payload,
+        ...(typeof t.summary === "string" ? { summary: t.summary } : {}),
+        ...(t.expectsResponse === true ? { expectsResponse: true } : {}),
+      };
   }
 }

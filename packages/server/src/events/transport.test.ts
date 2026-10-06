@@ -155,6 +155,34 @@ describe("trigger transport delivery receipt", () => {
     expect((await store.getDelivery(deliveryId))?.status).toBe("delivered");
   });
 
+  it("preserves original payload, summary, source and response requirements alongside route instructions", async () => {
+    localSocket = makeLocalSocket();
+    sharedSession = { sessionId: "s-prompt", userId: "u1" };
+    const source = { kind: "api" as const, id: "hook", name: "Trusted source", auth: "api-key" as const, userId: "u1" };
+    const deps = transport.createEngineDeps();
+    await authStorage.run(authCtx, () => engine.publishEvent(
+      { type: "t:plain-prompt", payload: { prompt: "User data", displayPayload: { prompt: "Not authoritative" } } }, source, deps, [{ sessionId: "s-prompt" }],
+    ));
+    const ordinary = localSocket.emits[0].data.trigger;
+    expect(ordinary.payload.prompt).toBe("User data");
+    expect(ordinary.displayPayload).toBeUndefined();
+
+    const route = await store.createRoute({
+      eventType: "t:route-prompt", target: { kind: "session", sessionId: "s-prompt" },
+      deliverAs: "followUp", origin: "agent", ownerUserId: "u1", promptTemplate: "Agent instructions",
+    });
+    await authStorage.run(authCtx, () => engine.publishEvent(
+      { type: "t:route-prompt", routeIds: [route.routeId], payload: { prompt: "Original event prompt" }, summary: "Routed summary", responseContract: {} }, source, deps,
+    ));
+    const injected = localSocket.emits[1].data.trigger;
+    expect(injected.payload.prompt).toBe("Agent instructions");
+    expect(injected.displayPayload).toEqual({ prompt: "Original event prompt" });
+    expect(injected.summary).toBe("Routed summary");
+    expect(injected.sourceName).toBe("Trusted source");
+    expect(injected.sourceSessionName).toBe("Routed summary"); // Old recipients keep their label.
+    expect(injected.expectsResponse).toBe(true);
+  });
+
   it("config session route: a live session owned by someone other than the bound principal receives nothing (R5)", async () => {
     await store.syncConfigRoutes([
       { eventType: "cfg:fan", target: { kind: "session", sessionId: "ops-live", ownerUserId: "operator" }, deliverAs: "steer", origin: "config" },

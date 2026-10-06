@@ -246,7 +246,7 @@ export const SessionMessageItem = React.memo(
               key={t.triggerId}
               triggerId={t.triggerId}
               body={typeof t.text === "string" ? t.text : ""}
-              parsed={parsedTriggerFromStructured({ ...t, payload: t.payload ?? {} })}
+              parsed={parsedTriggerFromStructured(t)}
               onRespond={onTriggerResponse
                 ? (id, response, action) => onTriggerResponse(id, response, action, t.sourceSessionId)
                 : undefined}

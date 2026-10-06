@@ -20,8 +20,13 @@ export interface TriggerMessageDetails {
     type: string;
     sourceSessionId: string;
     sourceSessionName?: string;
+    /** Original event data when payload contains route-rendered agent instructions. */
+    displayPayload?: Record<string, unknown>;
+    summary?: string;
+    sourceName?: string;
+    expectsResponse?: boolean;
     payload: Record<string, unknown>;
-    /** Agent-facing rendered text for this trigger (display fallback for non-lifecycle types). */
+    /** Agent-facing rendered text; structured transcript cards use the fields above instead. */
     text: string;
   }>;
 }
@@ -86,6 +91,10 @@ export interface RelayClientToServerEvents {
   session_trigger: (data: {
     token: string;
     trigger: {
+      /** Relay-only display data; discarded on client-originated triggers. */
+      displayPayload?: Record<string, unknown>;
+      summary?: string;
+      sourceName?: string;
       type: string;
       sourceSessionId: string;
       sourceSessionName?: string;
@@ -236,6 +245,10 @@ export interface RelayServerToClientEvents {
    *  trigger (tracked / batched for injection). */
   session_trigger: (data: {
     trigger: {
+      /** Original event data when payload contains route-rendered agent instructions. */
+      displayPayload?: Record<string, unknown>;
+      summary?: string;
+      sourceName?: string;
       type: string;
       sourceSessionId: string;
       sourceSessionName?: string;

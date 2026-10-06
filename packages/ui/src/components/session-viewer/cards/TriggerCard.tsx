@@ -1,6 +1,6 @@
 /**
  * TriggerCard — Renders conversation trigger-injected messages as distinct cards.
- * Supports ask_user_question, plan_review, session_complete, session_error, escalate.
+ * Supports lifecycle response cards and structured external/service event cards.
  */
 
 import * as React from "react";
@@ -17,12 +17,13 @@ import { parseTriggerBody } from "./trigger-parsers";
 import type { ParsedTrigger, ParsedTriggerQuestion } from "./trigger-parsers";
 import { MultipleChoiceQuestions, type MultipleChoiceAnswers } from "@/components/ai-elements/multiple-choice";
 import { formatAnswersForAgent } from "@/lib/ask-user-questions";
+import { EventTriggerCard } from "./EventTriggerCard";
 export { parseTriggerBody } from "./trigger-parsers";
 export type { ParsedTrigger } from "./trigger-parsers";
 
 export interface TriggerCardProps {
   triggerId: string;
-  /** Display text; used as the fallback for unknown trigger types. */
+  /** Agent-facing text; used only by legacy messages without a recognized structured card. */
   body: string;
   /** Structured trigger fields. When omitted, `body` is parsed (legacy text-injected triggers). */
   parsed?: ParsedTrigger;
@@ -394,6 +395,8 @@ export function TriggerCard({
   const parsed = structured ?? parseTriggerBody(body);
 
   switch (parsed.type) {
+    case "event":
+      return <EventTriggerCard event={parsed} />;
     case "ask_user_question":
       return (
         <AskUserQuestionCard

@@ -10,6 +10,7 @@
 // ============================================================================
 
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import type { ConnectionHandlers } from "./connection.js";
 
 class FakeSocket {
     handlers = new Map<string, Array<(data: any, ack?: any) => void>>();
@@ -145,7 +146,7 @@ function sleep(ms: number) {
 }
 
 function makeHarness() {
-    const sendCustomMessage = mock(async () => {});
+    const sendCustomMessage = mock(async (..._args: Parameters<ConnectionHandlers["sendCustomMessage"]>) => {});
     const rctx = {
         shuttingDown: false,
         sioSocket: null,
@@ -225,6 +226,19 @@ describe("session_trigger receipt acks", () => {
         // The trigger still injects through the normal batch path.
         await sleep(120);
         expect(sendCustomMessage).toHaveBeenCalledTimes(1);
+    });
+
+    test("preserves original display data, summary, source and response requirements in transcript details", async () => {
+        const { rctx, handlers, sendCustomMessage } = makeHarness();
+        connect(rctx, handlers);
+        lastSocket!.trigger("session_trigger", { trigger: {
+            ...makeTrigger("prompt-marker"), displayPayload: { prompt: "Original event prompt" },
+            summary: "Event summary", sourceName: "GitHub", expectsResponse: true,
+        } });
+        await sleep(120);
+        expect(sendCustomMessage.mock.calls[0]?.[2]).toMatchObject({ triggers: [{
+            displayPayload: { prompt: "Original event prompt" }, summary: "Event summary", sourceName: "GitHub", expectsResponse: true,
+        }] });
     });
 
     test("duplicate re-delivery acks too (already durably accepted)", async () => {

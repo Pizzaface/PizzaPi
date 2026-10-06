@@ -22,13 +22,28 @@ describe("parsedTriggerFromStructured", () => {
     });
   });
 
-  test("plan_review, session_error, escalation, unknown", () => {
+  test("external envelopes preserve their structured event type and payload", () => {
+    const payload = { eventType: "github:check_completed", conclusion: "success" };
+    expect(parsedTriggerFromStructured({ sourceSessionId: "external:github", type: "external", payload })).toEqual({
+      type: "event", eventType: "github:check_completed", sourceSessionId: "external:github", sourceName: undefined, payload,
+    });
+  });
+
+  test("namespaced event types cannot be replaced by payload data", () => {
+    expect(parsedTriggerFromStructured({
+      sourceSessionId: "external:github", type: "github:check_completed", payload: { eventType: "fake:event" },
+    }).eventType).toBe("github:check_completed");
+  });
+
+  test("plan_review, session_error, escalation, service events", () => {
     expect(parsedTriggerFromStructured({ ...base, type: "lifecycle:plan_review", payload: { title: "T", steps: [{ title: "s1", description: "d" }] } }))
       .toEqual({ type: "plan_review", childName: "Fixer", planTitle: "T", planSteps: [{ title: "s1", description: "d" }] });
     expect(parsedTriggerFromStructured({ ...base, type: "lifecycle:session_error", payload: { error: "boom" } }))
       .toEqual({ type: "session_error", childName: "Fixer", message: "boom" });
     expect(parsedTriggerFromStructured({ ...base, type: "lifecycle:escalation", payload: { reason: "help" } }))
       .toEqual({ type: "escalate", childName: "Fixer", reason: "help" });
-    expect(parsedTriggerFromStructured({ ...base, type: "github:pr_comment", payload: {} })).toEqual({ type: "unknown" });
+    expect(parsedTriggerFromStructured({ ...base, type: "github:pr_comment", payload: {} })).toEqual({
+      type: "event", eventType: "github:pr_comment", sourceSessionId: base.sourceSessionId, sourceName: "Fixer", payload: {},
+    });
   });
 });

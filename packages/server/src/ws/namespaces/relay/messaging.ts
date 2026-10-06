@@ -191,6 +191,10 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
         }
 
         const targetSessionId = trigger.targetSessionId;
+        // Alternate display data is relay-owned, never caller supplied.
+        delete trigger.displayPayload;
+        delete trigger.summary;
+        delete trigger.sourceName;
 
         // Find the target session's relay socket and validate ownership
         const [senderSession, targetSession] = await Promise.all([
@@ -254,6 +258,8 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
             // Escalation to self — keep original sourceSessionId for viewer attribution
         } else {
             trigger.sourceSessionId = sessionId;
+            const senderName = senderSession.sessionName;
+            trigger.sourceName = typeof senderName === "string" && senderName.trim() ? senderName.trim() : "Session";
         }
 
         let delivered = false;

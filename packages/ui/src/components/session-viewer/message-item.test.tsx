@@ -200,6 +200,180 @@ describe("SessionMessageItem structured inter-session messages", () => {
     expect(view.container.textContent).toContain("All *done*");
   });
 
+  test("renders external events from structured fields without leaking the agent envelope", () => {
+    const view = render(<SessionMessageItem message={{
+      key: "event-check",
+      role: "custom",
+      customType: "pizzapi-trigger",
+      display: true,
+      content: "<!-- trigger:check-1 -->\n```json\nUntrusted display text\n```",
+      details: { triggers: [{
+        triggerId: "check-1",
+        type: "github:check_completed",
+        expectsResponse: true,
+        sourceSessionId: "external:github",
+        sourceSessionName: "Legacy combined label",
+        sourceName: "GitHub",
+        summary: "Check finished",
+        payload: { prompt: "AGENT_ONLY_ROUTE_INSTRUCTIONS" },
+        displayPayload: {
+          checkName: "E2E install flow — npm-local",
+          conclusion: "success",
+          prompt: "Original event prompt",
+          repo: "Pizzaface/PizzaPi",
+          prNumber: 932,
+          url: "https://github.com/Pizzaface/PizzaPi/actions/runs/123/job/456",
+          maliciousUrl: "javascript:alert(1)",
+          nested: { attempts: [1, 2], passed: true, error: null },
+          empty: null,
+          enabled: false,
+        },
+        text: "<!-- trigger:check-1 -->\n```json\nUntrusted display text\n```",
+      }] },
+    }} isLast={false} />);
+
+    expect(view.getByText("github:check_completed")).toBeTruthy();
+    expect(view.getByText("Check finished")).toBeTruthy();
+    expect(view.getByText("GitHub · external:github")).toBeTruthy();
+    expect(view.getByText("Response required")).toBeTruthy();
+    expect(view.getByText("Original event prompt")).toBeTruthy();
+    expect(view.queryByText("Legacy combined label")).toBeNull();
+    expect(view.getByText("E2E install flow — npm-local")).toBeTruthy();
+    expect(view.getByText("success")).toBeTruthy();
+    expect(view.getByText("932")).toBeTruthy();
+    expect(view.getByText("false")).toBeTruthy();
+    expect(view.getByText("null")).toBeTruthy();
+    expect(view.getAllByRole("link")).toHaveLength(1);
+    expect(view.getByRole("link").getAttribute("href")).toBe("https://github.com/Pizzaface/PizzaPi/actions/runs/123/job/456");
+    expect(view.getByText("javascript:alert(1)")).toBeTruthy();
+    expect(view.container.textContent).not.toContain("Unknown trigger type");
+    expect(view.container.textContent).not.toContain("Untrusted display text");
+    expect(view.container.textContent).not.toContain("AGENT_ONLY_ROUTE_INSTRUCTIONS");
+    expect(view.container.textContent).not.toContain("<!-- trigger:");
+    expect(view.container.querySelector("details")?.open).toBe(false);
+    expect(view.container.querySelector("pre")).toBeNull(); // Collapsed data is not serialized.
+  });
+
+  test("bounds wide payloads and pages remaining fields", () => {
+    const payload = Object.fromEntries(Array.from({ length: 10_000 }, (_, i) => [`field${i}`, `value${i}`]));
+    const view = render(<SessionMessageItem message={{
+      key: "event-wide", role: "custom", customType: "pizzapi-trigger",
+      details: { triggers: [{ triggerId: "wide", type: "custom:wide", sourceSessionId: "external:service", payload, text: "ignored" }] },
+    }} isLast={false} />);
+    expect(view.container.querySelectorAll("dt").length).toBeLessThanOrEqual(32);
+    expect(view.getByText("value0")).toBeTruthy();
+    expect(view.queryByText("value32")).toBeNull();
+    fireEvent.click(view.getByRole("button", { name: "Next payload fields" }));
+    expect(view.getByText("value32")).toBeTruthy();
+    expect(view.queryByText("value0")).toBeNull();
+    expect(view.container.querySelectorAll("dt").length).toBeLessThanOrEqual(32);
+  });
+
+  test("does not inspect nested data until expanded, and bounds deep previews", async () => {
+    let reads = 0;
+    let deep: unknown = "leaf";
+    for (let i = 0; i < 10_000; i++) deep = { next: deep };
+    const nested = { get expensive() { reads++; return deep; } };
+    const view = render(<SessionMessageItem message={{
+      key: "event-lazy", role: "custom", customType: "pizzapi-trigger",
+      details: { triggers: [{ triggerId: "lazy", type: "custom:lazy", sourceSessionId: "external:service", payload: { nested }, text: "ignored" }] },
+    }} isLast={false} />);
+    expect(reads).toBe(0);
+    expect(view.container.querySelector("pre")).toBeNull();
+    const details = view.container.querySelector("details");
+    expect(details).toBeTruthy();
+    if (!details) throw new Error("Missing payload disclosure");
+    act(() => { details.open = true; fireEvent(details, new window.Event("toggle")); });
+    expect(reads).toBeGreaterThan(0);
+    const text = view.container.querySelector("pre")?.textContent ?? "";
+    expect(text).toContain("depth limit");
+    expect(text.length).toBeLessThanOrEqual(4_096);
+  });
+
+  test("caps expanded previews without executing custom serializers", () => {
+    let serializations = 0;
+    const nested = {
+      toJSON() { serializations++; return "Unexpected serializer result"; },
+      ...Object.fromEntries(Array.from({ length: 32 }, (_, i) => [`field${i}`, "x".repeat(5_000)])),
+    };
+    const view = render(<SessionMessageItem message={{
+      key: "event-preview-cap", role: "custom", customType: "pizzapi-trigger",
+      details: { triggers: [{ triggerId: "cap", type: "custom:event", sourceSessionId: "external:service", payload: { nested }, text: "ignored" }] },
+    }} isLast={false} />);
+    const details = view.container.querySelector("details");
+    if (!details) throw new Error("Missing payload disclosure");
+    act(() => { details.open = true; fireEvent(details, new window.Event("toggle")); });
+    const text = view.container.querySelector("pre")?.textContent ?? "";
+    expect(serializations).toBe(0);
+    expect(text).toContain("preview truncated");
+    expect(text.length).toBeLessThanOrEqual(4_096);
+  });
+
+  test("preserves ordinary prompt fields without alternate display data", () => {
+    const view = render(<SessionMessageItem message={{
+      key: "event-ordinary-prompt", role: "custom", customType: "pizzapi-trigger",
+      details: { triggers: [{ triggerId: "ordinary", type: "custom:event", sourceSessionId: "external:service", payload: { prompt: "Ordinary event data", displayPayload: { prompt: "Not authoritative" } }, text: "ignored" }] },
+    }} isLast={false} />);
+    expect(view.getByText("Ordinary event data")).toBeTruthy();
+  });
+
+  test.each([
+    { payload: "Scalar payload", expected: "Scalar payload" },
+    { payload: 42, expected: "42" },
+    { payload: false, expected: "false" },
+    { payload: null, expected: "null" },
+    { payload: ["Array payload", true, null], expected: "Array payload" },
+  ])("recovers malformed or historical transcript payload $expected", ({ payload, expected }) => {
+    const view = render(<SessionMessageItem message={{
+      key: "event-payload",
+      role: "custom",
+      customType: "pizzapi-trigger",
+      details: { triggers: [{ triggerId: "payload", type: "custom:event", sourceSessionId: "external:service", payload, text: "ignored" }] },
+    }} isLast={false} />);
+
+    const details = view.container.querySelector("details");
+    if (details) act(() => { details.open = true; fireEvent(details, new window.Event("toggle")); });
+    expect(view.container.textContent).toContain(expected);
+    expect(view.queryByText("No payload fields.")).toBeNull();
+    expect(view.container.textContent).not.toContain("ignored");
+  });
+
+  test("shows the actual destination of credentialed and deceptive URLs", () => {
+    const view = render(<SessionMessageItem message={{
+      key: "event-links",
+      role: "custom",
+      customType: "pizzapi-trigger",
+      details: { triggers: [{
+        triggerId: "links", type: "custom:event", sourceSessionId: "external:service",
+        payload: { credentialed: "https://github.com@evil.example/check", deceptive: "https://github.com.evil.example/check", unsafe: "data:text/html,<script>alert(1)</script>" },
+        text: "ignored",
+      }] },
+    }} isLast={false} />);
+
+    expect(view.getByRole("link", { name: "evil.example" }).getAttribute("href")).toBe("https://github.com@evil.example/check");
+    expect(view.getByRole("link", { name: "github.com.evil.example" })).toBeTruthy();
+    expect(view.getAllByRole("link")).toHaveLength(2);
+    expect(view.queryByText("Open link")).toBeNull();
+  });
+
+  test("renders an empty service event and each event in a batch", () => {
+    const view = render(<SessionMessageItem message={{
+      key: "event-batch",
+      role: "custom",
+      customType: "pizzapi-trigger",
+      details: { triggers: [
+        { triggerId: "one", type: "custom:event", sourceSessionId: "external:service", payload: {}, text: "ignored" },
+        { triggerId: "two", type: "time:timer_fired", sourceSessionId: "external:time", payload: { message: "Check status" }, text: "ignored" },
+      ] },
+    }} isLast={false} />);
+
+    expect(view.getByText("custom:event")).toBeTruthy();
+    expect(view.getByText("No payload fields.")).toBeTruthy();
+    expect(view.getByText("time:timer_fired")).toBeTruthy();
+    expect(view.getByText("Check status")).toBeTruthy();
+    expect(view.container.textContent).not.toContain("ignored");
+  });
+
   test("keeps long structured message bodies wrappable", () => {
     const body = "x".repeat(2_000);
     const view = render(<SessionMessageItem message={{

@@ -355,6 +355,10 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                         sourceSessionId: t.sourceSessionId,
                         ...(t.sourceSessionName ? { sourceSessionName: t.sourceSessionName } : {}),
                         payload: t.payload,
+                        ...(t.displayPayload !== undefined ? { displayPayload: t.displayPayload } : {}),
+                        ...(typeof t.summary === "string" ? { summary: t.summary } : {}),
+                        ...(typeof t.sourceName === "string" ? { sourceName: t.sourceName } : {}),
+                        ...(t.expectsResponse === true ? { expectsResponse: true } : {}),
                         text,
                     })),
                 };

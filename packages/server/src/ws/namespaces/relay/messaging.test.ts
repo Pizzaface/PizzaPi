@@ -119,12 +119,12 @@ describe("registerMessagingHandlers session_trigger acking", () => {
         }
     }
 
-    test("acks success after delivering a child trigger to the parent", async () => {
+    test("acks child delivery, discards spoofed display metadata and derives sender attribution", async () => {
         const socket = createMockSocket("child-1");
         const parentSocketEmit = mock((_event: string, _data: any) => {});
         mockGetSharedSession.mockImplementation(async (id: string) => {
             if (id === "parent-1") return { userId: "u1" } as any;
-            if (id === "child-1") return { userId: "u1" } as any;
+            if (id === "child-1") return { userId: "u1", sessionName: "Real child" } as any;
             return null;
         });
         mockGetLocalTuiSocket.mockReturnValue({ connected: true, emit: parentSocketEmit } as any);
@@ -139,6 +139,9 @@ describe("registerMessagingHandlers session_trigger acking", () => {
                 sourceSessionId: "child-1",
                 targetSessionId: "parent-1",
                 payload: { summary: "Done" },
+                displayPayload: { summary: "Forged display data" },
+                sourceName: "GitHub",
+                summary: "Forged trusted headline",
                 deliverAs: "followUp",
                 expectsResponse: true,
                 triggerId: "trigger-1",
@@ -154,6 +157,9 @@ describe("registerMessagingHandlers session_trigger acking", () => {
             }),
         });
         expect(ack).toHaveBeenCalledWith({ ok: true });
+        expect(parentSocketEmit.mock.calls[0][1].trigger.displayPayload).toBeUndefined();
+        expect(parentSocketEmit.mock.calls[0][1].trigger.summary).toBeUndefined();
+        expect(parentSocketEmit.mock.calls[0][1].trigger.sourceName).toBe("Real child");
     });
 
     test("acks failure when the parent session cannot be found", async () => {
