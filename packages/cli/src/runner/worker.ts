@@ -194,6 +194,22 @@ import { reportWorkerStartupError, reportWorkerStartupReady } from "./worker-sta
 
 // ── Session metadata / context tracking ──────────────────────────────────
 
+/** Colorless Theme stand-in for headless workers: styling calls return text unchanged. */
+export const headlessTheme = {
+    fg: (_color: string, text: string) => text,
+    bg: (_color: string, text: string) => text,
+    bold: (text: string) => text,
+    italic: (text: string) => text,
+    underline: (text: string) => text,
+    inverse: (text: string) => text,
+    strikethrough: (text: string) => text,
+    getFgAnsi: () => "",
+    getBgAnsi: () => "",
+    style: (text: string) => text,
+    getThinkingBorderColor: () => (s: string) => s,
+    getBashModeBorderColor: () => (s: string) => s,
+};
+
 function publishSessionMetadata(session: any): void {
     const sessionFile = session.sessionManager?.getSessionFile?.() ?? session.sessionFile;
     if (!sessionFile) return;
@@ -821,7 +837,9 @@ async function main(): Promise<void> {
             addAutocompleteProvider: () => {},
             setEditorComponent: () => {},
             getEditorComponent: () => undefined,
-            get theme() { return undefined; },
+            // Plain-text theme stub: headless has no colors, but extensions call
+            // ctx.ui.theme.fg(...) unguarded (e.g. i-have-adhd status line).
+            theme: headlessTheme,
             getAllThemes: () => [],
             getTheme: () => undefined,
             setTheme: (_theme: any) => ({ success: false, error: "UI not available" }),

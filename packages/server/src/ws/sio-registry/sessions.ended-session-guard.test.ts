@@ -123,6 +123,8 @@ const mockSessionReferencedByOtherTenant = mock(
     async (_sessionId: string, _userId: string | null): Promise<boolean> => false,
 );
 mock.module("../../events/store.js", () => ({
+    listPendingWakeDeliveries: async () => [],
+    updateDelivery: async () => null,
     deleteSessionRoutes: async () => [],
     listRoutes: async () => [],
     sessionReferencedByOtherTenant: mockSessionReferencedByOtherTenant,
