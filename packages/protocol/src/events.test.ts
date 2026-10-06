@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  configTargetPrincipal,
   isDeliveryStatus,
   isRouteTarget,
   isSourceIdentity,
@@ -57,6 +58,7 @@ describe("guards", () => {
     expect(isRouteTarget({ kind: "session", sessionId: "s1" })).toBe(true);
     expect(isRouteTarget({ kind: "session", sessionId: "s1", runnerId: "runner-1", wake: true })).toBe(true);
     expect(isRouteTarget({ kind: "session", sessionId: "s1", offlinePolicy: "fail" })).toBe(true);
+    expect(isRouteTarget({ kind: "session", sessionId: "s1", ownerUserId: "operator" })).toBe(true);
     expect(isRouteTarget({
       kind: "spawn",
       spec: {
@@ -76,6 +78,8 @@ describe("guards", () => {
     expect(isRouteTarget({ kind: "session", sessionId: "s1", runnerId: 1 })).toBe(false);
     expect(isRouteTarget({ kind: "session", sessionId: "s1", wake: "yes" })).toBe(false);
     expect(isRouteTarget({ kind: "session", sessionId: "s1", offlinePolicy: "retry" })).toBe(false);
+    expect(isRouteTarget({ kind: "session", sessionId: "s1", ownerUserId: "" })).toBe(false);
+    expect(isRouteTarget({ kind: "session", sessionId: "s1", ownerUserId: 7 })).toBe(false);
   });
 
   test("isRouteTarget rejects malformed spawn targets", () => {
@@ -137,5 +141,18 @@ describe("routeMatchesOwner", () => {
     expect(routeMatchesOwner({ origin: "config" }, undefined)).toBe(true);
     expect(routeMatchesOwner({ origin: "config", ownerUserId: "a" }, "b")).toBe(false);
     expect(routeMatchesOwner({ origin: "agent" }, "a")).toBe(false);
+  });
+});
+
+describe("configTargetPrincipal (R5)", () => {
+  const target = { kind: "session" as const, sessionId: "s" };
+  test("binds config session routes to the target owner, else the route tenant, else nobody", () => {
+    expect(configTargetPrincipal({ origin: "config", target: { ...target, ownerUserId: "op" }, ownerUserId: "t" })).toBe("op");
+    expect(configTargetPrincipal({ origin: "config", target, ownerUserId: "t" })).toBe("t");
+    expect(configTargetPrincipal({ origin: "config", target })).toBeNull();
+  });
+  test("does not apply to API routes or spawn targets", () => {
+    expect(configTargetPrincipal({ origin: "ui", target: { ...target, ownerUserId: "op" }, ownerUserId: "t" })).toBeUndefined();
+    expect(configTargetPrincipal({ origin: "config", target: { kind: "spawn", spec: { runnerId: "r" } } })).toBeUndefined();
   });
 });

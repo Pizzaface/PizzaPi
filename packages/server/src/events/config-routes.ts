@@ -40,6 +40,15 @@ export function parseRoutesFile(content: string): RouteInput[] {
     if (r.ownerUserId !== undefined && (typeof r.ownerUserId !== "string" || r.ownerUserId.length === 0)) {
       throw new Error(`routes[${i}]: ownerUserId must be a non-empty string`);
     }
+    // A session target must be bound to a principal (target.ownerUserId, else
+    // the route's ownerUserId). Without one, nothing ties the target id to
+    // its intended owner: once the session's ownership row is pruned any
+    // user could register the id and receive the route's deliveries.
+    if (r.target.kind === "session" && !r.target.ownerUserId && !r.ownerUserId) {
+      throw new Error(
+        `routes[${i}]: session targets need target.ownerUserId (the user who owns the target session) or ownerUserId`,
+      );
+    }
     return { ...r, eventType: r.eventType, target: r.target, deliverAs: r.deliverAs, origin: "config" as const };
   });
 }

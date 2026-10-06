@@ -1,6 +1,7 @@
-import { mkdir, rm, access } from "node:fs/promises";
+import { mkdir, rm, access, rename } from "node:fs/promises";
 import path from "node:path";
-import { getKysely } from "../auth.js";
+import { sql, type Kysely } from "kysely";
+import { getKysely, type DB } from "../auth.js";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("attachments");
@@ -34,6 +35,33 @@ export function attachmentMaxFileSizeBytes(): number {
     return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_MAX_FILE_SIZE_BYTES;
 }
 
+/** Default per-user cap on live extracted-image bytes (2 GiB). */
+export const DEFAULT_EXTRACTED_IMAGE_USER_QUOTA_BYTES = 2 * 1024 * 1024 * 1024;
+
+/**
+ * Per-user cap on the total decoded bytes of extracted (relay-ingested)
+ * images that are alive at once, including those whose TTL is renewed
+ * because a durable session references them. Enforced against the shared
+ * SQLite attachment metadata, so every relay instance using the same
+ * database draws from one budget.
+ */
+export function extractedImageUserQuotaBytes(): number {
+    const raw = process.env.PIZZAPI_EXTRACTED_IMAGE_USER_QUOTA_BYTES;
+    if (raw === undefined || raw.trim() === "") return DEFAULT_EXTRACTED_IMAGE_USER_QUOTA_BYTES;
+    const value = Number(raw);
+    return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_EXTRACTED_IMAGE_USER_QUOTA_BYTES;
+}
+
+export type ExtractedImageRejectionReason = "too_large" | "quota_exceeded" | "invalid";
+
+/** Thrown by storeExtractedImage when an image is refused before decoding. */
+export class ExtractedImageRejectedError extends Error {
+    constructor(readonly reason: ExtractedImageRejectionReason, message: string) {
+        super(message);
+        this.name = "ExtractedImageRejectedError";
+    }
+}
+
 const uploadRoot = path.resolve(process.env.PIZZAPI_ATTACHMENT_DIR ?? path.join(process.cwd(), ".pizzapi", "uploads"));
 
 const attachments = new Map<string, StoredAttachment>();
@@ -46,6 +74,44 @@ const attachments = new Map<string, StoredAttachment>();
  * referenced by any durable session.
  */
 const extractedImageSessionRefs = new Map<string, Set<string>>();
+
+/**
+ * Extracted-image bytes per owner held by THIS process (mirrors `attachments`
+ * system records). Informational only: quota enforcement uses the shared
+ * database (see reserveExtractedImageQuota).
+ */
+const extractedBytesByOwner = new Map<string, number>();
+
+/**
+ * Reservations for in-flight extracted-image writes expire after this long so
+ * a relay that crashes mid-write cannot hold quota forever.
+ */
+const EXTRACTED_IMAGE_RESERVATION_TTL_MS = 5 * 60 * 1000;
+
+function adjustOwnerBytes(map: Map<string, number>, ownerUserId: string, delta: number): void {
+    const next = (map.get(ownerUserId) ?? 0) + delta;
+    if (next > 0) map.set(ownerUserId, next);
+    else map.delete(ownerUserId);
+}
+
+function setAttachmentRecord(record: StoredAttachment): void {
+    const previous = attachments.get(record.attachmentId);
+    if (previous?.uploaderUserId === "system") {
+        adjustOwnerBytes(extractedBytesByOwner, previous.ownerUserId, -previous.size);
+    }
+    attachments.set(record.attachmentId, record);
+    if (record.uploaderUserId === "system") {
+        adjustOwnerBytes(extractedBytesByOwner, record.ownerUserId, record.size);
+    }
+}
+
+/** Extracted-image bytes for a user stored by this process. */
+export function extractedImageBytesForUser(ownerUserId: string): number {
+    return extractedBytesByOwner.get(ownerUserId) ?? 0;
+}
+
+// Single anchored character class: linear-time, no backtracking blowup.
+const BASE64_RE = /^[A-Za-z0-9+/=_\-\s]*$/;
 
 export function sanitizeFilename(filename: string): string {
     return filename.replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -145,13 +211,20 @@ export async function deleteStoredAttachment(attachmentId: string): Promise<void
     if (!record) return;
     // P1 fix: DB deletes FIRST — if any reject, we leave the in-memory entry intact
     // so subsequent prune/sweep calls can retry. File removal is best-effort after.
-    await Promise.all([
-        removePersistedAttachment(attachmentId),
-        removePersistedUploadedAttachment(attachmentId),
-        removePersistedSessionRefs(attachmentId),
-    ]);
+    // One transaction (review R2-8): a partial failure must not drop the quota
+    // row while the record is still served from memory.
+    await getKysely().transaction().execute(async (trx) => {
+        await removePersistedAttachment(attachmentId, trx);
+        await removePersistedUploadedAttachment(attachmentId, trx);
+        await removePersistedSessionRefs(attachmentId, trx);
+    });
     // Only remove from memory after persistence deletes succeed.
-    attachments.delete(attachmentId);
+    if (attachments.get(attachmentId) === record) {
+        attachments.delete(attachmentId);
+        if (record.uploaderUserId === "system") {
+            adjustOwnerBytes(extractedBytesByOwner, record.ownerUserId, -record.size);
+        }
+    }
     extractedImageSessionRefs.delete(attachmentId);
     // Best-effort file rm: awaited so callers (and tests) see a consistent final state,
     // but errors are caught so a missing file never breaks the deletion contract.
@@ -185,8 +258,39 @@ export function normalizeExtractedImageMimeType(mimeType: string): string {
 /**
  * Store base64 image data extracted from a session state payload.
  * The attachmentId is pre-generated by the caller (strip-images.ts).
+ *
+ * New (non-deduplicated) images are checked against the attachment size
+ * policy (PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES) and the owner's extracted
+ * image quota BEFORE decoding; refusals throw ExtractedImageRejectedError.
  */
 export async function storeExtractedImage(input: {
+    attachmentId: string;
+    sessionId: string;
+    ownerUserId: string;
+    mimeType: string;
+    base64Data: string;
+}): Promise<StoredAttachment> {
+    // Writers of one content-addressed ID are serialized in this process
+    // (review R2-8): a later writer finds the earlier one's record and
+    // dedupes instead of reserving quota and rewriting the same file.
+    return withExtractedWriteLock(input.attachmentId, () => storeExtractedImageUnlocked(input));
+}
+
+const extractedWriteLocks = new Map<string, Promise<void>>();
+
+async function withExtractedWriteLock<T>(attachmentId: string, fn: () => Promise<T>): Promise<T> {
+    const previous = extractedWriteLocks.get(attachmentId) ?? Promise.resolve();
+    const run = previous.then(fn);
+    const tail = run.then(() => {}, () => {});
+    extractedWriteLocks.set(attachmentId, tail);
+    try {
+        return await run;
+    } finally {
+        if (extractedWriteLocks.get(attachmentId) === tail) extractedWriteLocks.delete(attachmentId);
+    }
+}
+
+async function storeExtractedImageUnlocked(input: {
     attachmentId: string;
     sessionId: string;
     ownerUserId: string;
@@ -220,6 +324,103 @@ export async function storeExtractedImage(input: {
     const rawB64 = base64Data.includes(",") && base64Data.startsWith("data:")
         ? base64Data.slice(base64Data.indexOf(",") + 1)
         : base64Data;
+
+    // Size and quota checks run on the encoded length, before any decode.
+    const maxBytes = attachmentMaxFileSizeBytes();
+    const estimatedBytes = Math.floor((rawB64.length * 3) / 4);
+    if (estimatedBytes > maxBytes) {
+        throw new ExtractedImageRejectedError(
+            "too_large",
+            `Extracted image ${attachmentId} (~${estimatedBytes} bytes) exceeds the ${maxBytes}-byte attachment limit`,
+        );
+    }
+    if (!BASE64_RE.test(rawB64)) {
+        throw new ExtractedImageRejectedError("invalid", `Extracted image ${attachmentId} is not valid base64`);
+    }
+    const quota = extractedImageUserQuotaBytes();
+    const reservationId = await reserveExtractedImageQuota(attachmentId, ownerUserId, estimatedBytes, quota);
+    if (!reservationId) {
+        throw new ExtractedImageRejectedError(
+            "quota_exceeded",
+            `Extracted image storage quota (${quota} bytes) exhausted for user`,
+        );
+    }
+
+    try {
+        return await writeExtractedImage({ attachmentId, sessionId, ownerUserId, mimeType, rawB64 });
+    } finally {
+        await releaseExtractedImageQuota(reservationId).catch((err) => {
+            // The reservation expires on its own; until then it only over-counts.
+            log.error("Failed to release extracted image quota reservation:", err);
+        });
+    }
+}
+
+/**
+ * Atomically reserve `bytes` of a user's extracted-image quota in the shared
+ * database. Committed usage is the sum of the user's `extracted_attachment`
+ * rows (excluding a row for this same content-addressed ID, which the write
+ * would replace) plus unexpired reservations from in-flight writes on any
+ * relay instance. The check and the insert are one SQL statement, so
+ * concurrent writers — in this process or another — cannot both pass it.
+ *
+ * Reservations are keyed by (owner, attachmentId) (review R2-8): writers of
+ * the same content-addressed ID end up with ONE copy, so reservations for
+ * this ID are not counted against it, other IDs count once each (largest
+ * reservation), and a reservation whose ID is already committed is covered
+ * by the committed row.
+ * Returns the reservation ID, or null when the quota would be exceeded.
+ */
+async function reserveExtractedImageQuota(
+    attachmentId: string,
+    ownerUserId: string,
+    bytes: number,
+    quota: number,
+): Promise<string | null> {
+    const db = getKysely();
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    await db
+        .deleteFrom("extracted_attachment_reservation" as any)
+        .where("expiresAt", "<=", nowIso)
+        .execute();
+    const reservationId = crypto.randomUUID();
+    const expiresAt = new Date(nowMs + EXTRACTED_IMAGE_RESERVATION_TTL_MS).toISOString();
+    const result = await sql`
+        INSERT INTO extracted_attachment_reservation (reservationId, ownerUserId, attachmentId, bytes, expiresAt)
+        SELECT ${reservationId}, ${ownerUserId}, ${attachmentId}, ${bytes}, ${expiresAt}
+        WHERE (
+            (SELECT COALESCE(SUM(size), 0) FROM extracted_attachment
+                WHERE ownerUserId = ${ownerUserId} AND attachmentId != ${attachmentId})
+            + (SELECT COALESCE(SUM(perId), 0) FROM (
+                SELECT MAX(r.bytes) AS perId FROM extracted_attachment_reservation r
+                WHERE r.ownerUserId = ${ownerUserId} AND r.expiresAt > ${nowIso}
+                    AND (r.attachmentId IS NULL OR (
+                        r.attachmentId != ${attachmentId}
+                        AND r.attachmentId NOT IN (SELECT attachmentId FROM extracted_attachment
+                            WHERE ownerUserId = ${ownerUserId})))
+                GROUP BY COALESCE(r.attachmentId, r.reservationId)))
+            + ${bytes}
+        ) <= ${quota}
+    `.execute(db);
+    return Number(result.numAffectedRows ?? 0) > 0 ? reservationId : null;
+}
+
+async function releaseExtractedImageQuota(reservationId: string): Promise<void> {
+    await getKysely()
+        .deleteFrom("extracted_attachment_reservation" as any)
+        .where("reservationId", "=", reservationId)
+        .execute();
+}
+
+async function writeExtractedImage(input: {
+    attachmentId: string;
+    sessionId: string;
+    ownerUserId: string;
+    mimeType: string;
+    rawB64: string;
+}): Promise<StoredAttachment> {
+    const { attachmentId, sessionId, ownerUserId, mimeType, rawB64 } = input;
     const bytes = Buffer.from(rawB64, "base64");
     const VALID_IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "ico"]);
     const rawExt = mimeType.split("/").pop()?.split(";")[0]?.trim().toLowerCase() ?? "png";
@@ -228,7 +429,17 @@ export async function storeExtractedImage(input: {
     const targetPath = path.join(uploadRoot, filename);
 
     await mkdir(uploadRoot, { recursive: true });
-    await Bun.write(targetPath, bytes);
+    // Write privately, then atomically rename into the content-addressed path,
+    // so a concurrent writer of the same ID (another relay sharing this
+    // directory) never observes a partial file. Content is identical by ID.
+    const tmpPath = `${targetPath}.${crypto.randomUUID()}.tmp`;
+    try {
+        await Bun.write(tmpPath, bytes);
+        await rename(tmpPath, targetPath);
+    } catch (err) {
+        await rm(tmpPath, { force: true }).catch(() => {});
+        throw err;
+    }
 
     const createdAtMs = Date.now();
     const expiresAtMs = createdAtMs + EXTRACTED_IMAGE_TTL_MS;
@@ -247,17 +458,40 @@ export async function storeExtractedImage(input: {
         filePath: targetPath,
     };
 
-    attachments.set(attachmentId, record);
+    // Persist before publishing the record. The shared quota is computed from
+    // these rows, so an image whose metadata could not be written must not be
+    // kept (it would be stored outside every instance's quota). It also means
+    // the caller never stores a URL that cannot be rehydrated after a crash.
+    try {
+        await persistExtractedAttachment(record);
+    } catch (err) {
+        // Remove the file only when no writer's metadata references this ID:
+        // otherwise the file belongs to the winner of a concurrent write
+        // (review R2-8). If that cannot be determined, keep it.
+        if (!(await extractedRowMayExist(attachmentId))) {
+            await rm(targetPath, { force: true }).catch(() => {});
+        }
+        throw err;
+    }
+    setAttachmentRecord(record);
     addSessionRef(attachmentId, sessionId);
-    // Await both persists so the record and session reference are durably written
-    // before the caller can store the attachment URL in session state. Without
-    // this, a crash between the file-write and the SQLite commit leaves dangling
-    // /api/attachments/:id URLs in snapshots that can never be rehydrated.
-    await persistExtractedAttachment(record).catch((err) => {
-        log.error("Failed to persist extracted attachment:", err);
-    });
     await persistSessionRef(attachmentId, sessionId).catch(() => {});
     return record;
+}
+
+/** True unless the DB proves there is no extracted_attachment row for the ID. */
+async function extractedRowMayExist(attachmentId: string): Promise<boolean> {
+    try {
+        const row = await getKysely()
+            .selectFrom("extracted_attachment")
+            .select("attachmentId")
+            .where("attachmentId", "=", attachmentId)
+            .executeTakeFirst();
+        return row !== undefined;
+    } catch (err) {
+        log.error("Could not check extracted attachment metadata; keeping file:", err);
+        return true;
+    }
 }
 
 /**
@@ -484,6 +718,40 @@ export async function ensureExtractedAttachmentTable(): Promise<void> {
         .columns(["attachmentId", "sessionId"])
         .unique()
         .execute();
+
+    // Shared per-user quota accounting (PIZZAPI_EXTRACTED_IMAGE_USER_QUOTA_BYTES):
+    // usage is summed from extracted_attachment by owner, plus reservations
+    // held by in-flight writes on any relay instance.
+    await getKysely().schema
+        .createIndex("idx_extracted_attachment_owner")
+        .ifNotExists()
+        .on("extracted_attachment")
+        .column("ownerUserId")
+        .execute();
+
+    await getKysely().schema
+        .createTable("extracted_attachment_reservation")
+        .ifNotExists()
+        .addColumn("reservationId", "text", (col) => col.primaryKey())
+        .addColumn("ownerUserId", "text", (col) => col.notNull())
+        .addColumn("attachmentId", "text")
+        .addColumn("bytes", "integer", (col) => col.notNull())
+        .addColumn("expiresAt", "text", (col) => col.notNull())
+        .execute();
+    // Reservation tables created before review R2-8 lack attachmentId.
+    const reservationColumns = await sql<{ name: string }>`
+        SELECT name FROM pragma_table_info('extracted_attachment_reservation')
+    `.execute(getKysely());
+    if (!reservationColumns.rows.some((c) => c.name === "attachmentId")) {
+        await sql`ALTER TABLE extracted_attachment_reservation ADD COLUMN attachmentId text`.execute(getKysely());
+    }
+
+    await getKysely().schema
+        .createIndex("idx_extracted_attachment_reservation_owner")
+        .ifNotExists()
+        .on("extracted_attachment_reservation")
+        .column("ownerUserId")
+        .execute();
 }
 
 /** Persist a session reference for an extracted attachment. */
@@ -516,8 +784,8 @@ async function batchLoadSessionRefsFromDb(attachmentIds: string[]): Promise<Map<
 }
 
 /** Remove all session references for an attachment from SQLite. */
-async function removePersistedSessionRefs(attachmentId: string): Promise<void> {
-    await getKysely()
+async function removePersistedSessionRefs(attachmentId: string, db: Kysely<DB> = getKysely()): Promise<void> {
+    await db
         .deleteFrom("extracted_attachment_session" as any)
         .where("attachmentId", "=", attachmentId)
         .execute();
@@ -543,8 +811,8 @@ async function persistUploadedAttachment(record: StoredAttachment): Promise<void
         .execute();
 }
 
-async function removePersistedUploadedAttachment(attachmentId: string): Promise<void> {
-    await getKysely()
+async function removePersistedUploadedAttachment(attachmentId: string, db: Kysely<DB> = getKysely()): Promise<void> {
+    await db
         .deleteFrom("attachment" as any)
         .where("attachmentId", "=", attachmentId)
         .execute();
@@ -574,8 +842,8 @@ async function persistExtractedAttachment(record: StoredAttachment): Promise<voi
 }
 
 /** Remove an extracted attachment record from SQLite. */
-async function removePersistedAttachment(attachmentId: string): Promise<void> {
-    await getKysely()
+async function removePersistedAttachment(attachmentId: string, db: Kysely<DB> = getKysely()): Promise<void> {
+    await db
         .deleteFrom("extracted_attachment")
         .where("attachmentId", "=", attachmentId)
         .execute();
@@ -687,7 +955,7 @@ export async function rehydrateExtractedAttachments(): Promise<number> {
         if (attachments.has(row.attachmentId)) continue;
 
         const expiresAtMs = Date.parse(row.expiresAt);
-        attachments.set(row.attachmentId, {
+        setAttachmentRecord({
             attachmentId: row.attachmentId,
             sessionId: row.sessionId,
             ownerUserId: row.ownerUserId,

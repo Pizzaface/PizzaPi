@@ -291,6 +291,23 @@ interface LastEmittedMessageState {
 let lastEmittedMessageState: LastEmittedMessageState | null = null;
 let inFlightMessageLeafId: string | null = null;
 
+/**
+ * Minimum gap between full chunked snapshots. Large sessions otherwise
+ * re-upload the whole transcript (5-10 MB) on every agent_end and on every
+ * 10 s heartbeat while messages change. Viewers already get those messages
+ * live via message_end/turn_end, so in between we send metadata only and one
+ * trailing snapshot catches the relay's lastState up.
+ * ponytail: still O(transcript) per snapshot; delta snapshots if this bites.
+ */
+export const CHUNKED_SNAPSHOT_MIN_INTERVAL_MS = 30_000;
+let lastChunkedSnapshotAt = 0;
+let trailingSnapshotTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearTrailingSnapshot(): void {
+    if (trailingSnapshotTimer !== null) clearTimeout(trailingSnapshotTimer);
+    trailingSnapshotTimer = null;
+}
+
 function getLiveModel(rctx: RelayContext, fallback: unknown | (() => unknown)) {
     const liveModel = rctx.latestCtx?.model;
     if (liveModel && typeof liveModel.provider === "string" && typeof liveModel.id === "string") {
@@ -395,6 +412,8 @@ export function _resetChunkedDeliveryStateForTesting(): void {
     activeChunkedSnapshotId = null;
     lastEmittedMessageState = null;
     inFlightMessageLeafId = null;
+    lastChunkedSnapshotAt = 0;
+    clearTrailingSnapshot();
 }
 
 /**
@@ -419,8 +438,23 @@ export function messagesChangedSinceLastEmit(rctx: RelayContext): boolean {
  * Emit session_active — either as a single event (small sessions) or as
  * metadata-only + chunked messages (large sessions).
  */
-export function emitSessionActive(rctx: RelayContext, recoveryNonce?: string): void {
+export function emitSessionActive(rctx: RelayContext, recoveryNonce?: string, throttle = false): void {
     if (!rctx.latestCtx) return;
+
+    // Throttle full re-uploads of large sessions (see CHUNKED_SNAPSHOT_MIN_INTERVAL_MS).
+    // Opt-in for the high-frequency callers (heartbeat, agent_end) only;
+    // connect/recovery/compaction/session-switch snapshots always go out.
+    const sinceLastChunked = Date.now() - lastChunkedSnapshotAt;
+    if (throttle && sinceLastChunked < CHUNKED_SNAPSHOT_MIN_INTERVAL_MS) {
+        forwardMetadataUpdate(rctx);
+        trailingSnapshotTimer ??= setTimeout(() => {
+            trailingSnapshotTimer = null;
+            emitSessionActive(rctx);
+        }, CHUNKED_SNAPSHOT_MIN_INTERVAL_MS - sinceLastChunked);
+        trailingSnapshotTimer.unref?.();
+        return;
+    }
+    clearTrailingSnapshot();
 
     const { messages, model } = buildSessionContext(
         rctx.latestCtx.sessionManager.getEntries(),
@@ -452,6 +486,7 @@ export function emitSessionActive(rctx: RelayContext, recoveryNonce?: string): v
         // The snapshotId ties the metadata event to its chunk stream so the UI
         // can discard stale chunks and the server can assemble the full state.
         const snapshotId = randomUUID();
+        lastChunkedSnapshotAt = Date.now();
         // Cancel any in-flight chunked sender from a previous call.
         activeChunkedSnapshotId = snapshotId;
         const snapshotLeafId = recordInFlightMessageState(rctx);
@@ -479,6 +514,7 @@ export function emitSessionActive(rctx: RelayContext, recoveryNonce?: string): v
         // Still cap individual oversized messages to avoid transport failures.
         activeChunkedSnapshotId = null;
         inFlightMessageLeafId = null;
+        lastChunkedSnapshotAt = 0; // small again (e.g. /new, compaction) — no throttle
         rctx.forwardEvent({
             type: "session_active",
             ...(recoveryNonce !== undefined ? { recoveryNonce } : {}),
@@ -508,11 +544,17 @@ export function emitSessionMetadataUpdate(rctx: RelayContext): void {
     // messages array (expensive for large sessions) when we know we need it.
     if (messagesChangedSinceLastEmit(rctx)) {
         // Messages changed since last full snapshot — send a complete session_active.
-        emitSessionActive(rctx);
+        emitSessionActive(rctx, undefined, true);
         return;
     }
 
-    // Messages unchanged — send lightweight metadata-only update.
+    forwardMetadataUpdate(rctx);
+}
+
+/** Metadata-only update — no transcript serialization. */
+function forwardMetadataUpdate(rctx: RelayContext): void {
+    if (!rctx.latestCtx) return;
+    // Messages unchanged (or snapshot throttled) — send lightweight metadata-only update.
     // We don't need buildSessionContext at all here.  getLiveModel prefers
     // the live model from rctx.latestCtx.model, so we can pass null as the
     // fallback (it'll never be reached when latestCtx.model exists).

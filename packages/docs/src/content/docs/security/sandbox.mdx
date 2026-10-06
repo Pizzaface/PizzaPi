@@ -240,7 +240,7 @@ When both global (`~/.pizzapi/config.json`) and project (`.pizzapi/config.json`)
 |----------|-------------|--------|
 | **macOS** | `sandbox-exec` (built-in) | ✅ Fully supported |
 | **Linux** | `bubblewrap` + seccomp | ✅ Supported — requires `bubblewrap` and `socat` |
-| **Windows** | — | ⚠️ Graceful degradation (sandbox disabled) |
+| **Windows** | — | ⚠️ Not supported. The implicit default degrades; an explicitly requested mode refuses to start (see below) |
 
 On Linux, install dependencies:
 
@@ -248,7 +248,20 @@ On Linux, install dependencies:
 sudo apt install bubblewrap socat
 ```
 
-On unsupported platforms, the sandbox initializes but is inactive — all tools execute without restrictions.
+### When the sandbox cannot be enabled
+
+What happens on an unsupported platform, or when sandbox initialization fails (for example, `bubblewrap` is missing), depends on how the mode was chosen:
+
+| How the mode was chosen | Behavior when the sandbox cannot be enabled |
+|-------------------------|---------------------------------------------|
+| Explicitly: `--sandbox` or `PIZZAPI_SANDBOX` set to `basic`/`full`, or `sandbox.mode` set to `basic`/`full` in `~/.pizzapi/config.json` (including through the web UI's sandbox settings) | **Fails closed.** The session refuses to start and reports why. If startup somehow continues, the `bash` tool refuses every command. |
+| Implicitly (no global `sandbox.mode` and no override, so the `basic` default applies) | Logs a warning and continues **unsandboxed**. `/sandbox` shows `Active: no`. |
+
+A project-local `.pizzapi/config.json` can escalate the mode, but it cannot make startup fail closed by itself.
+
+For runner sessions, the runner reports a new session as ready only after its worker confirms that the sandbox stage passed. When a fail-closed worker refuses to start, the runner reports a spawn error with the worker's reason instead, so the web UI and the spawn API show the failure (the spawn request fails if this happens within its acknowledgement window) rather than a session that disappears. If a worker has not reported within 20 seconds, the runner falls back to reporting it ready; the sandbox is still enforced, because the worker exits before running any tool.
+
+To accept unsandboxed execution for an explicitly requested mode, for example on Windows, set `PIZZAPI_SANDBOX_ALLOW_UNSANDBOXED=1`. You can also choose `none` explicitly.
 
 ---
 
@@ -391,6 +404,7 @@ If `PIZZAPI_WORKSPACE_ROOTS` is set, the other variables are ignored. If none ar
 - Paths are normalized — trailing slashes are stripped, symlinks are resolved.
 - A session's `cwd` must be **equal to or a subdirectory of** at least one root.
 - Path traversal attacks (`/../`) are neutralized via `realpathSync` before comparison.
+- Paths that do not exist yet (for example a new Git worktree destination) are resolved through their nearest existing ancestor, so an in-root symlink that points outside the roots cannot be used as a parent. `..` segments are applied after following symlinks, as Git and `mkdir -p` would, including after a not-yet-existing component (`missing/../link/wt` is judged by where `link` points). A path that passes through a dangling or unresolvable symlink is rejected.
 - On Windows, comparisons are case-insensitive.
 - The filesystem root (`/`) as a root allows everything (equivalent to unscoped).
 
@@ -482,9 +496,9 @@ Add the domain to `allowedDomains`:
 sudo apt install bubblewrap socat
 ```
 
-### "Sandbox init failed, continuing unsandboxed"
+### "Sandbox init failed, continuing unsandboxed" / "Refusing to start"
 
-The sandbox runtime failed to initialize. The session continues without protection. Check the error message — common causes:
+The sandbox runtime failed to initialize. If you did not choose a mode explicitly, the session continues without protection. If you did, the session refuses to start; see [When the sandbox cannot be enabled](#when-the-sandbox-cannot-be-enabled). Check the error message — common causes:
 - Linux: `bubblewrap` not installed
 - macOS: permission issue with `sandbox-exec`
 - Incompatible OS version

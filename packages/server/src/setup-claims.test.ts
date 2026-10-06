@@ -9,6 +9,9 @@ import {
     pollSetupClaim,
     approveSetupClaim,
     getSetupClaimInfo,
+    normalizeSetupClaimRelayUrl,
+    SetupClaimRejectedError,
+    SETUP_CLAIM_RELAY_URL_MAX_LENGTH,
 } from "./setup-claims.js";
 import { runWithAuthContext } from "./auth.js";
 
@@ -363,6 +366,82 @@ describe("setup-claims store", () => {
         await runWithAuthContext(authContext, async () => {
             const info = await getSetupClaimInfo("definitely-not-a-token");
             expect(info).toBeNull();
+        });
+    });
+});
+
+// F08: unauthenticated claim creation must be bounded.
+describe("setup-claims admission limits", () => {
+    async function countRows(): Promise<number> {
+        const { getKysely } = await import("./auth.js");
+        const rows = await getKysely().selectFrom("setup_claim").select("id").execute();
+        return rows.length;
+    }
+    async function countUnexpired(): Promise<number> {
+        const { getKysely } = await import("./auth.js");
+        const rows = await getKysely()
+            .selectFrom("setup_claim")
+            .select("id")
+            .where("expiresAt", ">", new Date().toISOString())
+            .execute();
+        return rows.length;
+    }
+
+    test("rejects non-http(s), credential-bearing, and oversized relay URLs without writing a row", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const before = await countRows();
+            for (const bad of [
+                "",
+                "not a url",
+                "ftp://relay.example.com",
+                "javascript:alert(1)",
+                "file:///etc/passwd",
+                "https://user:pass@relay.example.com",
+                `https://relay.example.com/${"a".repeat(SETUP_CLAIM_RELAY_URL_MAX_LENGTH)}`,
+            ]) {
+                const err = await createSetupClaim(bad).catch((e) => e);
+                expect(err).toBeInstanceOf(SetupClaimRejectedError);
+                expect((err as SetupClaimRejectedError).reason).toBe("invalid_relay_url");
+            }
+            expect(await countRows()).toBe(before);
+            expect(normalizeSetupClaimRelayUrl("  https://relay.example.com:7492  ")).toBe("https://relay.example.com:7492");
+        });
+    });
+
+    test("enforces the global outstanding-claim quota and writes nothing once exceeded", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const cap = (await countUnexpired()) + 2;
+            await createSetupClaim("http://localhost:7492", null, { maxOutstanding: cap });
+            await createSetupClaim("http://localhost:7492", null, { maxOutstanding: cap });
+            const before = await countRows();
+
+            const err = await createSetupClaim("http://localhost:7492", null, { maxOutstanding: cap }).catch((e) => e);
+            expect(err).toBeInstanceOf(SetupClaimRejectedError);
+            expect((err as SetupClaimRejectedError).reason).toBe("quota_exceeded");
+            expect(await countRows()).toBe(before);
+        });
+    });
+
+    test("expired claims free quota and long-expired rows are purged on create", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { getKysely } = await import("./auth.js");
+            const cap = (await countUnexpired()) + 1;
+            const { token: filler } = await createSetupClaim("http://localhost:7492", null, { maxOutstanding: cap });
+            await expect(createSetupClaim("http://localhost:7492", null, { maxOutstanding: cap })).rejects.toBeInstanceOf(SetupClaimRejectedError);
+
+            // Recently expired: no longer counts against the quota, but is kept
+            // so a polling CLI still sees `expired` instead of 404.
+            const recentlyExpired = new Date(Date.now() - 1000).toISOString();
+            await getKysely().updateTable("setup_claim").set({ expiresAt: recentlyExpired }).where("id", "=", filler).execute();
+            const { token: next } = await createSetupClaim("http://localhost:7492", null, { maxOutstanding: cap });
+            expect((await pollSetupClaim(filler))!.status).toBe("expired");
+
+            // Long-expired: physically deleted by the next create.
+            const longExpired = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+            await getKysely().updateTable("setup_claim").set({ expiresAt: longExpired }).where("id", "in", [filler, next]).execute();
+            await createSetupClaim("http://localhost:7492", null, { maxOutstanding: cap });
+            const remaining = await getKysely().selectFrom("setup_claim").select("id").where("id", "in", [filler, next]).execute();
+            expect(remaining).toHaveLength(0);
         });
     });
 });

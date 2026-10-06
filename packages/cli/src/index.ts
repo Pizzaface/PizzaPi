@@ -11,7 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { join } from "path";
-import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv, resolveExplicitProjectTrust } from "./config.js";
+import { maybeBuildSystemPrompt, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, shouldSandboxFailClosed, loadGlobalConfig, applyProviderSettingsEnv, resolveExplicitProjectTrust } from "./config.js";
 import { isPackageCommand, runPackageCommand } from "./package-commands.js";
 import { getOAuthAccessToken, getAnthropicKeychainToken } from "./runner/usage-auth.js";
 import { c, usageBar, colorPct } from "./cli-colors.js";
@@ -496,12 +496,26 @@ async function main() {
         sandboxConfig.srtConfig = overridden.srtConfig;
     }
 
+    // An explicitly requested sandbox fails closed (see shouldSandboxFailClosed);
+    // PIZZAPI_SANDBOX_ALLOW_UNSANDBOXED=1 restores degradation.
+    const sandboxFailClosed = shouldSandboxFailClosed({
+        effectiveMode: sandboxConfig.mode,
+        override: sandboxOverride,
+        globalMode: loadGlobalConfig().sandbox?.mode,
+        env: process.env,
+    });
     try {
-        await initSandbox(sandboxConfig);
+        await initSandbox(sandboxConfig, { failClosed: sandboxFailClosed });
     } catch (err) {
-        log.warn(
-            `pizzapi: sandbox init failed, continuing unsandboxed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        const msg = err instanceof Error ? err.message : String(err);
+        if (sandboxFailClosed) {
+            log.error(
+                `pizzapi: refusing to start: ${msg}. The sandbox was explicitly requested, so the session will not run unsandboxed. ` +
+                "Fix the sandbox dependencies, use --sandbox off, or set PIZZAPI_SANDBOX_ALLOW_UNSANDBOXED=1 to allow running unsandboxed.",
+            );
+            process.exit(1);
+        }
+        log.warn(`pizzapi: sandbox init failed, continuing unsandboxed: ${msg}`);
     }
     if (isSandboxActive()) {
         process.env.PIZZAPI_SANDBOX_ACTIVE = "1";

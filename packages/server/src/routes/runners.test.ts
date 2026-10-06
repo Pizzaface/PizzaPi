@@ -92,6 +92,9 @@ mock.module("../runner-recent-folders.js", () => ({
 mock.module("../user-hidden-models.js", () => ({ getHiddenModels: mock(() => Promise.resolve([])) }));
 import * as _runnerRegistryModule from "../ws/sio-registry/runners.js";
 import * as _sioStateModule from "../ws/sio-state/index.js";
+import * as _runnerOwnerModule from "../runner-owner.js";
+const mockGetRunnerOwner = mock((_runnerId: string) => Promise.resolve(null as string | null));
+spyOn(_runnerOwnerModule, "getRunnerOwner").mockImplementation(mockGetRunnerOwner as any);
 spyOn(_runnerRegistryModule, "getRunnerServices").mockImplementation(mockGetRunnerServices as any);
 spyOn(_sioStateModule, "getSession").mockImplementation(mockGetSession as any);
 
@@ -977,6 +980,111 @@ describe("runner spawn effort", () => {
 
         expect(res!.status).toBe(400);
         expect(mockGetLocalRunnerSocket).not.toHaveBeenCalled();
+    });
+});
+
+describe("runner spawn idempotency (F14)", () => {
+    beforeEach(() => {
+        mockRequireSession.mockReset();
+        mockGetRunnerData.mockReset();
+        mockGetLocalRunnerSocket.mockReset();
+    });
+
+    function asUser(userId: string) {
+        mockRequireSession.mockReturnValue(Promise.resolve({ userId, userName: userId } as any));
+    }
+
+    async function spawn(runnerId: string, idempotencyKey: string) {
+        const [req, url] = makeReq("POST", "/api/runners/spawn", { runnerId, idempotencyKey });
+        const res = await handleRunnersRoute(req, url);
+        return { status: res!.status, body: await res!.json() as any };
+    }
+
+    test("replays the cached session for the same user, runner and key", async () => {
+        asUser("user-1");
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+        const emit = mock(() => {});
+        mockGetLocalRunnerSocket.mockReturnValue({ emit } as any);
+
+        const first = await spawn("runner-A", "f14-same");
+        const second = await spawn("runner-A", "f14-same");
+
+        expect(first.status).toBe(200);
+        expect(second.body).toEqual({ ok: true, runnerId: "runner-A", sessionId: first.body.sessionId, deduplicated: true });
+        expect(emit).toHaveBeenCalledTimes(1);
+    });
+
+    test("another user's colliding key is rejected by runner authorization, not answered from cache", async () => {
+        asUser("user-1");
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+        mockGetLocalRunnerSocket.mockReturnValue({ emit: mock(() => {}) } as any);
+        const victim = await spawn("runner-A", "f14-cross-user");
+        expect(victim.status).toBe(200);
+
+        asUser("user-2");
+        const attacker = await spawn("runner-A", "f14-cross-user");
+        expect(attacker.status).toBe(403);
+        expect(JSON.stringify(attacker.body)).not.toContain(victim.body.sessionId);
+    });
+
+    test("replays the cached session after the runner disconnects (R12)", async () => {
+        asUser("user-1");
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+        const emit = mock(() => {});
+        mockGetLocalRunnerSocket.mockReturnValue({ emit } as any);
+        const first = await spawn("runner-A", "r12-offline");
+        expect(first.status).toBe(200);
+
+        // Response lost, runner goes offline: no live state, no socket.
+        mockGetRunnerData.mockReturnValue(Promise.resolve(null));
+        mockGetLocalRunnerSocket.mockReturnValue(null);
+        mockGetRunnerOwner.mockReturnValue(Promise.resolve("user-1"));
+        const retry = await spawn("runner-A", "r12-offline");
+        expect(retry).toEqual({
+            status: 200,
+            body: { ok: true, runnerId: "runner-A", sessionId: first.body.sessionId, deduplicated: true },
+        });
+        expect(emit).toHaveBeenCalledTimes(1);
+
+        // Fail closed: an offline runner whose durable owner is unknown or
+        // someone else does not answer from cache.
+        for (const owner of [null, "user-2"]) {
+            mockGetRunnerOwner.mockReturnValue(Promise.resolve(owner));
+            const denied = await spawn("runner-A", "r12-offline");
+            expect(denied.status).toBe(404);
+            expect(JSON.stringify(denied.body)).not.toContain(first.body.sessionId);
+        }
+        mockGetRunnerOwner.mockReturnValue(Promise.resolve(null));
+    });
+
+    test("the same key on a different owned runner spawns a fresh session", async () => {
+        asUser("user-1");
+        mockGetRunnerData.mockImplementation((runnerId: string) => Promise.resolve({ userId: "user-1", runnerId } as any));
+        const emit = mock(() => {});
+        mockGetLocalRunnerSocket.mockReturnValue({ emit } as any);
+
+        const onA = await spawn("runner-A", "f14-cross-runner");
+        const onB = await spawn("runner-B", "f14-cross-runner");
+
+        expect(onB.status).toBe(200);
+        expect(onB.body.deduplicated).toBeUndefined();
+        expect(onB.body.sessionId).not.toBe(onA.body.sessionId);
+        expect(emit).toHaveBeenCalledTimes(2);
+    });
+
+    test("a different user with their own runner does not hit another user's cached key", async () => {
+        mockGetRunnerData.mockImplementation((runnerId: string) =>
+            Promise.resolve({ userId: runnerId === "runner-A" ? "user-1" : "user-2", runnerId } as any));
+        mockGetLocalRunnerSocket.mockReturnValue({ emit: mock(() => {}) } as any);
+
+        asUser("user-1");
+        const victim = await spawn("runner-A", "f14-own-runner");
+        asUser("user-2");
+        const other = await spawn("runner-C", "f14-own-runner");
+
+        expect(other.status).toBe(200);
+        expect(other.body.deduplicated).toBeUndefined();
+        expect(other.body.sessionId).not.toBe(victim.body.sessionId);
     });
 });
 

@@ -17,8 +17,8 @@
 
 import { execFileSync, spawn } from "child_process";
 import { createECDH, createHash, randomBytes } from "crypto";
-import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from "fs";
-import { join, dirname } from "path";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, renameSync } from "fs";
+import { join, dirname, basename } from "path";
 import { homedir, arch } from "os";
 import { c } from "./cli-colors.js";
 import { createLogger } from "@pizzapi/tools";
@@ -76,7 +76,7 @@ function loadHostBuildState(): HostBuildState {
 }
 
 function saveHostBuildState(state: HostBuildState): void {
-    mkdirSync(WEB_DIR, { recursive: true });
+    ensureSecureDir(WEB_DIR);
     writeFileSync(HOST_BUILD_STATE_PATH, JSON.stringify(state, null, 2) + "\n");
 }
 
@@ -426,7 +426,7 @@ function migrateLegacySettings(): Partial<WebConfig> {
 
 /** Load config from disk, migrating from legacy formats if needed */
 export function loadWebConfig(): WebConfig {
-    mkdirSync(WEB_DIR, { recursive: true });
+    ensureSecureDir(WEB_DIR);
 
     if (existsSync(CONFIG_PATH)) {
         try {
@@ -514,16 +514,71 @@ export function loadWebConfig(): WebConfig {
  * HOME would write over the caller's real config.
  */
 export function writeJsonSecure(path: string, value: unknown): void {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
-    // `mode` above only applies when writeFileSync CREATES the file. Configs
-    // written before caddyDnsToken existed are already on disk at 0644, so the
-    // token would land world-readable without an explicit chmod.
+    writeFileSecure(path, JSON.stringify(value, null, 2) + "\n");
+}
+
+/**
+ * Create `path` (and any missing parents) as 0700, and repair an existing
+ * directory to 0700. Used for ~/.pizzapi/web, which holds secret-bearing
+ * files (config.json, compose.yml). `mkdirSync`'s `mode` only applies to
+ * directories it creates, so an explicit chmod is needed for existing ones.
+ */
+export function ensureSecureDir(path: string): void {
+    mkdirSync(path, { recursive: true, mode: 0o700 });
     try {
-        chmodSync(path, 0o600);
+        chmodSync(path, 0o700);
     } catch (err) {
         log.warn(`Could not restrict permissions on ${path} (it holds secrets):`, err);
     }
+}
+
+/**
+ * Atomically write a secret-bearing file with mode 0600.
+ *
+ * The content goes to a fresh 0600 temp file in the same directory (created
+ * with O_EXCL, so it is never readable by others even transiently and cannot
+ * follow a planted symlink) and is then renamed over `path`. Renaming also
+ * replaces whatever mode a pre-existing file had — e.g. configs written by
+ * older versions at 0644 — so the result is always 0600.
+ */
+export function writeFileSecure(path: string, content: string): void {
+    const dir = dirname(path);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const tmp = join(dir, `.${basename(path)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
+    try {
+        writeFileSync(tmp, content, { mode: 0o600, flag: "wx" });
+        try {
+            // Normalise in case an unusual umask produced something other than 0600.
+            chmodSync(tmp, 0o600);
+        } catch (err) {
+            log.warn(`Could not restrict permissions on ${path} (it holds secrets):`, err);
+        }
+        renameSync(tmp, path);
+    } catch (err) {
+        rmSync(tmp, { force: true });
+        throw err;
+    }
+}
+
+/**
+ * Write the generated compose.yml (which embeds BETTER_AUTH_SECRET, the VAPID
+ * private key, the ntfy publish token and optional DNS-provider credentials)
+ * as 0600. When the content is unchanged the file is not rewritten, but its
+ * mode is still repaired so a compose.yml left at 0644 by an older version
+ * does not stay world-readable.
+ */
+export function writeComposeSecure(path: string, content: string): "created" | "updated" | "unchanged" {
+    const existing = existsSync(path) ? readFileSync(path, "utf-8") : null;
+    if (existing === content) {
+        try {
+            chmodSync(path, 0o600);
+        } catch (err) {
+            log.warn(`Could not restrict permissions on ${path} (it holds secrets):`, err);
+        }
+        return "unchanged";
+    }
+    writeFileSecure(path, content);
+    return existing === null ? "created" : "updated";
 }
 
 export function saveWebConfig(config: WebConfig): void {
@@ -586,7 +641,7 @@ function getRepoPath(): string {
     }
 
     log.info("Cloning PizzaPi repository...");
-    mkdirSync(WEB_DIR, { recursive: true });
+    ensureSecureDir(WEB_DIR);
     try {
         execFileSync("git", ["clone", "--depth", "1", REPO_URL, clonedRepo], { stdio: "inherit" });
     } catch {
@@ -874,7 +929,7 @@ export function generateComposeFile(opts: {
     uiDistHash?: string;
 }): string {
     const composePath = join(WEB_DIR, "compose.yml");
-    mkdirSync(WEB_DIR, { recursive: true });
+    ensureSecureDir(WEB_DIR);
 
     const { repoPath, config, useDevUi, useLocalUiBuild, imageTag, prebuiltUi, uiDistHash } = opts;
 
@@ -1018,13 +1073,12 @@ export function generateComposeFile(opts: {
         .replace(/\{\{APP_SERVICE_BLOCK}}/g, appServiceBlock + caddyBlock)
         .replace(/\{\{VOLUMES_SECTION}}/g, volumesSection ? volumesSection + caddyVolumes : caddyVolumes ? `volumes:\n${caddyVolumes}` : "");
 
-    // Only write if changed
-    const existing = existsSync(composePath) ? readFileSync(composePath, "utf-8") : null;
-    if (existing === compose) {
+    // Only write if changed; the mode is repaired to 0600 either way.
+    const result = writeComposeSecure(composePath, compose);
+    if (result === "unchanged") {
         log.info(`Config unchanged: ${composePath}`);
     } else {
-        writeFileSync(composePath, compose);
-        log.info(existing ? `Updated ${composePath}` : `Created ${composePath}`);
+        log.info(result === "updated" ? `Updated ${composePath}` : `Created ${composePath}`);
     }
 
     return composePath;

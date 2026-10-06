@@ -17,6 +17,7 @@ import {
     registerTerminal,
 } from "../ws/sio-registry.js";
 import { getRunnerServices } from "../ws/sio-registry/runners.js";
+import { getRunnerOwner } from "../runner-owner.js";
 import { triggerAllowedForCwd } from "./mode-scope.js";
 import { createRoute, deleteRoute, listRoutes, updateRoute, listDeliveries, eventsForIds } from "../events/store.js";
 import { publishEvent } from "../events/engine.js";
@@ -181,7 +182,12 @@ const RUNNER_MCP_RELOAD_RE = /^\/api\/runners\/([^/]+)\/mcp\/reload$/;
 // if runners/spawn is ever served from a cluster, TTLs make stale entries self-clean.
 const SPAWN_IDEMPOTENCY_TTL_MS = 10 * 60_000;
 const EFFORT_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
-const recentSpawnIdempotency = new Map<string, { sessionId: string; ts: number }>();
+const recentSpawnIdempotency = new Map<string, { sessionId: string; userId: string; runnerId: string; ts: number }>();
+
+/** Tenant- and runner-scoped cache key; JSON encoding avoids delimiter collisions. */
+function spawnIdempotencyCacheKey(userId: string, runnerId: string, key: string): string {
+    return `runner-spawn:${JSON.stringify([userId, runnerId, key])}`;
+}
 
 export const handleRunnersRoute: RouteHandler = async (req, url) => {
     // ── List runners ───────────────────────────────────────────────────
@@ -205,17 +211,9 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         const requestedRunnerId = typeof body.runnerId === "string" ? body.runnerId : undefined;
         const requestedCwd = typeof body.cwd === "string" ? body.cwd : undefined;
         const requestedPrompt = typeof body.prompt === "string" ? body.prompt : undefined;
-        const idempotencyKey = typeof body.idempotencyKey === "string" && body.idempotencyKey.length > 0 && body.idempotencyKey.length <= 200
-            ? `runner-spawn:${body.idempotencyKey}`
+        const rawIdempotencyKey = typeof body.idempotencyKey === "string" && body.idempotencyKey.length > 0 && body.idempotencyKey.length <= 200
+            ? body.idempotencyKey as string
             : null;
-        if (idempotencyKey) {
-            // Schedule-driven spawns retry after ambiguous failures; without a
-            // key each retry mints a fresh duplicate replacement session.
-            const cached = recentSpawnIdempotency.get(idempotencyKey);
-            if (cached && Date.now() - cached.ts < SPAWN_IDEMPOTENCY_TTL_MS) {
-                return Response.json({ ok: true, runnerId: body.runnerId, sessionId: cached.sessionId, deduplicated: true });
-            }
-        }
         const requestedImageUrls = Array.isArray(body.imageUrls)
             ? body.imageUrls.filter((u: unknown): u is string => typeof u === "string").slice(0, 8)
             : undefined;
@@ -275,6 +273,34 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
         const runnerId = requestedRunnerId;
         const runner = await getRunnerData(runnerId);
+
+        // Idempotency is scoped to (caller, runner, key). A replay is answered
+        // only after the caller is re-authorized for the runner, so a guessed
+        // or colliding key can never surface another tenant's/runner's
+        // session. Replay must not depend on the runner still being live: a
+        // spawn whose response was lost before the runner disconnected would
+        // otherwise 404 on retry. Offline runners authorize through the
+        // durable owner record instead (fail-closed when none exists).
+        const idempotencyKey = rawIdempotencyKey
+            ? spawnIdempotencyCacheKey(identity.userId, runnerId, rawIdempotencyKey)
+            : null;
+        if (idempotencyKey) {
+            // Schedule-driven spawns retry after ambiguous failures; without a
+            // key each retry mints a fresh duplicate replacement session.
+            const cached = recentSpawnIdempotency.get(idempotencyKey);
+            if (
+                cached
+                && Date.now() - cached.ts < SPAWN_IDEMPOTENCY_TTL_MS
+                && cached.userId === identity.userId
+                && cached.runnerId === runnerId
+            ) {
+                const owner = runner ? runner.userId : await getRunnerOwner(runnerId);
+                if (owner && owner === identity.userId) {
+                    return Response.json({ ok: true, runnerId, sessionId: cached.sessionId, deduplicated: true });
+                }
+            }
+        }
+
         if (!runner) {
             return Response.json({ error: "Runner not found" }, { status: 404 });
         }
@@ -358,7 +384,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         // Only the successful spawn (even ack-pending) is memoized as the
         // idempotent outcome for this key.
         if (idempotencyKey) {
-            recentSpawnIdempotency.set(idempotencyKey, { sessionId, ts: Date.now() });
+            recentSpawnIdempotency.set(idempotencyKey, { sessionId, userId: identity.userId, runnerId, ts: Date.now() });
             if (recentSpawnIdempotency.size > 1000) {
                 const oldest = [...recentSpawnIdempotency.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
                 if (oldest) recentSpawnIdempotency.delete(oldest[0]);

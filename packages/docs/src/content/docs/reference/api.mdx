@@ -166,6 +166,15 @@ Spawn a new agent session on a runner.
 
 If the runner's spawn acknowledgement times out, `pending` is `true`.
 
+An optional `idempotencyKey` (string, up to 200 characters) makes retries safe:
+a repeat request from the same user for the same runner and key within ten
+minutes (per relay process) returns the original `sessionId` with `"deduplicated": true`
+instead of spawning again. Replay re-checks that the caller owns the runner,
+using the durable owner record when the runner is offline, so a retry after a
+lost response still succeeds even if the runner has since disconnected. If
+neither live state nor the durable record names the caller as the owner, the
+cache is not consulted.
+
 ---
 
 ### `POST /api/runners/restart`
@@ -900,7 +909,7 @@ Upload file attachments to a session (e.g. for the agent to process). Accepts on
 
 Download a previously uploaded attachment. Returns the file with appropriate content headers.
 
-**Auth:** Session cookie or API key (via `x-api-key` header or `?apiKey=` query param).
+**Auth:** Session cookie, API key in the `x-api-key` header, or a short-lived attachment-scoped `?token=` minted by `POST /api/attachments/{attachmentId}/token` (used by the mobile app for `<img>` URLs). A durable API key in the `?apiKey=` query parameter is rejected with `401`, because URLs end up in proxy logs and history. Relays that must still serve mobile builds predating scoped tokens can set `PIZZAPI_ALLOW_ATTACHMENT_QUERY_API_KEY=true` temporarily; each such request is logged as deprecated.
 
 **Response:** Binary file with headers:
 - `Content-Type` — the attachment's MIME type
@@ -922,6 +931,40 @@ event types can't cross-fire between users even when their names collide.
 config-file Route (`PIZZAPI_ROUTES_FILE`) with no `ownerUserId`: it is
 operator-level and matches all users. Legacy rows whose owner could not be
 backfilled at startup match nothing (they're logged and remain deletable).
+
+**Config session targets are bound to a principal.** A config-file Route with a
+`session` target must name the user who owns that session, either as
+`target.ownerUserId` or (for a tenant-scoped route) through the route's
+`ownerUserId`, which is the default. The relay refuses to load a routes file
+with an unbound session target. Only a session registered by the bound
+user receives the route's deliveries, whether live or drained on
+registration. The target session ID stays reserved for that user after the
+session's ownership record is pruned: another user who registers that ID is
+given a fresh session ID instead. Rows synced before this requirement that
+have no binding deliver to nobody until the file is fixed. `target.ownerUserId`
+is ignored on API-created routes.
+
+A live delivery requires the target session's current ownership record to
+name the bound user; a missing record is treated as a mismatch, and the
+delivery stays queued. The bound user is also recorded on each queued
+Delivery when it is created, so removing or changing the route (a config
+reload, session cleanup, or an edit that changes the route's ID) never
+releases already-queued deliveries to anyone else. At startup the relay
+backfills this field on deliveries queued by an older version from their
+route; a queued config delivery whose route is already gone is delivered to
+nobody.
+
+```json
+{
+  "routes": [
+    {
+      "eventType": "github:pr_comment",
+      "target": { "kind": "session", "sessionId": "ops-session", "ownerUserId": "operator-user-id" },
+      "deliverAs": "followUp"
+    }
+  ]
+}
+```
 
 ### `POST /api/events` — publish an Event
 
@@ -1062,7 +1105,10 @@ The `action` must be one of the event's declared contract actions, when any.
 
 Routes are subscriptions (ADR-0002): an event type + a target (a session, or a
 spawn spec for auto-spawn listeners). Query: `eventType`. Only routes the caller
-owns (or ownerless config/legacy routes they can manage) are returned. There is
+owns (directly, or through the route's session or runner owner for legacy rows)
+are returned. Legacy routes whose owner cannot be resolved from any record are
+quarantined: they never match events and are hidden from ordinary users; only
+users listed in `PIZZAPI_ROUTE_RECOVERY_USER_IDS` see them. There is
 no `GET /api/routes/{routeId}` endpoint; list routes and filter client-side when
 you need one route by id.
 
@@ -1084,8 +1130,12 @@ emit an unsubscribe reconcile delta per session route. Config-origin routes
 are skipped and counted. Intended for cleaning up after a dead runner.
 
 **Auth:** API key or session cookie; the caller must own the runner (live state
-or the durable owner record). Runners with no resolvable owner are cleanable by
-any authenticated user.
+or the durable owner record). For a runner with no resolvable owner, a caller
+removes only routes stamped with their own `ownerUserId`; unstamped routes on
+such a runner can be removed only by a user listed in
+`PIZZAPI_ROUTE_RECOVERY_USER_IDS`, and only when no record resolves an owner
+for the route itself. Routes stamped for another user (on the route or in its
+spawn spec) are never selected by recovery cleanup.
 
 **Response:**
 
@@ -1167,7 +1217,10 @@ session target must be owned by the caller.
 
 Unsubscribe. Sessions that have ended remain manageable: authorization falls
 back through the route's stamped runner owner, so a standing schedule is
-always cancellable.
+always cancellable by its owner. A legacy route with no resolvable owner
+returns `404` to ordinary users; a user listed in
+`PIZZAPI_ROUTE_RECOVERY_USER_IDS` may delete it (but `PUT` on such a route
+returns `403`, so recovery never adopts or re-arms it).
 
 **Auth:** API key or session cookie.
 
@@ -1377,23 +1430,18 @@ Delete a webhook.
 
 Fire a webhook — publishes a `webhook:<slug>` Event and delivers it through all matching Routes. A Route may target an existing session or spawn a new one, so a fire can reach multiple sessions. **No session cookie required** — authenticated via HMAC signature.
 
-**Auth:** HMAC-SHA256 signature of the request body using the webhook's `secret`. Two modes are supported and auto-detected by header presence:
+**Auth:** HMAC-SHA256 signature using the webhook's `secret`:
 
-- **Legacy mode** (default): sign the raw request body and send only `X-Webhook-Signature`.
-- **Enhanced mode** (replay-protected): sign `${timestamp}.${nonce}.${rawBody}` and include `X-Webhook-Timestamp` (ISO string or RFC3339) and `X-Webhook-Nonce` headers. The timestamp must be within a 5-minute window and the nonce must be unique per delivery.
+- **Enhanced mode** (required by default, replay-protected): sign `${timestamp}.${nonce}.${rawBody}` and include `X-Webhook-Timestamp` (ISO string or RFC3339) and `X-Webhook-Nonce` headers. The timestamp must be within a 5-minute window and the nonce must be unique per delivery. Sending only one of the two headers returns `401`.
+- **Legacy mode** (deprecated): sign the raw request body and send only `X-Webhook-Signature`. Rejected with `401` unless the relay sets `PIZZAPI_WEBHOOK_ALLOW_LEGACY_SIGNATURES=true`; when enabled, an identical signed body is accepted at most once per webhook per 24 hours (`409` on repeat). Attempts that fail with `403` (runner unavailable), `500`, or `503` do not count, so the identical request can be retried.
 
 **Headers:**
 
 ```http
 X-Webhook-Signature: <hex-encoded HMAC-SHA256>
-Content-Type: application/json
-```
-
-For enhanced mode, also include:
-
-```http
 X-Webhook-Timestamp: 2025-01-15T12:00:00.000Z
 X-Webhook-Nonce: <unique nonce>
+Content-Type: application/json
 ```
 
 **Response:**
@@ -1457,6 +1505,18 @@ Subscribe the browser to push notifications.
   "enabledEvents": "question,error"   // optional comma-separated event list
 }
 ```
+
+`endpoint` must be an `https://` URL. IPv4-literal hosts must be public unicast
+addresses and `localhost` names are rejected (`400`). IPv6-literal hosts
+(`https://[2001:…]/…`, including IPv4-mapped forms) are not supported and are
+rejected with `400` and the error `IPv6-literal hosts are not supported; use a
+DNS hostname`: the pinned Bun runtime cannot verify a TLS certificate for an
+IPv6-literal host. Browser push services use DNS hostnames, so this does not
+affect normal subscriptions. Rows stored before this restriction are refused
+at delivery time with the same reason. At delivery time the relay
+resolves the endpoint host, skips delivery if **any** resolved address is
+loopback, private, link-local, CGNAT, multicast, or otherwise non-global, and
+connects only to the validated addresses (redirects are not followed).
 
 **Response:**
 
@@ -1642,3 +1702,70 @@ Runner-based tunnel proxy (preferred). Same as above but addressed by runner ID 
 **Auth:** Session cookie (must own the runner).
 
 The request is forwarded to `127.0.0.1:{port}` on the runner. HTML, JS, and CSS responses are rewritten to route absolute paths through the tunnel prefix. Auth headers (`Cookie`, `Authorization`, `x-api-key`, `Referer`) and hop-by-hop headers (`Host`, `Accept-Encoding`, etc.) are stripped before forwarding. `apiKey` and `tunnelToken` query parameters are removed from the forwarded URL.
+
+A browser navigation (not an API call) to either cookie path is redirected to
+the equivalent signed `/api/tunnel/auth/…` path below; see
+[Tunnel origin isolation](/PizzaPi/features/tunnels/#origin-isolation).
+
+---
+
+### `POST /api/tunnel-token`
+
+Mint a self-authenticating tunnel URL for one session or runner port. The web
+UI, the mobile app, and the `create_tunnel`/`list_tunnels` tools use it so a
+tunnel can load without a relay cookie. This path is not under the
+`/api/tunnel/` prefix.
+
+**Auth:** Session cookie or API key (`x-api-key` header). The caller must own
+the session (`sessionId`) or the runner (`runnerId`).
+
+**Request body:**
+
+```json
+{
+  "sessionId": "uuid",   // or "runnerId": "runner-id" (one is required)
+  "port": 3000,           // integer 1–65535
+  "ttlHours": 24          // optional, 1–168
+}
+```
+
+**Response:**
+
+```json
+{
+  "token": "…",
+  "expiresAt": "2026-01-01T00:00:00.000Z",
+  "url": "/api/tunnel/auth/<token>/<scope>/3000/",
+  "hostUrl": "https://<label>.tunnels.example.com/"
+}
+```
+
+The signed token expires after one hour unless `ttlHours` is given. `hostUrl`
+is present only when `PIZZAPI_TUNNEL_DOMAIN` is configured and Redis is
+reachable; that label expires after 6 idle hours (or after `ttlHours` when
+given). Errors: `400` (invalid JSON, missing ID, invalid `port` or `ttlHours`),
+`401` (not signed in), `403` (not the owner), `404` (unknown session or
+runner), `405` (not `POST`), `503` (session has no runner).
+
+Treat `url` and `hostUrl` as secrets: anyone holding them can reach the port
+until they expire.
+
+---
+
+### `* /api/tunnel/auth/{token}/{scope}/{port}/*`
+
+Signed tunnel proxy. `{scope}` is the session ID, or `runner:{runnerId}` for a
+runner-scoped token (URL-encoded), and must match the token together with
+`{port}`.
+
+**Auth:** The token in the path; no cookie or API key. A token is rejected
+with `401` when it is invalid, expired, minted for a different scope or port,
+or when its session has ended or the session/runner no longer belongs to the
+user who minted it.
+
+Forwarding, rewriting, and header stripping match the cookie paths above.
+Responses keep the `sandbox` CSP and may be framed cross-origin: the relay
+drops `X-Frame-Options` and removes only the `frame-ancestors` directive from
+the app's own `Content-Security-Policy`. CORS requests from the sandbox's
+`null` origin are answered so the app's own `fetch`, module scripts, and fonts
+keep working. WebSocket upgrades on this path are proxied the same way.

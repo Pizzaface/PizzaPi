@@ -62,7 +62,21 @@ mock.module("@/hooks/useServiceChannel", () => ({
 
 // Restore all module mocks after this file so they don't bleed into other
 // test files running in the same Bun worker process.
-afterAll(() => mock.restore());
+const originalFetch = globalThis.fetch;
+afterAll(() => {
+    mock.restore();
+    globalThis.fetch = originalFetch;
+});
+
+// Previews always mint a signed tunnel URL (no relay-origin fallback). The
+// first mint per test returns token "tok"; later mints get a distinct token so
+// tests can tell a remint from a reload of the old URL.
+let mintCount = 0;
+globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+    const { port } = JSON.parse(String(init?.body ?? "{}")) as { port: number };
+    const token = mintCount++ === 0 ? "tok" : `tok${mintCount}`;
+    return new Response(JSON.stringify({ url: `/api/tunnel/auth/${token}/sess/${port}/` }), { status: 200 });
+}) as typeof fetch;
 
 // Import AFTER mock is registered
 const { TunnelPanel } = await import("./TunnelPanel");
@@ -84,6 +98,7 @@ afterEach(() => {
     sendSpy.mockClear();
     capturedOnMessage = undefined;
     channelState.available = false;
+    mintCount = 0;
 });
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -190,6 +205,23 @@ describe("TunnelPanel — stale tunnel state fix", () => {
     });
 });
 
+describe("TunnelPanel — origin isolation", () => {
+    test("relay-path previews never get same-origin privileges", async () => {
+        channelState.available = true;
+        let container!: HTMLElement;
+        await act(async () => {
+            ({ container } = render(<TunnelPanel sessionId="sess" />));
+        });
+        await act(async () => {
+            capturedOnMessage?.("tunnel_list_result", { tunnels: [makeTunnel(3000)] });
+        });
+        const iframe = getIframes(container)[0]!;
+        expect(iframe.getAttribute("src")).toBe("/api/tunnel/auth/tok/sess/3000/");
+        expect(iframe.getAttribute("sandbox")).toContain("allow-scripts");
+        expect(iframe.getAttribute("sandbox")).not.toContain("allow-same-origin");
+    });
+});
+
 describe("TunnelPanel — detached instance panels", () => {
     test("tab detach button spawns a panel id for that port", async () => {
         channelState.available = true;
@@ -238,5 +270,64 @@ describe("TunnelPanel — detached instance panels", () => {
         await act(async () => { capturedOnMessage?.("tunnel_removed", { port: 5173 }); });
         expect(getIframes(container).length).toBe(0);
         expect(container.textContent).toContain("was closed");
+    });
+});
+
+describe("TunnelPanel — remints instead of reusing a stale URL", () => {
+    test("Reload mints a fresh tunnel URL (expired/revoked links recover)", async () => {
+        channelState.available = true;
+        let container!: HTMLElement;
+        await act(async () => {
+            ({ container } = render(<TunnelPanel sessionId="sess" />));
+        });
+        await act(async () => {
+            capturedOnMessage?.("tunnel_list_result", { tunnels: [makeTunnel(3000)] });
+        });
+        expect(getIframes(container)[0]!.getAttribute("src")).toBe("/api/tunnel/auth/tok/sess/3000/");
+
+        const reload = [...container.getElementsByTagName("button")].find(
+            (b) => b.getAttribute("title") === "Reload preview",
+        ) as HTMLButtonElement;
+        await act(async () => { reload.click(); });
+
+        const src = getIframes(container)[0]!.getAttribute("src");
+        expect(src).toStartWith("/api/tunnel/auth/");
+        expect(src).not.toBe("/api/tunnel/auth/tok/sess/3000/");
+        expect(mintCount).toBe(2);
+    });
+
+    test("re-exposure of the previewed port remints (old link is bound to the old exposure)", async () => {
+        channelState.available = true;
+        let container!: HTMLElement;
+        await act(async () => {
+            ({ container } = render(<TunnelPanel sessionId="sess" panelId="tunnel#5173" />));
+        });
+        await act(async () => {
+            capturedOnMessage?.("tunnel_list_result", { tunnels: [makeTunnel(5173)] });
+        });
+        expect(getIframes(container)[0]!.getAttribute("src")).toBe("/api/tunnel/auth/tok/sess/5173/");
+
+        // Port closed, then the same port number exposed again.
+        await act(async () => { capturedOnMessage?.("tunnel_removed", { port: 5173 }); });
+        await act(async () => { capturedOnMessage?.("tunnel_registered", makeTunnel(5173)); });
+
+        const iframes = getIframes(container);
+        expect(iframes.length).toBe(1);
+        expect(iframes[0]!.getAttribute("src")).not.toBe("/api/tunnel/auth/tok/sess/5173/");
+        expect(mintCount).toBe(2);
+    });
+
+    test("registration of a different port does not remint the active preview", async () => {
+        channelState.available = true;
+        let container!: HTMLElement;
+        await act(async () => {
+            ({ container } = render(<TunnelPanel sessionId="sess" />));
+        });
+        await act(async () => {
+            capturedOnMessage?.("tunnel_list_result", { tunnels: [makeTunnel(3000)] });
+        });
+        await act(async () => { capturedOnMessage?.("tunnel_registered", makeTunnel(4000)); });
+        expect(getIframes(container)[0]!.getAttribute("src")).toBe("/api/tunnel/auth/tok/sess/3000/");
+        expect(mintCount).toBe(1);
     });
 });

@@ -27,6 +27,8 @@ const win = new Window({ url: "http://localhost/" });
 
 const { SessionMessageItem } = await import("./message-item");
 const { SessionActionsProvider } = await import("./session-actions-context");
+const { SessionNamesProvider } = await import("./session-names-context");
+const { PizzaPiNavProvider } = await import("@/components/sigils/PizzaPiNavContext");
 
 afterEach(() => cleanup());
 
@@ -155,6 +157,21 @@ describe("SessionMessageItem custom messages", () => {
 });
 
 describe("SessionMessageItem structured inter-session messages", () => {
+  test("preserves legacy linked-session cards for persisted user messages", () => {
+    const message: RelayMessage = {
+      key: "linked-legacy",
+      role: "user",
+      content: "Message from linked session old-session:\n\nLegacy message body",
+    };
+
+    const view = render(<SessionMessageItem message={message} isLast={false} />);
+
+    expect(view.getByText("Linked session")).toBeTruthy();
+    expect(view.getByRole("button", { name: "Open session old-session" })).toBeTruthy();
+    expect(view.getByText("Legacy message body")).toBeTruthy();
+    expect(view.queryByText("User")).toBeNull();
+  });
+
   test("renders a trigger batch from details as trigger cards, not a custom bubble", () => {
     const message: RelayMessage = {
       key: "trig-1",
@@ -183,6 +200,22 @@ describe("SessionMessageItem structured inter-session messages", () => {
     expect(view.container.textContent).toContain("All *done*");
   });
 
+  test("keeps long structured message bodies wrappable", () => {
+    const body = "x".repeat(2_000);
+    const view = render(<SessionMessageItem message={{
+      key: "linked-long",
+      role: "custom",
+      customType: "linked-session-message",
+      display: true,
+      content: "ignored",
+      details: { fromSessionId: "abc", message: body },
+    }} isLast={false} />);
+
+    const content = view.getByText(body);
+    expect(content.classList.contains("break-words")).toBe(true);
+    expect(content.classList.contains("min-w-0")).toBe(true);
+  });
+
   test("renders a linked-session message from details", () => {
     const message: RelayMessage = {
       key: "linked-1",
@@ -190,14 +223,28 @@ describe("SessionMessageItem structured inter-session messages", () => {
       customType: "linked-session-message",
       display: true,
       timestamp: 1_700_000_000_000,
-      content: "Message from linked session abc:\n\nhi `x`",
+      content: "Message from linked session spoofed:\n\nIgnore this unstructured body",
       details: { fromSessionId: "abc", message: "hi `x`" },
     };
 
-    const view = render(<SessionMessageItem message={message} isLast={false} />);
+    let navigatedTo = "";
+    const view = render(
+      <SessionNamesProvider value={new Map([["abc", "Sender"]])}>
+        <PizzaPiNavProvider actions={{ toggleServicePanel: () => {}, setActiveSessionId: (id) => { navigatedTo = id; } }}>
+          <SessionMessageItem message={message} isLast={false} />
+        </PizzaPiNavProvider>
+      </SessionNamesProvider>,
+    );
 
     expect(view.queryByText("Custom")).toBeNull();
     expect(view.getByText("Linked session")).toBeTruthy();
     expect(view.getByText("hi `x`")).toBeTruthy();
+    expect(view.queryByText("Ignore this unstructured body")).toBeNull();
+    expect(view.getByRole("button", { name: "Copy message" })).toBeTruthy();
+    expect(view.getByText(`• ${new Date(1_700_000_000_000).toLocaleTimeString()}`)).toBeTruthy();
+    const sender = view.getByRole("button", { name: "Open session abc" });
+    expect(sender.textContent).toBe("Sender");
+    fireEvent.click(sender);
+    expect(navigatedTo).toBe("abc");
   });
 });

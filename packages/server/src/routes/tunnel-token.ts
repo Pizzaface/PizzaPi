@@ -18,6 +18,12 @@ export interface TunnelTokenPayload {
     aud?: string;
     iat?: number;
     kid?: string;
+    /**
+     * Millisecond mint time (same instant as `iat`). The runner refuses a
+     * capability minted before the port was last closed; whole-second `iat`
+     * alone would make a link minted just after a close look older than it is.
+     */
+    iatMs?: number;
 }
 
 function base64url(input: string): string {
@@ -47,7 +53,9 @@ function deriveKid(secret: string): string {
  * unconfigured deploys keep working without code changes.
  *
  * Rotation: set PIZZAPI_TUNNEL_TOKEN_SECRET_PREVIOUS to the old secret;
- * tokens signed with it are still accepted until they expire (up to 1 h).
+ * tokens signed with it are still accepted until they expire. Callers may
+ * request lifetimes up to LABEL_MAX_TTL_HOURS (168 h) and the UI mints 24 h
+ * tokens, so keep the previous secret for the longest lifetime issued.
  */
 function getTunnelSecret(): string {
     return process.env.PIZZAPI_TUNNEL_TOKEN_SECRET ?? getAuthContext().config.secret;
@@ -84,6 +92,7 @@ export function createTunnelToken(
         aud: TUNNEL_TOKEN_AUD,
         iat,
         kid,
+        iatMs: Math.floor(nowMs),
     };
     const encodedPayload = base64url(JSON.stringify(payload));
     const signature = signPayload(encodedPayload, secret);
@@ -170,6 +179,25 @@ export async function assertTunnelTokenStillValid(payload: TunnelTokenPayload): 
     if (ownerId !== payload.userId) {
         throw new Error("Tunnel token revoked");
     }
+}
+
+/**
+ * How long ago a verified token was minted. Sent to the runner as
+ * `capabilityAgeMs` so it can refuse tokens minted for an earlier exposure of
+ * a since-reused port. Legacy tokens (no `iat`) had a fixed 1 h lifetime, so
+ * their issue time is exp − 1 h.
+ */
+export function tunnelTokenAgeMs(payload: TunnelTokenPayload, nowMs = Date.now()): number {
+    const issuedAtSec = typeof payload.iat === "number" && Number.isFinite(payload.iat)
+        ? payload.iat
+        : payload.exp - TUNNEL_TOKEN_TTL_MS / 1000;
+    let issuedAtMs = issuedAtSec * 1000;
+    // Prefer the millisecond mint time when it agrees with the whole-second iat.
+    if (typeof payload.iatMs === "number" && Number.isFinite(payload.iatMs)
+        && Math.floor(payload.iatMs / 1000) === issuedAtSec) {
+        issuedAtMs = payload.iatMs;
+    }
+    return Math.max(0, nowMs - issuedAtMs);
 }
 
 export function getAuthTunnelBasePath(token: string, sessionId: string, port: number): string {

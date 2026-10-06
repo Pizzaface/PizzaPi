@@ -3,6 +3,7 @@ import {
     _injectRedisForTesting,
     _resetRedisKvStoreForTesting,
     consumeNonceOnce,
+    releaseNonce,
     getValue,
     setValue,
     deleteValue,
@@ -105,6 +106,17 @@ describe("consumeNonceOnce", () => {
         expect(await consumeNonceOnce("a", nonce, ttlMs)).toBe(true);
         expect(await consumeNonceOnce("b", nonce, ttlMs)).toBe(true);
         expect(await consumeNonceOnce("a", nonce, ttlMs)).toBe(false);
+    });
+
+    test("releaseNonce lets a released nonce be consumed again (Redis and memory)", async () => {
+        expect(await consumeNonceOnce("webhook-legacy", "sig", 60_000)).toBe(true);
+        expect(await consumeNonceOnce("webhook-legacy", "sig", 60_000)).toBe(false);
+        await releaseNonce("webhook-legacy", "sig");
+        expect(await consumeNonceOnce("webhook-legacy", "sig", 60_000)).toBe(true);
+        // Other namespaces are untouched by a release.
+        expect(await consumeNonceOnce("webhook", "sig", 60_000)).toBe(true);
+        await releaseNonce("webhook-legacy", "sig");
+        expect(await consumeNonceOnce("webhook", "sig", 60_000)).toBe(false);
     });
 
     test("falls back to in-memory store when Redis is disabled", async () => {

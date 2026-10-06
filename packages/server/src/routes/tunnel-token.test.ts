@@ -24,6 +24,7 @@ const {
     verifyTunnelToken,
     assertTunnelTokenStillValid,
     TUNNEL_TOKEN_AUD,
+    tunnelTokenAgeMs,
 } = await import("./tunnel-token.js");
 
 // Helpers to manipulate env vars during a test
@@ -204,6 +205,37 @@ describe("tunnel token — rotation (previous secret)", () => {
         });
     });
 
+    test("previous-key tokens stay valid for their full requested lifetime (up to 168 h), not 1 h", () => {
+        const ctx = createTestAuthContext({ dbPath: ":memory:", secret: "auth-secret-aaaaaaaaaaaaaaaaaaaaaa" });
+        const oldSecret = "old-secret-gggggggggggggggggggggggggggg";
+        const newSecret = "new-secret-hhhhhhhhhhhhhhhhhhhhhhhhhhhh";
+        const HOUR = 3600 * 1000;
+        // Longest lifetime handleTunnelTokenMint accepts (LABEL_MAX_TTL_HOURS).
+        const maxTtlMs = 168 * HOUR;
+
+        let oldToken: string;
+        withEnv({ PIZZAPI_TUNNEL_TOKEN_SECRET: oldSecret, PIZZAPI_TUNNEL_TOKEN_SECRET_PREVIOUS: undefined }, () => {
+            runWithAuthContext(ctx, () => {
+                oldToken = createTunnelToken({ userId: "u-1", sessionId: "s-1", port: 3000, ttlMs: maxTtlMs }, 0).token;
+            });
+        });
+
+        withEnv({ PIZZAPI_TUNNEL_TOKEN_SECRET: newSecret, PIZZAPI_TUNNEL_TOKEN_SECRET_PREVIOUS: oldSecret }, () => {
+            runWithAuthContext(ctx, () => {
+                // Well past the 1 h the rotation guide used to assume.
+                expect(verifyTunnelToken(oldToken!, 2 * HOUR)).not.toBeNull();
+                expect(verifyTunnelToken(oldToken!, maxTtlMs - HOUR)).not.toBeNull();
+                expect(verifyTunnelToken(oldToken!, maxTtlMs + 1_000)).toBeNull();
+            });
+        });
+        // Dropping the previous secret early cuts those live links off.
+        withEnv({ PIZZAPI_TUNNEL_TOKEN_SECRET: newSecret, PIZZAPI_TUNNEL_TOKEN_SECRET_PREVIOUS: undefined }, () => {
+            runWithAuthContext(ctx, () => {
+                expect(verifyTunnelToken(oldToken!, 2 * HOUR)).toBeNull();
+            });
+        });
+    });
+
     test("rejects previous-key token once previous secret is removed", () => {
         const ctx = createTestAuthContext({ dbPath: ":memory:", secret: "auth-secret-aaaaaaaaaaaaaaaaaaaaaa" });
 
@@ -308,5 +340,38 @@ describe("assertTunnelTokenStillValid", () => {
                 exp: 1_000_000,
             }),
         ).rejects.toThrow("Tunnel token revoked");
+    });
+});
+
+describe("tunnelTokenAgeMs (F04 exposure binding)", () => {
+    test("measures age from iat so the runner can reject tokens minted for an earlier exposure", () => {
+        const ctx = createTestAuthContext({ dbPath: ":memory:" });
+        runWithAuthContext(ctx, () => {
+            const { token } = createTunnelToken({ userId: "u-1", sessionId: "s-1", port: 3000 }, 10_000_000);
+            const payload = verifyTunnelToken(token, 10_000_000)!;
+            expect(tunnelTokenAgeMs(payload, 10_000_000 + 90_000)).toBe(90_000);
+        });
+    });
+
+    test("ages new tokens with millisecond precision so a link minted just after a close is not mistaken for an older one", () => {
+        const ctx = createTestAuthContext({ dbPath: ":memory:" });
+        runWithAuthContext(ctx, () => {
+            const { token } = createTunnelToken({ userId: "u-1", sessionId: "s-1", port: 3000 }, 10_000_750);
+            const payload = verifyTunnelToken(token, 10_000_750)!;
+            // Whole-second iat alone would report 1 000 ms.
+            expect(tunnelTokenAgeMs(payload, 10_001_000)).toBe(250);
+        });
+    });
+
+    test("ignores an iatMs that disagrees with the whole-second iat", () => {
+        expect(tunnelTokenAgeMs({ v: 1, userId: "u", sessionId: "s", port: 1, exp: 99_999, iat: 10_000, iatMs: 50 }, 10_000_500)).toBe(500);
+    });
+
+    test("legacy tokens without iat are aged from their fixed 1 h lifetime", () => {
+        expect(tunnelTokenAgeMs({ v: 1, userId: "u", sessionId: "s", port: 1, exp: 7_200 }, 7_200_000)).toBe(3_600_000);
+    });
+
+    test("never reports a negative age", () => {
+        expect(tunnelTokenAgeMs({ v: 1, userId: "u", sessionId: "s", port: 1, exp: 99_999, iat: 5_000 }, 1_000)).toBe(0);
     });
 });

@@ -25,7 +25,7 @@ afterAll(() => mock.restore());
 
 const VALID = {
   routes: [
-    { eventType: "github:pr_comment", target: { kind: "session", sessionId: "s1" }, deliverAs: "followUp" },
+    { eventType: "github:pr_comment", target: { kind: "session", sessionId: "s1", ownerUserId: "user-x" }, deliverAs: "followUp" },
     { eventType: "schedule:nightly", target: { kind: "spawn", spec: { runnerId: "r1", cwd: "/tmp" } }, deliverAs: "steer" },
   ],
 };
@@ -48,6 +48,17 @@ describe("config routes", () => {
     expect(() =>
       cfg.parseRoutesFile(JSON.stringify({ routes: [{ eventType: "bad", target: { kind: "session", sessionId: "s" }, deliverAs: "steer" }] })),
     ).toThrow(/invalid eventType/);
+  });
+
+  it("requires session targets to be bound to a principal (R5)", () => {
+    const route = (extra: Record<string, unknown>, target: Record<string, unknown> = {}) => JSON.stringify({
+      routes: [{ eventType: "cfg:x", target: { kind: "session", sessionId: "ops", ...target }, deliverAs: "steer", ...extra }],
+    });
+    expect(() => cfg.parseRoutesFile(route({}))).toThrow(/target\.ownerUserId/);
+    expect(() => cfg.parseRoutesFile(route({}, { ownerUserId: "" }))).toThrow(/invalid target/);
+    expect(cfg.parseRoutesFile(route({}, { ownerUserId: "operator" }))[0].target).toMatchObject({ ownerUserId: "operator" });
+    // A tenant-scoped config route is bound to its tenant by default.
+    expect(cfg.parseRoutesFile(route({ ownerUserId: "tenant" }))).toHaveLength(1);
   });
 
   it("syncs from a file and clears when the file goes away", async () => {

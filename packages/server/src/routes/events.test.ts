@@ -295,6 +295,25 @@ describe("events HTTP surface", () => {
     expect(deleted!.status).toBe(200);
   });
 
+  it("never stores a client-supplied config target binding on API routes (R5)", async () => {
+    const created = await call(routes, "POST", "/api/routes", {
+      eventType: "t:bind",
+      target: { kind: "session", sessionId: "owned", ownerUserId: "someone-else" },
+      deliverAs: "steer",
+      origin: "ui",
+    });
+    expect(created!.status).toBe(200);
+    const { route } = (await created!.json()) as any;
+    expect(route.target.ownerUserId).toBeUndefined();
+    const updated = await call(routes, "PUT", `/api/routes/${route.routeId}`, {
+      target: { kind: "session", sessionId: "owned", ownerUserId: "someone-else" },
+    });
+    expect(((await updated!.json()) as any).route.target.ownerUserId).toBeUndefined();
+    const stored = await store.getRoute(route.routeId);
+    expect(stored?.target.kind).toBe("session");
+    expect(stored?.target.kind === "session" ? stored.target.ownerUserId : "n/a").toBeUndefined();
+  });
+
   it("rejects malformed route fields on create and update", async () => {
     const valid = {
       eventType: "test:route",
@@ -806,6 +825,54 @@ describe("events HTTP surface", () => {
     expect(originalDelivery?.status).toBe("responded");
   });
 
+  it("escalation originalTriggerId never resolves another tenant's delivery or fireId (F12)", async () => {
+    // Victim (u2) contract-bearing event + completion-style delivery.
+    const victim = await store.insertEvent({
+      type: "lifecycle:session_complete",
+      source: { kind: "session", id: "stranger-child", auth: "cookie", userId: "u2" },
+      payload: {},
+      responseContract: { ttlMs: 60_000 },
+    }, "victim-fire-1");
+    const victimDelivery = await store.createDelivery({
+      eventId: victim.event.eventId,
+      eventType: "lifecycle:session_complete",
+      sessionId: "stranger",
+      deliverAs: "followUp",
+    });
+    expect(victimDelivery).not.toBeNull();
+
+    for (const originalTriggerId of [victimDelivery!.deliveryId, "victim-fire-1"]) {
+      responses.length = 0;
+      const pub = await call(routes, "POST", "/api/events", {
+        type: "lifecycle:escalation",
+        payload: { reason: "probe", originalTriggerId },
+        responseContract: { escalate: false },
+        fireId: `escalate:${originalTriggerId}`,
+        source: { kind: "session", id: "child" },
+        target: { sessionId: "owned" },
+      });
+      expect(pub!.status).toBe(200);
+      const { deliveries } = (await pub!.json()) as any;
+      const res = await call(routes, "POST", `/api/deliveries/${deliveries[0].deliveryId}/response`, {
+        response: "hijack",
+      });
+      expect(res!.status).toBe(200);
+
+      // Victim delivery untouched, and nothing relayed to the victim's session.
+      const after = await store.getDelivery(victimDelivery!.deliveryId);
+      expect(after?.status).toBe("pending");
+      expect(after?.response).toBeUndefined();
+      expect(responses.some((r) => r.sessionId === "stranger" || r.sessionId === "stranger-child")).toBe(false);
+      // The relay stays with the publisher's own source session.
+      const relay = responses.find((r) => r.event === "trigger_response");
+      expect(relay?.sessionId).toBe("child");
+    }
+
+    // A same-tenant fireId still resolves (scoped lookup keeps legacy senders working).
+    expect(await store.getEventByFireId("victim-fire-1", "u2")).not.toBeNull();
+    expect(await store.getEventByFireId("victim-fire-1", "u1")).toBeNull();
+  });
+
   it("feed is scoped to events the caller sourced or received", async () => {
     // Visible: published with a direct target into an owned session.
     const mine = await call(routes, "POST", "/api/events", {
@@ -943,6 +1010,23 @@ describe("dead-runner route cleanup", () => {
     ]));
   });
 
+  it("DELETE /api/runners/:id/routes on an owned runner never deletes foreign-stamped routes (R2 P3)", async () => {
+    await seedRunner("runner-dead", "u1");
+    const mine = await store.createRoute({
+      eventType: "time:cron", target: { kind: "session", sessionId: "gone", runnerId: "runner-dead" },
+      deliverAs: "followUp", origin: "agent", ownerUserId: "u1",
+    });
+    const foreign = await store.createRoute({
+      eventType: "time:cron", target: { kind: "session", sessionId: "theirs", runnerId: "runner-dead" },
+      deliverAs: "followUp", origin: "agent", ownerUserId: "u2",
+    });
+    const res = await call(routes, "DELETE", "/api/runners/runner-dead/routes");
+    expect(await res!.json()).toEqual({ ok: true, removed: 1, skipped: 0 });
+    const remaining = (await store.listRoutes()).map((r) => r.routeId);
+    expect(remaining).toEqual([foreign.routeId]);
+    expect(remaining).not.toContain(mine.routeId);
+  });
+
   it("DELETE /api/runners/:id/routes is owner-gated (404 shape) and allows ownerless runners", async () => {
     await seedRunner("runner-theirs", "u2");
     await store.createRoute({
@@ -953,12 +1037,123 @@ describe("dead-runner route cleanup", () => {
     expect(denied!.status).toBe(404);
     expect(await store.listRoutes()).toHaveLength(1);
 
-    // Never registered since runner_owner landed → any authenticated user may clean up.
+    // Never registered since runner_owner landed → a tenant may clean up the
+    // routes explicitly stamped with their own ownerUserId.
     await store.createRoute({
       eventType: "hook:b", target: { kind: "spawn", spec: { runnerId: "runner-orphan" } },
       deliverAs: "steer", origin: "agent", ownerUserId: "u1",
     });
     const ok = await call(routes, "DELETE", "/api/runners/runner-orphan/routes");
     expect(await ok!.json()).toEqual({ ok: true, removed: 1, skipped: 0 });
+  });
+
+  describe("ownerless legacy routes are quarantined (F13)", () => {
+    const prevRecovery = process.env.PIZZAPI_ROUTE_RECOVERY_USER_IDS;
+    beforeAll(async () => {
+      // Minimal persisted-session table so ownership falls through every
+      // record (live → persisted → runner) and resolves to nobody.
+      await memDb.schema.createTable("relay_session").ifNotExists()
+        .addColumn("id", "text", (c) => c.primaryKey())
+        .addColumn("userId", "text")
+        .addColumn("runnerId", "text")
+        .addColumn("cwd", "text")
+        .execute();
+    });
+    afterEach(() => {
+      if (prevRecovery === undefined) delete process.env.PIZZAPI_ROUTE_RECOVERY_USER_IDS;
+      else process.env.PIZZAPI_ROUTE_RECOVERY_USER_IDS = prevRecovery;
+    });
+
+    /** Legacy rows the startup backfill could not stamp: no owner by any record. */
+    async function seedOrphans() {
+      const session = await store.createRoute({
+        eventType: "time:cron", target: { kind: "session", sessionId: "ghost-session" },
+        deliverAs: "followUp", origin: "agent",
+      });
+      const spawn = await store.createRoute({
+        eventType: "hook:legacy", target: { kind: "spawn", spec: { runnerId: "runner-orphan" } },
+        deliverAs: "steer", origin: "agent",
+      });
+      return { session, spawn };
+    }
+
+    it("ordinary tenants cannot list, adopt, retarget, or delete them", async () => {
+      delete process.env.PIZZAPI_ROUTE_RECOVERY_USER_IDS;
+      const { session, spawn } = await seedOrphans();
+
+      const listed = (await (await call(routes, "GET", "/api/routes"))!.json()) as { routes: Array<{ routeId: string }> };
+      expect(listed.routes.map((r) => r.routeId)).not.toContain(session.routeId);
+      expect(listed.routes.map((r) => r.routeId)).not.toContain(spawn.routeId);
+
+      for (const route of [session, spawn]) {
+        const adopt = await call(routes, "PUT", `/api/routes/${route.routeId}`, { deliverAs: "steer" });
+        expect(adopt!.status).toBe(404);
+        const retarget = await call(routes, "PUT", `/api/routes/${route.routeId}`, {
+          target: { kind: "session", sessionId: "owned" },
+        });
+        expect(retarget!.status).toBe(404);
+        const del = await call(routes, "DELETE", `/api/routes/${route.routeId}`);
+        expect(del!.status).toBe(404);
+        const after = await store.getRoute(route.routeId);
+        expect(after?.ownerUserId).toBeUndefined();
+        expect(after?.deliverAs).toBe(route.deliverAs);
+      }
+
+      // Bulk cleanup of the ownerless runner leaves the unstamped row alone.
+      const bulk = await call(routes, "DELETE", "/api/runners/runner-orphan/routes");
+      expect(await bulk!.json()).toEqual({ ok: true, removed: 0, skipped: 0 });
+      expect(await store.getRoute(spawn.routeId)).not.toBeNull();
+      expect(mirrored).toHaveLength(0);
+    });
+
+    it("a configured recovery operator can list and delete them but never adopt them", async () => {
+      process.env.PIZZAPI_ROUTE_RECOVERY_USER_IDS = "someone-else, u1";
+      const { session, spawn } = await seedOrphans();
+
+      const listed = (await (await call(routes, "GET", "/api/routes"))!.json()) as { routes: Array<{ routeId: string }> };
+      expect(listed.routes.map((r) => r.routeId)).toEqual(expect.arrayContaining([session.routeId, spawn.routeId]));
+
+      const adopt = await call(routes, "PUT", `/api/routes/${session.routeId}`, { deliverAs: "steer" });
+      expect(adopt!.status).toBe(403);
+      expect((await store.getRoute(session.routeId))?.ownerUserId).toBeUndefined();
+
+      const del = await call(routes, "DELETE", `/api/routes/${session.routeId}`);
+      expect(del!.status).toBe(200);
+      expect(await store.getRoute(session.routeId)).toBeNull();
+
+      const bulk = await call(routes, "DELETE", "/api/runners/runner-orphan/routes");
+      expect(await bulk!.json()).toEqual({ ok: true, removed: 1, skipped: 0 });
+      expect(await store.getRoute(spawn.routeId)).toBeNull();
+    });
+
+    it("recovery bulk-delete of an ownerless runner never selects foreign-owned routes (R19)", async () => {
+      process.env.PIZZAPI_ROUTE_RECOVERY_USER_IDS = "u1";
+      const { spawn } = await seedOrphans();
+      // Explicitly stamped for another tenant, on the same ownerless runner.
+      const foreign = await store.createRoute({
+        eventType: "hook:foreign", target: { kind: "spawn", spec: { runnerId: "runner-orphan" } },
+        deliverAs: "steer", origin: "agent", ownerUserId: "u2",
+      });
+      const foreignSpec = await store.createRoute({
+        eventType: "hook:foreign-spec", target: { kind: "spawn", spec: { runnerId: "runner-orphan", ownerUserId: "u2" } },
+        deliverAs: "steer", origin: "agent",
+      });
+      const bulk = await call(routes, "DELETE", "/api/runners/runner-orphan/routes");
+      expect(await bulk!.json()).toEqual({ ok: true, removed: 1, skipped: 0 });
+      expect(await store.getRoute(spawn.routeId)).toBeNull();
+      expect(await store.getRoute(foreign.routeId)).not.toBeNull();
+      expect(await store.getRoute(foreignSpec.routeId)).not.toBeNull();
+    });
+
+    it("recovery authority never extends to routes with a resolvable owner", async () => {
+      process.env.PIZZAPI_ROUTE_RECOVERY_USER_IDS = "u1";
+      const theirs = await store.createRoute({
+        eventType: "hook:theirs", target: { kind: "spawn", spec: { runnerId: "runner-other" } },
+        deliverAs: "steer", origin: "agent",
+      });
+      const del = await call(routes, "DELETE", `/api/routes/${theirs.routeId}`);
+      expect(del!.status).toBe(404);
+      expect(await store.getRoute(theirs.routeId)).not.toBeNull();
+    });
   });
 });

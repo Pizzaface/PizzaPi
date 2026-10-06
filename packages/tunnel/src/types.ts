@@ -45,6 +45,16 @@ export interface TunnelRequestStartMessage {
    * Absent for path-based tunnels — those keep "127.0.0.1:<port>".
    */
   host?: string;
+  /**
+   * Capability-authenticated requests (signed tunnel token or host label):
+   * milliseconds since the relay minted that capability. The runner rejects
+   * the request when the port's current exposure began after the capability
+   * was issued — an unexposed-then-reused port must not revive old links.
+   * Relative age (not a timestamp) keeps this immune to relay/runner clock
+   * skew. Absent for cookie/API-key requests, which are authorized live.
+   * Old runners ignore it.
+   */
+  capabilityAgeMs?: number;
 }
 
 export interface TunnelRequestDataMessage {
@@ -96,6 +106,37 @@ export interface TunnelResponseDataAbortMessage {
   reason?: string;
 }
 
+// ── Flow control ────────────────────────────────────────────────────────────
+//
+// Optional, advisory backpressure for HTTP bodies. Peers that predate these
+// messages ignore them; both sides additionally enforce hard buffer limits,
+// so an old peer degrades to deterministic termination instead of unbounded
+// queueing.
+
+/** Server → client: viewer is not draining the response — pause reading the local response. */
+export interface TunnelResponsePauseMessage {
+  type: "response-pause";
+  id: string;
+}
+
+/** Server → client: viewer drained — resume reading the local response. */
+export interface TunnelResponseResumeMessage {
+  type: "response-resume";
+  id: string;
+}
+
+/** Client → server: local service is not draining the request body — stop sending request-data. */
+export interface TunnelRequestPauseMessage {
+  type: "request-pause";
+  id: string;
+}
+
+/** Client → server: local service drained — resume sending request-data. */
+export interface TunnelRequestResumeMessage {
+  type: "request-resume";
+  id: string;
+}
+
 // ── WebSocket proxying ──────────────────────────────────────────────────────
 
 export interface TunnelWsOpenMessage {
@@ -109,6 +150,8 @@ export interface TunnelWsOpenMessage {
   preserveAuth?: boolean;
   /** See TunnelRequestStartMessage.host. */
   host?: string;
+  /** See TunnelRequestStartMessage.capabilityAgeMs. */
+  capabilityAgeMs?: number;
 }
 
 export interface TunnelWsOpenedMessage {
@@ -156,6 +199,8 @@ export type TunnelClientMessage =
   | TunnelResponseDataEndMessage
   | TunnelResponseDataAbortMessage
   | TunnelRequestEndMessage
+  | TunnelRequestPauseMessage
+  | TunnelRequestResumeMessage
   | TunnelWsOpenedMessage
   | TunnelWsDataMessage
   | TunnelWsCloseMessage
@@ -169,6 +214,8 @@ export type TunnelServerMessage =
   | TunnelRequestDataMessage
   | TunnelRequestDataEndMessage
   | TunnelRequestEndMessage
+  | TunnelResponsePauseMessage
+  | TunnelResponseResumeMessage
   | TunnelWsOpenMessage
   | TunnelWsDataMessage
   | TunnelWsCloseMessage

@@ -2,9 +2,17 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { isSandboxActive, setReadOnlyOverlay } from "@pizzapi/tools";
-import { WRITE_BLOCKED_TOOL_NAMES } from "./patterns.js";
+import { getPlanModeToolBlockReason, TOGGLE_PLAN_MODE_TOOL } from "./tool-policy.js";
 import { isDestructiveCommand } from "./safe-command.js";
 import { PlanTodoItem, extractTodoItems, markCompletedSteps, isAssistantMessage, getTextContent } from "./todo-items.js";
+
+/**
+ * Whether the live bash tool executes through the sandbox's wrapCommand (and
+ * therefore honours the plan-mode read-only overlay). It currently does not:
+ * background-bash.ts spawns the shell directly. Only flip this once the bash
+ * path is wrapped; until then plan mode must not relax its filesystem checks.
+ */
+const BASH_PATH_IS_SANDBOX_WRAPPED = false;
 
 // ── Module-level state for remote extension to read ──────────────────────────
 
@@ -154,7 +162,6 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
     });
 
     // ── toggle_plan_mode tool — lets the agent enter/exit plan mode ─────────
-    const TOGGLE_PLAN_MODE_TOOL = "toggle_plan_mode";
 
     pi.registerTool({
         name: TOGGLE_PLAN_MODE_TOOL,
@@ -214,10 +221,11 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
 
         if (!planModeEnabled) return;
 
-        // Always allow the agent to toggle plan mode off
-        if (event.toolName === TOGGLE_PLAN_MODE_TOOL) return;
-
-        // Block write tools and session-spawning tools.
+        // Default-deny: only tools known to be read-only may run (see
+        // tool-policy.ts). This blocks write tools, session-spawning tools,
+        // MCP tools not annotated `readOnlyHint: true`, and any unknown
+        // extension/overlay tool; toggle_plan_mode is always allowed.
+        //
         // spawn_session is blocked unconditionally — spawned child sessions are
         // independent processes with their own full write access and there is no
         // mechanism to inject plan-mode restrictions into them.
@@ -233,25 +241,20 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
         //   2. Have the subagent runner pass PIZZAPI_PLAN_MODE=1 (or equivalent) into
         //      the spawned agent environment.
         //   3. Load and enforce plan-mode restrictions inside the subagent session.
-        if (WRITE_BLOCKED_TOOL_NAMES.has(event.toolName)) {
-            const isSpawnTool = event.toolName === "subagent" || event.toolName === "spawn_session";
-            return {
-                block: true,
-                reason: isSpawnTool
-                    ? `Plan mode: "${event.toolName}" is blocked — spawning sessions creates child contexts with full write access, bypassing plan mode. Use toggle_plan_mode to exit plan mode first.`
-                    : `Plan mode: "${event.toolName}" is blocked in read-only mode. Use toggle_plan_mode to exit plan mode first.`,
-            };
+        const blockReason = getPlanModeToolBlockReason(event.toolName);
+        if (blockReason) {
+            return { block: true, reason: blockReason };
         }
 
         // Block destructive bash commands in plan mode.
-        // When the OS sandbox is active, its read-only overlay enforces
-        // filesystem write restrictions — so we only check for non-filesystem
-        // side effects (kill, sudo, systemctl, remote mutations, etc.).
-        // When the sandbox is NOT active, we apply the full regex battery
-        // as the only line of defense.
+        // Always apply the full (no-sandbox) battery: the live `bash` tool
+        // (background-bash.ts) spawns commands directly and is NOT routed
+        // through the sandbox's wrapCommand, so the read-only overlay toggled
+        // by setReadOnlyOverlay() does not constrain it. Relaxing filesystem
+        // checks because isSandboxActive() is true would let writes through.
         if (event.toolName === "bash") {
-            const command = (event.input as any).command as string;
-            if (isDestructiveCommand(command, isSandboxActive())) {
+            const command = (event.input as { command?: unknown } | undefined)?.command;
+            if (typeof command !== "string" || isDestructiveCommand(command, BASH_PATH_IS_SANDBOX_WRAPPED)) {
                 return {
                     block: true,
                     reason: `Plan mode: command blocked (matches destructive pattern). Use toggle_plan_mode to exit plan mode first.\nCommand: ${command}`,
@@ -328,9 +331,9 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
 You are in plan mode — a read-only exploration mode for safe code analysis.
 
 Restrictions:
-- You can use: read, bash (read-only commands only), grep, find, ls, and any MCP read tools
-- You CANNOT use: edit, write (file modifications are disabled)
-- Bash is restricted to read-only commands (destructive commands are blocked)
+- You can use: read, bash (read-only commands only), grep, find, ls, and MCP tools annotated read-only
+- You CANNOT use: edit, write, subagent, spawn_session, or any tool not known to be read-only
+- Bash is restricted to read-only commands (destructive, network-mutating, and script-interpreter commands are blocked)
 
 Expected workflow:
 1. Explore the codebase using read-only tools
@@ -462,30 +465,50 @@ After completing a step, include a [DONE:n] tag in your response (e.g. [DONE:1])
         persistState();
     });
 
-    // ── Restore state on session start/resume ────────────────────────────────
-    pi.on("session_start", async (_event, ctx) => {
-        const entries = ctx.sessionManager.getEntries();
+    // ── Restore state on session start / resume / switch / fork ──────────────
+    //
+    // The transcript is the source of truth for plan-mode state. Every session
+    // transition (startup, --continue, /new, /resume, /fork, reload, and the
+    // worker's in-place session_switch) re-derives state from the *target*
+    // session's latest persisted "plan-mode-toggle" entry:
+    //   - saved entry present → restore it (including the sandbox read-only
+    //     overlay) BEFORE any tool call can run in that session;
+    //   - no saved entry (genuinely new session) → reset to plan mode OFF so
+    //     state from a previous session never leaks into a new one.
+    // Restoring and resetting used to be two separate session_start handlers;
+    // the unconditional reset ran second and silently disabled a resumed plan
+    // mode (and its read-only overlay).
+    function restoreStateFromSession(ctx: { sessionManager: { getEntries(): unknown[] } }, reason: string | undefined) {
+        const entries = ctx.sessionManager.getEntries() as Array<{ type: string; customType?: string; data?: unknown; message?: unknown }>;
+        const wasEnabled = planModeEnabled;
 
-        // Restore persisted state
         const saved = entries
-            .filter((e: { type: string; customType?: string }) => e.type === "custom" && e.customType === "plan-mode-toggle")
-            .pop() as { data?: { enabled: boolean; todos?: PlanTodoItem[]; executing?: boolean } } | undefined;
+            .filter((e) => e.type === "custom" && e.customType === "plan-mode-toggle")
+            .pop() as { data?: { enabled?: boolean; todos?: PlanTodoItem[]; executing?: boolean } } | undefined;
 
         if (saved?.data) {
-            planModeEnabled = saved.data.enabled ?? false;
-            todoItems = saved.data.todos ?? [];
-            executionMode = saved.data.executing ?? false;
+            planModeEnabled = saved.data.enabled === true;
+            todoItems = Array.isArray(saved.data.todos) ? saved.data.todos : [];
+            executionMode = saved.data.executing === true;
             // On resume, the context message was already sent in the original session
             planModeContextSent = planModeEnabled;
+        } else {
+            planModeEnabled = false;
+            todoItems = [];
+            executionMode = false;
+            planModeContextSent = false;
         }
+        planSubmittedDuringSession = false;
+        planModeToolInvokedThisTurn = false;
+        // A pending "Clear Context & Begin" belongs to the session it was
+        // requested in; only a same-session reload may keep it.
+        if (reason !== "reload") _pendingContextClear = false;
 
         // On resume: re-scan messages to rebuild completion state
-        const isResume = saved !== undefined;
-        if (isResume && executionMode && todoItems.length > 0) {
+        if (saved?.data && executionMode && todoItems.length > 0) {
             let executeIndex = -1;
             for (let i = entries.length - 1; i >= 0; i--) {
-                const entry = entries[i] as { type: string; customType?: string };
-                if (entry.customType === "plan-mode-execute") {
+                if (entries[i].customType === "plan-mode-execute") {
                     executeIndex = i;
                     break;
                 }
@@ -502,33 +525,27 @@ After completing a step, include a [DONE:n] tag in your response (e.g. [DONE:1])
             markCompletedSteps(allText, todoItems);
         }
 
-        // Re-apply sandbox overlay to match restored plan mode state.
-        // On resume with plan mode enabled, the overlay must be re-activated;
-        // on resume with plan mode off, ensure it's cleared.
+        // Re-apply sandbox overlay to match the restored state: re-activate it
+        // when resuming into plan mode, clear it otherwise.
         if (isSandboxActive()) {
             setReadOnlyOverlay(planModeEnabled);
         }
         syncModuleState();
+        if (wasEnabled !== planModeEnabled) {
+            _onPlanModeChange?.(planModeEnabled);
+            _planModeMetaEmitter?.(planModeEnabled);
+        }
+    }
+
+    pi.on("session_start", async (event, ctx) => {
+        restoreStateFromSession(ctx, (event as { reason?: string } | undefined)?.reason);
     });
 
-    pi.on("session_start", () => {
-        const wasEnabled = planModeEnabled;
-        planModeEnabled = false;
-        executionMode = false;
-        todoItems = [];
-        planModeContextSent = false;
-        _pendingContextClear = false;
-        // Clear sandbox read-only overlay so the new session starts with full
-        // write access. Without this, a previous session's plan mode leaks
-        // read-only restrictions into the next session.
-        if (wasEnabled && isSandboxActive()) {
-            setReadOnlyOverlay(false);
-        }
-        syncModuleState();
-        if (wasEnabled) {
-            _onPlanModeChange?.(false);
-            _planModeMetaEmitter?.(false);
-        }
-        persistState();
+    // The runner worker performs /new, /resume and /fork in place and emits
+    // "session_switch" (removed from upstream's type union, dispatched by
+    // string key) instead of session_start. Restore from the target session
+    // there too, otherwise the previous session's plan-mode state would apply.
+    pi.on("session_switch" as any, async (event: { reason?: string } | undefined, ctx: { sessionManager: { getEntries(): unknown[] } }) => {
+        restoreStateFromSession(ctx, event?.reason);
     });
 };

@@ -181,9 +181,20 @@ describe("GET /api/attachments/:id?token=", () => {
 // ── Deprecation warning on ?apiKey= ──────────────────────────────────────────
 
 describe("GET /api/attachments/:id?apiKey= (deprecated)", () => {
-    test("logs a deprecation warning when ?apiKey= is used", async () => {
-        await callRoute(new Request("http://localhost/api/attachments/att-1?apiKey=my-key"));
-        expect(warnLogs.some((m) => m.includes("deprecated") || m.includes("apiKey"))).toBe(true);
+    test("refuses ?apiKey= by default (durable credential in URL)", async () => {
+        delete process.env.PIZZAPI_ALLOW_ATTACHMENT_QUERY_API_KEY;
+        const res = await callRoute(new Request("http://localhost/api/attachments/att-1?apiKey=my-key"));
+        expect(res?.status).toBe(401);
+    });
+
+    test("logs a deprecation warning when ?apiKey= is used under the compat opt-in", async () => {
+        process.env.PIZZAPI_ALLOW_ATTACHMENT_QUERY_API_KEY = "true";
+        try {
+            await callRoute(new Request("http://localhost/api/attachments/att-1?apiKey=my-key"));
+            expect(warnLogs.some((m) => m.includes("deprecated") || m.includes("apiKey"))).toBe(true);
+        } finally {
+            delete process.env.PIZZAPI_ALLOW_ATTACHMENT_QUERY_API_KEY;
+        }
     });
 
     test("does not log a deprecation warning for x-api-key header", async () => {
@@ -193,9 +204,21 @@ describe("GET /api/attachments/:id?apiKey= (deprecated)", () => {
         expect(warnLogs.some((m) => m.includes("deprecated"))).toBe(false);
     });
 
-    test("still serves attachment when ?apiKey= used (backward compat)", async () => {
-        const res = await callRoute(new Request("http://localhost/api/attachments/att-1?apiKey=my-key"));
-        expect(res?.status).not.toBe(401);
-        expect(res?.status).not.toBe(403);
+    test("still serves attachment when ?apiKey= used under the compat opt-in", async () => {
+        process.env.PIZZAPI_ALLOW_ATTACHMENT_QUERY_API_KEY = "true";
+        try {
+            const res = await callRoute(new Request("http://localhost/api/attachments/att-1?apiKey=my-key"));
+            expect(res?.status).not.toBe(401);
+            expect(res?.status).not.toBe(403);
+        } finally {
+            delete process.env.PIZZAPI_ALLOW_ATTACHMENT_QUERY_API_KEY;
+        }
+    });
+
+    test("the scoped ?token= path keeps working when ?apiKey= is refused", async () => {
+        delete process.env.PIZZAPI_ALLOW_ATTACHMENT_QUERY_API_KEY;
+        const token = mintToken("u-1", "att-1");
+        const res = await callRoute(new Request(`http://localhost/api/attachments/att-1?token=${encodeURIComponent(token)}`));
+        expect(res?.status).toBe(200);
     });
 });

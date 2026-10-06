@@ -91,6 +91,43 @@ describe("bash override with backgrounding", () => {
         expect(pi.messages.length).toBe(0);
     });
 
+    // F19: the model's shell must not observe PizzaPi relay/runner credentials
+    // inherited by the worker, while user-owned variables stay available.
+    test("scrubs PizzaPi credentials from the command environment", async () => {
+        const injected: Record<string, string> = {
+            PIZZAPI_API_KEY: "relay-key-secret",
+            PIZZAPI_RUNNER_TOKEN: "runner-token-secret",
+            BETTER_AUTH_SECRET: "auth-secret",
+            PIZZAPI_FUTURE_SERVICE_TOKEN: "future-secret",
+            ANTHROPIC_API_KEY: "user-provider-key",
+            GITHUB_TOKEN: "user-gh-token",
+            PIZZAPI_RELAY_URL: "http://relay.invalid",
+        };
+        const saved = Object.fromEntries(Object.keys(injected).map((k) => [k, process.env[k]]));
+        Object.assign(process.env, injected);
+        try {
+            const { tool } = getTool();
+            const command = Object.keys(injected).map((v) => `echo "${v}=\${${v}:-unset}"`).join("; ");
+            const res = await run(tool, { command, title: "env probe" });
+            const text: string = res.content[0].text;
+            expect(text).toContain("PIZZAPI_API_KEY=unset");
+            expect(text).toContain("PIZZAPI_RUNNER_TOKEN=unset");
+            expect(text).toContain("BETTER_AUTH_SECRET=unset");
+            expect(text).toContain("PIZZAPI_FUTURE_SERVICE_TOKEN=unset");
+            expect(text).not.toContain("secret");
+            expect(text).toContain("ANTHROPIC_API_KEY=user-provider-key");
+            expect(text).toContain("GITHUB_TOKEN=user-gh-token");
+            expect(text).toContain("PIZZAPI_RELAY_URL=http://relay.invalid");
+            // The worker process itself keeps its credentials.
+            expect(process.env.PIZZAPI_API_KEY).toBe("relay-key-secret");
+        } finally {
+            for (const [k, v] of Object.entries(saved)) {
+                if (v === undefined) delete process.env[k];
+                else process.env[k] = v;
+            }
+        }
+    });
+
     test("foreground non-zero exit returns Pi 1.0 structured error", async () => {
         const { tool } = getTool();
         const res = await run(tool, { command: "exit 3" });

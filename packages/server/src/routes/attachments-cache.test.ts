@@ -124,14 +124,30 @@ describe("GET /api/attachments/:id — cache-control", () => {
         expect(res!.headers.get("x-content-type-options")).toBe("nosniff");
     });
 
-    test("?apiKey= query-param auth sets private, no-store cache-control", async () => {
+    test("?apiKey= query-param auth (compat opt-in) sets private, no-store cache-control", async () => {
+        process.env.PIZZAPI_ALLOW_ATTACHMENT_QUERY_API_KEY = "true";
+        try {
+            const req = new Request(
+                `http://localhost/api/attachments/${testAttachmentId}?apiKey=valid-api-key`,
+                { method: "GET" },
+            );
+            const res = await handleAttachmentsRoute(req, new URL(req.url));
+            expect(res).not.toBeUndefined();
+            expect(res!.status).toBe(200);
+            expect(res!.headers.get("cache-control")).toBe("private, no-store");
+        } finally {
+            delete process.env.PIZZAPI_ALLOW_ATTACHMENT_QUERY_API_KEY;
+        }
+    });
+
+    test("?apiKey= query-param is refused by default with private, no-store cache-control", async () => {
+        delete process.env.PIZZAPI_ALLOW_ATTACHMENT_QUERY_API_KEY;
         const req = new Request(
             `http://localhost/api/attachments/${testAttachmentId}?apiKey=valid-api-key`,
             { method: "GET" },
         );
         const res = await handleAttachmentsRoute(req, new URL(req.url));
-        expect(res).not.toBeUndefined();
-        expect(res!.status).toBe(200);
+        expect(res!.status).toBe(401);
         expect(res!.headers.get("cache-control")).toBe("private, no-store");
     });
 

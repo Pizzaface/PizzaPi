@@ -124,4 +124,86 @@ describe("chunked session hydration", () => {
             await scenario.reset();
         }
     }, TIMEOUT);
+    test("a rejected chunk stream leaves a recovery marker so viewers re-request a runner snapshot (review R10)", async () => {
+        const scenario = new TestScenario();
+        scenario.setServer(server);
+        try {
+            const session = await scenario.addSession({ cwd: "/chunked-rejected" });
+            let seq = 0;
+            const emit = (event: unknown) => session.relay.emitEvent(session.sessionId, session.token, event, seq++);
+            let runnerSignals = 0;
+            session.relay.socket.on("connected" as any, () => { runnerSignals++; });
+
+            // An older, complete snapshot is cached.
+            emit({ type: "session_active", state: { sessionName: "old", messages: [msg(0)] } });
+            // A newer chunked snapshot is rejected (chunkIndex out of range).
+            // Its events are ACKed, so the runner believes it was delivered.
+            emit({ type: "session_active", state: { messages: [], chunked: true, snapshotId: "snap-bad", totalMessages: 4 } });
+            emit({ type: "session_messages_chunk", snapshotId: "snap-bad", chunkIndex: 7, totalChunks: 2, totalMessages: 4, messages: [msg(1), msg(2)], final: false });
+            await new Promise((r) => setTimeout(r, 300));
+
+            const viewer = await scenario.addViewer(session.sessionId);
+            const sa = await viewer.waitForEvent((e) => (e as Evt)?.type === "session_active", 5_000) as Evt;
+            expect(sa.state.sessionName).toBe("old");
+            // The cache hit must NOT suppress recovery: the runner is asked
+            // for a fresh snapshot instead of leaving the viewer on the old one.
+            const deadline = Date.now() + 3_000;
+            while (runnerSignals === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+            expect(runnerSignals).toBeGreaterThan(0);
+
+            // The runner answers with a valid snapshot; the marker clears and
+            // later cache hits suppress the runner signal again.
+            emit({ type: "session_active", state: { sessionName: "fresh", messages: [msg(0), msg(1), msg(2)] } });
+            await viewer.waitForEvent((e) => (e as Evt)?.type === "session_active" && (e as Evt).state?.sessionName === "fresh", 5_000);
+            const signalsBefore = runnerSignals;
+            const viewer2 = await scenario.addViewer(session.sessionId);
+            const sa2 = await viewer2.waitForEvent((e) => (e as Evt)?.type === "session_active", 5_000) as Evt;
+            expect(sa2.state.sessionName).toBe("fresh");
+            await new Promise((r) => setTimeout(r, 300));
+            expect(runnerSignals).toBe(signalsBefore);
+        } finally {
+            await scenario.reset();
+        }
+    }, TIMEOUT);
+});
+
+describe("rejected chunk stream recovery on resync (review R2-6)", () => {
+    for (const mode of ["cursor", "cursorless"] as const) {
+        test(`an already-connected viewer's ${mode} resync asks the runner for a fresh snapshot`, async () => {
+            const scenario = new TestScenario();
+            scenario.setServer(server);
+            try {
+                const session = await scenario.addSession({ cwd: `/chunked-rejected-resync-${mode}` });
+                let seq = 0;
+                const emit = (event: unknown) => session.relay.emitEvent(session.sessionId, session.token, event, seq++);
+                let runnerSignals = 0;
+                session.relay.socket.on("connected" as any, () => { runnerSignals++; });
+
+                emit({ type: "session_active", state: { sessionName: "old", messages: [msg(0)] } });
+                await new Promise((r) => setTimeout(r, 200));
+
+                // The viewer hydrates from the (valid) cache BEFORE the rejection.
+                const viewer = await scenario.addViewer(session.sessionId);
+                await viewer.waitForEvent((e) => (e as Evt)?.type === "session_active", 5_000);
+                await new Promise((r) => setTimeout(r, 300));
+
+                // A newer chunked snapshot is rejected after its chunks were ACKed.
+                emit({ type: "session_active", state: { messages: [], chunked: true, snapshotId: "snap-bad", totalMessages: 4 } });
+                emit({ type: "session_messages_chunk", snapshotId: "snap-bad", chunkIndex: 7, totalChunks: 2, totalMessages: 4, messages: [msg(1), msg(2)], final: false });
+                await new Promise((r) => setTimeout(r, 300));
+
+                const signalsBefore = runnerSignals;
+                viewer.clearEvents();
+                // Cursor resync takes the seq-aware cache path; cursorless
+                // takes the lastState snapshot path. Both serve the old
+                // checkpoint, so both must also nudge the runner.
+                viewer.socket.emit("resync", mode === "cursor" ? { lastSeq: 0 } : {});
+                const deadline = Date.now() + 3_000;
+                while (runnerSignals === signalsBefore && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+                expect(runnerSignals).toBeGreaterThan(signalsBefore);
+            } finally {
+                await scenario.reset();
+            }
+        }, TIMEOUT);
+    }
 });

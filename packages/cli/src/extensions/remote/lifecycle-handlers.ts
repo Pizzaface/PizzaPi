@@ -455,7 +455,7 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         // (chunk-aware) instead — both consumers skip message-less agent_end.
         const { messages: runMessages, ...eventWithoutMessages } = event;
         rctx.forwardEvent(eventWithoutMessages);
-        emitSessionActive(rctx);
+        emitSessionActive(rctx, undefined, true);
         rctx.forwardEvent(rctx.buildHeartbeat());
         // Defer completion/error reporting to agent_settled: pi fires agent_end
         // after every attempt, including ones it will auto-retry. agent_settled

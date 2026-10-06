@@ -1,5 +1,5 @@
 import * as React from "react";
-import { AlertTriangleIcon, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
+import { AlertTriangleIcon, ChevronDown, ChevronRight, Link2, Loader2 } from "lucide-react";
 import type { RelayMessage } from "./types";
 import {
   renderContent,
@@ -10,8 +10,7 @@ import {
   isCommandResult,
 } from "./rendering";
 import { normalizeToolName } from "./utils";
-import { isTriggerMessage, renderTriggerCard } from "./cards/InterAgentCards";
-import { SubAgentConversationCard } from "./cards/SubAgentCards";
+import { isTriggerMessage, renderTriggerCard, truncateSessionId } from "./cards/InterAgentCards";
 import { TriggerCard } from "./cards/TriggerCard";
 import { parsedTriggerFromStructured } from "./cards/trigger-parsers";
 import { LINKED_SESSION_MESSAGE_TYPE, TRIGGER_MESSAGE_TYPE, type TriggerMessageDetails } from "@pizzapi/protocol";
@@ -21,6 +20,40 @@ import { exportToMarkdown } from "@/lib/export-markdown";
 import { cn } from "@/lib/utils";
 import { useConversationScrollRef } from "@/components/ai-elements/conversation";
 import { useSessionActions } from "@/components/session-viewer/session-actions-context";
+import { useSessionName } from "@/components/session-viewer/session-names-context";
+import { usePizzaPiNav } from "@/components/sigils/PizzaPiNavContext";
+
+/** Relay prefixes send_message input with this (server/src/ws/namespaces/relay/messaging.ts). */
+const LINKED_MESSAGE_RE = /^Message from linked session (\S+):\n\n([\s\S]*)$/;
+
+export function parseLinkedSessionMessage(content: unknown): { fromSessionId: string; text: string } | null {
+  const text = typeof content === "string"
+    ? content
+    : Array.isArray(content) && content.length === 1 && content[0]?.type === "text" && typeof content[0].text === "string"
+      ? content[0].text
+      : null;
+  const match = text?.match(LINKED_MESSAGE_RE);
+  return match ? { fromSessionId: match[1], text: match[2] } : null;
+}
+
+function LinkedSessionChip({ sessionId }: { sessionId: string }) {
+  const name = useSessionName(sessionId);
+  const navigate = usePizzaPiNav();
+  return (
+    <button
+      type="button"
+      onClick={() => navigate(`pizzapi://session/${sessionId}`)}
+      title={`Open session ${sessionId}`}
+      aria-label={`Open session ${sessionId}`}
+      className={cn(
+        "max-w-[16rem] truncate rounded bg-violet-500/15 px-1.5 py-0.5 text-[10px] hover:bg-violet-500/30 hover:text-violet-100",
+        !name && "font-mono",
+      )}
+    >
+      {name ?? truncateSessionId(sessionId)}
+    </button>
+  );
+}
 
 /** Structured linked-session delivery (pi custom message injected by the relay input path). */
 export function getLinkedSessionMessage(message: Pick<RelayMessage, "role" | "customType" | "details">): { fromSessionId: string; message: string } | null {
@@ -203,16 +236,6 @@ export const SessionMessageItem = React.memo(
       );
     }
 
-    // Linked-session send_message deliveries → conversation card instead of user bubble
-    const linked = getLinkedSessionMessage(message);
-    if (linked) {
-      return (
-        <div className="w-full max-w-3xl mx-auto px-4 py-1.5">
-          <SubAgentConversationCard title="Linked session" turns={[{ type: "received", ...linked }]} />
-        </div>
-      );
-    }
-
     // Structured trigger batches → one TriggerCard per trigger
     const triggers = getTriggerMessageTriggers(message);
     if (triggers) {
@@ -242,6 +265,35 @@ export const SessionMessageItem = React.memo(
       return (
         <div className="w-full max-w-3xl mx-auto px-4 py-1.5">
           {renderTriggerCard(message.content, onTriggerResponse)}
+        </div>
+      );
+    }
+
+    // Messages injected by a linked (parent/child) session → distinct agent card, not a user bubble
+    const structuredLinked = getLinkedSessionMessage(message);
+    const linked = structuredLinked
+      ? { fromSessionId: structuredLinked.fromSessionId, text: structuredLinked.message }
+      : message.role === "user" ? parseLinkedSessionMessage(message.content) : null;
+    if (linked) {
+      return (
+        <div className="group/msg w-full max-w-3xl mx-auto px-4 py-1.5">
+          <div className="pp-message-content rounded-lg border border-violet-500/30 border-l-4 border-l-violet-500/70 bg-violet-500/5 px-3 py-2 text-card-foreground">
+            <div className="mb-1 flex items-center gap-2 text-[11px] text-violet-300/90">
+              <Link2 className="size-3.5 shrink-0" aria-hidden="true" />
+              <span className="uppercase tracking-wide">Linked session</span>
+              <LinkedSessionChip sessionId={linked.fromSessionId} />
+              {message.timestamp && (
+                <span className="opacity-70">• {new Date(message.timestamp).toLocaleTimeString()}</span>
+              )}
+              <MessageCopyButton
+                text={linked.text}
+                className="ml-auto opacity-0 group-hover/msg:opacity-100 focus-visible:opacity-100 transition-opacity"
+              />
+            </div>
+            {structuredLinked
+              ? <div className="min-w-0 break-words whitespace-pre-wrap text-sm">{linked.text}</div>
+              : renderContent(linked.text, activeToolCalls, "user", undefined, false, undefined, message.toolCallId ?? message.key)}
+          </div>
         </div>
       );
     }

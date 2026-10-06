@@ -81,6 +81,11 @@ export function pluginSearchDirs(cwd?: string, opts?: { includeProjectLocal?: bo
  *   2. .claude/settings.json (project-level, relative to cwd)
  *   3. .claude/settings.local.json (project-local overrides)
  *
+ * Security: a user-level `false` is authoritative. Project files are
+ * repository-controlled, and installed plugins are treated as globally trusted
+ * executable resources (hooks, MCP servers), so a project may further disable
+ * a plugin but can never re-enable one the user disabled globally.
+ *
  * Returns a merged map of `"pluginName@marketplace" → boolean`.
  * If no settings files exist or none contain `enabledPlugins`, returns null.
  */
@@ -95,19 +100,25 @@ export function readEnabledPlugins(cwd?: string): Record<string, boolean> | null
     }
 
     let merged: Record<string, boolean> | null = null;
+    // Keys the user disabled in user-level settings. Later (project) files
+    // cannot flip these back to true — deny overrides are monotonic.
+    const globallyDisabled = new Set<string>();
 
-    for (const path of candidates) {
+    for (const [index, path] of candidates.entries()) {
+        const isUserLevel = index === 0;
         if (!existsSync(path)) continue;
         try {
             const raw = readFileSync(path, "utf-8");
             const parsed = JSON.parse(raw);
             if (parsed.enabledPlugins && typeof parsed.enabledPlugins === "object") {
                 if (!merged) merged = {};
-                // Later files (project-level) override earlier (user-level)
+                // Later files (project-level) override earlier (user-level),
+                // except that they cannot re-enable a user-disabled plugin.
                 for (const [key, value] of Object.entries(parsed.enabledPlugins)) {
-                    if (typeof value === "boolean") {
-                        merged[key] = value;
-                    }
+                    if (typeof value !== "boolean") continue;
+                    if (isUserLevel && value === false) globallyDisabled.add(key);
+                    if (value === true && !isUserLevel && globallyDisabled.has(key)) continue;
+                    merged[key] = value;
                 }
             }
         } catch {

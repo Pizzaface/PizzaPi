@@ -216,6 +216,27 @@ describe("messagesChangedSinceLastEmit", () => {
         expect(messagesChangedSinceLastEmit(ctx)).toBe(true);
     });
 
+    test("throttles opt-in chunked snapshots to metadata-only + one trailing snapshot", async () => {
+        const large = (id: string) => ({
+            type: "message", id, parentId: null, timestamp: new Date(0).toISOString(),
+            message: { role: "user", content: "x".repeat(4_800_000), timestamp: Date.now() },
+        });
+        const ctx = makeContext({ leafId: "big", entries: [large("big")] });
+        const types = () => ctx.emitted.map((e: any) => e.type);
+
+        emitSessionActive(ctx, undefined, true); // first one goes out
+        expect((ctx.emitted[0] as any).state.chunked).toBe(true);
+
+        ctx.emitted.length = 0;
+        emitSessionActive(ctx, undefined, true); // throttled (agent_end/heartbeat)
+        emitSessionActive(ctx, undefined, true);
+        expect(types()).toEqual(["session_metadata_update", "session_metadata_update"]);
+
+        ctx.emitted.length = 0;
+        emitSessionActive(ctx); // non-throttled callers (connect, compaction, /new) bypass
+        expect((ctx.emitted[0] as any).state.chunked).toBe(true);
+    });
+
     test("suppresses duplicate heartbeat refreshes while a chunk stream is in flight", () => {
         const ctx = makeContext({ leafId: "leaf-chunking" });
         const leafId = recordInFlightMessageState(ctx);

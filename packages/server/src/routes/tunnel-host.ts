@@ -57,6 +57,13 @@ export interface TunnelLabelRecord {
     maxExp?: number;
     /** Idle TTL in seconds used on refresh (defaults to LABEL_TTL_SECONDS). */
     idleTtl?: number;
+    /**
+     * Mint time (epoch ms). The runner rejects a label minted before the
+     * port's current exposure began (see TunnelRequestStartMessage
+     * .capabilityAgeMs). Records without it predate exposure binding and are
+     * refused — the UI simply mints a new label.
+     */
+    iat?: number;
 }
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -178,10 +185,12 @@ export async function mintTunnelLabel(
     const maxLifetime = ttlHours ? Math.min(ttlHours, LABEL_MAX_TTL_HOURS) * 3600 : LABEL_MAX_LIFETIME_SECONDS;
     // Explicit ttlHours means "keep it alive that long" — idle == max so it never lapses early.
     const idleTtl = ttlHours ? maxLifetime : LABEL_TTL_SECONDS;
+    const now = Date.now();
     const stored: TunnelLabelRecord = {
         ...record,
-        maxExp: Math.floor(Date.now() / 1000) + maxLifetime,
+        maxExp: Math.floor(now / 1000) + maxLifetime,
         idleTtl,
+        iat: now,
     };
     try {
         await client.set(`${LABEL_KEY_PREFIX}${label}`, JSON.stringify(stored), { EX: idleTtl });
@@ -218,6 +227,9 @@ export async function resolveTunnelLabel(label: string): Promise<TunnelLabelReco
         client.del(`${LABEL_KEY_PREFIX}${label}`).catch(() => undefined);
         return null;
     }
+    // Fail closed on records minted before exposure binding existed: without
+    // a mint time the runner cannot tell which exposure the label was for.
+    if (typeof record.iat !== "number" || !Number.isFinite(record.iat)) return null;
     return record;
 }
 
@@ -225,6 +237,11 @@ export async function resolveTunnelLabel(label: string): Promise<TunnelLabelReco
  * Resolve + authorize a label all the way to a connected runnerId.
  * Returns an error status when anything fails — shared by HTTP and WS paths.
  */
+/** Age of a resolved label, sent to the runner as `capabilityAgeMs`. */
+export function tunnelLabelAgeMs(record: TunnelLabelRecord, nowMs = Date.now()): number {
+    return Math.max(0, nowMs - (record.iat ?? 0));
+}
+
 export async function authorizeTunnelLabel(label: string): Promise<
     | { ok: true; record: TunnelLabelRecord; runnerId: string }
     | { ok: false; status: number; message: string }
@@ -310,5 +327,6 @@ export async function handleTunnelHostRequest(req: Request, url: URL): Promise<R
         forwardHeaders,
         true,
         url.host,
+        tunnelLabelAgeMs(auth.record),
     );
 }

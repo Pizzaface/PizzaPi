@@ -29,6 +29,49 @@ export interface ChunkedSessionState {
      * assembled snapshot is, or they'd be overwritten by it.
      */
     deferredEvents?: unknown[];
+    /** Messages accepted so far across unique chunks (bounded by snapshot limits). */
+    receivedMessages?: number;
+    /** Serialized size (JSON string length) of accepted chunks so far. */
+    receivedBytes?: number;
+}
+
+// ── Chunked snapshot resource limits ─────────────────────────────────────────
+// The runner splits a snapshot into chunks of at most 200 messages / ~6 MB
+// (packages/cli/src/extensions/remote/chunked-delivery.ts), so legitimate
+// streams stay far below these defaults. They exist so a relay client cannot
+// use chunkIndex/totalChunks/messages to make the relay allocate or iterate
+// attacker-sized structures. Each is overridable with a positive integer env
+// var; invalid values fall back to the default.
+
+export const DEFAULT_SNAPSHOT_MAX_CHUNKS = 10_000;
+export const DEFAULT_SNAPSHOT_MAX_MESSAGES = 1_000_000;
+export const DEFAULT_SNAPSHOT_MAX_BYTES = 512 * 1024 * 1024;
+export const DEFAULT_SNAPSHOT_MAX_DEFERRED_EVENTS = 10_000;
+
+export interface ChunkedSnapshotLimits {
+    /** Upper bound (exclusive for indexes, inclusive for totalChunks). */
+    maxChunks: number;
+    maxMessages: number;
+    /** Aggregate serialized size of all chunks (JSON string length). */
+    maxBytes: number;
+    /** Events deferred behind an in-flight snapshot. */
+    maxDeferredEvents: number;
+}
+
+function positiveIntEnv(name: string, fallback: number): number {
+    const raw = process.env[name];
+    if (raw === undefined || raw.trim() === "") return fallback;
+    const value = Number(raw);
+    return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+export function getChunkedSnapshotLimits(): ChunkedSnapshotLimits {
+    return {
+        maxChunks: positiveIntEnv("PIZZAPI_RELAY_SNAPSHOT_MAX_CHUNKS", DEFAULT_SNAPSHOT_MAX_CHUNKS),
+        maxMessages: positiveIntEnv("PIZZAPI_RELAY_SNAPSHOT_MAX_MESSAGES", DEFAULT_SNAPSHOT_MAX_MESSAGES),
+        maxBytes: positiveIntEnv("PIZZAPI_RELAY_SNAPSHOT_MAX_BYTES", DEFAULT_SNAPSHOT_MAX_BYTES),
+        maxDeferredEvents: positiveIntEnv("PIZZAPI_RELAY_SNAPSHOT_MAX_DEFERRED_EVENTS", DEFAULT_SNAPSHOT_MAX_DEFERRED_EVENTS),
+    };
 }
 
 /**
@@ -57,31 +100,79 @@ export interface PendingChunkUpdate {
 
 export const pendingChunkedStates = new Map<string, ChunkedSessionState>();
 
+export type ChunkApplyResult =
+    | { status: "applied" }
+    | { status: "duplicate" }
+    /** The chunk is malformed or over budget; the caller must abort the snapshot. */
+    | { status: "rejected"; reason: string };
+
+function serializedLength(value: unknown): number | null {
+    try {
+        const json = JSON.stringify(value);
+        return typeof json === "string" ? json.length : 0;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Validate and apply one chunk. Every check runs before any mutation, so a
+ * rejected chunk leaves `pending` untouched.
+ */
 export function applyChunkToPendingState(
     pending: ChunkedSessionState,
     update: PendingChunkUpdate,
-): boolean {
+    limits: ChunkedSnapshotLimits = getChunkedSnapshotLimits(),
+): ChunkApplyResult {
     const { chunkIndex, chunkMessages, totalChunks, isFinalChunk } = update;
+
+    if (!Number.isSafeInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= limits.maxChunks) {
+        return { status: "rejected", reason: `invalid chunkIndex ${String(chunkIndex)}` };
+    }
 
     if (pending.receivedChunkIndexes.has(chunkIndex)) {
         if (isFinalChunk) {
             pending.finalChunkSeen = true;
         }
-        return false;
+        return { status: "duplicate" };
     }
 
-    if (Number.isInteger(totalChunks) && totalChunks > 0) {
-        pending.totalChunks = totalChunks;
+    if (!Number.isSafeInteger(totalChunks) || totalChunks <= 0 || totalChunks > limits.maxChunks) {
+        return { status: "rejected", reason: `invalid totalChunks ${String(totalChunks)}` };
+    }
+    if (chunkIndex >= totalChunks) {
+        return { status: "rejected", reason: `chunkIndex ${chunkIndex} >= totalChunks ${totalChunks}` };
+    }
+    if (pending.totalChunks > 0 && totalChunks !== pending.totalChunks) {
+        return { status: "rejected", reason: `totalChunks changed from ${pending.totalChunks} to ${totalChunks}` };
+    }
+    if (!Array.isArray(chunkMessages)) {
+        return { status: "rejected", reason: "chunk messages are not an array" };
+    }
+    const nextMessages = (pending.receivedMessages ?? 0) + chunkMessages.length;
+    if (nextMessages > limits.maxMessages) {
+        return { status: "rejected", reason: `snapshot exceeds ${limits.maxMessages} messages` };
+    }
+    const chunkBytes = serializedLength(chunkMessages);
+    if (chunkBytes === null) {
+        return { status: "rejected", reason: "chunk messages are not serializable" };
+    }
+    const nextBytes = (pending.receivedBytes ?? 0) + chunkBytes;
+    if (nextBytes > limits.maxBytes) {
+        return { status: "rejected", reason: `snapshot exceeds ${limits.maxBytes} bytes` };
     }
 
+    pending.totalChunks = totalChunks;
     if (isFinalChunk) {
         pending.finalChunkSeen = true;
     }
 
     pending.receivedChunkIndexes.add(chunkIndex);
     pending.chunks[chunkIndex] = chunkMessages;
+    pending.receivedMessages = nextMessages;
+    pending.receivedBytes = nextBytes;
     pending.lastActivityAt = Date.now();
-    return true;
+    return { status: "applied" };
 }
 
 export function applySnapshotPatchToPendingState(

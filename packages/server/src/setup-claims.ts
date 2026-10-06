@@ -14,6 +14,7 @@
  * - Approval requires a valid better-auth session.
  */
 
+import { sql } from "kysely";
 import { getKysely, type SetupClaimTable } from "./auth.js";
 import { mintEphemeralApiKey } from "./routes/utils.js";
 import { createLogger } from "@pizzapi/tools";
@@ -77,29 +78,90 @@ function sanitizeLabel(label: unknown): string | null {
     return cleaned || null;
 }
 
+/** Maximum accepted length of the CLI-supplied relay URL. */
+export const SETUP_CLAIM_RELAY_URL_MAX_LENGTH = 2048;
+
+/**
+ * Global cap on unexpired setup claims. Claim creation is unauthenticated, so
+ * this bounds the rows an anonymous caller can make the relay persist. Since
+ * claims live for DEFAULT_CLAIM_TTL_MS, the cap also bounds the creation rate.
+ */
+export const MAX_OUTSTANDING_SETUP_CLAIMS = 500;
+
+/**
+ * Expired rows are kept this long (so a polling CLI still sees `expired`
+ * rather than 404) and then deleted opportunistically on the next create, so
+ * total rows stay bounded between the hourly sweeps.
+ */
+const EXPIRED_CLAIM_GRACE_MS = DEFAULT_CLAIM_TTL_MS;
+
+/**
+ * Validate the relay URL a CLI asks to be echoed back after redemption.
+ * Returns the normalized string, or null when it is not a reasonably sized
+ * http(s) URL without embedded credentials.
+ */
+export function normalizeSetupClaimRelayUrl(raw: unknown): string | null {
+    if (typeof raw !== "string") return null;
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.length > SETUP_CLAIM_RELAY_URL_MAX_LENGTH) return null;
+    let parsed: URL;
+    try {
+        parsed = new URL(trimmed);
+    } catch {
+        return null;
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    if (!parsed.hostname || parsed.username || parsed.password) return null;
+    return trimmed;
+}
+
+/** Thrown when a claim is refused without writing anything. */
+export class SetupClaimRejectedError extends Error {
+    constructor(readonly reason: "invalid_relay_url" | "quota_exceeded") {
+        super(reason === "invalid_relay_url" ? "Invalid setup-claim relay URL" : "Outstanding setup-claim quota reached");
+        this.name = "SetupClaimRejectedError";
+    }
+}
+
+/**
+ * Create a pending claim. Throws {@link SetupClaimRejectedError} (and writes
+ * nothing) when the relay URL is invalid or the global outstanding-claim quota
+ * is exhausted.
+ */
 export async function createSetupClaim(
     relayUrl: string,
     label?: string | null,
+    opts: { maxOutstanding?: number } = {},
 ): Promise<{ token: string; expiresAt: string }> {
-    const token = generateToken();
-    const now = new Date().toISOString();
-    const expiresAt = claimExpiry();
-    await getKysely()
-        .insertInto("setup_claim")
-        .values({
-            id: token,
-            status: "pending",
-            relayUrl,
-            apiKey: null,
-            userId: null,
-            userName: null,
-            createdAt: now,
-            expiresAt,
-            approvedAt: null,
-            redeemedAt: null,
-            label: sanitizeLabel(label),
-        })
+    const normalizedRelayUrl = normalizeSetupClaimRelayUrl(relayUrl);
+    if (!normalizedRelayUrl) throw new SetupClaimRejectedError("invalid_relay_url");
+    const maxOutstanding = opts.maxOutstanding ?? MAX_OUTSTANDING_SETUP_CLAIMS;
+
+    const db = getKysely();
+    const nowMs = Date.now();
+    const now = new Date(nowMs).toISOString();
+
+    // Bounded opportunistic cleanup of long-expired rows (the hourly sweep
+    // remains as a backstop).
+    await db
+        .deleteFrom("setup_claim")
+        .where("expiresAt", "<", new Date(nowMs - EXPIRED_CLAIM_GRACE_MS).toISOString())
         .execute();
+
+    const token = generateToken();
+    const expiresAt = claimExpiry();
+    // Conditional insert: the quota check and the write are one statement, so
+    // concurrent creators cannot overshoot the cap.
+    const result = await sql`
+        INSERT INTO setup_claim
+            (id, status, relayUrl, apiKey, userId, userName, createdAt, expiresAt, approvedAt, redeemedAt, label)
+        SELECT ${token}, 'pending', ${normalizedRelayUrl}, NULL, NULL, NULL, ${now}, ${expiresAt}, NULL, NULL, ${sanitizeLabel(label)}
+        WHERE (SELECT COUNT(*) FROM setup_claim WHERE expiresAt > ${now}) < ${maxOutstanding}
+    `.execute(db);
+    if (Number(result.numAffectedRows ?? 0n) === 0) {
+        log.warn("setup-claim creation rejected: outstanding claim quota reached");
+        throw new SetupClaimRejectedError("quota_exceeded");
+    }
     return { token, expiresAt };
 }
 

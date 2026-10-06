@@ -87,6 +87,8 @@ const MAX_VIOLATIONS = 100;
 let _config: ResolvedSandboxConfig | null = null;
 let _initialized = false;
 let _initFailed = false;
+/** Set when the caller asked initSandbox() to fail closed for this config. */
+let _failClosed = false;
 let _violations: ViolationRecord[] = [];
 let _violationListeners: Array<(violation: ViolationRecord) => void> = [];
 let _sshAuthSock: string | null = null;
@@ -100,18 +102,26 @@ let _readOnlyOverlay = false;
  * Translates `ResolvedSandboxConfig.srtConfig` into the `SandboxRuntimeConfig`
  * expected by `SandboxManager` and calls `SandboxManager.initialize()`.
  *
- * Graceful degradation:
- * - Mode `"none"` or null srtConfig: skips initialization entirely.
- * - Unsupported platforms (Windows): logs a warning and continues unsandboxed.
- * - If config building or `SandboxManager.initialize()` throws (including a
- *   malformed `srtConfig` — missing entirely, or with undefined filesystem
- *   arrays): logs the error and continues unsandboxed. Never crashes the
- *   worker.
+ * Mode `"none"` or null srtConfig skips initialization entirely.
+ *
+ * When the sandbox is requested but cannot be enabled (unsupported platform,
+ * or config building / `SandboxManager.initialize()` throws — including a
+ * malformed `srtConfig`):
+ * - `opts.failClosed: true` → throws {@link SandboxUnavailableError}. Callers
+ *   use this when the user explicitly asked for isolation, so a session never
+ *   silently runs with runner-account authority it was told it would not have.
+ *   {@link isSandboxRequiredButUnavailable} stays true afterwards so tools that
+ *   execute processes can refuse even if a caller swallows the error.
+ * - otherwise (default) → logs and continues unsandboxed (graceful degradation).
  */
-export async function initSandbox(config: ResolvedSandboxConfig): Promise<void> {
+export async function initSandbox(
+    config: ResolvedSandboxConfig,
+    opts?: { failClosed?: boolean },
+): Promise<void> {
     _config = config;
     _violations = [];
     _initFailed = false;
+    _failClosed = opts?.failClosed === true;
 
     // Mode "none" or no srtConfig → no sandbox
     if (config.mode === "none" || config.srtConfig === null) {
@@ -127,9 +137,12 @@ export async function initSandbox(config: ResolvedSandboxConfig): Promise<void> 
 
     // Check platform support
     if (!SandboxManager.isSupportedPlatform()) {
-        log.warn("Platform not supported for sandboxing. Running unsandboxed.");
         _initialized = true;
         _initFailed = true;
+        if (_failClosed) {
+            throw new SandboxUnavailableError(`sandbox mode "${config.mode}" is not supported on platform ${platform()}`);
+        }
+        log.warn("Platform not supported for sandboxing. Running unsandboxed.");
         return;
     }
 
@@ -141,10 +154,31 @@ export async function initSandbox(config: ResolvedSandboxConfig): Promise<void> 
         await SandboxManager.initialize(runtimeConfig);
         _initialized = true;
     } catch (err) {
-        log.error("Failed to initialize sandbox. Continuing unsandboxed:", err);
         _initialized = true;
         _initFailed = true;
+        if (_failClosed) {
+            const msg = err instanceof Error ? err.message : String(err);
+            throw new SandboxUnavailableError(`sandbox mode "${config.mode}" failed to initialize: ${msg}`);
+        }
+        log.error("Failed to initialize sandbox. Continuing unsandboxed:", err);
     }
+}
+
+/** Thrown by {@link initSandbox} when a fail-closed sandbox cannot be enabled. */
+export class SandboxUnavailableError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "SandboxUnavailableError";
+    }
+}
+
+/**
+ * True when the sandbox was requested with `failClosed` but is not active.
+ * Process-executing tools must refuse to run in this state rather than fall
+ * back to unsandboxed execution.
+ */
+export function isSandboxRequiredButUnavailable(): boolean {
+    return _failClosed && _config !== null && _config.mode !== "none" && _config.srtConfig !== null && !_isActive();
 }
 
 /**
@@ -322,6 +356,7 @@ export async function cleanupSandbox(): Promise<void> {
     _config = null;
     _initialized = false;
     _initFailed = false;
+    _failClosed = false;
     _violations = [];
     _violationListeners = [];
     _sshAuthSock = null;
@@ -663,6 +698,7 @@ export function _resetState(): void {
     _config = null;
     _initialized = false;
     _initFailed = false;
+    _failClosed = false;
     _violations = [];
     _violationListeners = [];
     _sshAuthSock = null;

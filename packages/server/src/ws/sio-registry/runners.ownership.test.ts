@@ -112,9 +112,15 @@ afterAll(() => mock.restore());
 
 mock.restore();
 
+// Registration consults the durable runner_owner store (fail-closed); back it
+// with a disposable in-memory database.
+const { installRunnerOwnerTestDb } = await import("../../../tests/fixtures/runner-owner-db.js");
+const ownerDb = await installRunnerOwnerTestDb();
+
 const { initStateRedis, setSession, setRunner } = await import("../sio-state/index.js");
 const { initSioRegistry, runnerSecrets, localRunnerSockets, localTuiSockets } = await import("./context.js");
-const { registerRunner, getRunnerData, getLocalRunnerSocket, getConnectedSessionsForRunner } = await import("./runners.js");
+const { registerRunner, removeRunner, getRunnerData, getLocalRunnerSocket, getConnectedSessionsForRunner } = await import("./runners.js");
+const { getRunnerOwner, rememberRunnerOwner } = await import("../../runner-owner.js");
 
 function fakeSocket() {
     return { join: mock(async () => {}), data: {} } as any;
@@ -184,6 +190,8 @@ function connectTui(sessionId: string): void {
 
 describe("runner ownership guard", () => {
     beforeEach(async () => {
+        await ownerDb.reset();
+        ownerDb.setBroken(false);
         store.clear();
         setStore.clear();
         runnerSecrets.clear();
@@ -311,6 +319,94 @@ describe("runner ownership guard", () => {
         expect(result).toBeInstanceOf(Error);
         const runner = await getRunnerData("runner-anon");
         expect(runner!.userId).toBeNull();
+    });
+});
+
+describe("runner ownership guard — offline runner (durable owner)", () => {
+    beforeEach(async () => {
+        store.clear();
+        setStore.clear();
+        runnerSecrets.clear();
+        localRunnerSockets.clear();
+        await ownerDb.reset();
+        ownerDb.setBroken(false);
+        initSioRegistry(fakeIo());
+        await initStateRedis(mockRedis as never);
+    });
+
+    async function registerThenDisconnect(runnerId: string, secret: string, userId: string) {
+        const result = await registerRunner(fakeSocket(), {
+            ...baseOpts,
+            requestedRunnerId: runnerId,
+            runnerSecret: secret,
+            userId,
+        });
+        expect(result).toBe(runnerId);
+        // Normal disconnect: Redis state AND the runner secret are deleted.
+        await removeRunner(runnerId);
+        expect(await getRunnerData(runnerId)).toBeNull();
+    }
+
+    it("rejects a different user claiming an offline runner's ID, and the real runner can still reconnect", async () => {
+        await registerThenDisconnect("runner-off", "secret-real", USER_A);
+
+        const attackerSocket = fakeSocket();
+        const result = await registerRunner(attackerSocket, {
+            ...baseOpts,
+            requestedRunnerId: "runner-off",
+            runnerSecret: "attacker-chosen",
+            userId: USER_B,
+        });
+        expect(result).toBeInstanceOf(Error);
+        expect((result as Error).message).toContain("owned by a different user");
+        expect(attackerSocket.join).not.toHaveBeenCalled();
+        expect(await getRunnerData("runner-off")).toBeNull();
+        // Durable owner untouched, attacker's secret never persisted.
+        expect(await getRunnerOwner("runner-off")).toBe(USER_A);
+        expect(runnerSecrets.has("runner-off")).toBe(false);
+
+        // The legitimate runner reconnects with its original secret.
+        const again = await registerRunner(fakeSocket(), {
+            ...baseOpts,
+            requestedRunnerId: "runner-off",
+            runnerSecret: "secret-real",
+            userId: USER_A,
+        });
+        expect(again).toBe("runner-off");
+        expect((await getRunnerData("runner-off"))!.userId).toBe(USER_A);
+    });
+
+    it("rejects an anonymous registration of a durably-owned offline runner", async () => {
+        await registerThenDisconnect("runner-off-anon", "s", USER_A);
+        const result = await registerRunner(fakeSocket(), {
+            ...baseOpts,
+            requestedRunnerId: "runner-off-anon",
+            runnerSecret: "s",
+            userId: null,
+        });
+        expect(result).toBeInstanceOf(Error);
+        expect(await getRunnerOwner("runner-off-anon")).toBe(USER_A);
+    });
+
+    it("fails closed when the durable owner store is unavailable", async () => {
+        ownerDb.setBroken(true);
+        const result = await registerRunner(fakeSocket(), {
+            ...baseOpts,
+            requestedRunnerId: "runner-db-down",
+            runnerSecret: "s",
+            userId: USER_A,
+        });
+        ownerDb.setBroken(false);
+        expect(result).toBeInstanceOf(Error);
+        expect((result as Error).message).toContain("could not be verified");
+        expect(await getRunnerData("runner-db-down")).toBeNull();
+        expect(runnerSecrets.has("runner-db-down")).toBe(false);
+    });
+
+    it("ordinary owner recording never overwrites an established durable owner", async () => {
+        await registerThenDisconnect("runner-keep", "s", USER_A);
+        await rememberRunnerOwner("runner-keep", USER_B);
+        expect(await getRunnerOwner("runner-keep")).toBe(USER_A);
     });
 });
 

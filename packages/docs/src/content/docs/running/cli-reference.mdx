@@ -385,6 +385,8 @@ All settings and persistent data are stored in `~/.pizzapi/web/`:
 
 VAPID keys for push notifications are generated on first run and stored in `config.json`. They persist across restarts and config changes — push notification subscriptions won't break.
 
+`config.json` and `compose.yml` both contain secrets (`BETTER_AUTH_SECRET`, the VAPID private key, the ntfy publish token, and any DNS-provider token). `pizza web` writes them atomically with mode `0600` and keeps `~/.pizzapi/web/` at `0700`. It repairs looser modes left by older versions on every run, including when `compose.yml` is otherwise unchanged. If you keep secrets in `compose.override.yml`, restrict that file yourself (`chmod 600`).
+
 <Aside type="note">
   **Custom Docker overrides:** The `compose.yml` is regenerated on each run from the template + config. For additional Docker customizations (extra volumes, networks, etc.), create a `compose.override.yml` in the same directory — PizzaPi automatically includes it if present.
 </Aside>

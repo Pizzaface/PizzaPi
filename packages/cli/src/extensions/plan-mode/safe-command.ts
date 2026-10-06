@@ -1,6 +1,136 @@
-import { DESTRUCTIVE_CMD_PATTERNS, DESTRUCTIVE_FLAG_PATTERNS, SANDBOX_ONLY_CMD_PATTERNS, WRAPPER_SHELLS, PASSTHROUGH_WRAPPERS } from "./patterns.js";
+import {
+    DESTRUCTIVE_CMD_PATTERNS,
+    DESTRUCTIVE_FLAG_PATTERNS,
+    SANDBOX_ONLY_CMD_PATTERNS,
+    OPAQUE_INTERPRETER_PATTERNS,
+    DANGEROUS_ENV_NAME_PATTERN,
+    WRAPPER_SHELLS,
+    PASSTHROUGH_WRAPPERS,
+} from "./patterns.js";
 import { splitShellSegments, splitShellWords, hasUnsafeOutputRedirection } from "./shell-parser.js";
-import { isDestructiveGitCommand, isDestructiveTarCommand, isDestructiveGawkCommand, isDestructivePatchCommand } from "./command-checks.js";
+import {
+    isDestructiveGitCommand,
+    isDestructiveTarCommand,
+    isDestructiveGawkCommand,
+    isDestructivePatchCommand,
+    isDestructiveCurlCommand,
+    isDestructiveGhCommand,
+    isDestructiveClusterCommand,
+    isDestructiveAwkProgram,
+    isDestructiveSedScript,
+    extractFindExecCommands,
+} from "./command-checks.js";
+
+// ── Segment normalization ────────────────────────────────────────────────────
+
+const ASSIGNMENT_WORD = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\+?=/;
+const LEADING_REDIRECTION_WORD = /^\d*(?:&>>?|>>?\|?|<<<?|<<-?|<>|>&|<&|<)/;
+const PREFIX_KEYWORD = /^\s*(?:(?:if|then|else|elif|do|while|until)(?=\s)|[!({](?=\s|\S))\s*/;
+/** Compound-command / definition keywords whose bodies we do not analyse. */
+const OPAQUE_LEADING_KEYWORD = /^\s*(?:case|function|select|coproc)(?:\s|$)/;
+/** `name() {` / `name () (` function definitions. */
+const FUNCTION_DEFINITION = /^\s*[^\s()|&;<>]+\s*\(\s*\)/;
+/** Builtins that only assign variables (`export X=1`). */
+const ASSIGNMENT_BUILTINS = new Set(["export", "declare", "typeset", "readonly", "local"]);
+
+/**
+ * Returns true when an inline `NAME=value` assignment would change which code
+ * a later command executes (PATH, LD_PRELOAD, GIT_*, *PAGER, …). `PAGER=cat`
+ * style assignments that merely disable paging are allowed.
+ *
+ * @internal Exported for testing only.
+ */
+export function isDangerousEnvAssignment(word: string): boolean {
+    const match = word.match(ASSIGNMENT_WORD);
+    if (!match) return false;
+    if (!DANGEROUS_ENV_NAME_PATTERN.test(match[1])) return false;
+    const value = word.slice(word.indexOf("=") + 1).replace(/^['"]|['"]$/g, "");
+    if (/PAGER$/i.test(match[1]) && (value === "" || value === "cat")) return false;
+    return true;
+}
+
+/**
+ * True if a raw (quote-preserving) command word contains an unquoted or
+ * double-quoted expansion (`$VAR`, `${…}`, `$'…'`, backticks) or an unquoted
+ * glob — i.e. the executable bash will run cannot be known statically.
+ */
+function isOpaqueCommandWord(rawWord: string): boolean {
+    if (rawWord === "[" || rawWord === "[[") return false;
+    const withoutSingle = rawWord.replace(/'[^']*'/g, "");
+    if (/[$`]/.test(withoutSingle.replace(/\\./g, ""))) return true;
+    const unquoted = withoutSingle.replace(/"(?:[^"\\]|\\.)*"/g, "").replace(/\\./g, "");
+    return /[*?[\]{}]/.test(unquoted);
+}
+
+/**
+ * Canonicalise one shell segment for pattern matching:
+ *   - strip leading grouping / control keywords (`(`, `{`, `!`, `if`, `then`,
+ *     `do`, `while`, …) so `( rm x )` and `if x; then rm y; fi` are analysed;
+ *   - strip leading variable assignments and redirections
+ *     (`FOO=1 rm x`, `2>/dev/null rm x`), rejecting dangerous assignments;
+ *   - unquote the command word and reduce it to its basename, so
+ *     `/usr/bin/curl`, `\rm`, `'rm'` and `r""m` all match `^\s*name\b`.
+ *
+ * Returns the normalized segment (`""` for assignment-only / empty
+ * segments), or `null` when the executed command cannot be determined
+ * statically (expansion or glob in command position, function definitions,
+ * `case`/`coproc`, dangerous env assignments) — callers treat `null` as
+ * destructive.
+ *
+ * @internal Exported for testing only.
+ */
+export function normalizeSegment(segment: string): string | null {
+    let rest = segment.trim();
+    for (let guard = 0; guard < 64; guard++) {
+        if (!rest) return "";
+        if (OPAQUE_LEADING_KEYWORD.test(rest) || FUNCTION_DEFINITION.test(rest)) return null;
+
+        const closer = rest.match(/^(?:\)\)?|\}|fi|done|esac)(?=\s|$|[)}])\s*/);
+        if (closer) {
+            rest = rest.slice(closer[0].length).trim();
+            continue;
+        }
+
+        const keyword = rest.match(PREFIX_KEYWORD);
+        if (keyword && keyword[0].length > 0) {
+            rest = rest.slice(keyword[0].length).trim();
+            continue;
+        }
+
+        const rawWords = splitShellWords(rest, true);
+        const first = rawWords[0] ?? "";
+
+        if (ASSIGNMENT_WORD.test(first)) {
+            if (isDangerousEnvAssignment(splitShellWords(first)[0] ?? first)) return null;
+            const off = findWordStartOffset(rest, 1);
+            rest = off >= 0 ? rest.slice(off) : "";
+            continue;
+        }
+
+        const redirect = first.match(LEADING_REDIRECTION_WORD);
+        if (redirect) {
+            // `>file cmd` (target attached) skips one word; `> file cmd` two.
+            const skip = redirect[0].length === first.length ? 2 : 1;
+            const off = findWordStartOffset(rest, skip);
+            rest = off >= 0 ? rest.slice(off) : "";
+            continue;
+        }
+
+        if (isOpaqueCommandWord(first)) return null;
+
+        const unquoted = splitShellWords(first)[0] ?? "";
+        const base = unquoted.replace(/^.*[/\\]/, "") || unquoted;
+
+        if (ASSIGNMENT_BUILTINS.has(base.toLowerCase())) {
+            const words = splitShellWords(rest);
+            if (words.slice(1).some(isDangerousEnvAssignment)) return null;
+        }
+
+        const restOff = findWordStartOffset(rest, 1);
+        return restOff >= 0 ? `${base} ${rest.slice(restOff)}` : base;
+    }
+    return null;
+}
 
 // ── Wrapper shell/interpreter detection ──────────────────────────────────────────────────
 
@@ -84,7 +214,10 @@ function extractWrapperInnerCommand(segment: string): string | null {
     // token starts with an identifier, not a recognised command name.
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) {
         let i = 0;
-        while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++;
+        while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) {
+            if (isDangerousEnvAssignment(words[i])) return "";
+            i++;
+        }
         if (i >= words.length) return null; // only assignments, no actual command
         const off = findWordStartOffset(segment, i);
         return off >= 0 ? segment.slice(off) : "";
@@ -152,6 +285,35 @@ function extractWrapperInnerCommand(segment: string): string | null {
         if (i >= words.length) return null; // wrapper only, no inner command
         const paOff = findWordStartOffset(segment, i);
         return paOff >= 0 ? segment.slice(paOff) : "";
+    }
+
+    // xargs [opts] CMD [args…] — runs CMD with arguments read from stdin
+    // (`… | xargs kill`, `… | xargs rm`). Without CMD it runs `echo`.
+    if (first === "xargs") {
+        const XARGS_ARG_FLAGS = new Set(["-I", "-L", "-n", "-P", "-s", "-d", "-E", "-a", "--arg-file", "--delimiter", "--max-args", "--max-procs", "--max-lines", "--max-chars", "--eof", "--replace", "--process-slot-var"]);
+        let i = 1;
+        while (i < words.length && words[i].startsWith("-")) {
+            if (words[i] === "--") { i++; break; }
+            if (XARGS_ARG_FLAGS.has(words[i])) i++;
+            i++;
+        }
+        if (i >= words.length) return null;
+        const off = findWordStartOffset(segment, i);
+        return off >= 0 ? segment.slice(off) : "";
+    }
+
+    // watch [opts] CMD… — runs CMD (via `sh -c`) repeatedly.
+    if (first === "watch") {
+        const WATCH_ARG_FLAGS = new Set(["-n", "--interval", "-q", "--equexit"]);
+        let i = 1;
+        while (i < words.length && words[i].startsWith("-")) {
+            if (words[i] === "--") { i++; break; }
+            if (WATCH_ARG_FLAGS.has(words[i])) i++;
+            i++;
+        }
+        if (i >= words.length) return null;
+        const off = findWordStartOffset(segment, i);
+        return off >= 0 ? segment.slice(off) : "";
     }
 
     // env as a command launcher: env [opts] [VAR=val...] COMMAND [args...]
@@ -228,6 +390,8 @@ function extractWrapperInnerCommand(segment: string): string | null {
 
             // VAR=val environment variable assignments
             if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) {
+                // PATH / LD_PRELOAD / GIT_* etc. change what the inner command runs.
+                if (isDangerousEnvAssignment(w)) return "";
                 i++;
                 continue;
             }
@@ -298,19 +462,39 @@ export function isWrapperShellFileExecution(segment: string): boolean {
 }
 
 /**
+ * Non-filesystem side effects: process control, privilege escalation, system
+ * management, network/remote mutations, and opaque code execution. The OS
+ * read-only overlay does not stop any of these, so they are checked in both
+ * sandbox and no-sandbox mode. `segment` must already be normalized.
+ */
+function hasNonFilesystemSideEffect(segment: string): boolean {
+    if (SANDBOX_ONLY_CMD_PATTERNS.some((p) => p.test(segment))) return true;
+    if (OPAQUE_INTERPRETER_PATTERNS.some((p) => p.test(segment))) return true;
+    if (isDestructiveCurlCommand(segment)) return true;
+    if (isDestructiveGhCommand(segment)) return true;
+    if (isDestructiveClusterCommand(segment)) return true;
+    if (isDestructiveAwkProgram(segment)) return true;
+    if (isDestructiveSedScript(segment)) return true;
+    // `bash script.sh` executes a file whose contents cannot be inspected.
+    if (isWrapperShellFileExecution(segment)) return true;
+    return false;
+}
+
+/**
  * Check if a command looks destructive based on known patterns.
  *
  * For most commands this is a **blocklist** check — known destructive patterns
- * are flagged and everything else passes. For `git` specifically an
- * **allowlist** approach is used because the set of mutating git subcommands
- * is too large to enumerate reliably (git clean, git apply, git restore,
- * git am, git bisect, etc.).
+ * are flagged and everything else passes. For `git`, `gh`, `docker`/`podman`,
+ * `kubectl` and `helm` an **allowlist** of read-only subcommands is used
+ * instead. Command words are normalized first (basename, unquoted, leading
+ * keywords/assignments/redirections stripped), and any segment whose
+ * executable cannot be determined statically is treated as destructive.
  *
- * When `sandboxActive` is true, only non-filesystem side effects are checked
- * (process control, privilege escalation, system management, remote mutations).
- * The OS-level sandbox enforces filesystem write restrictions, so output
- * redirection, script interpreters, and `find -exec` are all safe.
- * Command substitution is still rejected to prevent smuggling blocked commands.
+ * When `sandboxActive` is true, filesystem writes (redirection, `rm`,
+ * `sed -i`, …) are left to the OS-level read-only overlay, but every
+ * non-filesystem side effect — process control, privilege escalation,
+ * network/remote mutations, interpreters and other opaque code execution —
+ * is still blocked, because the overlay does not prevent those.
  *
  * When `sandboxActive` is false (default), the full regex battery is applied
  * as the only line of defense against destructive commands.
@@ -318,102 +502,77 @@ export function isWrapperShellFileExecution(segment: string): boolean {
  * @internal Exported for testing only.
  */
 export function isDestructiveCommand(command: string, sandboxActive = false): boolean {
-    // ── Sandbox-active path: lightweight check ───────────────────────────
-    // The OS sandbox enforces a read-only filesystem overlay. We only need
-    // to block non-filesystem side effects that the sandbox doesn't cover.
-    if (sandboxActive) {
-        // Multi-line payloads and command/backtick/process substitution are
-        // still rejected — they can smuggle commands past the per-segment
-        // check regardless of sandbox state.
-        if (/\$\(|`|\n|<\(|>\(/.test(command)) return true;
-
-        const parts = splitShellSegments(command);
-        for (const part of parts) {
-            const trimmed = part.trim();
-            if (!trimmed) continue;
-
-            if (SANDBOX_ONLY_CMD_PATTERNS.some((p) => p.test(trimmed))) return true;
-
-            // Git: reuse the same allowlist as the no-sandbox path. Any git
-            // subcommand not on the safe list (send-pack, http-push, etc.)
-            // is treated as destructive — this covers all plumbing commands
-            // that can mutate remotes without enumerating them individually.
-            // Note: we skip DESTRUCTIVE_FLAG_PATTERNS here because the
-            // sandbox handles filesystem writes (redirection, -o, etc.).
-            if (/^\s*git\b/i.test(trimmed)) {
-                if (isDestructiveGitCommand(trimmed)) return true;
-                continue;
-            }
-
-            // Wrapper shells — extract the inner command and evaluate it
-            // against the sandbox-active rules so that e.g.
-            // `bash -c "curl -X POST ..."` and `bash -c "kill 1"` are caught
-            // even when the OS sandbox is on (it only protects the filesystem,
-            // not network mutations or process-control calls).
-            const innerCmdSandbox = extractWrapperInnerCommand(trimmed);
-            if (innerCmdSandbox !== null) {
-                if (innerCmdSandbox === "" || isDestructiveCommand(innerCmdSandbox, true)) return true;
-                continue; // inner command is safe; skip remaining checks
-            }
-        }
-        return false;
-    }
-
-    // ── No-sandbox path: full regex battery ──────────────────────────────
     // Reject command substitution, backtick expansion, process substitution,
     // and multi-line payloads that could smuggle destructive commands past
-    // the per-segment check.
-    if (/\$\(|`|\n|<\(|>\(/.test(command)) return true;
+    // the per-segment check — regardless of sandbox state.
+    if (/\$\(|`|\n|\r|<\(|>\(/.test(command)) return true;
+    // Bash network pseudo-devices open sockets via plain redirection.
+    if (/\/dev\/(?:tcp|udp)\//i.test(command)) return true;
 
     // Split on shell chaining operators, respecting quotes
     const parts = splitShellSegments(command);
 
     for (const part of parts) {
-        const trimmed = part.trim();
-        if (!trimmed) continue; // empty segment (e.g. trailing semicolon)
+        const original = part.trim();
+        if (!original) continue; // empty segment (e.g. trailing semicolon)
 
-        // Git: allowlist-based check (stricter than the generic blocklist)
+        const trimmed = normalizeSegment(original);
+        if (trimmed === null) return true; // executable cannot be determined
+        if (!trimmed) {
+            // Assignment- or redirection-only segment (`X=1`, `> file`).
+            if (!sandboxActive && hasUnsafeOutputRedirection(original)) return true;
+            continue;
+        }
+
+        if (hasNonFilesystemSideEffect(trimmed)) return true;
+
+        // Git: allowlist-based check (stricter than the generic blocklist).
+        // Any subcommand not on the safe list (push, send-pack, http-push, …)
+        // is destructive in both modes.
         if (/^\s*git\b/i.test(trimmed)) {
             if (isDestructiveGitCommand(trimmed)) return true;
-            if (hasUnsafeOutputRedirection(trimmed)) return true;
+            if (sandboxActive) continue;
+            if (hasUnsafeOutputRedirection(original)) return true;
             // Flag-level check still applies (e.g. git diff --output=...)
             if (DESTRUCTIVE_FLAG_PATTERNS.some((p) => p.test(trimmed))) return true;
             continue;
         }
 
-        // tar, gawk, and patch need command-aware parsing to avoid false positives and
-        // to account for read-only flags / legacy syntax.
-        if (isDestructiveTarCommand(trimmed) || isDestructiveGawkCommand(trimmed) || isDestructivePatchCommand(trimmed)) return true;
-
-        // Wrapper shells/interpreters: bash -c, sh -c, env COMMAND, etc.
-        // Instead of blanket-blocking all wrapper shells, extract the inner command
-        // and evaluate it recursively.  This allows `env HOME=/tmp git status` and
-        // `bash -lc "git status"` while still blocking `bash -c "rm -rf /"`.
+        // Wrapper shells/launchers: bash -c, env COMMAND, xargs, timeout, …
+        // Extract the inner command and evaluate it recursively. This allows
+        // `env HOME=/tmp git status` and `bash -lc "git status"` while still
+        // blocking `bash -c "rm -rf /"` and `… | xargs kill`.
         const innerCmd = extractWrapperInnerCommand(trimmed);
         if (innerCmd !== null) {
             // Also block if the outer wrapper itself has unsafe output redirection,
             // e.g. `bash -c 'git status' > output.txt` writes to a file.
-            if (hasUnsafeOutputRedirection(trimmed)) return true;
+            if (!sandboxActive && hasUnsafeOutputRedirection(original)) return true;
             // Block if no extractable inner command, or if the inner command is destructive.
-            if (innerCmd === "" || isDestructiveCommand(innerCmd, false)) return true;
+            if (innerCmd === "" || isDestructiveCommand(innerCmd, sandboxActive)) return true;
             continue; // inner command is safe; skip remaining pattern checks
         }
 
-        // P1-3: `bash script.sh` / `sh run.sh` (no -c flag) executes an
-        // arbitrary file whose contents cannot be inspected at static-analysis
-        // time.  In no-sandbox mode treat this as destructive.  In sandbox mode
-        // the filesystem overlay limits the damage, so we allow it (the check
-        // is only reached on the no-sandbox code path).
-        if (isWrapperShellFileExecution(trimmed)) return true;
+        if (sandboxActive) {
+            // find -exec runs an arbitrary command; check it like any other.
+            const execCommands = extractFindExecCommands(trimmed);
+            if (execCommands?.some((c) => !c || isDestructiveCommand(c, true))) return true;
+            continue;
+        }
+
+        // ── No-sandbox: filesystem writes must be caught here ────────────
+        // tar, gawk, and patch need command-aware parsing to avoid false positives and
+        // to account for read-only flags / legacy syntax.
+        if (isDestructiveTarCommand(trimmed) || isDestructiveGawkCommand(trimmed) || isDestructivePatchCommand(trimmed)) return true;
 
         const isCmdDestructive = DESTRUCTIVE_CMD_PATTERNS.some((p) => p.test(trimmed));
-        const hasUnsafeRedirection = hasUnsafeOutputRedirection(trimmed);
+        const hasUnsafeRedirection = hasUnsafeOutputRedirection(original);
         const isFlagDestructive = DESTRUCTIVE_FLAG_PATTERNS.some((p) => p.test(trimmed));
         if (isCmdDestructive || hasUnsafeRedirection || isFlagDestructive) return true;
     }
 
     return false;
 }
+
 
 /**
  * @deprecated Use `isDestructiveCommand` instead. Kept for backward compat during transition.

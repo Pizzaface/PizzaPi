@@ -9,7 +9,7 @@
 
 import { randomUUID } from "crypto";
 import type { Delivery, Route, TriggerEvent } from "@pizzapi/protocol";
-import { renderEventText } from "@pizzapi/protocol";
+import { configTargetPrincipal, renderEventText } from "@pizzapi/protocol";
 import { createLogger } from "@pizzapi/tools";
 import {
   broadcastToSessionViewers,
@@ -328,6 +328,22 @@ export async function emitTriggerResponse(
 export function createEngineDeps(): EngineDeps {
   return {
     async deliver(delivery, event, route): Promise<DeliverOutcome> {
+      // Config session routes are bound to a target principal: only a
+      // session registered by that user may receive them (an unbound row
+      // reaches nobody). Requires positive proof: a missing ownership record
+      // (stale room membership after the record's sweep) is not a match.
+      // The binding is stamped on the row, so it holds after the route is
+      // gone. The row stays pending for the rightful owner.
+      const principal = delivery.recipientBound === true
+        ? (delivery.recipientUserId ?? null)
+        : route ? configTargetPrincipal(route) : undefined;
+      if (principal !== undefined) {
+        const live = principal === null ? null : await getSharedSession(delivery.sessionId);
+        if (principal === null || live?.userId !== principal) {
+          log.warn(`Delivery ${delivery.deliveryId}: session ${delivery.sessionId} is not owned by config route ${route?.routeId}'s target principal — not delivering`);
+          return "unreachable";
+        }
+      }
       const trigger = toWireEnvelope(delivery, event, route);
       // Ack-capable sessions (new CLIs): emit with a receipt ack — the row is
       // inflight until the ack lands; a disconnect between emit and receipt
@@ -486,6 +502,27 @@ export function createEngineDeps(): EngineDeps {
  * so the parent's received-trigger lookup matches. Shared by the respond
  * route and the drain-on-source-registration path so the two cannot drift.
  */
+/**
+ * Resolve an event payload's `originalTriggerId` (a delivery id, or a legacy
+ * fireId) to the original Delivery/Event — only within `ownerUserId`'s
+ * tenant. The id comes from publisher-controlled payload, so a foreign
+ * delivery or event is treated exactly like an unknown id. Without an
+ * authenticated owner nothing is resolved (fail closed).
+ */
+export async function resolveOriginalTrigger(
+  originalTriggerId: string,
+  ownerUserId: string | undefined,
+): Promise<{ delivery: Delivery | null; event: TriggerEvent | null }> {
+  if (!ownerUserId) return { delivery: null, event: null };
+  const delivery = await getDelivery(originalTriggerId).catch(() => null);
+  if (delivery) {
+    const event = await getEvent(delivery.eventId).catch(() => null);
+    if (event && event.source.userId === ownerUserId) return { delivery, event };
+  }
+  const event = await getEventByFireId(originalTriggerId, ownerUserId).catch(() => null);
+  return { delivery: null, event };
+}
+
 export async function emitDeliveryResponseRelay(delivery: Delivery, event: TriggerEvent): Promise<boolean> {
   if (event.source.kind !== "session" || !event.source.id) return false;
   const originalTriggerId = typeof event.payload?.originalTriggerId === "string"
@@ -495,10 +532,10 @@ export async function emitDeliveryResponseRelay(delivery: Delivery, event: Trigg
   let originalDelivery: Delivery | null = null;
   let originalEvent: TriggerEvent | null = null;
   if (originalTriggerId) {
-    originalDelivery = await getDelivery(originalTriggerId).catch(() => null);
-    originalEvent = originalDelivery
-      ? await getEvent(originalDelivery.eventId).catch(() => null)
-      : await getEventByFireId(originalTriggerId).catch(() => null);
+    ({ delivery: originalDelivery, event: originalEvent } = await resolveOriginalTrigger(
+      originalTriggerId,
+      event.source.userId,
+    ));
     correlationId = originalEvent?.fireId ?? originalTriggerId;
   }
   const isSessionComplete = event.type === "lifecycle:session_complete"

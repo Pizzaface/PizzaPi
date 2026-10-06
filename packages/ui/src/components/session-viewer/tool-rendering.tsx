@@ -58,18 +58,8 @@ import { WriteFileCard } from "@/components/session-viewer/cards/WriteFileCard";
 import { TodoCard } from "@/components/session-viewer/cards/TodoCard";
 import type { TodoItem } from "@/lib/types";
 import type { NestedToolCalls } from "@/components/session-viewer/types";
-import { getMobileRuntimeConfig, resolveMobileMediaUrlAsync } from "@/lib/mobile-runtime";
-
-/** Resolves a mobile attachment URL asynchronously (mints a short-lived token). */
-function MobileMediaImg({ url, alt, className, loading }: { url: string; alt: string; className?: string; loading?: "lazy" | "eager" }) {
-  const { isMobileBundled } = getMobileRuntimeConfig();
-  const [src, setSrc] = React.useState(url);
-  React.useEffect(() => {
-    if (!isMobileBundled) return;
-    resolveMobileMediaUrlAsync(url).then(setSrc);
-  }, [url, isMobileBundled]);
-  return <img src={src} alt={alt} className={className} loading={loading} />;
-}
+import { getMobileRuntimeConfig } from "@/lib/mobile-runtime";
+import { MobileMediaImg } from "@/components/session-viewer/MobileMediaImg";
 import { SessionNameCard } from "@/components/session-viewer/cards/SessionNameCard";
 import {
   SpawnSessionCard,

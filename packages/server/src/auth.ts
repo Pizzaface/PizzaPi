@@ -294,6 +294,8 @@ export interface TriggerDeliveryTable {
     updatedAt: string;
     /** Exposed column for contract TTL sweeps (added by ensureEventTables). */
     expiresAt: string | null;
+    /** Recipient principal mirrored from deliveryJson (added by ensureEventTables). */
+    recipientUserId: string | null;
 }
 
 export interface DB {

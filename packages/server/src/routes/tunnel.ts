@@ -10,9 +10,9 @@
  *   - Runner-based:  /api/tunnel/runner/:runnerId/:port/* (preferred, stable across session switches)
  */
 
-import type { TunnelRelay } from "@pizzapi/tunnel";
+import { TUNNEL_SEND_HIGH_WATER_BYTES, type TunnelRelay } from "@pizzapi/tunnel";
 import { requireSession } from "../middleware.js";
-import { assertTunnelTokenStillValid, createTunnelToken, getAuthTunnelBasePath, verifyTunnelToken } from "./tunnel-token.js";
+import { assertTunnelTokenStillValid, createTunnelToken, getAuthTunnelBasePath, tunnelTokenAgeMs, verifyTunnelToken } from "./tunnel-token.js";
 import { getTunnelRelay } from "../tunnel-relay.js";
 import { getSession } from "../ws/sio-state/index.js";
 import { getRunnerData } from "../ws/sio-registry.js";
@@ -20,6 +20,8 @@ import { LABEL_MAX_TTL_HOURS, mintTunnelLabel } from "./tunnel-host.js";
 import type { RouteHandler } from "./types.js";
 
 const TUNNEL_MAX_BUFFERED_BYTES = 25 * 1024 * 1024; // ponytail: fixed ceiling, raise if legit large HTML responses appear
+/** Streamed responses: ask the runner to pause once this many bytes wait for the viewer. */
+const TUNNEL_STREAM_HIGH_WATER_BYTES = TUNNEL_SEND_HIGH_WATER_BYTES;
 
 /** Pattern: /api/tunnel/auth/:token/:sessionId/:port/<rest> — mobile iframe auth. */
 const AUTH_TUNNEL_PATH_RE = /^\/api\/tunnel\/auth\/([^/]+)\/([^/]+)\/(\d+)(\/.*)?$/;
@@ -29,6 +31,88 @@ const RUNNER_TUNNEL_PATH_RE = /^\/api\/tunnel\/runner\/([^/]+)\/(\d+)(\/.*)?$/;
 
 /** Pattern: /api/tunnel/:sessionId/:port/<rest> */
 const TUNNEL_PATH_RE = /^\/api\/tunnel\/([^/]+)\/(\d+)(\/.*)?$/;
+
+/** True for the signed-token tunnel route (/api/tunnel/auth/<token>/…). */
+export function isAuthTunnelPath(pathname: string): boolean {
+    return AUTH_TUNNEL_PATH_RE.test(pathname);
+}
+
+/**
+ * CSP applied to every path-based tunnel response (see withSecurityHeaders).
+ * `sandbox` without `allow-same-origin` gives the document an opaque origin,
+ * so runner-controlled scripts cannot act as the relay origin — even when the
+ * URL is opened top-level, outside the UI's sandboxed iframe.
+ */
+export const PATH_TUNNEL_SANDBOX_CSP = "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads";
+
+/**
+ * Lifetime of signed tunnel URLs the relay mints itself when a browser
+ * navigates to a cookie-authenticated tunnel path (see redirectToTokenTunnel).
+ * Matches the default absolute lifetime of host-origin tunnel labels so a
+ * long-open preview does not lose its subresources after an hour.
+ */
+export const TUNNEL_NAVIGATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Browsers attach no relay cookie to subresource requests from an opaque
+ * (sandboxed) document, so a cookie-authenticated path tunnel cannot load its
+ * own assets once it is sandboxed. Navigations to those paths are therefore
+ * redirected to an equivalent signed-token path that carries its auth in the
+ * URL. Non-navigation requests (API clients, curl) are served as before.
+ */
+function isBrowserNavigation(req: Request): boolean {
+    const method = req.method.toUpperCase();
+    return (method === "GET" || method === "HEAD") && req.headers.get("sec-fetch-mode") === "navigate";
+}
+
+function redirectToTokenTunnel(userId: string, scope: string, port: number, url: URL, proxyPath: string): Response {
+    const { token } = createTunnelToken({ userId, sessionId: scope, port, ttlMs: TUNNEL_NAVIGATION_TOKEN_TTL_MS });
+    return new Response(null, {
+        status: 302,
+        headers: {
+            Location: `${getAuthTunnelBasePath(token, scope, port)}${buildPathWithQuery(url, proxyPath)}`,
+            "Cache-Control": "no-store",
+        },
+    });
+}
+
+/**
+ * Sandboxed tunnel documents have an opaque origin, so their own fetch/XHR,
+ * module scripts, fonts and EventSource requests back to the token path are
+ * cross-origin (`Origin: null`). The token route is authenticated by the URL
+ * alone and forwards no relay cookies, so it can safely grant CORS to the
+ * opaque origin — including credentialed mode, which apps using
+ * `credentials: "include"` / `withCredentials` require.
+ */
+function isOpaqueOriginRequest(req: Request): boolean {
+    return req.headers.get("origin") === "null";
+}
+
+function opaqueOriginPreflight(req: Request): Response {
+    const headers = new Headers({
+        "Access-Control-Allow-Origin": "null",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": req.headers.get("access-control-request-method") ?? "GET",
+        "Access-Control-Max-Age": "600",
+        Vary: "Origin",
+    });
+    const requestedHeaders = req.headers.get("access-control-request-headers");
+    if (requestedHeaders) headers.set("Access-Control-Allow-Headers", requestedHeaders);
+    return new Response(null, { status: 204, headers });
+}
+
+function withOpaqueOriginCors(res: Response): Response {
+    const headers = new Headers(res.headers);
+    const exposed: string[] = [];
+    headers.forEach((_value, key) => {
+        if (!key.toLowerCase().startsWith("x-pizzapi-tunnel")) exposed.push(key);
+    });
+    headers.set("Access-Control-Allow-Origin", "null");
+    headers.set("Access-Control-Allow-Credentials", "true");
+    if (exposed.length > 0) headers.set("Access-Control-Expose-Headers", exposed.join(", "));
+    headers.append("Vary", "Origin");
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
 
 /**
  * decodeURIComponent that returns "" on malformed percent-encoding instead of
@@ -86,6 +170,31 @@ function buildTunnelInterceptScript(basePath: string): string {
     return `<script data-pizzapi-tunnel-intercept>
 (function(){
   var B="${basePath}";
+  // Path tunnels run in a CSP sandbox (opaque origin), where touching
+  // localStorage/sessionStorage/document.cookie throws SecurityError. Give
+  // apps a per-page in-memory stand-in so they keep working; persistence
+  // needs the isolated tunnel origin (PIZZAPI_TUNNEL_DOMAIN).
+  function mem(){
+    var d=Object.create(null);
+    return {
+      get length(){return Object.keys(d).length},
+      key:function(i){var k=Object.keys(d);return i<k.length?k[i]:null},
+      getItem:function(k){k=String(k);return k in d?d[k]:null},
+      setItem:function(k,v){d[String(k)]=String(v)},
+      removeItem:function(k){delete d[String(k)]},
+      clear:function(){d=Object.create(null)}
+    };
+  }
+  ["localStorage","sessionStorage"].forEach(function(n){
+    try{void window[n].length}catch(_e){try{Object.defineProperty(window,n,{value:mem(),configurable:true})}catch(_x){}}
+  });
+  try{void document.cookie}catch(_e){
+    var jar=Object.create(null);
+    try{Object.defineProperty(document,"cookie",{configurable:true,
+      get:function(){return Object.keys(jar).map(function(k){return k+"="+jar[k]}).join("; ")},
+      set:function(v){var p=String(v).split(";")[0],i=p.indexOf("=");if(i>0)jar[p.slice(0,i).trim()]=p.slice(i+1).trim()}
+    })}catch(_x){}
+  }
   function rw(u){
     if(typeof u!=="string")return u;
     if(u.startsWith(B))return u;
@@ -355,12 +464,50 @@ function shouldBufferTunnelResponse(contentType: string | null): boolean {
         || shouldRewriteTunnelCss(contentType);
 }
 
+/**
+ * Response headers that mutate browser state for the WHOLE origin (cookies,
+ * site data, service-worker scope, HSTS, alt services, reporting policies,
+ * credentialed CORS). Path-based tunnels are served from the relay origin, so
+ * a runner-local service must never be able to emit these: they would set,
+ * shadow, or clear PizzaPi's own cookies/storage or persist policy for the
+ * relay. Local apps that need cookies must use the isolated tunnel origin
+ * (PIZZAPI_TUNNEL_DOMAIN), where they are scoped to the app's own host.
+ */
+export const PATH_TUNNEL_ORIGIN_STATE_HEADERS: readonly string[] = [
+    "set-cookie",
+    "set-cookie2",
+    "clear-site-data",
+    "service-worker-allowed",
+    "strict-transport-security",
+    "alt-svc",
+    "nel",
+    "report-to",
+    "reporting-endpoints",
+    "access-control-allow-credentials",
+];
+
+/** Internal relay markers — an upstream service must never be able to supply them. */
+function stripInternalTunnelMarkers(responseHeaders: Headers): void {
+    const internal: string[] = [];
+    responseHeaders.forEach((_value, key) => {
+        if (key.toLowerCase().startsWith("x-pizzapi-tunnel")) internal.push(key);
+    });
+    for (const key of internal) responseHeaders.delete(key);
+}
+
 function applyResponseHeadersByBasePath(responseHeaders: Headers, basePath: string, allowCrossOriginFrame = false): void {
+    // Upstream-supplied copies of our internal markers (e.g. a forged
+    // x-pizzapi-tunnel-frame: cross-origin to drop X-Frame-Options) are removed
+    // before the relay sets its own.
+    stripInternalTunnelMarkers(responseHeaders);
     const location = responseHeaders.get("location");
     if (location) {
         responseHeaders.set("location", rewriteUrlByBasePath(location, basePath));
     }
-    if (basePath === "") {
+    if (basePath !== "") {
+        // Path-based tunnel: the response is served on the relay origin.
+        for (const header of PATH_TUNNEL_ORIGIN_STATE_HEADERS) responseHeaders.delete(header);
+    } else {
         // Host-based tunnel: force cookies host-only. A malicious local app
         // could otherwise Set-Cookie with Domain=.<tunnel domain> (poisoning
         // sibling tunnels) or a parent registrable domain shared with the
@@ -373,7 +520,9 @@ function applyResponseHeadersByBasePath(responseHeaders: Headers, basePath: stri
             }
         }
     }
-    responseHeaders.set("x-pizzapi-tunnel", "1");
+    // "host" = isolated tunnel origin; "path" = served on the relay origin
+    // (withSecurityHeaders sandboxes everything that is not "host").
+    responseHeaders.set("x-pizzapi-tunnel", basePath === "" ? "host" : "path");
     if (allowCrossOriginFrame) responseHeaders.set("x-pizzapi-tunnel-frame", "cross-origin");
 }
 
@@ -415,6 +564,10 @@ function tunnelErrorResponse(message: string): Response {
         return Response.json({ error: "Tunnel request timed out" }, { status: 504 });
     }
 
+    if (message.includes("Too many concurrent")) {
+        return Response.json({ error: `Tunnel error: ${message}` }, { status: 503, headers: { "Retry-After": "1" } });
+    }
+
     if (message.includes("body too large") || message.includes("too large")) {
         return Response.json({ error: `Tunnel error: ${message}` }, { status: 413 });
     }
@@ -446,12 +599,23 @@ async function streamRequestBodyToRelay(
         void reader.cancel(signal.reason).catch(() => {});
     };
     signal.addEventListener("abort", cancelReader, { once: true });
+    let bodyRejected = false;
     try {
         while (!signal.aborted) {
+            // Backpressure: do not pull more of the viewer's body until the
+            // runner socket has drained and the runner has not paused us.
+            await relay.waitForRequestCapacity(runnerId, requestId, signal);
+            if (signal.aborted) break;
             const { done, value } = await reader.read();
             if (done || signal.aborted) break;
             if (!value || value.byteLength === 0) continue;
-            relay.sendRequestData(runnerId, requestId, Buffer.from(value));
+            if (!relay.sendRequestData(runnerId, requestId, Buffer.from(value))) {
+                // Over the body limit (the relay already failed the request)
+                // or the runner is gone — stop reading the viewer's body.
+                bodyRejected = true;
+                cancelReader();
+                break;
+            }
         }
     } finally {
         signal.removeEventListener("abort", cancelReader);
@@ -459,7 +623,17 @@ async function streamRequestBodyToRelay(
         reader.releaseLock();
     }
 
-    if (!signal.aborted) relay.sendRequestDataEnd(runnerId, requestId);
+    if (!signal.aborted && !bodyRejected) relay.sendRequestDataEnd(runnerId, requestId);
+}
+
+/** 413 when a declared Content-Length already exceeds the tunnel request-body limit. */
+function rejectOversizedTunnelBody(req: Request, relay: TunnelRelay): Response | null {
+    const limit = relay.limits.maxRequestBodyBytes;
+    if (limit <= 0) return null;
+    const declared = req.headers.get("content-length");
+    if (declared === null || !/^\d+$/.test(declared)) return null;
+    if (Number(declared) <= limit) return null;
+    return tunnelErrorResponse("Request body too large");
 }
 
 function proxyTunnelRequestViaRelay(
@@ -474,7 +648,12 @@ function proxyTunnelRequestViaRelay(
     forwardHeaders: Record<string, string>,
     allowCrossOriginFrame = false,
     tunnelHost?: string,
+    /** Set for capability-authenticated routes (token/label) — see TunnelRequestStartMessage. */
+    capabilityAgeMs?: number,
 ): Promise<Response> {
+    const oversized = rejectOversizedTunnelBody(req, relay);
+    if (oversized) return Promise.resolve(oversized);
+    const maxStreamBufferedBytes = relay.limits.maxBufferedBytes;
     return new Promise<Response>((resolve) => {
         const bodyAbortController = new AbortController();
         let relayCancel: (() => void) | undefined;
@@ -509,6 +688,7 @@ function proxyTunnelRequestViaRelay(
         let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
         let streamClosed = false;
         let shouldBuffer = false;
+        let responsePaused = false;
         let bufferedBytes = 0;
         const bodyChunks: Buffer[] = [];
 
@@ -550,6 +730,7 @@ function proxyTunnelRequestViaRelay(
                 // Host-based tunnels forward the app's own credentials end-to-end.
                 preserveAuth: basePath === "" || undefined,
                 host: tunnelHost,
+                capabilityAgeMs,
             },
             {
                 onResponseStart: (code, _statusMessage, headers) => {
@@ -589,10 +770,19 @@ function proxyTunnelRequestViaRelay(
                         start(controller) {
                             streamController = controller;
                         },
+                        pull() {
+                            // The viewer drained below the high-water mark.
+                            if (!responsePaused) return;
+                            responsePaused = false;
+                            relay.resumeResponse(runnerId, requestId);
+                        },
                         cancel() {
                             streamClosed = true;
                             cancelRequest();
                         },
+                    }, {
+                        highWaterMark: TUNNEL_STREAM_HIGH_WATER_BYTES,
+                        size: (chunk) => chunk?.byteLength ?? 0,
                     });
 
                     resolveOnce(new Response(stream, {
@@ -612,13 +802,27 @@ function proxyTunnelRequestViaRelay(
                         return;
                     }
 
-                    if (streamClosed) return;
+                    if (streamClosed || !streamController) return;
                     try {
-                        streamController?.enqueue(
+                        streamController.enqueue(
                             new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength),
                         );
                     } catch {
                         streamClosed = true;
+                        return;
+                    }
+                    const desired = streamController.desiredSize ?? 0;
+                    const queuedBytes = TUNNEL_STREAM_HIGH_WATER_BYTES - desired;
+                    if (maxStreamBufferedBytes > 0 && queuedBytes > maxStreamBufferedBytes) {
+                        // Slow viewer and a producer that ignored pause (or an
+                        // older runner): terminate instead of queueing without bound.
+                        cancelRequest();
+                        errorStream(new Error("Tunnel response buffer limit exceeded"));
+                        return;
+                    }
+                    if (desired <= 0 && !responsePaused) {
+                        responsePaused = true;
+                        relay.pauseResponse(runnerId, requestId);
                     }
                 },
                 onResponseEnd: () => {
@@ -803,8 +1007,13 @@ async function handleAuthTunnel(req: Request, url: URL, match: RegExpMatchArray)
         return tunnelErrorResponse(`Runner ${runnerId} not connected`);
     }
 
+    const opaqueOrigin = isOpaqueOriginRequest(req);
+    if (opaqueOrigin && method === "OPTIONS" && req.headers.has("access-control-request-method")) {
+        return opaqueOriginPreflight(req);
+    }
+
     const requestId = crypto.randomUUID();
-    return proxyTunnelRequestViaRelay(
+    const res = await proxyTunnelRequestViaRelay(
         req,
         relay,
         runnerId,
@@ -815,7 +1024,10 @@ async function handleAuthTunnel(req: Request, url: URL, match: RegExpMatchArray)
         buildPathWithQuery(url, proxyPath),
         buildForwardHeaders(req),
         true,
+        undefined,
+        tunnelTokenAgeMs(payload),
     );
+    return opaqueOrigin ? withOpaqueOriginCors(res) : res;
 }
 
 /**
@@ -893,6 +1105,8 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
     if (!runnerId) {
         return Response.json({ error: "Session has no runner" }, { status: 503 });
     }
+
+    if (isBrowserNavigation(req)) return redirectToTokenTunnel(identity.userId, sessionId, port, url, proxyPath);
 
     // ── Forward headers (strip hop-by-hop and host) ───────────────────────────
     const HOP_BY_HOP = new Set([
@@ -1017,6 +1231,8 @@ async function handleRunnerTunnel(req: Request, url: URL, match: RegExpMatchArra
     if (!runnerData.userId || runnerData.userId !== identity.userId) {
         return Response.json({ error: "Forbidden" }, { status: 403 });
     }
+
+    if (isBrowserNavigation(req)) return redirectToTokenTunnel(identity.userId, `runner:${runnerId}`, port, url, proxyPath);
 
     const relay = getTunnelRelay();
     if (!relay?.hasRunner(runnerId)) {

@@ -1,5 +1,5 @@
 import { describe, test, expect, mock } from "bun:test";
-import { TunnelService } from "./tunnel-service.js";
+import { TunnelService, tunnelMaxBufferedBytesFromEnv } from "./tunnel-service.js";
 
 function createMockSocket() {
     const emitted: Array<[string, ...unknown[]]> = [];
@@ -474,5 +474,21 @@ describe("TunnelService", () => {
         });
         const listEnvelope = (socket.emitted[0] as any[])[1] as any;
         expect(listEnvelope.payload.tunnels.map((t: any) => t.port)).toEqual([9090]);
+    });
+});
+
+describe("tunnelMaxBufferedBytesFromEnv", () => {
+    test("unset → undefined (client default applies)", () => {
+        expect(tunnelMaxBufferedBytesFromEnv({})).toBeUndefined();
+    });
+
+    test("parses non-negative integers, including 0 to disable", () => {
+        expect(tunnelMaxBufferedBytesFromEnv({ PIZZAPI_TUNNEL_MAX_BUFFERED_BYTES: "1048576" })).toBe(1048576);
+        expect(tunnelMaxBufferedBytesFromEnv({ PIZZAPI_TUNNEL_MAX_BUFFERED_BYTES: "0" })).toBe(0);
+    });
+
+    test("ignores malformed values", () => {
+        expect(tunnelMaxBufferedBytesFromEnv({ PIZZAPI_TUNNEL_MAX_BUFFERED_BYTES: "64MB" })).toBeUndefined();
+        expect(tunnelMaxBufferedBytesFromEnv({ PIZZAPI_TUNNEL_MAX_BUFFERED_BYTES: "-5" })).toBeUndefined();
     });
 });

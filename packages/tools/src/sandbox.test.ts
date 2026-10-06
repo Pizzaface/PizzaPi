@@ -1,4 +1,5 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
+import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
 import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -16,10 +17,13 @@ import {
     onViolation,
     getResolvedConfig,
     cleanupSandbox,
+    isSandboxRequiredButUnavailable,
+    SandboxUnavailableError,
     _resetState,
     type ResolvedSandboxConfig,
     type ViolationRecord,
 } from "./sandbox.js";
+import { createBashTool } from "./bash.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -168,6 +172,73 @@ describe("sandbox", () => {
                     delete process.env.SSH_AUTH_SOCK;
                 }
             }
+        });
+    });
+
+    // ── Fail-closed initialization (F18) ─────────────────────────────────────
+
+    describe("initSandbox() failClosed", () => {
+        const spies: Array<{ mockRestore: () => void }> = [];
+        afterEach(() => {
+            while (spies.length) spies.pop()!.mockRestore();
+        });
+        const forceUnsupported = () => spies.push(spyOn(SandboxManager, "isSupportedPlatform").mockReturnValue(false));
+        const forceInitThrow = () => {
+            spies.push(spyOn(SandboxManager, "isSupportedPlatform").mockReturnValue(true));
+            spies.push(spyOn(SandboxManager, "initialize").mockRejectedValue(new Error("bwrap missing")));
+        };
+
+        for (const mode of ["basic", "full"] as const) {
+            test(`${mode}: unsupported platform throws when failClosed`, async () => {
+                forceUnsupported();
+                await expect(initSandbox(makeConfig({ mode }), { failClosed: true })).rejects.toBeInstanceOf(SandboxUnavailableError);
+                expect(isSandboxActive()).toBe(false);
+                expect(isSandboxRequiredButUnavailable()).toBe(true);
+            });
+
+            test(`${mode}: thrown initialization throws when failClosed`, async () => {
+                forceInitThrow();
+                await expect(initSandbox(makeConfig({ mode }), { failClosed: true })).rejects.toThrow(/bwrap missing/);
+                expect(isSandboxActive()).toBe(false);
+                expect(isSandboxRequiredButUnavailable()).toBe(true);
+            });
+        }
+
+        test("default (not failClosed) still degrades without throwing", async () => {
+            forceInitThrow();
+            await initSandbox(makeConfig({ mode: "basic" }));
+            expect(isSandboxActive()).toBe(false);
+            expect(isSandboxRequiredButUnavailable()).toBe(false);
+        });
+
+        test("mode none never fails closed", async () => {
+            forceUnsupported();
+            await initSandbox({ mode: "none", srtConfig: null }, { failClosed: true });
+            expect(isSandboxRequiredButUnavailable()).toBe(false);
+        });
+
+        test("cleanupSandbox clears the fail-closed state", async () => {
+            forceUnsupported();
+            await initSandbox(makeConfig({ mode: "full" }), { failClosed: true }).catch(() => {});
+            await cleanupSandbox();
+            expect(isSandboxRequiredButUnavailable()).toBe(false);
+        });
+
+        // Crosses the init → tool boundary with the real sandbox module: even
+        // if a caller swallows the startup error, bash must not run directly.
+        test("real bash tool refuses to execute after a failed fail-closed init", async () => {
+            forceInitThrow();
+            await initSandbox(makeConfig({ mode: "basic" }), { failClosed: true }).catch(() => {});
+            let executed = false;
+            const tool = createBashTool({
+                execFn: ((..._args: unknown[]) => {
+                    executed = true;
+                    throw new Error("exec must not be called");
+                }) as never,
+            });
+            const result: any = await tool.execute("call", { command: "echo pwned" });
+            expect(executed).toBe(false);
+            expect(result.details.sandboxBlocked).toBe(true);
         });
     });
 

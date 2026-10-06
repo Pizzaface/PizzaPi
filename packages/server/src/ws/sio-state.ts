@@ -260,6 +260,14 @@ export interface RedisSessionData {
      */
     snapshotOverlay?: string | null;
     /**
+     * ISO timestamp set when the relay abandoned a chunked snapshot (malformed
+     * or over budget) whose chunks the runner was already ACKed for. The
+     * cached lastState is then older than what the runner believes it sent,
+     * so viewer hydration must still ask the runner for a fresh snapshot.
+     * Cleared by updateSessionState when a full snapshot lands.
+     */
+    snapshotRejectedAt?: string | null;
+    /**
      * Lifecycle generation (epoch) captured at session registration. Bumped on
      * every (re)registration so a delayed session-end from a prior socket can
      * be matched against the current generation and ignored if stale.
@@ -452,6 +460,7 @@ function parseSessionFromHash(hash: Record<string, string>): RedisSessionData | 
         linkedParentId: hash.linkedParentId || null,
         metaState: hash.metaState || null,
         snapshotOverlay: hash.snapshotOverlay || null,
+        snapshotRejectedAt: hash.snapshotRejectedAt || null,
         generation: hash.generation || null,
         acksSessionTrigger: hash.acksSessionTrigger === "1",
     };

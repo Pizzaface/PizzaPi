@@ -157,6 +157,8 @@ A container with no resolvable relay credential and a known `PIZZAPI_RELAY_URL` 
 
 That key shows up individually in the relay's Settings → API Keys, labeled by name, and can be revoked on its own without touching any other runner's credentials — unlike a hand-copied token shared across machines.
 
+Because claim creation is unauthenticated, the relay bounds it: each client IP may create at most 30 claims per 10 minutes, at most 500 claims may be pending relay-wide, and the submitted relay URL must be an `http(s)` URL of at most 2048 characters. Over-limit requests get `429` with `Retry-After` and pairing fails with that error; restart the container (or run `pizza runner pair`) after the window passes. When provisioning many runners from behind one NAT address at once, stagger them or use the secrets-file path below.
+
 Opt out with `PIZZAPI_PAIRING=0` if you'd rather the container fail fast with an actionable error than sit there waiting for a human to click a link (e.g. for the secrets-file path below, or any automated provisioning where no one will be watching the logs).
 
 **Re-pairing after revoking a key.** Revoking the minted key in the web UI doesn't make the runner forget it — the stale key sits in `config.json` in the data volume until something replaces it. Run the same headless flow on demand instead of hand-editing the volume:
@@ -184,6 +186,13 @@ For automated provisioning where pairing's human-approval step doesn't fit — C
 | `PIZZAPI_AUTH_FILE` | Seeds `<data volume>/auth.json` (mode `0600`) from the file at that path, but **only when `auth.json` doesn't already exist**. It never overwrites an existing one — OAuth refresh writes back to `auth.json` on every token refresh, so clobbering it on every restart would destroy already-refreshed credentials. |
 
 The deliberate `_KEY`/`_TOKEN` scoping matters: a blanket `*_FILE` → bare-name expansion would silently repurpose any unrelated app's own `FOO_FILE` convention (pointing at a config path, a binary DB, whatever) the moment it happened to share a name with something the runner reads — restricting it to credential-shaped suffixes keeps the behavior predictable.
+
+Once expanded, `_FILE` pointers to PizzaPi credentials (for example `PIZZAPI_API_KEY_FILE` or
+`PIZZAPI_RUNNER_TOKEN_FILE`) are not forwarded to session workers, and they are removed from the
+environment of `bash` tool commands along with the credentials themselves. The secret file
+itself is still on disk: a command that knows or guesses its path can read it unless the
+[sandbox](/PizzaPi/security/sandbox/) denies it, so add the secrets mount (for example
+`/run/secrets`) to `sandbox.filesystem.denyRead` when sessions run model-written commands.
 
 ```yaml
 services:

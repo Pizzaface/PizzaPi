@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parsePsLine, ProcessService } from "./process-service.js";
 import { killSessionProcessGroup } from "../session-spawner.js";
-import { sessionJobsFilePath } from "../session-procs.js";
+import { readRecordedGroupPids, recordSessionGroupPid, sessionJobsFilePath } from "../session-procs.js";
 
 describe("parsePsLine", () => {
     test("parses a normal ps line", () => {
@@ -169,5 +169,43 @@ describe("ProcessService", () => {
         expect(killSessionProcessGroup(groupPid, "SIGKILL")).toBe(false);
 
         rmSync(dir, { recursive: true, force: true });
+    });
+});
+
+describe("ProcessService historical worker groups (F23)", () => {
+    test("lists a prior worker generation's surviving group alongside the current worker", async () => {
+        // Prior worker generation: its leader exits (restart-in-place) but an
+        // inline child keeps the old PGID alive.
+        const oldWorker = spawn("sh", ["-c", "sleep 31 & exit 0"], { detached: true, stdio: "ignore" });
+        const oldPgid = oldWorker.pid!;
+        const newWorker = spawn("sh", ["-c", "sleep 30"], { detached: true, stdio: "ignore" });
+        const newPid = newWorker.pid!;
+        await new Promise((r) => setTimeout(r, 150));
+
+        const dir = mkdtempSync(join(tmpdir(), "procsvc-hist-"));
+        const procFile = join(dir, "s-hist.pids");
+        recordSessionGroupPid(procFile, oldPgid);
+        try {
+            const service = new ProcessService((id) => (id === "s-hist" ? newPid : null), () => procFile);
+            const sent: Array<{ type: string; payload: any }> = [];
+            (service as any).socket = { on() {}, off() {}, emit: (_e: string, env: any) => sent.push(env) };
+
+            await (service as any).handleList({ serviceId: "process", type: "process_list", sessionId: "s-hist", payload: {} });
+            const procs = sent[0].payload.processes as Array<{ pid: number; command: string }>;
+            expect(procs.some((p) => p.pid === newPid)).toBe(true);
+            // The orphaned child from the old generation is still listed.
+            expect(procs.some((p) => p.command.includes("sleep 31"))).toBe(true);
+            // Listing prunes dead groups but keeps the live historical one.
+            expect(readRecordedGroupPids(procFile)).toEqual([oldPgid]);
+
+            // And it can be killed through the panel (authorized membership).
+            const orphan = procs.find((p) => p.command.includes("sleep 31"))!;
+            await (service as any).handleKill({ serviceId: "process", type: "process_kill", sessionId: "s-hist", payload: { pid: orphan.pid } });
+            expect(sent[1].type).toBe("process_list_result");
+        } finally {
+            killSessionProcessGroup(oldPgid, "SIGKILL");
+            killSessionProcessGroup(newPid, "SIGKILL");
+            rmSync(dir, { recursive: true, force: true });
+        }
     });
 });

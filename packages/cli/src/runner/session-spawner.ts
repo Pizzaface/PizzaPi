@@ -8,13 +8,16 @@ import {
     sessionProcFilePath,
     ensureSessionProcDir,
     readRecordedGroupPids,
+    recordSessionGroupPid,
     removeSessionProcFile,
 } from "./session-procs.js";
 import { runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd, refreshAndWriteRunnerUsageCache } from "./runner-usage-cache.js";
 import { recordTranscriptLink } from "./session-transcript-links.js";
 import { isCwdAllowed } from "./workspace.js";
+import { watchWorkerStartup, WORKER_STARTUP_TIMEOUT_MS, type WorkerStartupResult } from "./worker-startup.js";
 import { loadConfig } from "../config.js";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { isStrippedSubprocessEnvName } from "@pizzapi/tools";
 
 export interface RunnerSession {
     sessionId: string;
@@ -147,6 +150,47 @@ export async function notifyWorkersOfRestart(
 // - Windows: import.meta.url contains "~BUN" (drive letter/format varies)
 export const isCompiledBinary = import.meta.url.includes("$bunfs") || import.meta.url.includes("~BUN") || import.meta.url.includes("%7EBUN");
 
+const WORKER_ENV_DENYLIST = new Set([
+    "PIZZAPI_RUNNER_TOKEN",
+    "PIZZAPI_RUNNER_API_KEY",
+    // Per-session provider snapshot — each worker derives its own from
+    // PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER; never inherit the daemon's.
+    "PIZZAPI_SESSION_PROVIDER",
+    "NODE_OPTIONS",
+    "BUN_OPTIONS",           // Bun equivalent of NODE_OPTIONS — can inject code via --preload
+    "LD_PRELOAD",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_FORCE_FLAT_NAMESPACE",
+]);
+
+// Docker/K8s `<NAME>_FILE` secret pointers (e.g. PIZZAPI_API_KEY_FILE,
+// PIZZAPI_RUNNER_TOKEN_FILE) were already expanded by the CLI entrypoint
+// that started this daemon. A worker never needs them — it gets its own
+// PIZZAPI_API_KEY in spawnSession — and forwarding them would let the worker (whose
+// compiled-binary entrypoint re-runs that expansion) or any process it
+// starts re-read a daemon credential from disk.
+function isWorkerEnvDenied(key: string): boolean {
+    if (WORKER_ENV_DENYLIST.has(key)) return true;
+    if (!key.toUpperCase().endsWith("_FILE")) return false;
+    const base = key.slice(0, -"_FILE".length);
+    return WORKER_ENV_DENYLIST.has(base.toUpperCase()) || isStrippedSubprocessEnvName(base);
+}
+
+/**
+ * The `envOverrides` a worker for `cwd` receives: the merged global+project
+ * config (project keys in GLOBAL_ONLY_ENV_OVERRIDES are already dropped by
+ * loadConfig), restricted to non-denied `PIZZAPI_*` keys.
+ */
+export function workerEnvOverrides(cwd: string): Record<string, string> {
+    const envOverrides: Record<string, string> = {};
+    for (const [key, val] of Object.entries(loadConfig(cwd).envOverrides ?? {})) {
+        if (key.startsWith("PIZZAPI_") && !isWorkerEnvDenied(key) && typeof val === "string") {
+            envOverrides[key] = val;
+        }
+    }
+    return envOverrides;
+}
+
 /**
  * Returns the spawn arguments for starting a worker subprocess.
  * - Compiled binary: `[process.execPath, ["_worker"]]`
@@ -203,6 +247,16 @@ export function spawnSession(
          * relay event may still fire later and re-run the same cleanup.
          */
         onSessionExit?: (sessionId: string) => void;
+        /**
+         * Called once with the worker's startup outcome (see worker-startup.ts):
+         * ok after the worker reports its sandbox stage passed, or an error
+         * when it reports a startup failure or exits first. Bounded by
+         * `startupTimeoutMs`; a restart-in-place before readiness does not
+         * call it (the replacement worker reports for itself).
+         */
+        onStartup?: (result: WorkerStartupResult) => void;
+        /** @internal Override the startup report timeout for tests. */
+        startupTimeoutMs?: number;
     },
 ): void {
     logInfo(`spawning headless worker for session ${sessionId}…`);
@@ -250,32 +304,15 @@ export function spawnSession(
     //   LD_PRELOAD               – shared-library injection (Linux)
     //   DYLD_INSERT_LIBRARIES    – shared-library injection (macOS)
     //   DYLD_FORCE_FLAT_NAMESPACE
-    const WORKER_ENV_DENYLIST = new Set([
-        "PIZZAPI_RUNNER_TOKEN",
-        "PIZZAPI_RUNNER_API_KEY",
-        // Per-session provider snapshot — each worker derives its own from
-        // PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER; never inherit the daemon's.
-        "PIZZAPI_SESSION_PROVIDER",
-        "NODE_OPTIONS",
-        "BUN_OPTIONS",           // Bun equivalent of NODE_OPTIONS — can inject code via --preload
-        "LD_PRELOAD",
-        "DYLD_INSERT_LIBRARIES",
-        "DYLD_FORCE_FLAT_NAMESPACE",
-    ]);
-
+    // (see WORKER_ENV_DENYLIST / isWorkerEnvDenied above)
     const baseEnv: Record<string, string> = {};
     for (const [key, val] of Object.entries(process.env)) {
-        if (!WORKER_ENV_DENYLIST.has(key) && typeof val === "string") {
+        if (!isWorkerEnvDenied(key) && typeof val === "string") {
             baseEnv[key] = val;
         }
     }
 
-    const envOverrides: Record<string, string> = {};
-    for (const [key, val] of Object.entries(loadConfig(effectiveCwd).envOverrides ?? {})) {
-        if (key.startsWith("PIZZAPI_") && !WORKER_ENV_DENYLIST.has(key) && typeof val === "string") {
-            envOverrides[key] = val;
-        }
-    }
+    const envOverrides = workerEnvOverrides(effectiveCwd);
 
     const env: Record<string, string> = {
         ...baseEnv,
@@ -334,6 +371,13 @@ export function spawnSession(
         stdio: ["ignore", "inherit", "inherit", "ipc"],
     });
 
+    if (options?.onStartup) {
+        watchWorkerStartup(child, options.onStartup, {
+            timeoutMs: options.startupTimeoutMs ?? WORKER_STARTUP_TIMEOUT_MS,
+            onTimeout: () => logInfo(`session ${sessionId} worker has not reported startup yet; reporting it ready anyway`),
+        });
+    }
+
     // Pre-restart IPC signal: the worker sends this before calling process.exit(43).
     // Marking restartingSessions here (synchronously, while the worker is still
     // alive) guarantees the guard is set before any relay session_ended event arrives.
@@ -379,10 +423,17 @@ export function spawnSession(
             // message above; this add is a belt-and-suspenders fallback for the
             // (unlikely) case where the IPC message was not sent or was lost.
             restartingSessions.add(sessionId);
-            // ponytail: background processes from the old worker's group survive a
-            // restart-in-place (intentional — session continues) but land in a
-            // different pgid than the new worker. Track historical pgids per
-            // session if orphans from restarted workers become a problem.
+            // Background processes from the old worker's group survive a
+            // restart-in-place (intentional — session continues) but keep the
+            // old worker's PGID, not the new worker's. Record that historical
+            // group in the session pid file so the Processes panel keeps
+            // listing it and the final session cleanup (SIGTERM → SIGKILL)
+            // reaps it. Only record a group that still has live members so a
+            // dead PGID is never kept around to be recycled.
+            if (child.pid && isProcessGroupAlive(child.pid)) {
+                recordSessionGroupPid(sessionProcFilePath(sessionId), child.pid);
+                logInfo(`session ${sessionId} retained prior worker process group ${child.pid} for cleanup`);
+            }
             logInfo(`re-spawning session ${sessionId} (worker restart requested)`);
             onRestartRequested();
         } else {

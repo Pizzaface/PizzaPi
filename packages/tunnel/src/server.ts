@@ -12,16 +12,53 @@ import type {
   TunnelWsErrorMessage,
   TunnelWsOpenedMessage,
   TunnelRegisterMessage,
+  TunnelRequestPauseMessage,
+  TunnelRequestResumeMessage,
 } from "./types.js";
 
 const PING_INTERVAL_MS = 30_000;
 const PONG_TIMEOUT_MS = 90_000;
+
+/**
+ * Resource bounds for tunnelled traffic. `0` disables a limit. Every limit is
+ * enforced per request / WebSocket (except `maxInFlightPerRunner`).
+ */
+export interface TunnelRelayLimits {
+  /** Max total request-body bytes forwarded to the runner per HTTP request. */
+  maxRequestBodyBytes: number;
+  /** Max total response-body bytes accepted from the runner per HTTP request. */
+  maxResponseBodyBytes: number;
+  /** Max concurrent HTTP requests + WebSockets proxied to a single runner. */
+  maxInFlightPerRunner: number;
+  /**
+   * Hard ceiling on bytes queued for any single slow consumer (runner socket
+   * send buffer, viewer response stream, viewer WebSocket). Producers are
+   * paused well before this; exceeding it terminates the stream.
+   */
+  maxBufferedBytes: number;
+}
+
+export const DEFAULT_TUNNEL_RELAY_LIMITS: Readonly<TunnelRelayLimits> = Object.freeze({
+  maxRequestBodyBytes: 100 * 1024 * 1024,
+  maxResponseBodyBytes: 0,
+  maxInFlightPerRunner: 256,
+  maxBufferedBytes: 64 * 1024 * 1024,
+});
+
+/**
+ * Soft high-water mark: senders wait (backpressure) while the runner socket
+ * has more than this many bytes queued.
+ */
+export const TUNNEL_SEND_HIGH_WATER_BYTES = 1024 * 1024;
+const DRAIN_POLL_MS = 10;
 
 export interface TunnelRelayOptions {
   /** Static API key list, or an async authorize function (returns owning userId, or null to reject). */
   apiKeys: string[] | ((apiKey: string, runnerId: string) => Promise<string | null | boolean>);
   /** Optional logger (defaults to no-op). */
   log?: TunnelLogger;
+  /** Resource limits; unspecified fields use {@link DEFAULT_TUNNEL_RELAY_LIMITS}. */
+  limits?: Partial<TunnelRelayLimits>;
 }
 
 export interface TunnelLogger {
@@ -54,6 +91,12 @@ export interface PendingProxyRequest {
   onResponseEnd: () => void;
   onError: (error: string) => void;
   timer: ReturnType<typeof setTimeout>;
+  /** Request-body bytes forwarded so far. */
+  requestBytes: number;
+  /** Response-body bytes received so far. */
+  responseBytes: number;
+  /** Runner asked us to stop sending request-data (local service is slow). */
+  requestPaused: boolean;
 }
 
 export interface PendingWsProxy {
@@ -118,7 +161,9 @@ function isTunnelClientMessage(value: unknown): value is TunnelClientMessage {
     case "response-data": return typeof value.id === "string" && typeof value.data === "string";
     case "response-data-end": return typeof value.id === "string";
     case "response-data-abort": return typeof value.id === "string" && isOptionalString(value.reason);
-    case "request-end": return typeof value.id === "string";
+    case "request-end":
+    case "request-pause":
+    case "request-resume": return typeof value.id === "string";
     case "ws-opened": return typeof value.id === "string" && isOptionalString(value.protocol);
     case "ws-data": return typeof value.id === "string" && typeof value.data === "string" && isOptionalBoolean(value.binary);
     case "ws-close": return typeof value.id === "string" && isOptionalCloseCode(value.code) && isOptionalCloseReason(value.reason);
@@ -126,6 +171,25 @@ function isTunnelClientMessage(value: unknown): value is TunnelClientMessage {
     case "pong": return true;
     default: return false;
   }
+}
+
+function resolveLimits(overrides: Partial<TunnelRelayLimits> | undefined): TunnelRelayLimits {
+  const limits: TunnelRelayLimits = { ...DEFAULT_TUNNEL_RELAY_LIMITS };
+  for (const key of Object.keys(limits) as Array<keyof TunnelRelayLimits>) {
+    const value = overrides?.[key];
+    if (value === undefined) continue;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+      throw new Error(`TunnelRelay: limits.${key} must be a non-negative finite number`);
+    }
+    limits[key] = Math.floor(value);
+  }
+  return limits;
+}
+
+/** bufferedAmount of a socket, tolerating adapters/mocks that do not expose it. */
+function socketBufferedAmount(ws: WebSocket): number {
+  const amount = (ws as { bufferedAmount?: unknown }).bufferedAmount;
+  return typeof amount === "number" && Number.isFinite(amount) ? amount : 0;
 }
 
 export class TunnelRelay {
@@ -136,8 +200,10 @@ export class TunnelRelay {
   private pendingRequests = new Map<string, PendingProxyRequest>();
   private pendingWs = new Map<string, PendingWsProxy>();
   private wsToRunner = new Map<WebSocket, string>();
+  readonly limits: Readonly<TunnelRelayLimits>;
 
   constructor(options: TunnelRelayOptions) {
+    this.limits = Object.freeze(resolveLimits(options.limits));
     if (Array.isArray(options.apiKeys)) {
       const keys = options.apiKeys.filter((key) => key !== "");
       if (keys.length === 0) {
@@ -187,6 +253,7 @@ export class TunnelRelay {
       headers: Record<string, string>;
       preserveAuth?: boolean;
       host?: string;
+      capabilityAgeMs?: number;
     },
     callbacks: {
       onResponseStart: (statusCode: number, statusMessage: string, headers: Record<string, string | string[]>) => void;
@@ -199,6 +266,10 @@ export class TunnelRelay {
     const runner = this.runners.get(runnerId);
     if (!runner) {
       callbacks.onError(`Runner ${runnerId} not connected`);
+      return { cancel() {} };
+    }
+    if (this.atInFlightLimit(runnerId, request.id)) {
+      callbacks.onError("Too many concurrent tunnel requests for this runner");
       return { cancel() {} };
     }
 
@@ -218,6 +289,9 @@ export class TunnelRelay {
       onResponseEnd: callbacks.onResponseEnd,
       onError: callbacks.onError,
       timer,
+      requestBytes: 0,
+      responseBytes: 0,
+      requestPaused: false,
     };
     this.replacePendingRequest(request.id, pending);
 
@@ -230,6 +304,7 @@ export class TunnelRelay {
       headers: request.headers,
       preserveAuth: request.preserveAuth,
       host: request.host,
+      capabilityAgeMs: request.capabilityAgeMs,
     });
 
     return {
@@ -242,14 +317,81 @@ export class TunnelRelay {
     };
   }
 
-  sendRequestData(runnerId: string, requestId: string, data: Buffer): void {
+  /**
+   * Forward a request-body chunk. Returns false once the per-request body
+   * limit is exceeded ("Request body too large") or when the frame would push
+   * the runner socket past `maxBufferedBytes` (queued bytes PLUS this frame's
+   * serialized size; "Tunnel buffer limit exceeded"). In both cases the
+   * request is failed and nothing is queued; callers must stop sending.
+   */
+  sendRequestData(runnerId: string, requestId: string, data: Buffer): boolean {
     const runner = this.runners.get(runnerId);
-    if (!runner) return;
-    this.send(runner.ws, {
+    if (!runner) return false;
+    const pending = this.pendingRequests.get(requestId);
+    const owned = pending !== undefined && pending.runnerId === runnerId;
+    if (owned) {
+      pending.requestBytes += data.length;
+      const limit = this.limits.maxRequestBodyBytes;
+      if (limit > 0 && pending.requestBytes > limit) {
+        this.failPendingRequest(requestId, pending, "Request body too large");
+        return false;
+      }
+    }
+    const payload = JSON.stringify({
       type: "request-data",
       id: requestId,
       data: data.toString("binary"),
-    });
+    } satisfies TunnelServerMessage);
+    const ceiling = this.limits.maxBufferedBytes;
+    if (ceiling > 0 && socketBufferedAmount(runner.ws) + Buffer.byteLength(payload, "utf8") > ceiling) {
+      if (owned) this.failPendingRequest(requestId, pending, "Tunnel buffer limit exceeded");
+      return false;
+    }
+    if (runner.ws.readyState === WebSocket.OPEN) runner.ws.send(payload);
+    return true;
+  }
+
+  /**
+   * Resolve once it is reasonable to send more request-body data: the runner
+   * socket has drained below the high-water mark and the runner has not
+   * paused this request. Resolves immediately when the request/runner is
+   * gone or `signal` aborts (callers re-check state).
+   */
+  async waitForRequestCapacity(runnerId: string, requestId: string, signal?: AbortSignal): Promise<void> {
+    while (!signal?.aborted) {
+      const runner = this.runners.get(runnerId);
+      const pending = this.pendingRequests.get(requestId);
+      if (!runner || !pending || pending.runnerId !== runnerId) return;
+      if (!pending.requestPaused && socketBufferedAmount(runner.ws) <= TUNNEL_SEND_HIGH_WATER_BYTES) return;
+      await new Promise((resolve) => setTimeout(resolve, DRAIN_POLL_MS));
+    }
+  }
+
+  /** True while the runner socket holds more than the send high-water mark. */
+  isRunnerCongested(runnerId: string): boolean {
+    const runner = this.runners.get(runnerId);
+    return runner !== undefined && socketBufferedAmount(runner.ws) > TUNNEL_SEND_HIGH_WATER_BYTES;
+  }
+
+  /** Resolve once the runner socket drains below the high-water mark (or the runner is gone). */
+  async waitForRunnerDrain(runnerId: string): Promise<void> {
+    while (this.isRunnerCongested(runnerId)) {
+      await new Promise((resolve) => setTimeout(resolve, DRAIN_POLL_MS));
+    }
+  }
+
+  /** Ask the runner to stop reading the local response (viewer is slow). Advisory. */
+  pauseResponse(runnerId: string, requestId: string): void {
+    const runner = this.runners.get(runnerId);
+    if (!runner || this.pendingRequests.get(requestId)?.runnerId !== runnerId) return;
+    this.send(runner.ws, { type: "response-pause", id: requestId });
+  }
+
+  /** Ask the runner to resume reading the local response. */
+  resumeResponse(runnerId: string, requestId: string): void {
+    const runner = this.runners.get(runnerId);
+    if (!runner || this.pendingRequests.get(requestId)?.runnerId !== runnerId) return;
+    this.send(runner.ws, { type: "response-resume", id: requestId });
   }
 
   sendRequestDataEnd(runnerId: string, requestId: string): void {
@@ -268,6 +410,7 @@ export class TunnelRelay {
       headers: Record<string, string>;
       preserveAuth?: boolean;
       host?: string;
+      capabilityAgeMs?: number;
     },
     callbacks: {
       onOpened: (protocol?: string) => void;
@@ -280,6 +423,10 @@ export class TunnelRelay {
     const runner = this.runners.get(runnerId);
     if (!runner) {
       callbacks.onError(`Runner ${runnerId} not connected`);
+      return { cancel() {} };
+    }
+    if (this.atInFlightLimit(runnerId, request.id)) {
+      callbacks.onError("Too many concurrent tunnel requests for this runner");
       return { cancel() {} };
     }
 
@@ -310,6 +457,7 @@ export class TunnelRelay {
       headers: request.headers,
       preserveAuth: request.preserveAuth,
       host: request.host,
+      capabilityAgeMs: request.capabilityAgeMs,
     });
 
     return {
@@ -322,10 +470,24 @@ export class TunnelRelay {
     };
   }
 
-  sendWsData(runnerId: string, wsId: string, data: string, binary?: boolean): void {
+  /**
+   * Forward a viewer→runner WebSocket frame. A WebSocket cannot be paused by
+   * the runner, so a frame that would push the runner socket past
+   * `maxBufferedBytes` (queued bytes PLUS this frame's serialized size) is
+   * not sent: the stream is closed with 1013 and false is returned.
+   */
+  sendWsData(runnerId: string, wsId: string, data: string, binary?: boolean): boolean {
     const runner = this.runners.get(runnerId);
-    if (!runner) return;
-    this.send(runner.ws, { type: "ws-data", id: wsId, data, binary });
+    if (!runner) return false;
+    const payload = JSON.stringify({ type: "ws-data", id: wsId, data, binary } satisfies TunnelServerMessage);
+    const limit = this.limits.maxBufferedBytes;
+    if (limit > 0 && socketBufferedAmount(runner.ws) + Buffer.byteLength(payload, "utf8") > limit) {
+      this.log.warn(`[tunnel-relay] Closing tunnel WebSocket ${wsId}: runner send buffer would exceed ${limit} bytes`);
+      this.sendWsClose(runnerId, wsId, 1013, "tunnel buffer limit exceeded");
+      return false;
+    }
+    if (runner.ws.readyState === WebSocket.OPEN) runner.ws.send(payload);
+    return true;
   }
 
   sendWsClose(runnerId: string, wsId: string, code?: number, reason?: string): void {
@@ -362,6 +524,31 @@ export class TunnelRelay {
 
     this.runners.clear();
     this.wsToRunner.clear();
+  }
+
+  /** Whether opening another stream (other than one replacing `id`) would exceed the per-runner limit. */
+  private atInFlightLimit(runnerId: string, id: string): boolean {
+    const limit = this.limits.maxInFlightPerRunner;
+    if (limit <= 0) return false;
+    let count = 0;
+    for (const [pendingId, pending] of this.pendingRequests) {
+      if (pending.runnerId === runnerId && pendingId !== id) count++;
+    }
+    for (const [pendingId, pending] of this.pendingWs) {
+      if (pending.runnerId === runnerId && pendingId !== id) count++;
+    }
+    return count >= limit;
+  }
+
+  /** Abort a pending HTTP request: tell the runner to stop and surface `reason` to the caller. */
+  private failPendingRequest(id: string, pending: PendingProxyRequest, reason: string): void {
+    if (this.pendingRequests.get(id) !== pending) return;
+    clearTimeout(pending.timer);
+    this.pendingRequests.delete(id);
+    const runner = this.runners.get(pending.runnerId);
+    if (runner) this.send(runner.ws, { type: "request-end", id });
+    this.log.warn(`[tunnel-relay] Aborting tunnel request ${id} for runner ${pending.runnerId}: ${reason}`);
+    pending.onError(reason);
   }
 
   private replacePendingRequest(id: string, pending: PendingProxyRequest): void {
@@ -422,6 +609,10 @@ export class TunnelRelay {
         break;
       case "request-end":
         this.handleRequestEnd(ws, msg);
+        break;
+      case "request-pause":
+      case "request-resume":
+        this.handleRequestFlow(ws, msg);
         break;
       case "ws-opened":
         this.handleWsOpened(ws, msg);
@@ -513,7 +704,20 @@ export class TunnelRelay {
   private handleResponseData(ws: WebSocket, msg: TunnelResponseDataMessage): void {
     const pending = this.pendingRequests.get(msg.id);
     if (!this.isMessageForPending(ws, pending)) return;
-    pending.onResponseData(Buffer.from(msg.data, "binary"));
+    const chunk = Buffer.from(msg.data, "binary");
+    pending.responseBytes += chunk.length;
+    const limit = this.limits.maxResponseBodyBytes;
+    if (limit > 0 && pending.responseBytes > limit) {
+      this.failPendingRequest(msg.id, pending, "Response body too large");
+      return;
+    }
+    pending.onResponseData(chunk);
+  }
+
+  private handleRequestFlow(ws: WebSocket, msg: TunnelRequestPauseMessage | TunnelRequestResumeMessage): void {
+    const pending = this.pendingRequests.get(msg.id);
+    if (!this.isMessageForPending(ws, pending)) return;
+    pending.requestPaused = msg.type === "request-pause";
   }
 
   private handleResponseDataEnd(ws: WebSocket, msg: TunnelResponseDataEndMessage): void {

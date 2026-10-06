@@ -11,7 +11,7 @@ import { Loader2, Server, ExternalLink, Eye, EyeOff, Zap, Hash, RefreshCw } from
 import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { Switch } from "@/components/ui/switch";
-import { resolveTunnelHref } from "@/hooks/useTunnelSrc";
+import { openTunnelInNewTab } from "@/hooks/useTunnelSrc";
 import { reportError } from "@/lib/frontend-log";
 
 /** Built-in system service IDs — hidden from the user-facing panel. */
@@ -224,11 +224,10 @@ export function RunnerServicesPanel({ runnerId }: RunnerServicesPanelProps) {
   }, []);
 
   const handleOpen = (panel: ServicePanel) => {
-    // Mobile needs an absolute, token-authed relay URL (relative paths resolve
-    // against the local bundle and carry no auth) — same fix as iframe panels.
-    void resolveTunnelHref({ runnerId, port: panel.port }).then(
-      (url) => window.open(url, "_blank", "noopener,noreferrer"),
-      (err: unknown) => reportError("tunnel", `Could not open port ${panel.port}`, {
+    // Mints a signed URL (never the cookie path). Opens the tab synchronously,
+    // within this click's user activation, so it is not popup-blocked.
+    openTunnelInNewTab({ runnerId, port: panel.port }, (err: unknown) =>
+      reportError("tunnel", `Could not open port ${panel.port}`, {
         detail: `runner ${runnerId} · ${err instanceof Error ? err.message : String(err)}`,
       }),
     );

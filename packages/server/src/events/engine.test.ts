@@ -210,7 +210,7 @@ describe("engine", () => {
     const parent = await store.listDeliveries({ sessionId: "parent-1" });
     expect(parent).toHaveLength(1);
     expect(parent[0].status).toBe("delivered");
-    expect(await engine.drainPendingDeliveries("parent-1", deps)).toBe(0);
+    expect(await engine.drainPendingDeliveries("parent-1", deps, "u1")).toBe(0);
     expect(parentEmits).toBe(1);
   });
 
@@ -353,8 +353,8 @@ describe("engine", () => {
       },
     }).deps;
     const counts = await Promise.all([
-      engine.drainPendingDeliveries("s-race", online),
-      engine.drainPendingDeliveries("s-race", online),
+      engine.drainPendingDeliveries("s-race", online, "u1"),
+      engine.drainPendingDeliveries("s-race", online, "u1"),
     ]);
 
     expect(emits).toBe(1);
@@ -390,7 +390,7 @@ describe("engine", () => {
 
     // Session registers: drain delivers both in event order.
     const ok = makeDeps();
-    const drained = await engine.drainPendingDeliveries("s-offline", ok.deps);
+    const drained = await engine.drainPendingDeliveries("s-offline", ok.deps, "u1");
     expect(drained).toBe(2);
     const order = ok.delivered.map((d) => d.event.payload.n);
     expect(order).toEqual([1, 2]);
@@ -503,7 +503,7 @@ describe("delivery receipt acks (inflight settle)", () => {
     expect(await store.pendingDeliveriesFor("s-flap")).toHaveLength(1);
 
     // Session registers: drain re-delivers, now with a legacy-confirmed handoff.
-    const drained = await engine.drainPendingDeliveries("s-flap", makeDeps({ deliver: async () => "delivered" }).deps);
+    const drained = await engine.drainPendingDeliveries("s-flap", makeDeps({ deliver: async () => "delivered" }).deps, "u1");
     expect(drained).toBe(1);
     expect((await store.listDeliveries({ sessionId: "s-flap" }))[0].status).toBe("delivered");
   });
@@ -539,6 +539,148 @@ describe("delivery receipt acks (inflight settle)", () => {
     expect((await store.listDeliveries({ sessionId: "s-fresh" }))[0].status).toBe("inflight");
   });
 
+  it("drains never hand a recycled session id another tenant's deliveries or response relays (F09)", async () => {
+    // Victim (u1) queued a delivery to an offline session, plus a response
+    // awaiting relay to the same id as an event source.
+    const out = await engine.publishEvent({ type: "schedule:nightly", payload: { n: 1 } }, source, makeDeps({ deliver: async () => "unreachable" }).deps, [
+      { sessionId: "s-recycled" },
+    ]);
+    expect(out.deliveries[0].status).toBe("pending");
+    const childSource: SourceIdentity = { kind: "session", id: "s-recycled", auth: "socket", userId: "u1" };
+    const { event } = await store.insertEvent({ type: "t:ask", source: childSource, payload: {}, responseContract: {} }, "fire-recycled-1");
+    const answered = await store.createDelivery({ eventId: event.eventId, eventType: event.type, sessionId: "parent-r", deliverAs: "steer" });
+    await store.updateDelivery(answered!.deliveryId, {
+      status: "responded", respondedAt: new Date().toISOString(), response: { text: "secret answer" }, responseRelayPending: true,
+    }, { guard: ["pending"] });
+
+    // Another user registers the pruned id: nothing drains, nothing changes.
+    const attacker = makeDeps();
+    let attackerRelays = 0;
+    attacker.deps.relayResponse = async () => { attackerRelays++; return true; };
+    expect(await engine.drainPendingDeliveries("s-recycled", attacker.deps, "u2")).toBe(0);
+    expect(await engine.drainPendingResponseRelays("s-recycled", attacker.deps, "u2")).toBe(0);
+    expect(await engine.drainPendingDeliveries("s-recycled", attacker.deps, null)).toBe(0);
+    expect(attacker.delivered).toHaveLength(0);
+    expect(attackerRelays).toBe(0);
+    expect((await store.getDelivery(out.deliveries[0].deliveryId))?.status).toBe("pending");
+    expect((await store.getDelivery(answered!.deliveryId))?.responseRelayPending).toBe(true);
+
+    // The real owner still drains both.
+    const owner = makeDeps();
+    expect(await engine.drainPendingDeliveries("s-recycled", owner.deps, "u1")).toBe(1);
+    expect(await engine.drainPendingResponseRelays("s-recycled", owner.deps, "u1")).toBe(1);
+  });
+
+  it("config session route deliveries drain only to the bound target principal (R5)", async () => {
+    await store.syncConfigRoutes([
+      { eventType: "cfg:fan", target: { kind: "session", sessionId: "ops-target", ownerUserId: "operator" }, deliverAs: "steer", origin: "config" },
+      { eventType: "cfg:fan", target: { kind: "session", sessionId: "ops-unbound" }, deliverAs: "steer", origin: "config" },
+    ]);
+    // Any tenant's event fans in to the operator's (offline) session.
+    const out = await engine.publishEvent({ type: "cfg:fan", payload: { secret: 1 } }, source, makeDeps({ deliver: async () => "unreachable" }).deps);
+    expect(out.deliveries.map((d) => d.status)).toEqual(["pending", "pending"]);
+
+    // Another user registers the recycled target id: nothing drains.
+    const attacker = makeDeps();
+    expect(await engine.drainPendingDeliveries("ops-target", attacker.deps, "u2")).toBe(0);
+    expect(await engine.drainPendingDeliveries("ops-target", attacker.deps, "u1")).toBe(0); // even the event's own tenant
+    expect(await engine.drainPendingDeliveries("ops-target", attacker.deps, null)).toBe(0);
+    // An unbound config target drains to nobody, operator included.
+    expect(await engine.drainPendingDeliveries("ops-unbound", attacker.deps, "operator")).toBe(0);
+    expect(attacker.delivered).toHaveLength(0);
+
+    // The bound principal drains it.
+    const operator = makeDeps();
+    expect(await engine.drainPendingDeliveries("ops-target", operator.deps, "operator")).toBe(1);
+    expect(operator.delivered.map((d) => d.delivery.sessionId)).toEqual(["ops-target"]);
+  });
+
+  it("a bound config delivery keeps its principal after the route is removed (R2-5)", async () => {
+    await store.syncConfigRoutes([
+      { eventType: "cfg:fan", target: { kind: "session", sessionId: "ops-gone", ownerUserId: "operator" }, deliverAs: "steer", origin: "config" },
+    ]);
+    const out = await engine.publishEvent({ type: "cfg:fan", payload: { secret: 1 } }, source, makeDeps({ deliver: async () => "unreachable" }).deps);
+    const id = out.deliveries[0].deliveryId;
+    expect(out.deliveries[0].status).toBe("pending");
+    expect(out.deliveries[0].recipientUserId).toBe("operator");
+
+    // Config reload drops the route (same for a hash-ID change or terminal cleanup).
+    await store.syncConfigRoutes([]);
+    expect(await store.getRoute(out.deliveries[0].routeId!)).toBeNull();
+
+    // Registration: the id stays reserved for the bound principal, not the event owner.
+    expect(await store.sessionReferencedByOtherTenant("ops-gone", "u1")).toBe(true);
+    expect(await store.sessionReferencedByOtherTenant("ops-gone", "operator")).toBe(false);
+
+    // Drain: the event owner gets nothing; the bound principal drains it.
+    const eventOwner = makeDeps();
+    expect(await engine.drainPendingDeliveries("ops-gone", eventOwner.deps, "u1")).toBe(0);
+    expect(eventOwner.delivered).toHaveLength(0);
+    expect((await store.getDelivery(id))?.status).toBe("pending");
+    const operator = makeDeps();
+    expect(await engine.drainPendingDeliveries("ops-gone", operator.deps, "operator")).toBe(1);
+    expect(operator.delivered[0].delivery.recipientUserId).toBe("operator");
+    expect(operator.delivered[0].delivery.recipientBound).toBe(true);
+  });
+
+  it("unstamped rows of a vanished config route drain to nobody (R2-5)", async () => {
+    await store.syncConfigRoutes([
+      { eventType: "cfg:fan", target: { kind: "session", sessionId: "ops-legacy", ownerUserId: "operator" }, deliverAs: "steer", origin: "config" },
+    ]);
+    const out = await engine.publishEvent({ type: "cfg:fan" }, source, makeDeps({ deliver: async () => "unreachable" }).deps);
+    // Simulate a pre-upgrade row (no recipient stamp), then lose the route.
+    await memDb.updateTable("trigger_delivery")
+      .set({ recipientUserId: null, deliveryJson: JSON.stringify({ ...out.deliveries[0], recipientUserId: undefined, recipientBound: undefined }) })
+      .where("id", "=", out.deliveries[0].deliveryId)
+      .execute();
+    await store.syncConfigRoutes([]);
+    const d = makeDeps();
+    expect(await engine.drainPendingDeliveries("ops-legacy", d.deps, "u1")).toBe(0);
+    expect(await engine.drainPendingDeliveries("ops-legacy", d.deps, "operator")).toBe(0);
+    expect(d.delivered).toHaveLength(0);
+  });
+
+  it("boot migration backfills the recipient on pre-upgrade pending rows from their route (R2-5)", async () => {
+    await store.syncConfigRoutes([
+      { eventType: "cfg:fan", target: { kind: "session", sessionId: "ops-bf", ownerUserId: "operator" }, deliverAs: "steer", origin: "config" },
+    ]);
+    const out = await engine.publishEvent({ type: "cfg:fan" }, source, makeDeps({ deliver: async () => "unreachable" }).deps);
+    const direct = await engine.publishEvent({ type: "t:x" }, source, makeDeps({ deliver: async () => "unreachable" }).deps, [{ sessionId: "s-bf" }]);
+    for (const d of [out.deliveries[0], direct.deliveries[0]]) {
+      await memDb.updateTable("trigger_delivery")
+        .set({ recipientUserId: null, deliveryJson: JSON.stringify({ ...d, recipientUserId: undefined, recipientBound: undefined }) })
+        .where("id", "=", d.deliveryId)
+        .execute();
+      expect((await store.getDelivery(d.deliveryId))?.recipientUserId).toBeUndefined();
+    }
+    await store.ensureEventTables();
+    const bound = await store.getDelivery(out.deliveries[0].deliveryId);
+    expect(bound?.recipientUserId).toBe("operator");
+    expect(bound?.recipientBound).toBe(true);
+    expect((await store.getDelivery(direct.deliveries[0].deliveryId))?.recipientUserId).toBe("u1");
+    const col = await memDb.selectFrom("trigger_delivery").select(["recipientUserId"]).where("id", "=", out.deliveries[0].deliveryId).executeTakeFirst();
+    expect(col?.recipientUserId).toBe("operator");
+    // Route later removed: the backfilled binding still holds.
+    await store.syncConfigRoutes([]);
+    expect(await engine.drainPendingDeliveries("ops-bf", makeDeps().deps, "u1")).toBe(0);
+    expect(await engine.drainPendingDeliveries("ops-bf", makeDeps().deps, "operator")).toBe(1);
+  });
+
+  it("an escalated bound config delivery inherits the binding on the parent hop (R2-5)", async () => {
+    await store.syncConfigRoutes([
+      { eventType: "cfg:ask", target: { kind: "session", sessionId: "ops-child", ownerUserId: "operator" }, deliverAs: "steer", origin: "config" },
+    ]);
+    const { deps } = makeDeps({ deliver: async () => "unreachable", escalate: async () => "ops-parent" });
+    await engine.publishEvent({ type: "cfg:ask", responseContract: { ttlMs: 1000 } }, source, deps);
+    await store.syncConfigRoutes([]);
+    expect(await engine.sweepExpiredContracts(deps, new Date(Date.now() + 60_000))).toBe(1);
+    const [parent] = await store.listDeliveries({ sessionId: "ops-parent" });
+    expect(parent.recipientUserId).toBe("operator");
+    expect(parent.recipientBound).toBe(true);
+    expect(await engine.drainPendingDeliveries("ops-parent", makeDeps().deps, "u1")).toBe(0);
+    expect(await engine.drainPendingDeliveries("ops-parent", makeDeps().deps, "operator")).toBe(1);
+  });
+
   it("drainPendingResponseRelays re-relays a failed response relay on source registration", async () => {
     // A child session published a contract event; the parent answered, but the
     // relay to the (offline) child source failed → marker stays for the drain.
@@ -557,21 +699,21 @@ describe("delivery receipt acks (inflight settle)", () => {
 
     // Not the source session → nothing drained.
     const wrongDeps = makeDeps({ relayResponse: async () => true }).deps;
-    expect(await engine.drainPendingResponseRelays("someone-else", wrongDeps)).toBe(0);
+    expect(await engine.drainPendingResponseRelays("someone-else", wrongDeps, "u1")).toBe(0);
 
     // Source registers: the stored response re-relays and the marker clears.
     let relayedIds: string[] = [];
     const deps = makeDeps({
       relayResponse: async (d) => { relayedIds.push(d.deliveryId); return true; },
     }).deps;
-    expect(await engine.drainPendingResponseRelays("child-src", deps)).toBe(1);
+    expect(await engine.drainPendingResponseRelays("child-src", deps, "u1")).toBe(1);
     expect(relayedIds).toEqual([delivery!.deliveryId]);
     expect((await store.getDelivery(delivery!.deliveryId))?.responseRelayPending).toBeUndefined();
 
     // A relay that still fails keeps the marker for the next registration.
     await store.updateDelivery(delivery!.deliveryId, { responseRelayPending: true });
     const failing = makeDeps({ relayResponse: async () => false }).deps;
-    expect(await engine.drainPendingResponseRelays("child-src", failing)).toBe(0);
+    expect(await engine.drainPendingResponseRelays("child-src", failing, "u1")).toBe(0);
     expect((await store.getDelivery(delivery!.deliveryId))?.responseRelayPending).toBe(true);
   });
 });
