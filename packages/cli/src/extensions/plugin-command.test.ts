@@ -2,7 +2,8 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runPluginCommand, runPluginCommandView, pluginCommandExtension, PLUGIN_COMMAND_RESULT_CHANNEL } from "./plugin-command.js";
+import { PLUGIN_COMMAND_MESSAGE_TYPE } from "@pizzapi/protocol";
+import { runPluginCommand, runPluginCommandView, pluginCommandExtension } from "./plugin-command.js";
 
 let home: string;
 let originalHome: string | undefined;
@@ -166,35 +167,38 @@ describe("runPluginCommandView", () => {
 });
 
 describe("pluginCommandExtension", () => {
-    let listeners: Array<(data: any) => void> = [];
+    let sent: Array<{ message: any; options: any }> = [];
+    let contextHandler: (e: any) => any;
     function install() {
-        listeners = [];
+        sent = [];
         const commands = new Map<string, any>();
         pluginCommandExtension({
             registerCommand: (n: string, d: any) => commands.set(n, d),
-            events: {
-                emit: (ch: string, data: any) => { if (ch === PLUGIN_COMMAND_RESULT_CHANNEL) for (const l of listeners) l(data); },
-                on: () => () => {},
-            },
+            sendMessage: (message: any, options: any) => sent.push({ message, options }),
+            on: (ev: string, h: any) => { if (ev === "context") contextHandler = h; },
         } as any);
         return commands;
     }
 
-    test("emits a structured result; a handling listener suppresses the text notice", async () => {
+    test("persists a structured result as a non-turn-triggering custom message", async () => {
         const cmd = install();
         runPluginCommand(["marketplace", "add", sourceRepo]);
-        const events: any[] = [];
-        listeners.push((e) => { events.push(e); e.handled = true; });
-        const notices: string[] = [];
-        await cmd.get("plugin").handler("install demo-plugin", {
-            reload: async () => {},
-            ui: { notify: (m: string) => notices.push(m) },
-        });
-        expect(events).toHaveLength(1);
-        expect(events[0].type).toBe("plugin_command_result");
-        expect(events[0].notice).toContain("Installed demo-plugin@demo");
-        expect(events[0].overview.marketplaces[0].name).toBe("demo");
-        expect(notices).toHaveLength(0);
+        await cmd.get("plugin").handler("install demo-plugin", { reload: async () => {} });
+        expect(sent).toHaveLength(1);
+        const { message, options } = sent[0];
+        expect(options).toEqual({ triggerTurn: false });
+        expect(message.customType).toBe(PLUGIN_COMMAND_MESSAGE_TYPE);
+        expect(message.display).toBe(true);
+        expect(message.content).toContain("Installed demo-plugin@demo");
+        expect(message.details.notice).toContain("Installed demo-plugin@demo");
+        expect(message.details.overview.marketplaces[0].name).toBe("demo");
+    });
+
+    test("strips /plugin results from LLM context", () => {
+        install();
+        const keep = { role: "user", content: "hi" };
+        const out = contextHandler({ messages: [keep, { role: "custom", customType: PLUGIN_COMMAND_MESSAGE_TYPE, content: "x" }] });
+        expect(out.messages).toEqual([keep]);
     });
 
     test("registers /plugin", () => {
@@ -204,7 +208,7 @@ describe("pluginCommandExtension", () => {
     test("reloads resources only after a mutating subcommand", async () => {
         const cmd = install().get("plugin");
         let reloads = 0;
-        const ctx = { reload: async () => { reloads++; }, ui: { notify: () => {} } };
+        const ctx = { reload: async () => { reloads++; } };
 
         await cmd.handler("", ctx);
         expect(reloads).toBe(0);
@@ -213,14 +217,11 @@ describe("pluginCommandExtension", () => {
         expect(reloads).toBe(1);
     });
 
-    test("surfaces failures as a notice instead of throwing", async () => {
+    test("surfaces failures as an error result instead of throwing", async () => {
         const cmd = install().get("plugin");
-        const notices: string[] = [];
-        await cmd.handler("marketplace add not-a-real-source", {
-            reload: async () => {},
-            ui: { notify: (m: string) => notices.push(m) },
-        });
-        expect(notices.join()).toContain("failed");
+        await cmd.handler("marketplace add not-a-real-source", { reload: async () => {} });
+        expect(sent[0].message.details.isError).toBe(true);
+        expect(sent[0].message.content).toContain("failed");
     });
 
     test("completions offer subcommands and marketplace actions", () => {

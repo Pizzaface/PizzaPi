@@ -13,7 +13,8 @@ import { normalizeToolName } from "./utils";
 import { isTriggerMessage, renderTriggerCard, truncateSessionId } from "./cards/InterAgentCards";
 import { TriggerCard } from "./cards/TriggerCard";
 import { parsedTriggerFromStructured } from "./cards/trigger-parsers";
-import { LINKED_SESSION_MESSAGE_TYPE, TRIGGER_MESSAGE_TYPE, type TriggerMessageDetails } from "@pizzapi/protocol";
+import { LINKED_SESSION_MESSAGE_TYPE, PLUGIN_COMMAND_MESSAGE_TYPE, TRIGGER_MESSAGE_TYPE, type TriggerMessageDetails } from "@pizzapi/protocol";
+import type { PluginsViewData } from "@/components/plugins/plugins-data";
 import { Message, MessageContent } from "@/components/ai-elements/message";
 import { MessageCopyButton } from "@/components/ai-elements/conversation";
 import { exportToMarkdown } from "@/lib/export-markdown";
@@ -165,6 +166,15 @@ export const SessionMessageItem = React.memo(
       return (
         <div className="w-full px-4 py-1.5 max-w-3xl mx-auto">
           <CommandResultCard data={message.content} />
+        </div>
+      );
+    }
+
+    // Persisted `/plugin` results (session custom message) → interactive plugins card
+    if (message.role === "custom" && message.customType === PLUGIN_COMMAND_MESSAGE_TYPE) {
+      return (
+        <div className="w-full px-4 py-1.5 max-w-3xl mx-auto">
+          <CommandResultCard data={{ kind: "plugins", ...(message.details as PluginsViewData) }} />
         </div>
       );
     }

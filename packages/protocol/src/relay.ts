@@ -14,6 +14,9 @@ export const LINKED_SESSION_MESSAGE_TYPE = "linked-session-message";
 /** pi customType for injected conversation-trigger batches (details: TriggerMessageDetails). */
 export const TRIGGER_MESSAGE_TYPE = "pizzapi-trigger";
 
+/** pi customType for `/plugin` results (details: the structured plugins view). Kept out of LLM context. */
+export const PLUGIN_COMMAND_MESSAGE_TYPE = "pizzapi-plugin-command";
+
 export interface TriggerMessageDetails {
   triggers: Array<{
     triggerId: string;

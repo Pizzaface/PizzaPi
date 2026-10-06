@@ -97,26 +97,46 @@ function ActionButton({ id, args, label, confirm, variant = "outline" }: {
 
 // ── Pieces ───────────────────────────────────────────────────────────────────
 
-function Section({ title, icon: Icon, count, children, action }: {
+function Section({ title, icon: Icon, count, children, action, collapsible, defaultOpen = true }: {
   title: string;
   icon: React.ElementType;
   count?: number;
   children: React.ReactNode;
   action?: React.ReactNode;
+  /** Render the header as an accordion toggle. */
+  collapsible?: boolean;
+  defaultOpen?: boolean;
 }) {
+  const [open, setOpen] = React.useState(defaultOpen || !collapsible);
+  const heading = (
+    <>
+      <Icon className="size-3" />
+      {title}
+      {count !== undefined && (
+        <Badge variant="secondary" className="h-4 rounded-sm px-1.5 font-mono text-[10px]">{count}</Badge>
+      )}
+    </>
+  );
+  const headingClass = "flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
   return (
     <section className="py-2">
-      <div className="flex items-center justify-between px-3 pb-1.5">
-        <h4 className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-          <Icon className="size-3" />
-          {title}
-          {count !== undefined && (
-            <Badge variant="secondary" className="h-4 rounded-sm px-1.5 font-mono text-[10px]">{count}</Badge>
-          )}
+      <div className={cn("flex items-center justify-between px-3", open && "pb-1.5")}>
+        <h4 className={headingClass}>
+          {collapsible ? (
+            <button
+              type="button"
+              onClick={() => setOpen((v) => !v)}
+              aria-expanded={open}
+              className={cn(headingClass, "hover:text-foreground")}
+            >
+              <ChevronDown className={cn("size-3 transition-transform", !open && "-rotate-90")} />
+              {heading}
+            </button>
+          ) : heading}
         </h4>
-        {action}
+        {open && action}
       </div>
-      <ul className="flex flex-col gap-1 px-2">{children}</ul>
+      {open && <ul className="flex flex-col gap-1 px-2">{children}</ul>}
     </section>
   );
 }
@@ -444,6 +464,8 @@ export function PluginsView({ data, onCommand, className, sections = ["plugins",
             title="Pi packages"
             icon={Package}
             count={overview.packages.length}
+            collapsible
+            defaultOpen={!showPlugins}
             action={overview.packages.length > 0
               ? <ActionButton id="pkg-update-all" args={["package", "update"]} label="Update all" variant="ghost" />
               : undefined}

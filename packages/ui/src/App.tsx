@@ -4,7 +4,6 @@ import { ThemeProvider } from "@/components/ThemeProvider";
 import { initAnimationSync } from "@/lib/synced-animation";
 import { SessionSidebar, type DotState, type HubSession } from "@/components/SessionSidebar";
 import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
-import { toPluginsViewData } from "@/components/plugins/plugins-data";
 import type { CommandResultData } from "@/components/session-viewer/rendering";
 import { detectInFlightTools } from "@/components/session-viewer/utils";
 import { DesktopHeader, MobileHeader } from "@/components/AppHeaders";
@@ -2864,12 +2863,6 @@ export function App() {
       // Reset for the next assistant message.
       thinkingStartTimesRef.current = new Map();
       thinkingDurationsRef.current = new Map();
-    }
-
-    // Structured `/plugin` result → interactive plugins card.
-    if (type === "plugin_command_result") {
-      appendLocalSystemMessage({ kind: "plugins", ...toPluginsViewData(evt) });
-      return;
     }
 
     // PATCH(pizzapi): Forward ui_notify events from the runner to the toast system

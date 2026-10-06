@@ -35,8 +35,7 @@ import {
     type PluginsOverview,
 } from "../plugins/info.js";
 
-import { PLUGIN_COMMAND_RESULT_CHANNEL, PLUGIN_COMMAND_RESULT_EVENT } from "./plugin-command-events.js";
-export { PLUGIN_COMMAND_RESULT_CHANNEL, PLUGIN_COMMAND_RESULT_EVENT };
+import { PLUGIN_COMMAND_MESSAGE_TYPE } from "@pizzapi/protocol";
 
 const USAGE = [
     "Usage:",
@@ -311,6 +310,10 @@ const SUBCOMMANDS = [
 ];
 
 export const pluginCommandExtension: ExtensionFactory = (pi) => {
+    // Results are UI-only transcript entries — never feed them to the model.
+    pi.on("context", (event) => ({
+        messages: event.messages.filter((m: any) => !(m.role === "custom" && m.customType === PLUGIN_COMMAND_MESSAGE_TYPE)),
+    }));
     pi.registerCommand("plugin", {
         description: "Manage Claude Code plugin marketplaces: marketplace add/list/remove, install, uninstall, enable, disable",
         getArgumentCompletions: (prefix: string) => {
@@ -351,12 +354,13 @@ export const pluginCommandExtension: ExtensionFactory = (pi) => {
         handler: async (rawArgs: string, ctx: any) => {
             const args = (rawArgs ?? "").trim().split(/\s+/).filter(Boolean);
             const view = await runPluginCommandView(args, ctx?.cwd);
-            // The remote extension forwards this to the web UI as a structured
-            // card and flags it handled (EventBus delivery is synchronous).
-            const event = { type: PLUGIN_COMMAND_RESULT_EVENT, ...view, handled: false };
-            pi.events.emit(PLUGIN_COMMAND_RESULT_CHANNEL, event);
-            const isTui = ctx?.hasUI && ctx?.mode === "tui";
-            if (!event.handled || isTui) ctx?.ui?.notify?.(view.output, view.isError ? "error" : "info");
+            // Persisted as a session custom message so the web UI card survives
+            // snapshots/reloads; the TUI renders the text content.
+            const { output, changed: _changed, ...details } = view;
+            pi.sendMessage(
+                { customType: PLUGIN_COMMAND_MESSAGE_TYPE, content: output, display: true, details },
+                { triggerTurn: false },
+            );
             // Pick up newly installed commands, skills, and hooks right away.
             if (view.changed) await ctx.reload();
         },

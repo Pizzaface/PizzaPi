@@ -100,7 +100,7 @@ export type {
   RelayInterServerEvents,
   RelaySocketData,
 } from "./relay.js";
-export { LINKED_SESSION_MESSAGE_TYPE, TRIGGER_MESSAGE_TYPE } from "./relay.js";
+export { LINKED_SESSION_MESSAGE_TYPE, PLUGIN_COMMAND_MESSAGE_TYPE, TRIGGER_MESSAGE_TYPE } from "./relay.js";
 export type { TriggerMessageDetails } from "./relay.js";
 
 // /viewer namespace (Browser viewer ↔ Server)

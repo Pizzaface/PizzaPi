@@ -117,6 +117,16 @@ describe("PluginsView", () => {
         expect(onCommand).toHaveBeenLastCalledWith(["package", "install", "git:github.com/a/b", "--local"]);
     });
 
+    test("pi packages collapse into an accordion alongside plugins", () => {
+        const { container, queryByText } = render(<PluginsView data={data} />);
+        const toggle = [...container.querySelectorAll("h4 button")].find((b) => b.textContent?.includes("Pi packages")) as HTMLButtonElement;
+        expect(toggle.getAttribute("aria-expanded")).toBe("false");
+        expect(queryByText("npm:@acme/ext")).toBeNull();
+        fireEvent.click(toggle);
+        expect(toggle.getAttribute("aria-expanded")).toBe("true");
+        expect(queryByText("npm:@acme/ext")).toBeTruthy();
+    });
+
     test("toPluginsViewData tolerates legacy and malformed payloads", () => {
         expect(toPluginsViewData({ kind: "plugins", plugins: [] }).overview).toEqual({ plugins: [], disabled: [], marketplaces: [], packages: [], packagesCwd: undefined });
         expect(toPluginsViewData(null).isError).toBe(false);
