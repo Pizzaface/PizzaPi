@@ -38,6 +38,7 @@ import {
     emitGoalUpdated,
 } from "../remote-meta-events.js";
 import { getAuthSource } from "../remote-auth-source.js";
+import { PLUGIN_COMMAND_RESULT_CHANNEL } from "../plugin-command.js";
 import { clearAndCancelPendingTriggers } from "../triggers/extension.js";
 import { receivedTriggers } from "../triggers/extension.js";
 import { listTriggerSubscriptions, unsubscribeTrigger } from "../trigger-client.js";
@@ -793,6 +794,15 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
 
     pi.events.on("plugin:loaded", () => {
         rctx.forwardEvent(rctx.buildCapabilitiesState());
+    });
+
+    // Structured `/plugin` results — rendered as an interactive card in the web
+    // UI. Flag it handled so the command skips its plain-text notice.
+    pi.events.on(PLUGIN_COMMAND_RESULT_CHANNEL, (data: unknown) => {
+        if (!data || typeof data !== "object" || !rctx.relay || !rctx.sioSocket?.connected) return;
+        const { handled: _handled, output: _output, ...event } = data as Record<string, unknown>;
+        rctx.forwardEvent(event);
+        (data as { handled?: boolean }).handled = true;
     });
 
     // ── MCP events ────────────────────────────────────────────────────────────

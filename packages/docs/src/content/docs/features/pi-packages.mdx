@@ -15,7 +15,7 @@ import { Aside } from "@astrojs/starlight/components";
 
 ## Installing Packages
 
-Use `pizza install` from the terminal (not from within a PizzaPi session):
+From the terminal, use `pizza install`:
 
 ```bash
 # From npm
@@ -43,6 +43,21 @@ pizza update                  # Update all non-pinned npm packages
 pizza remove npm:@foo/bar     # Remove a package
 pizza config                  # Enable/disable specific resources
 ```
+
+### From a session or the web UI
+
+Inside a session, `/plugin package` manages the same settings files:
+
+```
+/plugin package list
+/plugin package install npm:@foo/pi-tools [--local]
+/plugin package remove npm:@foo/pi-tools [--local]
+/plugin package update [source]
+```
+
+`--local` targets the session's project (`.pizzapi/settings.json`). Changes reload the session's resources right away.
+
+In the web UI, `/plugins` opens an interactive card with a **Pi packages** section (update, remove, and install, with an optional project-scope checkbox). The runner panel's **Plugins → Pi Packages** tab offers the same controls at runner level. Use **Apply to live sessions** to reload the runner's running sessions.
 
 <Aside type="tip">
   Pinned npm versions (e.g., `npm:@foo/bar@1.2.3`) are skipped by `pizza update`. Pinned git refs are still reconciled on update so the clone matches the configured ref. Remove the pin to allow automatic updates.

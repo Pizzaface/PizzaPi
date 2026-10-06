@@ -436,13 +436,23 @@ export function RunnerDetailPanel({
                     tabs={[
                         {
                             key: "installed",
-                            label: "Installed",
+                            label: "Claude Plugins",
                             content: (
                                 <PluginsManager
                                     runnerId={runner.runnerId}
                                     plugins={runner.plugins}
                                     onPluginsChange={(p) => onPluginsChange?.(runner.runnerId, p)}
-                                    bare
+                                />
+                            ),
+                        },
+                        {
+                            key: "packages",
+                            label: "Pi Packages",
+                            content: (
+                                <PluginsManager
+                                    runnerId={runner.runnerId}
+                                    plugins={runner.plugins}
+                                    section="packages"
                                 />
                             ),
                         },

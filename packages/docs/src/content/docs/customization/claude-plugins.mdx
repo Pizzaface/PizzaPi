@@ -320,6 +320,20 @@ uses — so an install made from either tool is visible to both.
 Mutating subcommands reload session resources afterwards, so a newly installed plugin's
 commands, skills, and rules are usable immediately — no restart.
 
+### From the web UI
+
+In the web UI, `/plugin` and `/plugins` reply with an interactive card instead of text. It shows
+loaded plugins (expand one to see its commands, skills, agents, hooks, and install path), disabled
+plugins, registered marketplaces, and configured [pi packages](/PizzaPi/features/pi-packages/). Use its buttons to enable, disable, or uninstall a plugin,
+browse a marketplace's catalog and install from it, and add, update, or remove a marketplace. Each
+button runs the matching `/plugin` subcommand in the session, so changes reload the session
+the same way they do when you type the command.
+
+The runner panel's **Plugins** tab has the same controls at runner level, split into **Claude Plugins** and **Pi Packages** sub-tabs. Changes made there apply
+to new sessions; click **Apply to live sessions** to reload the runner's running sessions.
+The tab calls `POST /api/runners/{runnerId}/plugins/command` with `{ "args": ["install", "my-plugin@market"] }`
+(the `/plugin` arguments as an array), which returns the same structured overview.
+
 ### From the CLI
 
 ```bash

@@ -1386,6 +1386,46 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         }
     }
 
+    // POST /api/runners/:id/plugins/command — run a `/plugin` subcommand on the
+    // runner (marketplace add/remove/show, install, uninstall, enable, disable)
+    // and return the structured overview the plugins UI renders.
+    const pluginsCommandMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/plugins\/command$/);
+    if (pluginsCommandMatch && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(pluginsCommandMatch[1]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        let body: any = {};
+        try { body = await req.json(); } catch { body = {}; }
+        const args = body?.args;
+        if (!Array.isArray(args) || args.length > 8 || !args.every((a) => typeof a === "string" && a.length <= 1000)) {
+            return Response.json({ error: "'args' must be an array of at most 8 strings" }, { status: 400 });
+        }
+        const cwd = typeof body.cwd === "string" && body.cwd ? body.cwd : undefined;
+        if (cwd) {
+            const roots = parseJsonArray(runner.roots);
+            if (roots.length > 0 && !cwdMatchesRoots(roots, cwd)) {
+                return Response.json({ error: "cwd outside allowed workspace roots" }, { status: 403 });
+            }
+        }
+
+        try {
+            // Marketplace adds and installs shallow-clone git repos — allow time.
+            const result = await sendRunnerCommand(runnerId, { type: "plugin_command", args, cwd }, 120_000) as any;
+            if (result?.ok === false) {
+                return Response.json({ error: result.message ?? "Plugin command rejected" }, { status: 403 });
+            }
+            return Response.json(result);
+        } catch (err) {
+            pluginsLog.error("plugin command failed:", err);
+            return Response.json({ error: err instanceof Error ? err.message : "Plugin command failed" }, { status: 502 });
+        }
+    }
+
     // ── File explorer ──────────────────────────────────────────────────
     const filesMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/files$/);
     if (filesMatch && req.method === "POST") {

@@ -11,11 +11,7 @@ import {
   Server,
   Puzzle,
   BookOpen,
-  Terminal,
-  Zap,
   AlertTriangle,
-  Bot,
-  FileText,
   ChevronDown,
   RefreshCw,
   Eye,
@@ -24,6 +20,7 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { useMcpToggle } from "@/components/session-viewer/McpToggleContext";
+import { PluginCommandContext, PluginsView, toPluginsViewData, type PluginsViewData } from "@/components/plugins/PluginsView";
 
 // ── Shared types ──────────────────────────────────────────────────────────────
 
@@ -94,28 +91,7 @@ export interface McpResultData {
 
 // ── Plugins ───────────────────────────────────────────────────────────────────
 
-export interface PluginCommandEntry {
-  name: string;
-  description?: string;
-}
-
-export interface PluginEntry {
-  name: string;
-  description?: string;
-  version?: string;
-  commands: PluginCommandEntry[];
-  hookCount: number;
-  skillCount: number;
-  agentCount?: number;
-  ruleCount: number;
-  hasMcp?: boolean;
-  hasAgents?: boolean;
-}
-
-export interface PluginsResultData {
-  kind: "plugins";
-  plugins: PluginEntry[];
-}
+export type PluginsResultData = { kind: "plugins" } & PluginsViewData;
 
 // ── Skills ────────────────────────────────────────────────────────────────────
 
@@ -470,113 +446,11 @@ function FlatToolList({ toolNames }: { toolNames: string[] }) {
 }
 
 /** Collapsible plugin row that expands to show commands */
-function PluginEntryRow({ plugin }: { plugin: PluginEntry }) {
-  const [open, setOpen] = React.useState(false);
-  const commandCount = plugin.commands.length;
-
-  return (
-    <li className="border-b border-zinc-800/60 last:border-b-0">
-      <button
-        type="button"
-        onClick={() => commandCount > 0 && setOpen(!open)}
-        className={cn(
-          "flex items-start gap-2.5 w-full text-left px-4 py-2.5 transition-colors",
-          commandCount > 0 && "hover:bg-zinc-900/50 cursor-pointer",
-        )}
-      >
-        {commandCount > 0 ? (
-          <ChevronDown className={cn("size-3 mt-0.5 shrink-0 text-zinc-500 transition-transform", open && "rotate-180")} />
-        ) : (
-          <Puzzle className="size-3.5 mt-0.5 shrink-0 text-zinc-500" />
-        )}
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-semibold font-mono text-zinc-200">{plugin.name}</span>
-            {plugin.version && (
-              <Badge variant="outline" className="h-3.5 px-1 text-[9px] font-mono border-zinc-700 text-zinc-500">
-                v{plugin.version}
-              </Badge>
-            )}
-          </div>
-          {plugin.description && (
-            <p className="text-[11px] text-zinc-500 mt-0.5 line-clamp-2">{plugin.description}</p>
-          )}
-          <div className="flex items-center gap-2 mt-1 flex-wrap">
-            {commandCount > 0 && (
-              <span className="inline-flex items-center gap-0.5 text-[10px] text-zinc-500">
-                <Terminal className="size-2.5" />
-                {commandCount} cmd{commandCount > 1 ? "s" : ""}
-              </span>
-            )}
-            {plugin.hookCount > 0 && (
-              <span className="inline-flex items-center gap-0.5 text-[10px] text-zinc-500">
-                <Zap className="size-2.5" />
-                {plugin.hookCount} hook{plugin.hookCount > 1 ? "s" : ""}
-              </span>
-            )}
-            {plugin.skillCount > 0 && (
-              <span className="inline-flex items-center gap-0.5 text-[10px] text-zinc-500">
-                <BookOpen className="size-2.5" />
-                {plugin.skillCount} skill{plugin.skillCount > 1 ? "s" : ""}
-              </span>
-            )}
-            {(plugin.ruleCount ?? 0) > 0 && (
-              <span className="inline-flex items-center gap-0.5 text-[10px] text-zinc-500">
-                <FileText className="size-2.5" />
-                {plugin.ruleCount} rule{plugin.ruleCount > 1 ? "s" : ""}
-              </span>
-            )}
-            {plugin.hasMcp && (
-              <span className="inline-flex items-center gap-0.5 text-[10px] text-amber-500/80">
-                <AlertTriangle className="size-2.5" />
-                MCP
-              </span>
-            )}
-            {(plugin.agentCount ?? 0) > 0 && (
-              <span className="inline-flex items-center gap-0.5 text-[10px] text-zinc-400">
-                <Bot className="size-2.5" />
-                {plugin.agentCount} agent{plugin.agentCount! > 1 ? "s" : ""}
-              </span>
-            )}
-          </div>
-        </div>
-      </button>
-      {open && commandCount > 0 && (
-        <div className="px-4 pb-2.5 pt-0.5 flex flex-wrap gap-1">
-          {plugin.commands.map((cmd) => (
-            <span
-              key={cmd.name}
-              className="inline-flex items-center rounded bg-zinc-800/80 px-1.5 py-0.5 text-[10px] font-mono text-zinc-400"
-              title={cmd.description}
-            >
-              /{plugin.name}:{cmd.name}
-            </span>
-          ))}
-        </div>
-      )}
-    </li>
-  );
-}
-
-function PluginsCard({ data }: { data: PluginsResultData }) {
-  if (data.plugins.length === 0) {
-    return (
-      <ToolCardShell>
-        <ToolCardHeader>
-          <ToolCardTitle icon={<Puzzle className="size-4 shrink-0 text-zinc-400" />}>
-            <span className="text-sm font-medium text-zinc-300">Plugins</span>
-          </ToolCardTitle>
-          <StatusPill variant="neutral">0</StatusPill>
-        </ToolCardHeader>
-        <div className="px-4 py-3 text-xs text-zinc-500 text-center">
-          No plugins loaded.
-        </div>
-      </ToolCardShell>
-    );
-  }
-
-  const totalCommands = data.plugins.reduce((sum, p) => sum + p.commands.length, 0);
-
+function PluginsCard({ data: raw }: { data: PluginsResultData }) {
+  const onCommand = React.useContext(PluginCommandContext);
+  // Normalize: cached transcripts may hold the pre-overview card shape.
+  const data = React.useMemo(() => toPluginsViewData(raw), [raw]);
+  const { plugins, disabled, marketplaces, packages } = data.overview;
   return (
     <ToolCardShell>
       <ToolCardHeader>
@@ -584,21 +458,20 @@ function PluginsCard({ data }: { data: PluginsResultData }) {
           <span className="text-sm font-medium text-zinc-300">Plugins</span>
         </ToolCardTitle>
         <div className="flex items-center gap-1.5">
-          <StatusPill variant="success">
-            {data.plugins.length} loaded
-          </StatusPill>
-          {totalCommands > 0 && (
+          <StatusPill variant={plugins.length > 0 ? "success" : "neutral"}>{plugins.length} loaded</StatusPill>
+          {disabled.length > 0 && <StatusPill variant="neutral">{disabled.length} disabled</StatusPill>}
+          {packages.length > 0 && (
+            <StatusPill variant="neutral">{packages.length} pi package{packages.length !== 1 ? "s" : ""}</StatusPill>
+          )}
+          {marketplaces.length > 0 && (
             <StatusPill variant="neutral">
-              {totalCommands} cmd{totalCommands !== 1 ? "s" : ""}
+              {marketplaces.length} marketplace{marketplaces.length !== 1 ? "s" : ""}
             </StatusPill>
           )}
         </div>
       </ToolCardHeader>
-      <ul>
-        {data.plugins.map((p) => (
-          <PluginEntryRow key={p.name} plugin={p} />
-        ))}
-      </ul>
+      {/* Tool cards are always dark; scope dark theme tokens to the shared view. */}
+      <PluginsView data={data} onCommand={onCommand ?? undefined} className="dark text-foreground" />
     </ToolCardShell>
   );
 }

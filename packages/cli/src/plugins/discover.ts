@@ -229,6 +229,8 @@ export function discoverClaudeInstalledPlugins(cwd?: string): DiscoveredPlugin[]
 
             try {
                 const plugin = parsePlugin(installDir);
+                plugin.origin = "marketplace";
+                plugin.enableKey = _key;
                 if (!seen.has(plugin.name)) {
                     seen.add(plugin.name);
                     plugins.push(plugin);
@@ -326,11 +328,14 @@ export function discoverPlugins(cwd?: string, opts?: { includeProjectLocal?: boo
     // directory), because the enabledPlugins map was consulted solely on the
     // marketplace path below.
     const enabledPlugins = readEnabledPlugins(cwd);
+    const projectDirs = new Set(cwd ? projectPluginDirs(cwd) : []);
 
     // 1. Scan PizzaPi/agents plugin dirs
     for (const dir of dirs) {
         for (const plugin of scanPluginsDir(dir)) {
             if (!isPluginEnabled(plugin.name, enabledPlugins)) continue;
+            plugin.origin = projectDirs.has(dir) ? "project" : "directory";
+            plugin.enableKey = plugin.name;
             if (!seen.has(plugin.name)) {
                 seen.add(plugin.name);
                 plugins.push(plugin);

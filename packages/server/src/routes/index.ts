@@ -23,7 +23,6 @@ import { handlePushRoute } from "./push.js";
 import { handleSettingsRoute } from "./settings.js";
 import { handleRunnerSettingsRoute } from "./runner-settings.js";
 import { handleRunnerAuthRoute } from "./runner-auth.js";
-import { handlePackagesRoute } from "./packages.js";
 import { handleMcpOAuthRoute } from "./mcp-oauth.js";
 import { handleTunnelRoute } from "./tunnel.js";
 import { handleTriggersRoute } from "./triggers.js";
@@ -45,7 +44,6 @@ const routers: RouteHandler[] = [
     handleRunnerAuthRoute,  // Before runners — /api/runners/:id/providers/*
     handleRunnersRoute,
     handleRunnerSettingsRoute,
-    handlePackagesRoute,
     handleSessionsRoute,
     handleEventsRoute,      // Unified trigger system (ADR-0002) — /api/events, /api/routes
     handleTriggersRoute,    // Session control, trigger history, and trigger metadata

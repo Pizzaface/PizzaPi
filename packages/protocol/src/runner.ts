@@ -397,6 +397,13 @@ export interface RunnerServerToClientEvents {
     cwd?: string;
   }) => void;
 
+  /** Runs a `/plugin` subcommand (args split on whitespace); replies via file_result */
+  plugin_command: (data: {
+    requestId?: string;
+    args: string[];
+    cwd?: string;
+  }) => void;
+
   /** Creates a new skill */
   create_skill: (data: {
     requestId?: string;
@@ -495,31 +502,6 @@ export interface RunnerServerToClientEvents {
     section: string;
     /** The new value for that section */
     value: unknown;
-  }) => void;
-
-  /** Package management: list installed packages */
-  packages_list: (data: {
-    requestId?: string;
-  }) => void;
-
-  /** Package management: install a package */
-  packages_install: (data: {
-    requestId?: string;
-    source: string;
-    local?: boolean;
-  }) => void;
-
-  /** Package management: remove a package */
-  packages_remove: (data: {
-    requestId?: string;
-    source: string;
-    local?: boolean;
-  }) => void;
-
-  /** Package management: update packages */
-  packages_update: (data: {
-    requestId?: string;
-    source?: string;
   }) => void;
 
   /** Model provider auth: list providers that support interactive login */
