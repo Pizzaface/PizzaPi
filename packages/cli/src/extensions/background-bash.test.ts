@@ -380,6 +380,7 @@ describe("process tracking and lifecycle", () => {
 
         await Bun.sleep(300);
         expect(pi.messages.length).toBe(0); // completion suppressed — old conversation is gone
+        expect(existsSync(logPath)).toBe(false); // no deferred stream open may recreate the log
         expect(() => process.kill(pid, 0)).toThrow(); // actually dead
     });
 

@@ -388,7 +388,8 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
         }
 
         const logPath = join(tmpdir(), `pizzapi-bash-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.log`);
-        const log = createWriteStream(logPath);
+        // Open before cleanup can unlink it; a deferred stream open would recreate the log after /new.
+        const log = createWriteStream(logPath, { fd: openSync(logPath, "w") });
         const startedAt = Date.now();
         // Record this command's detached group-leader PID for the daemon's
         // process tracking (Processes panel + end-of-session reaping). The
