@@ -1,8 +1,16 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { act, cleanup, fireEvent, render } from "@testing-library/react";
-import { PluginsView, toPluginsViewData, type PluginsViewData } from "./PluginsView";
+import { Window } from "happy-dom";
 
-Object.assign(window, { SyntaxError });
+// Own DOM: other test files in the same process can leave `window` unset.
+const win = new Window({ url: "http://localhost/" });
+(win as any).SyntaxError = globalThis.SyntaxError;
+for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "SVGElement", "MutationObserver", "Event", "HTMLInputElement"]) {
+    (globalThis as any)[key] = key === "window" ? win : (win as any)[key];
+}
+
+const { act, cleanup, fireEvent, render } = await import("@testing-library/react");
+const { PluginsView, toPluginsViewData } = await import("./PluginsView");
+type PluginsViewData = import("./PluginsView").PluginsViewData;
 afterEach(cleanup);
 
 const data: PluginsViewData = {
