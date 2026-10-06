@@ -109,7 +109,7 @@ describe("registerMessagingHandlers session_trigger acking", () => {
 
                 const payload = {
                     text: "Message from linked session parent-1:\n\nChange direction", attachments: [], client: "agent",
-                    fromSessionId: "parent-1",
+                    fromSessionId: "parent-1", message: "Change direction",
                     deliverAs: deliverAs === "steer" ? "steer" : "followUp",
                 };
                 expect(mockIsChildOfParent).toHaveBeenCalledWith("parent-1", "child-1");

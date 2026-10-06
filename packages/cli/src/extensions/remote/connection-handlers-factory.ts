@@ -17,6 +17,7 @@ import { connect, disconnect, type ConnectionHandlers } from "./connection.js";
 import type { DelinkManager } from "./delink-management.js";
 import type { CancellationManager } from "./trigger-cancellation.js";
 import type { FollowUpGraceManager } from "./followup-grace.js";
+import { LINKED_SESSION_MESSAGE_TYPE } from "@pizzapi/protocol";
 
 const log = createLogger("remote");
 
@@ -73,6 +74,16 @@ export function createConnectionHandlers(deps: ConnectionHandlersDeps) {
                 throw new Error("pizzapi: no SessionHost available — cannot deliver user message");
             }
             await rctx.sessionHost.sendUserMessage(msg as UserMessageContent, opts);
+        },
+
+        sendLinkedSessionMessage: async (text, details, deliverAs) => {
+            if (!rctx.sessionHost) {
+                throw new Error("pizzapi: no SessionHost available — cannot deliver linked-session message");
+            }
+            await rctx.sessionHost.sendCustomMessage(
+                { customType: LINKED_SESSION_MESSAGE_TYPE, content: text, display: true, details },
+                { triggerTurn: true, ...(deliverAs ? { deliverAs } : {}) },
+            );
         },
 
         // ── Delink handlers ───────────────────────────────────────────────

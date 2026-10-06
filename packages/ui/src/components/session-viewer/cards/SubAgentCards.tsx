@@ -111,7 +111,7 @@ export function SubAgentTurnBubble({ turn }: { turn: SubAgentTurn }) {
   return null;
 }
 
-export function SubAgentConversationCard({ turns }: { turns: SubAgentTurn[] }) {
+export function SubAgentConversationCard({ turns, title = "Sub-agent" }: { turns: SubAgentTurn[]; title?: string }) {
   // Collect unique remote session IDs for the header
   const sessionIds = new Set<string>();
   for (const turn of turns) {
@@ -136,7 +136,7 @@ export function SubAgentConversationCard({ turns }: { turns: SubAgentTurn[] }) {
       {/* Header */}
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
         <BotIcon className="size-3.5 shrink-0 text-violet-400" />
-        <span className="text-[0.8rem] font-semibold text-foreground">Sub-agent</span>
+        <span className="text-[0.8rem] font-semibold text-foreground">{title}</span>
         <div className="flex flex-wrap gap-1 min-w-0">
           {[...sessionIds].map((id) => (
             <span

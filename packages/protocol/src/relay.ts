@@ -8,6 +8,9 @@ import type { Attachment, SocketClientMetadata } from "./shared.js";
 // Client → Server (TUI sends to server)
 // ---------------------------------------------------------------------------
 
+/** pi customType for linked-session send_message deliveries (details: { fromSessionId, message }). */
+export const LINKED_SESSION_MESSAGE_TYPE = "linked-session-message";
+
 export interface RelayClientToServerEvents {
   /** TUI registers a new or existing session */
   register: (data: {
@@ -159,13 +162,17 @@ export interface RelayServerToClientEvents {
   /** Notifies TUI that a viewer connected */
   connected: (data: Record<string, never>) => void;
 
-  /** Delivers user input from the web viewer */
+  /** Delivers user input from the web viewer. Inter-agent input carrying
+   * fromSessionId + message is injected as a pi custom message of type
+   * LINKED_SESSION_MESSAGE_TYPE with details { fromSessionId, message }. */
   input: (data: {
     text: string;
     attachments?: Attachment[];
     client?: string;
     /** Source agent session ID for inter-agent input. */
     fromSessionId?: string;
+    /** Unattributed inter-agent message body (set with fromSessionId). */
+    message?: string;
     deliverAs?: "steer" | "followUp";
     /** Viewer delivery attempt ID, preserved for mixed-version idempotency. */
     requestId?: string;

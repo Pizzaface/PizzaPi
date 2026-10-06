@@ -97,6 +97,8 @@ export interface ConnectionHandlers {
     setModelFromWeb: (provider: string, modelId: string) => Promise<void>;
     /** Deliver a user message to the agent (called from input and session_trigger handlers). */
     sendUserMessage: (message: unknown, options?: { deliverAs?: "followUp" | "steer"; expandPromptTemplates?: boolean }) => Promise<void>;
+    /** Deliver a linked-session message as a structured custom message. */
+    sendLinkedSessionMessage: (text: string, details: { fromSessionId: string; message: string }, deliverAs?: "followUp" | "steer") => Promise<void>;
 
     // ── Delink handlers (PR #176) ─────────────────────────────────────────
     /** Whether a delink_own_parent is pending (child did /new). */
@@ -542,6 +544,10 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
             : data.deliverAs === "steer" ? "steer" as const
             : undefined;
         const isSlashCommand = typeof inputText === "string" && inputText.trimStart().startsWith("/");
+        const rawMessage = (data as { message?: unknown }).message;
+        const linkedMessage = isAgentInput && fromSessionId && typeof rawMessage === "string" && !isSlashCommand && attachments.length === 0
+            ? { fromSessionId, message: rawMessage }
+            : null;
         void (async () => {
             try {
                 const httpBase = rctx.relayHttpBaseUrl();
@@ -564,6 +570,11 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                 if (abortForSlashCommand) rctx.pendingSteeringSlashCommands += 1;
                 try {
                     if (abortForSlashCommand) await rctx.sessionHost?.abort();
+                    if (linkedMessage) {
+                        await handlers.sendLinkedSessionMessage(inputText, linkedMessage, effectiveDeliverAs);
+                        settle(true);
+                        return;
+                    }
                     await handlers.sendUserMessage(message, { expandPromptTemplates: true, ...(effectiveDeliverAs ? { deliverAs: effectiveDeliverAs } : {}) });
                     settle(true);
                 } finally {

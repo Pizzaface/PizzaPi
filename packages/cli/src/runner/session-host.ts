@@ -112,6 +112,14 @@ export class SessionHost {
         await this.session.prompt(text, promptOptions);
     }
 
+    /** Inject a structured pi custom message (LLM sees `content`; UI reads `details`). */
+    sendCustomMessage<T>(
+        message: { customType: string; content: string; display: boolean; details?: T },
+        options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" },
+    ): Promise<void> {
+        return this.session.sendCustomMessage(message, options);
+    }
+
     /** Snapshot of the pending steering/follow-up queues (defensively copied). */
     getQueuedMessages(): { steering: string[]; followUp: string[] } {
         return {

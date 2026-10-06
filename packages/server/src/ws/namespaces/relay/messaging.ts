@@ -31,7 +31,7 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
         const targetSocket = getLocalTuiSocket(targetSessionId);
         const attributedText = `Message from linked session ${fromSessionId}:\n\n${messageText}`;
         const payload = isInput
-            ? { text: attributedText, attachments: [], client: "agent", fromSessionId, deliverAs: inputDelivery }
+            ? { text: attributedText, attachments: [], client: "agent", fromSessionId, message: messageText, deliverAs: inputDelivery }
             : { fromSessionId, message: messageText, ts: new Date().toISOString() };
 
         if (targetSocket?.connected) {

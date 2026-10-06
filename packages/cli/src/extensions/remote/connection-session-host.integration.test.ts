@@ -9,6 +9,7 @@
  * even part of ConnectionHandlersDeps anymore (see connection-handlers-factory.ts).
  */
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { LINKED_SESSION_MESSAGE_TYPE } from "@pizzapi/protocol";
 import { SessionHost } from "../../runner/session-host.js";
 
 class FakeSocket {
@@ -230,6 +231,52 @@ describe("connection handler -> SessionHost -> AgentSession.prompt integration",
         expect(ack).toHaveBeenCalledWith(true);
         expect(promptCalls).toHaveLength(1);
         expect(promptCalls[0].text).toBe("yes");
+    });
+
+    test("linked-session input is injected as a structured custom message", async () => {
+        const custom: Array<{ message: any; options: any }> = [];
+        const fakeSession = {
+            prompt: mock(async () => {}),
+            sendCustomMessage: async (message: any, options: any) => { custom.push({ message, options }); },
+        } as any;
+        const host = new SessionHost(() => fakeSession, {
+            newSession: async () => ({ cancelled: false }),
+            switchSession: async () => ({ cancelled: false }),
+            fork: async () => ({ cancelled: false }),
+        });
+        const { rctx } = makeRctx(host);
+        const { connectionHandlers } = createConnectionHandlers({
+            rctx,
+            state: makeState() as any,
+            triggerWaits: { cancelAll: () => 0 } as any,
+            delinkManager: {} as any,
+            cancellationManager: {} as any,
+            followUpGrace: { clearFollowUpGrace: () => {} } as any,
+            setModelFromWeb: async () => {},
+        });
+        const ack = mock((_delivered: boolean) => {});
+
+        connect(rctx, connectionHandlers);
+        lastSocket!.trigger("input", {
+            text: "Message from linked session child-1:\n\nhi",
+            message: "hi",
+            client: "agent",
+            fromSessionId: "child-1",
+            deliverAs: "steer",
+        }, ack);
+        await sleep(30);
+
+        expect(ack).toHaveBeenCalledWith(true);
+        expect(fakeSession.prompt).not.toHaveBeenCalled();
+        expect(custom).toEqual([{
+            message: {
+                customType: LINKED_SESSION_MESSAGE_TYPE,
+                content: "Message from linked session child-1:\n\nhi",
+                display: true,
+                details: { fromSessionId: "child-1", message: "hi" },
+            },
+            options: { triggerTurn: true, deliverAs: "steer" },
+        }]);
     });
 
     test("acknowledges an interactive response consumed by the runner", async () => {

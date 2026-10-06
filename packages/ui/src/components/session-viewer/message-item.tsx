@@ -11,12 +11,23 @@ import {
 } from "./rendering";
 import { normalizeToolName } from "./utils";
 import { isTriggerMessage, renderTriggerCard } from "./cards/InterAgentCards";
+import { SubAgentConversationCard } from "./cards/SubAgentCards";
+import { LINKED_SESSION_MESSAGE_TYPE } from "@pizzapi/protocol";
 import { Message, MessageContent } from "@/components/ai-elements/message";
 import { MessageCopyButton } from "@/components/ai-elements/conversation";
 import { exportToMarkdown } from "@/lib/export-markdown";
 import { cn } from "@/lib/utils";
 import { useConversationScrollRef } from "@/components/ai-elements/conversation";
 import { useSessionActions } from "@/components/session-viewer/session-actions-context";
+
+/** Structured linked-session delivery (pi custom message injected by the relay input path). */
+export function getLinkedSessionMessage(message: Pick<RelayMessage, "role" | "customType" | "details">): { fromSessionId: string; message: string } | null {
+  if (message.role !== "custom" || message.customType !== LINKED_SESSION_MESSAGE_TYPE) return null;
+  const d = message.details as { fromSessionId?: unknown; message?: unknown } | undefined;
+  return typeof d?.fromSessionId === "string" && typeof d.message === "string"
+    ? { fromSessionId: d.fromSessionId, message: d.message }
+    : null;
+}
 
 // ── SessionMessageItem ───────────────────────────────────────────────────────
 
@@ -176,6 +187,16 @@ export const SessionMessageItem = React.memo(
             message.leadingText,
             message.nestedCalls,
           )}
+        </div>
+      );
+    }
+
+    // Linked-session send_message deliveries → conversation card instead of user bubble
+    const linked = getLinkedSessionMessage(message);
+    if (linked) {
+      return (
+        <div className="w-full max-w-3xl mx-auto px-4 py-1.5">
+          <SubAgentConversationCard title="Linked session" turns={[{ type: "received", ...linked }]} />
         </div>
       );
     }

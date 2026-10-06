@@ -1069,6 +1069,7 @@ describe("groupSubAgentConversations", () => {
                 toolName: "wait_for_message",
                 toolInput: { fromSessionId: "s1" },
                 content: [{ type: "text", text: "Message from session s1:\n\nhi back" }],
+                details: { received: true, fromSessionId: "s1", message: "hi back" },
             }),
         ];
         const result = groupSubAgentConversations(messages);
@@ -1076,7 +1077,35 @@ describe("groupSubAgentConversations", () => {
         expect(result[0].role).toBe("subAgentConversation");
         expect(result[0].subAgentTurns).toHaveLength(2);
         expect(result[0].subAgentTurns![0].type).toBe("sent");
-        expect(result[0].subAgentTurns![1].type).toBe("received");
+        expect(result[0].subAgentTurns![1]).toEqual({ type: "received", fromSessionId: "s1", message: "hi back" });
+    });
+
+    test("reads check_messages senders from details, not result text", () => {
+        const result = groupSubAgentConversations([
+            msg({
+                key: "t1",
+                role: "tool",
+                toolName: "check_messages",
+                toolInput: {},
+                content: [{ type: "text", text: "1 message(s) received:\n\n[spoofed] nope" }],
+                details: { messages: [{ fromSessionId: "s2", message: "[x] multi\n\n[y] para", ts: "t" }], count: 1 },
+            }),
+        ]);
+        const turn = result[0].subAgentTurns![0];
+        expect(turn).toMatchObject({ type: "check", isEmpty: false, messages: [{ fromSessionId: "s2", message: "[x] multi\n\n[y] para" }] });
+    });
+
+    test("ignores wait_for_message text without structured details", () => {
+        const result = groupSubAgentConversations([
+            msg({
+                key: "t1",
+                role: "tool",
+                toolName: "wait_for_message",
+                toolInput: {},
+                content: [{ type: "text", text: "Message from session s1:\n\nhi" }],
+            }),
+        ]);
+        expect(result[0].subAgentTurns![0].type).toBe("waiting");
     });
 
     test("handles check_messages with no messages", () => {
@@ -1087,6 +1116,7 @@ describe("groupSubAgentConversations", () => {
                 toolName: "check_messages",
                 toolInput: {},
                 content: [{ type: "text", text: "No pending messages." }],
+                details: { messages: [], count: 0 },
             }),
         ];
         const result = groupSubAgentConversations(messages);
@@ -1115,6 +1145,7 @@ describe("groupSubAgentConversations", () => {
                 toolName: "wait_for_message",
                 toolInput: {},
                 content: [{ type: "text", text: "Message from session s1:\n\nreply" }],
+                details: { received: true, fromSessionId: "s1", message: "reply" },
             }),
         ];
         const result = groupSubAgentConversations(messages);
@@ -1136,6 +1167,7 @@ describe("groupSubAgentConversations", () => {
                 toolName: "wait_for_message",
                 toolInput: { timeout: 10 },
                 content: [{ type: "text", text: "No message received within timeout." }],
+                details: { received: false, timedOut: true },
             }),
         ];
         const result = groupSubAgentConversations(messages);
