@@ -73,7 +73,7 @@ import {
 } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import { McpToggleContext } from "@/components/session-viewer/McpToggleContext";
-import { PluginCommandContext, type PluginCommandHandler } from "@/components/plugins/PluginsView";
+import { PluginCommandContext, type PluginCommandHandler } from "@/components/plugins/plugins-data";
 import { SessionActionsProvider } from "@/components/session-viewer/session-actions-context";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { type IncompleteTriggerItem } from "@/attention/trigger-groups";

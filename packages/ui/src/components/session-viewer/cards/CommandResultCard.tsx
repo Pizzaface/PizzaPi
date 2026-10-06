@@ -20,7 +20,12 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { useMcpToggle } from "@/components/session-viewer/McpToggleContext";
-import { PluginCommandContext, PluginsView, toPluginsViewData, type PluginsViewData } from "@/components/plugins/PluginsView";
+import { PluginCommandContext, toPluginsViewData, type PluginsViewData } from "@/components/plugins/plugins-data";
+
+// Lazy: the interactive view is only needed once a /plugin card renders.
+const PluginsView = React.lazy(() =>
+  import("@/components/plugins/PluginsView").then((m) => ({ default: m.PluginsView })),
+);
 
 // ── Shared types ──────────────────────────────────────────────────────────────
 
@@ -471,7 +476,9 @@ function PluginsCard({ data: raw }: { data: PluginsResultData }) {
         </div>
       </ToolCardHeader>
       {/* Tool cards are always dark; scope dark theme tokens to the shared view. */}
-      <PluginsView data={data} onCommand={onCommand ?? undefined} className="dark text-foreground" />
+      <React.Suspense fallback={<div className="px-4 py-3 text-xs text-zinc-500">Loading…</div>}>
+        <PluginsView data={data} onCommand={onCommand ?? undefined} className="dark text-foreground" />
+      </React.Suspense>
     </ToolCardShell>
   );
 }

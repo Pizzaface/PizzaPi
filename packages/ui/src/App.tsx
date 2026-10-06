@@ -4,7 +4,7 @@ import { ThemeProvider } from "@/components/ThemeProvider";
 import { initAnimationSync } from "@/lib/synced-animation";
 import { SessionSidebar, type DotState, type HubSession } from "@/components/SessionSidebar";
 import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
-import { toPluginsViewData } from "@/components/plugins/PluginsView";
+import { toPluginsViewData } from "@/components/plugins/plugins-data";
 import type { CommandResultData } from "@/components/session-viewer/rendering";
 import { detectInFlightTools } from "@/components/session-viewer/utils";
 import { DesktopHeader, MobileHeader } from "@/components/AppHeaders";
