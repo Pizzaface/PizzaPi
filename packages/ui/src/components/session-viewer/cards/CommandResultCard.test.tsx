@@ -1,11 +1,14 @@
 import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
 import { Window } from "happy-dom";
-import { cleanup, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import React from "react";
 
 const win = new Window({ url: "http://localhost/" });
 /* eslint-disable @typescript-eslint/no-explicit-any */
+(win as any).SyntaxError = globalThis.SyntaxError;
 (globalThis as any).window = win;
+(globalThis as any).HTMLInputElement = win.HTMLInputElement;
+(globalThis as any).Event = win.Event;
 (globalThis as any).document = win.document;
 (globalThis as any).navigator = win.navigator;
 (globalThis as any).HTMLElement = win.HTMLElement;
@@ -33,6 +36,7 @@ mock.module("@/lib/utils", () => ({
 }));
 
 const { CommandResultCard } = await import("./CommandResultCard");
+const { PluginCommandContext, PluginResultCountContext } = await import("@/components/plugins/plugins-data");
 
 afterAll(() => mock.restore());
 
@@ -117,5 +121,42 @@ describe("CommandResultCard MCP state rendering", () => {
     expect(text).toContain("disabled");
     expect(text).toContain("mcp_github_create_issue");
     expect(text).toContain("mcp_linear_search");
+  });
+});
+
+describe("CommandResultCard plugins pending state", () => {
+  test("stays loading after sending until a new plugin result card arrives", async () => {
+    const send = mock(async (_args: string[]) => {});
+    const data: any = {
+      kind: "plugins",
+      overview: { plugins: [], disabled: [], marketplaces: [{ name: "market", source: "a/b", pluginCount: 1 }], packages: [] },
+    };
+    const tree = (count: number) => (
+      <PluginCommandContext.Provider value={send}>
+        <PluginResultCountContext.Provider value={count}>
+          <CommandResultCard data={data} />
+        </PluginResultCountContext.Provider>
+      </PluginCommandContext.Provider>
+    );
+    const { findByText, queryByText, rerender } = render(tree(1));
+    await act(async () => { await import("@/components/plugins/PluginsView"); await new Promise((r) => setTimeout(r, 0)); });
+    const browse = await findByText("Browse");
+    await act(async () => { fireEvent.click(browse); });
+    expect(send).toHaveBeenLastCalledWith(["marketplace", "show", "market"]);
+    // Send resolved, but the result card hasn't landed yet.
+    expect(queryByText("Loading from runner…")).toBeTruthy();
+    rerender(tree(2));
+    expect(queryByText("Loading from runner…")).toBeNull();
+
+    // Header collapses the whole view and shows a summary.
+    fireEvent.click(await findByText("Plugins"));
+    expect(queryByText("Browse")).toBeNull();
+    expect(queryByText(/1 marketplaces/)).toBeTruthy();
+    fireEvent.click(await findByText("Plugins"));
+
+    // Undelivered (send resolves false) → loading clears immediately.
+    send.mockImplementation(async () => false as any);
+    await act(async () => { fireEvent.click(await findByText("Browse")); });
+    expect(queryByText("Loading from runner…")).toBeNull();
   });
 });

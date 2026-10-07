@@ -1,6 +1,6 @@
 import * as React from "react";
 import type { RelayMessage } from "./types";
-import { groupToolExecutionMessages, groupSubAgentConversations } from "./grouping";
+import { groupToolExecutionMessages, groupSubAgentConversations, groupPluginResults } from "./grouping";
 import { hasVisibleContent } from "./utils";
 
 const PAGE_SIZE = 50;
@@ -32,7 +32,7 @@ export function useMessageProcessor(
   }, [sessionId]);
 
   const groupedMessages = React.useMemo(
-    () => groupSubAgentConversations(groupToolExecutionMessages(messages)),
+    () => groupPluginResults(groupSubAgentConversations(groupToolExecutionMessages(messages))),
     [messages],
   );
 

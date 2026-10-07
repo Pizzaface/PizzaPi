@@ -127,10 +127,19 @@ export function WideNearBottomStick() {
     // This captures the *pre-resize* state so the ResizeObserver below can
     // decide correctly even when a single content addition exceeds the
     // threshold distance.
+    // Scroll events also fire for layout changes — content growing, or the
+    // composer resizing the scroller so the browser clamps scrollTop down.
+    // Those aren't the user leaving the bottom, so only a scroll with
+    // unchanged dimensions may clear the pinned state.
+    let lastHeight = scroller.scrollHeight;
+    let lastClient = scroller.clientHeight;
     const updateNearBottom = () => {
-      const distance =
-        scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-      wasNearBottomRef.current = distance <= NEAR_BOTTOM_THRESHOLD_PX;
+      const { scrollHeight, clientHeight, scrollTop } = scroller;
+      const layoutChanged = scrollHeight !== lastHeight || clientHeight !== lastClient;
+      lastHeight = scrollHeight;
+      lastClient = clientHeight;
+      const near = scrollHeight - scrollTop - clientHeight <= NEAR_BOTTOM_THRESHOLD_PX;
+      if (near || !layoutChanged) wasNearBottomRef.current = near;
     };
 
     // Initialise from current scroll position.
@@ -143,6 +152,11 @@ export function WideNearBottomStick() {
     const observer = new ResizeObserver(() => {
       if (wasNearBottomRef.current) {
         scrollToBottom("instant");
+        // use-stick-to-bottom re-checks escapes 1ms after a scroll event and
+        // treats a layout clamp as a user scroll-up; re-pin after that check.
+        setTimeout(() => {
+          if (wasNearBottomRef.current) scrollToBottom("instant");
+        }, 5);
       }
     });
 

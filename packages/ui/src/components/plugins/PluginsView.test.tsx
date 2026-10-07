@@ -36,9 +36,17 @@ const data: PluginsViewData = {
         packages: [{ source: "npm:@acme/ext", scope: "project", installedPath: "/w/.pizzapi/npm/ext" }],
         packagesCwd: "/work/repo",
     },
+};
+
+const browsing: PluginsViewData = {
+    ...data,
+    notice: undefined,
     catalog: {
         name: "market",
-        plugins: [{ name: "fresh", key: "fresh@market", installed: false, enabled: false }],
+        plugins: [
+            { name: "fresh", key: "fresh@market", installed: false, enabled: false, category: "dev" },
+            ...Array.from({ length: 40 }, (_, i) => ({ name: `p${i}`, key: `p${i}@market`, description: i === 7 ? "needle" : undefined, category: i % 2 ? "db" : "dev", installed: true, enabled: true })),
+        ],
     },
 };
 
@@ -54,9 +62,8 @@ describe("PluginsView", () => {
         expect(getByText("Installed demo@market")).toBeTruthy();
         // Disabled row shows its marketplace; the loaded plugin's source lives in its details.
         expect(getAllByText("@market").length).toBe(1);
-        expect(getByText("fresh")).toBeTruthy();
         // Read-only: no action buttons.
-        expect([...container.querySelectorAll("button")].some((b) => b.textContent === "Install")).toBe(false);
+        expect([...container.querySelectorAll("button")].some((b) => b.textContent === "Disable")).toBe(false);
 
         fireEvent.click(container.querySelector('[aria-label="Show details for demo"]')!);
         expect(getByText("/demo:go")).toBeTruthy();
@@ -70,9 +77,6 @@ describe("PluginsView", () => {
     test("actions dispatch /plugin args; destructive ones need a second click", async () => {
         const onCommand = mock(async (_args: string[]) => {});
         const { container } = render(<PluginsView data={data} onCommand={onCommand} />);
-
-        await act(async () => { fireEvent.click(button(container, "Install")); });
-        expect(onCommand).toHaveBeenLastCalledWith(["install", "fresh@market"]);
 
         await act(async () => { fireEvent.click(button(container, "Disable")); });
         expect(onCommand).toHaveBeenLastCalledWith(["disable", "demo@market"]);
@@ -92,6 +96,52 @@ describe("PluginsView", () => {
             fireEvent.submit(input.closest("form")!);
         });
         expect(onCommand).toHaveBeenLastCalledWith(["marketplace", "add", "owner/repo"]);
+    });
+
+    test("browse mode replaces the overview with a searchable, paged catalog", async () => {
+        const onCommand = mock(async (_args: string[]) => {});
+        const { container, queryByText } = render(<PluginsView data={browsing} onCommand={onCommand} />);
+        expect(container.textContent).not.toContain("Claude plugins");
+        expect(queryByText("p15")).toBeNull(); // paged
+        await act(async () => { fireEvent.click(button(container, "Show more (31 left)")); });
+        expect(queryByText("p15")).toBeTruthy();
+
+        await act(async () => { fireEvent.click(button(container, "Install")); });
+        expect(onCommand).toHaveBeenLastCalledWith(["install", "fresh@market"]);
+        fireEvent.click(button(container, "db"));
+        expect(queryByText("fresh")).toBeNull();
+        expect(queryByText("p1")).toBeTruthy();
+
+        fireEvent.click(button(container, "All"));
+        const search = container.querySelector('input[aria-label="Search plugins"]') as HTMLInputElement;
+        fireEvent.change(search, { target: { value: "needle" } });
+        expect(queryByText("p7")).toBeTruthy();
+        expect(queryByText("p1")).toBeNull();
+
+        // Back returns to the overview locally — no command sent.
+        const calls = onCommand.mock.calls.length;
+        fireEvent.click(button(container, "Back"));
+        expect(onCommand.mock.calls.length).toBe(calls);
+        expect(container.textContent).toContain("Claude plugins");
+    });
+
+    test("browse mode survives a catalog-less result and re-derives install state", () => {
+        const { container, queryByText, rerender } = render(<PluginsView data={browsing} onCommand={async () => {}} />);
+        expect(button(container, "Install")).toBeTruthy();
+        // Install result: no catalog, fresh overview now includes the plugin.
+        const after: PluginsViewData = {
+            overview: { ...data.overview, plugins: [...data.overview.plugins, { ...data.overview.plugins[0], name: "fresh", key: "fresh@market" }] },
+        };
+        rerender(<PluginsView data={after} onCommand={async () => {}} />);
+        expect(container.textContent).not.toContain("Claude plugins");
+        expect(queryByText("fresh")?.closest("li")?.textContent).toContain("Installed");
+    });
+
+    test("Update re-fetches by name (no catalog → stays on overview)", async () => {
+        const onCommand = mock(async (_args: string[]) => {});
+        const { container } = render(<PluginsView data={{ overview: data.overview }} onCommand={onCommand} />);
+        await act(async () => { fireEvent.click(button(container, "Update")); });
+        expect(onCommand).toHaveBeenLastCalledWith(["marketplace", "update", "market"]);
     });
 
     test("pi packages: list, scoped remove, update, project-scoped install", async () => {
@@ -127,6 +177,12 @@ describe("PluginsView", () => {
         fireEvent.click(toggle);
         expect(toggle.getAttribute("aria-expanded")).toBe("true");
         expect(queryByText("npm:@acme/ext")).toBeTruthy();
+    });
+
+    test("loading shows a status line and blocks the stale view", () => {
+        const { getByText, container } = render(<PluginsView data={data} loading />);
+        expect(getByText("Loading from runner…").getAttribute("role")).toBe("status");
+        expect(container.firstElementChild?.getAttribute("aria-busy")).toBe("true");
     });
 
     test("toPluginsViewData tolerates legacy and malformed payloads", () => {

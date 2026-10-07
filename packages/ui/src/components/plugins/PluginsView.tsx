@@ -6,12 +6,13 @@
  * `onCommand` the view is read-only.
  */
 import * as React from "react";
-import { AlertTriangle, Check, ChevronDown, Copy, Loader2 } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, ChevronDown, Copy, Loader2, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 import {
+  type MarketplaceCatalogInfo,
   type PiPackageInfo,
   type PluginCommandHandler,
   type PluginInfo,
@@ -43,11 +44,12 @@ const ActionContext = React.createContext<{
  * Button that runs a `/plugin` command. `confirm` makes it two-click for
  * destructive actions. Renders nothing in read-only views.
  */
-function ActionButton({ id, args, label, confirm, variant = "ghost" }: {
+function ActionButton({ id, args, label, confirm, icon, variant = "ghost" }: {
   id: string;
   args: string[];
   label: string;
   confirm?: boolean;
+  icon?: React.ReactNode;
   variant?: "outline" | "ghost" | "default";
 }) {
   const ctx = React.useContext(ActionContext);
@@ -73,7 +75,7 @@ function ActionButton({ id, args, label, confirm, variant = "ghost" }: {
         ctx.run(id, args);
       }}
     >
-      {busy && <Loader2 className="size-3 animate-spin" />}
+      {busy ? <Loader2 className="size-3 animate-spin" /> : icon}
       {armed ? `Confirm ${label.toLowerCase()}?` : label}
     </Button>
   );
@@ -319,12 +321,121 @@ function PackageRow({ pkg }: { pkg: PiPackageInfo }) {
   );
 }
 
+const CATALOG_PAGE = 10;
+
+/** Marketplace browse mode: searchable, category-filtered, paged catalog. */
+function CatalogBrowser({ catalog, onBack }: { catalog: MarketplaceCatalogInfo; onBack: () => void }) {
+  const [query, setQuery] = React.useState("");
+  const [category, setCategory] = React.useState<string | null>(null);
+  const [limit, setLimit] = React.useState(CATALOG_PAGE);
+
+  const categories = React.useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const p of catalog.plugins) if (p.category) counts.set(p.category, (counts.get(p.category) ?? 0) + 1);
+    return [...counts].sort((a, b) => b[1] - a[1]).map(([c]) => c);
+  }, [catalog.plugins]);
+
+  const q = query.trim().toLowerCase();
+  const matches = catalog.plugins.filter((p) =>
+    (!category || p.category === category) &&
+    (!q || `${p.name} ${p.description ?? ""} ${p.category ?? ""}`.toLowerCase().includes(q)));
+  const shown = matches.slice(0, limit);
+  // Reset paging when the filter changes.
+  React.useEffect(() => setLimit(CATALOG_PAGE), [q, category]);
+
+  return (
+    <section className="flex flex-col gap-3 px-3 py-3">
+      <div className="flex items-start gap-2">
+        <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-[11px] text-muted-foreground hover:text-foreground" onClick={onBack}>
+          <ArrowLeft className="size-3" />Back
+        </Button>
+        <div className="min-w-0 flex-1">
+          <h4 className="truncate text-sm font-medium text-foreground">
+            {catalog.name}
+            <span className="ml-2 text-xs font-normal tabular-nums text-muted-foreground">{plural(catalog.plugins.length, "plugin")}</span>
+          </h4>
+          {catalog.description && <p className="mt-0.5 text-xs text-muted-foreground">{catalog.description}</p>}
+        </div>
+      </div>
+
+      {catalog.plugins.length > 8 && (
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search plugins"
+            aria-label="Search plugins"
+            className="h-8 pl-7 text-xs"
+          />
+        </div>
+      )}
+
+      {categories.length > 1 && (
+        <div className="-mx-3 flex gap-1.5 overflow-x-auto px-3 pb-1 [scrollbar-width:none]">
+          {[null, ...categories].map((c) => (
+            <button
+              key={c ?? "all"}
+              type="button"
+              aria-pressed={category === c}
+              onClick={() => setCategory(c)}
+              className={cn(
+                "shrink-0 whitespace-nowrap rounded-full border px-2.5 py-0.5 text-[11px] capitalize transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                category === c
+                  ? "border-foreground/30 bg-foreground/10 text-foreground"
+                  : "border-border/60 text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {c ?? "All"}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {matches.length === 0 ? (
+        <p className="py-4 text-center text-xs text-muted-foreground">No plugins match.</p>
+      ) : (
+        <ul className="flex flex-col divide-y divide-border/40">
+          {shown.map((p) => (
+            <li key={p.key} className="flex items-start gap-3 py-2.5">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-baseline gap-2">
+                  <span className="truncate font-mono text-xs font-medium text-foreground">{p.name}</span>
+                  {p.category && !category && <span className="shrink-0 text-[10px] capitalize text-muted-foreground">{p.category}</span>}
+                </div>
+                {p.description && <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground" title={p.description}>{p.description}</p>}
+              </div>
+              <div className="shrink-0">
+                {!p.installed ? (
+                  <ActionButton id={`install:${p.key}`} args={["install", p.key]} label="Install" variant="outline" />
+                ) : p.enabled ? (
+                  <span className="inline-flex h-6 items-center gap-1 px-2 text-[11px] text-muted-foreground"><Check className="size-3" />Installed</span>
+                ) : (
+                  <ActionButton id={`enable:${p.key}`} args={["enable", p.key]} label="Enable" />
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {matches.length > shown.length && (
+        <Button type="button" variant="ghost" size="sm" className="h-7 self-center text-xs text-muted-foreground" onClick={() => setLimit((n) => n + CATALOG_PAGE)}>
+          Show more ({matches.length - shown.length} left)
+        </Button>
+      )}
+    </section>
+  );
+}
+
 // ── Main view ────────────────────────────────────────────────────────────────
 
 export type PluginsViewSection = "plugins" | "packages";
 
-export function PluginsView({ data, onCommand, className, sections = ["plugins", "packages"] }: {
+export function PluginsView({ data, onCommand, className, loading, sections = ["plugins", "packages"] }: {
   data: PluginsViewData;
+  /** A command is in flight on the runner — shows a status line and dims the stale view. */
+  loading?: boolean;
   onCommand?: PluginCommandHandler;
   className?: string;
   /** Which groups to render: Claude plugins (+ marketplaces) and/or pi packages. */
@@ -344,12 +455,39 @@ export function PluginsView({ data, onCommand, className, sections = ["plugins",
   const { overview } = data;
   const showPlugins = sections.includes("plugins");
   const showPackages = sections.includes("packages");
-  const catalog = showPlugins ? data.catalog : undefined;
+  // Browse mode outlives the result that opened it: an install/enable result
+  // carries no catalog, so keep browsing and re-derive install state from the
+  // fresh overview. Back is purely local — every result carries the overview.
+  const [browsing, setBrowsing] = React.useState(data.catalog);
+  const [seenCatalog, setSeenCatalog] = React.useState(data.catalog);
+  if (data.catalog !== seenCatalog) {
+    setSeenCatalog(data.catalog);
+    if (data.catalog) setBrowsing(data.catalog);
+  }
+  const catalog = React.useMemo(() => {
+    if (!showPlugins || !browsing) return undefined;
+    const enabled = new Set(overview.plugins.map((p) => p.key).filter(Boolean));
+    const disabled = new Set(overview.disabled.map((p) => p.key));
+    return {
+      ...browsing,
+      plugins: browsing.plugins.map((p) => ({
+        ...p,
+        enabled: enabled.has(p.key),
+        installed: enabled.has(p.key) || disabled.has(p.key),
+      })),
+    };
+  }, [showPlugins, browsing, overview]);
   const projectName = overview.packagesCwd?.split(/[\\/]/).filter(Boolean).pop();
 
   return (
     <ActionContext.Provider value={actions}>
-      <div className={cn("divide-y divide-border/40", className)}>
+      <div className={cn("divide-y divide-border/40", className)} aria-busy={loading || undefined}>
+        {loading && (
+          <p role="status" className="flex items-center gap-1.5 px-3 py-2 text-xs text-muted-foreground">
+            <Loader2 className="size-3 animate-spin" />Loading from runner…
+          </p>
+        )}
+        <div className={cn("divide-y divide-border/40", loading && "pointer-events-none opacity-50")}>
         {data.notice && (
           <p
             role={data.isError ? "alert" : "status"}
@@ -359,29 +497,10 @@ export function PluginsView({ data, onCommand, className, sections = ["plugins",
           </p>
         )}
 
-        {catalog && (
-          <Section title={`Marketplace: ${catalog.name}`} count={catalog.plugins.length}>
-            {catalog.description && <p className="px-1.5 pb-1 text-[11px] text-muted-foreground">{catalog.description}</p>}
-            {catalog.plugins.map((p) => (
-              <li key={p.key} className="flex items-start gap-2 rounded-md px-1.5 py-1.5 hover:bg-muted/20">
-                <div className="min-w-0 flex-1">
-                  <span className="font-mono text-xs text-foreground">{p.name}</span>
-                  {p.category && <span className="ml-1.5 text-[10px] text-muted-foreground">{p.category}</span>}
-                  {p.description && <p className="line-clamp-1 text-[11px] text-muted-foreground" title={p.description}>{p.description}</p>}
-                </div>
-                {!p.installed ? (
-                  <ActionButton id={`install:${p.key}`} args={["install", p.key]} label="Install" variant="outline" />
-                ) : p.enabled ? (
-                  <span className="inline-flex h-6 items-center gap-1 px-2 text-[11px] text-muted-foreground"><Check className="size-3" />Installed</span>
-                ) : (
-                  <ActionButton id={`enable:${p.key}`} args={["enable", p.key]} label="Enable" />
-                )}
-              </li>
-            ))}
-          </Section>
-        )}
+        {/* Browsing a marketplace replaces the overview — it's its own screen. */}
+        {catalog && <CatalogBrowser key={catalog.name} catalog={catalog} onBack={() => setBrowsing(undefined)} />}
 
-        {showPlugins && (<>
+        {showPlugins && !catalog && (<>
         <Section title="Claude plugins" count={overview.plugins.length}>
           {overview.plugins.length === 0 ? (
             <li className="px-1.5 py-1 text-[11px] text-muted-foreground">
@@ -417,7 +536,7 @@ export function PluginsView({ data, onCommand, className, sections = ["plugins",
                 <span className="shrink-0 text-[10px] text-muted-foreground">{plural(m.pluginCount, "plugin")}</span>
               </span>
               <ActionButton id={`show:${m.name}`} args={["marketplace", "show", m.name]} label="Browse" />
-              {m.source && <ActionButton id={`update:${m.name}`} args={["marketplace", "add", m.source]} label="Update" />}
+              {m.source && <ActionButton id={`update:${m.name}`} args={["marketplace", "update", m.name]} label="Update" />}
               <ActionButton id={`remove:${m.name}`} args={["marketplace", "remove", m.name]} label="Remove" confirm />
             </li>
           ))}
@@ -431,7 +550,7 @@ export function PluginsView({ data, onCommand, className, sections = ["plugins",
         </Section>
         </>)}
 
-        {showPackages && (
+        {showPackages && !catalog && (
           <Section
             title={showPlugins ? "Pi packages" : "Installed"}
             count={overview.packages.length}
@@ -455,6 +574,7 @@ export function PluginsView({ data, onCommand, className, sections = ["plugins",
             />
           </Section>
         )}
+        </div>
       </div>
     </ActionContext.Provider>
   );

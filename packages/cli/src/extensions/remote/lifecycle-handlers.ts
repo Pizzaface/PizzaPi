@@ -38,6 +38,7 @@ import {
     emitGoalUpdated,
 } from "../remote-meta-events.js";
 import { getAuthSource } from "../remote-auth-source.js";
+import { PLUGIN_COMMAND_LIVE_EVENT } from "../plugin-command.js";
 import { clearAndCancelPendingTriggers } from "../triggers/extension.js";
 import { receivedTriggers } from "../triggers/extension.js";
 import { listTriggerSubscriptions, unsubscribeTrigger } from "../trigger-client.js";
@@ -427,6 +428,12 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
     // lightweight metadata update so the web UI header badge stays in sync,
     // and also as a discrete meta event so the server can keep the
     // authoritative metaState up to date for reconnecting viewers.
+    // /plugin results are appended while idle, which pi doesn't surface to
+    // extension message_end handlers — relay them so the web card shows live.
+    pi.events.on(PLUGIN_COMMAND_LIVE_EVENT, (message: unknown) => {
+        rctx.forwardEvent({ type: "message_end", message });
+    });
+
     pi.events.on("goal:state_changed", (goal: unknown) => {
         rctx.goalState = goal && typeof goal === "object" ? (goal as MetaGoalStatus) : null;
         emitGoalUpdated(rctx, rctx.goalState);

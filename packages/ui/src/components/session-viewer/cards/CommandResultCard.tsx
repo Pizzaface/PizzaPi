@@ -20,7 +20,7 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { useMcpToggle } from "@/components/session-viewer/McpToggleContext";
-import { PluginCommandContext, toPluginsViewData, type PluginsViewData } from "@/components/plugins/plugins-data";
+import { PluginCommandContext, PluginResultCountContext, toPluginsViewData, type PluginsViewData } from "@/components/plugins/plugins-data";
 
 // Lazy: the interactive view is only needed once a /plugin card renders.
 const PluginsView = React.lazy(() =>
@@ -452,20 +452,58 @@ function FlatToolList({ toolNames }: { toolNames: string[] }) {
 
 /** Collapsible plugin row that expands to show commands */
 function PluginsCard({ data: raw }: { data: PluginsResultData }) {
-  const onCommand = React.useContext(PluginCommandContext);
+  const [open, setOpen] = React.useState(true);
+  const sendCommand = React.useContext(PluginCommandContext);
+  const resultCount = React.useContext(PluginResultCountContext);
+  // Results land as a new card, so this one stays "loading" until the
+  // transcript's plugin-card count moves past the count at send time.
+  const [awaitingFrom, setAwaitingFrom] = React.useState<number | null>(null);
+  React.useEffect(() => {
+    if (awaitingFrom === null) return;
+    if (resultCount !== awaitingFrom) { setAwaitingFrom(null); return; }
+    // ponytail: fixed timeout in case the result never arrives (aborted/lost); slow installs past 2min un-dim early.
+    const t = setTimeout(() => setAwaitingFrom(null), 120_000);
+    return () => clearTimeout(t);
+  }, [awaitingFrom, resultCount]);
+  const onCommand = React.useMemo(() => sendCommand
+    ? (args: string[]) => {
+        setAwaitingFrom(resultCount);
+        // sendSessionInput resolves false (not throws) when delivery fails.
+        return Promise.resolve(sendCommand(args)).then(
+          (delivered) => { if (delivered === false) setAwaitingFrom(null); return delivered; },
+          (err) => { setAwaitingFrom(null); throw err; },
+        );
+      }
+    : undefined, [sendCommand, resultCount]);
   // Normalize: cached transcripts may hold the pre-overview card shape.
   const data = React.useMemo(() => toPluginsViewData(raw), [raw]);
   return (
     <ToolCardShell>
-      <ToolCardHeader>
-        <ToolCardTitle icon={<Puzzle className="size-4 shrink-0 text-zinc-400" />}>
-          <span className="text-sm font-medium text-zinc-300">Plugins</span>
-        </ToolCardTitle>
+      <ToolCardHeader className={cn("p-0", !open && "border-b-0")}>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          aria-label={open ? "Hide plugins" : "Show plugins"}
+          className="flex w-full min-w-0 items-center justify-between gap-2 px-4 py-2 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-500"
+        >
+          <ToolCardTitle icon={<Puzzle className="size-4 shrink-0 text-zinc-400" />}>
+            <span className="text-sm font-medium text-zinc-300">Plugins</span>
+            {!open && (
+              <span className="truncate text-xs text-zinc-500">
+                {data.overview.plugins.length} loaded · {data.overview.marketplaces.length} marketplaces · {data.overview.packages.length} packages
+              </span>
+            )}
+          </ToolCardTitle>
+          <ChevronDown className={cn("size-4 shrink-0 text-zinc-500 transition-transform", !open && "-rotate-90")} />
+        </button>
       </ToolCardHeader>
-      {/* Tool cards are always dark; scope dark theme tokens to the shared view. */}
-      <React.Suspense fallback={<div className="px-4 py-3 text-xs text-zinc-500">Loading…</div>}>
-        <PluginsView data={data} onCommand={onCommand ?? undefined} className="dark text-foreground" />
-      </React.Suspense>
+      {open && (
+        /* Tool cards are always dark; scope dark theme tokens to the shared view. */
+        <React.Suspense fallback={<div className="px-4 py-3 text-xs text-zinc-500">Loading…</div>}>
+          <PluginsView data={data} onCommand={onCommand} loading={awaitingFrom !== null} className="dark text-foreground" />
+        </React.Suspense>
+      )}
     </ToolCardShell>
   );
 }

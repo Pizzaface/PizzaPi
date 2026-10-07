@@ -89,6 +89,9 @@ export type PluginCommandHandler = (args: string[]) => Promise<unknown> | void;
 /** In-session provider: sends `/plugin …` to the session so it reloads after changes. */
 export const PluginCommandContext = React.createContext<PluginCommandHandler | null>(null);
 
+/** Number of `/plugin` result cards in the transcript — a card that sent a command waits for this to change. */
+export const PluginResultCountContext = React.createContext(0);
+
 const EMPTY_OVERVIEW: PluginsOverview = { plugins: [], disabled: [], marketplaces: [], packages: [] };
 
 /** Coerce an untrusted payload (relay event / HTTP body) into view data. */

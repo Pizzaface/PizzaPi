@@ -40,6 +40,7 @@ import {
     getSessionSeq,
     sendSnapshotToViewer,
     getLocalTuiSocket,
+    waitForLocalTuiSocket,
     emitToRelaySession,
     emitToRelaySessionVerified,
     emitToRelaySessionChecked,
@@ -105,6 +106,12 @@ export function forwardInputToRunner(
         }
     });
 }
+
+/** How long viewer input waits for a reloading worker to reconnect. A reload
+ * after a pi package change re-resolves and loads every package, which can
+ * take several seconds. Past the UI's 10s ack timeout the UI assumes delivery,
+ * so this stays just under it to still report a real failure. */
+const TUI_RECONNECT_WAIT_MS = 9_000;
 
 type ViewerSocket = Socket<
     ViewerClientToServerEvents,
@@ -879,6 +886,16 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             try {
                 const currentSessionId = getCurrentSessionId();
                 if (!currentSessionId) return;
+                // A runtime reload (/plugin changes, /skills reload, /restart)
+                // drops the worker's relay socket — and its shared session —
+                // for a moment. Hold the input until it re-registers instead
+                // of failing it. Checked before the summary lookup because
+                // the summary is gone during that gap too.
+                if (!getLocalTuiSocket(currentSessionId)?.connected) {
+                    const started = Date.now();
+                    const back = await waitForLocalTuiSocket(currentSessionId, TUI_RECONNECT_WAIT_MS);
+                    log.info(`input for ${currentSessionId} waited ${Date.now() - started}ms for worker reconnect (${back ? "reconnected" : "timed out — input dropped"})`);
+                }
                 const currentSession = await getSharedSessionSummary(currentSessionId);
                 if (!currentSession?.collabMode) return;
 

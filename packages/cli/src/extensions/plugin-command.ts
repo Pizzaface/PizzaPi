@@ -14,6 +14,7 @@
  */
 
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { createLogger } from "@pizzapi/tools";
 import {
     addMarketplace,
     installPlugin,
@@ -211,7 +212,19 @@ export function runPluginCommand(args: string[], cwd?: string): PluginCommandRes
         if (action === "add") {
             if (!target) return failure("Usage: /plugin marketplace add <owner/repo | git-url | path>");
             const added = addMarketplace(target);
-            return result(`Added marketplace "${added.name}" (${added.pluginCount} plugins)`, true, added.name);
+            // Catalog-only change: nothing loaded changes, so no session reload
+            // (a reload drops the relay connection and fails the next click).
+            return result(`Added marketplace "${added.name}" (${added.pluginCount} plugins)`, false, added.name);
+        }
+
+        if (action === "update") {
+            if (!target) return failure("Usage: /plugin marketplace update <name>");
+            const known = listMarketplaces()[target];
+            const spec = known?.source?.repo ?? known?.source?.url ?? known?.source?.path;
+            if (!spec) return failure(`Unknown marketplace: ${target}`);
+            const updated = addMarketplace(spec, { name: target });
+            // No catalog: an update shouldn't switch the UI into browse mode.
+            return result(`Updated marketplace "${updated.name}" (${updated.pluginCount} plugins)`, false);
         }
 
         if (action === "remove" || action === "rm") {
@@ -299,6 +312,11 @@ export async function runPluginCommandView(
     }
 }
 
+const log = createLogger("plugin-command");
+
+/** pi.events channel the remote extension relays as a live message_end. */
+export const PLUGIN_COMMAND_LIVE_EVENT = "plugin:command_message";
+
 const SUBCOMMANDS = [
     { value: "marketplace", label: "marketplace", description: "Add, list, or remove marketplaces" },
     { value: "install", label: "install", description: "Install a plugin from a marketplace" },
@@ -327,6 +345,7 @@ export const pluginCommandExtension: ExtensionFactory = (pi) => {
                 const actions = [
                     { value: "marketplace add", label: "add", description: "Add a marketplace" },
                     { value: "marketplace list", label: "list", description: "List marketplaces" },
+                    { value: "marketplace update", label: "update", description: "Re-fetch a marketplace" },
                     { value: "marketplace remove", label: "remove", description: "Remove a marketplace" },
                     { value: "marketplace show", label: "show", description: "Show a marketplace's plugins" },
                 ];
@@ -357,12 +376,20 @@ export const pluginCommandExtension: ExtensionFactory = (pi) => {
             // Persisted as a session custom message so the web UI card survives
             // snapshots/reloads; the TUI renders the text content.
             const { output, changed: _changed, ...details } = view;
-            pi.sendMessage(
-                { customType: PLUGIN_COMMAND_MESSAGE_TYPE, content: output, display: true, details },
-                { triggerTurn: false },
-            );
+            const message = { customType: PLUGIN_COMMAND_MESSAGE_TYPE, content: output, display: true, details };
+            pi.sendMessage(message, { triggerTurn: false });
+            // pi emits an idle-appended custom message only to session listeners,
+            // not extension handlers, so the relay never sees its message_end and
+            // the web card would only appear on the next snapshot. Forward it.
+            pi.events?.emit(PLUGIN_COMMAND_LIVE_EVENT, { role: "custom", ...message, timestamp: Date.now() });
             // Pick up newly installed commands, skills, and hooks right away.
-            if (view.changed) await ctx.reload();
+            if (view.changed) {
+                const started = Date.now();
+                await ctx.reload();
+                // Viewer input sent during the reload waits for the reconnect (relay
+                // viewer.ts TUI_RECONNECT_WAIT_MS); log the gap to tune that window.
+                log.info(`/plugin ${args[0] ?? ""} reload took ${Date.now() - started}ms`);
+            }
         },
     });
 };

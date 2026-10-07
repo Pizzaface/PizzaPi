@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PLUGIN_COMMAND_MESSAGE_TYPE } from "@pizzapi/protocol";
 import { runPluginCommand, runPluginCommandView, pluginCommandExtension } from "./plugin-command.js";
+import { listMarketplaces } from "../plugins/marketplace.js";
 
 let home: string;
 let originalHome: string | undefined;
@@ -42,9 +43,19 @@ describe("runPluginCommand", () => {
 
     test("marketplace add registers and reports the catalog", () => {
         const { output, changed } = runPluginCommand(["marketplace", "add", sourceRepo]);
-        expect(changed).toBe(true);
         expect(output).toContain("Added marketplace");
+        expect(changed).toBe(false); // catalog-only — no session reload
         expect(output).toContain("demo-plugin");
+    });
+
+    test("marketplace update re-fetches without returning a catalog", () => {
+        runPluginCommand(["marketplace", "add", sourceRepo]);
+        const name = Object.keys(listMarketplaces())[0]!;
+        const r = runPluginCommand(["marketplace", "update", name]);
+        expect(r.output).toContain(`Updated marketplace "${name}"`);
+        expect(r.changed).toBe(false);
+        expect(r.catalog).toBeUndefined();
+        expect(runPluginCommand(["marketplace", "update", "ghost"]).isError).toBe(true);
     });
 
     test("install → enable/disable → uninstall round trip", () => {
@@ -111,7 +122,7 @@ describe("runPluginCommandView", () => {
     test("overview tracks enabled, disabled, and catalog state", async () => {
         const deps = { packageManager: fakePackageManager() };
         const added = await runPluginCommandView(["marketplace", "add", sourceRepo], undefined, deps);
-        expect(added.changed).toBe(true);
+        expect(added.changed).toBe(false);
         expect(added.catalog?.plugins).toEqual([
             expect.objectContaining({ name: "demo-plugin", key: "demo-plugin@demo", installed: false }),
         ]);
@@ -169,13 +180,16 @@ describe("runPluginCommandView", () => {
 describe("pluginCommandExtension", () => {
     let sent: Array<{ message: any; options: any }> = [];
     let contextHandler: (e: any) => any;
+    let live: any[] = [];
     function install() {
         sent = [];
+        live = [];
         const commands = new Map<string, any>();
         pluginCommandExtension({
             registerCommand: (n: string, d: any) => commands.set(n, d),
             sendMessage: (message: any, options: any) => sent.push({ message, options }),
             on: (ev: string, h: any) => { if (ev === "context") contextHandler = h; },
+            events: { emit: (ch: string, d: any) => live.push({ ch, d }) },
         } as any);
         return commands;
     }
@@ -192,6 +206,8 @@ describe("pluginCommandExtension", () => {
         expect(message.content).toContain("Installed demo-plugin@demo");
         expect(message.details.notice).toContain("Installed demo-plugin@demo");
         expect(message.details.overview.marketplaces[0].name).toBe("demo");
+        // Also relayed live (pi doesn't give extensions idle custom-message events).
+        expect(live).toEqual([{ ch: "plugin:command_message", d: expect.objectContaining({ role: "custom", customType: PLUGIN_COMMAND_MESSAGE_TYPE, timestamp: expect.any(Number) }) }]);
     });
 
     test("strips /plugin results from LLM context", () => {
@@ -213,7 +229,11 @@ describe("pluginCommandExtension", () => {
         await cmd.handler("", ctx);
         expect(reloads).toBe(0);
 
+        // Catalog-only: no reload.
         await cmd.handler(`marketplace add ${sourceRepo}`, ctx);
+        expect(reloads).toBe(0);
+
+        await cmd.handler("install demo-plugin", ctx);
         expect(reloads).toBe(1);
     });
 

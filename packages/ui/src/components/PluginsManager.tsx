@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Loader2, RefreshCw, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { createLogger } from "@pizzapi/tools";
 import { showToast } from "@/lib/frontend-log";
 import {
@@ -121,12 +122,24 @@ export function PluginsManager({ runnerId, plugins, onPluginsChange, section = "
                     </Button>
                 </div>
             </div>
-            <PluginsView
-                data={view}
-                onCommand={data ? run : undefined}
-                sections={[section]}
-                className="rounded-lg border border-border/40"
-            />
+            {!data && loading ? (
+                <div role="status" aria-label="Loading from runner" className="flex flex-col gap-3 rounded-lg border border-border/40 p-3">
+                    {[0, 1, 2].map((i) => (
+                        <div key={i} className="flex flex-col gap-1.5">
+                            <Skeleton className="h-3.5 w-40" />
+                            <Skeleton className="h-3 w-3/4" />
+                        </div>
+                    ))}
+                </div>
+            ) : (
+                <PluginsView
+                    data={view}
+                    onCommand={data ? run : undefined}
+                    loading={loading}
+                    sections={[section]}
+                    className="rounded-lg border border-border/40"
+                />
+            )}
         </>
     );
 }
