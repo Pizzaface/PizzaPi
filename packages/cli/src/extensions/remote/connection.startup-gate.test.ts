@@ -51,6 +51,7 @@ mock.module("socket.io-client", () => ({
 
 mock.module("../../config.js", () => ({
     loadConfig: mock(() => ({ relayUrl: "ws://relay.test" })),
+    expandHome: (path: string) => path,
 }));
 
 mock.module("../../backoff.js", () => ({
