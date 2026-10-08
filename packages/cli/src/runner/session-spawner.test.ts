@@ -240,10 +240,13 @@ describe("session-spawner child", () => {
                 throw new Error("cleanup boom");
             });
             spawnSession("sess-exit", "api-key", "https://relay.example", tempCwd, normalRunningSessions, normalRestartingSessions, normalKilledSessions, undefined, { onSessionExit });
+            latestChild!.emit("message", { type: "pre_restart" });
+            expect(normalRestartingSessions.has("sess-exit")).toBe(true);
             latestChild!.exitCode = 0;
             latestChild!.emit("exit", 0, null);
             await Promise.resolve();
             expect(normalRunningSessions.has("sess-exit")).toBe(false);
+            expect(normalRestartingSessions.has("sess-exit")).toBe(false);
             expect(cleanupSessionAttachments).toHaveBeenCalledWith("sess-exit");
             expect(onSessionExit).toHaveBeenCalledWith("sess-exit");
             expect(onSessionExit).toHaveBeenCalledTimes(1);
