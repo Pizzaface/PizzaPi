@@ -71,7 +71,7 @@ To use the CLI without connecting to a relay, run:
 PIZZAPI_RELAY_URL=off pizzapi
 ```
 
-This disables relay connection for that invocation; the agent still runs in the terminal. For persistent relay-free use, set `"relayUrl": "off"` in `~/.pizzapi/config.json`. Use `pizzapi runner` only when you want headless sessions spawned from the web UI.
+This disables relay connection for that invocation; `pizzapi --no-relay` is the equivalent flag form. The agent and local session history still work, but browser streaming and remote spawning do not. For persistent relay-free use, set `"relayUrl": "off"` in `~/.pizzapi/config.json`. Use `pizzapi runner` only when you want headless sessions spawned from the web UI.
 
 ## Authenticate and select a model
 
