@@ -83,31 +83,41 @@ describe("SessionSidebar touch targets", () => {
 
         for (const name of ["Select sessions", "New session"]) {
             const button = screen.getByRole("button", { name });
-            expect(button.className).toContain("h-11");
-            expect(button.className).toContain("w-11");
-            expect(button.className).not.toContain("md:h-8");
+            // Desktop density is preserved — only touch devices get 44px.
+            expect(button.className).toContain("h-9");
+            expect(button.className).toContain("w-9");
+            expect(button.className).toContain("md:h-8");
+            expect(button.className).toContain("md:w-8");
+            expect(button.className).toContain("pointer-coarse:min-h-11");
+            expect(button.className).toContain("pointer-coarse:min-w-11");
         }
 
         for (const name of ["Sessions", "Runners"]) {
-            expect(screen.getByRole("button", { name }).className).toContain("min-h-11");
+            expect(screen.getByRole("button", { name }).className).toContain("pointer-coarse:min-h-11");
         }
 
         const expandButton = screen.getByRole("button", { name: "Expand linked sessions" });
-        expect(expandButton.className).toContain("h-11");
-        expect(expandButton.className).toContain("w-11");
+        // Chevron stays a small hit target on fine pointers, grows on touch.
+        expect(expandButton.className).toContain("-m-1.5");
+        expect(expandButton.className).toContain("p-1.5");
+        expect(expandButton.className).toContain("pointer-coarse:h-11");
+        expect(expandButton.className).toContain("pointer-coarse:w-11");
+        expect(expandButton.className).not.toContain(" h-11");
 
         fireEvent.click(screen.getByRole("button", { name: "Select sessions" }));
 
         for (const name of ["Select all", "End selected sessions", "Cancel"]) {
             const button = await screen.findByRole("button", { name });
-            expect(button.className).toContain("h-11");
-            if (name !== "Cancel") expect(button.className).toContain("w-11");
+            expect(button.className).toContain("pointer-coarse:min-h-11");
+            if (name !== "Cancel") expect(button.className).toContain("pointer-coarse:min-w-11");
         }
 
         fireEvent.click(screen.getByRole("button", { name: "Select all" }));
         fireEvent.click(screen.getByRole("button", { name: "End selected sessions" }));
         expect((await screen.findByRole("button", { name: "End 2 Sessions" })).className).toContain("min-h-11");
         expect(screen.getAllByRole("button", { name: "Cancel" }).at(-1)?.className).toContain("min-h-11");
+        // The dialog cancel/confirm buttons grow unconditionally (overlays, not
+        // density-sensitive desktop chrome) — confirmed above via "min-h-11".
     });
 
     test("renders mode and service launcher targets at least 44px", async () => {
@@ -123,11 +133,57 @@ describe("SessionSidebar touch targets", () => {
 
         await act(async () => {});
 
-        expect(screen.getByRole("button", { name: "New in Work" }).className).toContain("min-h-11");
+        expect(screen.getByRole("button", { name: "New in Work" }).className).toContain("pointer-coarse:min-h-11");
         for (const name of ["Godmother", "GitHub"]) {
             const button = screen.getByRole("button", { name });
-            expect(button.className).toContain("h-11");
-            expect(button.className).toContain("w-11");
+            // These launchers render in the full-width (non-collapsed) footer —
+            // desktop size is preserved, touch devices still get 44px.
+            expect(button.className).toContain("h-8");
+            expect(button.className).toContain("w-8");
+            expect(button.className).toContain("pointer-coarse:min-h-11");
+            expect(button.className).toContain("pointer-coarse:min-w-11");
         }
+    });
+
+    test("collapsed rail restores desktop density and avoids overflowing the w-12 rail on touch", async () => {
+        const socket = new FakeHubSocket();
+        const screen = renderSidebar(socket, {
+            dynamicPanels: [
+                { serviceId: "godmother", port: 1234, label: "Godmother", icon: "sparkles", launcher: { surface: "session-list", position: "bottom-left" } },
+            ],
+        });
+
+        await act(async () => {});
+        fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+
+        const expandButton = await screen.findByRole("button", { name: "Expand sidebar" });
+        // The collapsed rail is hidden md:flex (desktop-only by display), so its
+        // controls must not grow on fine pointers — only on touch, and the w-12
+        // rail must still fit a 44px button at that point.
+        expect(expandButton.className).toContain("h-9");
+        expect(expandButton.className).toContain("w-9");
+        expect(expandButton.className).toContain("md:h-8");
+        expect(expandButton.className).toContain("md:w-8");
+        expect(expandButton.className).toContain("pointer-coarse:min-h-11");
+        expect(expandButton.className).toContain("pointer-coarse:min-w-11");
+
+        const runnersButton = screen.getByRole("button", { name: "Runners" });
+        expect(runnersButton.className).toContain("h-8");
+        expect(runnersButton.className).toContain("w-8");
+        expect(runnersButton.className).toContain("pointer-coarse:min-h-11");
+        expect(runnersButton.className).toContain("pointer-coarse:min-w-11");
+
+        const launcherButton = screen.getByRole("button", { name: "Godmother" });
+        expect(launcherButton.className).toContain("h-8");
+        expect(launcherButton.className).toContain("w-8");
+        expect(launcherButton.className).toContain("pointer-coarse:min-h-11");
+        expect(launcherButton.className).toContain("pointer-coarse:min-w-11");
+
+        // The footer wrapper's px-1 (4px/side) leaves only 39px for a 44px
+        // button inside the 47px-wide rail content box — drop the padding on
+        // touch so the enlarged button actually fits.
+        const footerWrapper = launcherButton.closest("div.border-t");
+        expect(footerWrapper?.className).toContain("px-1");
+        expect(footerWrapper?.className).toContain("pointer-coarse:px-0");
     });
 });

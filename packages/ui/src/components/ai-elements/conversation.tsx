@@ -201,7 +201,7 @@ export const ConversationScrollButton = ({
     !isAtBottom && (
       <Button
         className={cn(
-          "absolute bottom-4 left-[50%] translate-x-[-50%] rounded-full dark:bg-background dark:hover:bg-muted",
+          "absolute bottom-4 left-[50%] translate-x-[-50%] rounded-full pointer-coarse:min-h-11 pointer-coarse:min-w-11 dark:bg-background dark:hover:bg-muted",
           className
         )}
         onClick={handleScrollToBottom}
@@ -279,7 +279,7 @@ export const ConversationExport = ({
       <DropdownMenuTrigger asChild>
         <Button
           className={cn(
-            "absolute top-4 right-4 size-11 rounded-full dark:bg-background dark:hover:bg-muted",
+            "absolute top-4 right-4 rounded-full pointer-coarse:min-h-11 pointer-coarse:min-w-11 dark:bg-background dark:hover:bg-muted",
             className,
           )}
           size="icon"

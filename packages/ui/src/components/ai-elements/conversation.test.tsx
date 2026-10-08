@@ -4,13 +4,28 @@ import { Window } from "happy-dom";
 const win = new Window({ url: "http://localhost/" });
 (win as any).SyntaxError = SyntaxError;
 (win as any).TypeError = TypeError;
-for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "SVGElement", "MutationObserver", "Event", "HTMLInputElement"]) {
+for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "SVGElement", "MutationObserver", "ResizeObserver", "Event", "HTMLInputElement", "getComputedStyle"]) {
   (globalThis as any)[key] = key === "window" ? win : (win as any)[key];
 }
+(globalThis as any).requestAnimationFrame ??= (cb: FrameRequestCallback) => setTimeout(() => cb(Date.now()), 0);
+(globalThis as any).cancelAnimationFrame ??= (id: number) => clearTimeout(id);
 
 const { act, cleanup, fireEvent, render } = await import("@testing-library/react");
 const { SigilProvider } = await import("@/components/sigils/SigilContext");
-const { Conversation, ConversationExport, MessageCopyButton } = await import("./conversation");
+
+// ConversationScrollButton only renders when the real StickToBottom context
+// reports `!isAtBottom` — happy-dom never measures a real scroll gap, so
+// stub the hook to exercise the "not at bottom" / visible-FAB branch.
+const scrollToBottomMock = mock(() => {});
+const StubStickToBottom = Object.assign((props: any) => props.children, {
+  Content: (props: any) => props.children,
+});
+mock.module("use-stick-to-bottom", () => ({
+  StickToBottom: StubStickToBottom,
+  useStickToBottomContext: () => ({ isAtBottom: false, scrollToBottom: scrollToBottomMock }),
+}));
+
+const { Conversation, ConversationExport, ConversationScrollButton, MessageCopyButton } = await import("./conversation");
 
 const originalFetch = globalThis.fetch;
 const originalClipboard = navigator.clipboard;
@@ -52,20 +67,44 @@ test("Conversation disables its implicit role=log live region instead of announc
   expect(log.hasAttribute("aria-relevant")).toBe(false);
 });
 
-test("message copy and export buttons keep 44px touch targets", () => {
+test("message copy button keeps its 44px touch target (tracked separately in GM Ex5W2eFk)", () => {
   const view = render(
     <SigilProvider sigilDefs={sigilDefs} panels={[]} runnerId="runner-1">
       <MessageCopyButton text="copy me" />
-      <ConversationExport messages={[]} />
     </SigilProvider>,
   );
 
   const copy = view.getByRole("button", { name: "Copy message" });
   expect(copy.className).toContain("size-11");
   expect(copy.className).toContain("-m-2.5");
-  expect(copy.className).not.toContain("md:size-6");
+});
+
+test("export button keeps desktop density, growing to 44px only on touch", () => {
+  const view = render(
+    <SigilProvider sigilDefs={sigilDefs} panels={[]} runnerId="runner-1">
+      <ConversationExport messages={[]} />
+    </SigilProvider>,
+  );
 
   const exportButton = view.getByRole("button", { name: "Export conversation" });
-  expect(exportButton.className).toContain("size-11");
-  expect(exportButton.className).not.toContain("md:size-9");
+  // Desktop density preserved (size-9, the Button "icon" default) — only
+  // coarse pointers grow to 44px.
+  expect(exportButton.className).not.toContain("size-11");
+  expect(exportButton.className).toContain("pointer-coarse:min-h-11");
+  expect(exportButton.className).toContain("pointer-coarse:min-w-11");
+});
+
+test("scroll-to-bottom FAB keeps desktop density, growing to 44px only on touch", () => {
+  const view = render(<ConversationScrollButton />);
+
+  const scrollButton = view.container.querySelector("button");
+  expect(scrollButton).not.toBeNull();
+  // Button's "icon" size default (size-9) is left alone — only coarse
+  // pointers grow this FAB to 44px.
+  expect(scrollButton!.className).not.toContain("size-11");
+  expect(scrollButton!.className).toContain("pointer-coarse:min-h-11");
+  expect(scrollButton!.className).toContain("pointer-coarse:min-w-11");
+
+  fireEvent.click(scrollButton!);
+  expect(scrollToBottomMock).toHaveBeenCalled();
 });

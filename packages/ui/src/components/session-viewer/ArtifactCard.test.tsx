@@ -39,7 +39,7 @@ afterEach(() => {
 });
 
 describe("ArtifactCard", () => {
-    test("shows the file name and offers 44px touch actions", () => {
+    test("shows the file name and keeps desktop density, growing to 44px only on touch", () => {
         const { getByText, getByLabelText } = render(
             <ArtifactCard path="/w/reports/q3.csv" kind="csv" runnerId="r1" onOpen={() => {}} />,
         );
@@ -47,8 +47,11 @@ describe("ArtifactCard", () => {
         for (const label of ["Open q3.csv", "Download q3.csv", "Expand q3.csv"]) {
             const button = getByLabelText(label);
             expect(button).toBeDefined();
-            expect(button.className).toContain("size-11");
-            expect(button.className).not.toContain("md:size-7");
+            // Desktop density preserved (size-7) — only coarse pointers grow to 44px.
+            expect(button.className).toContain("size-7");
+            expect(button.className).not.toContain("size-11");
+            expect(button.className).toContain("pointer-coarse:min-h-11");
+            expect(button.className).toContain("pointer-coarse:min-w-11");
         }
     });
 
