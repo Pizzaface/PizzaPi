@@ -432,7 +432,7 @@ export function SessionViewer({
   } = atMention;
 
   // ── Message processing ────────────────────────────────────────────────────
-  const { sortedMessages, visibleMessages, renderedMessages, hasMore, loadMoreMessages } =
+  const { visibleMessages, renderedMessages, hasMore, loadMoreMessages } =
     useMessageProcessor(messages, sessionId);
 
   // ── Session actions + MCP toggle context ─────────────────────────────────
@@ -858,7 +858,7 @@ export function SessionViewer({
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <ConversationExport
-                      messages={sortedMessages}
+                      messages={messages}
                       filename={`session-${sessionId || "export"}.md`}
                       className="static top-auto right-auto hidden md:inline-flex h-7 w-7 border-border bg-background hover:bg-accent hover:text-accent-foreground rounded-md"
                       variant="outline"
@@ -899,7 +899,7 @@ export function SessionViewer({
                   isAnalyzerOpen={isAnalyzerOpen}
                   triggerCount={triggerCount}
                   onDuplicateSession={onDuplicateSession}
-                  messages={sortedMessages}
+                  messages={messages}
                   sessionId={sessionId}
                   extraItems={extraOverflowItems}
                 />
