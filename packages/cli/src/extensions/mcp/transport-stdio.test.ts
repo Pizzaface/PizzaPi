@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, test } from "bun:test";
 import { createStdioMcpClient } from "./transport-stdio.js";
 
@@ -59,4 +62,44 @@ test("closing stdio cancels an outstanding elicitation", async () => {
     client.close();
     await expect(call).rejects.toThrow();
   } finally { client.close(); }
+});
+
+const legacyCancelScript = `
+const fs = require('node:fs');
+require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+  const m = JSON.parse(line);
+  const reply = result => process.stdout.write(JSON.stringify({ jsonrpc:'2.0', id:m.id, result }) + '\\n');
+  if (m.method === 'server/discover') return process.stdout.write(JSON.stringify({ jsonrpc:'2.0', id:m.id, error:{code:-32601,message:'Unknown method'} }) + '\\n');
+  if (m.method === 'initialize') return reply({protocolVersion:'2025-03-26'});
+  if (m.method === 'tools/call') { fs.writeFileSync(process.env.TEST_STARTED_FILE, String(m.id)); return; }
+  if (m.method === 'notifications/cancelled') fs.writeFileSync(process.env.TEST_CANCEL_FILE, JSON.stringify(m.params));
+});
+`;
+
+test("aborting a legacy stdio tool call notifies the server", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mcp-stdio-cancel-"));
+  const startedFile = join(dir, "started");
+  const cancelFile = join(dir, "cancelled");
+  const client = await createStdioMcpClient({ name: "legacy", command: process.execPath, args: ["--eval", legacyCancelScript], env: { TEST_STARTED_FILE: startedFile, TEST_CANCEL_FILE: cancelFile } });
+  const abort = new AbortController();
+  try {
+    const call = client.callTool("slow", {}, abort.signal);
+    for (let i = 0; i < 100; i++) {
+      try { readFileSync(startedFile, "utf8"); break; } catch { await Bun.sleep(10); }
+    }
+    abort.abort(new DOMException("cancelled", "AbortError"));
+    await expect(call).rejects.toThrow();
+    for (let i = 0; i < 100; i++) {
+      try {
+        expect(JSON.parse(readFileSync(cancelFile, "utf8"))).toEqual({ requestId: Number(readFileSync(startedFile, "utf8")), reason: "Client cancelled request" });
+        return;
+      } catch {
+        await Bun.sleep(10);
+      }
+    }
+    throw new Error("legacy cancellation notification was not observed");
+  } finally {
+    client.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
