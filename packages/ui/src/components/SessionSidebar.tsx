@@ -207,12 +207,12 @@ function StatusCountChip({ counts }: { counts: SessionStatusCounts }) {
     const title = segments.map((s) => `${s.n} ${s.label}`).join(" · ");
     return (
         <span
-            className="flex flex-shrink-0 items-center divide-x divide-sidebar-border rounded-full border border-sidebar-border text-[0.55rem] font-mono font-semibold leading-none tabular-nums"
+            className="flex flex-shrink-0 items-center divide-x divide-sidebar-border rounded-full border border-sidebar-border bg-sidebar text-[0.5rem] font-mono font-bold leading-none tabular-nums"
             title={title}
             aria-label={title}
         >
             {segments.map((s) => (
-                <span key={s.label} className={cn("px-1.5 py-0.5", s.cls)}>{s.n}</span>
+                <span key={s.label} className={cn("px-[3px] py-px", s.cls)}>{s.n}</span>
             ))}
         </span>
     );
@@ -1620,6 +1620,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         )}
 
                                                         {/* Provider icon — status indicated via background/glow */}
+                                                        <div className="relative flex-shrink-0">
                                                         <div
                                                             className={cn(
                                                                 "relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md transition-all duration-300",
@@ -1643,11 +1644,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                           : "unknown"
                                                                 }
                                                             />
-                                                            {groupCounts && (
-                                                                <span className="absolute -top-2.5 left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded-full bg-sidebar">
-                                                                    <StatusCountChip counts={groupCounts} />
-                                                                </span>
-                                                            )}
+                                                        </div>
+                                                        {groupCounts && (
+                                                            <span className="absolute -top-2 left-0 z-10 whitespace-nowrap">
+                                                                <StatusCountChip counts={groupCounts} />
+                                                            </span>
+                                                        )}
                                                         </div>
 
                                                         {/* Text info */}
