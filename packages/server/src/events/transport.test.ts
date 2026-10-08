@@ -98,7 +98,7 @@ const modsPromise = (async () => {
       return localSocket;
     },
     getSharedSession: async () => sharedSession,
-    getSharedSessionSummary: async () => null,
+    getSharedSessionSummary: async () => sharedSession,
     linkSessionToRunner: async (runnerId: string, sessionId: string) => linkSessionToRunnerImpl(runnerId, sessionId),
     recordRunnerSession: async (runnerId: string, sessionId: string) => recordRunnerSessionImpl(runnerId, sessionId),
     waitForLocalTuiSocket: async (sessionId: string, timeoutMs: number) => waitForLocalTuiSocketImpl(sessionId, timeoutMs),
@@ -320,6 +320,33 @@ describe("trigger transport delivery receipt", () => {
     const { deliveryId } = await publishTo("s-gone");
     expect((await store.getDelivery(deliveryId))?.status).toBe("pending");
   });
+
+  for (const offlinePolicy of [undefined, "wait", "fail"] as const) {
+    it(`wakes suspended sessions with ${offlinePolicy ?? "no route"} policy`, async () => {
+      const sessionId = "s-suspended";
+      sharedSession = { sessionId, userId: "u1", runnerId: "runner-1", suspended: true };
+      let deliveryId: string;
+      if (offlinePolicy === undefined) {
+        ({ deliveryId } = await publishTo(sessionId));
+      } else {
+        const route = await store.createRoute({
+          eventType: "t:suspended", target: { kind: "session", sessionId, runnerId: "runner-1", offlinePolicy },
+          deliverAs: "followUp", origin: "agent", ownerUserId: "u1",
+        });
+        const source = { kind: "api" as const, id: "hook", auth: "api-key" as const, userId: "u1" };
+        const outcome = await authStorage.run(authCtx, () => engine.publishEvent(
+          { type: "t:suspended", routeIds: [route.routeId] }, source, transport.createEngineDeps(),
+        ));
+        deliveryId = outcome.deliveries[0].deliveryId;
+      }
+      const delivery = await store.getDelivery(deliveryId);
+      expect(delivery?.status).toBe("pending");
+      expect(delivery?.wakeRequested).toBe(true);
+      expect(runnerEmits).toEqual([{
+        runnerId: "runner-1", event: "new_session", data: { sessionId, resumeId: sessionId },
+      }]);
+    });
+  }
 
   it("wake offline policy preserves the pending delivery and resumes its route session", async () => {
     sharedSession = { sessionId: "s-offline-wake", userId: "u1", runnerId: "runner-1" };

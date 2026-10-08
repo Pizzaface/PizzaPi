@@ -344,7 +344,7 @@ describe("session_message to a suspended session", () => {
         mockGetSharedSession.mockReset();
         mockGetLocalTuiSocket.mockReset();
         mockEmitToRelaySessionInputAck.mockReset();
-        mockEmitToRelaySessionVerified.mockReset();
+        mockEmitToRelaySessionChecked.mockReset();
         mockHasRelaySessionListener.mockReset();
         mockGetChildSessions.mockReset();
         mockIsChildOfParent.mockReset();
@@ -353,7 +353,7 @@ describe("session_message to a suspended session", () => {
         mockIsChildOfParent.mockResolvedValue(true);
         mockIsPendingParentDelinkChild.mockResolvedValue(false);
         mockHasRelaySessionListener.mockResolvedValue(false);
-        mockEmitToRelaySessionVerified.mockResolvedValue(false);
+        mockEmitToRelaySessionChecked.mockResolvedValue("empty");
         mockEmitToRelaySessionInputAck.mockResolvedValue({ hadListeners: false, delivered: false });
         mockGetSharedSession.mockImplementation(async (id: string) => {
             if (id === "parent-1") return { userId: "u1", parentSessionId: null, linkedParentId: null } as any;
