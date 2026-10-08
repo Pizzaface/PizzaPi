@@ -41,7 +41,7 @@ import { getAuthSource } from "../remote-auth-source.js";
 import { PLUGIN_COMMAND_LIVE_EVENT } from "../plugin-command.js";
 import { clearAndCancelPendingTriggers } from "../triggers/extension.js";
 import { receivedTriggers } from "../triggers/extension.js";
-import { listTriggerSubscriptions, unsubscribeTrigger } from "../trigger-client.js";
+import { clearTriggerHistory, listTriggerSubscriptions, unsubscribeTrigger } from "../trigger-client.js";
 import { setTodoUpdateCallback, setTodoMetaEmitter, type TodoItem } from "../update-todo.js";
 import { setPlanModeChangeCallback, setPlanModeMetaEmitter } from "../plan-mode/index.js";
 import { registerAskUserTool } from "../remote-ask-user.js";
@@ -198,6 +198,16 @@ export function performSessionTransitionCleanup({
                     `pizzapi: trigger subscription cleanup failed on session transition: ${err instanceof Error ? err.message : String(err)}`,
                 );
             });
+
+        // Clear server-side trigger history for this generation. Authoritative
+        // call site — do NOT rely on the web UI's exec_result handler to also
+        // issue this DELETE; a second caller reintroduces the race this fix
+        // closes (see GM a8yAXXwa).
+        clearTriggerHistory(sid).then((result) => {
+            if (!result.ok) {
+                log.info(`pizzapi: trigger history clear failed on session transition: ${result.error}`);
+            }
+        });
     }
 
     // ── Delink children ───────────────────────────────────────────────────────
@@ -357,11 +367,19 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         // generation before resetting completion payload state.
         followUpGrace.clearFollowUpGrace();
 
-        // ── /new cleanup: cancel pending triggers and delink children ─────────
-        if (event.reason === "new") {
+        // ── Transition cleanup: cancel pending triggers and delink children ───
+        // Worker session_switch must match local-TUI session_start parity:
+        // new/resume/fork are all real transitions (a previous conversation's
+        // stale child links and trigger subscriptions must not leak into the
+        // next one). Only "new" used to run full cleanup here, which let a
+        // /resume or /fork on the worker path inherit the prior generation's
+        // stale children — see A1-007 follow-up (GM a8yAXXwa).
+        if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
             performSessionTransitionCleanup({ state, rctx, triggerWaits, delinkManager, cancellationManager, followUpGrace });
         } else {
-            // For resume/fork: just reset session-complete state (no stale-child cleanup).
+            // Defensive fallback for any other/unknown reason: still reset
+            // session-complete generation state so a stale "fired" flag can't
+            // leak into the next conversation.
             state.sessionCompleteFired = false;
             state.sessionCompleteGeneration += 1;
             state.pendingSessionCompleteDelivery = null;

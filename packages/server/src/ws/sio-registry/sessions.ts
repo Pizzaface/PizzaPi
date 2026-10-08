@@ -1059,6 +1059,26 @@ async function endSharedSessionUnlocked(
         }
     }
 
+    // ── Explicit policy: terminal close of a PARENT does NOT touch ITS OWN
+    // children (GM a8yAXXwa) ─────────────────────────────────────────────────
+    // This function only ever cleans up `sessionId`'s membership in its own
+    // parent's set (above). It deliberately does NOT look up `sessionId`'s
+    // children and delink or terminate them here, even on a confirmed
+    // terminal end. This is a decision, not an oversight:
+    //  - Delinking every child on parent close would race with a live child
+    //    still mid-turn, clearing a parentSessionId it may still need for
+    //    `send_message(target: "parent")` / escalation routing.
+    //  - Terminating descendants would turn an ordinary parent session end
+    //    (e.g. `/end`, normal exit) into a cascading kill of unrelated work.
+    //  - A child that tries to reach a gone parent already degrades
+    //    gracefully: reconnect / registerTuiSession treats a missing parent
+    //    as transient (see sessions.parent-miss-delink.test.ts) rather than
+    //    erroring, and the child's own next transition
+    //    (performSessionTransitionCleanup) clears its stale parent link.
+    // If a future caller needs cascading termination, it must pass that
+    // intent explicitly (e.g. a new `terminateDescendants` option) rather
+    // than inferring it from `confirmedTerminal`.
+
     const disconnectPayload = viewerDisconnectPayload(reason, sessionId);
 
     // Notify all viewers in the room and disconnect them

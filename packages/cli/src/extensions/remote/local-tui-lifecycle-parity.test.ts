@@ -304,5 +304,42 @@ describe("local-TUI transition cleanup parity", () => {
             // sessionCompleteGeneration bumped once by performSessionTransitionCleanup
             expect(state.sessionCompleteGeneration).toBe(genBefore + 1);
         });
+
+        test("session_switch with reason:resume and reason:fork also clean (worker/local-TUI parity — GM a8yAXXwa)", () => {
+            // Regression guard: worker session_switch must clean stale child
+            // state on resume/fork exactly like local-TUI session_start does.
+            // Before the fix, only reason:"new" ran performSessionTransitionCleanup
+            // on the worker path, so a /resume or /fork there silently inherited
+            // the previous generation's stale child links and trigger subscriptions.
+            process.env.PIZZAPI_WORKER_CWD = "/tmp/worker-cwd";
+            const { handlers, state } = makeMinimalDeps();
+            const sessionStart = handlers.get("session_start")!;
+            const sessionSwitch = handlers.get("session_switch")!;
+
+            sessionStart({ reason: "startup" }, minimalCtx);
+
+            state.staleChildIds.add("child-resume-stale");
+            state.sessionCompleteFired = true;
+            let genBefore = state.sessionCompleteGeneration;
+
+            sessionSwitch({ reason: "resume" }, minimalCtx);
+
+            expect(state.staleChildIds.has("child-resume-stale")).toBe(false);
+            expect(state.pendingDelink).toBe(true);
+            expect(state.sessionCompleteFired).toBe(false);
+            expect(state.sessionCompleteGeneration).toBe(genBefore + 1);
+
+            state.staleChildIds.add("child-fork-stale");
+            state.sessionCompleteFired = true;
+            state.pendingDelink = false;
+            genBefore = state.sessionCompleteGeneration;
+
+            sessionSwitch({ reason: "fork" }, minimalCtx);
+
+            expect(state.staleChildIds.has("child-fork-stale")).toBe(false);
+            expect(state.pendingDelink).toBe(true);
+            expect(state.sessionCompleteFired).toBe(false);
+            expect(state.sessionCompleteGeneration).toBe(genBefore + 1);
+        });
     });
 });

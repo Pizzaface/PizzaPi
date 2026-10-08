@@ -558,3 +558,43 @@ export async function unsubscribeTrigger(
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
 }
+
+/**
+ * Clear a session's server-side trigger history (DELETE /api/sessions/:id/triggers).
+ *
+ * This is the authoritative call for "this is a new conversation generation,
+ * forget the old trigger history" — it must be driven from the CLI's
+ * generation-aware transition cleanup (performSessionTransitionCleanup), not
+ * reactively from a UI event handler. Calling it from the UI only (keyed off
+ * a specific exec_result like new_session) raced with the server-authoritative
+ * cleanup: a late history write from the old generation could land after the
+ * UI's DELETE, or the DELETE itself could arrive late and wipe the new
+ * generation's just-recorded history.
+ */
+export async function clearTriggerHistory(
+    sessionId: string,
+    deps: Partial<TriggerClientDeps> = {},
+): Promise<SubscriptionResult> {
+    const d: TriggerClientDeps = { ...defaultDeps, ...deps };
+    const baseUrl = d.getRelayHttpBaseUrl();
+    const apiKey = d.getApiKey();
+
+    if (!baseUrl || !apiKey) {
+        return { ok: false, error: "No relay URL or API key configured" };
+    }
+
+    try {
+        const url = `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/triggers`;
+        const response = await d.fetch(url, {
+            method: "DELETE",
+            headers: { "x-api-key": apiKey },
+        });
+        const data = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+        if (!response.ok || !data.ok) {
+            return { ok: false, error: data.error ?? `HTTP ${response.status}` };
+        }
+        return { ok: true };
+    } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+}
