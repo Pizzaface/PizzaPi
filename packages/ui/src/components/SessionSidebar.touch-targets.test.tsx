@@ -1,6 +1,6 @@
 import * as React from "react";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { HubSocketContext } from "@/lib/hub-socket-context";
 import { SessionSidebar } from "./SessionSidebar";
 
@@ -50,6 +50,8 @@ function renderSidebar(socket: FakeHubSocket) {
     );
 }
 
+const originalFetch = globalThis.fetch;
+
 beforeEach(() => {
     (globalThis.window as Window & typeof globalThis & { SyntaxError?: ErrorConstructor }).SyntaxError = globalThis.SyntaxError;
     globalThis.fetch = (() => Promise.resolve(new Response(JSON.stringify({ pinnedSessions: [] })))) as typeof fetch;
@@ -57,12 +59,15 @@ beforeEach(() => {
 
 afterEach(() => {
     cleanup();
+    globalThis.fetch = originalFetch;
 });
 
 describe("SessionSidebar touch targets", () => {
     test("renders mobile action targets at least 44px tall/wide", async () => {
         const socket = new FakeHubSocket();
-        renderSidebar(socket);
+        // Bind queries to this render: other suites replace happy-dom's document,
+        // while Testing Library's global screen retains its import-time document.
+        const screen = renderSidebar(socket);
 
         await act(async () => {});
         act(() => {
