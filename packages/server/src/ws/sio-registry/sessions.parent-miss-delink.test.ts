@@ -170,6 +170,12 @@ mock.module("../sio-state/index.js", () => ({
         if (!raw) return;
         store.set(`__hash__:pizzapi:sio:session:${sessionId}`, JSON.stringify({ ...JSON.parse(raw), ...fields }));
     },
+    updateSessionFieldsAndBumpMessagesVersion: async (sessionId: string, fields: Record<string, unknown>) => {
+        const raw = store.get(`__hash__:pizzapi:sio:session:${sessionId}`);
+        if (!raw) return;
+        store.set(`__hash__:pizzapi:sio:session:${sessionId}`, JSON.stringify({ ...JSON.parse(raw), ...fields }));
+    },
+    getMessagesVersion: async () => null,
     deleteSession: async (sessionId: string) => {
         store.delete(`__hash__:pizzapi:sio:session:${sessionId}`);
     },

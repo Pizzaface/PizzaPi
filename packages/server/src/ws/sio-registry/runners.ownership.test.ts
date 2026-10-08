@@ -55,6 +55,13 @@ const mockMulti = () => {
             readKeys.push(key);
             return mockMulti();
         }),
+        incr: mock((key: string) => {
+            ops.push(() => {
+                const next = (Number(store.get(key)) || 0) + 1;
+                store.set(key, String(next));
+            });
+            return mockMulti();
+        }),
         exec: mock(async () => {
             for (const op of ops) op();
             return readKeys.map((key) => {

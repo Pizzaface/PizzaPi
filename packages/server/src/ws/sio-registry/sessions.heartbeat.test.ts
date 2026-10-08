@@ -21,6 +21,8 @@ mock.module("../sio-state/index.js", () => ({
     getSessionSummary: mockGetSession,
     getSessionField: async () => null,
     updateSessionFields: mockUpdateSessionFields,
+    updateSessionFieldsAndBumpMessagesVersion: mockUpdateSessionFields,
+    getMessagesVersion: async () => null,
     deleteSession: noopAsync,
     getAllSessionSummaries: noopAsync,
     refreshSessionTTL: noopAsync,

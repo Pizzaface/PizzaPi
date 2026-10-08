@@ -38,6 +38,19 @@ const mockMulti = () => {
             });
             return chain;
         }),
+        sRem: mock((key: string, member: string) => {
+            ops.push(() => {
+                setStore.get(key)?.delete(member);
+            });
+            return chain;
+        }),
+        del: mock((key: string) => {
+            ops.push(() => {
+                hashStore.delete(key);
+                stringStore.delete(key);
+            });
+            return chain;
+        }),
         exec: mock(async () => {
             for (const op of ops) op();
             return [];
@@ -74,7 +87,31 @@ const mockRedis = {
         stringStore.set(key, String(next));
         return next;
     }),
-    eval: mock(async (_script: string, options: { keys: string[] }) => {
+    eval: mock(async (script: string, options: { keys: string[]; arguments: string[] }) => {
+        // deleteSessionIfOwner's Lua script checks a 'token' field; claimTerminalSpawn's
+        // checks 'spawned'. Branch on which script ran to keep one eval mock for both.
+        if (script.includes("'token'")) {
+            const [sessionKeyName, , allSessionsKeyName] = options.keys;
+            const [expectedToken, sessionId, userSessionsPrefix] = options.arguments;
+            const hash = hashStore.get(sessionKeyName);
+            if (!hash || hash.token !== expectedToken) return 0;
+            const userId = hash.userId;
+            // Delete exactly whichever KEYS[n] the script's DEL call references, so a
+            // regression that widens the Lua DEL (e.g. back to deleting the messages
+            // version key) is caught instead of silently ignored by this mock.
+            const delArgs = script.match(/redis\.call\('DEL',\s*([^)]+)\)/)?.[1]?.split(",") ?? [];
+            for (const arg of delArgs) {
+                const idx = Number(arg.match(/KEYS\[(\d+)\]/)?.[1]) - 1;
+                const keyName = options.keys[idx];
+                if (keyName) {
+                    hashStore.delete(keyName);
+                    stringStore.delete(keyName);
+                }
+            }
+            setStore.get(allSessionsKeyName)?.delete(sessionId);
+            if (userId) setStore.get(`${userSessionsPrefix}${userId}`)?.delete(sessionId);
+            return 1;
+        }
         const hash = hashStore.get(options.keys[0]);
         if (!hash || hash.spawned !== "0") return 0;
         hash.spawned = "1";
@@ -85,6 +122,8 @@ const mockRedis = {
 // No mock.module needed — mock Redis client is injected directly via initStateRedis().
 import {
     claimTerminalSpawn,
+    deleteSession,
+    deleteSessionIfOwner,
     getMessagesVersion,
     getSessionSummary,
     initStateRedis,
@@ -277,5 +316,73 @@ describe("messages version", () => {
 
         await setSession(sessionId, { ...data, lastState: JSON.stringify({ messages: ["gen2"] }) });
         expect(await getMessagesVersion(sessionId)).toBe(3);
+    });
+
+    it("keeps the messages version monotonic across deleteSession + re-registration", async () => {
+        const sessionId = "session-version-delete-reregister";
+        const data = {
+            sessionId,
+            token: "tkn",
+            collabMode: true,
+            shareUrl: "http://localhost/session",
+            cwd: "/tmp/project",
+            startedAt: new Date().toISOString(),
+            userId: "user-1",
+            userName: "Jordan",
+            sessionName: "Version Session",
+            isEphemeral: false,
+            expiresAt: null,
+            isActive: true,
+            lastHeartbeatAt: new Date().toISOString(),
+            lastHeartbeat: null,
+            lastState: JSON.stringify({ messages: ["gen1"] }),
+            runnerId: "runner-1",
+            runnerName: "Runner",
+            seq: 0,
+            parentSessionId: null,
+        };
+
+        await setSession(sessionId, data);
+        expect(await getMessagesVersion(sessionId)).toBe(1);
+
+        await deleteSession(sessionId);
+        await setSession(sessionId, { ...data, lastState: JSON.stringify({ messages: ["gen2"] }) });
+
+        expect(await getMessagesVersion(sessionId)).toBe(2);
+    });
+
+    it("keeps the messages version monotonic across deleteSessionIfOwner + re-registration", async () => {
+        const sessionId = "session-version-delete-if-owner-reregister";
+        const data = {
+            sessionId,
+            token: "tkn",
+            collabMode: true,
+            shareUrl: "http://localhost/session",
+            cwd: "/tmp/project",
+            startedAt: new Date().toISOString(),
+            userId: "user-1",
+            userName: "Jordan",
+            sessionName: "Version Session",
+            isEphemeral: false,
+            expiresAt: null,
+            isActive: true,
+            lastHeartbeatAt: new Date().toISOString(),
+            lastHeartbeat: null,
+            lastState: JSON.stringify({ messages: ["gen1"] }),
+            runnerId: "runner-1",
+            runnerName: "Runner",
+            seq: 0,
+            parentSessionId: null,
+        };
+
+        await setSession(sessionId, data);
+        expect(await getMessagesVersion(sessionId)).toBe(1);
+
+        const deleted = await deleteSessionIfOwner(sessionId, "tkn");
+        expect(deleted).toBe(true);
+
+        await setSession(sessionId, { ...data, lastState: JSON.stringify({ messages: ["gen2"] }) });
+
+        expect(await getMessagesVersion(sessionId)).toBe(2);
     });
 });
