@@ -219,6 +219,8 @@ export interface RelayContext {
     isAgentSettling: boolean;
     isCompacting: boolean;
     shuttingDown: boolean;
+    /** Set once the relay accepted session_suspend: exit without session_end. */
+    suspending?: boolean;
     wasAborted: boolean;
     /** Number of steering slash commands aborting a turn before dispatch. */
     pendingSteeringSlashCommands: number;

@@ -17,6 +17,7 @@ import {
     refreshChildSessionsTTL,
 } from "../../sio-state/index.js";
 import { pushTriggerHistory, recordTriggerResponse } from "../../../sessions/trigger-store.js";
+import { wakeSuspendedSession } from "../../../events/transport.js";
 import type { RelaySocket } from "./types.js";
 
 export function registerMessagingHandlers(socket: RelaySocket): void {
@@ -28,7 +29,11 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
     ): Promise<{ ok: boolean; error?: string }> => {
         const isInput = deliverAs === "input" || deliverAs === "steer";
         const inputDelivery = deliverAs === "steer" ? "steer" : "followUp";
-        const targetSocket = getLocalTuiSocket(targetSessionId);
+        let targetSocket = getLocalTuiSocket(targetSessionId);
+        // An input for a suspended session (idle worker exited) wakes it first.
+        if (isInput && !targetSocket?.connected && await wakeSuspendedSession(targetSessionId)) {
+            targetSocket = getLocalTuiSocket(targetSessionId);
+        }
         const attributedText = `Message from linked session ${fromSessionId}:\n\n${messageText}`;
         const payload = isInput
             ? { text: attributedText, attachments: [], client: "agent", fromSessionId, message: messageText, deliverAs: inputDelivery }
@@ -119,8 +124,11 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
                     if ((child.parentSessionId ?? child.linkedParentId) !== sessionId) continue;
                     if (!await isChildOfParent(sessionId, childId)) continue;
                     // getLocalTuiSocket is already connected-aware — no need
-                    // to re-check `.connected` here.
-                    if (!getLocalTuiSocket(childId) && !await hasRelaySessionListener(childId)) continue;
+                    // to re-check `.connected` here. A suspended child is
+                    // never reachable via a live socket, but input-class
+                    // messages must still be allowed through so the wake path
+                    // (deliverSessionMessage) can resume it.
+                    if (!(isInput && child.suspended) && !getLocalTuiSocket(childId) && !await hasRelaySessionListener(childId)) continue;
                     direct.push(childId);
                 }
                 return { ids: direct };

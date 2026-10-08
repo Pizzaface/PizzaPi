@@ -33,6 +33,11 @@ mock.module("../../sio-state/index.js", () => ({
     deleteChildSpawnBinding: async () => {},
 }));
 
+const mockWakeSuspendedSession = mock(async (_id: string) => false);
+mock.module("../../../events/transport.js", () => ({
+    wakeSuspendedSession: mockWakeSuspendedSession,
+}));
+
 mock.module("../../../sessions/trigger-store.js", () => ({
     pushTriggerHistory: mockPushTriggerHistory,
     recordTriggerResponse: mockRecordTriggerResponse,
@@ -331,5 +336,68 @@ describe("registerMessagingHandlers session_trigger acking", () => {
         expect(ack.mock.calls[0][0]).toMatchObject({ ok: false, error: "Invalid token" });
         expect(ack.mock.calls[1][0]).toMatchObject({ ok: false, error: expect.stringContaining("exactly one target") });
         expect(ack.mock.calls[2][0]).toMatchObject({ ok: false, errors: [{ targetSessionId: "child-1", error: "Target session did not acknowledge delivery" }] });
+    });
+});
+
+describe("session_message to a suspended session", () => {
+    beforeEach(() => {
+        mockGetSharedSession.mockReset();
+        mockGetLocalTuiSocket.mockReset();
+        mockEmitToRelaySessionInputAck.mockReset();
+        mockEmitToRelaySessionVerified.mockReset();
+        mockHasRelaySessionListener.mockReset();
+        mockGetChildSessions.mockReset();
+        mockIsChildOfParent.mockReset();
+        mockIsPendingParentDelinkChild.mockReset();
+        mockWakeSuspendedSession.mockReset();
+        mockIsChildOfParent.mockResolvedValue(true);
+        mockIsPendingParentDelinkChild.mockResolvedValue(false);
+        mockHasRelaySessionListener.mockResolvedValue(false);
+        mockEmitToRelaySessionVerified.mockResolvedValue(false);
+        mockEmitToRelaySessionInputAck.mockResolvedValue({ hadListeners: false, delivered: false });
+        mockGetSharedSession.mockImplementation(async (id: string) => {
+            if (id === "parent-1") return { userId: "u1", parentSessionId: null, linkedParentId: null } as any;
+            if (id === "child-1") return { userId: "u1", parentSessionId: "parent-1", linkedParentId: "parent-1", suspended: true } as any;
+            return null;
+        });
+    });
+
+    test("an input wakes the child, then is delivered to its new worker", async () => {
+        const socket = createMockSocket("parent-1");
+        const emit = mock((_event: string, _data: any, cb?: (err: unknown, response: unknown) => void) => cb?.(null, true));
+        let awake = false;
+        mockGetLocalTuiSocket.mockImplementation(() => (awake ? { connected: true, timeout: () => ({ emit }) } : undefined));
+        mockWakeSuspendedSession.mockImplementation(async () => { awake = true; return true; });
+        registerMessagingHandlers(socket as any);
+
+        const ack = mock((_r: any) => {});
+        await socket.fireEvent("session_message", {
+            token: "relay-token", targetSessionId: "child-1", message: "One more thing", deliverAs: "input",
+        }, ack);
+
+        expect(mockWakeSuspendedSession).toHaveBeenCalledWith("child-1");
+        expect(emit).toHaveBeenCalledWith("input", expect.objectContaining({ message: "One more thing" }), expect.any(Function));
+        expect(ack).toHaveBeenCalledWith(expect.objectContaining({ ok: true, delivered: ["child-1"] }));
+    });
+
+    test("a plain bus message does not wake it", async () => {
+        const socket = createMockSocket("parent-1");
+        mockGetLocalTuiSocket.mockReturnValue(undefined);
+        registerMessagingHandlers(socket as any);
+
+        await socket.fireEvent("session_message", { token: "relay-token", targetSessionId: "child-1", message: "fyi" }, () => {});
+
+        expect(mockWakeSuspendedSession).not.toHaveBeenCalled();
+    });
+
+    test("target:'children' includes suspended children for inputs", async () => {
+        const socket = createMockSocket("parent-1");
+        mockGetChildSessions.mockResolvedValue(["child-1"]);
+        mockGetLocalTuiSocket.mockReturnValue(undefined);
+        registerMessagingHandlers(socket as any);
+
+        await socket.fireEvent("session_message", { token: "relay-token", target: "children", message: "status?", deliverAs: "input" }, () => {});
+
+        expect(mockWakeSuspendedSession).toHaveBeenCalledWith("child-1");
     });
 });

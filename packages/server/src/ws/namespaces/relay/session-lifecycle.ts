@@ -8,6 +8,7 @@ import {
     getLocalTuiSocket,
     broadcastToViewers,
     endSharedSession,
+    suspendSharedSession,
     getSessionOwnerToken,
     forgetLocalTuiSocketIfCurrent,
 } from "../../sio-registry.js";
@@ -15,6 +16,7 @@ import {
     clearPushPendingQuestion,
     deleteRunnerAssociation,
 } from "../../sio-state/index.js";
+import { relaySessionRoom } from "../../sio-registry/context.js";
 import { socketAckedSeqs } from "./ack-tracker.js";
 import { clearThinkingMaps } from "./thinking-tracker.js";
 import { forgetViewerGate } from "./viewer-gate.js";
@@ -177,6 +179,36 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
         if (ended) socket.data.sessionId = undefined;
         socketAckedSeqs.delete(socket.id);
         if (typeof acknowledge === "function") acknowledge({ ended });
+    });
+
+    // ── session_suspend — idle worker exits, session stays addressable ──
+    socket.on("session_suspend", async (data, acknowledge?: (result: { ok: boolean }) => void) => {
+        const sessionId = socket.data.sessionId;
+        if (!sessionId || data?.token !== socket.data.token) {
+            if (typeof acknowledge === "function") acknowledge({ ok: false });
+            return;
+        }
+        let ok = false;
+        await enqueueSessionEvent(sessionId, async () => {
+            ok = await suspendSharedSession(sessionId, socket.data.token!).catch((err) => {
+                log.warn(`session_suspend failed for ${sessionId}:`, err);
+                return false;
+            });
+        });
+        if (ok) {
+            clearThinkingMaps(sessionId);
+            forgetViewerGate(sessionId);
+            pendingChunkedStates.delete(sessionId);
+            // The worker disconnects next; with no sessionId the disconnect
+            // handler skips teardown and the suspended record survives.
+            socket.data.sessionId = undefined;
+            socketAckedSeqs.delete(socket.id);
+            // Leave the room so relay emits/presence counts no longer see the
+            // exiting worker — a message now has to wake the session.
+            await socket.leave(relaySessionRoom(sessionId));
+            log.info(`session ${sessionId} suspended`);
+        }
+        if (typeof acknowledge === "function") acknowledge({ ok });
     });
 
     // ── exec_result — forward to viewers ─────────────────────────────────

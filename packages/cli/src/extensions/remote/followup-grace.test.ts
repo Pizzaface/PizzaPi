@@ -72,6 +72,56 @@ describe("startFollowUpGrace / shutdownFollowUpGraceImmediately", () => {
     });
 });
 
+describe("startFollowUpGrace idle suspend", () => {
+    function captureTimers() {
+        const callbacks: Array<() => unknown> = [];
+        const spy = spyOn(globalThis, "setTimeout").mockImplementation(((cb: () => unknown) => {
+            callbacks.push(cb);
+            return callbacks.length as any;
+        }) as any);
+        return { callbacks, restore: () => spy.mockRestore() };
+    }
+
+    test("arms one idle timer and re-arms while suspend is not possible", async () => {
+        const timers = captureTimers();
+        const followUpGrace = createFollowUpGrace(makeRelayContext(), makeState(), { logger: mockLogger });
+        const shutdown = mock(() => {});
+        const trySuspend = mock(async () => false);
+
+        followUpGrace.startFollowUpGrace({ shutdown }, trySuspend);
+        expect(timers.callbacks).toHaveLength(1);
+        await timers.callbacks[0]();
+        expect(trySuspend).toHaveBeenCalledTimes(1);
+        expect(timers.callbacks).toHaveLength(2);
+        // The grace itself never ends the session.
+        expect(shutdown).not.toHaveBeenCalled();
+        timers.restore();
+    });
+
+    test("stops after a successful suspend", async () => {
+        const timers = captureTimers();
+        const followUpGrace = createFollowUpGrace(makeRelayContext(), makeState(), { logger: mockLogger });
+        followUpGrace.startFollowUpGrace({ shutdown: () => {} }, async () => true);
+        await timers.callbacks[0]();
+        expect(timers.callbacks).toHaveLength(1);
+        timers.restore();
+    });
+
+    test("does not re-arm once new work cleared the grace mid-attempt", async () => {
+        const timers = captureTimers();
+        const state = makeState();
+        const followUpGrace = createFollowUpGrace(makeRelayContext(), state, { logger: mockLogger });
+        followUpGrace.startFollowUpGrace({ shutdown: () => {} }, async () => {
+            followUpGrace.clearFollowUpGrace(); // turn_start while probes were in flight
+            return false;
+        });
+        await timers.callbacks[0]();
+        expect(timers.callbacks).toHaveLength(1);
+        expect(state.suspendTimer ?? null).toBeNull();
+        timers.restore();
+    });
+});
+
 describe("createFollowUpGrace fireSessionComplete", () => {
     beforeEach(() => {
         mockEmitTriggerWithAck.mockReset();

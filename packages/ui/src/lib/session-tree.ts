@@ -20,6 +20,7 @@ export interface HubSession {
   runnerName?: string | null;
   isPinned?: boolean;
   parentSessionId?: string | null;
+  suspended?: boolean;
 }
 
 export interface SessionTreeNode {

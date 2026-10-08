@@ -75,6 +75,16 @@ export interface RelayClientToServerEvents {
     final?: boolean;
   }, acknowledge?: (result: { ended: boolean }) => void) => void;
 
+  /**
+   * Idle worker asks to exit while keeping the session addressable. On ok the
+   * relay marks it suspended (a later message wakes it) and the worker exits
+   * without session_end.
+   */
+  session_suspend: (data: {
+    sessionId: string;
+    token: string;
+  }, acknowledge?: (result: { ok: boolean }) => void) => void;
+
   /** TUI responds to a previously-received exec command */
   exec_result: (data: {
     id: string;

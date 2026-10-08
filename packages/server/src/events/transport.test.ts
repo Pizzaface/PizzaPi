@@ -98,6 +98,7 @@ const modsPromise = (async () => {
       return localSocket;
     },
     getSharedSession: async () => sharedSession,
+    getSharedSessionSummary: async () => null,
     linkSessionToRunner: async (runnerId: string, sessionId: string) => linkSessionToRunnerImpl(runnerId, sessionId),
     recordRunnerSession: async (runnerId: string, sessionId: string) => recordRunnerSessionImpl(runnerId, sessionId),
     waitForLocalTuiSocket: async (sessionId: string, timeoutMs: number) => waitForLocalTuiSocketImpl(sessionId, timeoutMs),

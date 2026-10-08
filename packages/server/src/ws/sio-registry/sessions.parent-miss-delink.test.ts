@@ -170,6 +170,7 @@ mock.module("../../sessions/store.js", () => ({
     recordRelaySessionOverlay: async () => {},
     updateRelaySessionRunner: async () => {},
     updateRelaySessionName: async () => {},
+    markRelaySessionSuspended: async () => {},
     touchRelaySession: async () => {},
 }));
 

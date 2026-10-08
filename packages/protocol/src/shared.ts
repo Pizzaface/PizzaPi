@@ -31,6 +31,8 @@ export interface SessionInfo {
   runnerName: string | null;
   /** ID of the parent session that spawned this one, or null for top-level. */
   parentSessionId?: string | null;
+  /** Worker exited while idle; the session is kept and wakes on the next message. */
+  suspended?: boolean;
 }
 
 /** Model provider and identifier */

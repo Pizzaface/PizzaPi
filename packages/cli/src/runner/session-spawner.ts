@@ -414,9 +414,17 @@ export function spawnSession(
     // Pre-restart IPC signal: the worker sends this before calling process.exit(43).
     // Marking restartingSessions here (synchronously, while the worker is still
     // alive) guarantees the guard is set before any relay session_ended event arrives.
+    // Set by the worker's "pre_suspend" IPC: it is exiting idle while the relay
+    // keeps the session, and a wake respawns it under the same ID.
+    let suspended = false;
     child.on("message", (msg: unknown) => {
         if (typeof msg !== "object" || msg === null) return;
         const message = msg as Record<string, unknown>;
+        if (message.type === "pre_suspend") {
+            suspended = true;
+            logInfo(`session ${sessionId} suspending via IPC`);
+            return;
+        }
         if (message.type === "pre_restart") {
             restartingSessions.add(sessionId);
             logInfo(`session ${sessionId} signaled pre-restart via IPC`);
@@ -445,9 +453,22 @@ export function spawnSession(
     trackSessionCwd(sessionId, effectiveCwd);
 
     child.on("exit", (code, signal) => {
-        runningSessions.delete(sessionId);
-        untrackSessionCwd(sessionId, effectiveCwd);
+        // A wake may already have respawned this session — never drop its entry.
+        const current = runningSessions.get(sessionId);
+        if (!current || current.child === child) {
+            runningSessions.delete(sessionId);
+            untrackSessionCwd(sessionId, effectiveCwd);
+        }
         logInfo(`session ${sessionId} exited (code=${code}, signal=${signal})`);
+        if (suspended && !killedSessions.has(sessionId)) {
+            // Suspended, not ended: keep attachments and session services for
+            // the resumed worker. Only reap this worker's own process group.
+            if (killSessionProcessGroup(child.pid)) {
+                logInfo(`session ${sessionId} suspended worker group ${child.pid} signaled for cleanup`);
+            }
+            if (!runningSessions.has(sessionId)) removeSessionProcFile(sessionId);
+            return;
+        }
         if (code === 43 && onRestartRequested && !killedSessions.has(sessionId)) {
             // Restart-in-place: re-spawn immediately without touching attachments.
             // The session continues under the same ID — files saved to

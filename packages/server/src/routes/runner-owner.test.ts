@@ -37,6 +37,7 @@ const modsPromise = (async () => {
     getIo: () => undefined,
     runnerRoom: (id: string) => `runner:${id}`,
     getSharedSession: async () => null,
+    getSharedSessionSummary: async () => null,
     emitToRunner: () => {},
     getLocalTuiSocket: () => null,
     emitToRelaySessionVerified: async () => false,

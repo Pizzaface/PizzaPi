@@ -845,7 +845,8 @@ export function disconnect(rctx: RelayContext, handlers?: ConnectionHandlers, op
     const bridge = getMcpBridge();
     bridge?.setRelayContext?.(null);
     if (rctx.sioSocket) {
-        if (rctx.relay && rctx.sioSocket.connected) {
+        // A suspended session must stay on the relay — no session_end.
+        if (rctx.relay && rctx.sioSocket.connected && !rctx.suspending) {
             rctx.sioSocket.emit("session_end", {
                 sessionId: rctx.relay.sessionId,
                 token: rctx.relay.token,

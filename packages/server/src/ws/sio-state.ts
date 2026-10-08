@@ -279,6 +279,11 @@ export interface RedisSessionData {
      * trigger transport then keeps handoff-equals-delivered semantics.
      */
     acksSessionTrigger?: boolean | null;
+    /**
+     * Worker exited idle (session_suspend). The record is kept — not ended —
+     * and the next message wakes the session on its runner.
+     */
+    suspended?: boolean | null;
 }
 
 /**
@@ -306,6 +311,8 @@ export interface RedisSessionSummaryData {
     parentSessionId: string | null;
     /** See RedisSessionData.linkedParentId. */
     linkedParentId?: string | null;
+    /** See RedisSessionData.suspended. */
+    suspended?: boolean | null;
 }
 
 export interface RedisRunnerData {
@@ -392,6 +399,7 @@ const SESSION_SUMMARY_FIELDS = [
     "runnerName",
     "parentSessionId",
     "linkedParentId",
+    "suspended",
 ] as const;
 
 function parseSessionSummaryFromHash(hash: Record<string, string>): RedisSessionSummaryData | null {
@@ -414,6 +422,7 @@ function parseSessionSummaryFromHash(hash: Record<string, string>): RedisSession
         runnerName: hash.runnerName || null,
         parentSessionId: hash.parentSessionId || null,
         linkedParentId: hash.linkedParentId || null,
+        suspended: hash.suspended === "1",
     };
 }
 
@@ -465,6 +474,7 @@ function parseSessionFromHash(hash: Record<string, string>): RedisSessionData | 
         snapshotRejectedAt: hash.snapshotRejectedAt || null,
         generation: hash.generation || null,
         acksSessionTrigger: hash.acksSessionTrigger === "1",
+        suspended: hash.suspended === "1",
     };
 }
 

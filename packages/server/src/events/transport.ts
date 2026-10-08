@@ -22,6 +22,7 @@ import {
   getLocalRunnerSocket,
   getLocalTuiSocket,
   getSharedSession,
+  getSharedSessionSummary,
   linkSessionToRunner,
   recordRunnerSession,
   waitForLocalTuiSocket,
@@ -272,6 +273,33 @@ export function wakeOfflineSession(
   return attempt;
 }
 
+const SUSPENDED_WAKE_WAIT_MS = 15_000;
+const SUSPENDED_WAKE_POLL_MS = 250;
+
+/**
+ * Wake a suspended session (idle worker exited, record kept) and wait until
+ * its new worker registers. Returns false when the session is not suspended
+ * or did not come back in time. Waits on the shared Redis record rather than
+ * a local socket, so a worker that registers on another relay node counts.
+ */
+export async function wakeSuspendedSession(sessionId: string): Promise<boolean> {
+  const summary = await getSharedSessionSummary(sessionId).catch(() => null);
+  if (!summary?.suspended || !summary.runnerId) return false;
+  log.info(`wake: resuming suspended session ${sessionId}`);
+  void wakeOfflineSession(sessionId, { runnerId: summary.runnerId, cwd: summary.cwd });
+  // ponytail: 250ms Redis poll; a cluster-wide registration signal would replace it.
+  const deadline = Date.now() + SUSPENDED_WAKE_WAIT_MS;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, SUSPENDED_WAKE_POLL_MS));
+    if (getLocalTuiSocket(sessionId)?.connected) return true;
+    // null = mid-registration (record is replaced under the lock) or ended.
+    const current = await getSharedSessionSummary(sessionId).catch(() => null);
+    if (current && !current.suspended) return true;
+  }
+  log.warn(`wake: suspended session ${sessionId} did not register within ${SUSPENDED_WAKE_WAIT_MS}ms`);
+  return false;
+}
+
 /** Failed-wake retry bound: one re-attempt per delivery per 5 minutes. */
 const WAKE_RETRY_INTERVAL_MS = 5 * 60_000;
 
@@ -377,9 +405,14 @@ export function createEngineDeps(): EngineDeps {
         ).catch(() => {});
         broadcastToSessionViewers(delivery.sessionId, "trigger_delivered", { triggerId: delivery.deliveryId });
         return acks ? "inflight" : "delivered";
-      } else if (route?.target.kind === "session") {
-        // Legacy wake=true routes retain wake behavior; missing policy is wait.
-        const policy = route.target.offlinePolicy ?? (route.target.wake ? "wake" : "wait");
+      }
+      // A suspended session always wakes, whatever the route says. Legacy
+      // wake=true routes retain wake behavior; missing policy is wait.
+      const suspended = (await getSharedSessionSummary(delivery.sessionId).catch(() => null))?.suspended === true;
+      if (suspended || route?.target.kind === "session") {
+        const policy = suspended || route?.target.kind !== "session"
+          ? "wake"
+          : route.target.offlinePolicy ?? (route.target.wake ? "wake" : "wait");
         if (policy === "fail") return "failed";
         if (policy === "wake") {
           // Ownership was checked at publish time — resolve the runner across

@@ -107,9 +107,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         pendingCancellations: [] as Array<{ triggerId: string; childSessionId: string }>,
         pendingCancellationRetryTimer: null as ReturnType<typeof setInterval> | null,
         pendingCancellationRetryInFlight: false,
-        // Follow-up grace state (no timer — see followup-grace.ts)
+        // Follow-up grace state (suspend timer only — see followup-grace.ts)
         sessionCompleteFired: false,
         followUpGraceShutdown: null as (() => void) | null,
+        suspendTimer: null as ReturnType<typeof setTimeout> | null,
         sessionCompleteGeneration: 0,
         sessionCompleteTransportGeneration: 0,
         sessionCompleteRetryTimer: null as ReturnType<typeof setTimeout> | null,

@@ -48,6 +48,7 @@ import {
     recordRelaySessionState,
     recordRelaySessionStateSerialized,
     recordRelaySessionOverlay,
+    markRelaySessionSuspended,
     touchRelaySession,
 } from "../../sessions/store.js";
 import { appendRelayEventToCache } from "../../sessions/redis.js";
@@ -231,7 +232,15 @@ async function registerTuiSessionUnlocked(
             if (oldSocket && oldSocket !== socket) {
                 oldSocket.data.sessionId = undefined;
             }
-            await endSharedSessionUnlocked(sessionId, "Session reconnected");
+            if (existing.suspended) {
+                // Waking a suspended session: its worker already exited, so
+                // there is nothing to tear down. Skipping the reconnect
+                // teardown keeps viewers attached — the input that woke the
+                // session would otherwise have its ack failed by the kick.
+                await deleteSession(sessionId);
+            } else {
+                await endSharedSessionUnlocked(sessionId, "Session reconnected");
+            }
             // Reset per-session relay state so stale queued work and
             // half-assembled chunk state from the old generation cannot leak
             // into the new one.  Lives in relay-state.ts (barrel-free) so this
@@ -437,7 +446,9 @@ async function registerTuiSessionUnlocked(
         lastState: null,
         runnerId,
         runnerName,
-        seq: 0,
+        // A woken suspended session keeps its viewers attached, so its seq
+        // must keep climbing — viewers drop events below their cursor.
+        seq: existing?.suspended ? existing.seq : 0,
         parentSessionId: resolvedParentSessionId,
         linkedParentId,
         // Fresh lifecycle generation on every (re)registration so a delayed
@@ -607,6 +618,7 @@ export async function getSessions(filterUserId?: string): Promise<SessionInfo[]>
             runnerId: s.runnerId,
             runnerName: s.runnerName,
             parentSessionId: s.parentSessionId,
+            ...(s.suspended ? { suspended: true } : {}),
         };
     });
 }
@@ -758,6 +770,7 @@ export async function getSessionState(sessionId: string): Promise<unknown | unde
 interface SessionActivityHint {
     isEphemeral: boolean;
     runnerId: string | null;
+    suspended?: boolean | null;
 }
 
 export async function touchSessionActivity(
@@ -774,6 +787,13 @@ export async function touchSessionActivity(
 
     const session = sessionHint ?? await getSessionSummary(sessionId);
     if (!session) return;
+
+    // A suspended session must not re-arm its ephemeral expiry (e.g. when a
+    // viewer opens it) — the expiry sweep would end it 10 minutes later.
+    if (session.suspended) {
+        await refreshSessionTTL(sessionId);
+        return;
+    }
 
     if (session.isEphemeral) {
         await updateSessionFields(sessionId, { expiresAt: nextEphemeralExpiry() });
@@ -1287,6 +1307,46 @@ async function endSharedSessionUnlocked(
     return true;
 }
 
+/**
+ * Suspend a session whose idle worker is about to exit: keep the Redis record
+ * (parent link, runner association, last state, routes, pending deliveries)
+ * but drop the socket and the ephemeral expiry, so the session stays
+ * addressable and a later message wakes it. Returns false when the caller no
+ * longer owns the session.
+ */
+export async function suspendSharedSession(sessionId: string, expectedOwnerToken: string): Promise<boolean> {
+    const lockOwner = randomUUID();
+    await acquireSessionOwnershipLock(sessionId, lockOwner);
+    try {
+        if ((await getSessionOwnerToken(sessionId)) !== expectedOwnerToken) return false;
+        const session = await getSessionSummary(sessionId);
+        if (!session) return false;
+
+        await updateSessionFields(sessionId, { suspended: true, isActive: false, expiresAt: null });
+        await markRelaySessionSuspended(sessionId).catch((error) => {
+            log.error(`Failed to persist suspension of ${sessionId}:`, error);
+        });
+        localTuiSockets.delete(sessionId);
+        lastTouchTimes.delete(sessionId);
+
+        await broadcastToHub(
+            "session_status",
+            {
+                sessionId,
+                isActive: false,
+                lastHeartbeatAt: session.lastHeartbeatAt,
+                sessionName: session.sessionName,
+                model: modelFromHeartbeat(session.lastHeartbeat ? safeJsonParse(session.lastHeartbeat) : null),
+                suspended: true,
+            },
+            session.userId ?? undefined,
+        );
+        return true;
+    } finally {
+        await releaseSessionOwnershipLock(sessionId, lockOwner);
+    }
+}
+
 /** Sweep expired ephemeral sessions (Redis + Socket.IO rooms). */
 export async function sweepExpiredSessions(nowMs: number = Date.now()): Promise<void> {
     const expiredIds = await scanExpiredSessions(nowMs);
@@ -1330,6 +1390,9 @@ export async function sweepOrphanedSessions(nowMs: number): Promise<void> {
         // by an early-returning disconnect handler) must NOT count as live —
         // `.has()` alone would skip these sessions forever.
         if (hasLiveLocalTuiSocket(sessionId)) continue;
+        // Suspended sessions have no socket by design — never sweep them as
+        // orphaned (they're excluded from TTL expiry too; see suspend.ts).
+        if (session.suspended) continue;
 
         // Check heartbeat staleness locally FIRST (fast memory check)
         // to avoid expensive cluster-wide N+1 socket queries for healthy sessions

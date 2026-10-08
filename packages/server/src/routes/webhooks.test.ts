@@ -97,6 +97,7 @@ mock.module("../ws/sio-registry.js", () => ({
     runnerRoom: (id: string) => `runner:${id}`,
     countSocketsInRoomCluster: async () => ({ kind: "unknown" }),
     getSharedSession: mockGetSharedSession,
+    getSharedSessionSummary: async () => null,
     getLocalTuiSocket: mockGetLocalTuiSocket,
     emitToRelaySessionVerified: mockEmitToRelaySessionVerified,
     emitToRelaySessionAcked: mock(async () => true),

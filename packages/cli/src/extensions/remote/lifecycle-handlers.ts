@@ -58,6 +58,8 @@ import type { CancellationManager } from "./trigger-cancellation.js";
 import { isManualAbort } from "./followup-grace.js";
 import type { FollowUpGraceManager } from "./followup-grace.js";
 import { slimForwardedEvent } from "./slim-forwarded-event.js";
+import { canSuspendWorker, requestSuspend, shouldSuspend } from "./suspend.js";
+import { runningBackgroundJobCount } from "../background-bash.js";
 
 const log = createLogger("remote");
 const LINKED_CHILD_COUNT_TIMEOUT_MS = 2_000;
@@ -512,6 +514,42 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         settledMessages = runMessages ?? [];
     });
 
+    /**
+     * Exit the worker of an idle completed child while the relay keeps the
+     * session (suspend). Called by the follow-up grace's idle timer; returns
+     * false to be retried later.
+     */
+    async function trySuspendIdleChild(ctx: any): Promise<boolean> {
+        const generation = state.sessionCompleteGeneration;
+        const localProbe = () => ({
+            sessionCompleteDelivered: state.sessionCompleteFired,
+            hasPendingMessages: ctx.hasPendingMessages(),
+            isAgentBusy: rctx.isAgentActive || rctx.isAgentSettling || rctx.shuttingDown,
+            activeSubagents: hasActiveSubagents(),
+            runningBackgroundJobs: runningBackgroundJobCount(),
+        });
+        // Cheap local checks first; skip the relay probes when they already fail.
+        if (!shouldSuspend({ ...localProbe(), activeSubscriptionCount: 0, linkedChildCount: 0 })) return false;
+
+        const sessionId = rctx.relaySessionId;
+        const activeSubscriptionCount = sessionId
+            ? await listTriggerSubscriptions(sessionId).then((subs) => subs.length).catch(() => null)
+            : null;
+        const linkedChildCount = await getLinkedChildCount(rctx);
+        if (state.sessionCompleteGeneration !== generation) return false;
+        if (!shouldSuspend({ ...localProbe(), activeSubscriptionCount, linkedChildCount })) return false;
+
+        if (!(await requestSuspend(rctx))) return false;
+        // ponytail: work arriving during the ack round-trip is lost with the
+        // worker; the relay stops routing to us once it has acked.
+        rctx.suspending = true;
+        log.info("pizzapi: idle child suspended — exiting worker; the next message wakes it");
+        // Tell the daemon first so it keeps attachments for the resume.
+        process.send?.({ type: "pre_suspend" });
+        ctx.shutdown();
+        return true;
+    }
+
     function handleAgentSettled(_event: any, ctx: any) {
         rctx.isAgentSettling = false;
         if (settledMessages === null) return; // settled without a preceding agent_end
@@ -610,7 +648,12 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
             if (rctx.isChildSession) {
                 // No grace-period auto-shutdown after a manual abort — the user
                 // took control and will steer or end the session themselves.
-                if (!manualAbort) followUpGrace.startFollowUpGrace(ctx);
+                if (!manualAbort) {
+                    followUpGrace.startFollowUpGrace(
+                        ctx,
+                        canSuspendWorker() ? () => trySuspendIdleChild(ctx) : undefined,
+                    );
+                }
             } else if (process.env.PIZZAPI_WORKER_AUTO_CLOSE === "true" && exitReason === "completed") {
                 // Auto-close: trigger-spawned sessions with autoClose shut down
                 // immediately on successful completion — no follow-up grace.
