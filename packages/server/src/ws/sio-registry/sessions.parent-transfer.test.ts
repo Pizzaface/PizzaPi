@@ -6,9 +6,10 @@
 // ============================================================================
 
 import { afterAll, describe, it, expect, beforeEach, mock } from "bun:test";
+import { createSioStateRedisFixture } from "../../tests/fixtures/sio-state-redis.js";
 
-const store = new Map<string, string>();
-const setStore = new Map<string, Set<string>>();
+const stateRedis = createSioStateRedisFixture();
+const { store, setStore } = stateRedis;
 const triggerHistoryLists = new Map<string, string[]>();
 const deletedRouteOptions: Array<{ sessionId: string; preserveDurable?: boolean }> = [];
 
@@ -44,6 +45,8 @@ mock.module("../../sessions/store.js", () => ({
     recordRelaySessionState: async () => {},
     recordRelaySessionStateSerialized: async () => {},
     recordRelaySessionOverlay: async () => {},
+    updateRelaySessionRunner: async () => {},
+    updateRelaySessionName: async () => {},
     touchRelaySession: async () => {},
 }));
 
@@ -60,71 +63,15 @@ mock.module("../../events/reconcile.js", () => ({
     routeToSubscription: () => null,
 }));
 
-const childrenKey = (p: string) => `children:${p}`;
-const pendingDelinkKey = (p: string) => `pending-delink:${p}`;
-const sessionHashKey = (s: string) => `session:${s}`;
-
-mock.module("../sio-state/index.js", () => ({
-    acquireSessionOwnershipLock: async () => {},
-    releaseSessionOwnershipLock: async () => {},
-    deleteSessionIfOwner: async () => true,
-    initStateRedis: async () => {},
-    setSession: async (sessionId: string, data: Record<string, unknown>) => {
-        store.set(sessionHashKey(sessionId), JSON.stringify(data));
-    },
-    getSession: async (sessionId: string) => {
-        const raw = store.get(sessionHashKey(sessionId));
-        return raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
-    },
-    getSessionSummary: async (sessionId: string) => {
-        const raw = store.get(sessionHashKey(sessionId));
-        return raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
-    },
-    getSessionField: async () => null,
-    updateSessionFields: async () => {},
-    deleteSession: async (sessionId: string) => {
-        store.delete(sessionHashKey(sessionId));
-    },
-    getAllSessionSummaries: async () => [],
-    refreshSessionTTL: async () => {},
-    incrementSeq: async () => 1,
-    getSeq: async () => 0,
-    setPendingRunnerLink: async () => {},
-    getPendingRunnerLink: async () => null,
-    deletePendingRunnerLink: async () => {},
-    getRunnerAssociation: async () => null,
-    setRunnerAssociation: async () => {},
-    refreshRunnerAssociationTTL: async () => {},
-    scanExpiredSessions: async () => [],
-    addChildSession: async (parentSessionId: string, childSessionId: string) => {
-        const s = setStore.get(childrenKey(parentSessionId)) ?? new Set();
-        s.add(childSessionId);
-        setStore.set(childrenKey(parentSessionId), s);
-    },
-    addChildSessionMembership: async (parentSessionId: string, childSessionId: string) => {
-        const s = setStore.get(childrenKey(parentSessionId)) ?? new Set();
-        s.add(childSessionId);
-        setStore.set(childrenKey(parentSessionId), s);
-    },
-    removeChildSession: async (parentSessionId: string, childSessionId: string) => {
-        setStore.get(childrenKey(parentSessionId))?.delete(childSessionId);
-    },
-    isChildDelinked: async (childSessionId: string) => store.has(`delinked:${childSessionId}`),
-    clearParentSessionId: async () => {},
-    refreshChildSessionsTTL: async () => {},
-    removePendingParentDelinkChild: async (parentSessionId: string, childSessionId: string) => {
-        setStore.get(pendingDelinkKey(parentSessionId))?.delete(childSessionId);
-    },
-    markChildAsDelinked: async (childSessionId: string) => {
-        store.set(`delinked:${childSessionId}`, "1");
-    },
-    getRunner: async () => null,
-}));
+const childrenKey = (p: string) => `pizzapi:sio:children:${p}`;
+const pendingDelinkKey = (p: string) => `pizzapi:sio:pending-delink-children:${p}`;
+const sessionHashKey = (s: string) => `__hash__:pizzapi:sio:session:${s}`;
 
 mock.module("./hub.js", () => ({
     broadcastToHub: async () => {},
 }));
 
+const { initStateRedis, setSession } = await import("../sio-state.js");
 const { registerTuiSession, endSharedSession } = await import("./sessions.js");
 const { initSioRegistry } = await import("./context.js");
 const { _injectRedisForTesting: _injectTriggerStoreRedis, _resetRedisForTesting: _resetTriggerStoreRedis } =
@@ -161,24 +108,21 @@ function fakeSocket() {
 }
 
 async function seedSession(sessionId: string, extra: Record<string, unknown> = {}) {
-    store.set(
-        sessionHashKey(sessionId),
-        JSON.stringify({
-            sessionId,
-            userId: "u1",
-            token: "t",
-            startedAt: new Date().toISOString(),
-            parentSessionId: null,
-            linkedParentId: null,
-            ...extra,
-        }),
-    );
+    await setSession(sessionId, {
+        sessionId,
+        userId: "u1",
+        token: "t",
+        startedAt: new Date().toISOString(),
+        parentSessionId: null,
+        linkedParentId: null,
+        ...extra,
+    } as never);
 }
 
 describe("atomic parent transfer on relink", () => {
-    beforeEach(() => {
-        store.clear();
-        setStore.clear();
+    beforeEach(async () => {
+        stateRedis.reset();
+        await initStateRedis(stateRedis.client as never);
         triggerHistoryLists.clear();
         mockTriggerRedis.lPush.mockClear();
         mockTriggerRedis.lTrim.mockClear();
@@ -247,9 +191,9 @@ describe("atomic parent transfer on relink", () => {
 });
 
 describe("endSharedSession confirmedTerminal membership removal", () => {
-    beforeEach(() => {
-        store.clear();
-        setStore.clear();
+    beforeEach(async () => {
+        stateRedis.reset();
+        await initStateRedis(stateRedis.client as never);
         triggerHistoryLists.clear();
         deletedRouteOptions.length = 0;
         mockTriggerRedis.lPush.mockClear();
@@ -310,9 +254,9 @@ describe("endSharedSession confirmedTerminal membership removal", () => {
 });
 
 describe("endSharedSession stamps disconnected with sessionId", () => {
-    beforeEach(() => {
-        store.clear();
-        setStore.clear();
+    beforeEach(async () => {
+        stateRedis.reset();
+        await initStateRedis(stateRedis.client as never);
         emittedDisconnects.length = 0;
     });
 

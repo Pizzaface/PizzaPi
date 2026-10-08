@@ -5,46 +5,11 @@
 // sensitive lifecycle operations can skip rather than treating unknown as owner.
 // ============================================================================
 
-import { afterAll, describe, it, expect, mock } from "bun:test";
-
-let fieldValue: string | null = null;
-let fieldShouldThrow = false;
+import { afterAll, beforeEach, describe, it, expect, mock } from "bun:test";
+import { createSioStateRedisFixture } from "../../tests/fixtures/sio-state-redis.js";
 
 const noopAsync = async () => {};
-
-mock.module("../sio-state/index.js", () => ({
-    setSession: noopAsync,
-    getSession: async () => null,
-    getSessionSummary: async () => null,
-    getSessionField: async (_sessionId: string, _field: string) => {
-        if (fieldShouldThrow) throw new Error("Redis ECONNRESET (test)");
-        return fieldValue;
-    },
-    acquireSessionOwnershipLock: noopAsync,
-    releaseSessionOwnershipLock: noopAsync,
-    deleteSessionIfOwner: async () => true,
-    updateSessionFields: noopAsync,
-    deleteSession: noopAsync,
-    getAllSessionSummaries: async () => [],
-    refreshSessionTTL: noopAsync,
-    incrementSeq: async () => 0,
-    getSeq: async () => 0,
-    setPendingRunnerLink: noopAsync,
-    getPendingRunnerLink: async () => null,
-    deletePendingRunnerLink: noopAsync,
-    getRunnerAssociation: async () => null,
-    setRunnerAssociation: noopAsync,
-    refreshRunnerAssociationTTL: noopAsync,
-    scanExpiredSessions: async () => [],
-    addChildSession: noopAsync,
-    addChildSessionMembership: noopAsync,
-    removeChildSession: noopAsync,
-    isChildDelinked: async () => false,
-    clearParentSessionId: noopAsync,
-    refreshChildSessionsTTL: noopAsync,
-    removePendingParentDelinkChild: noopAsync,
-    getRunner: async () => null,
-}));
+const stateRedis = createSioStateRedisFixture();
 
 mock.module("./meta.js", () => ({ extractMetaFromHeartbeat: () => ({}) }));
 mock.module("./hub.js", () => ({ broadcastToHub: noopAsync }));
@@ -59,6 +24,7 @@ mock.module("../../sessions/store.js", () => ({
     recordRelaySessionState: noopAsync,
     recordRelaySessionStateSerialized: noopAsync,
     recordRelaySessionOverlay: noopAsync,
+    updateRelaySessionRunner: noopAsync,
     touchRelaySession: noopAsync,
     updateRelaySessionName: noopAsync,
 }));
@@ -72,24 +38,31 @@ mock.module("../stale-parent-link.js", () => ({ severStaleParentLink: noopAsync 
 
 afterAll(() => mock.restore());
 
+const { initStateRedis } = await import("../sio-state.js");
 const { getSessionOwnerToken } = await import("./sessions.js");
 
 describe("getSessionOwnerToken (A2-017 fail-closed ownership)", () => {
+    beforeEach(async () => {
+        stateRedis.reset();
+        await initStateRedis(stateRedis.client as never);
+    });
+
     it("propagates Redis errors so callers skip sensitive operations", async () => {
-        fieldShouldThrow = true;
+        stateRedis.failHGet(new Error("Redis ECONNRESET (test)"));
         await expect(getSessionOwnerToken("sess-1")).rejects.toThrow("Redis ECONNRESET");
-        fieldShouldThrow = false;
     });
 
     it("returns the stored token when Redis read succeeds", async () => {
-        fieldValue = "token-abc";
+        await (stateRedis.client.hSet as (key: string, field: string, value: string) => Promise<void>)(
+            "pizzapi:sio:session:sess-1",
+            "token",
+            "token-abc",
+        );
         const result = await getSessionOwnerToken("sess-1");
         expect(result).toBe("token-abc");
-        fieldValue = null;
     });
 
     it("returns null when field is absent (session not yet written)", async () => {
-        fieldValue = null;
         const result = await getSessionOwnerToken("sess-1");
         expect(result).toBeNull();
     });
