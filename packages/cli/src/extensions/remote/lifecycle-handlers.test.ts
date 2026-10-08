@@ -23,6 +23,7 @@ mock.module("../trigger-client.js", () => ({
             ? _triggerClientMock.subscriptionsOverride()
             : Promise.resolve([]),
     unsubscribeTrigger: () => Promise.resolve({ ok: true }),
+    clearTriggerHistory: async () => ({ ok: true }),
 }));
 import { registerLifecycleHandlers, type LifecycleHandlerState } from "./lifecycle-handlers.js";
 import { createFollowUpGrace } from "./followup-grace.js";

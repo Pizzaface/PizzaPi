@@ -32,6 +32,7 @@ mock.module("../triggers/extension.js", () => ({
 mock.module("../trigger-client.js", () => ({
     listTriggerSubscriptions: async (_sid: string) => [],
     unsubscribeTrigger: async () => ({ ok: true }),
+    clearTriggerHistory: async () => ({ ok: true }),
 }));
 
 // Mocked after module mocks are registered:
