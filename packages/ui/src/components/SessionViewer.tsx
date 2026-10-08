@@ -34,6 +34,7 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { cn } from "@/lib/utils";
+import { computeLiveAnnouncement } from "@/lib/session-live-announcements";
 import { PizzaLogo } from "@/components/PizzaLogo";
 import {
   canSubmitSessionInput,
@@ -210,6 +211,21 @@ export function SessionViewer({
   // True when the session has been stuck hydrating ("Connecting…"/"Loading
   // session…") long enough that the disabled composer needs an explanation.
   const [hydrationStuck, setHydrationStuck] = React.useState(false);
+
+  // Assertive ARIA live-region text for screen readers: session
+  // connect/disconnect/error state and agent start/stop. Reset whenever the
+  // viewed session changes so a leftover announcement doesn't bleed over.
+  const [liveAnnouncement, setLiveAnnouncement] = React.useState("");
+  const prevLiveStateRef = React.useRef({ status: viewerStatus, agentActive: !!agentActive, sessionId });
+  React.useEffect(() => {
+    const prev = prevLiveStateRef.current;
+    const announcement =
+      prev.sessionId === sessionId
+        ? computeLiveAnnouncement(prev.status, viewerStatus, prev.agentActive, !!agentActive)
+        : null;
+    prevLiveStateRef.current = { status: viewerStatus, agentActive: !!agentActive, sessionId };
+    setLiveAnnouncement(announcement ?? "");
+  }, [viewerStatus, agentActive, sessionId]);
 
   const sendActionSigilResponse = React.useCallback(
     async (text: string): Promise<boolean> => {
@@ -658,6 +674,11 @@ export function SessionViewer({
         <ModeUiContext.Provider value={modeUi ?? null}>
         <ArtifactHostContext.Provider value={artifactHost}>
         <div className="flex flex-col flex-1 min-h-0">
+
+          {/* Screen-reader-only announcer for connection/agent state changes. */}
+          <div aria-live="assertive" aria-atomic="true" className="sr-only">
+            {liveAnnouncement}
+          </div>
 
           {/* ── Session info bar ─────────────────────────────────────────── */}
           {sessionId && (

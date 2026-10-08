@@ -38,6 +38,7 @@ export const Conversation = ({ className, ...props }: ConversationProps) => (
     initial="instant"
     resize="instant"
     role="log"
+    aria-live="polite"
     {...props}
   />
 );
