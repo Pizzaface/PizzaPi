@@ -567,7 +567,7 @@ async function main() {
             ...(noPlugins ? [] : getPluginSkillPaths(cwd)),
         ],
         additionalPromptTemplatePaths: [
-            ...buildPromptTemplatePaths(cwd),
+            ...buildPromptTemplatePaths(cwd, projectTrusted),
             ...(noPlugins ? [] : getPluginPromptTemplatePaths(cwd)),
         ],
         ...(config.systemPrompt !== undefined
@@ -606,7 +606,7 @@ async function main() {
                     ...(noPlugins ? [] : getPluginSkillPaths(opts.cwd)),
                 ],
                 additionalPromptTemplatePaths: [
-                    ...buildPromptTemplatePaths(opts.cwd),
+                    ...buildPromptTemplatePaths(opts.cwd, rtProjectTrusted),
                     ...(noPlugins ? [] : getPluginPromptTemplatePaths(opts.cwd)),
                 ],
                 ...(config.systemPrompt !== undefined && {

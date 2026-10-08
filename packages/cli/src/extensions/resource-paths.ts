@@ -62,7 +62,7 @@ export function createResourcePathsExtension(options: {
                     ...(options.skipPlugins ? [] : getPluginSkillPaths(cwd)),
                 ],
                 promptPaths: [
-                    ...buildPromptTemplatePaths(cwd),
+                    ...buildPromptTemplatePaths(cwd, projectTrusted),
                     ...(options.skipPlugins ? [] : getPluginPromptTemplatePaths(cwd)),
                 ],
             };

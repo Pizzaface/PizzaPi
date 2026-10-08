@@ -478,7 +478,10 @@ describe("buildSkillPaths", () => {
     test("never returns duplicates, even when cwd IS the home dir", () => {
         // Regression: at $HOME the ~-relative and cwd-relative entries collapse
         // onto the same dir, and pi reported every file as colliding with itself.
-        const paths = buildSkillPaths(homedir());
+        // Trusted so the project-scope (cwd-relative) entries are actually added
+        // and have something to collapse onto the user-scope ones — otherwise
+        // this test passes for the wrong reason (nothing cwd-relative to collide).
+        const paths = buildSkillPaths(homedir(), undefined, true);
         expect(paths).toEqual([...new Set(paths)]);
     });
 
@@ -530,13 +533,22 @@ describe("buildSkillPaths", () => {
 // ── buildPromptTemplatePaths ──────────────────────────────────────────────────
 
 describe("buildPromptTemplatePaths", () => {
-    test("includes the commands dirs that exist", () => {
+    test("includes the commands dirs that exist, when trusted", () => {
+        const project = makeTmpDir();
+        mkdirSync(join(project, ".pizzapi", "commands"), { recursive: true });
+        mkdirSync(join(project, ".agents", "commands"), { recursive: true });
+        const paths = buildPromptTemplatePaths(project, true);
+        expect(paths).toContain(join(project, ".pizzapi", "commands"));
+        expect(paths).toContain(join(project, ".agents", "commands"));
+    });
+
+    test("omits project-scope commands dirs for an untrusted project (default) — same bypass class as buildSkillPaths (9py0SHJs / EN1UeiFK)", () => {
         const project = makeTmpDir();
         mkdirSync(join(project, ".pizzapi", "commands"), { recursive: true });
         mkdirSync(join(project, ".agents", "commands"), { recursive: true });
         const paths = buildPromptTemplatePaths(project);
-        expect(paths).toContain(join(project, ".pizzapi", "commands"));
-        expect(paths).toContain(join(project, ".agents", "commands"));
+        expect(paths).not.toContain(join(project, ".pizzapi", "commands"));
+        expect(paths).not.toContain(join(project, ".agents", "commands"));
     });
 
     test("omits the prompts dir that pi auto-discovers", () => {

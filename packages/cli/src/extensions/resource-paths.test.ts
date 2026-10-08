@@ -1,4 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, afterEach } from "bun:test";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import { createResourcePathsExtension } from "./resource-paths.js";
 import { buildPromptTemplatePaths, buildSkillPaths } from "../skills.js";
 import { getPluginSkillPaths } from "./claude-plugins.js";
@@ -79,6 +83,78 @@ describe("createResourcePathsExtension", () => {
             ...getPluginSkillPaths(otherCwd),
         ]);
         expect(otherCwdResult.promptPaths).toEqual(buildPromptTemplatePaths(otherCwd));
+    });
+
+    describe("trust-gates project-scope paths per event.cwd (9py0SHJs)", () => {
+        let tmpDir: string;
+
+        afterEach(() => {
+            if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+        });
+
+        test("a trusted event.cwd gets project-scope skill/command dirs, an untrusted one does not", async () => {
+            tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-resource-paths-trust-"));
+            const agentDir = join(tmpDir, "agent");
+            const trustedCwd = join(tmpDir, "trusted-project");
+            const untrustedCwd = join(tmpDir, "untrusted-project");
+            mkdirSync(agentDir, { recursive: true });
+            mkdirSync(trustedCwd, { recursive: true });
+            mkdirSync(untrustedCwd, { recursive: true });
+            // conventionPaths() filters out dirs that don't exist, so both cwds
+            // need the real project-scope dirs on disk for a trust difference to
+            // show up in the returned paths at all.
+            for (const cwd of [trustedCwd, untrustedCwd]) {
+                mkdirSync(join(cwd, ".pizzapi", "skills"), { recursive: true });
+                mkdirSync(join(cwd, ".pizzapi", "commands"), { recursive: true });
+            }
+            new ProjectTrustStore(agentDir).set(trustedCwd, true);
+            // untrustedCwd is never decided — resolveExplicitProjectTrust fails closed.
+
+            let handler: ((event: { cwd: string; reason: string }) => unknown) | undefined;
+            const pi = {
+                on: (event: string, fn: typeof handler) => {
+                    if (event === "resources_discover") handler = fn;
+                },
+            };
+            createResourcePathsExtension({ agentDir, skipPlugins: true })(pi as any);
+            expect(handler).toBeDefined();
+
+            const trustedResult = (await handler!({ cwd: trustedCwd, reason: "reload" })) as {
+                skillPaths: string[];
+                promptPaths: string[];
+            };
+            const untrustedResult = (await handler!({ cwd: untrustedCwd, reason: "reload" })) as {
+                skillPaths: string[];
+                promptPaths: string[];
+            };
+
+            expect(trustedResult.skillPaths).toEqual(buildSkillPaths(trustedCwd, undefined, true));
+            expect(trustedResult.promptPaths).toEqual(buildPromptTemplatePaths(trustedCwd, true));
+            expect(untrustedResult.skillPaths).toEqual(buildSkillPaths(untrustedCwd, undefined, false));
+            expect(untrustedResult.promptPaths).toEqual(buildPromptTemplatePaths(untrustedCwd, false));
+            expect(trustedResult.skillPaths).not.toEqual(untrustedResult.skillPaths);
+        });
+
+        test("omitted agentDir fails closed (untrusted) even for an otherwise-trusted cwd", async () => {
+            tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-resource-paths-trust-"));
+            const agentDir = join(tmpDir, "agent");
+            const projectCwd = join(tmpDir, "project");
+            mkdirSync(agentDir, { recursive: true });
+            mkdirSync(projectCwd, { recursive: true });
+            new ProjectTrustStore(agentDir).set(projectCwd, true);
+
+            let handler: ((event: { cwd: string; reason: string }) => unknown) | undefined;
+            const pi = {
+                on: (event: string, fn: typeof handler) => {
+                    if (event === "resources_discover") handler = fn;
+                },
+            };
+            // No agentDir passed — can't re-derive trust, must fail closed.
+            createResourcePathsExtension({ skipPlugins: true })(pi as any);
+
+            const result = (await handler!({ cwd: projectCwd, reason: "reload" })) as { skillPaths: string[] };
+            expect(result.skillPaths).toEqual(buildSkillPaths(projectCwd, undefined, false));
+        });
     });
 
     test("dual-path: DefaultResourceLoader constructor still wires additionalSkillPaths/additionalPromptTemplatePaths in worker.ts and index.ts", async () => {

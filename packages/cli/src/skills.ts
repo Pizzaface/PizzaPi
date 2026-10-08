@@ -376,11 +376,11 @@ function conventionPaths(paths: string[]): string[] {
  * Includes:
  *   - Built-in skills shipped with the CLI package
  *   - ~/.pizzapi/skills/        (global PizzaPi skills)
- *   - <cwd>/.pizzapi/skills/    (project-local PizzaPi skills)
+ *   - <cwd>/.pizzapi/skills/    (project-local PizzaPi skills — only when projectTrusted)
  *   - ~/.pizzapi/agents/        (global agents treated as skills)
- *   - <cwd>/.pizzapi/agents/    (project-local agents treated as skills)
- *   - <cwd>/.agents/skills/     (Claude Code compatible project skills)
- *   - <cwd>/.agents/agents/     (Claude Code compatible project agents)
+ *   - <cwd>/.pizzapi/agents/    (project-local agents treated as skills — only when projectTrusted)
+ *   - <cwd>/.agents/skills/     (Claude Code compatible project skills — only when projectTrusted)
+ *   - <cwd>/.agents/agents/     (Claude Code compatible project agents — only when projectTrusted)
  *   - Paths declared in config.skills
  *
  * USER-scope `skills/` dirs are omitted: pi auto-discovers
@@ -444,8 +444,8 @@ export function buildWorkerSkillPaths(cwd: string, configSkills?: string[]): str
  *
  * Includes:
  *   - ~/.pizzapi/commands/       (global commands — Claude Code compatible)
- *   - <cwd>/.pizzapi/commands/   (project-local commands)
- *   - <cwd>/.agents/commands/    (Claude Code compatible project commands)
+ *   - <cwd>/.pizzapi/commands/   (project-local commands — only when projectTrusted)
+ *   - <cwd>/.agents/commands/    (Claude Code compatible project commands — only when projectTrusted)
  *
  * Deliberately NOT included — pi auto-discovers it itself, via
  * `collectAutoPromptEntries()`:
@@ -457,11 +457,19 @@ export function buildWorkerSkillPaths(cwd: string, configSkills?: string[]): str
  * `"build" collision: ✓ ... ✗ ... (skipped)` at startup. `commands/` dirs
  * stay: `commands` is not one of pi's resource types, so nothing else
  * discovers them.
+ *
+ * PROJECT-scope `commands/` dirs are only added when `projectTrusted` is
+ * true — same bypass class and same fix as `buildSkillPaths` (Godmother
+ * `9py0SHJs` / `EN1UeiFK`): these are project-controlled, and upstream
+ * merges `additionalPromptTemplatePaths` with no trust check of its own, so
+ * an untrusted repo's `.pizzapi/commands`/`.agents/commands` would otherwise
+ * still load and run as slash commands. Fails closed: an undecided or
+ * explicitly-untrusted repo gets none of the project-scope dirs below. The
+ * global `~/.pizzapi/commands` dir is unaffected — it's not project-controlled.
  */
-export function buildPromptTemplatePaths(cwd: string): string[] {
+export function buildPromptTemplatePaths(cwd: string, projectTrusted = false): string[] {
     return conventionPaths([
         join(homedir(), ".pizzapi", "commands"),
-        join(cwd, ".pizzapi", "commands"),
-        join(cwd, ".agents", "commands"),
+        ...(projectTrusted ? [join(cwd, ".pizzapi", "commands"), join(cwd, ".agents", "commands")] : []),
     ]);
 }

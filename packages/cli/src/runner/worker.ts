@@ -431,7 +431,7 @@ async function main(): Promise<void> {
             ...(skipPlugins ? [] : getPluginSkillPaths(cwd)),
         ],
         additionalPromptTemplatePaths: [
-            ...buildPromptTemplatePaths(cwd),
+            ...buildPromptTemplatePaths(cwd, projectTrusted),
             ...(skipPlugins ? [] : getPluginPromptTemplatePaths(cwd)),
         ],
         ...(config.systemPrompt !== undefined
