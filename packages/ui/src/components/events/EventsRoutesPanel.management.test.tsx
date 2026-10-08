@@ -10,10 +10,11 @@ let route: any;
 let routeList: any[] | null = null;
 let publishDeliveries: Array<{ status: string }>;
 let listenerHistory: any[] | undefined = [];
+let eventSource: any = { kind: "service", id: "github", auth: "internal" };
 let routeUpdateError = false;
 let routeLoadError = false;
 const calls: Array<{ url: string; method: string; body: any }> = [];
-const resetRoute = () => { routeList = null; listenerHistory = []; route = { routeId: "r-1", eventType: "github:pr_comment", target: { kind: "session", sessionId: "s-1", runnerId: "runner-1", offlinePolicy: "fail" }, filters: [{ field: "action", value: "opened" }], deliverAs: "followUp", origin: "ui", createdAt: "2026-01-01T00:00:00Z" }; publishDeliveries = [{ status: "pending" }]; };
+const resetRoute = () => { routeList = null; listenerHistory = []; eventSource = { kind: "service", id: "github", auth: "internal" }; route = { routeId: "r-1", eventType: "github:pr_comment", target: { kind: "session", sessionId: "s-1", runnerId: "runner-1", offlinePolicy: "fail" }, filters: [{ field: "action", value: "opened" }], deliverAs: "followUp", origin: "ui", createdAt: "2026-01-01T00:00:00Z" }; publishDeliveries = [{ status: "pending" }]; };
 resetRoute();
 const fetchSpy = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = String(input); const method = init?.method ?? "GET";
@@ -21,7 +22,7 @@ const fetchSpy = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
   if (url === "/api/routes") return { ok: !routeLoadError, status: routeLoadError ? 500 : 200, json: async () => routeLoadError ? ({ error: "Route service unavailable" }) : ({ routes: routeList ?? [route] }) } as unknown as Response;
   if (url.startsWith("/api/events")) {
     if (method === "POST") listenerHistory = [{ deliveryId: "d-1", eventId: "e-1", status: "delivered", sessionId: "s-1", eventType: "github:pr_comment", createdAt: "2026-01-01T00:00:00Z" }];
-    if (method === "GET") return { ok: true, json: async () => ({ events: [{ eventId: "e-1", type: "github:pr_comment", source: { kind: "service", id: "github", auth: "internal" }, payload: {}, summary: "Runner event", ts: "2026-01-01T00:00:00Z" }] }) } as unknown as Response;
+    if (method === "GET") return { ok: true, json: async () => ({ events: [{ eventId: "e-1", type: "github:pr_comment", source: eventSource, payload: {}, summary: "Runner event", ts: "2026-01-01T00:00:00Z" }] }) } as unknown as Response;
     return { ok: true, json: async () => ({ deliveries: publishDeliveries }) } as unknown as Response;
   }
   if (method === "PUT" && url.startsWith("/api/routes/") && routeUpdateError) return { ok: false, status: 400, json: async () => ({ error: "Invalid route" }) } as unknown as Response;
@@ -123,6 +124,16 @@ describe("runner-wide trigger manager", () => {
     await waitFor(() => expect(calls.some((entry) => entry.url === "/api/events/e-1/deliveries?runnerId=runner-1")).toBe(true));
   });
 
+  test("labels API event sources without repeating an empty API id", async () => {
+    eventSource = { kind: "api", id: "api", auth: "api-key" };
+    const container = await mount();
+    const eventsTab = Array.from(container.querySelectorAll('[role="tab"]')).find((tab) => tab.textContent?.trim() === "Events")!;
+    await act(async () => { fireEvent.click(eventsTab); });
+    await waitFor(() => expect(container.textContent).toContain("Runner event"));
+    expect(container.textContent).toContain("API");
+    expect(container.textContent).not.toContain("api:api");
+  });
+
   test("shows server-enabled event routes, delivery policy, and route-specific test fire", async () => {
     const container = await mount();
     expect(container.textContent).toContain("Enabled · waiting for event");
@@ -132,8 +143,14 @@ describe("runner-wide trigger manager", () => {
     expect(container.textContent).toContain("Work");
     expect(container.textContent).toContain("Queue after current turn");
     await act(async () => { fireEvent.click(Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Test")!); });
+    expect(container.textContent).toContain("Source session: None");
+    expect(container.textContent).toContain("Target session: Work");
+    expect(container.textContent).toContain("follow-up queues after the current turn");
+    await act(async () => { fireEvent.click(Array.from(container.querySelectorAll("label")).find((label) => label.textContent?.includes("Expects response"))!.querySelector("input")!); });
+    await act(async () => { fireEvent.click(Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Send test trigger")!); });
+    await waitFor(() => expect(container.textContent).toContain("Test trigger sent to 1 delivery."));
     const call = calls.find((entry) => entry.url === "/api/events" && entry.method === "POST");
-    expect(call?.body).toEqual({ type: "github:pr_comment", routeIds: ["r-1"], payload: { action: "opened", comment: "Test comment" }, summary: "Test trigger" });
+    expect(call?.body).toEqual({ type: "github:pr_comment", routeIds: ["r-1"], payload: { action: "opened", comment: "Test comment" }, summary: "Test trigger", responseContract: { actions: ["ack"], escalate: true } });
   });
 
   test("updates expanded route history after Test reloads listener delivery history", async () => {
@@ -142,6 +159,7 @@ describe("runner-wide trigger manager", () => {
     await act(async () => { fireEvent.click(container.querySelector('[aria-expanded="false"]')!); });
     expect(container.textContent).toContain("No delivery history.");
     await act(async () => { fireEvent.click(Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Test")!); });
+    await act(async () => { fireEvent.click(Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Send test trigger")!); });
     await waitFor(() => expect(container.textContent).toContain("delivered"));
     expect(calls.filter((entry) => entry.url.includes("trigger-listeners")).length).toBeGreaterThanOrEqual(2);
   });
@@ -150,6 +168,7 @@ describe("runner-wide trigger manager", () => {
     publishDeliveries = [];
     const container = await mount();
     await act(async () => { fireEvent.click(Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Test")!); });
+    await act(async () => { fireEvent.click(Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Send test trigger")!); });
     await waitFor(() => expect(container.textContent).toContain("no delivery matched this trigger"));
     expect(calls.some((entry) => entry.url === "/api/events" && entry.body?.routeIds?.[0] === "r-1")).toBe(true);
   });
