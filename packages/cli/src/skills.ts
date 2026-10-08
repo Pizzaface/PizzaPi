@@ -7,7 +7,7 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expandHome } from "./config.js";
 import { parseFrontmatterDescription } from "./frontmatter.js";
@@ -188,9 +188,74 @@ export interface AgentFile {
     content: string;
 }
 
-/** Load direct markdown rule files from a directory in lexicographic order. */
-export function loadRulesDir(dir: string): AgentFile[] {
-    if (!existsSync(dir)) return [];
+/**
+ * Lstat every path component between `root` and `path` (directories AND the
+ * final entry), rejecting if any of them is a symlink.
+ *
+ * A plain `lstatSync(path)` only tells you whether the *final* component is a
+ * symlink — intermediate directory components are still followed by the OS when
+ * resolving the rest of the path. That means a hostile repo can ship a directory
+ * symlink (e.g. `.agents -> /Users/victim/Documents` or `.pizzapi -> /elsewhere`)
+ * and every entry-level `lstatSync` on files inside it comes back looking like a
+ * plain file, because by the time lstat runs the OS has already walked through
+ * the symlinked directory to get there. Walking component-by-component from a
+ * trusted `root` and lstatting each *prefix* (not the fully-resolved final path)
+ * catches that: once we've verified a prefix isn't a symlink, resolving the next
+ * segment against it is accurate.
+ *
+ * `root` bounds the walk deliberately: we only want to validate the path
+ * components a hostile repo could control (under the project cwd, or under
+ * `~/.pizzapi`), not every ancestor up to the filesystem root. Walking all the
+ * way up would also trip over legitimate OS-level symlinks outside anyone's
+ * control (e.g. macOS's `/var` -> `/private/var`, or `/tmp` -> `/private/tmp`,
+ * which every tmp-dir-based test and runtime path sits under).
+ *
+ * If `path` isn't actually under `root` (e.g. an ancestor-directory AGENTS.md
+ * above cwd, found via upstream's own ancestor walk), fall back to just
+ * checking `path`'s own final component plus its immediate parent — enough to
+ * catch "the file itself, or the directory holding it, is a symlink" without
+ * walking arbitrarily far up the tree.
+ */
+function isSafePath(root: string, path: string): boolean {
+    const rel = relative(root, path);
+    if (rel && !rel.startsWith(`..${sep}`) && rel !== "..") {
+        let current = root;
+        for (const part of rel.split(sep)) {
+            current = join(current, part);
+            try {
+                if (lstatSync(current).isSymbolicLink()) return false;
+            } catch {
+                return true; // missing/unreadable; let the caller's existsSync/readFileSync handle it
+            }
+        }
+        return true;
+    }
+    // path === root, or path isn't under root at all — bound the check to just
+    // the entry itself and its immediate parent directory.
+    for (const candidate of [path, dirname(path)]) {
+        try {
+            if (lstatSync(candidate).isSymbolicLink()) return false;
+        } catch {
+            return true;
+        }
+    }
+    return true;
+}
+
+/**
+ * Load direct markdown rule files from a directory in lexicographic order.
+ *
+ * `root` bounds the symlink walk (defaults to `dir` itself, i.e. only check
+ * whether `dir` is a symlink, not its ancestors) — pass the directory ABOVE
+ * `dir` that the caller trusts (cwd or homedir) so a symlinked intermediate
+ * component like `.pizzapi` is caught too. See `isSafePath` for why the walk
+ * must be bounded rather than going all the way to the filesystem root.
+ */
+export function loadRulesDir(dir: string, root: string = dir): AgentFile[] {
+    // Walks every component between `root` and `dir` (e.g. both `.pizzapi` and
+    // `.pizzapi/rules`), so a symlinked directory anywhere on the way is rejected
+    // before we ever readdir it.
+    if (!existsSync(dir) || !isSafePath(root, dir)) return [];
     let entries: string[];
     try {
         entries = readdirSync(dir).sort();
@@ -203,9 +268,9 @@ export function loadRulesDir(dir: string): AgentFile[] {
         if (!entry.endsWith(".md")) continue;
         const path = join(dir, entry);
         try {
-            // Use lstatSync: skip symlinks so a hostile repo can't read arbitrary local files.
+            // lstatSync: a symlink never reports isFile() true, so this alone skips symlinks.
             const s = lstatSync(path);
-            if (s.isSymbolicLink() || !s.isFile()) continue;
+            if (!s.isFile()) continue;
             files.push({ path, content: readFileSync(path, "utf-8") });
         } catch {
             // Skip unreadable or concurrently removed files.
@@ -218,8 +283,8 @@ export function loadRulesDir(dir: string): AgentFile[] {
 export function loadRules(cwd: string): { global: AgentFile[]; project: AgentFile[] } {
     // TODO: also discover Claude Code's ~/.claude/rules/ for compatibility.
     return {
-        global: loadRulesDir(join(homedir(), ".pizzapi", "rules")),
-        project: loadRulesDir(join(cwd, ".pizzapi", "rules")),
+        global: loadRulesDir(join(homedir(), ".pizzapi", "rules"), homedir()),
+        project: loadRulesDir(join(cwd, ".pizzapi", "rules"), cwd),
     };
 }
 
@@ -249,11 +314,13 @@ export function loadProjectAgentFiles(cwd: string): AgentFile[] {
     // to guarantee it's present — deduplication happens in agentsFilesOverride)
     const agentsMdPath = join(cwd, "AGENTS.md");
     try {
-        // Use lstatSync: skip symlinks so a hostile repo can't read arbitrary local files.
-        const s = lstatSync(agentsMdPath);
-        if (s.isFile()) {
-            const content = readFileSync(agentsMdPath, "utf-8");
-            files.push({ path: agentsMdPath, content });
+        // isSafePath rejects both a symlinked AGENTS.md and a symlinked ancestor dir.
+        if (isSafePath(cwd, agentsMdPath)) {
+            const s = lstatSync(agentsMdPath);
+            if (s.isFile()) {
+                const content = readFileSync(agentsMdPath, "utf-8");
+                files.push({ path: agentsMdPath, content });
+            }
         }
     } catch {
         // Skip missing or unreadable files
@@ -261,7 +328,8 @@ export function loadProjectAgentFiles(cwd: string): AgentFile[] {
 
     // Load .agents/*.md from cwd
     const dotAgentsDir = join(cwd, ".agents");
-    if (existsSync(dotAgentsDir)) {
+    // isSafePath walks every component, catching `.agents` itself being a symlinked dir.
+    if (existsSync(dotAgentsDir) && isSafePath(cwd, dotAgentsDir)) {
         let entries: string[];
         try {
             entries = readdirSync(dotAgentsDir);
@@ -272,7 +340,7 @@ export function loadProjectAgentFiles(cwd: string): AgentFile[] {
             if (!file.endsWith(".md")) continue;
             const filePath = join(dotAgentsDir, file);
             try {
-                // Use lstatSync: skip symlinks so a hostile repo can't read arbitrary local files.
+                // lstatSync: a symlink never reports isFile() true, so this alone skips symlinks.
                 const s = lstatSync(filePath);
                 if (!s.isFile()) continue;
                 const content = readFileSync(filePath, "utf-8");
@@ -317,9 +385,22 @@ export function createAgentsFilesOverride(
     if (additionalFiles.length === 0 && sendAgentsMd) return null;
 
     return (base) => {
+        // The upstream `DefaultResourceLoader` discovers this base list with a plain
+        // `statSync` (follows symlinks), so a symlinked cwd/AGENTS.md, CLAUDE.md,
+        // AGENTS.override.md, or ancestor-dir context file would otherwise reach the
+        // prompt untouched by our own symlink guards, which only cover the files WE
+        // load. Re-filter here so nothing symlinked survives regardless of name.
+        //
+        // Bound each file's symlink walk to whichever trusted root it lives under
+        // (the project cwd, or `~/.pizzapi`); files from neither (e.g. an
+        // ancestor-directory AGENTS.md above cwd) fall back inside `isSafePath`
+        // to checking just the file and its immediate parent.
+        const home = homedir();
+        const rootFor = (path: string) => (path === home || path.startsWith(home + sep) ? home : cwd);
+        const safeAgentsFiles = base.agentsFiles.filter((file) => isSafePath(rootFor(file.path), file.path));
         const baseFiles = sendAgentsMd
-            ? base.agentsFiles
-            : base.agentsFiles.filter((file) => !isAgentsMdPath(file.path));
+            ? safeAgentsFiles
+            : safeAgentsFiles.filter((file) => !isAgentsMdPath(file.path));
         const seenPaths = new Set<string>();
         const unique = (files: AgentFile[]) => files.filter((file) => {
             if (seenPaths.has(file.path)) return false;

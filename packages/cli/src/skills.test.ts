@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import * as os from "node:os";
@@ -27,6 +27,22 @@ function makeTmpDir(): string {
     const dir = join(tmpdir(), `pizzapi-skill-test-${randomBytes(8).toString("hex")}`);
     mkdirSync(dir, { recursive: true });
     return dir;
+}
+
+/**
+ * Create a symlink, returning false (instead of throwing) on EPERM so tests on
+ * symlink-restricted platforms can skip gracefully. Only wraps `symlinkSync`
+ * itself — never the assertions that follow — so a platform that DOES support
+ * symlinks always runs the real regression check.
+ */
+function trySymlink(target: string, path: string): boolean {
+    try {
+        symlinkSync(target, path);
+        return true;
+    } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code === "EPERM") return false;
+        throw err;
+    }
 }
 
 /** Write a SKILL.md inside a subdirectory of the given skills dir. */
@@ -259,7 +275,7 @@ describe("scanSkillsDir", () => {
         // Create a broken symlink as a .md file
         const brokenLink = join(dir, "broken.md");
         try {
-            require("node:fs").symlinkSync("/nonexistent/path/skill.md", brokenLink);
+            symlinkSync("/nonexistent/path/skill.md", brokenLink);
         } catch {
             return; // Skip if symlinks not supported
         }
@@ -285,7 +301,7 @@ describe("scanSkillsDir", () => {
         const badDir = join(dir, "bad-skill");
         mkdirSync(badDir, { recursive: true });
         try {
-            require("node:fs").symlinkSync("/nonexistent/SKILL.md", join(badDir, "SKILL.md"));
+            symlinkSync("/nonexistent/SKILL.md", join(badDir, "SKILL.md"));
         } catch {
             return; // Skip if symlinks not supported
         }
@@ -606,11 +622,9 @@ describe("loadProjectAgentFiles", () => {
         try {
             const secretPath = join(secretDir, "secret.txt");
             writeFileSync(secretPath, "super-secret", "utf-8");
-            require("node:fs").symlinkSync(secretPath, join(dir, "AGENTS.md"));
+            if (!trySymlink(secretPath, join(dir, "AGENTS.md"))) return; // symlinks unsupported on this platform
             const files = loadProjectAgentFiles(dir);
             expect(files).toEqual([]);
-        } catch (err: unknown) {
-            if ((err as NodeJS.ErrnoException).code !== "EPERM") throw err;
         } finally {
             rmSync(secretDir, { recursive: true, force: true });
         }
@@ -622,13 +636,26 @@ describe("loadProjectAgentFiles", () => {
             const secretPath = join(secretDir, "secret.txt");
             writeFileSync(secretPath, "super-secret", "utf-8");
             mkdirSync(join(dir, ".agents"), { recursive: true });
-            require("node:fs").symlinkSync(secretPath, join(dir, ".agents", "linked.md"));
+            if (!trySymlink(secretPath, join(dir, ".agents", "linked.md"))) return;
             const files = loadProjectAgentFiles(dir);
             expect(files).toEqual([]);
-        } catch (err: unknown) {
-            if ((err as NodeJS.ErrnoException).code !== "EPERM") throw err;
         } finally {
             rmSync(secretDir, { recursive: true, force: true });
+        }
+    });
+
+    test("does not follow a symlinked .agents directory itself", () => {
+        // Dish bz-002 Ramsey P0 #2: a hostile repo can ship `.agents -> /victim/dir`.
+        // Entry-level lstat on files inside it is not enough — the dir component itself
+        // must be lstat'd before readdir, since the OS follows dir symlinks to get there.
+        const victimDir = makeTmpDir();
+        try {
+            writeFileSync(join(victimDir, "notes.md"), "TOPSECRET-VICTIM-NOTES", "utf-8");
+            if (!trySymlink(victimDir, join(dir, ".agents"))) return;
+            const files = loadProjectAgentFiles(dir);
+            expect(files).toEqual([]);
+        } finally {
+            rmSync(victimDir, { recursive: true, force: true });
         }
     });
 });
@@ -660,13 +687,42 @@ describe("loadRulesDir", () => {
         try {
             const secretPath = join(secretDir, "secret.txt");
             writeFileSync(secretPath, "super-secret", "utf-8");
-            require("node:fs").symlinkSync(secretPath, join(dir, "linked.md"));
+            if (!trySymlink(secretPath, join(dir, "linked.md"))) return;
             expect(loadRulesDir(dir)).toEqual([]);
-        } catch (err: unknown) {
-            if ((err as NodeJS.ErrnoException).code !== "EPERM") throw err;
         } finally {
             rmSync(dir, { recursive: true, force: true });
             rmSync(secretDir, { recursive: true, force: true });
+        }
+    });
+
+    test("does not follow a symlinked rules directory itself (.pizzapi/rules)", () => {
+        // Dish bz-002 Ramsey P0 #2: `.pizzapi` or `.pizzapi/rules` can itself be a
+        // symlink to an arbitrary local directory; readdir on the resolved target
+        // would otherwise pass every file through the entry-level lstat check.
+        const projectDir = makeTmpDir();
+        const victimDir = makeTmpDir();
+        try {
+            writeFileSync(join(victimDir, "notes.md"), "TOPSECRET-VICTIM-NOTES", "utf-8");
+            mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+            if (!trySymlink(victimDir, join(projectDir, ".pizzapi", "rules"))) return;
+            expect(loadRulesDir(join(projectDir, ".pizzapi", "rules"))).toEqual([]);
+        } finally {
+            rmSync(projectDir, { recursive: true, force: true });
+            rmSync(victimDir, { recursive: true, force: true });
+        }
+    });
+
+    test("does not follow a symlinked .pizzapi directory itself", () => {
+        const projectDir = makeTmpDir();
+        const victimDir = makeTmpDir();
+        try {
+            mkdirSync(join(victimDir, "rules"), { recursive: true });
+            writeFileSync(join(victimDir, "rules", "notes.md"), "TOPSECRET-VICTIM-NOTES", "utf-8");
+            if (!trySymlink(victimDir, join(projectDir, ".pizzapi"))) return;
+            expect(loadRulesDir(join(projectDir, ".pizzapi", "rules"))).toEqual([]);
+        } finally {
+            rmSync(projectDir, { recursive: true, force: true });
+            rmSync(victimDir, { recursive: true, force: true });
         }
     });
 });
@@ -718,6 +774,60 @@ describe("createAgentsFilesOverride", () => {
         writeFileSync(join(dir, "AGENTS.md"), "# Agents", "utf-8");
         const override = createAgentsFilesOverride(dir);
         expect(override).toBeInstanceOf(Function);
+    });
+
+    test("strips a symlinked AGENTS.md that upstream's base list already read", () => {
+        // Dish bz-002 Ramsey P0 #1: this is the composition that actually feeds the
+        // prompt. Upstream `DefaultResourceLoader.loadProjectContextFiles` uses a plain
+        // `statSync` (follows symlinks) and hands us its result as `base.agentsFiles` —
+        // by the time the override runs, the symlinked file's content has ALREADY been
+        // read into that base entry. The override itself must filter it back out, or
+        // `getAgentsFiles()` leaks the symlink target end-to-end regardless of what our
+        // own loaders do. Simulates the upstream base list rather than importing it.
+        const secretDir = makeTmpDir();
+        try {
+            const secretPath = join(secretDir, "secret.txt");
+            writeFileSync(secretPath, "TOPSECRET-LOCAL-FILE", "utf-8");
+            const agentsMdPath = join(dir, "AGENTS.md");
+            if (!trySymlink(secretPath, agentsMdPath)) return;
+            // A real additional file so createAgentsFilesOverride doesn't return null
+            // (it only builds an override when there's at least one file to add).
+            mkdirSync(join(dir, ".agents"), { recursive: true });
+            writeFileSync(join(dir, ".agents", "extra.md"), "# Extra", "utf-8");
+            // Simulates what upstream's statSync-following loader already produced.
+            // sendAgentsMd defaults to true here deliberately: with it false, AGENTS.md
+            // is already excluded by the (pre-existing) name filter, which would mask
+            // whether the symlink check itself actually runs.
+            const upstreamBase = { agentsFiles: [{ path: agentsMdPath, content: readFileSync(secretPath, "utf-8") }] };
+            const override = createAgentsFilesOverride(dir)!;
+            const result = override(upstreamBase);
+            expect(result.agentsFiles.some((file) => file.path === agentsMdPath)).toBe(false);
+            expect(JSON.stringify(result.agentsFiles)).not.toContain("TOPSECRET-LOCAL-FILE");
+        } finally {
+            rmSync(secretDir, { recursive: true, force: true });
+        }
+    });
+
+    test("strips a symlinked CLAUDE.md from upstream's base list even when AGENTS.md sending is enabled", () => {
+        // The name filter only ever targeted AGENTS.md; CLAUDE.md must be caught by the
+        // symlink check regardless of name or the sendAgentsMd flag.
+        const secretDir = makeTmpDir();
+        try {
+            const secretPath = join(secretDir, "secret.txt");
+            writeFileSync(secretPath, "TOPSECRET-LOCAL-FILE", "utf-8");
+            const claudeMdPath = join(dir, "CLAUDE.md");
+            if (!trySymlink(secretPath, claudeMdPath)) return;
+            writeFileSync(join(dir, "AGENTS.md"), "# Agents", "utf-8"); // ensure override isn't null
+            const upstreamBase = {
+                agentsFiles: [{ path: claudeMdPath, content: readFileSync(secretPath, "utf-8") }],
+            };
+            const override = createAgentsFilesOverride(dir)!;
+            const result = override(upstreamBase);
+            expect(result.agentsFiles.some((file) => file.path === claudeMdPath)).toBe(false);
+            expect(JSON.stringify(result.agentsFiles)).not.toContain("TOPSECRET-LOCAL-FILE");
+        } finally {
+            rmSync(secretDir, { recursive: true, force: true });
+        }
     });
 
     test("deduplicates by path against base files", () => {
