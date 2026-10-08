@@ -201,6 +201,64 @@ describe("runner scoped service routes", () => {
             rows: 24,
         }, "sess-1");
     });
+
+    test("passes sessionId from the browse-directory query string to the runner service", async () => {
+        mockSendRunnerCommand.mockReturnValue(Promise.resolve({ ok: true, directories: [] }));
+        const [req, url] = makeReq("GET", "/api/runners/runner-A/browse?path=%2Frepo&sessionId=sess-1");
+
+        const res = await handleRunnersRoute(req, url);
+
+        expect(res!.status).toBe(200);
+        expect(mockSendRunnerCommand).toHaveBeenCalledWith("runner-A", {
+            type: "browse_directory",
+            path: "/repo",
+            sessionId: "sess-1",
+        }, 10_000);
+    });
+
+    test("rejects browse-directory session scope that belongs to another runner", async () => {
+        mockGetSession.mockReturnValue(Promise.resolve({ sessionId: "sess-1", userId: "user-1", runnerId: "runner-B" } as any));
+        const [req, url] = makeReq("GET", "/api/runners/runner-A/browse?path=%2Frepo&sessionId=sess-1");
+
+        const res = await handleRunnersRoute(req, url);
+
+        expect(res!.status).toBe(400);
+        expect(mockSendRunnerCommand).not.toHaveBeenCalled();
+    });
+
+    test("passes sessionId from search-files requests to the runner service", async () => {
+        mockSendRunnerCommand.mockReturnValue(Promise.resolve({ ok: true, files: [] }));
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/search-files", {
+            cwd: "/repo",
+            query: "foo",
+            sessionId: "sess-1",
+        });
+
+        const res = await handleRunnersRoute(req, url);
+
+        expect(res!.status).toBe(200);
+        expect(mockSendRunnerCommand).toHaveBeenCalledWith("runner-A", {
+            type: "search_files",
+            cwd: "/repo",
+            query: "foo",
+            limit: 100,
+            sessionId: "sess-1",
+        });
+    });
+
+    test("rejects search-files session scope that belongs to another runner", async () => {
+        mockGetSession.mockReturnValue(Promise.resolve({ sessionId: "sess-1", userId: "user-1", runnerId: "runner-B" } as any));
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/search-files", {
+            cwd: "/repo",
+            query: "foo",
+            sessionId: "sess-1",
+        });
+
+        const res = await handleRunnersRoute(req, url);
+
+        expect(res!.status).toBe(400);
+        expect(mockSendRunnerCommand).not.toHaveBeenCalled();
+    });
 });
 
 describe("runner read-file route", () => {
