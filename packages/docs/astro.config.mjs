@@ -8,10 +8,10 @@ export default defineConfig({
     // Redirect old /guides/* paths so existing public links don't 404.
     // Targets must include /PizzaPi base path — Astro doesn't prepend it automatically.
     redirects: {
-        "/guides/installation/":     "/PizzaPi/start-here/installation/",
+        "/guides/installation/":     "/PizzaPi/start-here/getting-started/",
         "/guides/quick-setup/":      "/PizzaPi/start-here/getting-started/",
         "/guides/cli-reference/":    "/PizzaPi/running/cli-reference/",
-        "/guides/standalone-mode/":  "/PizzaPi/start-here/installation/#relay-free-and-interactive-use",
+        "/guides/standalone-mode/":  "/PizzaPi/start-here/getting-started/#path-3-terminal-only",
         "/guides/runner-daemon/":    "/PizzaPi/running/runner-daemon/",
         "/guides/self-hosting/":     "/PizzaPi/deployment/self-hosting/",
         "/guides/tailscale/":        "/PizzaPi/deployment/self-hosting/#remote-access-with-tailscale-https",
@@ -26,15 +26,16 @@ export default defineConfig({
         // Consolidated onboarding pages.
         "/getting-started/":         "/PizzaPi/start-here/getting-started/",
         "/start-here/first-remote-session/": "/PizzaPi/start-here/getting-started/",
-        "/running/standalone-mode/": "/PizzaPi/start-here/installation/#relay-free-and-interactive-use",
+        "/running/standalone-mode/": "/PizzaPi/start-here/getting-started/#path-3-terminal-only",
+        "/start-here/installation/": "/PizzaPi/start-here/getting-started/",
         "/web-ui/terminal/": "/PizzaPi/web-ui/workspaces/#web-terminal",
         // Merged public guides; fragments are retained by browser redirects.
         "/deployment/mac-setup/": "/PizzaPi/running/runner-daemon/",
         "/deployment/tailscale/": "/PizzaPi/deployment/self-hosting/#remote-access-with-tailscale-https",
         "/deployment/tunnel-tls/": "/PizzaPi/deployment/self-hosting/#https-for-tunnelled-development-servers",
         "/deployment/mobile-push/": "/PizzaPi/web-ui/preferences/#native-android-push",
-        "/reference/mobile-builds/": "/PizzaPi/start-here/installation/",
-        "/reference/windows-crashes/": "/PizzaPi/start-here/installation/",
+        "/reference/mobile-builds/": "/PizzaPi/start-here/getting-started/",
+        "/reference/windows-crashes/": "/PizzaPi/start-here/getting-started/#troubleshooting",
         "/reference/environment-variables/": "/PizzaPi/customization/configuration/#environment-variables",
         "/reference/protocol/": "/PizzaPi/reference/architecture/#client-and-runner-communication",
         "/reference/development/": "/PizzaPi/reference/architecture/#development",
@@ -82,8 +83,7 @@ export default defineConfig({
             sidebar: [
                 { label: "Start Here", items: [
                     { label: "Overview", slug: "index" },
-                    { label: "Install", slug: "start-here/installation" },
-                    { label: "Your First Working Session", slug: "start-here/getting-started" },
+                    { label: "Install & First Session", slug: "start-here/getting-started" },
                 ] },
                 { label: "Running & Deployment", items: [
                     { label: "CLI Reference", slug: "running/cli-reference" },

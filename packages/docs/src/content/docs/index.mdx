@@ -7,20 +7,17 @@ hero:
   image:
     file: ../../assets/logo.svg
   actions:
-    - text: Install PizzaPi
-      link: /PizzaPi/start-here/installation/
+    - text: Install & first session
+      link: /PizzaPi/start-here/getting-started/
       icon: right-arrow
       variant: primary
-    - text: First working session
-      link: /PizzaPi/start-here/getting-started/
-      variant: minimal
 ---
 
 PizzaPi packages the `pi` coding agent with a relay-connected web interface. The agent runs on your machine; the relay streams session events to a browser and supports remote session management. A relay is optional for terminal-only use.
 
 ## Choose a path
 
-- **New install:** [Install PizzaPi](/PizzaPi/start-here/installation/), then follow [Your first working session](/PizzaPi/start-here/getting-started/).
+- **New install:** [Install & run your first session](/PizzaPi/start-here/getting-started/).
 - **Use an existing relay:** run `pizzapi setup`, connect to the relay address, then launch `pizzapi` in a project directory.
 - **Local relay:** with Docker available, run `pizzapi local` to start the relay and foreground runner.
 - **Terminal only:** run `PIZZAPI_RELAY_URL=off pizzapi` without setting up a relay.
