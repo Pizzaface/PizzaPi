@@ -31,6 +31,7 @@ import { setLogComponent, logInfo, logError } from "./logger.js";
 import { forceKillTree, SHUTDOWN_MESSAGE } from "./process-kill.js";
 import { resolveAgentDir } from "../config.js";
 import { ensureRunnerCredentials } from "./pairing.js";
+import { hostPiNodePath } from "./host-pi-node-path.js";
 
 const RESTART_DELAY_BASE = 2_000;  // 2 s
 const RESTART_DELAY_MAX  = 60_000; // 60 s
@@ -124,7 +125,8 @@ export async function runSupervisor(_args: string[] = []): Promise<number> {
     while (true) {
         const exitCode = await new Promise<number>((resolve) => {
             child = spawn(process.execPath, spawnArgs, {
-                env:   process.env as Record<string, string>,
+                // Services load in the daemon: pin their pi imports to the host copy.
+                env:   { ...process.env, NODE_PATH: hostPiNodePath(process.env.NODE_PATH) ?? "" } as Record<string, string>,
                 // The IPC channel (Windows) carries graceful-shutdown requests,
                 // since signals there are an uncatchable TerminateProcess.
                 stdio: process.platform === "win32"

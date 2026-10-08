@@ -5,7 +5,7 @@ import {
     getSharedSession,
     getSharedSessionSummary,
     getLocalTuiSocket,
-    emitToRelaySessionVerified,
+    emitToRelaySessionChecked,
     emitToRelaySessionInputAck,
     hasRelaySessionListener,
     broadcastToSessionViewers,
@@ -57,9 +57,10 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
             return result.delivered ? { ok: true } : { ok: false, error: "Target session did not acknowledge delivery" };
         }
 
-        return await emitToRelaySessionVerified(targetSessionId, "session_message", payload)
-            ? { ok: true }
-            : { ok: false, error: "Target session not found or not connected" };
+        const result = await emitToRelaySessionChecked(targetSessionId, "session_message", payload);
+        if (result === "delivered") return { ok: true };
+        if (result === "empty") return { ok: false, error: "Target session not found or not connected" };
+        return { ok: false, error: "Target session delivery could not be verified" };
     };
 
     // ── session_message — inter-session messaging ────────────────────────
@@ -278,19 +279,25 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
                 ack?.({ ok: false, error });
                 return;
             }
-        } else if (await emitToRelaySessionVerified(targetSessionId, "session_trigger", { trigger })) {
-            delivered = true;
         } else {
             // Cross-node fallback: target TUI socket is on a different server node.
-            // emitToRelaySessionVerified returns false when no relay recipient is present.
-            const error = `Target session ${targetSessionId} is not connected`;
-            socket.emit("session_message_error", {
-                targetSessionId,
-                error,
-                triggerId: trigger.triggerId,
-            });
-            ack?.({ ok: false, error });
-            return;
+            // Only a confirmed empty room means the target is offline; an unknown
+            // cluster lookup is a transient verification failure, not proof.
+            const result = await emitToRelaySessionChecked(targetSessionId, "session_trigger", { trigger });
+            if (result === "delivered") {
+                delivered = true;
+            } else {
+                const error = result === "empty"
+                    ? `Target session ${targetSessionId} is not connected`
+                    : `Target session ${targetSessionId} delivery could not be verified`;
+                socket.emit("session_message_error", {
+                    targetSessionId,
+                    error,
+                    triggerId: trigger.triggerId,
+                });
+                ack?.({ ok: false, error });
+                return;
+            }
         }
 
         // Record in trigger history so the history API and linked-sessions
@@ -403,16 +410,19 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
                 });
                 if (typeof ack === "function") ack({ ok: false, error: "Failed to deliver trigger response to target session" });
             }
-        } else if (!await emitToRelaySessionVerified(targetSessionId, "trigger_response", triggerPayload)) {
-            socket.emit("session_message_error", {
-                targetSessionId,
-                error: `Target session ${targetSessionId} is not connected`,
-            });
-            if (typeof ack === "function") ack({ ok: false, error: `Target session ${targetSessionId} is not connected` });
         } else {
-            void recordTriggerResponse(parentSessionId, triggerId, { action, text: response }).catch(() => {});
-            broadcastToSessionViewers(parentSessionId, "trigger_delivered", { triggerId });
-            if (typeof ack === "function") ack({ ok: true });
+            const result = await emitToRelaySessionChecked(targetSessionId, "trigger_response", triggerPayload);
+            if (result === "delivered") {
+                void recordTriggerResponse(parentSessionId, triggerId, { action, text: response }).catch(() => {});
+                broadcastToSessionViewers(parentSessionId, "trigger_delivered", { triggerId });
+                if (typeof ack === "function") ack({ ok: true });
+            } else {
+                const error = result === "empty"
+                    ? `Target session ${targetSessionId} is not connected`
+                    : `Target session ${targetSessionId} delivery could not be verified`;
+                socket.emit("session_message_error", { targetSessionId, error });
+                if (typeof ack === "function") ack({ ok: false, error });
+            }
         }
     });
 

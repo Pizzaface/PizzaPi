@@ -525,11 +525,17 @@ describe("resetPerSessionRelayState — reconnect state reset", () => {
         let release!: () => void;
         const blocked = new Promise<void>((resolve) => { release = resolve; });
 
-        // A chunk handler from the OLD generation is still in flight.
+        // A chunk handler from the OLD generation is still in flight (already
+        // started — queued-but-unstarted work is skipped by the reset; see
+        // relay-state.reset.test.ts).
+        let started!: () => void;
+        const running = new Promise<void>((resolve) => { started = resolve; });
         enqueueSessionEvent("sess-reconnect", async () => {
+            started();
             await blocked;
             order.push("old-chunk-handler");
         });
+        await running;
         pendingChunkedStates.set("sess-reconnect", {
             snapshotId: "old-snap",
             metadata: {},
