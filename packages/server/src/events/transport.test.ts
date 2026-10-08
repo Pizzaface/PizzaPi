@@ -49,7 +49,11 @@ const authCtx = { db: "test" };
 let strictAuth = false;
 let sharedSession: Record<string, unknown> | null = null;
 let localSocket: LocalSocket | null = null;
+let localRunnerSocket: LocalSocket | null = null;
 let localSocketLookups: string[] = [];
+let recordRunnerSessionImpl: (runnerId: string, sessionId: string) => Promise<void> = async () => {};
+let linkSessionToRunnerImpl: (runnerId: string, sessionId: string) => Promise<void> = async () => {};
+let waitForLocalTuiSocketImpl: (sessionId: string, timeoutMs: number) => Promise<boolean> = async () => true;
 let relayAcked: { attempts: number; settle: (acked: boolean) => void } | null = null;
 let relayVerified = false;
 let runnerEmits: Array<{ runnerId: string; event: string; data: any }> = [];
@@ -88,15 +92,15 @@ const modsPromise = (async () => {
     getIo: () => ({ of: () => ({}) }),
     runnerRoom: (id: string) => `runner:${id}`,
     countSocketsInRoomCluster: async () => runnerPresence,
-    getLocalRunnerSocket: () => null,
+    getLocalRunnerSocket: () => localRunnerSocket,
     getLocalTuiSocket: (sessionId: string) => {
       localSocketLookups.push(sessionId);
       return localSocket;
     },
     getSharedSession: async () => sharedSession,
-    linkSessionToRunner: async () => {},
-    recordRunnerSession: async () => {},
-    waitForLocalTuiSocket: async () => true,
+    linkSessionToRunner: async (runnerId: string, sessionId: string) => linkSessionToRunnerImpl(runnerId, sessionId),
+    recordRunnerSession: async (runnerId: string, sessionId: string) => recordRunnerSessionImpl(runnerId, sessionId),
+    waitForLocalTuiSocket: async (sessionId: string, timeoutMs: number) => waitForLocalTuiSocketImpl(sessionId, timeoutMs),
   }));
   mock.module("../ws/runner-control.js", () => ({ waitForSpawnAck: async () => ({ ok: true }) }));
   mock.module("../ws/sio-registry/runners.js", () => ({ getRunnerData: async () => null }));
@@ -113,7 +117,11 @@ afterAll(() => mock.restore());
 function resetFakes() {
   sharedSession = null;
   localSocket = null;
+  localRunnerSocket = null;
   localSocketLookups = [];
+  recordRunnerSessionImpl = async () => {};
+  linkSessionToRunnerImpl = async () => {};
+  waitForLocalTuiSocketImpl = async () => true;
   relayAcked = null;
   relayVerified = false;
   runnerEmits = [];
@@ -697,6 +705,43 @@ describe("failed-wake retry sweep (multi-node)", () => {
     expect(runnerEmits).toHaveLength(1); // …but the lock refused the emit
   });
 });
+describe("local spawn cleanup", () => {
+  let store: Awaited<typeof modsPromise>["store"];
+  let transport: Awaited<typeof modsPromise>["transport"];
+  let engine: Awaited<typeof modsPromise>["engine"];
+
+  beforeAll(async () => {
+    ({ store, transport, engine } = await modsPromise);
+  });
+
+  beforeEach(() => resetFakes());
+  afterEach(async () => {
+    await memDb.deleteFrom("trigger_delivery").execute();
+    await memDb.deleteFrom("trigger_route").execute();
+    await memDb.deleteFrom("trigger_event").execute();
+  });
+
+  it("kills a locally spawned session when registration bookkeeping fails", async () => {
+    localRunnerSocket = makeLocalSocket();
+    recordRunnerSessionImpl = async () => {
+      throw new Error("db unavailable");
+    };
+    await store.createRoute({
+      eventType: "hook:deploy",
+      target: { kind: "spawn", spec: { runnerId: "runner-local" } },
+      deliverAs: "steer",
+      origin: "config",
+    });
+
+    const source = { kind: "api" as const, id: "hook", auth: "api-key" as const, userId: "u1" };
+    const out = await engine.publishEvent({ type: "hook:deploy" }, source, transport.createEngineDeps());
+
+    expect(out.spawnedSessions).toEqual([]);
+    expect(localRunnerSocket.emits.map((e) => e.event)).toEqual(["new_session", "kill_session"]);
+    expect(localRunnerSocket.emits[1].data).toEqual({ sessionId: localRunnerSocket.emits[0].data.sessionId });
+  });
+});
+
 describe("cross-node spawn presence (multi-node)", () => {
   let store: Awaited<typeof modsPromise>["store"];
   let transport: Awaited<typeof modsPromise>["transport"];
