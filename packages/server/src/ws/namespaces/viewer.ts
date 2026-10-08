@@ -50,7 +50,7 @@ import {
     broadcastToSessionViewers,
     markPendingRecovery,
 } from "../sio-registry.js";
-import { isChildOfParent } from "../sio-state/index.js";
+import { isChildOfParent, getSessionMessagesCount, getSessionMessagesRange } from "../sio-state/index.js";
 import { getPendingChunkedSnapshot } from "./relay/index.js";
 import { getLatestCachedSnapshotEvent } from "../../sessions/redis.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
@@ -1242,6 +1242,29 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             if (!data || data.sessionId !== currentSessionId) return;
             if (typeof data.before !== "number" || !Number.isFinite(data.before)) return;
             if (typeof data.limit !== "number" || !Number.isFinite(data.limit)) return;
+
+            // Fast path: serve the page straight from the split Redis message
+            // list via LRANGE, without JSON.parse'ing the (possibly multi-MB)
+            // monolithic lastState blob. Falls back below when the list is
+            // absent (older session, Redis eviction, dual-write failure).
+            const messageCount = await getSessionMessagesCount(currentSessionId).catch(() => null);
+            if (messageCount !== null) {
+                const before = Math.max(0, Math.min(Math.trunc(data.before), messageCount));
+                const limit = Math.max(0, Math.trunc(data.limit));
+                const startIndex = Math.max(0, before - limit);
+                const endIndex = before;
+                const page = await getSessionMessagesRange(currentSessionId, startIndex, endIndex).catch(() => null);
+                if (page !== null) {
+                    socket.emit("session_messages_page", {
+                        sessionId: currentSessionId,
+                        messages: page,
+                        hasMore: startIndex > 0,
+                        oldestIndex: startIndex,
+                        generation: getCurrentGeneration(),
+                    });
+                    return;
+                }
+            }
 
             let fullState: Record<string, unknown> | null = null;
             const currentSession = await getSharedSession(currentSessionId);

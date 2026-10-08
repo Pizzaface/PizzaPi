@@ -617,6 +617,7 @@ export async function deleteSession(sessionId: string): Promise<void> {
     const multi = r.multi();
     multi.del(sessionKey(sessionId));
     multi.del(seqKey(sessionId));
+    multi.del(sessionMessagesKey(sessionId));
     multi.sRem(allSessionsKey(), sessionId);
 
     if (session?.userId) {
@@ -634,14 +635,14 @@ export async function deleteSessionIfOwner(sessionId: string, expectedToken: str
             return 0
         end
         local userId = redis.call('HGET', KEYS[1], 'userId')
-        redis.call('DEL', KEYS[1], KEYS[2])
+        redis.call('DEL', KEYS[1], KEYS[2], KEYS[4])
         redis.call('SREM', KEYS[3], ARGV[2])
         if userId and userId ~= '' then
             redis.call('SREM', ARGV[3] .. userId, ARGV[2])
         end
         return 1
     `, {
-        keys: [sessionKey(sessionId), seqKey(sessionId), allSessionsKey()],
+        keys: [sessionKey(sessionId), seqKey(sessionId), allSessionsKey(), sessionMessagesKey(sessionId)],
         arguments: [expectedToken, sessionId, `${KEY_PREFIX}:user-sessions:`],
     });
     return result === 1;
@@ -745,6 +746,79 @@ export async function getSeq(sessionId: string): Promise<number> {
     const r = requireRedis();
     const val = await r.get(seqKey(sessionId));
     return val ? parseInt(val, 10) : 0;
+}
+
+// ── Split message list (dual-write alongside the monolithic lastState) ─────
+//
+// `lastState` stores the full session snapshot (model, messages, todoList…)
+// as one JSON blob, so serving a message page requires JSON.parse'ing the
+// whole thing just to slice it. As a backward-compatible first step, every
+// `messages` array written to `lastState` is ALSO written to a separate
+// Redis List (`pizzapi:sio:session-messages:{id}`), one JSON-stringified
+// entry per message, so hot paths can `LRANGE` a page without touching the
+// monolithic blob. Readers must fall back to the monolithic `lastState` when
+// the list is absent (older sessions, Redis eviction, list write failure) —
+// this list is a cache, not the source of truth.
+
+function sessionMessagesKey(sessionId: string): string {
+    return `${KEY_PREFIX}:session-messages:${sessionId}`;
+}
+
+/**
+ * Replace the session's message list wholesale with the given array.
+ * Best-effort: callers should not let a failure here block the primary
+ * `lastState` write. A fresh snapshot always fully supersedes the old list,
+ * so this does DEL + RPUSH rather than incremental append.
+ */
+export async function setSessionMessagesList(sessionId: string, messages: unknown[]): Promise<void> {
+    const r = requireRedis();
+    const key = sessionMessagesKey(sessionId);
+    const multi = r.multi();
+    multi.del(key);
+    if (messages.length > 0) {
+        multi.rPush(key, messages.map((m) => JSON.stringify(m)));
+        multi.expire(key, SESSION_TTL_SECONDS);
+    }
+    await multi.exec();
+}
+
+/** Number of messages in the split list, or null if the list doesn't exist (caller should fall back to lastState). */
+export async function getSessionMessagesCount(sessionId: string): Promise<number | null> {
+    const r = requireRedis();
+    const exists = await r.exists(sessionMessagesKey(sessionId));
+    if (!exists) return null;
+    return r.lLen(sessionMessagesKey(sessionId));
+}
+
+/**
+ * Fetch messages[start, end) from the split list via LRANGE (no full-blob
+ * deserialization). Returns null if the list doesn't exist — caller must
+ * fall back to parsing lastState.
+ */
+export async function getSessionMessagesRange(
+    sessionId: string,
+    start: number,
+    end: number,
+): Promise<unknown[] | null> {
+    const r = requireRedis();
+    const key = sessionMessagesKey(sessionId);
+    if (!(await r.exists(key))) return null;
+    if (end <= start) return [];
+    // LRANGE's stop index is inclusive.
+    const raw = await r.lRange(key, start, end - 1);
+    return raw.map((entry) => {
+        try {
+            return JSON.parse(entry);
+        } catch {
+            return null;
+        }
+    });
+}
+
+/** Delete the split message list (session teardown). */
+export async function deleteSessionMessagesList(sessionId: string): Promise<void> {
+    const r = requireRedis();
+    await r.del(sessionMessagesKey(sessionId));
 }
 
 // ── Runner CRUD ─────────────────────────────────────────────────────────────
