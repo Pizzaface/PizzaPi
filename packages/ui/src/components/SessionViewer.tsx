@@ -86,7 +86,7 @@ import { ContextDonut } from "@/components/session-viewer/rendering";
 // ── Sub-module imports ────────────────────────────────────────────────────────
 import type { SessionViewerProps as BaseSessionViewerProps, CmdEntry } from "@/components/session-viewer/viewer-types";
 import { formatTokenCount } from "@/components/session-viewer/formatters";
-import { useMessageProcessor } from "@/components/session-viewer/message-processor";
+import { getExportMessages, useMessageProcessor } from "@/components/session-viewer/message-processor";
 import { useDraftManagement } from "@/components/session-viewer/draft-management";
 import { queueRecallTarget } from "@/lib/message-queue";
 import { useSessionActionsSetup } from "@/components/session-viewer/session-actions";
@@ -432,7 +432,7 @@ export function SessionViewer({
   } = atMention;
 
   // ── Message processing ────────────────────────────────────────────────────
-  const { visibleMessages, renderedMessages, hasMore, loadMoreMessages } =
+  const { visibleMessages, hasMore, loadMoreMessages } =
     useMessageProcessor(messages, sessionId);
 
   // ── Session actions + MCP toggle context ─────────────────────────────────
@@ -858,7 +858,7 @@ export function SessionViewer({
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <ConversationExport
-                      messages={messages}
+                      messages={() => getExportMessages(messages)}
                       filename={`session-${sessionId || "export"}.md`}
                       className="static top-auto right-auto hidden md:inline-flex h-7 w-7 border-border bg-background hover:bg-accent hover:text-accent-foreground rounded-md"
                       variant="outline"
@@ -899,7 +899,7 @@ export function SessionViewer({
                   isAnalyzerOpen={isAnalyzerOpen}
                   triggerCount={triggerCount}
                   onDuplicateSession={onDuplicateSession}
-                  messages={messages}
+                  messages={() => getExportMessages(messages)}
                   sessionId={sessionId}
                   extraItems={extraOverflowItems}
                 />
@@ -991,13 +991,13 @@ export function SessionViewer({
                     }}
                     loading={loadingOlderMessages}
                   />
-                  {renderedMessages.map((message, index) => (
+                  {visibleMessages.map((message, index) => (
                     <SessionMessageItem
                       key={message.key}
                       message={message}
                       activeToolCalls={activeToolCalls}
                       agentActive={agentActive}
-                      isLast={index === renderedMessages.length - 1}
+                      isLast={index === visibleMessages.length - 1}
                       onTriggerResponse={onTriggerResponse}
                       onActionSigilResponse={sendActionSigilResponse}
                     />

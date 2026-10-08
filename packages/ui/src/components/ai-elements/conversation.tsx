@@ -214,7 +214,7 @@ export type ConversationExportProps = Omit<
   ComponentProps<typeof Button>,
   "onClick"
 > & {
-  messages: RelayMessage[];
+  messages: RelayMessage[] | (() => RelayMessage[]);
   filename?: string;
   /** Duration in ms to show the success checkmark (default 2000) */
   feedbackMs?: number;
@@ -240,7 +240,8 @@ export const ConversationExport = ({
   }, []);
 
   const handleCopy = useCallback(async () => {
-    const markdown = await resolveMarkdown(exportToMarkdown(messages));
+    const input = typeof messages === "function" ? messages() : messages;
+    const markdown = await resolveMarkdown(exportToMarkdown(input));
     try {
       await navigator.clipboard.writeText(markdown);
       setCopied(true);
@@ -252,7 +253,8 @@ export const ConversationExport = ({
   }, [messages, feedbackMs, resolveMarkdown]);
 
   const handleDownload = useCallback(async () => {
-    const markdown = await resolveMarkdown(exportToMarkdown(messages));
+    const input = typeof messages === "function" ? messages() : messages;
+    const markdown = await resolveMarkdown(exportToMarkdown(input));
     const blob = new Blob([markdown], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
