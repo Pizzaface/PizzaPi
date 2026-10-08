@@ -111,4 +111,26 @@ describe("CsvTable", () => {
     expect(accessibleTable).toBeDefined();
     expect(accessibleTable?.textContent).toContain("Row 250");
   });
+
+  test("screen reader table lazily mounts rows: none while closed, full set once opened", () => {
+    const LARGE_ROWS = Array.from({ length: 5000 }, (_, i) => [`Row ${i + 1}`, String(i + 1)]);
+    const { getByText, container } = render(
+      <SpreadsheetTable header={["Name", "Qty"]} rows={LARGE_ROWS} full />,
+    );
+
+    // Closed: the details exists, but none of its 5,000 rows are mounted.
+    const details = container.querySelector("details");
+    expect(details).toBeDefined();
+    expect(details?.hasAttribute("open")).toBe(false);
+    expect(container.querySelectorAll("details tbody tr").length).toBe(0);
+
+    // Opened: the full row set mounts.
+    fireEvent.click(getByText("Screen reader table with all 5000 rows"));
+    expect(container.querySelectorAll("details tbody tr").length).toBe(5000);
+    expect(container.querySelector("details table")?.textContent).toContain("Row 5000");
+
+    // Closed again: rows unmount.
+    fireEvent.click(getByText("Screen reader table with all 5000 rows"));
+    expect(container.querySelectorAll("details tbody tr").length).toBe(0);
+  });
 });

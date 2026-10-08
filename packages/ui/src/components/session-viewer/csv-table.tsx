@@ -144,29 +144,41 @@ export function SpreadsheetTable({
       </tr>
     ));
 
+  const [srOpen, setSrOpen] = React.useState(false);
+
   return (
     <div className={cn("flex flex-col", full && "h-full")}>
       {virtualize && (
-        <details className="border-b border-border px-3 py-2 text-xs">
+        <details
+          className="border-b border-border px-3 py-2 text-xs"
+          open={srOpen}
+          onToggle={(event) => setSrOpen(event.currentTarget.open)}
+        >
           <summary className="cursor-pointer text-muted-foreground">
-            Screen reader table with all {sortedRows.length} rows
+            Screen reader table with {truncated ? "the first" : "all"} {sortedRows.length} rows
           </summary>
-          <div className="mt-2 max-h-96 overflow-auto">
-            <table className="w-full border-collapse text-xs">
-              <thead>
-                {table.getHeaderGroups().map((hg) => (
-                  <tr key={hg.id}>
-                    {hg.headers.map((h) => (
-                      <th key={h.id} className="border-b border-border px-2 py-1 text-left">
-                        {String(h.column.columnDef.header)}
-                      </th>
-                    ))}
-                  </tr>
-                ))}
-              </thead>
-              <tbody>{renderRows(sortedRows)}</tbody>
-            </table>
-          </div>
+          {srOpen && (
+            <div className="mt-2 max-h-96 overflow-auto">
+              <table className="w-full border-collapse text-xs">
+                <thead>
+                  {table.getHeaderGroups().map((hg) => (
+                    <tr key={hg.id}>
+                      {hg.headers.map((h) => (
+                        <th
+                          key={h.id}
+                          scope="col"
+                          className="border-b border-border px-2 py-1 text-left"
+                        >
+                          {String(h.column.columnDef.header)}
+                        </th>
+                      ))}
+                    </tr>
+                  ))}
+                </thead>
+                <tbody>{renderRows(sortedRows)}</tbody>
+              </table>
+            </div>
+          )}
         </details>
       )}
       <div ref={scrollRef} className={cn("overflow-auto", full ? "flex-1" : "max-h-96")}>
