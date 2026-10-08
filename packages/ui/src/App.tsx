@@ -96,6 +96,7 @@ import type { MetaGoalStatus } from "@pizzapi/protocol";
 import { metaEventToStatePatch, clearAnsweredApproval, type MetaStatePatch } from "@/lib/meta-state-apply";
 import { deriveSessionMetadataUpdatePatch } from "@/lib/session-metadata-update";
 import { reconcileMessageQueue } from "@/lib/message-queue";
+import { applyMessageQueueUpdate, resetSessionStateWithMessageQueueRef } from "@/app-session-state";
 import { usePanelLayout } from "@/hooks/usePanelLayout";
 import { useTriggerCount } from "@/hooks/useTriggerCount";
 import { useButtonPosition, type ToolbarButtonId, type ButtonSlot } from "@/hooks/useButtonPosition";
@@ -364,9 +365,7 @@ export function App() {
   // here instead of at each call site so the invariant can't be forgotten.
   const setMessageQueue = React.useCallback(
     (v: React.SetStateAction<QueuedMessage[]>) => {
-      const next = typeof v === "function" ? v(messageQueueRef.current) : v;
-      messageQueueRef.current = next;
-      setSessionState((p: SessionState) => ({ ...p, messageQueue: next }));
+      applyMessageQueueUpdate(v, messageQueueRef, setSessionState);
     },
     []
   );
@@ -1120,8 +1119,8 @@ export function App() {
     injectedMessagesRef.current = [];
     // Single atomic reset — all session-scoped fields defined in SessionState
     // are cleared together. New fields added to SessionState are automatically
-    // included; nothing can be accidentally left stale between sessions.
-    setSessionState(createInitialSessionState());
+    // included; keep messageQueueRef in sync before any same-batch queue write.
+    resetSessionStateWithMessageQueueRef(createInitialSessionState, messageQueueRef, setSessionState);
     lifecycleClearSelection();
     // Reset live-status fields that are intentionally outside SessionState
     // (they are driven by heartbeats, not snapshots) but must still be cleared

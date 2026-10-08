@@ -38,6 +38,8 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { renderHook, act } from "@testing-library/react";
 import * as React from "react";
+import { applyMessageQueueUpdate, resetSessionStateWithMessageQueueRef } from "./app-session-state";
+import type { QueuedMessage } from "@/lib/types";
 
 const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 // Strip line comments before source-text scanning below so comment prose
@@ -134,57 +136,66 @@ describe("App.tsx setState-updater race regression (GM RVeKYNtU)", () => {
     expect(unreviewed, `found unreviewed absolute setMessages(...) call(s): ${JSON.stringify(unreviewed)}`).toEqual([]);
   });
 
-  test("every setMessageQueue(...) call keeps messageQueueRef in sync by construction (single-setter invariant)", () => {
-    // Root-cause fix: instead of requiring every call site to remember to
-    // also write messageQueueRef.current, setMessageQueue itself does it, so
-    // ALL current and future call sites inherit the invariant for free.
+  test("message queue writes and full session reset use the shared ref-sync helpers", () => {
     const setterBody = extractCallback("setMessageQueue");
-    expect(setterBody).toContain("messageQueueRef.current");
-    // The ref write must happen before setSessionState is called, so a
-    // same-tick follow-up read (another queue mutation in the same handler,
-    // or a later call in the same batch) sees the result immediately instead
-    // of waiting for the commit-time useLayoutEffect.
-    const refWriteIdx = setterBody.indexOf("messageQueueRef.current =");
-    const setSessionStateIdx = setterBody.indexOf("setSessionState(");
-    expect(refWriteIdx).toBeGreaterThanOrEqual(0);
-    expect(setSessionStateIdx).toBeGreaterThan(refWriteIdx);
+    expect(setterBody).toContain("applyMessageQueueUpdate(v, messageQueueRef, setSessionState)");
+
+    const clearSelectionBody = extractCallback("clearSelection");
+    expect(clearSelectionBody).toContain("resetSessionStateWithMessageQueueRef(createInitialSessionState, messageQueueRef, setSessionState)");
   });
 
-  test("behavioral: a single ref-syncing setter composes correctly across synchronous batched calls (GM RVeKYNtU pattern)", () => {
-    // Mounting the real multi-thousand-line App component is not practical in
-    // a unit test (it needs a live socket/relay and dozens of other hooks) --
-    // consistent with every other test in this file. This exercises the same
-    // *pattern* setMessageQueue now uses, under React's real scheduler, to
-    // prove the pattern holds under batching (the two static tests above
-    // prove App.tsx's actual setter uses this exact pattern).
+  test("behavioral: production message queue helper composes correctly across synchronous batched calls", () => {
+    const first = { id: "first" } as unknown as QueuedMessage;
+    const second = { id: "second" } as unknown as QueuedMessage;
+
     function useQueueLikeState() {
-      const [queue, setQueueState] = React.useState<string[]>([]);
-      const queueRef = React.useRef<string[]>(queue);
-      React.useLayoutEffect(() => { queueRef.current = queue; }, [queue]);
-      const setQueue = React.useCallback((v: string[] | ((prev: string[]) => string[])) => {
-        const next = typeof v === "function" ? (v as (prev: string[]) => string[])(queueRef.current) : v;
-        queueRef.current = next;
-        setQueueState(next);
+      const [state, setState] = React.useState(() => ({ messageQueue: [] as QueuedMessage[], label: "active" }));
+      const queueRef = React.useRef<QueuedMessage[]>(state.messageQueue);
+      React.useLayoutEffect(() => { queueRef.current = state.messageQueue; }, [state.messageQueue]);
+      const setQueue = React.useCallback((v: React.SetStateAction<QueuedMessage[]>) => {
+        applyMessageQueueUpdate(v, queueRef, setState);
       }, []);
-      return { queue, queueRef, setQueue };
+      return { state, queueRef, setQueue };
     }
 
     const { result } = renderHook(() => useQueueLikeState());
 
-    // Two queue mutations issued synchronously in the same event-handler tick
-    // (React batches both into one render) -- the second must observe the
-    // first's result via the ref, not a stale snapshot.
     act(() => {
-      result.current.setQueue((prev) => [...prev, "a"]);
-      // If the ref were not updated synchronously by setQueue, this read would
-      // still see [] here (pre-fix behavior relied on React's eager-bailout
-      // optimization running the first updater immediately, which is not
-      // guaranteed while another update is already pending on the fiber).
-      expect(result.current.queueRef.current).toEqual(["a"]);
-      result.current.setQueue((prev) => prev.filter((x) => x !== "a").concat("b"));
+      result.current.setQueue((prev) => [...prev, first]);
+      expect(result.current.queueRef.current).toEqual([first]);
+      result.current.setQueue((prev) => prev.filter((x) => x !== first).concat(second));
     });
 
-    expect(result.current.queue).toEqual(["b"]);
-    expect(result.current.queueRef.current).toEqual(["b"]);
+    expect(result.current.state.messageQueue).toEqual([second]);
+    expect(result.current.queueRef.current).toEqual([second]);
+  });
+
+  test("behavioral: production reset helper clears messageQueueRef before a same-batch queue update", () => {
+    const oldItem = { id: "old" } as unknown as QueuedMessage;
+    const newItem = { id: "new" } as unknown as QueuedMessage;
+
+    function useSessionStateLike() {
+      const [state, setState] = React.useState(() => ({ messageQueue: [oldItem], label: "old" }));
+      const queueRef = React.useRef<QueuedMessage[]>(state.messageQueue);
+      React.useLayoutEffect(() => { queueRef.current = state.messageQueue; }, [state.messageQueue]);
+      const reset = React.useCallback(() => {
+        resetSessionStateWithMessageQueueRef(() => ({ messageQueue: [], label: "new" }), queueRef, setState);
+      }, []);
+      const setQueue = React.useCallback((v: React.SetStateAction<QueuedMessage[]>) => {
+        applyMessageQueueUpdate(v, queueRef, setState);
+      }, []);
+      return { state, queueRef, reset, setQueue };
+    }
+
+    const { result } = renderHook(() => useSessionStateLike());
+
+    act(() => {
+      result.current.reset();
+      expect(result.current.queueRef.current).toEqual([]);
+      result.current.setQueue((prev) => [...prev, newItem]);
+    });
+
+    expect(result.current.state).toEqual({ messageQueue: [newItem], label: "new" });
+    expect(result.current.queueRef.current).toEqual([newItem]);
   });
 });
