@@ -9,9 +9,11 @@ import { createTestAuthContext, type AuthConfig } from "../../src/auth.js";
 import { ensureBetterAuthCoreTables } from "../harness/ensure-auth-tables.js";
 import { runAllMigrations } from "../../src/migrations.js";
 import { handleFetch } from "../../src/handler.js";
-import { initStateRedis } from "../../src/ws/sio-state/index.js";
+import { RedisMemoryServer } from "redis-memory-server";
+import { closeStateRedis, initStateRedis } from "../../src/ws/sio-state/index.js";
 
 const savedTrustProxy = process.env.PIZZAPI_TRUST_PROXY;
+const savedRedisUrl = process.env.PIZZAPI_REDIS_URL;
 process.env.PIZZAPI_TRUST_PROXY = "true";
 
 const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-e2e-"));
@@ -28,6 +30,7 @@ const defaultSignupAuthConfig: AuthConfig = {
 };
 let currentSignupAuthConfig: AuthConfig = { ...defaultSignupAuthConfig };
 let authContext = createTestAuthContext(currentSignupAuthConfig);
+let redisServer: RedisMemoryServer | undefined;
 
 function setSignupAuthConfig(config: Partial<AuthConfig> = {}): void {
     currentSignupAuthConfig = { ...defaultSignupAuthConfig, ...config };
@@ -51,16 +54,28 @@ async function req(method: string, path: string, body?: any, headers?: Record<st
 beforeAll(async () => {
     setSignupAuthConfig();
     recreateSignupAuthContext();
+    redisServer = await RedisMemoryServer.create({
+        instance: { ip: "127.0.0.1", port: 0 },
+        autoStart: true,
+    } as any);
+    process.env.PIZZAPI_REDIS_URL = `redis://${await redisServer.getHost()}:${await redisServer.getPort()}`;
     await runAllMigrations(authContext);
     await ensureBetterAuthCoreTables(authContext.db);
     await initStateRedis();
 });
 
-afterAll(() => {
+afterAll(async () => {
+    await closeStateRedis();
+    await redisServer?.stop();
     if (savedTrustProxy === undefined) {
         delete process.env.PIZZAPI_TRUST_PROXY;
     } else {
         process.env.PIZZAPI_TRUST_PROXY = savedTrustProxy;
+    }
+    if (savedRedisUrl === undefined) {
+        delete process.env.PIZZAPI_REDIS_URL;
+    } else {
+        process.env.PIZZAPI_REDIS_URL = savedRedisUrl;
     }
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 });

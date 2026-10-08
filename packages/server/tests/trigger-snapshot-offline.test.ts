@@ -83,9 +83,8 @@ async function createRoute(
 }
 
 describe("schedule durability (routes)", () => {
-    // createTestServer() defaults to redis://localhost:6379 — a real, possibly
-    // production Redis. Run an isolated in-memory Redis for this suite instead,
-    // exactly like browser-smoke.test.ts does.
+    // Run an isolated in-memory Redis for this suite so the schedule durability
+    // checks can restart the server against a stable Redis instance.
     const previousRedisUrl = process.env.PIZZAPI_REDIS_URL;
     let redisServer: RedisMemoryServer | undefined;
 

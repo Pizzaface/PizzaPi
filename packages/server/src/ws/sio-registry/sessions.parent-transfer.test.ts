@@ -9,7 +9,30 @@ import { afterAll, describe, it, expect, beforeEach, mock } from "bun:test";
 
 const store = new Map<string, string>();
 const setStore = new Map<string, Set<string>>();
+const triggerHistoryLists = new Map<string, string[]>();
 const deletedRouteOptions: Array<{ sessionId: string; preserveDurable?: boolean }> = [];
+
+const mockTriggerRedis = {
+    isOpen: true,
+    lPush: mock(async (key: string, value: string) => {
+        const list = triggerHistoryLists.get(key) ?? [];
+        list.unshift(value);
+        triggerHistoryLists.set(key, list);
+        return list.length;
+    }),
+    lTrim: mock(async (key: string, start: number, stop: number) => {
+        const list = triggerHistoryLists.get(key);
+        if (list) triggerHistoryLists.set(key, list.slice(start, stop + 1));
+    }),
+    expire: mock(async () => {}),
+    del: mock(async (key: string) => {
+        triggerHistoryLists.delete(key);
+    }),
+};
+
+async function flushTriggerHistory(): Promise<void> {
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+}
 
 mock.module("../../sessions/store.js", () => ({
     getEphemeralTtlMs: () => 60_000,
@@ -22,10 +45,6 @@ mock.module("../../sessions/store.js", () => ({
     recordRelaySessionStateSerialized: async () => {},
     recordRelaySessionOverlay: async () => {},
     touchRelaySession: async () => {},
-}));
-
-mock.module("../../sessions/trigger-store.js", () => ({
-    pushTriggerHistory: async () => {},
 }));
 
 mock.module("../../events/store.js", () => ({
@@ -106,10 +125,18 @@ mock.module("./hub.js", () => ({
     broadcastToHub: async () => {},
 }));
 
-afterAll(() => mock.restore());
-
 const { registerTuiSession, endSharedSession } = await import("./sessions.js");
 const { initSioRegistry } = await import("./context.js");
+const { _injectRedisForTesting: _injectTriggerStoreRedis, _resetRedisForTesting: _resetTriggerStoreRedis } =
+    await import("../../sessions/trigger-store.js");
+const { _injectRedisForTesting: _injectRelayRedis, _resetRedisForTesting: _resetRelayRedis } =
+    await import("../../sessions/redis.js");
+
+afterAll(() => {
+    mock.restore();
+    _resetTriggerStoreRedis();
+    _resetRelayRedis();
+});
 
 // Minimal fake Socket.IO server — enough for endSharedSession's viewer teardown.
 // Captures the last `disconnected` emit payload so tests can assert the
@@ -152,6 +179,13 @@ describe("atomic parent transfer on relink", () => {
     beforeEach(() => {
         store.clear();
         setStore.clear();
+        triggerHistoryLists.clear();
+        mockTriggerRedis.lPush.mockClear();
+        mockTriggerRedis.lTrim.mockClear();
+        mockTriggerRedis.expire.mockClear();
+        mockTriggerRedis.del.mockClear();
+        _injectTriggerStoreRedis(mockTriggerRedis);
+        _injectRelayRedis(mockTriggerRedis);
     });
 
     it("removes the child from the old parent's membership and pending-delink sets when relinked to a new parent", async () => {
@@ -165,7 +199,12 @@ describe("atomic parent transfer on relink", () => {
             isEphemeral: false,
             parentSessionId: "parent-1",
         });
+        await flushTriggerHistory();
         expect(setStore.get(childrenKey("parent-1"))?.has("child-1")).toBe(true);
+        expect(mockTriggerRedis.lPush).toHaveBeenCalledWith(
+            "pizzapi:triggers:history:parent-1",
+            expect.stringContaining('"type":"session_linked"'),
+        );
 
         // Simulate a stale pending-delink entry for the old parent too.
         setStore.set(pendingDelinkKey("parent-1"), new Set(["child-1"]));
@@ -177,8 +216,13 @@ describe("atomic parent transfer on relink", () => {
             isEphemeral: false,
             parentSessionId: "parent-2",
         });
+        await flushTriggerHistory();
 
         expect(setStore.get(childrenKey("parent-2"))?.has("child-1")).toBe(true);
+        expect(mockTriggerRedis.lPush).toHaveBeenCalledWith(
+            "pizzapi:triggers:history:parent-2",
+            expect.stringContaining('"type":"session_linked"'),
+        );
         // Old parent must no longer own the child — no dual ownership.
         expect(setStore.get(childrenKey("parent-1"))?.has("child-1")).toBe(false);
         expect(setStore.get(pendingDelinkKey("parent-1"))?.has("child-1")).toBe(false);
@@ -206,7 +250,14 @@ describe("endSharedSession confirmedTerminal membership removal", () => {
     beforeEach(() => {
         store.clear();
         setStore.clear();
+        triggerHistoryLists.clear();
         deletedRouteOptions.length = 0;
+        mockTriggerRedis.lPush.mockClear();
+        mockTriggerRedis.lTrim.mockClear();
+        mockTriggerRedis.expire.mockClear();
+        mockTriggerRedis.del.mockClear();
+        _injectTriggerStoreRedis(mockTriggerRedis);
+        _injectRelayRedis(mockTriggerRedis);
     });
 
     it("preserves routes on disconnect and deletes durable routes on terminal close", async () => {

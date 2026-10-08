@@ -63,6 +63,9 @@ async function ensureIsolatedRedisUrl(): Promise<{ previousUrl: string | undefin
     if (previousUrl) return { previousUrl, usedSharedInstance: false };
 
     if (!_sharedMemoryRedis) {
+        if (process.env.PIZZAPI_TEST_FORCE_REDIS_PROVISION_FAILURE === "1") {
+            throw new Error("[test-harness] forced RedisMemoryServer provisioning failure");
+        }
         _sharedMemoryRedis = await RedisMemoryServer.create({
             instance: { ip: "127.0.0.1", port: 0 },
             autoStart: true,
@@ -208,10 +211,7 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
     const savedTrustProxy = process.env.PIZZAPI_TRUST_PROXY;
     process.env.PIZZAPI_TRUST_PROXY = "true";
 
-    // 2b. Never silently fall through to a real dev/production Redis — spin
-    // up a disposable in-memory instance when the caller hasn't set
-    // PIZZAPI_REDIS_URL explicitly.
-    const isolatedRedis = await ensureIsolatedRedisUrl();
+    let isolatedRedis: Awaited<ReturnType<typeof ensureIsolatedRedisUrl>> | null = null;
 
     // Shared helper — restores PIZZAPI_TRUST_PROXY/PIZZAPI_REDIS_URL to their
     // original values. Called both from cleanup() on success and from the
@@ -226,7 +226,7 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
         } else {
             process.env.PIZZAPI_TRUST_PROXY = savedTrustProxy;
         }
-        if (isolatedRedis.usedSharedInstance) {
+        if (isolatedRedis?.usedSharedInstance) {
             if (isolatedRedis.previousUrl === undefined) {
                 delete process.env.PIZZAPI_REDIS_URL;
             } else {
@@ -256,6 +256,13 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
     let subClient: RedisClientType | null = null;
 
     try {
+
+    // 2b. Never silently fall through to a real dev/production Redis — spin
+    // up a disposable in-memory instance when the caller hasn't set
+    // PIZZAPI_REDIS_URL explicitly. Keep this inside the guarded setup block
+    // so RedisMemoryServer provisioning failures still restore env and clear
+    // the active-server guard.
+    isolatedRedis = await ensureIsolatedRedisUrl();
 
     // 3. Init auth with temp DB
     const authContext = createTestAuthContext({
@@ -462,9 +469,6 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
         // Clear the active-server guard so a new server can be created.
         _activeServer = false;
 
-        // Restore PIZZAPI_TRUST_PROXY
-        restoreEnv();
-
         // Gracefully disconnect Socket.IO clients first so their async
         // disconnect handlers can flush Redis-backed broadcasts before the
         // adapter clients are closed.
@@ -489,6 +493,10 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
         // The shared in-memory Redis instance itself keeps running for reuse
         // by later servers in this process (see ensureIsolatedRedisUrl()).
         await Promise.allSettled([pubClient?.quit(), subClient?.quit(), closeStateRedis()]);
+
+        // Restore env only after every Redis-dependent teardown path has run;
+        // disconnect handlers may lazily use PIZZAPI_REDIS_URL while flushing.
+        restoreEnv();
 
         // Clean up temp directory
         try {

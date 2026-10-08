@@ -59,11 +59,10 @@ builder that handles creation order, resource tracking, and cleanup.
 ## Prerequisites
 
 1. **Bun** — the project uses Bun exclusively. `npm`/`yarn`/`node` will not work.
-2. **Redis** running on `localhost:6379` (the default). Override with
-   `PIZZAPI_REDIS_URL` if needed:
-   ```bash
-   PIZZAPI_REDIS_URL=redis://localhost:6379 bun test
-   ```
+2. **No local Redis required.** When `PIZZAPI_REDIS_URL` is unset, the harness
+   starts an isolated `RedisMemoryServer` on a random port. If a test needs to
+   bring its own Redis, set `PIZZAPI_REDIS_URL` to that isolated instance — never
+   to a developer's `localhost:6379`.
 3. All server dependencies installed:
    ```bash
    bun install
@@ -170,7 +169,7 @@ new TestScenario()
 
 Creates a fully-initialized PizzaPi server on an ephemeral port with:
 - A temporary SQLite database
-- Redis pub/sub adapter (uses `PIZZAPI_REDIS_URL` or `redis://localhost:6379`)
+- Redis pub/sub adapter (uses `PIZZAPI_REDIS_URL` when set, otherwise an isolated `RedisMemoryServer`)
 - Socket.IO with all namespaces registered
 - A pre-created test user with an API key and session cookie
 
@@ -912,24 +911,14 @@ This:
 
 ## Troubleshooting
 
-### Redis not running
+### Redis binary unavailable
 
-```
-Error: connect ECONNREFUSED 127.0.0.1:6379
-```
+`createTestServer()` auto-starts `RedisMemoryServer` when `PIZZAPI_REDIS_URL` is unset. If that package cannot find or download a `redis-server` binary, the harness fails loudly instead of falling back to `localhost:6379`.
 
-Start Redis locally:
+Use an isolated Redis on a non-dev port if you need to provide one explicitly:
+
 ```bash
-redis-server
-# or with Docker:
-docker run -p 6379:6379 redis:latest
-# or via Docker Compose (project root):
-docker compose up redis
-```
-
-Or override the URL:
-```bash
-PIZZAPI_REDIS_URL=redis://my-host:6379 bun test
+PIZZAPI_REDIS_URL=redis://127.0.0.1:6380 bun test
 ```
 
 ---
