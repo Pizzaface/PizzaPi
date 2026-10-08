@@ -73,6 +73,8 @@ export interface AtMentionPopoverProps {
   onBack?: () => void;
   /** Absolute working directory of the session (used as base for file paths) */
   sessionCwd?: string;
+  /** Active session ID for scoping runner service echoes. */
+  sessionId?: string;
   /** Index of highlighted item for keyboard navigation (-1 for none) */
   highlightedIndex?: number;
   /** Callback when highlighted index changes */
@@ -99,6 +101,7 @@ export function AtMentionPopover({
   onClose,
   onBack,
   sessionCwd,
+  sessionId,
   onHighlightedIndexChange,
   onHighlightedEntryChange,
   agents,
@@ -110,12 +113,12 @@ export function AtMentionPopover({
 
   // Fetch directory listing (used when browsing or when in a specific path)
   const { entries: dirEntries, loading: dirLoading, error: dirError } = useAtMentionFiles(
-    runnerId, path, open && !isSearchMode, sessionCwd
+    runnerId, path, open && !isSearchMode, sessionCwd, sessionId
   );
 
   // Recursive search (used when typing a query at root level)
   const { entries: searchEntries, loading: searchLoading, error: searchError } = useAtMentionSearch(
-    runnerId, query, open && isSearchMode, sessionCwd
+    runnerId, query, open && isSearchMode, sessionCwd, sessionId
   );
 
   const entries = isSearchMode ? searchEntries : dirEntries;

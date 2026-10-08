@@ -347,6 +347,8 @@ export interface RedisTerminalData {
     terminalId: string;
     runnerId: string;
     userId: string;
+    /** Session that opened this terminal, when it came from a session panel. */
+    sessionId?: string;
     spawned: boolean;
     exited: boolean;
     /** JSON-stringified TerminalSpawnOpts */
@@ -495,6 +497,7 @@ function parseTerminalFromHash(hash: Record<string, string>): RedisTerminalData 
         terminalId: hash.terminalId,
         runnerId: hash.runnerId ?? "",
         userId: hash.userId ?? "",
+        sessionId: hash.sessionId || undefined,
         spawned: hash.spawned === "1",
         exited: hash.exited === "1",
         spawnOpts: hash.spawnOpts || "{}",

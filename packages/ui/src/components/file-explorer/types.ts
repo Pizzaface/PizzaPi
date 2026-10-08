@@ -27,6 +27,7 @@ export interface GitStatus {
 export interface FileExplorerProps {
   runnerId: string;
   cwd: string;
+  sessionId?: string;
   className?: string;
   onClose?: () => void;
   /** Current docked position of the panel (desktop only). */

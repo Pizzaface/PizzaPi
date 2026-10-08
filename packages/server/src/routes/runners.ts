@@ -49,6 +49,16 @@ const pluginsLog = createLogger("plugins");
  * below are thin shims over the routes store so the UI keeps its listener
  * vocabulary while the data lives in one place.
  */
+async function scopedSessionId(body: { sessionId?: unknown }, runnerId: string, userId: string): Promise<string | undefined> {
+    const sessionId = typeof body.sessionId === "string" && body.sessionId ? body.sessionId : undefined;
+    if (!sessionId) return undefined;
+    const session = await getSession(sessionId);
+    if (!session || session.userId !== userId || session.runnerId !== runnerId) {
+        throw new Error("Session does not belong to this runner");
+    }
+    return sessionId;
+}
+
 interface ListenerInfo {
     listenerId: string;
     triggerType: string;
@@ -511,6 +521,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
         const runnerId = typeof body.runnerId === "string" ? body.runnerId : undefined;
         const requestedCwd = typeof body.cwd === "string" ? body.cwd : undefined;
+        const sessionId = typeof body.sessionId === "string" && body.sessionId ? body.sessionId : undefined;
         const cols = typeof body.cols === "number" ? body.cols : 80;
         const rows = typeof body.rows === "number" ? body.rows : 24;
 
@@ -529,12 +540,20 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
             }
         }
 
+        if (sessionId) {
+            try {
+                await scopedSessionId(body, runnerId, identity.userId);
+            } catch (err) {
+                return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
+            }
+        }
+
         const terminalId = crypto.randomUUID();
         await registerTerminal(terminalId, runnerId, identity.userId, {
             cwd: requestedCwd,
             cols,
             rows,
-        });
+        }, sessionId);
 
         return Response.json({ ok: true, terminalId, runnerId });
     }
@@ -578,6 +597,14 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
 
         const path = url.searchParams.get("path") || "/";
+        const sessionId = url.searchParams.get("sessionId") || undefined;
+        if (sessionId) {
+            try {
+                await scopedSessionId({ sessionId }, runnerId, identity.userId);
+            } catch (err) {
+                return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
+            }
+        }
 
         // Enforce workspace roots at the server layer (defense-in-depth).
         const roots = parseJsonArray(runner.roots);
@@ -589,6 +616,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
             const result = await sendRunnerCommand(runnerId, {
                 type: "browse_directory",
                 path,
+                ...(sessionId ? { sessionId } : {}),
             }, 10_000) as any;
             if (!result.ok) {
                 return Response.json({ error: result.message || "Browse failed" }, { status: 400 });
@@ -1442,6 +1470,12 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
         const path = typeof body.path === "string" ? body.path : "";
         if (!path) return Response.json({ error: "Missing path" }, { status: 400 });
+        let sessionId: string | undefined;
+        try {
+            sessionId = await scopedSessionId(body, runnerId, identity.userId);
+        } catch (err) {
+            return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
+        }
 
         const filesRoots = parseJsonArray(runner.roots);
         if (filesRoots.length > 0 && !cwdMatchesRoots(filesRoots, path)) {
@@ -1449,7 +1483,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         }
 
         try {
-            const result = await sendRunnerCommand(runnerId, { type: "list_files", path });
+            const result = await sendRunnerCommand(runnerId, { type: "list_files", path, ...(sessionId ? { sessionId } : {}) });
             if (!(result as any).ok) return Response.json({ error: (result as any).message ?? "Failed to list files" }, { status: 500 });
             return Response.json(result);
         } catch (err) {
@@ -1474,6 +1508,12 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         const cwd = typeof body.cwd === "string" ? body.cwd : "";
         const query = typeof body.query === "string" ? body.query : "";
         const limit = typeof body.limit === "number" ? body.limit : 100;
+        let sessionId: string | undefined;
+        try {
+            sessionId = await scopedSessionId(body, runnerId, identity.userId);
+        } catch (err) {
+            return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
+        }
 
         if (!cwd) return Response.json({ error: "Missing cwd" }, { status: 400 });
         if (!query) return Response.json({ ok: true, files: [] });
@@ -1484,7 +1524,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         }
 
         try {
-            const result = await sendRunnerCommand(runnerId, { type: "search_files", cwd, query, limit });
+            const result = await sendRunnerCommand(runnerId, { type: "search_files", cwd, query, limit, ...(sessionId ? { sessionId } : {}) });
             if (!(result as any).ok) return Response.json({ error: (result as any).message ?? "Search failed" }, { status: 500 });
             return Response.json(result);
         } catch (err) {

@@ -153,9 +153,17 @@ describe("FileExplorerService — browse_directory", () => {
         expect(names).toContain(".config");
     });
 
-    test("returns error for missing path", async () => {
-        await socket.trigger("browse_directory", { requestId: "r7", path: "" });
+    test("scopes service_message responses to the request session", async () => {
+        await socket.trigger("browse_directory", { requestId: "scoped", path: tmpDir, sessionId: "session-a" });
         const msg = socket.serviceMessages().pop();
+        expect(msg?.sessionId).toBe("session-a");
+        expect(msg?.payload?.ok).toBe(true);
+    });
+
+    test("returns error for missing path", async () => {
+        await socket.trigger("browse_directory", { requestId: "r7", path: "", sessionId: "session-a" });
+        const msg = socket.serviceMessages().pop();
+        expect(msg?.sessionId).toBe("session-a");
         expect(msg?.payload?.ok).toBe(false);
         expect(msg?.payload?.message).toBe("Missing path");
     });

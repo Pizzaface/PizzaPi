@@ -148,6 +148,7 @@ export function parseTerminalFromHash(hash: Record<string, string>): RedisTermin
         terminalId: hash.terminalId,
         runnerId: hash.runnerId ?? "",
         userId: hash.userId ?? "",
+        sessionId: hash.sessionId || undefined,
         spawned: hash.spawned === "1",
         exited: hash.exited === "1",
         spawnOpts: hash.spawnOpts || "{}",

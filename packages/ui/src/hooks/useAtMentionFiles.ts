@@ -32,12 +32,14 @@ interface UseAtMentionFilesResult {
  * @param path - Relative directory path to list (e.g., "", "src/", "src/components/")
  * @param enabled - Whether fetching is enabled (cache clears on true → false)
  * @param basePath - Absolute base path (session CWD) to resolve relative paths against
+ * @param sessionId - Session whose file request should scope service_message echoes
  */
 export function useAtMentionFiles(
     runnerId: string | undefined,
     path: string,
     enabled: boolean,
     basePath?: string,
+    sessionId?: string,
 ): UseAtMentionFilesResult {
     const [entries, setEntries] = useState<Entry[]>([]);
     const [loading, setLoading] = useState(false);
@@ -99,7 +101,7 @@ export function useAtMentionFiles(
                 const response = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/files`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ path: absolutePath }),
+                    body: JSON.stringify({ path: absolutePath, ...(sessionId ? { sessionId } : {}) }),
                     credentials: "include",
                     signal,
                 });
@@ -137,7 +139,7 @@ export function useAtMentionFiles(
                 }
             }
         },
-        [runnerId, resolvePath]
+        [runnerId, resolvePath, sessionId]
     );
 
     // Main effect: debounced fetch with caching

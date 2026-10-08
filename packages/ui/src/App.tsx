@@ -4933,12 +4933,13 @@ export function App() {
         <LazyFileExplorer
           runnerId={activeSessionInfo.runnerId}
           cwd={activeSessionInfo.cwd}
+          sessionId={activeSessionId ?? undefined}
           className="h-full"
           openFile={fileToOpen}
         />
       </Suspense>
     ),
-  } : null, [showFileExplorer, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, startPanelDragWith, handleFilesPositionChange, fileToOpen]);
+  } : null, [showFileExplorer, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, activeSessionId, startPanelDragWith, handleFilesPositionChange, fileToOpen]);
 
   // Open a git worktree as its own session: prefill the New Session wizard with
   // the worktree path as cwd (same flow as duplicating a session).

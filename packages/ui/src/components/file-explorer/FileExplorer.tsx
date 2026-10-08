@@ -49,12 +49,12 @@ function flattenTree(
 }
 
 /** Load children for a directory from the API. */
-async function fetchChildren(runnerId: string, dirPath: string): Promise<FileEntry[]> {
+async function fetchChildren(runnerId: string, dirPath: string, sessionId?: string): Promise<FileEntry[]> {
   const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/files`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ path: dirPath }),
+    body: JSON.stringify({ path: dirPath, ...(sessionId ? { sessionId } : {}) }),
   });
   if (!res.ok) return [];
   const data = await res.json() as { ok: boolean; files: FileEntry[] };
@@ -138,7 +138,7 @@ const FileTreeRow = React.memo(function FileTreeRow({ node, isExpanded, isLoadin
 
 // ── Main File Explorer Component ──────────────────────────────────────────────
 
-export function FileExplorer({ runnerId, cwd, className, openFile }: FileExplorerProps) {
+export function FileExplorer({ runnerId, cwd, sessionId, className, openFile }: FileExplorerProps) {
   const storageKey = `file-explorer:${runnerId}:${cwd}`;
   const git = useGitService(cwd);
   const canBlame = Boolean(git.available && git.status);
@@ -173,7 +173,7 @@ export function FileExplorer({ runnerId, cwd, className, openFile }: FileExplore
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ path: cwd }),
+        body: JSON.stringify({ path: cwd, ...(sessionId ? { sessionId } : {}) }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => null) as any;
@@ -186,7 +186,7 @@ export function FileExplorer({ runnerId, cwd, className, openFile }: FileExplore
     } finally {
       setLoading(false);
     }
-  }, [runnerId, cwd]);
+  }, [runnerId, cwd, sessionId]);
 
   React.useEffect(() => {
     void fetchFiles();
@@ -212,7 +212,7 @@ export function FileExplorer({ runnerId, cwd, className, openFile }: FileExplore
     // Expand — fetch children if not cached
     if (!childrenCache.has(entry.path)) {
       setLoadingPaths((prev) => new Set([...prev, entry.path]));
-      const children = await fetchChildren(runnerId, entry.path);
+      const children = await fetchChildren(runnerId, entry.path, sessionId);
       setChildrenCache((prev) => new Map([...prev, [entry.path, children]]));
       setLoadingPaths((prev) => {
         const next = new Set(prev);
@@ -222,7 +222,7 @@ export function FileExplorer({ runnerId, cwd, className, openFile }: FileExplore
     }
 
     setExpandedPaths((prev) => new Set([...prev, entry.path]));
-  }, [runnerId, expandedPaths, childrenCache]);
+  }, [runnerId, sessionId, expandedPaths, childrenCache]);
 
   // Collapse All
   const handleCollapseAll = React.useCallback(() => {
@@ -250,7 +250,7 @@ export function FileExplorer({ runnerId, cwd, className, openFile }: FileExplore
 
         let children = newCache.get(entry.path);
         if (!children) {
-          children = await fetchChildren(runnerId, entry.path);
+          children = await fetchChildren(runnerId, entry.path, sessionId);
           newCache.set(entry.path, children);
         }
         queue.push({ entries: children, depth: item.depth + 1 });
@@ -260,7 +260,7 @@ export function FileExplorer({ runnerId, cwd, className, openFile }: FileExplore
     setChildrenCache(newCache);
     setExpandedPaths((prev) => new Set([...prev, ...toExpand]));
     setExpandingAll(false);
-  }, [runnerId, files, childrenCache]);
+  }, [runnerId, sessionId, files, childrenCache]);
 
   // Flat list for virtualization
   const flatNodes = React.useMemo(() => {

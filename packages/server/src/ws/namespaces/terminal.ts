@@ -165,6 +165,7 @@ export function registerTerminalNamespace(io: SocketIOServer, context: AuthConte
                         shell: spawnOpts.shell,
                         cols,
                         rows,
+                        ...(te.sessionId ? { sessionId: te.sessionId } : {}),
                     });
                 } catch (err) {
                     log.error(
@@ -202,7 +203,10 @@ export function registerTerminalNamespace(io: SocketIOServer, context: AuthConte
             const runnerSocket = getLocalRunnerSocket(te.runnerId);
             if (!runnerSocket) return;
 
-            runnerSocket.emit("kill_terminal" as string, { terminalId: tid });
+            runnerSocket.emit("kill_terminal" as string, {
+                terminalId: tid,
+                ...(te.sessionId ? { sessionId: te.sessionId } : {}),
+            });
         });
 
         // ── disconnect ───────────────────────────────────────────────────────

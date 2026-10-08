@@ -57,11 +57,13 @@ export async function registerTerminal(
     runnerId: string,
     userId: string,
     spawnOpts: TerminalSpawnOpts = {},
+    sessionId?: string,
 ): Promise<void> {
     const data: RedisTerminalData = {
         terminalId,
         runnerId,
         userId,
+        ...(sessionId ? { sessionId } : {}),
         spawned: false,
         exited: false,
         spawnOpts: JSON.stringify(spawnOpts),
