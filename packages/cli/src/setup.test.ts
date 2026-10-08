@@ -2,8 +2,9 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { runQrSetup, qrCodeUrl, renderQrCode, requestHeadlessPairing } from "./setup.js";
+import { runQrSetup, qrCodeUrl, renderQrCode, requestHeadlessPairing, setDefaultThemeIfUnset } from "./setup.js";
 import { _setGlobalConfigDir } from "./config/io.js";
+import { c } from "./cli-colors.js";
 
 const originalHome = process.env.HOME;
 const originalCredentialEnv = {
@@ -199,6 +200,26 @@ describe("QR setup", () => {
         for (const call of calls) {
             expect(call).toContain("apiKey");
             expect(call).toContain("relayUrl");
+        }
+    });
+
+    test("default theme auto-selection uses themed success output", () => {
+        const messages: unknown[][] = [];
+        const originalLog = console.log;
+        const originalSuccess = c.success;
+        const originalAccent = c.accent;
+        console.log = (...args: unknown[]) => { messages.push(args); };
+        c.success = (value: string) => `success(${value})`;
+        c.accent = (value: string) => `accent(${value})`;
+
+        try {
+            const changed = setDefaultThemeIfUnset(join(tmpDir, ".pizzapi", "settings.json"));
+            expect(changed).toBe(true);
+            expect(messages.some((args) => args.join(" ").includes("success(✓) Theme set to accent(pizzapi-dark)"))).toBe(true);
+        } finally {
+            console.log = originalLog;
+            c.success = originalSuccess;
+            c.accent = originalAccent;
         }
     });
 });

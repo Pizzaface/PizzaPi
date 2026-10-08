@@ -54,6 +54,21 @@ function askPassword(question: string): Promise<string> {
     });
 }
 
+export function setDefaultThemeIfUnset(piSettingsPath = join(homedir(), ".pizzapi", "settings.json")): boolean {
+    let piSettings: Record<string, unknown> = {};
+    try {
+        const existing = readFileSync(piSettingsPath, "utf-8");
+        piSettings = JSON.parse(existing);
+    } catch {}
+    if (piSettings.theme) return false;
+
+    piSettings.theme = "pizzapi-dark";
+    mkdirSync(dirname(piSettingsPath), { recursive: true });
+    writeFileSync(piSettingsPath, JSON.stringify(piSettings, null, 2) + "\n", "utf-8");
+    log.info(`${c.success("✓")} Theme set to ${c.accent("pizzapi-dark")}\n`);
+    return true;
+}
+
 async function registerCli(
     relayUrl: string,
     name: string,
@@ -376,18 +391,7 @@ export async function runSetup(opts: { force?: boolean; scan?: boolean; relayDef
 
         // Auto-select the PizzaPi dark theme for new installations
         try {
-            const piSettingsPath = join(homedir(), ".pizzapi", "settings.json");
-            let piSettings: Record<string, unknown> = {};
-            try {
-                const existing = readFileSync(piSettingsPath, "utf-8");
-                piSettings = JSON.parse(existing);
-            } catch {}
-            if (!piSettings.theme) {
-                piSettings.theme = "pizzapi-dark";
-                mkdirSync(dirname(piSettingsPath), { recursive: true });
-                writeFileSync(piSettingsPath, JSON.stringify(piSettings, null, 2) + "\n", "utf-8");
-                log.info("✓ Theme set to pizzapi-dark\n");
-            }
+            setDefaultThemeIfUnset();
         } catch (err) {
             log.warn("Note: Could not set default theme:", err instanceof Error ? err.message : String(err));
         }
