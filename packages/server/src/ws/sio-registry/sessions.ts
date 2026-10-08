@@ -122,6 +122,7 @@ const SQLITE_STATE_WRITE_THROTTLE_MS = 30_000;
 // get their own shorter throttle than the multi-MB state writes.
 const lastRelaySessionOverlayWriteTimes = new Map<string, number>();
 const SQLITE_OVERLAY_WRITE_THROTTLE_MS = 5_000;
+const sessionMessagesCache = new Map<string, unknown[]>();
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -601,6 +602,7 @@ export interface UpdateSessionStateOpts {
 
 /** Update session state (lastState + sessionName detection). */
 export async function updateSessionState(sessionId: string, state: unknown, opts?: UpdateSessionStateOpts): Promise<void> {
+    sessionMessagesCache.delete(sessionId);
     const session = await getSessionSummary(sessionId);
     if (!session) return;
 
@@ -721,6 +723,25 @@ export async function getSessionState(sessionId: string): Promise<unknown | unde
     if (!session?.lastState) return undefined;
     const state = safeJsonParse(session.lastState);
     return applySnapshotOverlayToState(state, session.snapshotOverlay);
+}
+
+export async function getSessionMessages(sessionId: string): Promise<unknown[] | null> {
+    const cached = sessionMessagesCache.get(sessionId);
+    if (cached) return cached;
+
+    const session = await getSession(sessionId);
+    if (!session?.lastState) return null;
+
+    try {
+        const parsed = JSON.parse(session.lastState);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+        const candidate = (parsed as Record<string, unknown>).messages;
+        const messages = Array.isArray(candidate) ? candidate : [];
+        sessionMessagesCache.set(sessionId, messages);
+        return messages;
+    } catch {
+        return null;
+    }
 }
 
 /** Refresh ephemeral session expiry and SQLite touch. */
@@ -1168,6 +1189,7 @@ async function endSharedSessionUnlocked(
     }
     lastRelaySessionStateWriteTimes.delete(sessionId);
     lastRelaySessionOverlayWriteTimes.delete(sessionId);
+    sessionMessagesCache.delete(sessionId);
 
     // Persist end in SQLite
     void recordRelaySessionEnd(sessionId, session.generation).catch((error) => {

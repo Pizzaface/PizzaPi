@@ -35,6 +35,7 @@ import { withRunnerRefHint } from "./runner-ref.js";
 import {
     getSharedSession,
     getSharedSessionSummary,
+    getSessionMessages,
     addViewer,
     removeViewer,
     getSessionSeq,
@@ -1243,30 +1244,22 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             if (typeof data.before !== "number" || !Number.isFinite(data.before)) return;
             if (typeof data.limit !== "number" || !Number.isFinite(data.limit)) return;
 
-            let fullState: Record<string, unknown> | null = null;
-            const currentSession = await getSharedSession(currentSessionId);
-            if (currentSession?.lastState) {
-                try {
-                    const parsed = JSON.parse(currentSession.lastState);
-                    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-                        fullState = parsed as Record<string, unknown>;
-                    }
-                } catch {}
-            }
-
-            if (!fullState) {
+            let messages = await getSessionMessages(currentSessionId);
+            if (!messages) {
                 const snapshotEvent = (await getLatestCachedSnapshotEvent(currentSessionId))?.event ?? null;
                 if (snapshotEvent?.type === "session_active") {
                     const snapshotState = snapshotEvent.state;
-                    if (snapshotState && typeof snapshotState === "object" && !Array.isArray(snapshotState)) {
-                        fullState = snapshotState as Record<string, unknown>;
-                    }
+                    const candidate =
+                        snapshotState && typeof snapshotState === "object" && !Array.isArray(snapshotState)
+                            ? (snapshotState as Record<string, unknown>).messages
+                            : null;
+                    messages = Array.isArray(candidate) ? candidate : [];
                 } else if (snapshotEvent && Array.isArray(snapshotEvent.messages)) {
-                    fullState = snapshotEvent;
+                    messages = snapshotEvent.messages;
+                } else {
+                    messages = [];
                 }
             }
-
-            const messages = Array.isArray(fullState?.messages) ? fullState.messages : [];
             const before = Math.max(0, Math.min(Math.trunc(data.before), messages.length));
             const limit = Math.max(0, Math.trunc(data.limit));
             const startIndex = Math.max(0, before - limit);

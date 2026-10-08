@@ -19,6 +19,7 @@ export {
     updateSessionState,
     patchSessionSnapshotState,
     getSessionState,
+    getSessionMessages,
     touchSessionActivity,
     broadcastSessionEventToViewers,
     publishSessionEvent,
