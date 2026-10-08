@@ -848,8 +848,29 @@ export function App() {
     // Capacitor backgrounds a WebView's whole JS runtime on some Android OEMs,
     // where document.visibilitychange doesn't reliably fire on resume — the
     // native App plugin's appStateChange is the one signal that's always
-    // delivered when the app comes back to the foreground. No-op on web.
-    const removeAppResumeListener = registerAppResumeListener(kickSockets);
+    // delivered when the app comes back to the foreground. This must NOT
+    // reuse kickSockets: that gates on document.visibilityState (the exact
+    // signal we can't trust here) and only connect()s a socket that already
+    // reports connected===false. A frozen background runtime also freezes
+    // socket.io's own ping/pong timers, so a connection the server already
+    // timed out can sit reporting connected===true right up until the next
+    // send. Force a full disconnect()+connect() cycle unconditionally — the
+    // same recovery the stale-connection watchdog performs — so a resumed app
+    // always gets a fresh transport instead of waiting on the 30s/180s
+    // watchdog to notice.
+    const forceReconnectSockets = () => {
+      const viewer = viewerWsRef.current;
+      if (viewer) {
+        if (viewer.connected) viewer.disconnect();
+        viewer.connect();
+      }
+      const hub = hubSocketRef.current;
+      if (hub) {
+        if (hub.connected) hub.disconnect();
+        hub.connect();
+      }
+    };
+    const removeAppResumeListener = registerAppResumeListener(forceReconnectSockets);
     return () => {
       window.removeEventListener("online", kickSockets);
       document.removeEventListener("visibilitychange", kickSockets);

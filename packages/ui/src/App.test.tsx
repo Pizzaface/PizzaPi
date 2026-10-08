@@ -60,3 +60,49 @@ describe("App.tsx wiring — matchesViewerSession applied to resync replay path"
     expect(src).toMatch(/matchesViewerSession\(.*activeSessionId.*envelopeSessionId/s);
   });
 });
+
+describe("App.tsx wiring — native app resume forces a reconnect", () => {
+  const src = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  // Isolate the effect that wires window/document reconnect listeners plus
+  // the native resume listener, up to the matching `}, []);`.
+  const effect = src.slice(
+    src.indexOf("const kickSockets = () => {"),
+    src.indexOf("// How long to ignore runner queue syncs"),
+  );
+
+  test("registerAppResumeListener is wired, not left unused", () => {
+    expect(effect).toMatch(/registerAppResumeListener\(/);
+  });
+
+  test("native resume does NOT reuse kickSockets (the visibilityState-gated web path)", () => {
+    const resumeCall = effect.match(/registerAppResumeListener\((\w+)\)/);
+    expect(resumeCall).not.toBeNull();
+    expect(resumeCall![1]).not.toBe("kickSockets");
+  });
+
+  test("the native resume handler does not gate on document.visibilityState", () => {
+    const resumeCall = effect.match(/registerAppResumeListener\((\w+)\)/);
+    const handlerName = resumeCall![1];
+    const handlerBody = effect.slice(
+      effect.indexOf(`const ${handlerName} = () => {`),
+      effect.indexOf(`registerAppResumeListener(${handlerName})`),
+    );
+    expect(handlerBody).not.toMatch(/visibilityState/);
+  });
+
+  test("the native resume handler force-reconnects even when a socket still reports connected", () => {
+    const resumeCall = effect.match(/registerAppResumeListener\((\w+)\)/);
+    const handlerName = resumeCall![1];
+    const handlerBody = effect.slice(
+      effect.indexOf(`const ${handlerName} = () => {`),
+      effect.indexOf(`registerAppResumeListener(${handlerName})`),
+    );
+    // Must call connect() unconditionally (not gated behind `if (!x.connected)`),
+    // and must disconnect() first when already connected so a half-dead
+    // transport actually gets torn down rather than left in place.
+    expect(handlerBody).toMatch(/viewer\.disconnect\(\)/);
+    expect(handlerBody).toMatch(/viewer\.connect\(\)/);
+    expect(handlerBody).toMatch(/hub\.disconnect\(\)/);
+    expect(handlerBody).toMatch(/hub\.connect\(\)/);
+  });
+});
