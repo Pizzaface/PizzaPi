@@ -279,7 +279,7 @@ export const ConversationExport = ({
       <DropdownMenuTrigger asChild>
         <Button
           className={cn(
-            "absolute top-4 right-4 size-11 rounded-full dark:bg-background dark:hover:bg-muted md:size-9",
+            "absolute top-4 right-4 size-11 rounded-full dark:bg-background dark:hover:bg-muted",
             className,
           )}
           size="icon"
@@ -350,7 +350,7 @@ export const MessageCopyButton = ({
 
   return (
     <Button
-      className={cn("size-11 p-0 rounded-md md:size-6", className)}
+      className={cn("-m-2.5 size-11 rounded-md p-2.5", className)}
       onClick={handleCopy}
       size="icon"
       type="button"

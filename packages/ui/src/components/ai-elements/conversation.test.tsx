@@ -1,9 +1,16 @@
 import { afterEach, expect, mock, test } from "bun:test";
-import { act, cleanup, fireEvent, render } from "@testing-library/react";
-import { SigilProvider } from "@/components/sigils/SigilContext";
-import { Conversation, MessageCopyButton } from "./conversation";
+import { Window } from "happy-dom";
 
-(globalThis.window as unknown as { SyntaxError?: typeof SyntaxError }).SyntaxError = SyntaxError;
+const win = new Window({ url: "http://localhost/" });
+(win as any).SyntaxError = SyntaxError;
+(win as any).TypeError = TypeError;
+for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "SVGElement", "MutationObserver", "Event", "HTMLInputElement"]) {
+  (globalThis as any)[key] = key === "window" ? win : (win as any)[key];
+}
+
+const { act, cleanup, fireEvent, render } = await import("@testing-library/react");
+const { SigilProvider } = await import("@/components/sigils/SigilContext");
+const { Conversation, ConversationExport, MessageCopyButton } = await import("./conversation");
 
 const originalFetch = globalThis.fetch;
 const originalClipboard = navigator.clipboard;
@@ -43,4 +50,22 @@ test("Conversation disables its implicit role=log live region instead of announc
   // dedicated polite sr-only region instead.
   expect(log.getAttribute("aria-live")).toBe("off");
   expect(log.hasAttribute("aria-relevant")).toBe(false);
+});
+
+test("message copy and export buttons keep 44px touch targets", () => {
+  const view = render(
+    <SigilProvider sigilDefs={sigilDefs} panels={[]} runnerId="runner-1">
+      <MessageCopyButton text="copy me" />
+      <ConversationExport messages={[]} />
+    </SigilProvider>,
+  );
+
+  const copy = view.getByRole("button", { name: "Copy message" });
+  expect(copy.className).toContain("size-11");
+  expect(copy.className).toContain("-m-2.5");
+  expect(copy.className).not.toContain("md:size-6");
+
+  const exportButton = view.getByRole("button", { name: "Export conversation" });
+  expect(exportButton.className).toContain("size-11");
+  expect(exportButton.className).not.toContain("md:size-9");
 });
