@@ -25,3 +25,25 @@ export function getSessionVisualState(input: SessionVisualStateInput): SessionVi
   if (input.isCompletedUnread) return "completedUnread";
   return "idle";
 }
+
+export interface SessionStatusCounts {
+  awaiting: number;
+  working: number;
+  completed: number;
+}
+
+/** Count sessions by status for group chips. Awaiting > working > completed(unread); selection is ignored. */
+export function countSessionStatuses(
+  sessions: ReadonlyArray<{ sessionId: string; isActive?: boolean }>,
+  awaiting: ReadonlySet<string> | undefined,
+  compacting: ReadonlySet<string> | undefined,
+  completedUnread: ReadonlySet<string>,
+): SessionStatusCounts {
+  const counts = { awaiting: 0, working: 0, completed: 0 };
+  for (const s of sessions) {
+    if (awaiting?.has(s.sessionId)) counts.awaiting++;
+    else if (s.isActive || compacting?.has(s.sessionId)) counts.working++;
+    else if (completedUnread.has(s.sessionId)) counts.completed++;
+  }
+  return counts;
+}

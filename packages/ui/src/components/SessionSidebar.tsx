@@ -18,7 +18,7 @@ import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
 import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, Code2, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare, Copy } from "lucide-react";
 import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSessionIds, getGroupCwd } from "@/lib/session-tree";
 import { pruneSwipeOffsets } from "@/lib/swipe-reveal";
-import { getSessionVisualState } from "@/lib/session-visual-state";
+import { countSessionStatuses, getSessionVisualState, type SessionStatusCounts } from "@/lib/session-visual-state";
 import { parseHubSessionsPayload } from "@/lib/hub-sessions";
 import { cwdInWorkspace, type ServiceModeDef, type ServicePanelInfo } from "@pizzapi/protocol";
 
@@ -195,6 +195,28 @@ function LiveDot({ state }: { state: DotState }) {
 }
 
 import { Skeleton } from "@/components/ui/skeleton";
+
+/** Small segmented chip: awaiting input / working / completed — segments render only when > 0. */
+function StatusCountChip({ counts }: { counts: SessionStatusCounts }) {
+    const segments = [
+        { n: counts.awaiting, label: "awaiting input", cls: "text-amber-500" },
+        { n: counts.working, label: "working", cls: "text-sky-500" },
+        { n: counts.completed, label: "completed", cls: "text-green-500" },
+    ].filter((s) => s.n > 0);
+    if (segments.length === 0) return null;
+    const title = segments.map((s) => `${s.n} ${s.label}`).join(" · ");
+    return (
+        <span
+            className="flex flex-shrink-0 items-center divide-x divide-sidebar-border rounded-full border border-sidebar-border text-[0.55rem] font-mono font-semibold leading-none tabular-nums"
+            title={title}
+            aria-label={title}
+        >
+            {segments.map((s) => (
+                <span key={s.label} className={cn("px-1.5 py-0.5", s.cls)}>{s.n}</span>
+            ))}
+        </span>
+    );
+}
 
 function SidebarSkeleton() {
     return (
@@ -1315,6 +1337,9 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                     >
                                         {runnerGroup.label}
                                     </span>
+                                    {runnerGroup.projects.length === 1 && (
+                                        <StatusCountChip counts={countSessionStatuses(runnerGroup.projects[0].sessions, sessionsAwaitingInput, sessionsCompacting, completedUnreadSessions)} />
+                                    )}
                                 </div>
 
                                 {/* Project groups within this runner */}
@@ -1330,6 +1355,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                 >
                                                     {project.label}
                                                 </span>
+                                                <StatusCountChip counts={countSessionStatuses(project.sessions, sessionsAwaitingInput, sessionsCompacting, completedUnreadSessions)} />
                                             </div>
                                         )}
 

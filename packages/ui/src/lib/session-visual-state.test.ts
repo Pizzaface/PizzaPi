@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { getSessionVisualState } from "./session-visual-state";
+import { countSessionStatuses, getSessionVisualState } from "./session-visual-state";
 
 describe("getSessionVisualState", () => {
   test("returns 'active' when session is active and not awaiting", () => {
@@ -84,5 +84,19 @@ describe("getSessionVisualState", () => {
       isSelected: false,
       isCompacting: true,
     })).toBe("awaiting");
+  });
+});
+
+describe("countSessionStatuses", () => {
+  test("buckets with awaiting > working > completed priority", () => {
+    const sessions = [
+      { sessionId: "a", isActive: true }, // awaiting wins over active
+      { sessionId: "b", isActive: true },
+      { sessionId: "c" }, // compacting → working
+      { sessionId: "d" }, // completed unread
+      { sessionId: "e" }, // idle
+    ];
+    expect(countSessionStatuses(sessions, new Set(["a"]), new Set(["c"]), new Set(["d", "b"])))
+      .toEqual({ awaiting: 1, working: 2, completed: 1 });
   });
 });
