@@ -153,7 +153,12 @@ export function rewriteUpdateArgs(args: string[]): { includeSelf: boolean; argsF
     const rest = args.slice(1);
     const hasSelf = rest.includes("--self");
     const hasAll = rest.includes("--all");
-    const firstPositional = rest.find((a) => !a.startsWith("-"));
+    const hasModels = rest.includes("--models");
+
+    // `--extension <source>` consumes the next token as its value, not a
+    // positional — skip it so e.g. `update --extension self` isn't
+    // mistaken for the `self` positional.
+    const firstPositional = rest.find((a, i) => !a.startsWith("-") && rest[i - 1] !== "--extension");
     const positionalIsSelf = firstPositional === "self" || firstPositional === "pi";
 
     // Any explicit self-target flag or positional blocks self-update.
@@ -165,8 +170,10 @@ export function rewriteUpdateArgs(args: string[]): { includeSelf: boolean; argsF
     const hasExtensions = rest.includes("--extensions");
     const hasExtensionFlag = rest.some((a, i) => a === "--extension" && i + 1 < rest.length);
 
-    // Explicit extensions-only or specific source — no self
-    if (hasExtensions || hasExtensionFlag) {
+    // Explicit extensions-only, specific source, or --models — no self,
+    // and no default --extensions injection (it would conflict with
+    // --models upstream: "--models cannot be combined with --extensions").
+    if (hasExtensions || hasExtensionFlag || hasModels) {
         return { includeSelf: false, argsForUpstream: args };
     }
     if (firstPositional) {
