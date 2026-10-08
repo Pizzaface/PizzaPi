@@ -16,11 +16,12 @@ const win = new Window({ url: "http://localhost/" });
 (globalThis as any).Node = (win as any).Node;
 (globalThis as any).getComputedStyle = (win as any).getComputedStyle;
 
-const { CsvTable } = await import("./csv-table");
+const { CsvTable, SpreadsheetTable } = await import("./csv-table");
 
 afterEach(() => cleanup());
 
 const CSV = "Product,Qty,Total\nWidget,10,49.90\nGadget,3,149.95\nCable,25,37.25\n";
+const LARGE_CSV = `Name,Qty\n${Array.from({ length: 250 }, (_, i) => `Row ${i + 1},${i + 1}`).join("\n")}\n`;
 
 /** Data cell values for a given column index, in row order (skips spacer rows). */
 function columnValues(container: HTMLElement, colIndex: number): string[] {
@@ -91,5 +92,45 @@ describe("CsvTable", () => {
 
     fireEvent.click(getByRole("button", { name: "Total" }));
     expect(total.getAttribute("aria-sort")).toBe("descending");
+  });
+
+  test("full CSV and shared XLSX tables include an all-rows screen reader table", () => {
+    const { getByText, container, unmount } = render(<CsvTable content={LARGE_CSV} full />);
+
+    fireEvent.click(getByText("Screen reader table with all 250 rows"));
+    let accessibleTable = container.querySelector("details table");
+    expect(accessibleTable).toBeDefined();
+    expect(accessibleTable?.textContent).toContain("Row 250");
+
+    unmount();
+
+    const rows = Array.from({ length: 250 }, (_, i) => [`Row ${i + 1}`, String(i + 1)]);
+    const spreadsheet = render(<SpreadsheetTable header={["Name", "Qty"]} rows={rows} full />);
+    fireEvent.click(spreadsheet.getByText("Screen reader table with all 250 rows"));
+    accessibleTable = spreadsheet.container.querySelector("details table");
+    expect(accessibleTable).toBeDefined();
+    expect(accessibleTable?.textContent).toContain("Row 250");
+  });
+
+  test("screen reader table lazily mounts rows: none while closed, full set once opened", () => {
+    const LARGE_ROWS = Array.from({ length: 5000 }, (_, i) => [`Row ${i + 1}`, String(i + 1)]);
+    const { getByText, container } = render(
+      <SpreadsheetTable header={["Name", "Qty"]} rows={LARGE_ROWS} full />,
+    );
+
+    // Closed: the details exists, but none of its 5,000 rows are mounted.
+    const details = container.querySelector("details");
+    expect(details).toBeDefined();
+    expect(details?.hasAttribute("open")).toBe(false);
+    expect(container.querySelectorAll("details tbody tr").length).toBe(0);
+
+    // Opened: the full row set mounts.
+    fireEvent.click(getByText("Screen reader table with all 5000 rows"));
+    expect(container.querySelectorAll("details tbody tr").length).toBe(5000);
+    expect(container.querySelector("details table")?.textContent).toContain("Row 5000");
+
+    // Closed again: rows unmount.
+    fireEvent.click(getByText("Screen reader table with all 5000 rows"));
+    expect(container.querySelectorAll("details tbody tr").length).toBe(0);
   });
 });

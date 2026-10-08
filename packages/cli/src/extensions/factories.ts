@@ -145,6 +145,7 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
                 configSkills: options.configSkills,
                 skipPlugins: options.skipPlugins,
                 cwd: options.cwd,
+                agentDir,
             }),
             "resource-paths",
         ),

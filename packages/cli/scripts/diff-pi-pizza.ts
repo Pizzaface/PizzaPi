@@ -42,6 +42,7 @@ import {
     expandHome,
     loadConfig,
     maybeBuildSystemPrompt,
+    resolveExplicitProjectTrust,
 } from "../src/config.js";
 import { getPluginSkillPaths } from "../src/extensions/claude-plugins.js";
 import { buildPizzaPiExtensionFactories } from "../src/extensions/factories.js";
@@ -127,6 +128,10 @@ const cwd = process.cwd();
 const config = loadConfig(cwd);
 const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
 applyProviderSettingsEnv(config);
+// Mirror src/index.ts's trust resolution so the pizza leg doesn't silently
+// omit project-scope skill/command dirs for a trusted project (the pizza leg
+// must match the real CLI exactly, or the wire diff is misleading).
+const projectTrusted = resolveExplicitProjectTrust(cwd, agentDir);
 
 const extensionFactories = buildPizzaPiExtensionFactories({
     cwd,
@@ -144,10 +149,10 @@ const services = await createAgentSessionServices({
     resourceLoaderOptions: {
         extensionFactories: extensionFactories as any,
         additionalSkillPaths: [
-            ...buildSkillPaths(cwd, config.skills),
+            ...buildSkillPaths(cwd, config.skills, projectTrusted),
             ...(noPlugins ? [] : getPluginSkillPaths(cwd)),
         ],
-        additionalPromptTemplatePaths: buildPromptTemplatePaths(cwd),
+        additionalPromptTemplatePaths: buildPromptTemplatePaths(cwd, projectTrusted),
         ...(config.systemPrompt !== undefined && { systemPromptOverride: () => config.systemPrompt }),
         appendSystemPrompt: [maybeBuildSystemPrompt(config, { cwd }), config.appendSystemPrompt].filter(Boolean) as string[],
         ...(agentsFilesOverride && { agentsFilesOverride }),

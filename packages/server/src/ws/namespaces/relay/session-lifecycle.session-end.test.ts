@@ -87,6 +87,7 @@ afterAll(() => mock.restore());
 
 const { registerSessionLifecycleHandlers } = await import("./session-lifecycle.js");
 
+let closed = 0;
 function makeSocket(sessionId: string | undefined, token = "tok") {
     const handlers = new Map<string, (...args: any[]) => unknown>();
     const socket = {
@@ -97,6 +98,7 @@ function makeSocket(sessionId: string | undefined, token = "tok") {
             handlers.set(event, cb);
         },
         emit: () => {},
+        conn: { close() { closed++; } },
     } as never;
     return {
         socket,
@@ -155,6 +157,19 @@ describe("session_end handler", () => {
 
         expect(acknowledgement).toEqual({ ended: false });
         expect(endedSessions).toHaveLength(0);
+    });
+
+    it("a failed registration closes the transport instead of rejecting (unhandled rejection is fatal)", async () => {
+        registerSession = async () => {
+            throw new Error("Timed out acquiring session ownership lock for s");
+        };
+        closed = 0;
+        const { socket, fire } = makeSocket(undefined);
+        registerSessionLifecycleHandlers(socket);
+
+        await expect(fire("register", { sessionId: "s", cwd: "/", ephemeral: true })).resolves.toBeUndefined();
+        expect(closed).toBe(1);
+        expect((socket as unknown as { data: { sessionId?: string } }).data.sessionId).toBeUndefined();
     });
 
     it("cleans up a registration that completes after disconnect", async () => {

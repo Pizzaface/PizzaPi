@@ -19,9 +19,20 @@ import { getRunnerData } from "../ws/sio-registry.js";
 import { LABEL_MAX_TTL_HOURS, mintTunnelLabel } from "./tunnel-host.js";
 import type { RouteHandler } from "./types.js";
 
-const TUNNEL_MAX_BUFFERED_BYTES = 25 * 1024 * 1024; // ponytail: fixed ceiling, raise if legit large HTML responses appear
+const TUNNEL_MAX_BUFFERED_BYTES = 25 * 1024 * 1024; // hard safety cap; larger rewritable responses return 413 instead of buffering
 /** Streamed responses: ask the runner to pause once this many bytes wait for the viewer. */
 const TUNNEL_STREAM_HIGH_WATER_BYTES = TUNNEL_SEND_HIGH_WATER_BYTES;
+/**
+ * Above this, buffering the whole body to run the multi-pass HTML/JS/CSS
+ * rewrite regexes synchronously would block the shared relay event loop for
+ * too long. Bodies that grow past this (or declare a Content-Length past it)
+ * fall back to unrewritten passthrough streaming instead — absolute URLs in
+ * a response this large go unrewritten, but every other tunnel/session on
+ * the relay keeps responding.
+ * ponytail: fixed threshold, revisit with a worker-thread offload if large
+ * rewritable responses turn out to be common enough to need rewriting too.
+ */
+const TUNNEL_SYNC_REWRITE_MAX_BYTES = 2 * 1024 * 1024;
 
 /** Pattern: /api/tunnel/auth/:token/:sessionId/:port/<rest> — mobile iframe auth. */
 const AUTH_TUNNEL_PATH_RE = /^\/api\/tunnel\/auth\/([^/]+)\/([^/]+)\/(\d+)(\/.*)?$/;
@@ -719,6 +730,51 @@ function proxyTunnelRequestViaRelay(
             resolve(response);
         };
 
+        const markRewriteSkippedForSize = (): void => {
+            responseHeaders.set("x-pizzapi-rewrite", "skipped-size");
+        };
+
+        /**
+         * Resolve with a streamed, unrewritten passthrough response. Used both
+         * for responses that never needed rewriting and for ones that bailed
+         * out of buffering because the body grew past TUNNEL_SYNC_REWRITE_MAX_BYTES
+         * — `prefix` replays whatever was already buffered before the bail-out.
+         */
+        const beginUnrewrittenStream = (prefix: Buffer[]): void => {
+            applyResponseHeadersByBasePath(responseHeaders, basePath, allowCrossOriginFrame);
+            const stream = new ReadableStream<Uint8Array>({
+                start(controller) {
+                    streamController = controller;
+                    for (const chunk of prefix) {
+                        try {
+                            controller.enqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+                        } catch {
+                            streamClosed = true;
+                            return;
+                        }
+                    }
+                },
+                pull() {
+                    // The viewer drained below the high-water mark.
+                    if (!responsePaused) return;
+                    responsePaused = false;
+                    relay.resumeResponse(runnerId, requestId);
+                },
+                cancel() {
+                    streamClosed = true;
+                    cancelRequest();
+                },
+            }, {
+                highWaterMark: TUNNEL_STREAM_HIGH_WATER_BYTES,
+                size: (chunk) => chunk?.byteLength ?? 0,
+            });
+
+            resolveOnce(new Response(stream, {
+                status: statusCode,
+                headers: responseHeaders,
+            }));
+        };
+
         const { cancel } = relay.proxyHttpRequest(
             runnerId,
             {
@@ -762,33 +818,16 @@ function proxyTunnelRequestViaRelay(
                             resolveOnce(tunnelErrorResponse("Response body too large"));
                             return;
                         }
+                        // Known up front to be too large to rewrite synchronously:
+                        // skip buffering entirely, stream it through unrewritten.
+                        if (Number.isFinite(length) && length > TUNNEL_SYNC_REWRITE_MAX_BYTES) {
+                            shouldBuffer = false;
+                            markRewriteSkippedForSize();
+                        }
                     }
                     if (shouldBuffer) return;
 
-                    applyResponseHeadersByBasePath(responseHeaders, basePath, allowCrossOriginFrame);
-                    const stream = new ReadableStream<Uint8Array>({
-                        start(controller) {
-                            streamController = controller;
-                        },
-                        pull() {
-                            // The viewer drained below the high-water mark.
-                            if (!responsePaused) return;
-                            responsePaused = false;
-                            relay.resumeResponse(runnerId, requestId);
-                        },
-                        cancel() {
-                            streamClosed = true;
-                            cancelRequest();
-                        },
-                    }, {
-                        highWaterMark: TUNNEL_STREAM_HIGH_WATER_BYTES,
-                        size: (chunk) => chunk?.byteLength ?? 0,
-                    });
-
-                    resolveOnce(new Response(stream, {
-                        status: statusCode,
-                        headers: responseHeaders,
-                    }));
+                    beginUnrewrittenStream([]);
                 },
                 onResponseData: (chunk) => {
                     if (shouldBuffer) {
@@ -799,6 +838,16 @@ function proxyTunnelRequestViaRelay(
                         }
                         bufferedBytes += chunk.length;
                         bodyChunks.push(chunk);
+                        if (bufferedBytes > TUNNEL_SYNC_REWRITE_MAX_BYTES) {
+                            // Content-Length was absent or unknown up front (chunked
+                            // transfer) and the body just grew past the sync-rewrite
+                            // budget: stop buffering for rewrite and flush what's
+                            // already queued through an unrewritten stream instead of
+                            // running the regex rewrite on a multi-MB string later.
+                            shouldBuffer = false;
+                            markRewriteSkippedForSize();
+                            beginUnrewrittenStream(bodyChunks.splice(0, bodyChunks.length));
+                        }
                         return;
                     }
 

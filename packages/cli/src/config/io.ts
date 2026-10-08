@@ -229,6 +229,31 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
     if (hooks) config.hooks = hooks;
     else delete config.hooks;
 
+    // Prompt-shaping config is as powerful as hooks: an untrusted repo must not
+    // replace the session instructions or inject arbitrary skill paths.
+    if (!projectHooksTrusted) {
+        if (
+            "systemPrompt" in project ||
+            "appendSystemPrompt" in project ||
+            "builtinSystemPrompt" in project ||
+            "sendAgentsMd" in project ||
+            "skills" in project ||
+            "providerSettings" in project
+        ) {
+            warnLoadConfigOnce(
+                projectPath,
+                "project-prompt-config-untrusted",
+                "Project prompt/skills config found in .pizzapi/config.json but not trusted. " +
+                    'Set "allowProjectHooks": true in ~/.pizzapi/config.json or ' +
+                    "PIZZAPI_ALLOW_PROJECT_HOOKS=1 to enable.",
+            );
+        }
+        for (const key of ["systemPrompt", "appendSystemPrompt", "builtinSystemPrompt", "sendAgentsMd", "skills", "providerSettings"] as const) {
+            if (key in global) config[key] = global[key] as never;
+            else delete config[key];
+        }
+    }
+
     // envOverrides that relax a protection are honoured only from the global
     // config — a cloned repository must not be able to switch them off.
     if (project.envOverrides && typeof project.envOverrides === "object") {

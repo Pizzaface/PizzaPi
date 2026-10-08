@@ -454,6 +454,7 @@ export function createEngineDeps(): EngineDeps {
         return sessionId;
       }
       const ackPromise = waitForSpawnAck(sessionId, 10_000);
+      let runnerMayHaveSpawned = false;
       try {
         runnerSocket.emit("new_session", {
           sessionId,
@@ -466,12 +467,20 @@ export function createEngineDeps(): EngineDeps {
         // Ack timeout ≠ failure — the session may come up anyway (see the
         // legacy listener spawn path for the rationale).
         if (ack.ok === false && !("timeout" in ack && ack.timeout)) return null;
+        runnerMayHaveSpawned = true;
         await recordRunnerSession(spec.runnerId, sessionId);
         await linkSessionToRunner(spec.runnerId, sessionId);
         await waitForLocalTuiSocket(sessionId, 15_000);
         return sessionId;
       } catch (err) {
         log.warn(`Spawn route ${route.routeId} failed:`, err);
+        if (runnerMayHaveSpawned) {
+          try {
+            runnerSocket.emit("kill_session", { sessionId });
+          } catch (killErr) {
+            log.warn(`Spawn route ${route.routeId}: failed to kill orphaned session ${sessionId}:`, killErr);
+          }
+        }
         return null;
       }
     },
