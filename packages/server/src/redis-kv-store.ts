@@ -12,11 +12,13 @@ const log = createLogger("redis-kv");
 
 let _redis: RedisClient | null = null;
 let _initPromise: Promise<RedisClient | null> | null = null;
+let _injected = false;
 
 // A failed connect must not be cached forever (e.g. Redis briefly
 // unreachable at startup) — clearing _initPromise once it settles lets the
 // next call retry connectRedisClient() instead of permanently returning null.
 async function getClient(): Promise<RedisClient | null> {
+    if (_injected) return _redis;
     if (_redis?.isOpen) return _redis;
     if (!_initPromise) {
         _initPromise = connectRedisClient().then((c) => {
@@ -35,12 +37,14 @@ async function getClient(): Promise<RedisClient | null> {
 export function _injectRedisForTesting(client: unknown): void {
     _redis = client as RedisClient;
     _initPromise = null;
+    _injected = true;
 }
 
 /** Reset module-level state for tests. */
 export function _resetRedisKvStoreForTesting(): void {
     _redis = null;
     _initPromise = null;
+    _injected = false;
     nonceMemoryStore.clear();
 }
 

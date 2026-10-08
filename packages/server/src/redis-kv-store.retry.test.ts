@@ -14,6 +14,7 @@ mock.module("./redis-client.js", () => ({
         return connectImpl();
     },
     isRedisDisabled: () => false,
+    redisUrl: () => "redis://test",
 }));
 
 const kvStorePromise = import("./redis-kv-store.js");
