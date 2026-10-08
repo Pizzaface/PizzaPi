@@ -149,7 +149,7 @@ export async function emitTriggerSubscriptionDelta(
 
 // Forward declaration — filled in during registerRunnerNamespace() below.
 let emitToRunnerRoom: (runnerId: string, event: string, data: unknown) => void = () => {};
-import { runnerRoom } from "../sio-registry/context.js";
+import { runnerRoom, localRunnerSockets } from "../sio-registry/context.js";
 import {
     registerRunner,
     RetryableRunnerRegistrationError,
@@ -1600,7 +1600,14 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
                 // ownership, and the localRunnerSockets entry — so a replaced
                 // socket's disconnect is a NO-OP. Only the currently-
                 // registered socket performs real teardown.
-                if (getLocalRunnerSocket(runnerId) !== socket) {
+                //
+                // Must read the RAW map here, not getLocalRunnerSocket(): by
+                // the time "disconnect" fires, THIS socket's own .connected
+                // is already false (normal Socket.IO lifecycle) — the
+                // connected-aware accessor would return undefined for the
+                // very socket we're checking identity against, making every
+                // disconnect look "stale" and skipping real teardown entirely.
+                if (localRunnerSockets.get(runnerId) !== socket) {
                     log.info(
                         `ignoring stale disconnect for runner ${runnerId}: `
                         + `socket ${socket.id} is no longer the registered connection`,
