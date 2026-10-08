@@ -131,7 +131,10 @@ const { getRunnerOwner, rememberRunnerOwner } = await import("../../runner-owner
 const { _injectRedisForTesting: _injectKvRedis, _resetRedisKvStoreForTesting } = await import("../../redis-kv-store.js");
 
 function fakeSocket() {
-    return { join: mock(async () => {}), data: {} } as any;
+    // getLocalRunnerSocket treats `.connected !== true` as absent (GM
+    // oRG618iQ zombie-socket fix) — a freshly-registered real Socket.IO
+    // socket is always `.connected === true`, so the fixture must match.
+    return { join: mock(async () => {}), disconnect: mock(() => {}), data: {}, connected: true } as any;
 }
 
 function fakeIo() {

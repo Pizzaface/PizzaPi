@@ -58,6 +58,7 @@ export {
     getRunners,
     getRunnerData,
     getLocalRunnerSocket,
+    forgetLocalRunnerSocketIfCurrent,
     removeRunner,
     touchRunner,
     sweepOrphanedRunners,

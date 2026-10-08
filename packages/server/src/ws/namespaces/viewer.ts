@@ -890,7 +890,9 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 // for a moment. Hold the input until it re-registers instead
                 // of failing it. Checked before the summary lookup because
                 // the summary is gone during that gap too.
-                if (!getLocalTuiSocket(currentSessionId)?.connected) {
+                // getLocalTuiSocket is already connected-aware — no need
+                // to re-check `.connected` here.
+                if (!getLocalTuiSocket(currentSessionId)) {
                     const started = Date.now();
                     const back = await waitForLocalTuiSocket(currentSessionId, TUI_RECONNECT_WAIT_MS);
                     log.info(`input for ${currentSessionId} waited ${Date.now() - started}ms for worker reconnect (${back ? "reconnected" : "timed out — input dropped"})`);

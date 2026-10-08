@@ -102,7 +102,17 @@ function closeUniqueTransports(entries: RecoverySocket[], seenConnections: Set<o
             closed++;
         } catch (err) {
             log.warn(`failed to close transport during ${reason}:`, err);
-            unmarkRedisAdapterRecoverySocket(socket);
+            // conn.close() failing means NONE of this connection's sockets
+            // will fire a real disconnect from this forced-close attempt.
+            // Unmark every socket sharing this conn, not just the one that
+            // threw — the others are already in seenConnections and would
+            // otherwise `continue` past unmarked, stay marked indefinitely,
+            // and have their eventual real disconnect skipped as "recovery
+            // in progress" (the same zombie-entry class as the local socket
+            // map bugs, just on the recovery-mark WeakSet instead).
+            for (const other of entries) {
+                if (other.socket.conn === conn) unmarkRedisAdapterRecoverySocket(other.socket);
+            }
         }
     }
     return closed;
@@ -148,6 +158,15 @@ function sessionIdOf(socket: Socket): string | undefined {
  *
  * Sockets whose conn carries no sessionId at all (e.g. not yet attached to
  * any session) have nothing to wait for and are closed immediately.
+ *
+ * Narrow known gap: a viewer socket mid-switch (viewer.ts clears
+ * socket.data.sessionId before re-setting it to the new session) is
+ * momentarily sessionId-less too, so it can be grouped with the no-sessionId
+ * bucket and closed immediately instead of waiting for its NEW target
+ * session's worker to re-register. The window is sub-millisecond (both lines
+ * run synchronously in the same handler) and the socket simply reconnects
+ * and resyncs like any other recovered viewer, so this is accepted as-is —
+ * not treated as a bug.
  *
  * Grouping independently per conn (rather than waiting for every session
  * globally, then closing everything at once) means one slow-to-restart

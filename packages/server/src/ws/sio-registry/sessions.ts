@@ -531,10 +531,21 @@ async function registerTuiSessionUnlocked(
 
 /**
  * Get the local TUI socket for a session (only available on the server
- * that owns the session).
+ * that owns the session). Treats a map entry pointing at a disconnected
+ * socket as absent: a disconnect-handler early return (recovery mark,
+ * ownership-lookup failure, stale owner, shutdown preserve) can leave a
+ * stale socket pinned here, and callers emitting into a dead socket would
+ * otherwise hang until an ack timeout instead of seeing "not connected"
+ * immediately. Lazily clears the stale entry (only if it is still the
+ * same socket) so the next read is a plain Map hit.
  */
 export function getLocalTuiSocket(sessionId: string): Socket | undefined {
-    return localTuiSockets.get(sessionId);
+    const socket = localTuiSockets.get(sessionId);
+    if (socket && socket.connected !== true) {
+        forgetLocalTuiSocketIfCurrent(sessionId, socket);
+        return undefined;
+    }
+    return socket;
 }
 
 /**

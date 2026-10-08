@@ -277,6 +277,30 @@ describe("Redis adapter recovery", () => {
         expect(isRedisAdapterRecoverySocket(socket)).toBe(false);
     });
 
+    test("unmarks EVERY socket sharing a conn when conn.close() throws, not just the one that triggered it", () => {
+        // P3: before this fix, only the socket that initiated the throwing
+        // close() call was unmarked. A single Engine.IO conn can carry
+        // multiple namespace sockets (e.g. the runner daemon's relay socket
+        // and its runner socket share one transport); the others were
+        // already recorded in seenConnections and would `continue` past
+        // unmarked, staying marked-as-recovery-pending indefinitely — their
+        // later real disconnect would then be skipped as "recovery in
+        // progress", leaking teardown.
+        const throwingConn = {
+            closed: 0,
+            close() {
+                throw new Error("boom");
+            },
+        };
+        const relaySocket = fakeSocket(throwingConn as any, "session-1");
+        const runnerSocket = fakeSocket(throwingConn as any);
+
+        recoverLiveSocketsAfterRedisReconnect(fakeIo([relaySocket], [runnerSocket], []) as any, "test");
+
+        expect(isRedisAdapterRecoverySocket(relaySocket)).toBe(false);
+        expect(isRedisAdapterRecoverySocket(runnerSocket)).toBe(false);
+    });
+
     test("unmarkRedisAdapterRecoverySocket is idempotent for a socket never marked", () => {
         const plain = {};
         expect(() => unmarkRedisAdapterRecoverySocket(plain)).not.toThrow();

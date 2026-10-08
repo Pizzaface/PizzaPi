@@ -162,6 +162,7 @@ import {
     removeRunnerSession,
     removeRunner,
     getLocalRunnerSocket,
+    forgetLocalRunnerSocketIfCurrent,
     getLocalTuiSocket,
     sendToTerminalViewer,
     removeTerminal,
@@ -1567,6 +1568,16 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
                 // runner state: the daemon is still alive.
                 if (isRedisAdapterRecoverySocket(socket)) {
                     log.info(`redis adapter recovery — preserving runner ${runnerId} during forced reconnect`);
+                    // Redis state is preserved (the daemon is still alive and
+                    // will reconnect), but THIS socket is dead — the forced
+                    // transport close means it will never carry traffic again.
+                    // Leaving it pinned in localRunnerSockets would make
+                    // getLocalRunnerSocket's connected-check the only thing
+                    // standing between consumers and a zombie entry; clear it
+                    // proactively so a concurrent read never has to rely on
+                    // that fallback alone, and so registerRunner's own stale-
+                    // socket check (which reads the map directly) doesn't race it.
+                    forgetLocalRunnerSocketIfCurrent(runnerId, socket);
                     return;
                 }
 
