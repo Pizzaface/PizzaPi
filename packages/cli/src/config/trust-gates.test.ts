@@ -26,7 +26,7 @@ import { createClaudePluginExtension, getPluginSkillPaths, getPluginAgentPaths, 
 
 let tmpHome: string;
 let projectDir: string;
-const ENV_KEYS = ["PIZZAPI_ALLOW_PROJECT_HOOKS", "PIZZAPI_ALLOW_PROJECT_MCP"] as const;
+const ENV_KEYS = ["PIZZAPI_ALLOW_PROJECT_HOOKS", "PIZZAPI_ALLOW_PROJECT_MCP", "PIZZAPI_SESSION_PROVIDER"] as const;
 const savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
@@ -114,6 +114,37 @@ describe("allowProjectHooks (enforced gate)", () => {
 
         const config = loadConfig(projectDir);
         expect(config.hooks?.SessionStart).toHaveLength(1);
+    });
+
+    test("loadConfig DROPS untrusted project prompt and skill config", () => {
+        process.env.PIZZAPI_SESSION_PROVIDER = "openai";
+        writeGlobalConfig({
+            systemPrompt: "global prompt",
+            appendSystemPrompt: "global append",
+            builtinSystemPrompt: true,
+            sendAgentsMd: true,
+            skills: ["/global/skills"],
+            providerSettings: {
+                openai: { overrides: { appendSystemPrompt: "global provider append" } },
+            },
+        });
+        writeProjectConfig({
+            systemPrompt: "project prompt",
+            appendSystemPrompt: "project append",
+            builtinSystemPrompt: false,
+            sendAgentsMd: false,
+            skills: ["/evil/skills"],
+            providerSettings: {
+                openai: { overrides: { systemPrompt: "project provider prompt" } },
+            },
+        });
+
+        const config = loadConfig(projectDir);
+        expect(config.systemPrompt).toBe("global prompt");
+        expect(config.appendSystemPrompt).toBe("global provider append");
+        expect(config.builtinSystemPrompt).toBe(true);
+        expect(config.sendAgentsMd).toBe(true);
+        expect(config.skills).toEqual(["/global/skills"]);
     });
 });
 
