@@ -87,9 +87,26 @@ const mockRedis = {
 // No mock.module for redis — mock client is injected directly via initStateRedis().
 mock.module("./hub.js", () => ({ broadcastToHub: mock(async () => {}) }));
 
+// The secret path (redis-kv-store.js getValue/setValue) short-circuits to a
+// no-op when PIZZAPI_REDIS_URL=off, bypassing the injected mock entirely
+// regardless of _injectRedisForTesting(). Pin it to a harmless non-"off"
+// value for this suite so the assertions below are robust to ambient env
+// state left over from other tests/shells.
+const _previousRedisUrl = process.env.PIZZAPI_REDIS_URL;
+
 // Restore all module mocks after this file so they don't bleed into other
 // test files running in the same worker process.
-afterAll(() => mock.restore());
+afterAll(() => {
+    mock.restore();
+    // Reset the module-level kv-store client so it doesn't leak this file's
+    // mock into a later test file sharing the same Bun worker process.
+    _resetRedisKvStoreForTesting();
+    if (_previousRedisUrl === undefined) {
+        delete process.env.PIZZAPI_REDIS_URL;
+    } else {
+        process.env.PIZZAPI_REDIS_URL = _previousRedisUrl;
+    }
+});
 
 // Instead of mocking ./runners-broadcast.js (which is brittle if another test
 // imports it first), we provide a fake Socket.IO server via initSioRegistry()
@@ -160,6 +177,7 @@ const { registerRunner, removeRunner, updateRunnerSkills, updateRunnerAgents, up
 // cache on the barrel (../sio-state/index.js) cannot leak a fake into this file.
 describe("runners broadcast", () => {
     beforeEach(async () => {
+        process.env.PIZZAPI_REDIS_URL = "redis://mock-injected-for-testing";
         await ownerDb.reset();
         store.clear();
         setStore.clear();

@@ -121,6 +121,14 @@ const { initStateRedis, setSession, setRunner } = await import("../sio-state/ind
 const { initSioRegistry, runnerSecrets, localRunnerSockets, localTuiSockets } = await import("./context.js");
 const { registerRunner, removeRunner, getRunnerData, getLocalRunnerSocket, getConnectedSessionsForRunner } = await import("./runners.js");
 const { getRunnerOwner, rememberRunnerOwner } = await import("../../runner-owner.js");
+// The runner-secret path (validateAndPersistRunnerSecret -> getValue/setValue)
+// goes through redis-kv-store.js, a SEPARATE lazily-connecting client from
+// sio-state's. This suite registers runners with secrets in nearly every
+// test (re-registration/ownership races); without injecting it too, every
+// one of those registrations falls through to a real connect() attempt at
+// redis://127.0.0.1:6379 -- writing real `pizzapi:runner:secret:*` keys into
+// a developer's live Redis (or timing out when none is listening).
+const { _injectRedisForTesting: _injectKvRedis, _resetRedisKvStoreForTesting } = await import("../../redis-kv-store.js");
 
 function fakeSocket() {
     return { join: mock(async () => {}), data: {} } as any;
@@ -189,7 +197,15 @@ function connectTui(sessionId: string): void {
 }
 
 describe("runner ownership guard", () => {
+    // The secret path (redis-kv-store.js getValue/setValue) short-circuits to
+    // a no-op when PIZZAPI_REDIS_URL=off, bypassing the injected mock entirely
+    // regardless of _injectRedisForTesting(). Pin it to a harmless non-"off"
+    // value for this suite so the assertions below are robust to ambient env
+    // state left over from other tests/shells.
+    const previousRedisUrl = process.env.PIZZAPI_REDIS_URL;
+
     beforeEach(async () => {
+        process.env.PIZZAPI_REDIS_URL = "redis://mock-injected-for-testing";
         await ownerDb.reset();
         ownerDb.setBroken(false);
         store.clear();
@@ -198,6 +214,16 @@ describe("runner ownership guard", () => {
         localRunnerSockets.clear();
         initSioRegistry(fakeIo());
         await initStateRedis(mockRedis as never);
+        _resetRedisKvStoreForTesting();
+        _injectKvRedis(mockRedis);
+    });
+
+    afterAll(() => {
+        if (previousRedisUrl === undefined) {
+            delete process.env.PIZZAPI_REDIS_URL;
+        } else {
+            process.env.PIZZAPI_REDIS_URL = previousRedisUrl;
+        }
     });
 
     it("rejects re-registration with the correct secret by a DIFFERENT user", async () => {

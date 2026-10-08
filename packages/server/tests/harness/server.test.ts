@@ -199,4 +199,72 @@ describe("createTestServer", () => {
         }
         expect(threw).toBe(true);
     }, TEST_TIMEOUT_MS);
+
+    test("never connects to the default dev Redis port when PIZZAPI_REDIS_URL is unset", async () => {
+        // The harness must provision its own disposable Redis when the caller
+        // hasn't opted into an explicit PIZZAPI_REDIS_URL -- it must never
+        // silently fall through to redis://127.0.0.1:6379 (a real dev/prod
+        // Redis a developer or CI service container may have listening).
+        const previousUrl = process.env.PIZZAPI_REDIS_URL;
+        delete process.env.PIZZAPI_REDIS_URL;
+
+        try {
+            const server = await createTestServer();
+            try {
+                // PIZZAPI_REDIS_URL must now be set to an isolated instance,
+                // not the hardcoded default port.
+                const urlDuringLifetime = process.env.PIZZAPI_REDIS_URL;
+                expect(urlDuringLifetime).toBeDefined();
+                expect(urlDuringLifetime).not.toBe("redis://localhost:6379");
+                expect(urlDuringLifetime).not.toContain(":6379");
+            } finally {
+                await server.cleanup();
+            }
+
+            // The env var must be restored (here: deleted again) once the
+            // isolated server is torn down, so it doesn't leak into later tests.
+            expect(process.env.PIZZAPI_REDIS_URL).toBeUndefined();
+        } finally {
+            if (previousUrl === undefined) {
+                delete process.env.PIZZAPI_REDIS_URL;
+            } else {
+                process.env.PIZZAPI_REDIS_URL = previousUrl;
+            }
+        }
+    }, TEST_TIMEOUT_MS);
+
+    test("respects an explicitly-set PIZZAPI_REDIS_URL instead of auto-provisioning", async () => {
+        // Callers that already manage their own isolated Redis (e.g. via
+        // RedisMemoryServer, matching trigger-snapshot-offline.test.ts) must
+        // not have it silently swapped out from under them.
+        const { RedisMemoryServer } = await import("redis-memory-server");
+        const ownRedis = await RedisMemoryServer.create({
+            instance: { ip: "127.0.0.1", port: 0 },
+            autoStart: true,
+        } as any);
+        const ownUrl = `redis://${await ownRedis.getHost()}:${await ownRedis.getPort()}`;
+
+        const previousUrl = process.env.PIZZAPI_REDIS_URL;
+        process.env.PIZZAPI_REDIS_URL = ownUrl;
+
+        try {
+            const server = await createTestServer();
+            try {
+                // The caller's own URL must be left untouched (not overwritten
+                // by an auto-provisioned isolated instance).
+                expect(process.env.PIZZAPI_REDIS_URL).toBe(ownUrl);
+            } finally {
+                await server.cleanup();
+            }
+            // Cleanup must not stop/clear a Redis instance it didn't provision.
+            expect(process.env.PIZZAPI_REDIS_URL).toBe(ownUrl);
+        } finally {
+            if (previousUrl === undefined) {
+                delete process.env.PIZZAPI_REDIS_URL;
+            } else {
+                process.env.PIZZAPI_REDIS_URL = previousUrl;
+            }
+            await ownRedis.stop();
+        }
+    }, TEST_TIMEOUT_MS);
 });

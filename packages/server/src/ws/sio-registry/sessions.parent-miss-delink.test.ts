@@ -50,8 +50,25 @@ const mockMulti = () => {
     };
 };
 
+const listStore = new Map<string, string[]>();
+
 const mockRedis = {
     isOpen: true,
+    // List ops used by trigger-store.js (pushTriggerHistory).
+    lPush: mock(async (key: string, value: string) => {
+        const list = listStore.get(key) ?? [];
+        list.unshift(value);
+        listStore.set(key, list);
+        return list.length;
+    }),
+    lTrim: mock(async (key: string, start: number, stop: number) => {
+        const list = listStore.get(key);
+        if (list) listStore.set(key, list.slice(start, stop + 1));
+    }),
+    lRange: mock(async (key: string, start: number, stop: number) => {
+        const list = listStore.get(key) ?? [];
+        return stop === -1 ? list.slice(start) : list.slice(start, stop + 1);
+    }),
     sAdd: mock(async (key: string, ...members: string[]) => {
         const s = setStore.get(key) ?? new Set();
         for (const m of members.flat()) s.add(m);
@@ -209,13 +226,25 @@ mock.module("./hub.js", () => ({
 
 // Restore all module mocks after this file so they don't bleed into other
 // test files running in the same worker process.
-afterAll(() => mock.restore());
+afterAll(() => {
+    mock.restore();
+    _resetTriggerStoreForTesting();
+});
 
 // Dynamic imports so that mock.module("../../sessions/store.js", …) is in place
 // before sessions.js (and its transitive store.js dependency) is resolved.
 // The redis mock has been removed — mockRedis is injected via initStateRedis() instead.
 const { initStateRedis, markChildAsDelinked } = await import("../sio-state/index.js");
 const { registerTuiSession } = await import("./sessions.js");
+// registerTuiSession fire-and-forgets a `pushTriggerHistory()` call
+// (sessions.ts) whenever a child links to a parent. That goes through
+// trigger-store.js, a SEPARATE lazily-connecting Redis client from
+// sio-state's. Without injecting it too, every test below that sets
+// parentSessionId falls through to a real connect() attempt at
+// redis://127.0.0.1:6379 -- writing a real `pizzapi:triggers:history:*` key
+// into a developer's live Redis (or silently failing when none is listening).
+const { _injectRedisForTesting: _injectTriggerStoreRedis, _resetRedisForTesting: _resetTriggerStoreForTesting } =
+    await import("../../sessions/trigger-store.js");
 
 describe("registerTuiSession parent resolution", () => {
     beforeEach(async () => {
@@ -227,6 +256,7 @@ describe("registerTuiSession parent resolution", () => {
         mockGetRelaySessionUserId.mockReset();
         mockGetRelaySessionUserId.mockImplementation(async () => null);
         await initStateRedis(mockRedis as never);
+        _injectTriggerStoreRedis(mockRedis);
     });
 
     it("keeps membership when parent is transiently offline", async () => {
