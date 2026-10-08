@@ -45,7 +45,7 @@ import { normalizeLoopbackHost, toHttpRelayUrl } from "../relay-url.js";
 import { startUsageRefreshLoop, stopUsageRefreshLoop } from "./runner-usage-cache.js";
 import { startOllamaModelsRefreshLoop, stopOllamaModelsRefreshLoop } from "./runner-ollama-models-cache.js";
 import { getWorkspaceRoots } from "./workspace.js";
-import { type RunnerSession, spawnSession, killSessionProcessGroup, notifyWorkersOfRestart } from "./session-spawner.js";
+import { type RunnerSession, spawnSession, killSessionProcessGroup, notifyWorkersOfRestart, classifySpawnFailure, type SpawnFailureDetails } from "./session-spawner.js";
 import type { WorkerStartupResult } from "./worker-startup.js";
 import { pruneSessionCloseMetadata, type SessionCloseMetadata } from "./session-close-metadata.js";
 import { removeSessionProcFile, readRecordedGroupPids, sessionProcFilePath } from "./session-procs.js";
@@ -1839,6 +1839,17 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
 
             let isFirstSpawn = true;
+            let childFailureReported = false;
+            const emitChildFailure = (message: string, failure: SpawnFailureDetails) => {
+                if (childFailureReported) return;
+                childFailureReported = true;
+                socket.emit("session_error", {
+                    sessionId,
+                    message,
+                    ...(requestedParentSessionId ? { parentSessionId: requestedParentSessionId } : {}),
+                    failure,
+                });
+            };
             const doSpawn = () => {
                 try {
                     // Report session_ready only once the worker confirms its
@@ -1849,15 +1860,15 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                             socket.emit("session_ready", { sessionId });
                         } else {
                             logWarn(`session ${sessionId} failed to start: ${result.message}`);
-                            socket.emit("session_error", { sessionId, message: result.message });
+                            emitChildFailure(result.message, classifySpawnFailure(result.message, 1));
                         }
                     };
                     // Only pass initial prompt/model on the first spawn.
                     // On restart (exit code 43), the session already has
                     // the prompt in its history — re-sending would duplicate it.
                     const spawnOpts = isFirstSpawn
-                        ? { prompt: requestedPrompt, imageUrls: Array.isArray(requestedImageUrls) ? requestedImageUrls : undefined, model: requestedModel, effort: requestedEffort, hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, resumePath: resolvedResumePath, autoClose: requestedAutoClose === true, onSessionExit: cleanupSessionServices, onStartup }
-                        : { hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, autoClose: requestedAutoClose === true, onSessionExit: cleanupSessionServices, onStartup }; // Always pass agent + hidden models + parent + autoClose on restart
+                        ? { prompt: requestedPrompt, imageUrls: Array.isArray(requestedImageUrls) ? requestedImageUrls : undefined, model: requestedModel, effort: requestedEffort, hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, resumePath: resolvedResumePath, autoClose: requestedAutoClose === true, onSessionExit: cleanupSessionServices, onStartup, onSessionFailure: (_sid: string, failure: SpawnFailureDetails) => emitChildFailure(failure.detail, failure) }
+                        : { hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId, autoClose: requestedAutoClose === true, onSessionExit: cleanupSessionServices, onStartup, onSessionFailure: (_sid: string, failure: SpawnFailureDetails) => emitChildFailure(failure.detail, failure) }; // Always pass agent + hidden models + parent + autoClose on restart
                     isFirstSpawn = false;
                     spawnSession(sessionId, apiKey!, relayRaw, requestedCwd, runningSessions, restartingSessions, killedSessions, doSpawn, spawnOpts);
                     setSessionCloseMetadata(sessionId, {
@@ -1869,10 +1880,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     // persists the announce data in Redis and sends it to
                     // viewers automatically when they connect to a session.
                 } catch (err) {
-                    socket.emit("session_error", {
-                        sessionId,
-                        message: err instanceof Error ? err.message : String(err),
-                    });
+                    const message = err instanceof Error ? err.message : String(err);
+                    emitChildFailure(message, classifySpawnFailure(message, null));
                 }
             };
             doSpawn();

@@ -144,10 +144,16 @@ describe("runner — RunnerClientToServerEvents payloads", () => {
     expect(typeof p.sessionId).toBe("string");
   });
 
-  test("session_error carries sessionId and message", () => {
+  test("session_error carries typed linked-child failures", () => {
     type Payload = Parameters<RunnerClientToServerEvents["session_error"]>[0];
-    const p: Payload = { sessionId: "sess-3", message: "Worker crashed" };
+    const p: Payload = {
+      sessionId: "sess-3",
+      message: "Worker crashed",
+      parentSessionId: "parent-1",
+      failure: { kind: "auth", detail: "unauthorized", exitCode: 1 },
+    };
     expect(typeof p.message).toBe("string");
+    expect(p.failure?.kind).toBe("auth");
   });
 
   test("session_killed carries sessionId", () => {

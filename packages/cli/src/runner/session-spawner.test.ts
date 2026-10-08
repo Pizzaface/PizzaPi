@@ -849,6 +849,53 @@ describe("session-spawner child", () => {
         }
     });
 
+    test("reports typed linked-child failures on abnormal worker exit", async () => {
+        const isCwdAllowed = mock((_cwd: string | undefined) => true);
+        class FakeChild extends EventEmitter {
+            pid = 4323;
+            killed = false;
+            exitCode: number | null = null;
+        }
+        let child: FakeChild | null = null;
+        mock.module("node:child_process", () => ({ ...realChildProcess, spawn: mock(() => {
+            child = new FakeChild();
+            return child;
+        }), execFile: mock(() => {}) }));
+        mock.module("../extensions/session-attachments.js", () => ({ cleanupSessionAttachments: mock(async () => {}) }));
+        mock.module("./logger.js", () => ({ logInfo: mock(() => {}) }));
+        mock.module("./runner-usage-cache.js", () => ({
+            runnerUsageCacheFilePath: () => "/tmp/test-usage-cache.json",
+            trackSessionCwd: mock(() => {}),
+            untrackSessionCwd: mock(() => {}),
+            refreshAndWriteRunnerUsageCache: mock(async () => {}),
+        }));
+        mock.module("./workspace.js", () => ({ isCwdAllowed }));
+        mock.module("./session-procs.js", () => ({
+            ensureSessionProcDir: () => {},
+            sessionProcFilePath: (_sessionId: string) => "/tmp/test-session-failure.procs",
+            readRecordedGroupPids: () => [],
+            recordSessionGroupPid: () => {},
+            removeSessionProcFile: () => {},
+        }));
+
+        const { spawnSession } = await import("./session-spawner.js");
+        const tempCwd = mkdtempSync(join(tmpdir(), "session-spawner-failure-test-"));
+        const killSpy = spyOn(process, "kill").mockImplementation((() => true) as any);
+        try {
+            const failures: unknown[] = [];
+            spawnSession("child-1", "k", "https://relay.example", tempCwd, new Map(), new Set(), new Set(), undefined, {
+                parentSessionId: "parent-1",
+                onSessionFailure: (_sessionId, failure) => failures.push(failure),
+                shutdownGraceMs: 1,
+            });
+            child!.emit("exit", 1, null);
+            expect(failures).toEqual([{ kind: "crash", detail: "Session worker exited (code=1, signal=null)", exitCode: 1 }]);
+        } finally {
+            killSpy.mockRestore();
+            rmSync(tempCwd, { recursive: true, force: true });
+        }
+    });
+
     test("reports worker startup outcome only after the worker's startup IPC (review R13)", async () => {
         const isCwdAllowed = mock((_cwd: string | undefined) => true);
         class FakeChild extends EventEmitter {

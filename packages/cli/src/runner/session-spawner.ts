@@ -20,6 +20,25 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { isStrippedSubprocessEnvName } from "@pizzapi/tools";
 import { hostPiNodePath } from "./host-pi-node-path.js";
 
+export type SpawnFailureKind = "auth" | "crash" | "timeout" | "spawn_error";
+export interface SpawnFailureDetails {
+    kind: SpawnFailureKind;
+    detail: string;
+    exitCode?: number | null;
+}
+
+export function classifySpawnFailure(detail: string, exitCode?: number | null): SpawnFailureDetails {
+    const lower = detail.toLowerCase();
+    const kind: SpawnFailureKind = /unauthorized|401|403|api key|no api key|auth/.test(lower)
+        ? "auth"
+        : /timeout|timed out/.test(lower)
+            ? "timeout"
+            : /spawn|entrypoint|enoent|cwd does not exist|not a directory/.test(lower)
+                ? "spawn_error"
+                : "crash";
+    return { kind, detail, ...(exitCode !== undefined ? { exitCode } : {}) };
+}
+
 export interface RunnerSession {
     sessionId: string;
     child: ChildProcess | null;
@@ -256,6 +275,8 @@ export function spawnSession(
          * call it (the replacement worker reports for itself).
          */
         onStartup?: (result: WorkerStartupResult) => void;
+        /** Called when a linked child process exits abnormally after spawn. */
+        onSessionFailure?: (sessionId: string, failure: SpawnFailureDetails) => void;
         /** @internal Override the startup report timeout for tests. */
         startupTimeoutMs?: number;
     },
@@ -441,6 +462,12 @@ export function spawnSession(
             logInfo(`re-spawning session ${sessionId} (worker restart requested)`);
             onRestartRequested();
         } else {
+            if (options?.parentSessionId && (code !== 0 || signal)) {
+                options.onSessionFailure?.(
+                    sessionId,
+                    classifySpawnFailure(`Session worker exited (code=${code}, signal=${signal})`, code),
+                );
+            }
             // True termination — clean up persisted attachments now.
             // session_ended will also arrive later but runningSessions will be empty
             // by then, so this is the reliable cleanup point for spawned sessions.

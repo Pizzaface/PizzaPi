@@ -1102,9 +1102,26 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
         });
 
         // ── session_error — worker session failed to spawn ───────────────────
-        socket.on("session_error", (data) => {
+        socket.on("session_error", async (data) => {
             if (data.sessionId) {
                 resolveSpawnError(data.sessionId, data.message ?? "Runner spawn failed");
+                if (data.parentSessionId && data.failure) {
+                    try {
+                        const [{ createEngineDeps }, { publishChildSpawnFailure }] = await Promise.all([
+                            import("../../events/transport.js"),
+                            import("./runner-spawn-failure.js"),
+                        ]);
+                        const socketData = socket.data as { userId?: string };
+                        await publishChildSpawnFailure({
+                            sessionId: data.sessionId,
+                            parentSessionId: data.parentSessionId,
+                            failure: data.failure,
+                            userId: socketData.userId,
+                        }, createEngineDeps());
+                    } catch (err) {
+                        log.error(`failed to publish child spawn failure for ${data.sessionId}:`, err);
+                    }
+                }
             }
         });
 
