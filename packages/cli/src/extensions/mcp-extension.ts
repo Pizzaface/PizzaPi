@@ -679,6 +679,13 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
   // so stale eager init work cannot repopulate clients for a new session.
   let loadLifecycleController = new AbortController();
 
+  // Separate session-generation token. Unlike loadLifecycleController (which
+  // load() recycles on every reload — including the session_start retry
+  // load below), this is only replaced on session_shutdown. The relay-anchor
+  // guard below needs a token that survives normal in-session reloads so it
+  // doesn't self-abort before waitForRelayRegistration() resolves.
+  let sessionLifecycleController = new AbortController();
+
   async function load(): Promise<McpSnapshot> {
     const cwd = process.cwd();
     const baseConfig = loadConfig(cwd) as PizzaPiConfig & McpConfig;
@@ -926,7 +933,7 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
     // Without this guard, a slow relay registration from session N can
     // fire markOAuthRelayWaitAnchorReady() into session N+1's providers,
     // opening the fallback window prematurely.
-    const lifecycleAtStart = loadLifecycleController;
+    const lifecycleAtStart = sessionLifecycleController;
     void waitForRelayRegistration().then(() => {
       if (lifecycleAtStart.signal.aborted) return; // stale — session was shut down
       setDeferOAuthRelayWaitTimeoutUntilAnchor(false);
@@ -1111,6 +1118,12 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
     // repopulate active clients after shutdown.
     loadLifecycleController.abort();
     loadLifecycleController = new AbortController();
+
+    // Also retire the session-generation token so any still-pending relay
+    // registration callback from this session bails instead of leaking
+    // markOAuthRelayWaitAnchorReady() into the next session.
+    sessionLifecycleController.abort();
+    sessionLifecycleController = new AbortController();
 
     for (const client of activeClients) {
       try {

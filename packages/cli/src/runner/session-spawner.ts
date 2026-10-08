@@ -18,6 +18,7 @@ import { watchWorkerStartup, WORKER_STARTUP_TIMEOUT_MS, type WorkerStartupResult
 import { loadConfig } from "../config.js";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { isStrippedSubprocessEnvName } from "@pizzapi/tools";
+import { hostPiNodePath } from "./host-pi-node-path.js";
 
 export interface RunnerSession {
     sessionId: string;
@@ -355,6 +356,9 @@ export function spawnSession(
         ...(options?.resumePath ? { PIZZAPI_WORKER_RESUME_PATH: options.resumePath } : {}),
         ...(options?.autoClose ? { PIZZAPI_WORKER_AUTO_CLOSE: "true" } : {}),
     };
+    // Pin pi packages' runtime pi imports to the host copy (see host-pi-node-path.ts).
+    const nodePath = hostPiNodePath(env.NODE_PATH);
+    if (nodePath) env.NODE_PATH = nodePath;
 
     const child = spawn(process.execPath, workerArgs, {
         env,
@@ -440,7 +444,8 @@ export function spawnSession(
             // True termination — clean up persisted attachments now.
             // session_ended will also arrive later but runningSessions will be empty
             // by then, so this is the reliable cleanup point for spawned sessions.
-            // Also remove from killedSessions if this was an explicit kill to prevent leaks.
+            // Also remove from tracking sets if this was an explicit kill or a failed restart to prevent leaks.
+            restartingSessions.delete(sessionId);
             killedSessions.delete(sessionId);
             // Reap any stragglers the session left behind (background dev
             // servers etc.) — the worker is gone, so signal its whole group

@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import * as os from "node:os";
@@ -27,6 +27,22 @@ function makeTmpDir(): string {
     const dir = join(tmpdir(), `pizzapi-skill-test-${randomBytes(8).toString("hex")}`);
     mkdirSync(dir, { recursive: true });
     return dir;
+}
+
+/**
+ * Create a symlink, returning false (instead of throwing) on EPERM so tests on
+ * symlink-restricted platforms can skip gracefully. Only wraps `symlinkSync`
+ * itself — never the assertions that follow — so a platform that DOES support
+ * symlinks always runs the real regression check.
+ */
+function trySymlink(target: string, path: string): boolean {
+    try {
+        symlinkSync(target, path);
+        return true;
+    } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code === "EPERM") return false;
+        throw err;
+    }
 }
 
 /** Write a SKILL.md inside a subdirectory of the given skills dir. */
@@ -259,7 +275,7 @@ describe("scanSkillsDir", () => {
         // Create a broken symlink as a .md file
         const brokenLink = join(dir, "broken.md");
         try {
-            require("node:fs").symlinkSync("/nonexistent/path/skill.md", brokenLink);
+            symlinkSync("/nonexistent/path/skill.md", brokenLink);
         } catch {
             return; // Skip if symlinks not supported
         }
@@ -285,7 +301,7 @@ describe("scanSkillsDir", () => {
         const badDir = join(dir, "bad-skill");
         mkdirSync(badDir, { recursive: true });
         try {
-            require("node:fs").symlinkSync("/nonexistent/SKILL.md", join(badDir, "SKILL.md"));
+            symlinkSync("/nonexistent/SKILL.md", join(badDir, "SKILL.md"));
         } catch {
             return; // Skip if symlinks not supported
         }
@@ -430,13 +446,33 @@ describe("buildSkillPaths", () => {
         return dir;
     }
 
-    test("includes the project skills and agents dirs that exist", () => {
+    test("includes the project skills and agents dirs that exist, when trusted", () => {
         const project = makeProject();
-        const paths = buildSkillPaths(project);
+        const paths = buildSkillPaths(project, undefined, true);
         expect(paths).toContain(join(project, ".pizzapi", "agents"));
         expect(paths).toContain(join(project, ".agents", "agents"));
         expect(paths).toContain(join(project, ".pizzapi", "skills"));
         expect(paths).toContain(join(project, ".agents", "skills"));
+    });
+
+    test("omits ALL project-scope skills/agents dirs for an untrusted project (default)", () => {
+        // Regression (9py0SHJs): PizzaPi used to pass these via
+        // additionalSkillPaths regardless of trust, which upstream merges
+        // unconditionally -- bypassing pi's own project-trust gate entirely.
+        // `projectTrusted` defaults to false, so an untrusted (or undecided)
+        // project must get none of its project-scope dirs.
+        const project = makeProject();
+        const paths = buildSkillPaths(project);
+        expect(paths).not.toContain(join(project, ".pizzapi", "agents"));
+        expect(paths).not.toContain(join(project, ".agents", "agents"));
+        expect(paths).not.toContain(join(project, ".pizzapi", "skills"));
+        expect(paths).not.toContain(join(project, ".agents", "skills"));
+    });
+
+    test("omits project-scope dirs when projectTrusted is explicitly false", () => {
+        const project = makeProject();
+        const paths = buildSkillPaths(project, undefined, false);
+        expect(paths.filter((p) => p.startsWith(project))).toEqual([]);
     });
 
     test("includes builtin skills dir", () => {
@@ -458,7 +494,10 @@ describe("buildSkillPaths", () => {
     test("never returns duplicates, even when cwd IS the home dir", () => {
         // Regression: at $HOME the ~-relative and cwd-relative entries collapse
         // onto the same dir, and pi reported every file as colliding with itself.
-        const paths = buildSkillPaths(homedir());
+        // Trusted so the project-scope (cwd-relative) entries are actually added
+        // and have something to collapse onto the user-scope ones — otherwise
+        // this test passes for the wrong reason (nothing cwd-relative to collide).
+        const paths = buildSkillPaths(homedir(), undefined, true);
         expect(paths).toEqual([...new Set(paths)]);
     });
 
@@ -472,11 +511,11 @@ describe("buildSkillPaths", () => {
         }
     });
 
-    test("still passes PROJECT-scope skills dirs, which pi trust-gates", () => {
-        // These must survive: pi skips project-scoped auto-discovery for
-        // untrusted projects, so dropping them would change behaviour (9py0SHJs).
+    test("passes PROJECT-scope skills dirs only when trusted, mirroring pi's own gate", () => {
+        // pi skips project-scoped auto-discovery for untrusted projects, so a
+        // trusted project must still see these dirs (9py0SHJs).
         const project = makeProject();
-        const paths = buildSkillPaths(project);
+        const paths = buildSkillPaths(project, undefined, true);
         expect(paths).toContain(join(project, ".pizzapi", "skills"));
         expect(paths).toContain(join(project, ".agents", "skills"));
     });
@@ -510,13 +549,22 @@ describe("buildSkillPaths", () => {
 // ── buildPromptTemplatePaths ──────────────────────────────────────────────────
 
 describe("buildPromptTemplatePaths", () => {
-    test("includes the commands dirs that exist", () => {
+    test("includes the commands dirs that exist, when trusted", () => {
+        const project = makeTmpDir();
+        mkdirSync(join(project, ".pizzapi", "commands"), { recursive: true });
+        mkdirSync(join(project, ".agents", "commands"), { recursive: true });
+        const paths = buildPromptTemplatePaths(project, true);
+        expect(paths).toContain(join(project, ".pizzapi", "commands"));
+        expect(paths).toContain(join(project, ".agents", "commands"));
+    });
+
+    test("omits project-scope commands dirs for an untrusted project (default) — same bypass class as buildSkillPaths (9py0SHJs / EN1UeiFK)", () => {
         const project = makeTmpDir();
         mkdirSync(join(project, ".pizzapi", "commands"), { recursive: true });
         mkdirSync(join(project, ".agents", "commands"), { recursive: true });
         const paths = buildPromptTemplatePaths(project);
-        expect(paths).toContain(join(project, ".pizzapi", "commands"));
-        expect(paths).toContain(join(project, ".agents", "commands"));
+        expect(paths).not.toContain(join(project, ".pizzapi", "commands"));
+        expect(paths).not.toContain(join(project, ".agents", "commands"));
     });
 
     test("omits the prompts dir that pi auto-discovers", () => {
@@ -600,6 +648,48 @@ describe("loadProjectAgentFiles", () => {
         const files = loadProjectAgentFiles(dir);
         expect(files).toEqual([]);
     });
+
+    test("does not follow a symlinked AGENTS.md out of the project dir", () => {
+        const secretDir = makeTmpDir();
+        try {
+            const secretPath = join(secretDir, "secret.txt");
+            writeFileSync(secretPath, "super-secret", "utf-8");
+            if (!trySymlink(secretPath, join(dir, "AGENTS.md"))) return; // symlinks unsupported on this platform
+            const files = loadProjectAgentFiles(dir);
+            expect(files).toEqual([]);
+        } finally {
+            rmSync(secretDir, { recursive: true, force: true });
+        }
+    });
+
+    test("does not follow a symlinked file in .agents/", () => {
+        const secretDir = makeTmpDir();
+        try {
+            const secretPath = join(secretDir, "secret.txt");
+            writeFileSync(secretPath, "super-secret", "utf-8");
+            mkdirSync(join(dir, ".agents"), { recursive: true });
+            if (!trySymlink(secretPath, join(dir, ".agents", "linked.md"))) return;
+            const files = loadProjectAgentFiles(dir);
+            expect(files).toEqual([]);
+        } finally {
+            rmSync(secretDir, { recursive: true, force: true });
+        }
+    });
+
+    test("does not follow a symlinked .agents directory itself", () => {
+        // Dish bz-002 Ramsey P0 #2: a hostile repo can ship `.agents -> /victim/dir`.
+        // Entry-level lstat on files inside it is not enough — the dir component itself
+        // must be lstat'd before readdir, since the OS follows dir symlinks to get there.
+        const victimDir = makeTmpDir();
+        try {
+            writeFileSync(join(victimDir, "notes.md"), "TOPSECRET-VICTIM-NOTES", "utf-8");
+            if (!trySymlink(victimDir, join(dir, ".agents"))) return;
+            const files = loadProjectAgentFiles(dir);
+            expect(files).toEqual([]);
+        } finally {
+            rmSync(victimDir, { recursive: true, force: true });
+        }
+    });
 });
 
 describe("loadRulesDir", () => {
@@ -621,6 +711,51 @@ describe("loadRulesDir", () => {
 
     test("returns empty array for a missing directory", () => {
         expect(loadRulesDir(join(makeTmpDir(), "missing"))).toEqual([]);
+    });
+
+    test("does not follow a symlinked rule file out of the rules dir", () => {
+        const dir = makeTmpDir();
+        const secretDir = makeTmpDir();
+        try {
+            const secretPath = join(secretDir, "secret.txt");
+            writeFileSync(secretPath, "super-secret", "utf-8");
+            if (!trySymlink(secretPath, join(dir, "linked.md"))) return;
+            expect(loadRulesDir(dir)).toEqual([]);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+            rmSync(secretDir, { recursive: true, force: true });
+        }
+    });
+
+    test("does not follow a symlinked rules directory itself (.pizzapi/rules)", () => {
+        // Dish bz-002 Ramsey P0 #2: `.pizzapi` or `.pizzapi/rules` can itself be a
+        // symlink to an arbitrary local directory; readdir on the resolved target
+        // would otherwise pass every file through the entry-level lstat check.
+        const projectDir = makeTmpDir();
+        const victimDir = makeTmpDir();
+        try {
+            writeFileSync(join(victimDir, "notes.md"), "TOPSECRET-VICTIM-NOTES", "utf-8");
+            mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+            if (!trySymlink(victimDir, join(projectDir, ".pizzapi", "rules"))) return;
+            expect(loadRulesDir(join(projectDir, ".pizzapi", "rules"))).toEqual([]);
+        } finally {
+            rmSync(projectDir, { recursive: true, force: true });
+            rmSync(victimDir, { recursive: true, force: true });
+        }
+    });
+
+    test("does not follow a symlinked .pizzapi directory itself", () => {
+        const projectDir = makeTmpDir();
+        const victimDir = makeTmpDir();
+        try {
+            mkdirSync(join(victimDir, "rules"), { recursive: true });
+            writeFileSync(join(victimDir, "rules", "notes.md"), "TOPSECRET-VICTIM-NOTES", "utf-8");
+            if (!trySymlink(victimDir, join(projectDir, ".pizzapi"))) return;
+            expect(loadRulesDir(join(projectDir, ".pizzapi", "rules"))).toEqual([]);
+        } finally {
+            rmSync(projectDir, { recursive: true, force: true });
+            rmSync(victimDir, { recursive: true, force: true });
+        }
     });
 });
 
@@ -671,6 +806,60 @@ describe("createAgentsFilesOverride", () => {
         writeFileSync(join(dir, "AGENTS.md"), "# Agents", "utf-8");
         const override = createAgentsFilesOverride(dir);
         expect(override).toBeInstanceOf(Function);
+    });
+
+    test("strips a symlinked AGENTS.md that upstream's base list already read", () => {
+        // Dish bz-002 Ramsey P0 #1: this is the composition that actually feeds the
+        // prompt. Upstream `DefaultResourceLoader.loadProjectContextFiles` uses a plain
+        // `statSync` (follows symlinks) and hands us its result as `base.agentsFiles` —
+        // by the time the override runs, the symlinked file's content has ALREADY been
+        // read into that base entry. The override itself must filter it back out, or
+        // `getAgentsFiles()` leaks the symlink target end-to-end regardless of what our
+        // own loaders do. Simulates the upstream base list rather than importing it.
+        const secretDir = makeTmpDir();
+        try {
+            const secretPath = join(secretDir, "secret.txt");
+            writeFileSync(secretPath, "TOPSECRET-LOCAL-FILE", "utf-8");
+            const agentsMdPath = join(dir, "AGENTS.md");
+            if (!trySymlink(secretPath, agentsMdPath)) return;
+            // A real additional file so createAgentsFilesOverride doesn't return null
+            // (it only builds an override when there's at least one file to add).
+            mkdirSync(join(dir, ".agents"), { recursive: true });
+            writeFileSync(join(dir, ".agents", "extra.md"), "# Extra", "utf-8");
+            // Simulates what upstream's statSync-following loader already produced.
+            // sendAgentsMd defaults to true here deliberately: with it false, AGENTS.md
+            // is already excluded by the (pre-existing) name filter, which would mask
+            // whether the symlink check itself actually runs.
+            const upstreamBase = { agentsFiles: [{ path: agentsMdPath, content: readFileSync(secretPath, "utf-8") }] };
+            const override = createAgentsFilesOverride(dir)!;
+            const result = override(upstreamBase);
+            expect(result.agentsFiles.some((file) => file.path === agentsMdPath)).toBe(false);
+            expect(JSON.stringify(result.agentsFiles)).not.toContain("TOPSECRET-LOCAL-FILE");
+        } finally {
+            rmSync(secretDir, { recursive: true, force: true });
+        }
+    });
+
+    test("strips a symlinked CLAUDE.md from upstream's base list even when AGENTS.md sending is enabled", () => {
+        // The name filter only ever targeted AGENTS.md; CLAUDE.md must be caught by the
+        // symlink check regardless of name or the sendAgentsMd flag.
+        const secretDir = makeTmpDir();
+        try {
+            const secretPath = join(secretDir, "secret.txt");
+            writeFileSync(secretPath, "TOPSECRET-LOCAL-FILE", "utf-8");
+            const claudeMdPath = join(dir, "CLAUDE.md");
+            if (!trySymlink(secretPath, claudeMdPath)) return;
+            writeFileSync(join(dir, "AGENTS.md"), "# Agents", "utf-8"); // ensure override isn't null
+            const upstreamBase = {
+                agentsFiles: [{ path: claudeMdPath, content: readFileSync(secretPath, "utf-8") }],
+            };
+            const override = createAgentsFilesOverride(dir)!;
+            const result = override(upstreamBase);
+            expect(result.agentsFiles.some((file) => file.path === claudeMdPath)).toBe(false);
+            expect(JSON.stringify(result.agentsFiles)).not.toContain("TOPSECRET-LOCAL-FILE");
+        } finally {
+            rmSync(secretDir, { recursive: true, force: true });
+        }
     });
 
     test("deduplicates by path against base files", () => {
