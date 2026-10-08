@@ -23,6 +23,7 @@ import { getUserPreference, PREF_SUBAGENT_MODEL } from "../../../user-preference
 import { drainPendingDeliveries, drainPendingResponseRelays } from "../../../events/engine.js";
 import { createEngineDeps } from "../../../events/transport.js";
 import { createLogger } from "@pizzapi/tools";
+import { isRedisAdapterRecoverySocket } from "../../../redis-adapter-recovery.js";
 
 const log = createLogger("sio/relay");
 
@@ -189,6 +190,15 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
         log.info(`disconnected: ${socket.id} (${reason})`);
         const sessionId = socket.data.sessionId;
         if (sessionId) {
+            // Redis adapter recovery intentionally closes the transport so
+            // Socket.IO clients reconnect and re-register. Do not run normal
+            // disconnect teardown: the worker/runner is still alive.
+            if (isRedisAdapterRecoverySocket(socket)) {
+                log.info(`redis adapter recovery — preserving session ${sessionId} during forced reconnect`);
+                socketAckedSeqs.delete(socket.id);
+                return;
+            }
+
             // Guard 1 (single-node): if a newer socket already re-registered
             // this session on THIS node, don't tear down the new session.
             // registerTuiSession clears our sessionId as a primary guard, but

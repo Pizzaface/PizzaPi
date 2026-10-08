@@ -176,6 +176,7 @@ import {
 } from "../sio-registry.js";
 import { resolveSpawnReady, resolveSpawnError } from "../runner-control.js";
 import { createLogger } from "@pizzapi/tools";
+import { isRedisAdapterRecoverySocket } from "../../redis-adapter-recovery.js";
 
 const log = createLogger("sio/runner");
 
@@ -1561,6 +1562,14 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
                 runnerTtlTimer = null;
             }
             if (runnerId) {
+                // Redis adapter recovery intentionally closes the transport so
+                // Socket.IO clients reconnect and re-register. Do not remove
+                // runner state: the daemon is still alive.
+                if (isRedisAdapterRecoverySocket(socket)) {
+                    log.info(`redis adapter recovery — preserving runner ${runnerId} during forced reconnect`);
+                    return;
+                }
+
                 // During graceful shutdown (io.close()), Socket.IO disconnects
                 // all sockets with reason "server shutting down".  Skip
                 // destructive Redis cleanup for those — the runner is still
