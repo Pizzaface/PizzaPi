@@ -6,6 +6,7 @@
 // ============================================================================
 
 import { afterAll, afterEach, describe, it, expect, mock } from "bun:test";
+import type { RedisSessionData } from "../sio-state/index.js";
 
 let fieldValue: string | null = null;
 let fieldShouldThrow = false;
@@ -15,7 +16,7 @@ let messagesVersion: number | null = 0;
 const getSession = mock(async () => sessionData);
 const getSessionSummary = mock(async () => sessionSummary);
 const getSessionMessagesVersion = mock(async () => messagesVersion);
-const updateSessionFieldsAndBumpMessagesVersion = mock(async () => {});
+const updateSessionFieldsAndBumpMessagesVersion = mock(async (_id: string, _fields: Partial<RedisSessionData>) => {});
 
 const noopAsync = async () => {};
 
@@ -93,7 +94,12 @@ afterEach(() => {
 
 afterAll(() => mock.restore());
 
-const { getSessionOwnerToken, getSessionMessages, updateSessionState } = await import("./sessions.js");
+const {
+    getSessionOwnerToken,
+    getSessionMessages,
+    updateSessionState,
+    _clearSessionMessagesCacheForTesting,
+} = await import("./sessions.js");
 
 describe("getSessionOwnerToken (A2-017 fail-closed ownership)", () => {
     it("propagates Redis errors so callers skip sensitive operations", async () => {
@@ -162,6 +168,21 @@ describe("getSessionOwnerToken (A2-017 fail-closed ownership)", () => {
         expect(Object.isFrozen(messages)).toBe(true);
         expect(() => (messages as unknown[]).push("corrupt")).toThrow();
         expect(await getSessionMessages(sessionId)).toEqual(["safe"]);
+    });
+
+    it("evicts the least-recently-used parsed-message cache entry", async () => {
+        _clearSessionMessagesCacheForTesting();
+
+        for (let i = 0; i <= 200; i++) {
+            const sessionId = `lru-${i}`;
+            sessionData = { lastState: JSON.stringify({ messages: [`old-${i}`] }) };
+            messagesVersion = i + 1;
+            expect(await getSessionMessages(sessionId)).toEqual([`old-${i}`]);
+        }
+
+        sessionData = { lastState: JSON.stringify({ messages: ["refetched"] }) };
+        messagesVersion = 1;
+        expect(await getSessionMessages("lru-0")).toEqual(["refetched"]);
     });
 
     it("bumps the shared Redis messages version atomically with lastState updates", async () => {

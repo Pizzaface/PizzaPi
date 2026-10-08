@@ -236,12 +236,46 @@ describe("messages version", () => {
             parentSessionId: null,
         });
 
-        expect(await getMessagesVersion(sessionId)).toBe(0);
+        expect(await getMessagesVersion(sessionId)).toBe(1);
         await updateSessionFieldsAndBumpMessagesVersion(sessionId, {
             lastState: JSON.stringify({ messages: ["new"] }),
         });
 
-        expect(await getMessagesVersion(sessionId)).toBe(1);
+        expect(await getMessagesVersion(sessionId)).toBe(2);
         expect(hashStore.get("pizzapi:sio:session:session-version")?.lastState).toBe(JSON.stringify({ messages: ["new"] }));
+    });
+
+    it("keeps the messages version monotonic across same-ID re-registration", async () => {
+        const sessionId = "session-version-reregister";
+        const data = {
+            sessionId,
+            token: "tkn",
+            collabMode: true,
+            shareUrl: "http://localhost/session",
+            cwd: "/tmp/project",
+            startedAt: new Date().toISOString(),
+            userId: "user-1",
+            userName: "Jordan",
+            sessionName: "Version Session",
+            isEphemeral: false,
+            expiresAt: null,
+            isActive: true,
+            lastHeartbeatAt: new Date().toISOString(),
+            lastHeartbeat: null,
+            lastState: JSON.stringify({ messages: ["gen1"] }),
+            runnerId: "runner-1",
+            runnerName: "Runner",
+            seq: 0,
+            parentSessionId: null,
+        };
+
+        await setSession(sessionId, data);
+        await updateSessionFieldsAndBumpMessagesVersion(sessionId, {
+            lastState: JSON.stringify({ messages: ["gen1-v2"] }),
+        });
+        expect(await getMessagesVersion(sessionId)).toBe(2);
+
+        await setSession(sessionId, { ...data, lastState: JSON.stringify({ messages: ["gen2"] }) });
+        expect(await getMessagesVersion(sessionId)).toBe(3);
     });
 });

@@ -528,10 +528,11 @@ export async function setSession(sessionId: string, data: RedisSessionData): Pro
     const fields = toHashFields(data as unknown as Record<string, unknown>);
 
     const multi = r.multi();
+    const versionKey = messagesVersionKey(sessionId);
     multi.hSet(key, fields);
     multi.expire(key, SESSION_TTL_SECONDS);
-    multi.set(messagesVersionKey(sessionId), "0");
-    multi.expire(messagesVersionKey(sessionId), SESSION_TTL_SECONDS);
+    multi.incr(versionKey);
+    multi.expire(versionKey, SESSION_TTL_SECONDS);
 
     // Add to global index
     multi.sAdd(allSessionsKey(), sessionId);
@@ -602,6 +603,7 @@ export async function updateSessionFields(
     const multi = r.multi();
     multi.hSet(key, hashFields);
     multi.expire(key, SESSION_TTL_SECONDS); // refresh TTL on update
+    multi.expire(messagesVersionKey(sessionId), SESSION_TTL_SECONDS);
     await multi.exec();
 }
 

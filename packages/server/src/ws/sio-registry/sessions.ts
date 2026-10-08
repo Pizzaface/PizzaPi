@@ -134,6 +134,14 @@ const SQLITE_OVERLAY_WRITE_THROTTLE_MS = 5_000;
 const sessionMessagesCache = new Map<string, { version: number; messages: readonly unknown[] }>();
 const MAX_CACHED_SESSION_MESSAGES = 200;
 
+export function _clearSessionMessagesCacheForTesting(): void {
+    sessionMessagesCache.clear();
+}
+
+export function _hasCachedSessionMessagesForTesting(sessionId: string): boolean {
+    return sessionMessagesCache.has(sessionId);
+}
+
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
 function normalizeSessionName(value: unknown): string | null {
@@ -427,6 +435,8 @@ async function registerTuiSessionUnlocked(
             linkedParentId = null; // explicit delink — clear durable signal
         }
     }
+
+    sessionMessagesCache.delete(sessionId);
 
     const sessionData: RedisSessionData = {
         sessionId,

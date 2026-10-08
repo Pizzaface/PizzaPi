@@ -10,6 +10,7 @@ import { afterAll, describe, it, expect, beforeEach, mock } from "bun:test";
 const store = new Map<string, string>();
 const setStore = new Map<string, Set<string>>();
 const triggerHistoryLists = new Map<string, string[]>();
+const versionStore = new Map<string, number>();
 const deletedRouteOptions: Array<{ sessionId: string; preserveDurable?: boolean }> = [];
 
 const mockTriggerRedis = {
@@ -71,6 +72,7 @@ mock.module("../sio-state/index.js", () => ({
     initStateRedis: async () => {},
     setSession: async (sessionId: string, data: Record<string, unknown>) => {
         store.set(sessionHashKey(sessionId), JSON.stringify(data));
+        versionStore.set(sessionId, (versionStore.get(sessionId) ?? 0) + 1);
     },
     getSession: async (sessionId: string) => {
         const raw = store.get(sessionHashKey(sessionId));
@@ -82,6 +84,8 @@ mock.module("../sio-state/index.js", () => ({
     },
     getSessionField: async () => null,
     updateSessionFields: async () => {},
+    updateSessionFieldsAndBumpMessagesVersion: async () => {},
+    getMessagesVersion: async (sessionId: string) => versionStore.get(sessionId) ?? null,
     deleteSession: async (sessionId: string) => {
         store.delete(sessionHashKey(sessionId));
     },
@@ -125,7 +129,8 @@ mock.module("./hub.js", () => ({
     broadcastToHub: async () => {},
 }));
 
-const { registerTuiSession, endSharedSession } = await import("./sessions.js");
+const { registerTuiSession, endSharedSession, getSessionMessages, _clearSessionMessagesCacheForTesting, _hasCachedSessionMessagesForTesting } =
+    await import("./sessions.js");
 const { initSioRegistry } = await import("./context.js");
 const { _injectRedisForTesting: _injectTriggerStoreRedis, _resetRedisForTesting: _resetTriggerStoreRedis } =
     await import("../../sessions/trigger-store.js");
@@ -180,6 +185,8 @@ describe("atomic parent transfer on relink", () => {
         store.clear();
         setStore.clear();
         triggerHistoryLists.clear();
+        versionStore.clear();
+        _clearSessionMessagesCacheForTesting();
         mockTriggerRedis.lPush.mockClear();
         mockTriggerRedis.lTrim.mockClear();
         mockTriggerRedis.expire.mockClear();
@@ -246,11 +253,41 @@ describe("atomic parent transfer on relink", () => {
     });
 });
 
+describe("registerTuiSession parsed-message cache", () => {
+    beforeEach(() => {
+        store.clear();
+        setStore.clear();
+        versionStore.clear();
+        _clearSessionMessagesCacheForTesting();
+    });
+
+    it("does not reuse a same-ID cached messages array after Redis lost the old session", async () => {
+        const sessionId = "restart-in-place-cache";
+        versionStore.set(sessionId, 1);
+        await seedSession(sessionId, { lastState: JSON.stringify({ messages: ["gen1"] }) });
+        expect(await getSessionMessages(sessionId)).toEqual(["gen1"]);
+        expect(_hasCachedSessionMessagesForTesting(sessionId)).toBe(true);
+
+        store.delete(sessionHashKey(sessionId));
+        await registerTuiSession(fakeSocket(), "/repo", {
+            sessionId,
+            userId: "u1",
+            isEphemeral: false,
+        });
+        await seedSession(sessionId, { lastState: JSON.stringify({ messages: ["gen2"] }) });
+        versionStore.set(sessionId, 1);
+
+        expect(await getSessionMessages(sessionId)).toEqual(["gen2"]);
+    });
+});
+
 describe("endSharedSession confirmedTerminal membership removal", () => {
     beforeEach(() => {
         store.clear();
         setStore.clear();
         triggerHistoryLists.clear();
+        versionStore.clear();
+        _clearSessionMessagesCacheForTesting();
         deletedRouteOptions.length = 0;
         mockTriggerRedis.lPush.mockClear();
         mockTriggerRedis.lTrim.mockClear();
@@ -307,12 +344,28 @@ describe("endSharedSession confirmedTerminal membership removal", () => {
         // Membership must survive so delink_children can still find the child.
         expect(setStore.get(childrenKey("parent-1"))?.has("child-z")).toBe(true);
     });
+
+    it("drops parsed-message cache before owner-mismatch teardown returns", async () => {
+        const sessionId = "cache-owner-mismatch";
+        versionStore.set(sessionId, 1);
+        await seedSession(sessionId, { lastState: JSON.stringify({ messages: ["stale"] }) });
+        expect(await getSessionMessages(sessionId)).toEqual(["stale"]);
+        expect(_hasCachedSessionMessagesForTesting(sessionId)).toBe(true);
+
+        const ended = await endSharedSession(sessionId, "Session ended", { expectedOwnerToken: "other-token" });
+
+        expect(ended).toBe(false);
+        expect(_hasCachedSessionMessagesForTesting(sessionId)).toBe(false);
+        expect(store.has(sessionHashKey(sessionId))).toBe(true);
+    });
 });
 
 describe("endSharedSession stamps disconnected with sessionId", () => {
     beforeEach(() => {
         store.clear();
         setStore.clear();
+        versionStore.clear();
+        _clearSessionMessagesCacheForTesting();
         emittedDisconnects.length = 0;
     });
 
