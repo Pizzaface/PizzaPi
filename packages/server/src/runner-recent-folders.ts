@@ -34,6 +34,59 @@ export async function ensureRunnerRecentFoldersTable(): Promise<void> {
         .on("runner_recent_folder")
         .columns(["userId", "runnerId", "lastUsedAt"])
         .execute();
+
+    // Existing installations may already have duplicate (userId, runnerId,
+    // path) rows from the old select-then-insert race; merge them before
+    // adding the unique index below, or the index creation fails outright.
+    await mergeDuplicateFolderRows();
+
+    // Unique index backs the atomic upsert in recordRecentFolder() below —
+    // without it, concurrent recordRecentFolder() calls for the same triple
+    // can both miss the pre-existing row and insert duplicates, splitting
+    // usage counts and eating entries in the MAX_RECENT_FOLDERS cap.
+    await getKysely().schema
+        .createIndex("runner_recent_folder_user_runner_path_uidx")
+        .unique()
+        .ifNotExists()
+        .on("runner_recent_folder")
+        .columns(["userId", "runnerId", "path"])
+        .execute();
+}
+
+/** Collapse pre-existing duplicate (userId, runnerId, path) rows into one. */
+async function mergeDuplicateFolderRows(): Promise<void> {
+    const dupGroups = await getKysely()
+        .selectFrom("runner_recent_folder")
+        .select(["userId", "runnerId", "path"])
+        .groupBy(["userId", "runnerId", "path"])
+        .having((eb) => eb.fn.count("id"), ">", 1)
+        .execute();
+
+    for (const group of dupGroups) {
+        const rows = await getKysely()
+            .selectFrom("runner_recent_folder")
+            .select(["id", "lastUsedAt", "usageCount"])
+            .where("userId", "=", group.userId)
+            .where("runnerId", "=", group.runnerId)
+            .where("path", "=", group.path)
+            .orderBy("id", "asc")
+            .execute();
+        if (rows.length < 2) continue;
+
+        const [keep, ...rest] = rows;
+        const mergedUsageCount = rows.reduce((sum, r) => sum + r.usageCount, 0);
+        const mergedLastUsedAt = rows.reduce((max, r) => (r.lastUsedAt > max ? r.lastUsedAt : max), keep.lastUsedAt);
+
+        await getKysely()
+            .updateTable("runner_recent_folder")
+            .set({ usageCount: mergedUsageCount, lastUsedAt: mergedLastUsedAt })
+            .where("id", "=", keep.id)
+            .execute();
+        await getKysely()
+            .deleteFrom("runner_recent_folder")
+            .where("id", "in", rest.map((r) => r.id))
+            .execute();
+    }
 }
 
 export async function recordRecentFolder(
@@ -46,25 +99,10 @@ export async function recordRecentFolder(
 
     const nowIso = new Date().toISOString();
 
-    // Upsert: if this (userId, runnerId, path) triple already exists, just update lastUsedAt.
-    const existing = await getKysely()
-        .selectFrom("runner_recent_folder")
-        .select("id")
-        .where("userId", "=", userId)
-        .where("runnerId", "=", runnerId)
-        .where("path", "=", normalizedPath)
-        .executeTakeFirst();
-
-    if (existing) {
-        await getKysely()
-            .updateTable("runner_recent_folder")
-            .set({ lastUsedAt: nowIso, usageCount: sql`usageCount + 1` })
-            .where("id", "=", existing.id)
-            .execute();
-        return;
-    }
-
-    // Insert new row.
+    // Atomic upsert: the unique index on (userId, runnerId, path) makes this
+    // a single statement instead of select-then-insert, so concurrent calls
+    // for the same triple can never both miss the existing row and insert a
+    // duplicate.
     await getKysely()
         .insertInto("runner_recent_folder")
         .values({
@@ -75,6 +113,12 @@ export async function recordRecentFolder(
             lastUsedAt: nowIso,
             usageCount: 1,
         })
+        .onConflict((oc) =>
+            oc.columns(["userId", "runnerId", "path"]).doUpdateSet({
+                lastUsedAt: nowIso,
+                usageCount: sql`usageCount + 1`,
+            }),
+        )
         .execute();
 
     // Prune oldest entries beyond the cap for this (userId, runnerId) pair.

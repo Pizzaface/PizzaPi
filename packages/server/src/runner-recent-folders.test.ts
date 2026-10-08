@@ -99,6 +99,28 @@ describe("recordRecentFolder", () => {
         const folders = await getRecentFolders(USER, RUNNER);
         expect(folders[0]).toBe("/code/project");
     });
+
+    authTest("concurrent records of the same path never create duplicate rows", async () => {
+        // Regression for GM EqNrZtr1: select-then-insert let two concurrent
+        // calls both miss the not-yet-committed row and insert duplicates,
+        // splitting usage counts and eating cap entries.
+        await Promise.all([
+            recordRecentFolder(USER, RUNNER, "/code/race"),
+            recordRecentFolder(USER, RUNNER, "/code/race"),
+            recordRecentFolder(USER, RUNNER, "/code/race"),
+        ]);
+
+        const rows = await getKysely()
+            .selectFrom("runner_recent_folder")
+            .select(["id", "usageCount"])
+            .where("userId", "=", USER)
+            .where("runnerId", "=", RUNNER)
+            .where("path", "=", "/code/race")
+            .execute();
+
+        expect(rows).toHaveLength(1);
+        expect(rows[0].usageCount).toBe(3);
+    });
 });
 
 describe("deleteRecentFolder", () => {

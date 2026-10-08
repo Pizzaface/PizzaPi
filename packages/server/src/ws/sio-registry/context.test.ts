@@ -32,7 +32,11 @@ const mockRedisClient = {
         return Promise.resolve(store.get(key) ?? null);
     }),
 
-    set: mock((key: string, value: string, _opts?: unknown) => {
+    set: mock((key: string, value: string, opts?: { NX?: boolean }) => {
+        // Honor NX like real Redis so tests can exercise the atomic-claim path.
+        if (opts?.NX && store.has(key)) {
+            return Promise.resolve(null);
+        }
         store.set(key, value);
         return Promise.resolve("OK");
     }),
@@ -174,5 +178,24 @@ describe("runner secret persistence", () => {
         expect(mismatch).toBe("mismatch");
 
         process.env.PIZZAPI_REDIS_URL = previous;
+    });
+
+    test("concurrent first claims for the same runnerId never both win with different secrets", async () => {
+        // Regression for GM EqNrZtr1: interleaved first-claim calls used to
+        // both read "no stored secret" before either wrote one, letting two
+        // different secrets both come back "claimed" for the same runnerId.
+        const results = await Promise.all([
+            validateAndPersistRunnerSecret("runner-race", "secret-a"),
+            validateAndPersistRunnerSecret("runner-race", "secret-b"),
+        ]);
+
+        const claimedCount = results.filter((r) => r === "claimed").length;
+        expect(claimedCount).toBe(1);
+        expect(results.sort()).toEqual(["claimed", "mismatch"]);
+
+        // The winner's secret is the one actually persisted.
+        const winnerSecret = results[0] === "claimed" ? "secret-a" : "secret-b";
+        expect(runnerSecrets.get("runner-race")).toBe(winnerSecret);
+        expect(store.get("pizzapi:runner:secret:runner-race")).toBe(winnerSecret);
     });
 });

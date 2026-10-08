@@ -88,6 +88,27 @@ export async function deleteValue(key: string): Promise<void> {
     }
 }
 
+/**
+ * Atomically set a key only if it does not already exist (SET NX).
+ * Returns `true` if this call won the claim, `false` if the key already
+ * existed, or `null` when Redis is disabled/unavailable (callers must fall
+ * back to a process-local claim strategy in that case).
+ */
+export async function setValueIfAbsent(key: string, value: string, ttlMs?: number): Promise<boolean | null> {
+    if (isRedisDisabled()) return null;
+    const redis = await getClient();
+    if (!redis) return null;
+    try {
+        const opts: Record<string, unknown> = { NX: true };
+        if (ttlMs && ttlMs > 0) opts.PX = ttlMs;
+        const result = await redis.set(key, value, opts);
+        return result === "OK";
+    } catch (err) {
+        log.warn(`Redis SET NX ${key} failed:`, err);
+        return null;
+    }
+}
+
 // ── Nonce store (SET NX PX) ─────────────────────────────────────────────────
 
 const nonceMemoryStore = new Map<string, number>();

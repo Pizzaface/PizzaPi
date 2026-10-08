@@ -14,7 +14,7 @@ import type { Server as SocketIOServer, Socket, Namespace } from "socket.io";
 import type { ModelInfo } from "@pizzapi/protocol";
 import { getEphemeralTtlMs } from "../../sessions/store.js";
 import { createLogger } from "@pizzapi/tools";
-import { getValue, setValue, deleteValue } from "../../redis-kv-store.js";
+import { getValue, setValue, deleteValue, setValueIfAbsent } from "../../redis-kv-store.js";
 
 const log = createLogger("sio-registry");
 
@@ -112,9 +112,18 @@ export const localTerminalGcTimers = new Map<string, ReturnType<typeof setTimeou
  */
 export const runnerSecrets = new Map<string, string>();
 
+/**
+ * Per-runnerId chain of in-flight first-claim attempts. Concurrent calls for
+ * the same runnerId (e.g. two near-simultaneous connection handlers in this
+ * process) are serialized through this so they can't both observe "no stored
+ * secret yet" across the await gap and both claim it with different secrets.
+ */
+const claimChains = new Map<string, Promise<unknown>>();
+
 /** Reset module-level state for tests. */
 export function _resetRunnerSecretsForTesting(): void {
     runnerSecrets.clear();
+    claimChains.clear();
 }
 
 function secretKey(runnerId: string): string {
@@ -146,6 +155,43 @@ export async function deleteRunnerSecret(runnerId: string): Promise<void> {
     await deleteValue(secretKey(runnerId));
 }
 
+async function claimRunnerSecret(
+    runnerId: string,
+    secret: string,
+): Promise<"match" | "mismatch" | "claimed"> {
+    // Re-check the cache: another call in this process may have just won the
+    // claim while we were queued behind it.
+    const cached = runnerSecrets.get(runnerId);
+    if (cached !== undefined) {
+        return cached === secret ? "match" : "mismatch";
+    }
+
+    // Redis SET NX makes the cross-process (and cross-node) claim atomic: only
+    // one caller anywhere can win it for a given runnerId.
+    const won = await setValueIfAbsent(secretKey(runnerId), secret);
+    if (won === true) {
+        runnerSecrets.set(runnerId, secret);
+        return "claimed";
+    }
+    if (won === false) {
+        // Someone else (this call or another node) already claimed it.
+        const stored = await getValue(secretKey(runnerId));
+        if (stored !== null) {
+            runnerSecrets.set(runnerId, stored);
+            return stored === secret ? "match" : "mismatch";
+        }
+        // Vanishingly unlikely race: the key was deleted between the failed NX
+        // and the read. Fall through and claim it ourselves.
+    }
+
+    // Redis disabled/unavailable (won === null), or the key disappeared out
+    // from under us above: the in-flight chain already serializes this branch
+    // within the process, so a plain Map write is safe here.
+    runnerSecrets.set(runnerId, secret);
+    await setValue(secretKey(runnerId), secret);
+    return "claimed";
+}
+
 /**
  * Validate a runner secret claim. Returns:
  *   - "match": secret matches the stored value (cache or Redis)
@@ -166,16 +212,17 @@ export async function validateAndPersistRunnerSecret(
         return cached === secret ? "match" : "mismatch";
     }
 
-    const stored = await getValue(secretKey(runnerId));
-    if (stored !== null) {
-        runnerSecrets.set(runnerId, stored);
-        return stored === secret ? "match" : "mismatch";
-    }
-
-    // First claim for this runnerId.
-    runnerSecrets.set(runnerId, secret);
-    await setValue(secretKey(runnerId), secret);
-    return "claimed";
+    // Chain this call behind any other in-flight claim for the same runnerId so
+    // concurrent first claims can never both race past the Redis/Map read.
+    const prior = claimChains.get(runnerId) ?? Promise.resolve();
+    const chained = prior.then(
+        () => claimRunnerSecret(runnerId, secret),
+        () => claimRunnerSecret(runnerId, secret),
+    );
+    // Swallow rejections in the chain itself (not in the value we return) so a
+    // failed attempt doesn't permanently wedge later callers.
+    claimChains.set(runnerId, chained.catch(() => undefined));
+    return chained;
 }
 
 // ── Touch-throttle state ─────────────────────────────────────────────────────
