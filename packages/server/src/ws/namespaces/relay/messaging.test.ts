@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 
 const mockGetSharedSession = mock(async (_id: string) => null as any);
 const mockGetLocalTuiSocket = mock((_id: string) => undefined as any);
-const mockEmitToRelaySessionVerified = mock(async (_id: string, _event: string, _payload: any) => false);
+const mockEmitToRelaySessionChecked = mock(async (_id: string, _event: string, _payload: any) => "empty" as "delivered" | "empty" | "unknown");
 const mockEmitToRelaySessionInputAck = mock(async (_id: string, _event: string, _payload: any) => ({ hadListeners: false, delivered: false }));
 const mockHasRelaySessionListener = mock(async (_id: string) => false);
 const mockBroadcastToSessionViewers = mock((_sessionId: string, _event: string, _payload: any) => {});
@@ -17,7 +17,7 @@ mock.module("../../sio-registry.js", () => ({
     getSharedSession: mockGetSharedSession,
     getSharedSessionSummary: mockGetSharedSession,
     getLocalTuiSocket: mockGetLocalTuiSocket,
-    emitToRelaySessionVerified: mockEmitToRelaySessionVerified,
+    emitToRelaySessionChecked: mockEmitToRelaySessionChecked,
     emitToRelaySessionInputAck: mockEmitToRelaySessionInputAck,
     hasRelaySessionListener: mockHasRelaySessionListener,
     broadcastToSessionViewers: mockBroadcastToSessionViewers,
@@ -67,7 +67,7 @@ describe("registerMessagingHandlers session_trigger acking", () => {
     beforeEach(() => {
         mockGetSharedSession.mockReset();
         mockGetLocalTuiSocket.mockReset();
-        mockEmitToRelaySessionVerified.mockReset();
+        mockEmitToRelaySessionChecked.mockReset();
         mockBroadcastToSessionViewers.mockReset();
         mockEmitToRelaySessionInputAck.mockReset();
         mockHasRelaySessionListener.mockReset();
@@ -78,6 +78,7 @@ describe("registerMessagingHandlers session_trigger acking", () => {
         mockPushTriggerHistory.mockReset();
         mockRecordTriggerResponse.mockReset();
 
+        mockEmitToRelaySessionChecked.mockResolvedValue("empty");
         mockEmitToRelaySessionInputAck.mockResolvedValue({ hadListeners: false, delivered: false });
         mockHasRelaySessionListener.mockResolvedValue(false);
         mockGetChildSessions.mockResolvedValue([]);
@@ -187,6 +188,44 @@ describe("registerMessagingHandlers session_trigger acking", () => {
         }, ack);
 
         expect(ack).toHaveBeenCalledWith({ ok: false, error: "Target session parent-1 is not connected" });
+    });
+
+    test("does not report cross-node trigger delivery lookup failures as offline", async () => {
+        const socket = createMockSocket("child-1");
+        mockGetSharedSession.mockImplementation(async (id: string) => {
+            if (id === "child-1") return { userId: "u1", sessionName: "Child" } as any;
+            if (id === "parent-1") return { userId: "u1" } as any;
+            return null;
+        });
+        mockGetLocalTuiSocket.mockReturnValue(undefined);
+        mockEmitToRelaySessionChecked.mockResolvedValue("unknown");
+        registerMessagingHandlers(socket as any);
+        const ack = mock((_result: { ok: boolean; error?: string }) => {});
+
+        await socket.fireEvent("session_trigger", {
+            token: "relay-token",
+            trigger: {
+                type: "session_complete",
+                sourceSessionId: "child-1",
+                targetSessionId: "parent-1",
+                payload: { summary: "Done" },
+                deliverAs: "followUp",
+                expectsResponse: true,
+                triggerId: "trigger-unknown",
+                ts: new Date().toISOString(),
+            },
+        }, ack);
+
+        expect(mockEmitToRelaySessionChecked).toHaveBeenCalledWith("parent-1", "session_trigger", expect.any(Object));
+        expect(ack).toHaveBeenCalledWith({ ok: false, error: "Target session parent-1 delivery could not be verified" });
+        expect(socket._emitted.at(-1)).toEqual({
+            event: "session_message_error",
+            data: {
+                targetSessionId: "parent-1",
+                error: "Target session parent-1 delivery could not be verified",
+                triggerId: "trigger-unknown",
+            },
+        });
     });
 
     test("delivers child to parent via target parent and explicit parent sessionId", async () => {
