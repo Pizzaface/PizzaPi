@@ -1,5 +1,5 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { escapePromptXml } from "../../prompt-escape.js";
+import { escapePromptXmlText } from "../../prompt-escape.js";
 import * as S from "./storage.js";
 
 /**
@@ -141,7 +141,7 @@ export const memoryExtension: ExtensionFactory = (pi) => {
     let block = "";
     if (text.trim()) {
       block =
-        `\n\n<project-memory>\n${escapePromptXml(text.trim())}\n</project-memory>\n` +
+        `\n\n<project-memory>\n${escapePromptXmlText(text.trim())}\n</project-memory>\n` +
         (truncated ? "(memory index truncated to the load limit; use memory_read for topic files)\n" : "");
     }
     return {

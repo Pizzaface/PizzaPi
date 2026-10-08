@@ -13,6 +13,7 @@ delete process.env.PIZZAPI_HIDDEN_MODELS;
 
 const createAgentSessionCalls: unknown[] = [];
 const socketIoCalls: unknown[] = [];
+const resourceLoaderOptions: unknown[] = [];
 const fakeRuntime = Object.freeze({ id: "parent-runtime" });
 
 mock.module("socket.io-client", () => ({
@@ -40,8 +41,9 @@ mock.module("@earendil-works/pi-coding-agent", () => ({
         };
     }),
     DefaultResourceLoader: class {
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        constructor(_options: unknown) {}
+        constructor(options: unknown) {
+            resourceLoaderOptions.push(options);
+        }
         async reload() {}
     },
     createCodingTools: mock(() => [{ name: "read" }] as unknown[]),
@@ -98,6 +100,24 @@ describe("runSingleAgent model runtime reuse", () => {
                 else process.env[env] = value;
             }
         }
+    });
+
+    test("disables context-file discovery for isolated subagent sessions", async () => {
+        const result = await runSingleAgent(
+            process.cwd(),
+            [noopAgent],
+            "noop",
+            "task",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            (r) => ({ mode: "single", results: r }) as any,
+        );
+
+        expect(result.exitCode).toBe(0);
+        const options = resourceLoaderOptions[resourceLoaderOptions.length - 1] as any;
+        expect(options.noContextFiles).toBe(true);
     });
 
     test("passes the requested effort as the session thinking level", async () => {

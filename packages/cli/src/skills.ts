@@ -11,7 +11,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expandHome } from "./config.js";
 import { parseFrontmatterDescription } from "./frontmatter.js";
-import { escapePromptXml } from "./prompt-escape.js";
+import { escapePromptXmlAttribute, escapePromptXmlText } from "./prompt-escape.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -384,8 +384,8 @@ export function createAgentsFilesOverride(
         ...(sendAgentsMd ? rules.project : []),
     ];
     const sanitizeAgentFile = (file: AgentFile): AgentFile => ({
-        path: escapePromptXml(file.path),
-        content: escapePromptXml(file.content),
+        path: escapePromptXmlAttribute(file.path),
+        content: escapePromptXmlText(file.content),
     });
 
     return (base) => {

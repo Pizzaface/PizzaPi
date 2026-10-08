@@ -344,6 +344,7 @@ export async function runSingleAgent(
             noSkills: true,
             noPromptTemplates: true,
             noThemes: true,
+            noContextFiles: true,
             ...(agent.systemPrompt.trim() && { appendSystemPrompt: [agent.systemPrompt] }),
         });
         await loader.reload();
