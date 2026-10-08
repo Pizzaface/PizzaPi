@@ -427,7 +427,7 @@ async function main(): Promise<void> {
             projectTrusted,
         }),
         additionalSkillPaths: [
-            ...buildSkillPaths(cwd, config.skills),
+            ...buildSkillPaths(cwd, config.skills, projectTrusted),
             ...(skipPlugins ? [] : getPluginSkillPaths(cwd)),
         ],
         additionalPromptTemplatePaths: [

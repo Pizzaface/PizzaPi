@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { resolveExplicitProjectTrust } from "../config.js";
 import { buildPromptTemplatePaths, buildSkillPaths } from "../skills.js";
 import { getPluginSkillPaths, getPluginPromptTemplatePaths } from "./claude-plugins.js";
 
@@ -37,6 +38,15 @@ export function createResourcePathsExtension(options: {
     configSkills?: string[];
     skipPlugins?: boolean;
     cwd?: string;
+    /**
+     * Resolved agent dir, used to re-derive pi's persisted project-trust
+     * decision (`resolveExplicitProjectTrust`) for `event.cwd` on each
+     * `resources_discover` fire — that cwd can differ from the baseline
+     * `cwd` (e.g. a reload into a different directory), so trust can't be
+     * precomputed once. Omitted => fails closed (untrusted), matching
+     * `buildSkillPaths`'s own default.
+     */
+    agentDir?: string;
 } = {}): ExtensionFactory {
     const baselineCwd = options.cwd ? resolve(options.cwd) : undefined;
     return (pi) => {
@@ -45,9 +55,10 @@ export function createResourcePathsExtension(options: {
                 return { skillPaths: [], promptPaths: [] };
             }
             const cwd = event.cwd;
+            const projectTrusted = options.agentDir ? resolveExplicitProjectTrust(cwd, options.agentDir) : false;
             return {
                 skillPaths: [
-                    ...buildSkillPaths(cwd, options.configSkills),
+                    ...buildSkillPaths(cwd, options.configSkills, projectTrusted),
                     ...(options.skipPlugins ? [] : getPluginSkillPaths(cwd)),
                 ],
                 promptPaths: [

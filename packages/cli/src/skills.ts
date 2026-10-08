@@ -390,26 +390,27 @@ function conventionPaths(paths: string[]): string[] {
  * `cwd` IS the home dir, which is how the project-scoped entries below collapse
  * onto the user ones.
  *
- * PROJECT-scope `skills/` dirs are still passed even though pi auto-discovers
- * them too, because pi skips project-scoped auto-discovery for UNTRUSTED
- * projects — dropping them would newly trust-gate project skills, a behaviour
- * change tracked separately in Godmother `9py0SHJs`.
+ * PROJECT-scope `skills/`/`agents/` dirs are only added when `projectTrusted`
+ * is true. pi itself skips project-scoped auto-discovery for UNTRUSTED
+ * projects; PizzaPi previously passed these dirs via `additionalSkillPaths`
+ * regardless of trust, which upstream merges unconditionally and so bypassed
+ * pi's own gate (Godmother `9py0SHJs`). Fails closed: an undecided or
+ * explicitly-untrusted repo gets none of the project-scope dirs below. Global
+ * `~/.pizzapi/agents` and the built-in dir are unaffected — they're not
+ * project-controlled.
  */
-export function buildSkillPaths(cwd: string, configSkills?: string[]): string[] {
+export function buildSkillPaths(cwd: string, configSkills?: string[], projectTrusted = false): string[] {
     // Dirs pi auto-discovers regardless of project trust. Anything resolving to
     // one of these is pure duplication on our side.
     const piUserAutoDirs = new Set([
         resolve(join(homedir(), ".pizzapi", "skills")),
         resolve(join(homedir(), ".agents", "skills")),
     ]);
-    const paths: string[] = conventionPaths([
-        builtinSkillsDir(),
-        join(cwd, ".pizzapi", "skills"),
-        join(homedir(), ".pizzapi", "agents"),
-        join(cwd, ".pizzapi", "agents"),
-        join(cwd, ".agents", "skills"),
-        join(cwd, ".agents", "agents"),
-    ]).filter((p) => !piUserAutoDirs.has(p));
+    const userScopeDirs = [builtinSkillsDir(), join(homedir(), ".pizzapi", "agents")];
+    const projectScopeDirs = projectTrusted
+        ? [join(cwd, ".pizzapi", "skills"), join(cwd, ".pizzapi", "agents"), join(cwd, ".agents", "skills"), join(cwd, ".agents", "agents")]
+        : [];
+    const paths: string[] = conventionPaths([...userScopeDirs, ...projectScopeDirs]).filter((p) => !piUserAutoDirs.has(p));
     if (Array.isArray(configSkills)) {
         for (const p of configSkills) {
             if (typeof p === "string" && p.trim()) {
