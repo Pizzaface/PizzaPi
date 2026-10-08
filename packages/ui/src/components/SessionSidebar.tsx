@@ -1337,9 +1337,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                     >
                                         {runnerGroup.label}
                                     </span>
-                                    {runnerGroup.projects.length === 1 && (
-                                        <StatusCountChip counts={countSessionStatuses(runnerGroup.projects[0].sessions, sessionsAwaitingInput, sessionsCompacting, completedUnreadSessions)} />
-                                    )}
                                 </div>
 
                                 {/* Project groups within this runner */}
@@ -1355,7 +1352,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                 >
                                                     {project.label}
                                                 </span>
-                                                <StatusCountChip counts={countSessionStatuses(project.sessions, sessionsAwaitingInput, sessionsCompacting, completedUnreadSessions)} />
                                             </div>
                                         )}
 
@@ -1391,6 +1387,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                             const provider = s.model?.provider ??
                                                 (activeSessionId === s.sessionId ? activeModel?.provider : undefined) ??
                                                 "unknown";
+                                            // Linked-session group: status counts across all descendants.
+                                            const groupCounts = childrenByParent.has(s.sessionId)
+                                                ? (() => {
+                                                    const ids = new Set(getDescendantSessionIds(s.sessionId, project.sessions));
+                                                    return countSessionStatuses(project.sessions.filter((c) => ids.has(c.sessionId)), sessionsAwaitingInput, sessionsCompacting, completedUnreadSessions);
+                                                })()
+                                                : null;
                                             const timeLabel = isToday(s.startedAt)
                                                 ? formatTime(s.lastHeartbeatAt ?? s.startedAt)
                                                 : formatRelativeDate(s.startedAt);
@@ -1671,7 +1674,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                     </div>
                                                                 ) : null;
                                                             })()}
-                                                            {(s.userName || (showCwd && s.cwd)) && (
+                                                            {(s.userName || (showCwd && s.cwd) || groupCounts) && (
                                                                 <div className="flex items-center gap-1 mt-0.5 min-w-0">
                                                                     {s.userName && (
                                                                         <span className="text-[0.65rem] text-sidebar-foreground/60 truncate">
@@ -1684,6 +1687,11 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                             title={s.cwd}
                                                                         >
                                                                             {s.userName ? "·" : ""} {formatPathTail(s.cwd, 2)}
+                                                                        </span>
+                                                                    )}
+                                                                    {groupCounts && (
+                                                                        <span className="ml-auto flex-shrink-0">
+                                                                            <StatusCountChip counts={groupCounts} />
                                                                         </span>
                                                                     )}
                                                                 </div>
