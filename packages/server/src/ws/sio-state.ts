@@ -631,7 +631,6 @@ export async function deleteSession(sessionId: string): Promise<void> {
     const multi = r.multi();
     multi.del(sessionKey(sessionId));
     multi.del(seqKey(sessionId));
-    multi.del(messagesVersionKey(sessionId));
     multi.sRem(allSessionsKey(), sessionId);
 
     if (session?.userId) {
@@ -649,14 +648,14 @@ export async function deleteSessionIfOwner(sessionId: string, expectedToken: str
             return 0
         end
         local userId = redis.call('HGET', KEYS[1], 'userId')
-        redis.call('DEL', KEYS[1], KEYS[2], KEYS[4])
+        redis.call('DEL', KEYS[1], KEYS[2])
         redis.call('SREM', KEYS[3], ARGV[2])
         if userId and userId ~= '' then
             redis.call('SREM', ARGV[3] .. userId, ARGV[2])
         end
         return 1
     `, {
-        keys: [sessionKey(sessionId), seqKey(sessionId), allSessionsKey(), messagesVersionKey(sessionId)],
+        keys: [sessionKey(sessionId), seqKey(sessionId), allSessionsKey()],
         arguments: [expectedToken, sessionId, `${KEY_PREFIX}:user-sessions:`],
     });
     return result === 1;

@@ -261,21 +261,19 @@ describe("registerTuiSession parsed-message cache", () => {
         _clearSessionMessagesCacheForTesting();
     });
 
-    it("does not reuse a same-ID cached messages array after Redis lost the old session", async () => {
+    it("does not reuse another node's same-ID cache after teardown and re-registration", async () => {
         const sessionId = "restart-in-place-cache";
         versionStore.set(sessionId, 1);
         await seedSession(sessionId, { lastState: JSON.stringify({ messages: ["gen1"] }) });
         expect(await getSessionMessages(sessionId)).toEqual(["gen1"]);
         expect(_hasCachedSessionMessagesForTesting(sessionId)).toBe(true);
 
+        // Model a different relay node doing teardown + re-registration. This
+        // node keeps its gen-1 parsed-message cache, so only the shared Redis
+        // version counter can make it miss.
         store.delete(sessionHashKey(sessionId));
-        await registerTuiSession(fakeSocket(), "/repo", {
-            sessionId,
-            userId: "u1",
-            isEphemeral: false,
-        });
         await seedSession(sessionId, { lastState: JSON.stringify({ messages: ["gen2"] }) });
-        versionStore.set(sessionId, 1);
+        versionStore.set(sessionId, (versionStore.get(sessionId) ?? 0) + 1);
 
         expect(await getSessionMessages(sessionId)).toEqual(["gen2"]);
     });
