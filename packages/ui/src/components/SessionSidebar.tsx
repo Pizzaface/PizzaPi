@@ -545,6 +545,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     const [pinPendingSessionIds, setPinPendingSessionIds] = React.useState<Set<string>>(new Set());
     const [pinError, setPinError] = React.useState<string | null>(null);
     const [expandedNodeIds, setExpandedNodeIds] = React.useState<Set<string>>(new Set());
+    const [rovingSessionId, setRovingSessionId] = React.useState<string | null>(activeSessionId);
     const pinPendingRef = React.useRef<Set<string>>(new Set());
 
     // Fetch pinned sessions from the API
@@ -878,6 +879,14 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         () => filterSessionsByMode(liveSessions, selectedMode, sessionModes, sessionModesRunnerId),
         [liveSessions, selectedMode, sessionModes, sessionModesRunnerId],
     );
+    React.useEffect(() => {
+        if (rovingSessionId && visibleSessions.some((session) => session.sessionId === rovingSessionId)) return;
+        setRovingSessionId(
+            activeSessionId && visibleSessions.some((session) => session.sessionId === activeSessionId)
+                ? activeSessionId
+                : visibleSessions[0]?.sessionId ?? null,
+        );
+    }, [activeSessionId, visibleSessions, rovingSessionId]);
 
     const liveGroups = React.useMemo(() => {
         // Step 1: group sessions by runnerId.
@@ -1350,10 +1359,11 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     ) : liveGroups.length === 0 ? (
                         <p className="px-2 py-3 text-xs italic text-sidebar-foreground/40 text-center">No live sessions</p>
                     ) : (
-                        liveGroups.map((runnerGroup) => (
-                            <div key={runnerGroup.key} className="flex flex-col mb-2">
+                        <div role="tree" aria-label="Sessions">
+                        {liveGroups.map((runnerGroup) => (
+                            <div key={runnerGroup.key} role="presentation" className="flex flex-col mb-2">
                                 {/* Runner header */}
-                                <div className="flex items-center gap-1.5 px-1.5 py-1 min-w-0">
+                                <div role="presentation" className="flex items-center gap-1.5 px-1.5 py-1 min-w-0">
                                     <HardDrive className="h-3 w-3 text-sidebar-foreground/35 flex-shrink-0" />
                                     <span
                                         className="text-[0.65rem] font-medium text-sidebar-foreground/60 truncate flex-1"
@@ -1365,7 +1375,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
                                 {/* Project groups within this runner */}
                                 {runnerGroup.projects.map((project) => (
-                                    <div key={project.cwd || "__root__"}>
+                                    <div key={project.cwd || "__root__"} role="presentation">
                                         {/* Project sub-header — only shown when there are multiple projects */}
                                         {runnerGroup.projects.length > 1 && (
                                             <div className="flex items-center gap-1.5 pl-4 pr-1.5 py-0.5 min-w-0">
@@ -1426,11 +1436,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                             const swipeOffset = swipeOffsets.get(s.sessionId) ?? 0;
                                             const isRevealed = revealedSessionId === s.sessionId;
                                             const hasOffset = swipeOffset !== 0;
+                                            const childCount = childrenByParent.get(s.sessionId) ?? 0;
 
                                             return (
                                                 <div
                                                     key={s.sessionId}
-                                                    className="relative overflow-hidden rounded-md"
+                                                    role="presentation"
+                                                    className="group relative overflow-hidden rounded-md"
                                                     style={depth > 0 ? { marginLeft: `${getSessionIndent(depth)}px` } : undefined}
                                                 >
                                                     {/* "Duplicate" + "Pin" + "End" actions behind the card — only rendered during swipe/reveal (not in select mode) */}
@@ -1502,10 +1514,63 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         </button>
                                                     </div>}
 
+                                                    {/* Discoverable per-row actions — visible on hover/focus on desktop (md+); mobile keeps the swipe-reveal panel above */}
+                                                    {!selectMode && (
+                                                        <div className="hidden md:flex absolute right-1.5 top-1/2 -translate-y-1/2 z-10 items-center gap-0.5 rounded-md bg-sidebar-accent/95 p-0.5 shadow-sm opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                                                            {s.runnerId && onDuplicateSession && (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        onDuplicateSession(s.runnerId!, s.cwd || "");
+                                                                    }}
+                                                                    aria-label="Duplicate session"
+                                                                    title="New session with same runner & directory"
+                                                                    className="flex h-6 w-6 items-center justify-center rounded text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+                                                                >
+                                                                    <Copy className="h-3.5 w-3.5" />
+                                                                </button>
+                                                            )}
+                                                            <button
+                                                                type="button"
+                                                                disabled={isPinPending}
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    if (isPinPending) return;
+                                                                    togglePinSession(s.sessionId, isPinned);
+                                                                }}
+                                                                aria-label={isPinned ? "Unpin session" : "Pin session"}
+                                                                title={isPinned ? "Unpin session" : "Pin session"}
+                                                                className="flex h-6 w-6 items-center justify-center rounded text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground disabled:opacity-50"
+                                                            >
+                                                                {isPinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+                                                            </button>
+                                                            {onEndSession && (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        setConfirmEndSessionId(s.sessionId);
+                                                                    }}
+                                                                    aria-label="End session"
+                                                                    title="End session"
+                                                                    className="flex h-6 w-6 items-center justify-center rounded text-sidebar-foreground/70 hover:bg-red-500/20 hover:text-red-400"
+                                                                >
+                                                                    <X className="h-3.5 w-3.5" />
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                    )}
+
                                                     {/* Sliding session card */}
                                                     <ContextMenu>
                                                     <ContextMenuTrigger asChild disabled={selectMode}>
-                                                    <button
+                                                    <div
+                                                        role="treeitem"
+                                                        tabIndex={rovingSessionId === s.sessionId ? 0 : -1}
+                                                        aria-level={depth + 1}
+                                                        aria-expanded={childCount > 0 ? isExpanded : undefined}
+                                                        onFocus={() => setRovingSessionId(s.sessionId)}
                                                         onClick={(_e) => {
                                                             if (selectMode) {
                                                                 toggleSelectSession(s.sessionId);
@@ -1535,6 +1600,16 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         })()}
                                                         data-session-row=""
                                                         onKeyDown={(e) => {
+                                                            // Child action buttons own their activation keys.
+                                                            if (e.target !== e.currentTarget) return;
+                                                            // Enter/Space activate the row — native <button> semantics,
+                                                            // reimplemented here because this element is a <div> (a
+                                                            // nested chevron <button> inside a <button> is invalid HTML).
+                                                            if (e.key === "Enter" || e.key === " ") {
+                                                                e.preventDefault();
+                                                                (e.currentTarget as HTMLElement).click();
+                                                                return;
+                                                            }
                                                             // Arrow keys move focus between session rows (roving
                                                             // navigation without a full listbox refactor).
                                                             if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -1559,7 +1634,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         onPointerUp={selectMode ? undefined : handleSessionPointerUp}
                                                         onPointerCancel={selectMode ? undefined : handleSessionPointerUp}
                                                         className={cn(
-                                                            "relative flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 text-left rounded-md",
+                                                            "relative flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 text-left rounded-md cursor-pointer",
                                                             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                                                             !hasOffset && "transition-transform duration-200 ease-out",
                                                             visualState === "selected" && "bg-sidebar-accent text-sidebar-accent-foreground",
@@ -1576,61 +1651,40 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             touchAction: selectMode ? undefined : "pan-y",
                                                         }}
                                                     >
-                                                        {/* Expand/collapse toggle for parent sessions */}
-                                                        {(() => {
-                                                            const childCount = childrenByParent.get(s.sessionId) ?? 0;
-                                                            if (childCount > 0) {
-                                                              return (
-                                                                <span
-                                                                  role="button"
-                                                                  tabIndex={0}
-                                                                  onPointerDown={(e) => {
-                                                                    // Stop the parent session button from capturing the
-                                                                    // pointer — without this, setPointerCapture steals
-                                                                    // subsequent events and the click never fires.
-                                                                    e.stopPropagation();
-                                                                  }}
-                                                                  onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    setExpandedNodeIds(prev => {
-                                                                      const next = new Set(prev);
-                                                                      if (next.has(s.sessionId)) {
-                                                                        next.delete(s.sessionId);
-                                                                      } else {
-                                                                        next.add(s.sessionId);
-                                                                      }
-                                                                      return next;
-                                                                    });
-                                                                  }}
-                                                                  onKeyDown={(e) => {
-                                                                    if (e.key === "Enter" || e.key === " ") {
-                                                                      e.preventDefault();
-                                                                      e.stopPropagation();
-                                                                      setExpandedNodeIds(prev => {
-                                                                        const next = new Set(prev);
-                                                                        if (next.has(s.sessionId)) {
-                                                                          next.delete(s.sessionId);
-                                                                        } else {
-                                                                          next.add(s.sessionId);
-                                                                        }
-                                                                        return next;
-                                                                      });
-                                                                    }
-                                                                  }}
-                                                                  className="flex-shrink-0 -m-3 h-11 w-11 rounded flex items-center justify-center text-sidebar-foreground/50 hover:text-sidebar-foreground/70 hover:bg-sidebar-accent/50 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:-m-1.5 md:h-7 md:w-7"
-                                                                  aria-expanded={isExpanded}
-                                                                  aria-label={isExpanded ? "Collapse linked sessions" : "Expand linked sessions"}
-                                                                >
-                                                                  {isExpanded ? (
-                                                                    <ChevronDown className="h-4 w-4" />
-                                                                  ) : (
-                                                                    <ChevronRight className="h-4 w-4" />
-                                                                  )}
-                                                                </span>
-                                                              );
-                                                            }
-                                                            return null;
-                                                        })()}
+                                                        {/* Expand/collapse toggle is a real button, not a faux
+                                                            span[role=button]; it is no longer nested in a <button>. */}
+                                                        {childCount > 0 && (
+                                                            <button
+                                                              type="button"
+                                                              onPointerDown={(e) => {
+                                                                // Stop the parent row from capturing the pointer —
+                                                                // without this, setPointerCapture steals subsequent
+                                                                // events and the click never fires.
+                                                                e.stopPropagation();
+                                                              }}
+                                                              onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setExpandedNodeIds(prev => {
+                                                                  const next = new Set(prev);
+                                                                  if (next.has(s.sessionId)) {
+                                                                    next.delete(s.sessionId);
+                                                                  } else {
+                                                                    next.add(s.sessionId);
+                                                                  }
+                                                                  return next;
+                                                                });
+                                                              }}
+                                                              className="flex-shrink-0 -m-3 h-11 w-11 rounded flex items-center justify-center text-sidebar-foreground/50 hover:text-sidebar-foreground/70 hover:bg-sidebar-accent/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:-m-1.5 md:h-7 md:w-7"
+                                                              aria-expanded={isExpanded}
+                                                              aria-label={isExpanded ? "Collapse linked sessions" : "Expand linked sessions"}
+                                                            >
+                                                              {isExpanded ? (
+                                                                <ChevronDown className="h-4 w-4" />
+                                                              ) : (
+                                                                <ChevronRight className="h-4 w-4" />
+                                                              )}
+                                                            </button>
+                                                        )}
 
                                                         {/* Select mode checkbox */}
                                                         {selectMode && (
@@ -1723,7 +1777,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                 </div>
                                                             )}
                                                         </div>
-                                                    </button>
+                                                    </div>
                                                     </ContextMenuTrigger>
                                                     <ContextMenuContent>
                                                         <ContextMenuItem onSelect={() => onOpenSession(s.sessionId)}>
@@ -1760,7 +1814,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                     </div>
                                 ))}
                             </div>
-                        ))
+                        ))}
+                        </div>
                     )}
 
 
