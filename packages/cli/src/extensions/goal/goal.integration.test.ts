@@ -312,7 +312,22 @@ describe("/goal multi-turn integration", () => {
     test("LLM evaluator loop: unmet → guidance → agent acts → goal cleared (mocked network)", async () => {
         const { pi, handlers, messages, events, commands, userMessages } = createFakePi();
         const shutdown = mock(() => {});
-        const ctx = createFakeCtx({ cwd: tmpCwd, shutdown: shutdown as unknown as () => void });
+        // A distinctive session entry proves the standalone judge receives the
+        // real transcript built from `getEntries()`, not just the goal text —
+        // the fallback path's one source of session history.
+        const ctx = createFakeCtx({
+            cwd: tmpCwd,
+            shutdown: shutdown as unknown as () => void,
+            entries: [
+                {
+                    type: "message",
+                    message: { role: "user", content: "please restart the payments worker", timestamp: 1 },
+                    id: "1",
+                    parentId: null,
+                    timestamp: "1",
+                } as unknown as SessionEntry,
+            ],
+        });
 
         goalExtension(pi);
 
@@ -356,6 +371,13 @@ describe("/goal multi-turn integration", () => {
         const firstPrompt = (fakeCompleteSimple.mock.calls[0][1] as { messages: Array<{ content: unknown }> }).messages[0]?.content;
         expect(typeof firstPrompt).toBe("string");
         expect(firstPrompt as string).toContain("services are green");
+        // The standalone judge is the one evaluator that needs the full
+        // session transcript (the cache evaluator reuses the session's own
+        // context instead). Prove `buildEvaluationContext` actually built it
+        // from `ctx.sessionManager.getEntries()` and that it reached the
+        // judge prompt, not just "(no transcript available)".
+        expect(firstPrompt as string).toContain("Conversation so far:");
+        expect(firstPrompt as string).toContain("User:\nplease restart the payments worker");
 
         const stateAfterTurn1 = getGoal("goal-integration-session")!;
         expect(stateAfterTurn1.status).toBe("active");

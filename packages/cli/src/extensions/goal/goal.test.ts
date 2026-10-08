@@ -621,6 +621,10 @@ describe("createLlmGoalEvaluator", () => {
                 ? context.messages[0]!.content
                 : "";
             expect(prompt).toContain("Goal: tests pass");
+            // The standalone judge prompt must carry the transcript it was given —
+            // this is the only delivery mechanism for session history once the
+            // caller gates `buildTranscript(getEntries())` on `usesTranscript`.
+            expect(prompt).toContain("User: run tests\nAssistant: passed");
             return {
                 role: "assistant",
                 content: [{ type: "text", text: "Decision: yes\nReason: all green" }],
@@ -1484,7 +1488,7 @@ describe("goalExtension event wiring", () => {
         expect(userMessages.length).toBe(0);
     });
 
-    test("LLM goal evaluation does not build a transcript unless the selected evaluator needs it", async () => {
+    test("goal check does not build a transcript when the resolved evaluator doesn't need one", async () => {
         resetSession("session-1");
         const { pi, handlers } = createFakePi();
         const ctx = createFakeCtx({
