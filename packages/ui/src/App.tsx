@@ -357,9 +357,17 @@ export function App() {
       setSessionState((p: SessionState) => ({ ...p, mcpOAuthPastes: typeof v === "function" ? v(p.mcpOAuthPastes) : v })),
     []
   );
+  // Every writer — not just the three call sites that originally motivated
+  // messageQueueRef — must keep the ref in sync, or batched handlers that read
+  // the ref right after a sibling setMessageQueue() call in the same tick (or
+  // across a session switch) see a stale/previous-session queue. Do it once
+  // here instead of at each call site so the invariant can't be forgotten.
   const setMessageQueue = React.useCallback(
-    (v: React.SetStateAction<QueuedMessage[]>) =>
-      setSessionState((p: SessionState) => ({ ...p, messageQueue: typeof v === "function" ? v(p.messageQueue) : v })),
+    (v: React.SetStateAction<QueuedMessage[]>) => {
+      const next = typeof v === "function" ? v(messageQueueRef.current) : v;
+      messageQueueRef.current = next;
+      setSessionState((p: SessionState) => ({ ...p, messageQueue: next }));
+    },
     []
   );
   const setActiveModel = React.useCallback(
@@ -478,7 +486,11 @@ export function App() {
   // reading it right after. That pattern only works when the fiber has no other
   // update already pending (React's eager-bailout optimization) — not guaranteed
   // while a heartbeat or streaming update is in flight — so it can silently skip
-  // or stale-write the sessionUiCache patch.
+  // or stale-write the sessionUiCache patch. setMessageQueue (above) writes this
+  // ref synchronously on every call, so every writer stays in sync by
+  // construction; the useLayoutEffect below is just a backstop for the initial
+  // render / any direct setSessionState({ messageQueue }) spread that bypasses
+  // the setter.
   const messageQueueRef = React.useRef<QueuedMessage[]>(messageQueue);
   React.useLayoutEffect(() => { messageQueueRef.current = messageQueue; }, [messageQueue]);
   const activeModelRef = React.useRef<ConfiguredModelInfo | null>(activeModel);
@@ -5791,9 +5803,15 @@ export function App() {
                           setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
                           const stableKey = `mcp_auth:${serverName}`;
                           injectedMessagesRef.current = removeMessagesByStableKey(injectedMessagesRef.current, stableKey);
+                          // Functional updater: an absolute setMessages(next) built from
+                          // messagesRef.current here could clobber a pending RAF/streaming
+                          // functional update already queued in this batch (same bug class
+                          // as messageQueueRef). patchSessionCache is a best-effort cache
+                          // patch only (see the steer-message site above), so it can still
+                          // read the ref directly.
+                          setMessages((prev) => removeMessagesByStableKey(prev, stableKey));
                           const next = removeMessagesByStableKey(messagesRef.current, stableKey);
                           if (next.length !== messagesRef.current.length) {
-                            setMessages(next);
                             patchSessionCache({ messages: next });
                           }
                         }}
@@ -5801,9 +5819,9 @@ export function App() {
                           setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
                           const stableKey = `mcp_auth:${serverName}`;
                           injectedMessagesRef.current = removeMessagesByStableKey(injectedMessagesRef.current, stableKey);
+                          setMessages((prev) => removeMessagesByStableKey(prev, stableKey));
                           const disableNext = removeMessagesByStableKey(messagesRef.current, stableKey);
                           if (disableNext.length !== messagesRef.current.length) {
-                            setMessages(disableNext);
                             patchSessionCache({ messages: disableNext });
                           }
                           const socket = viewerWsRef.current;

@@ -36,8 +36,16 @@
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { renderHook, act } from "@testing-library/react";
+import * as React from "react";
 
 const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+// Strip line comments before source-text scanning below so comment prose
+// (e.g. explaining an anti-pattern) can't be mistaken for a real call site.
+const sourceNoComments = source
+  .split("\n")
+  .map((line) => line.replace(/\/\/.*$/, ""))
+  .join("\n");
 
 /** Extract the source of a `const name = React.useCallback((...) => { ... }, [...]);` declaration. */
 function extractCallback(name: string): string {
@@ -99,4 +107,84 @@ describe("App.tsx setState-updater race regression (GM RVeKYNtU)", () => {
       expect(block).not.toMatch(/setMessages\(\s*(next|nextMessages|filteredNext|errMessage)\s*\)/);
     });
   }
+
+  // The tests above only check a hand-picked allowlist of call sites named at
+  // fix time. A prior review round fixed three named call sites but missed
+  // five sibling setMessageQueue writers and two setMessages writers (the MCP
+  // paste-dismiss / server-disable callbacks) with the exact same bug shape.
+  // These tests scan the WHOLE file generically so a NEW call site with
+  // either anti-pattern fails even if nobody adds it to an allowlist.
+
+  test("every setMessages(...) call in App.tsx is either a functional updater or an explicitly-reviewed authoritative full replace", () => {
+    const nonFunctionalCalls = [...sourceNoComments.matchAll(/setMessages\(\s*((?!\(\s*prev)[^)]*)\)/g)].map((m) => m[0].trim());
+
+    // Each entry is a full snapshot/reset replace that was reviewed and is
+    // intentionally not a functional updater (it runs after
+    // cancelPendingDeltas(), or is an authoritative session reset/switch, not
+    // a stale-ref-derived patch). A new absolute setMessages(...) call must
+    // either become functional or get a reviewed, justified entry here.
+    const reviewedAbsoluteReplaces = [
+      "setMessages(injected.length > 0 ? [...normalizedMessages, ...injected] : normalizedMessages)",
+      "setMessages(withInjected)",
+      "setMessages([])",
+      "setMessages(cached?.messages ?? [])",
+    ];
+
+    const unreviewed = nonFunctionalCalls.filter((call) => !reviewedAbsoluteReplaces.includes(call));
+    expect(unreviewed, `found unreviewed absolute setMessages(...) call(s): ${JSON.stringify(unreviewed)}`).toEqual([]);
+  });
+
+  test("every setMessageQueue(...) call keeps messageQueueRef in sync by construction (single-setter invariant)", () => {
+    // Root-cause fix: instead of requiring every call site to remember to
+    // also write messageQueueRef.current, setMessageQueue itself does it, so
+    // ALL current and future call sites inherit the invariant for free.
+    const setterBody = extractCallback("setMessageQueue");
+    expect(setterBody).toContain("messageQueueRef.current");
+    // The ref write must happen before setSessionState is called, so a
+    // same-tick follow-up read (another queue mutation in the same handler,
+    // or a later call in the same batch) sees the result immediately instead
+    // of waiting for the commit-time useLayoutEffect.
+    const refWriteIdx = setterBody.indexOf("messageQueueRef.current =");
+    const setSessionStateIdx = setterBody.indexOf("setSessionState(");
+    expect(refWriteIdx).toBeGreaterThanOrEqual(0);
+    expect(setSessionStateIdx).toBeGreaterThan(refWriteIdx);
+  });
+
+  test("behavioral: a single ref-syncing setter composes correctly across synchronous batched calls (GM RVeKYNtU pattern)", () => {
+    // Mounting the real multi-thousand-line App component is not practical in
+    // a unit test (it needs a live socket/relay and dozens of other hooks) --
+    // consistent with every other test in this file. This exercises the same
+    // *pattern* setMessageQueue now uses, under React's real scheduler, to
+    // prove the pattern holds under batching (the two static tests above
+    // prove App.tsx's actual setter uses this exact pattern).
+    function useQueueLikeState() {
+      const [queue, setQueueState] = React.useState<string[]>([]);
+      const queueRef = React.useRef<string[]>(queue);
+      React.useLayoutEffect(() => { queueRef.current = queue; }, [queue]);
+      const setQueue = React.useCallback((v: string[] | ((prev: string[]) => string[])) => {
+        const next = typeof v === "function" ? (v as (prev: string[]) => string[])(queueRef.current) : v;
+        queueRef.current = next;
+        setQueueState(next);
+      }, []);
+      return { queue, queueRef, setQueue };
+    }
+
+    const { result } = renderHook(() => useQueueLikeState());
+
+    // Two queue mutations issued synchronously in the same event-handler tick
+    // (React batches both into one render) -- the second must observe the
+    // first's result via the ref, not a stale snapshot.
+    act(() => {
+      result.current.setQueue((prev) => [...prev, "a"]);
+      // If the ref were not updated synchronously by setQueue, this read would
+      // still see [] here (pre-fix behavior relied on React's eager-bailout
+      // optimization running the first updater immediately, which is not
+      // guaranteed while another update is already pending on the fiber).
+      expect(result.current.queueRef.current).toEqual(["a"]);
+      result.current.setQueue((prev) => prev.filter((x) => x !== "a").concat("b"));
+    });
+
+    expect(result.current.queue).toEqual(["b"]);
+    expect(result.current.queueRef.current).toEqual(["b"]);
+  });
 });
