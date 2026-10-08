@@ -196,6 +196,29 @@ describe("registerAppResumeListener", () => {
         expect(resumeCalls).toBe(2);
     });
 
+    test("an unimplemented native plugin (e.g. app not yet rebuilt with @capacitor/app) doesn't throw or reject unhandled", async () => {
+        // Mirrors what Capacitor's registerPlugin proxy does when the native
+        // side has no "App" plugin registered: addListener rejects instead of
+        // resolving. App.tsx's visibilitychange/online kickSockets listeners
+        // are registered independently of this one and keep working either way.
+        const appPlugin = {
+            addListener: async () => {
+                throw new Error("\"App\" plugin is not implemented on android");
+            },
+        };
+        const mod = await loadMobileNative(null, false);
+        let resumeCalls = 0;
+        const cleanup = mod.registerAppResumeListener(() => {
+            resumeCalls++;
+        }, appPlugin);
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(resumeCalls).toBe(0);
+        // cleanup must also be a no-op, not throw, even though no handle was ever set.
+        expect(() => cleanup()).not.toThrow();
+    });
+
     test("removes the native listener once the returned cleanup runs", async () => {
         let removeCalls = 0;
         const appPlugin = {

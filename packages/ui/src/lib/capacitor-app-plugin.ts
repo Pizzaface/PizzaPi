@@ -24,9 +24,11 @@ export interface CapacitorAppPlugin {
 
 // Web no-op so the proxy never rejects on the PWA build (calls are guarded to
 // native anyway). On native, registerPlugin routes to the "App" plugin that
-// `cap sync` installs — @capacitor/app is already pulled in transitively
-// (via @aparajita/capacitor-secure-storage), so there's no need to add a
-// direct npm dependency or import its JS wrapper.
+// `@capacitor/app` registers at runtime once `cap sync` has pulled it into
+// the native projects (android/capacitor.settings.gradle, iOS
+// CapApp-SPM/Package.swift). Callers must still tolerate addListener
+// rejecting — e.g. on a binary built before this dependency existed — since
+// registerPlugin resolves to an "unimplemented" stub in that case.
 class CapacitorAppWeb implements CapacitorAppPlugin {
     async addListener(): Promise<{ remove: () => Promise<void> }> {
         return { remove: async () => {} };
