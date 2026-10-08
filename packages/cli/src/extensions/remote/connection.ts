@@ -96,7 +96,7 @@ export interface ConnectionHandlers {
     /** Change the active model (called from exec and model_set handlers). */
     setModelFromWeb: (provider: string, modelId: string) => Promise<void>;
     /** Deliver a user message to the agent (called from input and session_trigger handlers). */
-    sendUserMessage: (message: unknown, options?: { deliverAs?: "followUp" | "steer"; expandPromptTemplates?: boolean }) => Promise<void>;
+    sendUserMessage: (message: unknown, options?: { deliverAs?: "followUp" | "steer"; expandPromptTemplates?: boolean; onAccepted?: () => void }) => Promise<void>;
     /** Deliver a structured pi custom message (LLM sees `text`; UI renders from `details`). Always triggers a turn. */
     sendCustomMessage: (customType: string, text: string, details: unknown, deliverAs?: "followUp" | "steer") => Promise<void>;
 
@@ -584,9 +584,15 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                 if (abortForSlashCommand) rctx.pendingSteeringSlashCommands += 1;
                 try {
                     if (abortForSlashCommand) await rctx.sessionHost?.abort();
+                    // Ack on acceptance, not completion: on an idle session pi
+                    // awaits the whole agent run, which outlives the relay's
+                    // 10s ack window and reports a delivered message as failed.
                     if (linkedMessage) {
-                        await handlers.sendCustomMessage(LINKED_SESSION_MESSAGE_TYPE, inputText, linkedMessage, effectiveDeliverAs);
+                        const delivery = handlers.sendCustomMessage(LINKED_SESSION_MESSAGE_TYPE, inputText, linkedMessage, effectiveDeliverAs);
+                        // Surfaces an immediate rejection (e.g. no SessionHost) before acking.
+                        await Promise.race([delivery, Promise.resolve()]);
                         settle(true);
+                        await delivery;
                         return;
                     }
                     // Ack slash commands on dispatch, not completion: a command can
@@ -595,7 +601,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                     // disconnected and reads the never-sent ack as a failed send.
                     // Command failures still surface via the cli_error below.
                     if (isSlashCommand) settle(true);
-                    await handlers.sendUserMessage(message, { expandPromptTemplates: true, ...(effectiveDeliverAs ? { deliverAs: effectiveDeliverAs } : {}) });
+                    await handlers.sendUserMessage(message, { expandPromptTemplates: true, onAccepted: () => settle(true), ...(effectiveDeliverAs ? { deliverAs: effectiveDeliverAs } : {}) });
                     settle(true);
                 } finally {
                     if (abortForSlashCommand) rctx.pendingSteeringSlashCommands -= 1;
