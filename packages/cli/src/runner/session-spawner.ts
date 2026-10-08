@@ -440,7 +440,8 @@ export function spawnSession(
             // True termination — clean up persisted attachments now.
             // session_ended will also arrive later but runningSessions will be empty
             // by then, so this is the reliable cleanup point for spawned sessions.
-            // Also remove from killedSessions if this was an explicit kill to prevent leaks.
+            // Also remove from tracking sets if this was an explicit kill or a failed restart to prevent leaks.
+            restartingSessions.delete(sessionId);
             killedSessions.delete(sessionId);
             // Reap any stragglers the session left behind (background dev
             // servers etc.) — the worker is gone, so signal its whole group
