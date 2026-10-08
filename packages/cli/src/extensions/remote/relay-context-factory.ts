@@ -119,6 +119,7 @@ export function createRelayContext(
                 ? process.env.PIZZAPI_SESSION_ID.trim()
                 : randomUUID(),
         supportsSessionTriggerAck: false,
+        supportsChunkAck: false,
 
         pendingAskUserQuestion: null,
         pendingPlanMode: null,

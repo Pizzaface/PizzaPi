@@ -17,6 +17,7 @@ import {
     recordInFlightMessageState,
     finishInFlightMessageState,
     _resetChunkedDeliveryStateForTesting,
+    CHUNK_RETRY_MAX_ATTEMPTS,
 } from "./chunked-delivery.js";
 import type { RelayContext } from "../remote-types.js";
 import { resetSessionAnalysis, sessionAnalysisExtension } from "../session-analysis.js";
@@ -50,6 +51,9 @@ function makeContext(opts: {
         modelId: string;
     } | null;
     entries?: unknown[];
+    /** Mirrors the real default (false) until a relay's `registered` payload
+     *  confirms chunk-ack support — set true to test the ack/nack paths. */
+    supportsChunkAck?: boolean;
 } = {}): RelayContext & { emitted: unknown[] } {
     const leafId = opts.leafId ?? "leaf-1";
     const emitted: unknown[] = [];
@@ -122,6 +126,8 @@ function makeContext(opts: {
         getAvailableCommands: () => [],
         getCurrentSessionName: () => opts.sessionName ?? null,
         getCurrentThinkingLevel: () => opts.thinkingLevel ?? null,
+
+        supportsChunkAck: opts.supportsChunkAck ?? false,
 
         // Relay status
         relayStatusText: "",
@@ -219,6 +225,7 @@ describe("messagesChangedSinceLastEmit", () => {
     test("records chunked refresh complete only after the relay acks the chunk", async () => {
         const ctx = makeContext({
             leafId: "acked-large-message",
+            supportsChunkAck: true,
             entries: [{
                 type: "message",
                 id: "acked-large-message",
@@ -251,6 +258,7 @@ describe("messagesChangedSinceLastEmit", () => {
     test("keeps chunked refresh eligible for retry when the relay nacks the chunk", async () => {
         const ctx = makeContext({
             leafId: "nacked-large-message",
+            supportsChunkAck: true,
             entries: [{
                 type: "message",
                 id: "nacked-large-message",
@@ -270,6 +278,69 @@ describe("messagesChangedSinceLastEmit", () => {
         await new Promise<void>((resolve) => setImmediate(resolve));
 
         expect(messagesChangedSinceLastEmit(ctx)).toBe(true);
+    });
+
+    test("mixed-version: falls back to fire-and-forget against a relay that hasn't confirmed chunk-ack support", async () => {
+        // supportsChunkAck defaults to false — the safe assumption before a
+        // relay's `registered` payload confirms support, and exactly what an
+        // older (pre-ack) relay's payload looks like. Its `socket.on("event",
+        // data)` handler never reads or invokes a 3rd ack-callback argument,
+        // so a runner that waited for one would time out on every chunk and
+        // treat the timeout as a failure — looping forever re-sending the
+        // same snapshot. This proves the fallback: fire-and-forget, marked
+        // delivered immediately, no ack callback even offered.
+        const ctx = makeContext({
+            leafId: "legacy-relay-large-message",
+            entries: [{
+                type: "message",
+                id: "legacy-relay-large-message",
+                parentId: null,
+                timestamp: new Date(0).toISOString(),
+                message: { role: "user", content: "x".repeat(4_800_000), timestamp: Date.now() },
+            }],
+        });
+        ctx.relay = { sessionId: "sess", token: "tok", shareUrl: "http://localhost/sess", seq: 0, ackedSeq: 0 };
+        let ackCallbackProvided = false;
+        ctx.sioSocket = {
+            connected: true,
+            emit: (_name: string, _payload: any, ack?: unknown) => {
+                ackCallbackProvided = ack !== undefined;
+                // An old relay never invokes the callback even if one were passed.
+            },
+        } as any;
+
+        emitSessionActive(ctx);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        expect(ackCallbackProvided).toBe(false);
+        expect(messagesChangedSinceLastEmit(ctx)).toBe(false);
+    });
+
+    test("bounded retries: gives up automatic resend after repeated failures, scoped to the stuck transcript state", () => {
+        const ctx = makeContext({ leafId: "stuck-leaf" });
+
+        // Simulate CHUNK_RETRY_MAX_ATTEMPTS consecutive chunked-delivery
+        // failures for the same leafId (e.g. a relay that keeps nacking, or a
+        // slow link that always exceeds the ack timeout).
+        for (let i = 0; i < CHUNK_RETRY_MAX_ATTEMPTS; i++) {
+            recordInFlightMessageState(ctx);
+            finishInFlightMessageState(ctx, "stuck-leaf", false);
+        }
+
+        // Further throttled (heartbeat/trailing-snapshot) retries for this
+        // leafId must stop attempting a full chunked resend — otherwise this
+        // is the unbounded multi-MB re-upload loop. Metadata still flows.
+        ctx.emitted.length = 0;
+        emitSessionActive(ctx, undefined, true);
+        expect(ctx.emitted).toHaveLength(1);
+        expect((ctx.emitted[0] as any).type).toBe("session_metadata_update");
+
+        // Give-up is scoped to the stuck leafId, not global: a different
+        // transcript state (new message) still gets a fresh attempt.
+        const freshCtx = makeContext({ leafId: "fresh-leaf" });
+        emitSessionActive(freshCtx, undefined, true);
+        expect((freshCtx.emitted[0] as any).type).toBe("session_active");
     });
 
     test("throttles opt-in chunked snapshots to metadata-only + one trailing snapshot", async () => {

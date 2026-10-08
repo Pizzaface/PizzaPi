@@ -230,6 +230,10 @@ export interface RelayContext {
     isChildSession: boolean;
     relaySessionId: string;
     supportsSessionTriggerAck: boolean;
+    /** True once the relay has confirmed (via `registered`) that it acks
+     *  `session_messages_chunk` events. False (the safe default) means
+     *  chunked delivery must fall back to legacy fire-and-forget. */
+    supportsChunkAck: boolean;
 
     // Pending interaction state
     pendingAskUserQuestion: PendingAskUserQuestion | null;
