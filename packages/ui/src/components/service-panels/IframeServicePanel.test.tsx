@@ -106,6 +106,23 @@ describe("IframeServicePanel", () => {
         expect(iframe.getAttribute("sandbox")).toContain("allow-same-origin");
     });
 
+    test("forwards active session separately from the stable tunnel session", async () => {
+        const calls = mockMint(() => ({ url: "/api/tunnel/auth/tok/stable-session/8080/" }));
+        const { container } = render(
+            React.createElement(IframeServicePanel, {
+                sessionId: "stable-session",
+                activeSessionId: "active-session",
+                port: 8080,
+                query: "activeSessionId=stale-session",
+            }),
+        );
+        const iframe = await renderedIframe(container);
+        const url = new URL(iframe.getAttribute("src")!, "http://localhost");
+        expect(url.searchParams.get("sessionId")).toBe("stable-session");
+        expect(url.searchParams.get("activeSessionId")).toBe("active-session");
+        expect(calls).toEqual([{ sessionId: "stable-session", port: 8080, ttlHours: 24 }]);
+    });
+
     test("appends panel params, session id, project dir, deep-link query and fragment", async () => {
         mockMint(() => ({ url: "/api/tunnel/auth/tok/sess-123/8080/" }));
         const { container } = render(
