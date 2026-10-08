@@ -4,7 +4,7 @@
  * Extracted from daemon.ts and the CLI/worker entry points so the logic
  * is independently testable.
  */
-import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -203,7 +203,10 @@ export function loadRulesDir(dir: string): AgentFile[] {
         if (!entry.endsWith(".md")) continue;
         const path = join(dir, entry);
         try {
-            if (statSync(path).isFile()) files.push({ path, content: readFileSync(path, "utf-8") });
+            // Use lstatSync: skip symlinks so a hostile repo can't read arbitrary local files.
+            const s = lstatSync(path);
+            if (s.isSymbolicLink() || !s.isFile()) continue;
+            files.push({ path, content: readFileSync(path, "utf-8") });
         } catch {
             // Skip unreadable or concurrently removed files.
         }
@@ -245,13 +248,15 @@ export function loadProjectAgentFiles(cwd: string): AgentFile[] {
     // Load AGENTS.md from cwd (also loaded by upstream, but we include it
     // to guarantee it's present — deduplication happens in agentsFilesOverride)
     const agentsMdPath = join(cwd, "AGENTS.md");
-    if (existsSync(agentsMdPath)) {
-        try {
+    try {
+        // Use lstatSync: skip symlinks so a hostile repo can't read arbitrary local files.
+        const s = lstatSync(agentsMdPath);
+        if (s.isFile()) {
             const content = readFileSync(agentsMdPath, "utf-8");
             files.push({ path: agentsMdPath, content });
-        } catch {
-            // Skip unreadable files
         }
+    } catch {
+        // Skip missing or unreadable files
     }
 
     // Load .agents/*.md from cwd
@@ -267,6 +272,9 @@ export function loadProjectAgentFiles(cwd: string): AgentFile[] {
             if (!file.endsWith(".md")) continue;
             const filePath = join(dotAgentsDir, file);
             try {
+                // Use lstatSync: skip symlinks so a hostile repo can't read arbitrary local files.
+                const s = lstatSync(filePath);
+                if (!s.isFile()) continue;
                 const content = readFileSync(filePath, "utf-8");
                 files.push({ path: filePath, content });
             } catch {

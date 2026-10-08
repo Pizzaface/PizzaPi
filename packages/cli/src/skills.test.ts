@@ -600,6 +600,37 @@ describe("loadProjectAgentFiles", () => {
         const files = loadProjectAgentFiles(dir);
         expect(files).toEqual([]);
     });
+
+    test("does not follow a symlinked AGENTS.md out of the project dir", () => {
+        const secretDir = makeTmpDir();
+        try {
+            const secretPath = join(secretDir, "secret.txt");
+            writeFileSync(secretPath, "super-secret", "utf-8");
+            require("node:fs").symlinkSync(secretPath, join(dir, "AGENTS.md"));
+            const files = loadProjectAgentFiles(dir);
+            expect(files).toEqual([]);
+        } catch (err: unknown) {
+            if ((err as NodeJS.ErrnoException).code !== "EPERM") throw err;
+        } finally {
+            rmSync(secretDir, { recursive: true, force: true });
+        }
+    });
+
+    test("does not follow a symlinked file in .agents/", () => {
+        const secretDir = makeTmpDir();
+        try {
+            const secretPath = join(secretDir, "secret.txt");
+            writeFileSync(secretPath, "super-secret", "utf-8");
+            mkdirSync(join(dir, ".agents"), { recursive: true });
+            require("node:fs").symlinkSync(secretPath, join(dir, ".agents", "linked.md"));
+            const files = loadProjectAgentFiles(dir);
+            expect(files).toEqual([]);
+        } catch (err: unknown) {
+            if ((err as NodeJS.ErrnoException).code !== "EPERM") throw err;
+        } finally {
+            rmSync(secretDir, { recursive: true, force: true });
+        }
+    });
 });
 
 describe("loadRulesDir", () => {
@@ -621,6 +652,22 @@ describe("loadRulesDir", () => {
 
     test("returns empty array for a missing directory", () => {
         expect(loadRulesDir(join(makeTmpDir(), "missing"))).toEqual([]);
+    });
+
+    test("does not follow a symlinked rule file out of the rules dir", () => {
+        const dir = makeTmpDir();
+        const secretDir = makeTmpDir();
+        try {
+            const secretPath = join(secretDir, "secret.txt");
+            writeFileSync(secretPath, "super-secret", "utf-8");
+            require("node:fs").symlinkSync(secretPath, join(dir, "linked.md"));
+            expect(loadRulesDir(dir)).toEqual([]);
+        } catch (err: unknown) {
+            if ((err as NodeJS.ErrnoException).code !== "EPERM") throw err;
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+            rmSync(secretDir, { recursive: true, force: true });
+        }
     });
 });
 
