@@ -97,7 +97,7 @@ function closeUniqueTransports(entries: RecoverySocket[], seenConnections: Set<o
 }
 
 export interface LiveSocketRecoveryOptions {
-    waitForSession?: (sessionId: string, timeoutMs: number) => Promise<boolean>;
+    waitForSession?: (sessionId: string, timeoutMs: number, signal?: AbortSignal) => Promise<boolean>;
     viewerFallbackMs?: number;
     signal?: AbortSignal;
     shouldCancel?: () => boolean;
@@ -150,7 +150,7 @@ async function recoverViewerGroups(
     await Promise.all(
         Array.from(groups.entries()).map(async ([sessionId, group]) => {
             if (sessionId && opts.waitForSession) {
-                await opts.waitForSession(sessionId, timeoutMs).catch((err) => {
+                await opts.waitForSession(sessionId, timeoutMs, opts.signal).catch((err) => {
                     log.warn(`viewer recovery wait failed for session ${sessionId} during ${reason}:`, err);
                     return false;
                 });

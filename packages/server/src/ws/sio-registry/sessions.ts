@@ -542,8 +542,8 @@ export function getLocalTuiSocket(sessionId: string): Socket | undefined {
  * or false after timeoutMs. Only observes sockets on this server node.
  * Event-driven replacement for 200ms polling loops.
  */
-export function waitForLocalTuiSocket(sessionId: string, timeoutMs: number): Promise<boolean> {
-    return waitForTuiSocket(sessionId, timeoutMs, (id) => localTuiSockets.get(id));
+export function waitForLocalTuiSocket(sessionId: string, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
+    return waitForTuiSocket(sessionId, timeoutMs, (id) => localTuiSockets.get(id), signal);
 }
 
 /**

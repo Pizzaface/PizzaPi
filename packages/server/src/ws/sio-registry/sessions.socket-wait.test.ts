@@ -52,4 +52,16 @@ describe("waitForTuiSocket", () => {
         const get = lookup({ s4: { connected: false } });
         expect(await waitForTuiSocket("s4", 30, get)).toBe(false);
     });
+
+    test("aborting removes the waiter before timeout", async () => {
+        const controller = new AbortController();
+        const promise = waitForTuiSocket("s5", 5000, lookup({}), controller.signal);
+        const start = Date.now();
+
+        controller.abort();
+
+        expect(await promise).toBe(false);
+        expect(Date.now() - start).toBeLessThan(100);
+        notifyTuiSocketConnected("s5");
+    });
 });

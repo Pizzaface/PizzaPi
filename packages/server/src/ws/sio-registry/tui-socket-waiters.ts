@@ -28,25 +28,35 @@ export function waitForTuiSocket(
     sessionId: string,
     timeoutMs: number,
     getSocket: (sessionId: string) => SocketLike | undefined,
+    signal?: AbortSignal,
 ): Promise<boolean> {
     if (getSocket(sessionId)?.connected) return Promise.resolve(true);
+    if (signal?.aborted) return Promise.resolve(false);
     return new Promise((resolve) => {
+        let settled = false;
         let waiters = tuiSocketWaiters.get(sessionId);
         if (!waiters) {
             waiters = new Set();
             tuiSocketWaiters.set(sessionId, waiters);
         }
-        const onConnect = (): void => {
+        const cleanup = (): void => {
             clearTimeout(timer);
-            resolve(true);
-        };
-        const timer = setTimeout(() => {
+            signal?.removeEventListener("abort", onAbort);
             const set = tuiSocketWaiters.get(sessionId);
             set?.delete(onConnect);
             if (set && set.size === 0) tuiSocketWaiters.delete(sessionId);
-            resolve(false);
-        }, timeoutMs);
+        };
+        const finish = (value: boolean): void => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(value);
+        };
+        const onConnect = (): void => finish(true);
+        const onAbort = (): void => finish(false);
+        const timer = setTimeout(() => finish(false), timeoutMs);
         waiters.add(onConnect);
+        signal?.addEventListener("abort", onAbort, { once: true });
     });
 }
 

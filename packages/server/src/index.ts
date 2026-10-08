@@ -369,7 +369,7 @@ try {
                 recoverLiveSocketsAfterRedisReconnect(io!, reason, {
                     signal: redisRecoveryAbort.signal,
                     shouldCancel: () => isServerShuttingDown,
-                    waitForSession: (sessionId, timeoutMs) => waitForLocalTuiSocket(sessionId, timeoutMs),
+                    waitForSession: (sessionId, timeoutMs, signal) => waitForLocalTuiSocket(sessionId, timeoutMs, signal),
                 });
             },
         });

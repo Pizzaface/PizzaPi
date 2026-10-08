@@ -127,6 +127,33 @@ describe("Redis adapter recovery", () => {
         expect((relaySocket as { data?: Record<string, unknown> }).data).toEqual({});
     });
 
+    test("passes the recovery abort signal into per-session viewer waits", async () => {
+        const controller = new AbortController();
+        const viewerConn = {
+            closed: 0,
+            close(discard?: boolean) {
+                expect(discard).toBe(true);
+                this.closed++;
+            },
+        };
+        const viewerSocket = fakeSocket(viewerConn, "session-a");
+        let receivedSignal: AbortSignal | undefined;
+
+        recoverLiveSocketsAfterRedisReconnect(fakeIo([], [], [viewerSocket]) as any, "test", {
+            signal: controller.signal,
+            waitForSession: async (_sessionId, _timeoutMs, signal) => {
+                receivedSignal = signal;
+                await new Promise((resolve) => signal?.addEventListener("abort", resolve, { once: true }));
+                return false;
+            },
+        });
+
+        await waitFor(() => expect(receivedSignal).toBe(controller.signal));
+        controller.abort();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(viewerConn.closed).toBe(0);
+    });
+
     test("recovers each viewer session independently — a slow session does not hold up a ready one", async () => {
         // Regression test: the recovery used to wait for ALL watched sessions'
         // workers to come back (or a single shared timeout to elapse) before
