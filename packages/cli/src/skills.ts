@@ -465,11 +465,11 @@ function conventionPaths(paths: string[]): string[] {
  * Includes:
  *   - Built-in skills shipped with the CLI package
  *   - ~/.pizzapi/skills/        (global PizzaPi skills)
- *   - <cwd>/.pizzapi/skills/    (project-local PizzaPi skills)
+ *   - <cwd>/.pizzapi/skills/    (project-local PizzaPi skills — only when projectTrusted)
  *   - ~/.pizzapi/agents/        (global agents treated as skills)
- *   - <cwd>/.pizzapi/agents/    (project-local agents treated as skills)
- *   - <cwd>/.agents/skills/     (Claude Code compatible project skills)
- *   - <cwd>/.agents/agents/     (Claude Code compatible project agents)
+ *   - <cwd>/.pizzapi/agents/    (project-local agents treated as skills — only when projectTrusted)
+ *   - <cwd>/.agents/skills/     (Claude Code compatible project skills — only when projectTrusted)
+ *   - <cwd>/.agents/agents/     (Claude Code compatible project agents — only when projectTrusted)
  *   - Paths declared in config.skills
  *
  * USER-scope `skills/` dirs are omitted: pi auto-discovers
@@ -479,26 +479,27 @@ function conventionPaths(paths: string[]): string[] {
  * `cwd` IS the home dir, which is how the project-scoped entries below collapse
  * onto the user ones.
  *
- * PROJECT-scope `skills/` dirs are still passed even though pi auto-discovers
- * them too, because pi skips project-scoped auto-discovery for UNTRUSTED
- * projects — dropping them would newly trust-gate project skills, a behaviour
- * change tracked separately in Godmother `9py0SHJs`.
+ * PROJECT-scope `skills/`/`agents/` dirs are only added when `projectTrusted`
+ * is true. pi itself skips project-scoped auto-discovery for UNTRUSTED
+ * projects; PizzaPi previously passed these dirs via `additionalSkillPaths`
+ * regardless of trust, which upstream merges unconditionally and so bypassed
+ * pi's own gate (Godmother `9py0SHJs`). Fails closed: an undecided or
+ * explicitly-untrusted repo gets none of the project-scope dirs below. Global
+ * `~/.pizzapi/agents` and the built-in dir are unaffected — they're not
+ * project-controlled.
  */
-export function buildSkillPaths(cwd: string, configSkills?: string[]): string[] {
+export function buildSkillPaths(cwd: string, configSkills?: string[], projectTrusted = false): string[] {
     // Dirs pi auto-discovers regardless of project trust. Anything resolving to
     // one of these is pure duplication on our side.
     const piUserAutoDirs = new Set([
         resolve(join(homedir(), ".pizzapi", "skills")),
         resolve(join(homedir(), ".agents", "skills")),
     ]);
-    const paths: string[] = conventionPaths([
-        builtinSkillsDir(),
-        join(cwd, ".pizzapi", "skills"),
-        join(homedir(), ".pizzapi", "agents"),
-        join(cwd, ".pizzapi", "agents"),
-        join(cwd, ".agents", "skills"),
-        join(cwd, ".agents", "agents"),
-    ]).filter((p) => !piUserAutoDirs.has(p));
+    const userScopeDirs = [builtinSkillsDir(), join(homedir(), ".pizzapi", "agents")];
+    const projectScopeDirs = projectTrusted
+        ? [join(cwd, ".pizzapi", "skills"), join(cwd, ".pizzapi", "agents"), join(cwd, ".agents", "skills"), join(cwd, ".agents", "agents")]
+        : [];
+    const paths: string[] = conventionPaths([...userScopeDirs, ...projectScopeDirs]).filter((p) => !piUserAutoDirs.has(p));
     if (Array.isArray(configSkills)) {
         for (const p of configSkills) {
             if (typeof p === "string" && p.trim()) {
@@ -532,8 +533,8 @@ export function buildWorkerSkillPaths(cwd: string, configSkills?: string[]): str
  *
  * Includes:
  *   - ~/.pizzapi/commands/       (global commands — Claude Code compatible)
- *   - <cwd>/.pizzapi/commands/   (project-local commands)
- *   - <cwd>/.agents/commands/    (Claude Code compatible project commands)
+ *   - <cwd>/.pizzapi/commands/   (project-local commands — only when projectTrusted)
+ *   - <cwd>/.agents/commands/    (Claude Code compatible project commands — only when projectTrusted)
  *
  * Deliberately NOT included — pi auto-discovers it itself, via
  * `collectAutoPromptEntries()`:
@@ -545,11 +546,19 @@ export function buildWorkerSkillPaths(cwd: string, configSkills?: string[]): str
  * `"build" collision: ✓ ... ✗ ... (skipped)` at startup. `commands/` dirs
  * stay: `commands` is not one of pi's resource types, so nothing else
  * discovers them.
+ *
+ * PROJECT-scope `commands/` dirs are only added when `projectTrusted` is
+ * true — same bypass class and same fix as `buildSkillPaths` (Godmother
+ * `9py0SHJs` / `EN1UeiFK`): these are project-controlled, and upstream
+ * merges `additionalPromptTemplatePaths` with no trust check of its own, so
+ * an untrusted repo's `.pizzapi/commands`/`.agents/commands` would otherwise
+ * still load and run as slash commands. Fails closed: an undecided or
+ * explicitly-untrusted repo gets none of the project-scope dirs below. The
+ * global `~/.pizzapi/commands` dir is unaffected — it's not project-controlled.
  */
-export function buildPromptTemplatePaths(cwd: string): string[] {
+export function buildPromptTemplatePaths(cwd: string, projectTrusted = false): string[] {
     return conventionPaths([
         join(homedir(), ".pizzapi", "commands"),
-        join(cwd, ".pizzapi", "commands"),
-        join(cwd, ".agents", "commands"),
+        ...(projectTrusted ? [join(cwd, ".pizzapi", "commands"), join(cwd, ".agents", "commands")] : []),
     ]);
 }

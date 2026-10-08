@@ -563,11 +563,11 @@ async function main() {
         settingsManager,
         extensionFactories,
         additionalSkillPaths: [
-            ...buildSkillPaths(cwd, config.skills),
+            ...buildSkillPaths(cwd, config.skills, projectTrusted),
             ...(noPlugins ? [] : getPluginSkillPaths(cwd)),
         ],
         additionalPromptTemplatePaths: [
-            ...buildPromptTemplatePaths(cwd),
+            ...buildPromptTemplatePaths(cwd, projectTrusted),
             ...(noPlugins ? [] : getPluginPromptTemplatePaths(cwd)),
         ],
         ...(config.systemPrompt !== undefined
@@ -602,11 +602,11 @@ async function main() {
             resourceLoaderOptions: {
                 extensionFactories: extensionFactories as any,
                 additionalSkillPaths: [
-                    ...buildSkillPaths(opts.cwd, config.skills),
+                    ...buildSkillPaths(opts.cwd, config.skills, rtProjectTrusted),
                     ...(noPlugins ? [] : getPluginSkillPaths(opts.cwd)),
                 ],
                 additionalPromptTemplatePaths: [
-                    ...buildPromptTemplatePaths(opts.cwd),
+                    ...buildPromptTemplatePaths(opts.cwd, rtProjectTrusted),
                     ...(noPlugins ? [] : getPluginPromptTemplatePaths(opts.cwd)),
                 ],
                 ...(config.systemPrompt !== undefined && {

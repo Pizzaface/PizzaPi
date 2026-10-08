@@ -446,13 +446,33 @@ describe("buildSkillPaths", () => {
         return dir;
     }
 
-    test("includes the project skills and agents dirs that exist", () => {
+    test("includes the project skills and agents dirs that exist, when trusted", () => {
         const project = makeProject();
-        const paths = buildSkillPaths(project);
+        const paths = buildSkillPaths(project, undefined, true);
         expect(paths).toContain(join(project, ".pizzapi", "agents"));
         expect(paths).toContain(join(project, ".agents", "agents"));
         expect(paths).toContain(join(project, ".pizzapi", "skills"));
         expect(paths).toContain(join(project, ".agents", "skills"));
+    });
+
+    test("omits ALL project-scope skills/agents dirs for an untrusted project (default)", () => {
+        // Regression (9py0SHJs): PizzaPi used to pass these via
+        // additionalSkillPaths regardless of trust, which upstream merges
+        // unconditionally -- bypassing pi's own project-trust gate entirely.
+        // `projectTrusted` defaults to false, so an untrusted (or undecided)
+        // project must get none of its project-scope dirs.
+        const project = makeProject();
+        const paths = buildSkillPaths(project);
+        expect(paths).not.toContain(join(project, ".pizzapi", "agents"));
+        expect(paths).not.toContain(join(project, ".agents", "agents"));
+        expect(paths).not.toContain(join(project, ".pizzapi", "skills"));
+        expect(paths).not.toContain(join(project, ".agents", "skills"));
+    });
+
+    test("omits project-scope dirs when projectTrusted is explicitly false", () => {
+        const project = makeProject();
+        const paths = buildSkillPaths(project, undefined, false);
+        expect(paths.filter((p) => p.startsWith(project))).toEqual([]);
     });
 
     test("includes builtin skills dir", () => {
@@ -474,7 +494,10 @@ describe("buildSkillPaths", () => {
     test("never returns duplicates, even when cwd IS the home dir", () => {
         // Regression: at $HOME the ~-relative and cwd-relative entries collapse
         // onto the same dir, and pi reported every file as colliding with itself.
-        const paths = buildSkillPaths(homedir());
+        // Trusted so the project-scope (cwd-relative) entries are actually added
+        // and have something to collapse onto the user-scope ones — otherwise
+        // this test passes for the wrong reason (nothing cwd-relative to collide).
+        const paths = buildSkillPaths(homedir(), undefined, true);
         expect(paths).toEqual([...new Set(paths)]);
     });
 
@@ -488,11 +511,11 @@ describe("buildSkillPaths", () => {
         }
     });
 
-    test("still passes PROJECT-scope skills dirs, which pi trust-gates", () => {
-        // These must survive: pi skips project-scoped auto-discovery for
-        // untrusted projects, so dropping them would change behaviour (9py0SHJs).
+    test("passes PROJECT-scope skills dirs only when trusted, mirroring pi's own gate", () => {
+        // pi skips project-scoped auto-discovery for untrusted projects, so a
+        // trusted project must still see these dirs (9py0SHJs).
         const project = makeProject();
-        const paths = buildSkillPaths(project);
+        const paths = buildSkillPaths(project, undefined, true);
         expect(paths).toContain(join(project, ".pizzapi", "skills"));
         expect(paths).toContain(join(project, ".agents", "skills"));
     });
@@ -526,13 +549,22 @@ describe("buildSkillPaths", () => {
 // ── buildPromptTemplatePaths ──────────────────────────────────────────────────
 
 describe("buildPromptTemplatePaths", () => {
-    test("includes the commands dirs that exist", () => {
+    test("includes the commands dirs that exist, when trusted", () => {
+        const project = makeTmpDir();
+        mkdirSync(join(project, ".pizzapi", "commands"), { recursive: true });
+        mkdirSync(join(project, ".agents", "commands"), { recursive: true });
+        const paths = buildPromptTemplatePaths(project, true);
+        expect(paths).toContain(join(project, ".pizzapi", "commands"));
+        expect(paths).toContain(join(project, ".agents", "commands"));
+    });
+
+    test("omits project-scope commands dirs for an untrusted project (default) — same bypass class as buildSkillPaths (9py0SHJs / EN1UeiFK)", () => {
         const project = makeTmpDir();
         mkdirSync(join(project, ".pizzapi", "commands"), { recursive: true });
         mkdirSync(join(project, ".agents", "commands"), { recursive: true });
         const paths = buildPromptTemplatePaths(project);
-        expect(paths).toContain(join(project, ".pizzapi", "commands"));
-        expect(paths).toContain(join(project, ".agents", "commands"));
+        expect(paths).not.toContain(join(project, ".pizzapi", "commands"));
+        expect(paths).not.toContain(join(project, ".agents", "commands"));
     });
 
     test("omits the prompts dir that pi auto-discovers", () => {
