@@ -1002,6 +1002,7 @@ function createFakePi(): {
 
 function createFakeCtx(overrides: {
     entries?: SessionEntry[];
+    getEntries?: () => SessionEntry[];
     shutdown?: () => void;
     signal?: AbortSignal;
     pendingMessages?: boolean;
@@ -1010,7 +1011,7 @@ function createFakeCtx(overrides: {
         cwd: "/tmp/pizzapi-goal-test",
         sessionManager: {
             getSessionId: () => "session-1",
-            getEntries: () => overrides.entries ?? [],
+            getEntries: overrides.getEntries ?? (() => overrides.entries ?? []),
         },
         modelRegistry: {
             getAll: () => [],
@@ -1481,6 +1482,30 @@ describe("goalExtension event wiring", () => {
         expect(getGoal("session-1")?.evaluations.at(-1)?.verdict).toBe("uncertain");
         // A broken evaluator must not spin the session forever.
         expect(userMessages.length).toBe(0);
+    });
+
+    test("LLM goal evaluation does not build a transcript unless the selected evaluator needs it", async () => {
+        resetSession("session-1");
+        const { pi, handlers } = createFakePi();
+        const ctx = createFakeCtx({
+            getEntries: () => {
+                throw new Error("transcript should be lazy");
+            },
+        });
+
+        goalExtension(pi);
+        setGoal("session-1", { description: "the deploy succeeds", evaluator: "llm" }, {}, pi);
+
+        for (const handler of handlers.get("turn_end") ?? []) {
+            await handler({
+                type: "turn_end",
+                turnIndex: 1,
+                message: makeAssistantMessage("working on it"),
+                toolResults: [],
+            } as unknown as TurnEndEvent, ctx);
+        }
+
+        expect(getGoal("session-1")?.evaluations.at(-1)?.verdict).toBe("uncertain");
     });
 
     test("throttled turns still stop the goal when a budget is exhausted", async () => {

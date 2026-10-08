@@ -293,6 +293,7 @@ export function createSessionCacheEvaluator(deps: SessionCacheEvaluatorDeps): Go
  */
 export function createLlmGoalEvaluator(deps: LlmEvaluatorDeps): GoalEvaluator {
     return {
+        usesTranscript: true,
         async evaluate(state, context): Promise<GoalEvaluatorFeedback> {
             const prompt = buildEvaluatorPrompt(state, context);
             const messages: Context["messages"] = [
