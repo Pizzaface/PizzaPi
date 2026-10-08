@@ -42,7 +42,6 @@ import {
     getLocalTuiSocket,
     waitForLocalTuiSocket,
     emitToRelaySession,
-    emitToRelaySessionVerified,
     emitToRelaySessionChecked,
     type RelayEmitCheckResult,
     emitToRunner,
@@ -1017,10 +1016,15 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             if (tuiSocket) {
                 tuiSocket.emit("mcp_oauth_paste" as string, payload);
                 if (typeof ack === "function") ack({ ok: true });
-            } else if (await emitToRelaySessionVerified(currentSessionId, "mcp_oauth_paste", payload)) {
-                if (typeof ack === "function") ack({ ok: true });
             } else {
-                if (typeof ack === "function") ack({ ok: false, error: "Runner session unavailable" });
+                const result = await emitToRelaySessionChecked(currentSessionId, "mcp_oauth_paste", payload);
+                if (result === "delivered") {
+                    if (typeof ack === "function") ack({ ok: true });
+                } else if (result === "empty") {
+                    if (typeof ack === "function") ack({ ok: false, error: "Runner session unavailable" });
+                } else if (typeof ack === "function") {
+                    ack({ ok: false, error: "Runner session delivery could not be verified" });
+                }
             }
         });
 
@@ -1077,12 +1081,17 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                     void recordTriggerResponse(currentSessionId, triggerId, { action, text: response }).catch(() => {});
                     broadcastToSessionViewers(currentSessionId, "trigger_delivered", { triggerId });
                     if (typeof ack === "function") ack();
-                } else if (await emitToRelaySessionVerified(targetSessionId, "trigger_response", triggerPayload)) {
-                    void recordTriggerResponse(currentSessionId, triggerId, { action, text: response }).catch(() => {});
-                    broadcastToSessionViewers(currentSessionId, "trigger_delivered", { triggerId });
-                    if (typeof ack === "function") ack();
                 } else {
-                    socket.emit("trigger_error", { message: `Failed to deliver trigger response to child session ${targetSessionId}`, triggerId });
+                    const result = await emitToRelaySessionChecked(targetSessionId, "trigger_response", triggerPayload);
+                    if (result === "delivered") {
+                        void recordTriggerResponse(currentSessionId, triggerId, { action, text: response }).catch(() => {});
+                        broadcastToSessionViewers(currentSessionId, "trigger_delivered", { triggerId });
+                        if (typeof ack === "function") ack();
+                    } else if (result === "empty") {
+                        socket.emit("trigger_error", { message: `Failed to deliver trigger response to child session ${targetSessionId}`, triggerId });
+                    } else {
+                        socket.emit("trigger_error", { message: `Could not verify trigger response delivery to child session ${targetSessionId}`, triggerId });
+                    }
                 }
                 return;
             }
@@ -1100,12 +1109,17 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
                 void recordTriggerResponse(currentSessionId, triggerId, { action, text: response }).catch(() => {});
                 broadcastToSessionViewers(currentSessionId, "trigger_delivered", { triggerId });
                 if (typeof ack === "function") ack();
-            } else if (await emitToRelaySessionVerified(currentSessionId, "trigger_response", triggerPayloadForParent)) {
-                void recordTriggerResponse(currentSessionId, triggerId, { action, text: response }).catch(() => {});
-                broadcastToSessionViewers(currentSessionId, "trigger_delivered", { triggerId });
-                if (typeof ack === "function") ack();
             } else {
-                socket.emit("trigger_error", { message: `Failed to deliver trigger response to session ${currentSessionId}`, triggerId });
+                const result = await emitToRelaySessionChecked(currentSessionId, "trigger_response", triggerPayloadForParent);
+                if (result === "delivered") {
+                    void recordTriggerResponse(currentSessionId, triggerId, { action, text: response }).catch(() => {});
+                    broadcastToSessionViewers(currentSessionId, "trigger_delivered", { triggerId });
+                    if (typeof ack === "function") ack();
+                } else if (result === "empty") {
+                    socket.emit("trigger_error", { message: `Failed to deliver trigger response to session ${currentSessionId}`, triggerId });
+                } else {
+                    socket.emit("trigger_error", { message: `Could not verify trigger response delivery to session ${currentSessionId}`, triggerId });
+                }
             }
         });
 
