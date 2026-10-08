@@ -11,6 +11,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expandHome } from "./config.js";
 import { parseFrontmatterDescription } from "./frontmatter.js";
+import { escapePromptXml } from "./prompt-escape.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -382,7 +383,10 @@ export function createAgentsFilesOverride(
         ...(sendAgentsMd ? projectFiles : projectFiles.filter((file) => !isAgentsMdPath(file.path))),
         ...(sendAgentsMd ? rules.project : []),
     ];
-    if (additionalFiles.length === 0 && sendAgentsMd) return null;
+    const sanitizeAgentFile = (file: AgentFile): AgentFile => ({
+        path: escapePromptXml(file.path),
+        content: escapePromptXml(file.content),
+    });
 
     return (base) => {
         // The upstream `DefaultResourceLoader` discovers this base list with a plain
@@ -407,7 +411,7 @@ export function createAgentsFilesOverride(
             seenPaths.add(file.path);
             return true;
         });
-        if (!sendAgentsMd) return { agentsFiles: unique([...baseFiles, ...additionalFiles]) };
+        if (!sendAgentsMd) return { agentsFiles: unique([...baseFiles, ...additionalFiles]).map(sanitizeAgentFile) };
 
         // Keep upstream global context first, then global rules, then project context.
         const globalRoot = join(homedir(), ".pizzapi") + "/";
@@ -419,7 +423,7 @@ export function createAgentsFilesOverride(
                 ...additionalFiles.filter((file) => rules.global.some((rule) => rule.path === file.path)),
                 ...projectFiles,
                 ...additionalFiles.filter((file) => !rules.global.some((rule) => rule.path === file.path)),
-            ]),
+            ]).map(sanitizeAgentFile),
         };
     };
 }
