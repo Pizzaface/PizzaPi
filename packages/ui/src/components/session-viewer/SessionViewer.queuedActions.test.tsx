@@ -4,9 +4,8 @@
  * focus/touch fallback, so they were unreachable on touch devices (no
  * hover state) and via keyboard-only navigation.
  *
- * The wrapper must also reveal on `group-focus-within`, so tabbing to one
- * of the action buttons (production code path, not a helper) makes the
- * whole action row visible.
+ * The wrapper must reveal on `group-focus-within` for keyboards and on
+ * `hover:none` devices for touch screens.
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
@@ -48,7 +47,7 @@ const { SessionViewer } = await import("../SessionViewer");
 afterEach(cleanup);
 
 describe("SessionViewer queued message actions (touch/keyboard reachability)", () => {
-  test("edit/remove/send-now buttons reveal via focus-within, not just hover", () => {
+  test("edit/remove/send-now buttons reveal via focus-within and touch fallback, not just hover", () => {
     const view = render(
       React.createElement(
         TooltipProvider,
@@ -78,6 +77,7 @@ describe("SessionViewer queued message actions (touch/keyboard reachability)", (
     expect(actionsWrapper.className).toContain("opacity-0");
     expect(actionsWrapper.className).toContain("group-hover:opacity-100");
     expect(actionsWrapper.className).toContain("group-focus-within:opacity-100");
+    expect(actionsWrapper.className).toContain("[@media(hover:none)]:opacity-100");
 
     // Keyboard/touch users must actually be able to reach the button.
     editButton.focus();

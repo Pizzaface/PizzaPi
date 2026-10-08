@@ -59,7 +59,7 @@ export function ActivityToolCard({
         <ChevronRightIcon
           className={cn(
             "ml-auto size-3.5 shrink-0 text-muted-foreground/50 transition-transform",
-            "opacity-0 group-hover:opacity-100",
+            "opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100",
             expanded && "rotate-90 opacity-100",
           )}
         />
