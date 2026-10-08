@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { backgroundBashExtension, backgroundPendingJobs, pendingCommands, backgroundAfterSeconds, resetBackgroundBashConfigCache, readFrom } from "./background-bash.js";
@@ -251,6 +251,21 @@ describe("bash override with backgrounding", () => {
         expect(Date.now() - started).toBeLessThan(5000);
     });
 
+    test("foreground timeout removes its temp log", async () => {
+        const dir = mkdtempSync(join(tmpdir(), "bgbash-timeout-"));
+        const prevTmp = process.env.TMPDIR;
+        process.env.TMPDIR = dir;
+        try {
+            const { tool } = getTool();
+            await expect(run(tool, { command: "echo before; sleep 20", title: "timeout cleanup", timeout: 0.2 })).rejects.toThrow(/timed out/);
+            expect(readdirSync(dir).filter((name) => name.startsWith("pizzapi-bash-")).length).toBe(0);
+        } finally {
+            if (prevTmp === undefined) delete process.env.TMPDIR;
+            else process.env.TMPDIR = prevTmp;
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
     test("abort while a stubborn command runs rejects instead of backgrounding", async () => {
         const { tool } = getTool();
         const ac = new AbortController();
@@ -398,6 +413,20 @@ describe("process tracking and lifecycle", () => {
 });
 
 describe("readFrom UTF-8 boundaries", () => {
+    test("caps each read to a bounded chunk", () => {
+        const dir = mkdtempSync(join(tmpdir(), "readfrom-"));
+        const file = join(dir, "log.txt");
+        try {
+            writeFileSync(file, Buffer.alloc(300 * 1024, "a"));
+            const r = readFrom(file, 0);
+            expect(Buffer.byteLength(r.text, "utf8")).toBeLessThanOrEqual(256 * 1024);
+            expect(r.newOffset).toBe(Buffer.byteLength(r.text, "utf8"));
+            expect(r.newOffset).toBeLessThan(300 * 1024);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
     test("incremental reads never split an emoji", () => {
         const dir = mkdtempSync(join(tmpdir(), "readfrom-"));
         const file = join(dir, "log.txt");

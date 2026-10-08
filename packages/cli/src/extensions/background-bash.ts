@@ -37,6 +37,7 @@ const MAX_DELIVERY_ATTEMPTS = 3;
 const KILL_GRACE_MS = 2_000;
 /** After the shell exits, stop reading once its pipes are idle this long (a `cmd &` descendant may hold them open forever). */
 const EXIT_STDIO_GRACE_MS = 100;
+const READ_FROM_MAX_BYTES = 256 * 1024;
 
 /** Seconds a bash call streams in the foreground before it auto-backgrounds. 0 = immediate. */
 export function backgroundAfterSeconds(): number {
@@ -144,11 +145,11 @@ export function readFrom(path: string, offset: number): { text: string; newOffse
     try {
         const size = statSync(path).size;
         if (size <= offset) return { text: "", newOffset: offset };
-        const len = size - offset;
+        const len = Math.min(size - offset, READ_FROM_MAX_BYTES);
         const buf = Buffer.allocUnsafe(len);
         fd = openSync(path, "r");
-        readSync(fd, buf, 0, len, offset);
-        const text = new StringDecoder("utf8").write(buf);
+        const bytesRead = readSync(fd, buf, 0, len, offset);
+        const text = new StringDecoder("utf8").write(buf.subarray(0, bytesRead));
         return { text, newOffset: offset + Buffer.byteLength(text, "utf8") };
     } catch {
         return { text: "", newOffset: offset };
@@ -466,10 +467,13 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
 
             if (raced !== "bg") {
                 // Foreground completion — built-in semantics.
-                if (signal?.aborted) throw new Error("aborted");
-                if (timedOut) throw new Error(`timeout:${timeout}`);
-                try { unlinkSync(logPath); } catch { /* best effort */ }
-                return { exitCode: raced.code };
+                try {
+                    if (signal?.aborted) throw new Error("aborted");
+                    if (timedOut) throw new Error(`timeout:${timeout}`);
+                    return { exitCode: raced.code };
+                } finally {
+                    try { unlinkSync(logPath); } catch { /* best effort */ }
+                }
             }
 
             // Stopped/timed out before the backgrounding kicked in — report that,
