@@ -51,6 +51,9 @@ mock.module("../../sio-registry.js", () => ({
         // registers it is NOT updated (maps are node-local).
         return localSocketMap.get(sessionId);
     },
+    forgetLocalTuiSocketIfCurrent: (sessionId: string, socket: object) => {
+        if (localSocketMap.get(sessionId) === socket) localSocketMap.delete(sessionId);
+    },
     broadcastToViewers: () => {},
     endSharedSession: async (
         sessionId: string,

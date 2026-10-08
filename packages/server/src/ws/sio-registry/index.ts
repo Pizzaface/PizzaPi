@@ -13,6 +13,7 @@ export {
     getLocalTuiSocket,
     waitForLocalTuiSocket,
     removeLocalTuiSocket,
+    forgetLocalTuiSocketIfCurrent,
     getSessions,
     getSharedSession,
     getSharedSessionSummary,

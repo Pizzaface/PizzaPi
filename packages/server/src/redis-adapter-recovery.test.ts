@@ -19,6 +19,7 @@ import {
     createRedisAdapterRecoveryController,
     isRedisAdapterRecoverySocket,
     recoverLiveSocketsAfterRedisReconnect,
+    unmarkRedisAdapterRecoverySocket,
 } from "./redis-adapter-recovery.js";
 
 function fakeSocket(conn: { closed: number; close: (discard?: boolean) => void }, sessionId?: string) {
@@ -32,12 +33,20 @@ function fakeSocket(conn: { closed: number; close: (discard?: boolean) => void }
     };
 }
 
-function fakeIo(relaySockets: unknown[], runnerSockets: unknown[], viewerSockets: unknown[] = []) {
-    const nsps = new Map([
+function fakeIo(
+    relaySockets: unknown[],
+    runnerSockets: unknown[],
+    viewerSockets: unknown[] = [],
+    extraNamespaces: Record<string, unknown[]> = {},
+) {
+    const nsps = new Map<string, { name: string; sockets: Map<string, unknown> }>([
         ["/relay", { name: "/relay", sockets: new Map(relaySockets.map((socket, index) => [`/relay-${index}`, socket])) }],
         ["/runner", { name: "/runner", sockets: new Map(runnerSockets.map((socket, index) => [`/runner-${index}`, socket])) }],
         ["/viewer", { name: "/viewer", sockets: new Map(viewerSockets.map((socket, index) => [`/viewer-${index}`, socket])) }],
     ]);
+    for (const [name, sockets] of Object.entries(extraNamespaces)) {
+        nsps.set(name, { name, sockets: new Map(sockets.map((socket, index) => [`${name}-${index}`, socket])) });
+    }
     return {
         _nsps: nsps,
         of(name: string) {
@@ -199,5 +208,78 @@ describe("Redis adapter recovery", () => {
         await waitFor(() => expect(slowConn.closed).toBe(1));
         expect(closedOrder).toEqual(["ready", "slow"]);
         expect(waitCalls.sort()).toEqual(["session-ready", "session-slow"]);
+    });
+
+    test("a /hub socket multiplexed on the same transport as a /viewer socket is not dropped before the viewer's session recovers", async () => {
+        // Regression (P1): the web UI opens /hub and /viewer on the SAME
+        // Engine.IO transport (one Manager, no forceNew). Grouping by
+        // sessionId used to put the sessionId-less /hub socket in its own
+        // group and close it — and its transport — immediately, which also
+        // yanks the co-located /viewer socket out from under its still-
+        // recovering session. Grouping by transport must keep them together
+        // and wait for the viewer's session before closing either.
+        const sharedConn = {
+            closed: 0,
+            close(discard?: boolean) {
+                expect(discard).toBe(true);
+                this.closed++;
+            },
+        };
+        const hubSocket = fakeSocket(sharedConn); // no sessionId, like /hub
+        const viewerSocket = fakeSocket(sharedConn, "session-a");
+
+        let resolveWait: (() => void) | undefined;
+        const waitForSession = () =>
+            new Promise<boolean>((resolve) => {
+                resolveWait = () => resolve(true);
+            });
+
+        const closed = recoverLiveSocketsAfterRedisReconnect(
+            fakeIo([], [], [], { "/hub": [hubSocket], "/viewer": [viewerSocket] }) as any,
+            "test",
+            { waitForSession },
+        );
+
+        expect(closed).toBe(1);
+        // The shared transport must not close while the viewer's session is
+        // still being waited on — closing it early would disconnect BOTH the
+        // hub and the viewer socket before the worker re-registers.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(sharedConn.closed).toBe(0);
+
+        resolveWait!();
+        await waitFor(() => expect(sharedConn.closed).toBe(1));
+    });
+
+    test("unmarks a socket as recovery-pending when it has no closeable transport", () => {
+        // P3: if the mark is not undone, this socket's EVENTUAL real
+        // disconnect would be mistaken for a forced-reconnect-in-progress and
+        // skip normal teardown.
+        const noConnSocket = fakeSocket(undefined as any);
+        delete (noConnSocket as any).conn;
+
+        recoverLiveSocketsAfterRedisReconnect(fakeIo([], [], [noConnSocket]) as any, "test");
+
+        expect(isRedisAdapterRecoverySocket(noConnSocket)).toBe(false);
+    });
+
+    test("unmarks a socket as recovery-pending when conn.close() throws", () => {
+        const throwingConn = {
+            closed: 0,
+            close() {
+                throw new Error("boom");
+            },
+        };
+        const socket = fakeSocket(throwingConn as any);
+
+        recoverLiveSocketsAfterRedisReconnect(fakeIo([socket], [], []) as any, "test");
+
+        expect(isRedisAdapterRecoverySocket(socket)).toBe(false);
+    });
+
+    test("unmarkRedisAdapterRecoverySocket is idempotent for a socket never marked", () => {
+        const plain = {};
+        expect(() => unmarkRedisAdapterRecoverySocket(plain)).not.toThrow();
+        expect(isRedisAdapterRecoverySocket(plain)).toBe(false);
     });
 });

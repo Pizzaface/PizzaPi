@@ -41,6 +41,7 @@ mock.module("../../sio-registry.js", () => ({
         wasDelinked: false,
     }),
     getLocalTuiSocket: () => undefined,
+    forgetLocalTuiSocketIfCurrent: () => {},
     getSessionOwnerToken: async () => "tok",
     broadcastToViewers: mockBroadcastToViewers,
     endSharedSession: async () => {},

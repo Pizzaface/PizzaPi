@@ -8,6 +8,10 @@ export function markRedisAdapterRecoverySocket(socket: object): void {
     recoverySockets.add(socket);
 }
 
+export function unmarkRedisAdapterRecoverySocket(socket: object): void {
+    recoverySockets.delete(socket);
+}
+
 export function isRedisAdapterRecoverySocket(socket: object | null | undefined): boolean {
     return !!socket && recoverySockets.has(socket);
 }
@@ -83,7 +87,14 @@ function closeUniqueTransports(entries: RecoverySocket[], seenConnections: Set<o
     let closed = 0;
     for (const { socket } of entries) {
         const conn = socket.conn as { close?: (discard?: boolean) => void } | undefined;
-        if (!conn || typeof conn.close !== "function") continue;
+        // No closeable transport: this socket will never actually reconnect
+        // via the forced-close path, so the mark must not stick — its real
+        // (unrelated) disconnect later must run normal teardown, not be
+        // skipped as "recovery in progress".
+        if (!conn || typeof conn.close !== "function") {
+            unmarkRedisAdapterRecoverySocket(socket);
+            continue;
+        }
         if (seenConnections.has(conn)) continue;
         seenConnections.add(conn);
         try {
@@ -91,6 +102,7 @@ function closeUniqueTransports(entries: RecoverySocket[], seenConnections: Set<o
             closed++;
         } catch (err) {
             log.warn(`failed to close transport during ${reason}:`, err);
+            unmarkRedisAdapterRecoverySocket(socket);
         }
     }
     return closed;
@@ -118,19 +130,31 @@ function sessionIdOf(socket: Socket): string | undefined {
 }
 
 /**
- * Group viewer transports by the TUI session they are watching, and recover
- * each group independently: as soon as that session's worker re-registers
- * (or that group's own timeout elapses, whichever comes first), close just
- * that group's transports so those viewers reconnect and resync.
+ * Group viewer sockets by their underlying Engine.IO transport (conn), and
+ * recover each transport independently: as soon as every TUI session that
+ * conn is watching has its worker re-register (or that group's own timeout
+ * elapses, whichever comes first), close that conn so its sockets reconnect
+ * and resync.
  *
- * Viewers with no resolvable sessionId (e.g. not yet attached to a session)
- * have nothing to wait for and are closed immediately.
+ * One Engine.IO connection can carry sockets from several namespaces at
+ * once (e.g. the web UI opens /hub and /viewer on the same Manager, so both
+ * ride one shared transport). Grouping by sessionId instead of by conn used
+ * to be wrong here: a /hub socket has no sessionId, so it formed its own
+ * `undefined` group and was closed immediately — which closes the SHARED
+ * conn and drops the co-located /viewer socket before its worker has a
+ * chance to re-register. Grouping by conn and waiting for every sessionId
+ * carried on it keeps multiplexed sockets closing together, in sync with
+ * the slowest session that conn is watching.
  *
- * Grouping independently (rather than waiting for every session globally,
- * then closing everything at once) means one slow-to-restart worker cannot
- * delay recovery for every other viewer, and a worker that comes back late
- * — after other sessions' viewers have already recovered — still gets its
- * own viewers reconnected promptly instead of waiting on a shared clock.
+ * Sockets whose conn carries no sessionId at all (e.g. not yet attached to
+ * any session) have nothing to wait for and are closed immediately.
+ *
+ * Grouping independently per conn (rather than waiting for every session
+ * globally, then closing everything at once) means one slow-to-restart
+ * worker cannot delay recovery for every other viewer, and a worker that
+ * comes back late — after other sessions' viewers have already recovered —
+ * still gets its own viewers reconnected promptly instead of waiting on a
+ * shared clock.
  */
 async function recoverViewerGroups(
     entries: RecoverySocket[],
@@ -139,21 +163,38 @@ async function recoverViewerGroups(
     opts: LiveSocketRecoveryOptions,
 ): Promise<void> {
     const timeoutMs = opts.viewerFallbackMs ?? 5_000;
-    const groups = new Map<string | undefined, RecoverySocket[]>();
+    const connGroups = new Map<object, RecoverySocket[]>();
+    const noConnEntries: RecoverySocket[] = [];
     for (const entry of entries) {
-        const key = sessionIdOf(entry.socket);
-        const group = groups.get(key);
+        const conn = entry.socket.conn as object | undefined;
+        if (!conn) {
+            noConnEntries.push(entry);
+            continue;
+        }
+        const group = connGroups.get(conn);
         if (group) group.push(entry);
-        else groups.set(key, [entry]);
+        else connGroups.set(conn, [entry]);
     }
 
+    // No transport to group by — nothing to wait on, close right away.
+    closeUniqueTransports(noConnEntries, seenConnections, reason);
+
     await Promise.all(
-        Array.from(groups.entries()).map(async ([sessionId, group]) => {
-            if (sessionId && opts.waitForSession) {
-                await opts.waitForSession(sessionId, timeoutMs, opts.signal).catch((err) => {
-                    log.warn(`viewer recovery wait failed for session ${sessionId} during ${reason}:`, err);
-                    return false;
-                });
+        Array.from(connGroups.values()).map(async (group) => {
+            const sessionIds = new Set<string>();
+            for (const { socket } of group) {
+                const sessionId = sessionIdOf(socket);
+                if (sessionId) sessionIds.add(sessionId);
+            }
+            if (sessionIds.size > 0 && opts.waitForSession) {
+                await Promise.all(
+                    Array.from(sessionIds, (sessionId) =>
+                        opts.waitForSession!(sessionId, timeoutMs, opts.signal).catch((err) => {
+                            log.warn(`viewer recovery wait failed for session ${sessionId} during ${reason}:`, err);
+                            return false;
+                        }),
+                    ),
+                );
             }
             if (opts.signal?.aborted || opts.shouldCancel?.()) return;
             closeUniqueTransports(group, seenConnections, reason);

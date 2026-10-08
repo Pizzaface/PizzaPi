@@ -9,6 +9,7 @@ import {
     broadcastToViewers,
     endSharedSession,
     getSessionOwnerToken,
+    forgetLocalTuiSocketIfCurrent,
 } from "../../sio-registry.js";
 import {
     clearPushPendingQuestion,
@@ -196,6 +197,10 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             if (isRedisAdapterRecoverySocket(socket)) {
                 log.info(`redis adapter recovery — preserving session ${sessionId} during forced reconnect`);
                 socketAckedSeqs.delete(socket.id);
+                // This socket isn't coming back on its own — it was force-closed
+                // to make the worker reconnect. If it never does, the map entry
+                // must not pin the session as "has a live local socket" forever.
+                forgetLocalTuiSocketIfCurrent(sessionId, socket);
                 return;
             }
 
@@ -223,6 +228,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             } catch {
                 log.warn(`disconnect for ${socket.id} — Redis ownership lookup failed; skipping teardown`);
                 socketAckedSeqs.delete(socket.id);
+                forgetLocalTuiSocketIfCurrent(sessionId, socket);
                 return;
             }
             if (sharedOwnerToken !== socket.data.token) {
@@ -230,6 +236,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
                     `disconnect for ${socket.id} — stale or unknown owner for session ${sessionId}, skipping teardown`,
                 );
                 socketAckedSeqs.delete(socket.id);
+                forgetLocalTuiSocketIfCurrent(sessionId, socket);
                 return;
             }
 
@@ -240,6 +247,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             if (shouldPreserveOnSocketDisconnect(reason)) {
                 log.info(`server shutting down — preserving Redis state for session ${sessionId}`);
                 socketAckedSeqs.delete(socket.id);
+                forgetLocalTuiSocketIfCurrent(sessionId, socket);
                 return;
             }
 

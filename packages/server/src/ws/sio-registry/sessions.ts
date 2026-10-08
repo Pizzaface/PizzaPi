@@ -553,6 +553,24 @@ export function removeLocalTuiSocket(sessionId: string): void {
     localTuiSockets.delete(sessionId);
 }
 
+/**
+ * Remove the local TUI socket entry for a session, but only if it is still
+ * the given socket. Disconnect handlers that skip teardown (recovery mark,
+ * ownership-lookup failure, stale owner, shutdown preserve) must not leave
+ * a dead socket pinned in the map: `.has()` checks elsewhere (notably
+ * `sweepOrphanedSessions`) would then treat the session as having a live
+ * local socket forever. A replacement socket that has already re-registered
+ * is a different map value, so it is never disturbed by this call.
+ */
+export function forgetLocalTuiSocketIfCurrent(sessionId: string, socket: Socket): void {
+    if (localTuiSockets.get(sessionId) === socket) localTuiSockets.delete(sessionId);
+}
+
+/** True only when the session has a local TUI socket that is still connected. */
+function hasLiveLocalTuiSocket(sessionId: string): boolean {
+    return localTuiSockets.get(sessionId)?.connected === true;
+}
+
 /** Returns a public summary of active sessions from Redis. */
 export async function getSessions(filterUserId?: string): Promise<SessionInfo[]> {
     const sessions = await getAllSessionSummaries(filterUserId);
@@ -1296,8 +1314,11 @@ export async function sweepOrphanedSessions(nowMs: number): Promise<void> {
     for (const session of allSessions) {
         const { sessionId } = session;
 
-        // Skip sessions that have an active local relay socket
-        if (localTuiSockets.has(sessionId)) continue;
+        // Skip sessions that have an active local relay socket. A map entry
+        // whose socket already disconnected (e.g. a dead socket left behind
+        // by an early-returning disconnect handler) must NOT count as live —
+        // `.has()` alone would skip these sessions forever.
+        if (hasLiveLocalTuiSocket(sessionId)) continue;
 
         // Check heartbeat staleness locally FIRST (fast memory check)
         // to avoid expensive cluster-wide N+1 socket queries for healthy sessions
@@ -1328,7 +1349,7 @@ export async function sweepOrphanedSessions(nowMs: number): Promise<void> {
         if (presence.kind !== "count" || presence.count !== 0) continue;
 
         // Verify locally right before teardown to catch fresh reconnections
-        if (localTuiSockets.has(candidate.sessionId)) continue;
+        if (hasLiveLocalTuiSocket(candidate.sessionId)) continue;
 
         log.info(
             `Sweeping orphaned session ${candidate.sessionId} ` +
