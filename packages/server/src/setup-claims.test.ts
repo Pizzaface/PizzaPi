@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createTestAuthContext } from "./auth.js";
+import { hashApiKey } from "./api-key-hash.js";
 import { runAllMigrations } from "./migrations.js";
 import {
     createSetupClaim,
@@ -55,6 +56,22 @@ describe("setup-claims store", () => {
             const second = await pollSetupClaim(token);
             expect(second!.status).toBe("redeemed");
             expect(second!.apiKey).toBeUndefined();
+        });
+    });
+
+    test("approval stores the shared better-auth API key hash", async () => {
+        await runWithAuthContext(authContext, async () => {
+            const { token } = await createSetupClaim("http://localhost:7492");
+            const approve = await approveSetupClaim(token, "user-hash", "Hash");
+            expect(approve).not.toBeNull();
+
+            const { getKysely } = await import("./auth.js");
+            const row = await getKysely()
+                .selectFrom("apikey")
+                .select(["key"])
+                .where("name", "=", `setup-claim-${token.slice(0, 8)}`)
+                .executeTakeFirstOrThrow();
+            expect(row.key).toBe(await hashApiKey(approve!.apiKey));
         });
     });
 

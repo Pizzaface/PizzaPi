@@ -8,6 +8,7 @@
 
 import { createLogger } from "@pizzapi/tools";
 import { getApiKeyRateLimitConfig, getAuth, getKysely, isSignupAllowed } from "../auth.js";
+import { hashApiKey } from "../api-key-hash.js";
 import { RateLimiter, isValidEmail, isValidPassword, getClientIp } from "../security.js";
 import { PASSWORD_REQUIREMENTS_SUMMARY } from "@pizzapi/protocol";
 import { hashPassword as betterAuthHashPassword } from "better-auth/crypto";
@@ -137,12 +138,7 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
         const { randomBytes } = await import("crypto");
         const key = randomBytes(32).toString("hex");
 
-        // Hash key using SHA-256 + base64url (matches better-auth's defaultKeyHasher)
-        const keyHashBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
-        const hashedKey = btoa(String.fromCharCode(...new Uint8Array(keyHashBuf)))
-            .replace(/\+/g, "-")
-            .replace(/\//g, "_")
-            .replace(/=/g, "");
+        const hashedKey = await hashApiKey(key);
 
         await getKysely().deleteFrom("apikey").where("userId", "=", userId).where("name", "=", "cli").execute();
 
