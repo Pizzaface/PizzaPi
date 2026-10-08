@@ -97,6 +97,105 @@ describe("proxyTunnelRequestViaRelay buffered response cap", () => {
     expect((await response.json()).error).toMatch(/too large/i);
   });
 
+  test("streams declared rewritable responses over sync-rewrite threshold byte-exact and unrewritten", async () => {
+    const { relay, mock } = await createRegisteredRelay();
+    const req = new Request("http://example.com/api/tunnel/runner/r1/3000/", { method: "GET" });
+
+    const responsePromise = proxyTunnelRequestViaRelay(
+      req,
+      relay,
+      "r1",
+      "req-large-cl",
+      "/api/tunnel/runner/r1/3000",
+      3000,
+      "/",
+      "/",
+      {},
+    );
+    await waitForMicrotask();
+
+    const body = Buffer.concat([
+      Buffer.from("<html><head></head><body>"),
+      Buffer.alloc(3 * 1024 * 1024, "a"),
+      Buffer.from("</body></html>"),
+    ]);
+
+    mock.emit("message", {
+      data: JSON.stringify({
+        type: "response-start",
+        id: "req-large-cl",
+        statusCode: 200,
+        statusMessage: "OK",
+        headers: {
+          "content-type": "text/html",
+          "content-length": String(body.length),
+        },
+      }),
+    });
+    await waitForMicrotask();
+
+    mock.emit("message", {
+      data: JSON.stringify({
+        type: "response-data",
+        id: "req-large-cl",
+        data: body.toString("binary"),
+      }),
+    });
+    await waitForMicrotask();
+
+    mock.emit("message", {
+      data: JSON.stringify({ type: "response-data-end", id: "req-large-cl" }),
+    });
+
+    const response = await responsePromise;
+    expect(response.status).toBe(200);
+    const received = Buffer.from(await response.arrayBuffer());
+    expect(received.equals(body)).toBe(true);
+    expect(received.includes("<base")).toBe(false);
+    expect(response.headers.get("x-pizzapi-rewrite")).toBe("skipped-size");
+  });
+
+  test("rejects accumulated rewritable responses over the hard buffer cap", async () => {
+    const { relay, mock } = await createRegisteredRelay();
+    const req = new Request("http://example.com/api/tunnel/runner/r1/3000/", { method: "GET" });
+
+    const responsePromise = proxyTunnelRequestViaRelay(
+      req,
+      relay,
+      "r1",
+      "req-too-large-chunk",
+      "/api/tunnel/runner/r1/3000",
+      3000,
+      "/",
+      "/",
+      {},
+    );
+    await waitForMicrotask();
+
+    mock.emit("message", {
+      data: JSON.stringify({
+        type: "response-start",
+        id: "req-too-large-chunk",
+        statusCode: 200,
+        statusMessage: "OK",
+        headers: { "content-type": "text/html" },
+      }),
+    });
+    await waitForMicrotask();
+
+    mock.emit("message", {
+      data: JSON.stringify({
+        type: "response-data",
+        id: "req-too-large-chunk",
+        data: Buffer.alloc(26 * 1024 * 1024, "x").toString("binary"),
+      }),
+    });
+
+    const response = await responsePromise;
+    expect(response.status).toBe(413);
+    expect((await response.json()).error).toMatch(/too large/i);
+  });
+
   test("falls back to unrewritten streaming once the buffered body exceeds the sync-rewrite threshold", async () => {
     // Regression test for the event-loop-blocking bug: a rewritable (HTML)
     // response whose size isn't known up front (chunked, no Content-Length)
@@ -160,6 +259,7 @@ describe("proxyTunnelRequestViaRelay buffered response cap", () => {
 
     const response = await responsePromise;
     expect(response.status).toBe(200);
+    expect(response.headers.get("x-pizzapi-rewrite")).toBe("skipped-size");
     const body = Buffer.from(await response.arrayBuffer());
     expect(body.equals(Buffer.concat([first, second]))).toBe(true);
     expect(body.includes("<base")).toBe(false);

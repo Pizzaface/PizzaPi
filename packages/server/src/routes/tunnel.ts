@@ -19,7 +19,7 @@ import { getRunnerData } from "../ws/sio-registry.js";
 import { LABEL_MAX_TTL_HOURS, mintTunnelLabel } from "./tunnel-host.js";
 import type { RouteHandler } from "./types.js";
 
-const TUNNEL_MAX_BUFFERED_BYTES = 25 * 1024 * 1024; // ponytail: fixed ceiling, raise if legit large HTML responses appear
+const TUNNEL_MAX_BUFFERED_BYTES = 25 * 1024 * 1024; // hard safety cap; larger rewritable responses return 413 instead of buffering
 /** Streamed responses: ask the runner to pause once this many bytes wait for the viewer. */
 const TUNNEL_STREAM_HIGH_WATER_BYTES = TUNNEL_SEND_HIGH_WATER_BYTES;
 /**
@@ -730,6 +730,10 @@ function proxyTunnelRequestViaRelay(
             resolve(response);
         };
 
+        const markRewriteSkippedForSize = (): void => {
+            responseHeaders.set("x-pizzapi-rewrite", "skipped-size");
+        };
+
         /**
          * Resolve with a streamed, unrewritten passthrough response. Used both
          * for responses that never needed rewriting and for ones that bailed
@@ -818,6 +822,7 @@ function proxyTunnelRequestViaRelay(
                         // skip buffering entirely, stream it through unrewritten.
                         if (Number.isFinite(length) && length > TUNNEL_SYNC_REWRITE_MAX_BYTES) {
                             shouldBuffer = false;
+                            markRewriteSkippedForSize();
                         }
                     }
                     if (shouldBuffer) return;
@@ -840,6 +845,7 @@ function proxyTunnelRequestViaRelay(
                             // already queued through an unrewritten stream instead of
                             // running the regex rewrite on a multi-MB string later.
                             shouldBuffer = false;
+                            markRewriteSkippedForSize();
                             beginUnrewrittenStream(bodyChunks.splice(0, bodyChunks.length));
                         }
                         return;

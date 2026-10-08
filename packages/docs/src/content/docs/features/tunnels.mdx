@@ -337,7 +337,7 @@ Use `list_tunnels` to see all active tunnels at a glance.
 
 ### SSE and Streaming Endpoints
 
-Tunnels support Server-Sent Events (SSE) and chunked streaming responses. Content types that need no rewriting — such as SSE, JSON, images, and binary — are streamed directly with minimal latency. Only HTML, JavaScript/TypeScript modules, and CSS are buffered (up to a generous limit) for rewriting.
+Tunnels support Server-Sent Events (SSE) and chunked streaming responses. Content types that need no rewriting — such as SSE, JSON, images, and binary — are streamed directly with minimal latency. In path-prefix mode, HTML, JavaScript/TypeScript modules, and CSS are buffered for rewriting only up to 2 MiB; larger rewritable responses stream through unmodified. Host-based tunnels are unaffected because they do not need URL rewriting.
 
 ---
 
@@ -373,6 +373,6 @@ Agent:
 - **No offline support** — tunnels are inherently a network feature. Without a relay, use direct `localhost` access on the runner machine.
 - **Request timeout** — service message round-trips time out after **10 seconds**. If the runner daemon is unresponsive, tunnel creation fails with a timeout error.
 - **Single-user access** — only the session/runner owner can access tunnel URLs. There is no sharing with other authenticated users.
-- **Content rewriting limits** (path-prefix mode only) — while the proxy rewrites HTML, JS modules, and CSS, some edge cases (e.g. paths constructed entirely at runtime from string concatenation, SPA routers reading `location.pathname`) may not be intercepted. Configure `PIZZAPI_TUNNEL_DOMAIN` to bypass rewriting entirely — apps on a dedicated tunnel origin run unmodified.
+- **Content rewriting limits** (path-prefix mode only) — the proxy rewrites HTML, JS modules, and CSS only while the response is 2 MiB or smaller. Larger rewritable responses stream unmodified: absolute URLs inside them are not rewritten, while root-relative URLs still resolve through the tunnel prefix via the injected `<base>`. Other edge cases (e.g. paths constructed entirely at runtime from string concatenation, SPA routers reading `location.pathname`) may not be intercepted. Configure `PIZZAPI_TUNNEL_DOMAIN` to bypass rewriting entirely — apps on a dedicated tunnel origin run unmodified, so this cutoff does not apply.
 - **Resource limits** — the relay bounds tunnel traffic: request bodies are capped at 100 MiB per request (`413` above that), each runner serves at most 256 concurrent tunnelled requests and WebSockets (`503` above that), and slow consumers apply backpressure — when the viewer stops reading, the runner pauses the local service's response; when the local service stops reading an upload, the runner asks the relay to pause it (where the runtime reports write backpressure). A stream whose queued data still exceeds 64 MiB is terminated (WebSockets close with code `1013`). Self-hosters can tune these with the `PIZZAPI_TUNNEL_*` variables in [Self-Hosting](/PizzaPi/deployment/self-hosting/).
 - **Local HTTPS targets** — the runner probes each exposed port and speaks TLS to local HTTPS services automatically (self-signed certs accepted, loopback only).
