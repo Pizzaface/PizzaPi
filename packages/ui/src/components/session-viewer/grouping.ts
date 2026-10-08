@@ -1,4 +1,5 @@
 import type { RelayMessage, SubAgentTurn } from "./types";
+import { PLUGIN_COMMAND_MESSAGE_TYPE } from "@pizzapi/protocol";
 
 import {
   hasVisibleContent,
@@ -1008,5 +1009,33 @@ export function groupSubAgentConversations(messages: RelayMessage[]): RelayMessa
     });
   }
 
+  return result;
+}
+
+const isPluginResult = (m: RelayMessage) => m.role === "custom" && m.customType === PLUGIN_COMMAND_MESSAGE_TYPE;
+
+/**
+ * Third grouping pass: a run of `/plugin` results — typically the result of
+ * clicking actions inside a plugin card — renders as ONE card showing the
+ * latest result. The merged card keeps the first message's key so React keeps
+ * the same instance (browse/search state survives each action). Invisible
+ * messages between results don't break a run.
+ */
+export function groupPluginResults(messages: RelayMessage[]): RelayMessage[] {
+  const result: RelayMessage[] = [];
+  let runIndex = -1; // index in `result` of the current run's merged card
+  for (const m of messages) {
+    if (isPluginResult(m)) {
+      if (runIndex >= 0) {
+        const head = result[runIndex]!;
+        result[runIndex] = { ...m, key: head.key };
+      } else {
+        runIndex = result.push(m) - 1;
+      }
+      continue;
+    }
+    if (hasVisibleContent(m.content) || m.role === "tool" || m.role === "toolResult") runIndex = -1;
+    result.push(m);
+  }
   return result;
 }

@@ -1215,3 +1215,37 @@ describe("skills reload route", () => {
         expect(body.failedSessionIds).toEqual(["sess-1"]);
     });
 });
+
+describe("plugin command route", () => {
+    beforeEach(() => {
+        mockRequireSession.mockReset();
+        mockRequireSession.mockReturnValue(Promise.resolve({ userId: "user-1", userName: "TestUser" } as any));
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A", roots: JSON.stringify(["/work"]) } as any));
+        mockSendRunnerCommand.mockReset();
+        mockSendRunnerCommand.mockReturnValue(Promise.resolve({ ok: true, changed: true, overview: { plugins: [], disabled: [], marketplaces: [] } }));
+    });
+
+    test("forwards args + cwd to the runner with a long timeout", async () => {
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/plugins/command", { args: ["install", "x@y"], cwd: "/work/repo" });
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        expect((await res!.json()).changed).toBe(true);
+        expect(mockSendRunnerCommand).toHaveBeenCalledWith("runner-A", { type: "plugin_command", args: ["install", "x@y"], cwd: "/work/repo" }, 120_000);
+    });
+
+    test("rejects malformed args and out-of-root cwd", async () => {
+        const [badReq, badUrl] = makeReq("POST", "/api/runners/runner-A/plugins/command", { args: "install x" });
+        expect((await handleRunnersRoute(badReq, badUrl))!.status).toBe(400);
+        const [cwdReq, cwdUrl] = makeReq("POST", "/api/runners/runner-A/plugins/command", { args: [], cwd: "/etc" });
+        expect((await handleRunnersRoute(cwdReq, cwdUrl))!.status).toBe(403);
+        expect(mockSendRunnerCommand).not.toHaveBeenCalled();
+    });
+
+    test("forbids other users' runners", async () => {
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "someone-else", runnerId: "runner-A" } as any));
+        const [req, url] = makeReq("POST", "/api/runners/runner-A/plugins/command", { args: [] });
+        expect((await handleRunnersRoute(req, url))!.status).toBe(403);
+        expect(mockSendRunnerCommand).not.toHaveBeenCalled();
+    });
+});

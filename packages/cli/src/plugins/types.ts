@@ -157,6 +157,10 @@ export interface DiscoveredPlugin {
     hasAgents: boolean;
     /** Whether the plugin has LSP configuration (informational — not adapted) */
     hasLsp: boolean;
+    /** Where discovery found it — set by discoverPlugins(). */
+    origin?: "marketplace" | "directory" | "project";
+    /** `enabledPlugins` key: "name@marketplace" for marketplace installs, bare name otherwise. */
+    enableKey?: string;
 }
 
 /**

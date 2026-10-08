@@ -15,7 +15,6 @@ const SystemPromptSettings = React.lazy(() => import("./SystemPromptSettings"));
 const ProviderOverridesSettings = React.lazy(() => import("./ProviderOverridesSettings"));
 const TuiPrefsSettings = React.lazy(() => import("./TuiPrefsSettings"));
 const GoalEvaluatorSettings = React.lazy(() => import("./GoalEvaluatorSettings"));
-const PackagesSettings = React.lazy(() => import("./PackagesSettings"));
 const ProviderAuthSettings = React.lazy(() => import("./ProviderAuthSettings"));
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -29,8 +28,7 @@ export type SettingsSection =
     | "systemPrompt"
     | "providerOverrides"
     | "tuiPreferences"
-    | "goal"
-    | "packages";
+    | "goal";
 
 export interface RunnerSettingsPanelProps {
     runnerId: string;
@@ -61,7 +59,6 @@ const SETTINGS_TABS: { key: SettingsSection; label: string }[] = [
     { key: "systemPrompt", label: "System Prompt" },
     { key: "providerOverrides", label: "Provider Overrides" },
     { key: "tuiPreferences", label: "TUI Prefs" },
-    { key: "packages", label: "Packages" },
 ];
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -177,9 +174,6 @@ export function RunnerSettingsPanel({ runnerId }: RunnerSettingsPanelProps) {
             break;
         case "tuiPreferences":
             content = <TuiPrefsSettings {...sectionProps} />;
-            break;
-        case "packages":
-            content = <PackagesSettings {...sectionProps} />;
             break;
         case "providerAuth":
             content = <ProviderAuthSettings {...sectionProps} />;

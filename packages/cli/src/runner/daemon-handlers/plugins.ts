@@ -2,6 +2,7 @@
 import type { Socket } from "socket.io-client";
 import { scanAllPluginInfo } from "../../plugins.js";
 import { isCwdAllowed } from "../workspace.js";
+import { runPluginCommandView } from "../../extensions/plugin-command.js";
 
 export function registerPluginsHandlers(socket: Socket, isShuttingDown: () => boolean): void {
     socket.on("list_plugins", (data: any) => {
@@ -25,5 +26,25 @@ export function registerPluginsHandlers(socket: Socket, isShuttingDown: () => bo
         const plugins = scanAllPluginInfo(scanCwd, { includeProjectLocal: includeLocal });
         // Echo scoped flag so the server can skip cache updates for per-session scans
         socket.emit("plugins_list", { plugins, requestId, ...(rawCwd ? { scoped: true } : {}) });
+    });
+
+    // `/plugin` for the runner panel: same structured result the in-session
+    // card renders. Refreshes the runner-wide plugin cache.
+    // ponytail: marketplace git clones run synchronously on the daemon loop;
+    // move to a child process if slow marketplaces start starving heartbeats.
+    socket.on("plugin_command", async (data: any) => {
+        if (isShuttingDown()) return;
+        const requestId = data?.requestId;
+        const args = Array.isArray(data?.args) ? data.args.filter((a: unknown): a is string => typeof a === "string") : [];
+        const cwd = typeof data?.cwd === "string" && data.cwd ? data.cwd : undefined;
+        if (cwd && !isCwdAllowed(cwd)) {
+            socket.emit("file_result", { requestId, ok: false, message: "cwd outside allowed workspace roots" });
+            return;
+        }
+        const { output: _output, ...view } = await runPluginCommandView(args, cwd);
+        socket.emit("file_result", { requestId, ok: true, ...view });
+        // Unscoped runs ARE the global scan — refresh the runner-wide cache.
+        if (!cwd) socket.emit("plugins_list", { plugins: view.overview.plugins });
+        else if (view.changed) socket.emit("plugins_list", { plugins: scanAllPluginInfo(undefined, { includeProjectLocal: false }) });
     });
 }

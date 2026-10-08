@@ -14,6 +14,7 @@
  */
 
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { createLogger } from "@pizzapi/tools";
 import {
     addMarketplace,
     installPlugin,
@@ -25,15 +26,28 @@ import {
     setPluginEnabled,
     uninstallPlugin,
 } from "../plugins/marketplace.js";
+import { dirInstalledPluginNames } from "../plugins/discover.js";
+import { resolveAgentDir, resolveExplicitProjectTrust } from "../config/io.js";
+import { packageManagerFor } from "../overlay/resolve.js";
+import {
+    buildMarketplaceCatalog,
+    buildPluginsOverview,
+    type MarketplaceCatalogInfo,
+    type PluginsOverview,
+} from "../plugins/info.js";
+
+import { PLUGIN_COMMAND_MESSAGE_TYPE } from "@pizzapi/protocol";
 
 const USAGE = [
     "Usage:",
     "  /plugin marketplace add <owner/repo | git-url | path>",
     "  /plugin marketplace list",
+    "  /plugin marketplace show <name>",
     "  /plugin marketplace remove <name>",
     "  /plugin install <name[@marketplace]>",
     "  /plugin uninstall <name[@marketplace]>",
     "  /plugin enable|disable <name[@marketplace]>",
+    "  /plugin package list|install|remove|update [source] [--local]",
 ].join("\n");
 
 function formatOverview(): string {
@@ -68,66 +82,240 @@ function formatCatalog(name: string): string {
     return lines.join("\n");
 }
 
-/** Run one `/plugin` invocation. Returns the text to show the user. */
-export function runPluginCommand(args: string[]): { output: string; changed: boolean } {
+export interface PluginCommandResult {
+    /** Full text for terminal output. */
+    output: string;
+    /** True when plugin/marketplace state on disk changed. */
+    changed: boolean;
+    /** Short status line (e.g. "Installed x@y"); absent for plain listings. */
+    notice?: string;
+    /** Marketplace whose catalog the result shows (add/show). */
+    catalog?: string;
+    /** Usage error or no-op on an unknown target. */
+    isError?: boolean;
+}
+
+/** A configured pi package (extensions, skills, prompts, themes). */
+export interface PiPackageInfo {
+    source: string;
+    scope: "user" | "project";
+    filtered: boolean;
+    installedPath?: string;
+}
+
+/** Structured payload rendered by the web UI's plugins card. */
+export interface PluginCommandView {
+    notice?: string;
+    isError?: boolean;
+    changed: boolean;
+    overview: PluginsOverview & {
+        packages: PiPackageInfo[];
+        /** Project dir that `--local` package installs target; absent at runner level. */
+        packagesCwd?: string;
+    };
+    catalog?: MarketplaceCatalogInfo;
+}
+
+/** The slice of pi's DefaultPackageManager `/plugin package` uses (injectable for tests). */
+export interface PiPackageManager {
+    listConfiguredPackages(): Array<{ source: string; scope: "user" | "project"; filtered: boolean; installedPath?: string }>;
+    installAndPersist(source: string, options?: { local?: boolean }): Promise<void>;
+    removeAndPersist(source: string, options?: { local?: boolean }): Promise<boolean>;
+    update(source?: string): Promise<void>;
+}
+
+function defaultPackageManager(cwd: string): PiPackageManager {
+    const agentDir = resolveAgentDir(cwd);
+    return packageManagerFor(cwd, agentDir, resolveExplicitProjectTrust(cwd, agentDir));
+}
+
+function listPiPackages(pm: PiPackageManager): PiPackageInfo[] {
+    try {
+        return pm.listConfiguredPackages().map(({ source, scope, filtered, installedPath }) => ({ source, scope, filtered, installedPath }));
+    } catch {
+        return [];
+    }
+}
+
+const PACKAGE_USAGE = [
+    "Usage:",
+    "  /plugin package list",
+    "  /plugin package install <source> [--local]",
+    "  /plugin package remove <source> [--local]",
+    "  /plugin package update [source]",
+].join("\n");
+
+function formatPackages(packages: PiPackageInfo[]): string {
+    if (packages.length === 0) return "No pi packages configured. Add one with /plugin package install <source>";
+    return [`Pi packages (${packages.length}):`, ...packages.map((p) => `  ${p.source}  (${p.scope})`)].join("\n");
+}
+
+/** `/plugin package …` — pi package management (args exclude the leading "package"). */
+export async function runPiPackageCommand(args: string[], pm: PiPackageManager): Promise<PluginCommandResult> {
+    const [action, ...rest] = args;
+    const local = rest.includes("--local") || rest.includes("-l");
+    const source = rest.filter((a) => a !== "--local" && a !== "-l").join(" ").trim();
+    const where = local ? " (project)" : "";
+
+    if (!action || action === "list") return { output: formatPackages(listPiPackages(pm)), changed: false };
+
+    if (action === "install" || action === "add") {
+        if (!source) return failure("Usage: /plugin package install <source> [--local]");
+        await pm.installAndPersist(source, { local });
+        return result(`Installed package ${source}${where}`, true);
+    }
+
+    if (action === "remove" || action === "uninstall" || action === "rm") {
+        if (!source) return failure("Usage: /plugin package remove <source> [--local]");
+        return (await pm.removeAndPersist(source, { local }))
+            ? result(`Removed package ${source}${where}`, true)
+            : failure(`Package not configured: ${source}${where}`);
+    }
+
+    if (action === "update") {
+        await pm.update(source || undefined);
+        return result(source ? `Updated package ${source}` : "Updated all packages", true);
+    }
+
+    return failure(PACKAGE_USAGE);
+}
+
+function result(notice: string | undefined, changed: boolean, catalog?: string): PluginCommandResult {
+    const body = catalog ? formatCatalog(catalog) : notice ? "" : formatOverview();
+    return { output: [notice, body].filter(Boolean).join("\n\n"), changed, notice, catalog };
+}
+
+function failure(notice: string): PluginCommandResult {
+    return { ...result(notice, false), isError: true };
+}
+
+/** Resolve an enable/disable target. Directory-installed plugins are keyed by bare name. */
+function resolveToggleKey(target: string, cwd?: string): string {
+    if (!target.includes("@") && dirInstalledPluginNames(cwd, { includeProjectLocal: !!cwd }).includes(target)) {
+        return target;
+    }
+    return resolvePluginKey(target);
+}
+
+/** Run one `/plugin` invocation. Throws on failed mutations. */
+export function runPluginCommand(args: string[], cwd?: string): PluginCommandResult {
     const [sub, ...rest] = args;
 
-    if (!sub) return { output: formatOverview(), changed: false };
+    if (!sub || sub === "list") return result(undefined, false);
 
     if (sub === "marketplace" || sub === "marketplaces") {
         const action = rest[0];
         const target = rest.slice(1).join(" ").trim();
 
-        if (!action || action === "list") return { output: formatOverview(), changed: false };
+        if (!action || action === "list") return result(undefined, false);
 
         if (action === "add") {
-            if (!target) return { output: "Usage: /plugin marketplace add <owner/repo | git-url | path>", changed: false };
-            const result = addMarketplace(target);
-            return {
-                output: `Added marketplace "${result.name}" (${result.pluginCount} plugins)\n\n${formatCatalog(result.name)}`,
-                changed: true,
-            };
+            if (!target) return failure("Usage: /plugin marketplace add <owner/repo | git-url | path>");
+            const added = addMarketplace(target);
+            // Catalog-only change: nothing loaded changes, so no session reload
+            // (a reload drops the relay connection and fails the next click).
+            return result(`Added marketplace "${added.name}" (${added.pluginCount} plugins)`, false, added.name);
+        }
+
+        if (action === "update") {
+            if (!target) return failure("Usage: /plugin marketplace update <name>");
+            const known = listMarketplaces()[target];
+            const spec = known?.source?.repo ?? known?.source?.url ?? known?.source?.path;
+            if (!spec) return failure(`Unknown marketplace: ${target}`);
+            const updated = addMarketplace(spec, { name: target });
+            // No catalog: an update shouldn't switch the UI into browse mode.
+            return result(`Updated marketplace "${updated.name}" (${updated.pluginCount} plugins)`, false);
         }
 
         if (action === "remove" || action === "rm") {
-            if (!target) return { output: "Usage: /plugin marketplace remove <name>", changed: false };
-            const removed = removeMarketplace(target);
-            return { output: removed ? `Removed marketplace "${target}"` : `Unknown marketplace: ${target}`, changed: removed };
+            if (!target) return failure("Usage: /plugin marketplace remove <name>");
+            return removeMarketplace(target)
+                ? result(`Removed marketplace "${target}"`, true)
+                : failure(`Unknown marketplace: ${target}`);
         }
 
         if (action === "show" || action === "plugins") {
-            if (!target) return { output: "Usage: /plugin marketplace show <name>", changed: false };
-            return { output: formatCatalog(target), changed: false };
+            if (!target) return failure("Usage: /plugin marketplace show <name>");
+            if (!readMarketplaceCatalog(target)) return failure(`Unknown marketplace: ${target}`);
+            return result(undefined, false, target);
         }
 
-        return { output: USAGE, changed: false };
+        return failure(USAGE);
     }
 
     const target = rest.join(" ").trim();
 
     if (sub === "install" || sub === "add") {
-        if (!target) return { output: "Usage: /plugin install <name[@marketplace]>", changed: false };
-        const result = installPlugin(target);
-        return { output: `Installed ${result.plugin}@${result.marketplace} → ${result.installPath}`, changed: true };
+        if (!target) return failure("Usage: /plugin install <name[@marketplace]>");
+        const installed = installPlugin(target);
+        // Keep showing the catalog so the user can carry on browsing.
+        return result(`Installed ${installed.plugin}@${installed.marketplace} → ${installed.installPath}`, true, installed.marketplace);
     }
 
     if (sub === "uninstall" || sub === "remove" || sub === "rm") {
-        if (!target) return { output: "Usage: /plugin uninstall <name[@marketplace]>", changed: false };
-        const removed = uninstallPlugin(target);
-        return { output: removed ? `Uninstalled ${target}` : `Not installed: ${target}`, changed: removed };
+        if (!target) return failure("Usage: /plugin uninstall <name[@marketplace]>");
+        return uninstallPlugin(target) ? result(`Uninstalled ${target}`, true) : failure(`Not installed: ${target}`);
     }
 
     if (sub === "enable" || sub === "disable") {
-        if (!target) return { output: `Usage: /plugin ${sub} <name[@marketplace]>`, changed: false };
-        const key = resolvePluginKey(target);
+        if (!target) return failure(`Usage: /plugin ${sub} <name[@marketplace]>`);
+        const key = resolveToggleKey(target, cwd);
         setPluginEnabled(key, sub === "enable");
-        return { output: `${sub === "enable" ? "Enabled" : "Disabled"} ${key}`, changed: true };
+        return result(`${sub === "enable" ? "Enabled" : "Disabled"} ${key}`, true);
     }
 
-    if (sub === "list") return { output: formatOverview(), changed: false };
-
-    return { output: USAGE, changed: false };
+    return failure(USAGE);
 }
+
+/**
+ * Run `/plugin` and build the structured view the web UI renders. Never throws:
+ * failures come back as `isError` with the current overview.
+ */
+export async function runPluginCommandView(
+    args: string[],
+    cwd?: string,
+    deps?: { packageManager?: PiPackageManager },
+): Promise<PluginCommandView & { output: string }> {
+    const scan = { includeProjectLocal: !!cwd };
+    let pm: PiPackageManager | undefined = deps?.packageManager;
+    const overview = (): PluginCommandView["overview"] => {
+        try {
+            pm ??= defaultPackageManager(cwd ?? process.cwd());
+        } catch {
+            // Unreadable pi settings — show plugins without packages.
+        }
+        return { ...buildPluginsOverview(cwd, scan), packages: pm ? listPiPackages(pm) : [], packagesCwd: cwd };
+    };
+    try {
+        const isPackage = args[0] === "package" || args[0] === "packages";
+        const r = isPackage
+            ? await runPiPackageCommand(args.slice(1), (pm ??= defaultPackageManager(cwd ?? process.cwd())))
+            : runPluginCommand(args, cwd);
+        const catalog = r.catalog ? buildMarketplaceCatalog(r.catalog) ?? undefined : undefined;
+        return {
+            output: r.output,
+            notice: r.notice,
+            isError: r.isError,
+            changed: r.changed,
+            overview: overview(),
+            catalog,
+        };
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+            output: `/plugin failed: ${message}`,
+            notice: message,
+            isError: true,
+            changed: false,
+            overview: overview(),
+        };
+    }
+}
+
+const log = createLogger("plugin-command");
+
+/** pi.events channel the remote extension relays as a live message_end. */
+export const PLUGIN_COMMAND_LIVE_EVENT = "plugin:command_message";
 
 const SUBCOMMANDS = [
     { value: "marketplace", label: "marketplace", description: "Add, list, or remove marketplaces" },
@@ -136,9 +324,14 @@ const SUBCOMMANDS = [
     { value: "enable", label: "enable", description: "Enable an installed plugin" },
     { value: "disable", label: "disable", description: "Disable an installed plugin" },
     { value: "list", label: "list", description: "List marketplaces and installed plugins" },
+    { value: "package", label: "package", description: "Manage pi packages: list, install, remove, update" },
 ];
 
 export const pluginCommandExtension: ExtensionFactory = (pi) => {
+    // Results are UI-only transcript entries — never feed them to the model.
+    pi.on("context", (event) => ({
+        messages: event.messages.filter((m: any) => !(m.role === "custom" && m.customType === PLUGIN_COMMAND_MESSAGE_TYPE)),
+    }));
     pi.registerCommand("plugin", {
         description: "Manage Claude Code plugin marketplaces: marketplace add/list/remove, install, uninstall, enable, disable",
         getArgumentCompletions: (prefix: string) => {
@@ -152,6 +345,7 @@ export const pluginCommandExtension: ExtensionFactory = (pi) => {
                 const actions = [
                     { value: "marketplace add", label: "add", description: "Add a marketplace" },
                     { value: "marketplace list", label: "list", description: "List marketplaces" },
+                    { value: "marketplace update", label: "update", description: "Re-fetch a marketplace" },
                     { value: "marketplace remove", label: "remove", description: "Remove a marketplace" },
                     { value: "marketplace show", label: "show", description: "Show a marketplace's plugins" },
                 ];
@@ -178,16 +372,24 @@ export const pluginCommandExtension: ExtensionFactory = (pi) => {
         },
         handler: async (rawArgs: string, ctx: any) => {
             const args = (rawArgs ?? "").trim().split(/\s+/).filter(Boolean);
-            let result: { output: string; changed: boolean };
-            try {
-                result = runPluginCommand(args);
-            } catch (err) {
-                ctx?.ui?.notify?.(`/plugin failed: ${err instanceof Error ? err.message : String(err)}`);
-                return;
-            }
-            ctx?.ui?.notify?.(result.output);
+            const view = await runPluginCommandView(args, ctx?.cwd);
+            // Persisted as a session custom message so the web UI card survives
+            // snapshots/reloads; the TUI renders the text content.
+            const { output, changed: _changed, ...details } = view;
+            const message = { customType: PLUGIN_COMMAND_MESSAGE_TYPE, content: output, display: true, details };
+            pi.sendMessage(message, { triggerTurn: false });
+            // pi emits an idle-appended custom message only to session listeners,
+            // not extension handlers, so the relay never sees its message_end and
+            // the web card would only appear on the next snapshot. Forward it.
+            pi.events?.emit(PLUGIN_COMMAND_LIVE_EVENT, { role: "custom", ...message, timestamp: Date.now() });
             // Pick up newly installed commands, skills, and hooks right away.
-            if (result.changed) await ctx.reload();
+            if (view.changed) {
+                const started = Date.now();
+                await ctx.reload();
+                // Viewer input sent during the reload waits for the reconnect (relay
+                // viewer.ts TUI_RECONNECT_WAIT_MS); log the gap to tune that window.
+                log.info(`/plugin ${args[0] ?? ""} reload took ${Date.now() - started}ms`);
+            }
         },
     });
 };

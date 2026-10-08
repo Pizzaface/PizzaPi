@@ -589,6 +589,12 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                         settle(true);
                         return;
                     }
+                    // Ack slash commands on dispatch, not completion: a command can
+                    // reload the runtime (/plugin changes, /skills reload), which
+                    // drops this socket and ends the shared session — the viewer is
+                    // disconnected and reads the never-sent ack as a failed send.
+                    // Command failures still surface via the cli_error below.
+                    if (isSlashCommand) settle(true);
                     await handlers.sendUserMessage(message, { expandPromptTemplates: true, ...(effectiveDeliverAs ? { deliverAs: effectiveDeliverAs } : {}) });
                     settle(true);
                 } finally {

@@ -37,7 +37,10 @@ let consumeApproval = false;
 mock.module("socket.io-client", () => ({
     io: mock(() => { lastSocket = new FakeSocket(); return lastSocket; }),
 }));
-mock.module("../../config.js", () => ({ loadConfig: mock(() => ({ relayUrl: "ws://relay.test" })) }));
+mock.module("../../config.js", () => ({
+    loadConfig: mock(() => ({ relayUrl: "ws://relay.test" })),
+    expandHome: (path: string) => path,
+}));
 mock.module("../../backoff.js", () => ({
     RELAY_BACKOFF_DEFAULTS: { baseMs: 1000, maxMs: 30000, jitterFactor: 0.25 },
     computeBackoffDelay: mock(() => 1000),

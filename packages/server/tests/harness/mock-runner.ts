@@ -827,6 +827,51 @@ export async function createMockRunner(
         socket.emit("plugins_list", { plugins: pluginsList, requestId });
     });
 
+    // Minimal `/plugin` emulation: enable/disable toggles, `marketplace show`
+    // returns a fixture catalog, everything else just echoes the overview.
+    const disabledPlugins = new Set<string>();
+    const piPackages: Array<{ source: string; scope: "user" | "project"; filtered: boolean }> = [
+        { source: "npm:@pizzapi/sandbox-ext", scope: "user", filtered: false },
+    ];
+    socket.on("plugin_command", (data: any) => {
+        if (isShuttingDown) return;
+        const args: string[] = Array.isArray(data?.args) ? data.args : [];
+        const [sub, target] = args;
+        let notice: string | undefined;
+        if ((sub === "enable" || sub === "disable") && target) {
+            if (sub === "disable") disabledPlugins.add(target); else disabledPlugins.delete(target);
+            notice = `${sub === "enable" ? "Enabled" : "Disabled"} ${target}`;
+        }
+        if (sub === "package" && (args[1] === "install" || args[1] === "remove") && args[2]) {
+            const scope = args.includes("--local") ? "project" : "user";
+            if (args[1] === "install") piPackages.push({ source: args[2], scope, filtered: false });
+            else {
+                const i = piPackages.findIndex((p) => p.source === args[2] && p.scope === scope);
+                if (i >= 0) piPackages.splice(i, 1);
+            }
+            notice = `${args[1] === "install" ? "Installed" : "Removed"} package ${args[2]}`;
+        }
+        const catalog = sub === "marketplace" && args[1] === "show"
+            ? { name: args[2], plugins: [
+                { name: "fresh-plugin", key: `fresh-plugin@${args[2]}`, description: "Not installed yet", installed: false, enabled: false },
+                ...pluginsList.map((p) => ({ name: p.name, key: p.name, description: p.description, installed: true, enabled: !disabledPlugins.has(p.name) })),
+            ] }
+            : undefined;
+        socket.emit("file_result", {
+            requestId: data?.requestId,
+            ok: true,
+            changed: notice !== undefined,
+            notice,
+            catalog,
+            overview: {
+                plugins: pluginsList.filter((p) => !disabledPlugins.has(p.name)).map((p) => ({ ...p, source: "directory", key: p.name })),
+                disabled: [...disabledPlugins].map((key) => ({ key, name: key })),
+                marketplaces: [{ name: "sandbox-market", source: "acme/sandbox-market", pluginCount: pluginsList.length + 1 }],
+                packages: piPackages,
+            },
+        });
+    });
+
     // --- File Explorer ---
 
     socket.on("list_files", (data: any) => {

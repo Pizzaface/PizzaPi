@@ -164,7 +164,7 @@ export function useSlashCommands(
           { name: "enable", description: "Enable a disabled MCP server", requiresArg: true },
         ],
       },
-      { name: "plugins", description: "Show loaded plugins" },
+      { name: "plugins", description: "Manage Claude Code plugins and marketplaces" },
       {
         name: "skills",
         description: "Show available skills",
@@ -474,62 +474,22 @@ export function useSlashCommands(
         return true;
       }
 
+      // `/plugins [args]` is an alias for the CLI's `/plugin` command, which
+      // replies with a structured, interactive plugins card.
       if (rawCommand === "plugins") {
-        if (!runnerId) {
-          setInput("");
-          setCommandOpen(false);
-          setCommandQuery("");
-          onAppendSystemMessage?.(
-            "**Plugins** — Runner not connected yet. Try again in a moment.",
-          );
-          return true;
-        }
         setInput("");
         setCommandOpen(false);
         setCommandQuery("");
-        const dispatchSessionId = sessionId;
-        const pluginsUrl = sessionCwd
-          ? `/api/runners/${encodeURIComponent(runnerId)}/plugins?cwd=${encodeURIComponent(sessionCwd)}`
-          : `/api/runners/${encodeURIComponent(runnerId)}/plugins`;
-        fetch(pluginsUrl, { credentials: "include" })
-          .then((res) =>
-            res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)),
-          )
-          .then((data: unknown) => {
-            if (dispatchSessionId !== sessionIdRef.current) return;
-            const raw = data as {
-              plugins?: Array<{
-                name: string; description?: string; version?: string;
-                commands?: Array<{ name: string; description?: string }>;
-                hookEvents?: string[]; skills?: Array<{ name: string }>;
-                agents?: Array<{ name: string }>; rules?: Array<{ name: string }>;
-                hasMcp?: boolean; hasAgents?: boolean;
-              }>;
-            };
-            const plugins = Array.isArray(raw?.plugins) ? raw.plugins : [];
-            onAppendSystemMessage?.({
-              kind: "plugins",
-              plugins: plugins.map((p) => ({
-                name: p.name,
-                description: p.description,
-                version: p.version,
-                commands: (p.commands ?? []).map((c) => ({
-                  name: c.name,
-                  description: c.description,
-                })),
-                hookCount: p.hookEvents?.length ?? 0,
-                skillCount: p.skills?.length ?? 0,
-                agentCount: p.agents?.length ?? 0,
-                ruleCount: p.rules?.length ?? 0,
-                hasMcp: !!p.hasMcp,
-                hasAgents: !!p.hasAgents,
-              })),
-            });
-          })
-          .catch((err: Error) => {
-            if (dispatchSessionId !== sessionIdRef.current) return;
-            onAppendSystemMessage?.(`**Plugins** — Failed to load: ${err.message}`);
-          });
+        if (!onSendInput) {
+          onAppendSystemMessage?.("**Plugins** — Session not connected yet. Try again in a moment.");
+          return true;
+        }
+        void onSendInput({
+          text: `/plugin${args ? ` ${args}` : ""}`,
+          files: [],
+          suppressOptimistic: true,
+          ...(isAgentActive ? { deliverAs: "steer" as const } : {}),
+        });
         return true;
       }
 

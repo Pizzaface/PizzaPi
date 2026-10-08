@@ -73,6 +73,8 @@ import {
 } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import { McpToggleContext } from "@/components/session-viewer/McpToggleContext";
+import { PluginCommandContext, PluginResultCountContext, type PluginCommandHandler } from "@/components/plugins/plugins-data";
+import { PLUGIN_COMMAND_MESSAGE_TYPE } from "@pizzapi/protocol";
 import { SessionActionsProvider } from "@/components/session-viewer/session-actions-context";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { type IncompleteTriggerItem } from "@/attention/trigger-groups";
@@ -220,6 +222,23 @@ export function SessionViewer({
       }
     },
     [onSendInput, sessionId],
+  );
+  // Plugin card actions run `/plugin …` in the session, so the CLI reloads
+  // resources and replies with a fresh structured card.
+  const runPluginCommand = React.useMemo<PluginCommandHandler | null>(
+    () => onSendInput && sessionId
+      ? (args: string[]) => Promise.resolve(onSendInput({
+          text: `/plugin ${args.join(" ")}`,
+          files: [],
+          suppressOptimistic: true,
+          ...(agentActive ? { deliverAs: "steer" as const } : {}),
+        }))
+      : null,
+    [onSendInput, sessionId, agentActive],
+  );
+  const pluginResultCount = React.useMemo(
+    () => messages.reduce((n, m) => n + (m.role === "custom" && m.customType === PLUGIN_COMMAND_MESSAGE_TYPE ? 1 : 0), 0),
+    [messages],
   );
   const [showEndSessionDialog, setShowEndSessionDialog] = React.useState(false);
   const [incompleteTriggers, setIncompleteTriggers] = React.useState<IncompleteTriggerItem[]>([]);
@@ -634,6 +653,8 @@ export function SessionViewer({
   return (
     <SessionActionsProvider value={sessionActionsWithQuote}>
       <McpToggleContext.Provider value={onExec ? handleMcpToggle : null}>
+        <PluginCommandContext.Provider value={runPluginCommand}>
+        <PluginResultCountContext.Provider value={pluginResultCount}>
         <ModeUiContext.Provider value={modeUi ?? null}>
         <ArtifactHostContext.Provider value={artifactHost}>
         <div className="flex flex-col flex-1 min-h-0">
@@ -1980,6 +2001,8 @@ export function SessionViewer({
         </div>
         </ArtifactHostContext.Provider>
         </ModeUiContext.Provider>
+        </PluginResultCountContext.Provider>
+        </PluginCommandContext.Provider>
       </McpToggleContext.Provider>
     </SessionActionsProvider>
   );
