@@ -39,12 +39,17 @@ afterEach(() => {
 });
 
 describe("ArtifactCard", () => {
-    test("shows the file name and offers to open it", () => {
+    test("shows the file name and offers 44px touch actions", () => {
         const { getByText, getByLabelText } = render(
             <ArtifactCard path="/w/reports/q3.csv" kind="csv" runnerId="r1" onOpen={() => {}} />,
         );
         expect(getByText("q3.csv")).toBeDefined();
-        expect(getByLabelText("Open q3.csv")).toBeDefined();
+        for (const label of ["Open q3.csv", "Download q3.csv", "Expand q3.csv"]) {
+            const button = getByLabelText(label);
+            expect(button).toBeDefined();
+            expect(button.className).toContain("size-11");
+            expect(button.className).not.toContain("md:size-7");
+        }
     });
 
     test("fetches text kinds as utf8 and renders the preview", async () => {

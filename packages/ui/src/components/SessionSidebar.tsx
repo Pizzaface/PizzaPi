@@ -982,12 +982,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         </DialogDescription>
                     </DialogHeader>
                     <DialogFooter>
-                        <Button variant="outline" onClick={() => setConfirmEndSessionId(null)}>
+                        <Button variant="outline" className="min-h-11" onClick={() => setConfirmEndSessionId(null)}>
                             Cancel
                         </Button>
                         {hasDescendants && (
                             <Button
                                 variant="destructive"
+                                className="min-h-11"
                                 onClick={() => {
                                     if (confirmEndSessionId && onEndSession) {
                                         onEndSession(confirmEndSessionId);
@@ -1003,6 +1004,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         )}
                         <Button
                             variant="destructive"
+                            className="min-h-11"
                             onClick={() => {
                                 if (confirmEndSessionId && onEndSession) {
                                     onEndSession(confirmEndSessionId);
@@ -1027,11 +1029,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         </DialogDescription>
                     </DialogHeader>
                     <DialogFooter>
-                        <Button variant="outline" onClick={() => setConfirmEndMultiple(false)}>
+                        <Button variant="outline" className="min-h-11" onClick={() => setConfirmEndMultiple(false)}>
                             Cancel
                         </Button>
                         <Button
                             variant="destructive"
+                            className="min-h-11"
                             onClick={() => {
                                 if (onEndSession) {
                                     for (const id of selectedSessionIds) {
@@ -1055,7 +1058,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         <Button
                             variant="ghost"
                             size="icon"
-                            className="hidden md:inline-flex h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            className="hidden md:inline-flex h-11 w-11 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
                             onClick={() => setCollapsed(true)}
                             aria-label="Collapse sidebar"
                         >
@@ -1069,7 +1072,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         <Button
                             variant="ghost"
                             size="icon"
-                            className="h-11 w-11 md:h-8 md:w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            className="h-11 w-11 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
                             onClick={onClose}
                             aria-label="Close sidebar"
                             title="Close sidebar"
@@ -1083,8 +1086,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     <div className="flex items-center gap-2">
                         <Button
                             variant="ghost"
-                            size="sm"
-                            className="h-11 md:h-7 text-xs text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent px-3 md:px-2"
+                            className="h-11 text-xs text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent px-3"
                             onClick={exitSelectMode}
                         >
                             Cancel
@@ -1097,7 +1099,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         <Button
                             variant="ghost"
                             size="icon"
-                            className="h-11 w-11 md:h-7 md:w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            className="h-11 w-11 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
                             onClick={() => {
                                 if (selectedSessionIds.size === liveSessions.length) {
                                     setSelectedSessionIds(new Set());
@@ -1114,7 +1116,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                             variant="ghost"
                             size="icon"
                             className={cn(
-                                "h-11 w-11 md:h-7 md:w-7",
+                                "h-11 w-11",
                                 selectedSessionIds.size > 0
                                     ? "text-red-500 hover:text-red-600 hover:bg-red-500/10"
                                     : "text-sidebar-foreground/30 cursor-not-allowed",
@@ -1137,7 +1139,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         <Button
                             variant="ghost"
                             size="icon"
-                            className="hidden md:inline-flex h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            className="hidden md:inline-flex h-11 w-11 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
                             onClick={() => setCollapsed(true)}
                             aria-label="Collapse sidebar"
                         >
@@ -1152,7 +1154,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                             <Button
                                 variant="ghost"
                                 size="icon"
-                                className="h-11 w-11 md:h-8 md:w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                                className="h-11 w-11 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
                                 onClick={() => setSelectMode(true)}
                                 aria-label="Select sessions"
                                 title="Select sessions"
@@ -1163,7 +1165,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         <Button
                             variant="ghost"
                             size="icon"
-                            className="h-11 w-11 md:h-8 md:w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            className="h-11 w-11 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
                             onClick={() => onNewSession()}
                             aria-label="New session"
                             title="New session"
@@ -1209,7 +1211,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                 </button>
                             ))}
                         </div>
-                        <Button className="w-full" variant="outline" size="sm" onClick={() => onNewSession(activeMode?.workspace)}>
+                        <Button className="min-h-11 w-full" variant="outline" onClick={() => onNewSession(activeMode?.workspace)}>
                             <Plus className="h-4 w-4" />
                             {activeMode ? `New in ${activeMode.label}` : "New"}
                         </Button>
@@ -1565,7 +1567,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                       });
                                                                     }
                                                                   }}
-                                                                  className="flex-shrink-0 -m-3 h-11 w-11 rounded flex items-center justify-center text-sidebar-foreground/50 hover:text-sidebar-foreground/70 hover:bg-sidebar-accent/50 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:-m-1.5 md:h-7 md:w-7"
+                                                                  className="flex-shrink-0 -m-3 h-11 w-11 rounded flex items-center justify-center text-sidebar-foreground/50 hover:text-sidebar-foreground/70 hover:bg-sidebar-accent/50 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                                                   aria-expanded={isExpanded}
                                                                   aria-label={isExpanded ? "Collapse linked sessions" : "Expand linked sessions"}
                                                                 >
@@ -1729,7 +1731,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     <Button
                         variant="ghost"
                         size="icon"
-                        className="h-11 w-11 md:h-8 md:w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                        className="h-11 w-11 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
                         onClick={() => setCollapsed(false)}
                         aria-label="Expand sidebar"
                     >
@@ -1738,7 +1740,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     <Button
                         variant="ghost"
                         size="icon"
-                        className={cn("h-8 w-8 hover:bg-sidebar-accent", showRunners ? "text-primary" : "text-sidebar-foreground/60 hover:text-sidebar-foreground")}
+                        className={cn("h-11 w-11 hover:bg-sidebar-accent", showRunners ? "text-primary" : "text-sidebar-foreground/60 hover:text-sidebar-foreground")}
                         onClick={onShowRunners}
                         title="Runners"
                     >
@@ -1837,7 +1839,7 @@ function LauncherFooter({ dynamicPanels, activeModeId, activeLauncherId, onOpenL
             key={panel.serviceId}
             variant="ghost"
             size="icon"
-            className={`h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent${activeClass(panel)}`}
+            className={`h-11 w-11 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent${activeClass(panel)}`}
             onClick={() => onOpenLauncherPanel?.(panel)}
             aria-label={panel.label}
             title={panel.label}
@@ -1861,7 +1863,7 @@ function LauncherFooter({ dynamicPanels, activeModeId, activeLauncherId, onOpenL
               key={panel.serviceId}
               variant="ghost"
               size="icon"
-              className={`h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent${activeClass(panel)}`}
+              className={`h-11 w-11 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent${activeClass(panel)}`}
               onClick={() => onOpenLauncherPanel?.(panel)}
               aria-label={panel.label}
               title={panel.label}
@@ -1878,7 +1880,7 @@ function LauncherFooter({ dynamicPanels, activeModeId, activeLauncherId, onOpenL
               key={panel.serviceId}
               variant="ghost"
               size="icon"
-              className={`h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent${activeClass(panel)}`}
+              className={`h-11 w-11 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent${activeClass(panel)}`}
               onClick={() => onOpenLauncherPanel?.(panel)}
               aria-label={panel.label}
               title={panel.label}
