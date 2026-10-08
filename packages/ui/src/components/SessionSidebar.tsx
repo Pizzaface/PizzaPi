@@ -1643,6 +1643,11 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                           : "unknown"
                                                                 }
                                                             />
+                                                            {groupCounts && (
+                                                                <span className="absolute -top-2.5 left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded-full bg-sidebar">
+                                                                    <StatusCountChip counts={groupCounts} />
+                                                                </span>
+                                                            )}
                                                         </div>
 
                                                         {/* Text info */}
@@ -1674,7 +1679,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                     </div>
                                                                 ) : null;
                                                             })()}
-                                                            {(s.userName || (showCwd && s.cwd) || groupCounts) && (
+                                                            {(s.userName || (showCwd && s.cwd)) && (
                                                                 <div className="flex items-center gap-1 mt-0.5 min-w-0">
                                                                     {s.userName && (
                                                                         <span className="text-[0.65rem] text-sidebar-foreground/60 truncate">
@@ -1687,11 +1692,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                             title={s.cwd}
                                                                         >
                                                                             {s.userName ? "·" : ""} {formatPathTail(s.cwd, 2)}
-                                                                        </span>
-                                                                    )}
-                                                                    {groupCounts && (
-                                                                        <span className="ml-auto flex-shrink-0">
-                                                                            <StatusCountChip counts={groupCounts} />
                                                                         </span>
                                                                     )}
                                                                 </div>
