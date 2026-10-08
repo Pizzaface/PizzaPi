@@ -216,6 +216,62 @@ describe("messagesChangedSinceLastEmit", () => {
         expect(messagesChangedSinceLastEmit(ctx)).toBe(true);
     });
 
+    test("records chunked refresh complete only after the relay acks the chunk", async () => {
+        const ctx = makeContext({
+            leafId: "acked-large-message",
+            entries: [{
+                type: "message",
+                id: "acked-large-message",
+                parentId: null,
+                timestamp: new Date(0).toISOString(),
+                message: { role: "user", content: "x".repeat(4_800_000), timestamp: Date.now() },
+            }],
+        });
+        ctx.relay = { sessionId: "sess", token: "tok", shareUrl: "http://localhost/sess", seq: 0, ackedSeq: 0 };
+        const chunkEvents: unknown[] = [];
+        ctx.sioSocket = {
+            connected: true,
+            emit: (_name: string, payload: any, ack?: (result: { ok: boolean }) => void) => {
+                chunkEvents.push(payload.event);
+                ack?.({ ok: true });
+            },
+        } as any;
+
+        emitSessionActive(ctx);
+        expect((ctx.emitted[0] as any).state.chunked).toBe(true);
+        expect(messagesChangedSinceLastEmit(ctx)).toBe(false);
+
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        expect(chunkEvents).toHaveLength(1);
+        expect(messagesChangedSinceLastEmit(ctx)).toBe(false);
+    });
+
+    test("keeps chunked refresh eligible for retry when the relay nacks the chunk", async () => {
+        const ctx = makeContext({
+            leafId: "nacked-large-message",
+            entries: [{
+                type: "message",
+                id: "nacked-large-message",
+                parentId: null,
+                timestamp: new Date(0).toISOString(),
+                message: { role: "user", content: "x".repeat(4_800_000), timestamp: Date.now() },
+            }],
+        });
+        ctx.relay = { sessionId: "sess", token: "tok", shareUrl: "http://localhost/sess", seq: 0, ackedSeq: 0 };
+        ctx.sioSocket = {
+            connected: true,
+            emit: (_name: string, _payload: any, ack?: (result: { ok: boolean }) => void) => ack?.({ ok: false }),
+        } as any;
+
+        emitSessionActive(ctx);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        expect(messagesChangedSinceLastEmit(ctx)).toBe(true);
+    });
+
     test("throttles opt-in chunked snapshots to metadata-only + one trailing snapshot", async () => {
         const large = (id: string) => ({
             type: "message", id, parentId: null, timestamp: new Date(0).toISOString(),

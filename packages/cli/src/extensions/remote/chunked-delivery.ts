@@ -218,6 +218,26 @@ export function computeChunkBoundaries(messages: unknown[], sizes?: number[]): A
  * Each chunk carries a `snapshotId` that matches the session_active event,
  * so the UI can discard stale chunks from a previous snapshot stream.
  */
+const CHUNK_ACK_TIMEOUT_MS = 15_000;
+
+function forwardChunkWithAck(rctx: RelayContext, event: Record<string, unknown>): Promise<boolean> {
+    if (!rctx.relay || !rctx.sioSocket?.connected) return Promise.resolve(false);
+    const seq = ++rctx.relay.seq;
+    return new Promise((resolve) => {
+        const timeout = setTimeout(() => resolve(false), CHUNK_ACK_TIMEOUT_MS);
+        timeout.unref?.();
+        (rctx.sioSocket as any).emit("event", {
+            sessionId: rctx.relay!.sessionId,
+            token: rctx.relay!.token,
+            event,
+            seq,
+        }, (ack?: { ok?: boolean }) => {
+            clearTimeout(timeout);
+            resolve(ack?.ok === true);
+        });
+    });
+}
+
 function sendChunkedMessages(
     rctx: RelayContext,
     rawMessages: unknown[],
@@ -237,7 +257,7 @@ function sendChunkedMessages(
 
     let chunkIndex = 0;
 
-    function sendNextChunk() {
+    async function sendNextChunk() {
         // A newer emitSessionActive() superseded this sender — stop before any
         // cleanup, because the newer sender owns the in-flight marker.
         if (activeChunkedSnapshotId !== snapshotId) return;
@@ -250,7 +270,7 @@ function sendChunkedMessages(
         const [start, end] = chunks[chunkIndex];
         const isFinal = chunkIndex === totalChunks - 1;
 
-        rctx.forwardEvent({
+        const delivered = await forwardChunkWithAck(rctx, {
             type: "session_messages_chunk",
             snapshotId,
             chunkIndex,
@@ -259,6 +279,11 @@ function sendChunkedMessages(
             messages: messages.slice(start, end),
             final: isFinal,
         });
+        if (activeChunkedSnapshotId !== snapshotId) return;
+        if (!delivered) {
+            onComplete(false);
+            return;
+        }
 
         chunkIndex++;
 
