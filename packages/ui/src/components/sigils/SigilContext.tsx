@@ -13,6 +13,11 @@ import { buildResolveUrl } from "@/lib/sigils/resolve-url";
 
 export type { SigilResolveData } from "@pizzapi/protocol";
 
+// ponytail: a failed sigil should get a fresh look once its service recovers,
+// even without a full page reload or a runner reconnect (which clears the
+// whole cache). A flat TTL on error entries beats tracking per-service health.
+const ERROR_CACHE_TTL_MS = 30_000;
+
 interface SigilResolveState {
   data?: SigilResolveData;
   loading: boolean;
@@ -129,7 +134,8 @@ export function SigilProvider({ sigilDefs, panels, runnerId, runnerOnline = true
     (type: string, id: string, params?: Record<string, string>) => {
       const canonical = registry.resolveType(type);
       const key = `${canonical}:${id}:${sessionCwd ?? ""}`;
-      // Failed entries stay cached after the bounded retries, until reconnect.
+      // Successes cache forever; failed entries self-expire (ERROR_CACHE_TTL_MS)
+      // so a pill retries once its service recovers, without a reconnect.
       if (!runnerOnline || cache.has(key)) return;
 
       const def = registry.getServiceDef(canonical);
@@ -182,6 +188,16 @@ export function SigilProvider({ sigilDefs, panels, runnerId, runnerOnline = true
           }
           cache.set(key, { loading: false, error: String(err) });
           setGeneration((g) => g + 1);
+          // Let a later trigger (pill remount, generation bump) retry instead
+          // of staying broken for the rest of the session.
+          const invalidate = setTimeout(() => {
+            retryTimers.delete(invalidate);
+            if (cache.get(key)?.error !== undefined) {
+              cache.delete(key);
+              setGeneration((g) => g + 1);
+            }
+          }, ERROR_CACHE_TTL_MS);
+          retryTimers.add(invalidate);
           return undefined;
         }
       };
