@@ -124,8 +124,51 @@ export function SpreadsheetTable({
       : 0;
   const bodyRows = virtualize ? virtualItems.map((vi) => sortedRows[vi.index]!) : sortedRows;
 
+  const renderRows = (tableRows: typeof sortedRows) =>
+    tableRows.map((row, i) => (
+      <tr key={row.id} className={cn(i % 2 === 1 && "bg-muted/20")}>
+        {row.getVisibleCells().map((cell) => {
+          const numeric = numericColumns[Number(cell.column.id)];
+          return (
+            <td
+              key={cell.id}
+              className={cn(
+                "border-b border-border/50 px-2 py-1",
+                numeric ? "text-right tabular-nums" : "text-left",
+              )}
+            >
+              {cell.getValue<string>()}
+            </td>
+          );
+        })}
+      </tr>
+    ));
+
   return (
     <div className={cn("flex flex-col", full && "h-full")}>
+      {virtualize && (
+        <details className="border-b border-border px-3 py-2 text-xs">
+          <summary className="cursor-pointer text-muted-foreground">
+            Screen reader table with all {sortedRows.length} rows
+          </summary>
+          <div className="mt-2 max-h-96 overflow-auto">
+            <table className="w-full border-collapse text-xs">
+              <thead>
+                {table.getHeaderGroups().map((hg) => (
+                  <tr key={hg.id}>
+                    {hg.headers.map((h) => (
+                      <th key={h.id} className="border-b border-border px-2 py-1 text-left">
+                        {String(h.column.columnDef.header)}
+                      </th>
+                    ))}
+                  </tr>
+                ))}
+              </thead>
+              <tbody>{renderRows(sortedRows)}</tbody>
+            </table>
+          </div>
+        </details>
+      )}
       <div ref={scrollRef} className={cn("overflow-auto", full ? "flex-1" : "max-h-96")}>
         <table className="w-full border-collapse text-xs">
           <thead className="sticky top-0 z-10 bg-muted/80 backdrop-blur">
@@ -175,24 +218,7 @@ export function SpreadsheetTable({
           </thead>
           <tbody>
             {paddingTop > 0 && <tr style={{ height: paddingTop }} aria-hidden />}
-            {bodyRows.map((row, i) => (
-              <tr key={row.id} className={cn(i % 2 === 1 && "bg-muted/20")}>
-                {row.getVisibleCells().map((cell) => {
-                  const numeric = numericColumns[Number(cell.column.id)];
-                  return (
-                    <td
-                      key={cell.id}
-                      className={cn(
-                        "border-b border-border/50 px-2 py-1",
-                        numeric ? "text-right tabular-nums" : "text-left",
-                      )}
-                    >
-                      {cell.getValue<string>()}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
+            {renderRows(bodyRows)}
             {paddingBottom > 0 && <tr style={{ height: paddingBottom }} aria-hidden />}
           </tbody>
         </table>
