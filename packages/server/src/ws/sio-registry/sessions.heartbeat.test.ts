@@ -17,6 +17,7 @@ mock.module("../sio-state/index.js", () => ({
     releaseSessionOwnershipLock: noopAsync,
     deleteSessionIfOwner: async () => true,
     setSession: noopAsync,
+    setSessionMessagesList: noopAsync,
     getSession: mockGetSession,
     getSessionSummary: mockGetSession,
     getSessionField: async () => null,

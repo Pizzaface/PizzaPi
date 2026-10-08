@@ -153,6 +153,7 @@ mock.module("../sio-state/index.js", () => ({
     releaseSessionOwnershipLock: async () => {},
     deleteSessionIfOwner: async () => true,
     initStateRedis: async () => {},
+    setSessionMessagesList: async () => {},
     setSession: async (sessionId: string, data: Record<string, unknown>) => {
         store.set(`__hash__:pizzapi:sio:session:${sessionId}`, JSON.stringify(data));
     },

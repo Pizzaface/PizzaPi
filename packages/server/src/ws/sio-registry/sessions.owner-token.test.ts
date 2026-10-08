@@ -14,6 +14,7 @@ const noopAsync = async () => {};
 
 mock.module("../sio-state/index.js", () => ({
     setSession: noopAsync,
+    setSessionMessagesList: noopAsync,
     getSession: async () => null,
     getSessionSummary: async () => null,
     getSessionField: async (_sessionId: string, _field: string) => {

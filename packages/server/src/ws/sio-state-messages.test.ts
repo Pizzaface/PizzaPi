@@ -149,9 +149,6 @@ describe("split session message list", () => {
         // → startIndex=3, endIndex=5 → messages[3..4].
         const page = await getSessionMessagesRange(sessionId, 3, 5);
         expect(page).toEqual([messages[3], messages[4]]);
-
-        const hasMore = 3 > 0;
-        expect(hasMore).toBe(true);
     });
 
     it("a fresh snapshot with zero messages clears the list so readers re-fall-back instead of serving stale entries", async () => {
