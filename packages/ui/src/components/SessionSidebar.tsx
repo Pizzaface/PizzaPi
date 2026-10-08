@@ -9,6 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { cn } from "@/lib/utils";
 import { useHubSocket } from "@/lib/hub-socket-context";
 import { extractWorktreeName, formatPathTail, worktreeRoots } from "@/lib/path";
@@ -1449,6 +1450,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                     </div>}
 
                                                     {/* Sliding session card */}
+                                                    <ContextMenu>
+                                                    <ContextMenuTrigger asChild disabled={selectMode}>
                                                     <button
                                                         onClick={(_e) => {
                                                             if (selectMode) {
@@ -1502,7 +1505,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         onPointerMove={selectMode ? undefined : handleSessionPointerMove}
                                                         onPointerUp={selectMode ? undefined : handleSessionPointerUp}
                                                         onPointerCancel={selectMode ? undefined : handleSessionPointerUp}
-                                                        onContextMenu={(e) => e.preventDefault()}
                                                         className={cn(
                                                             "relative flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 text-left rounded-md",
                                                             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
@@ -1662,6 +1664,35 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             )}
                                                         </div>
                                                     </button>
+                                                    </ContextMenuTrigger>
+                                                    <ContextMenuContent>
+                                                        <ContextMenuItem onSelect={() => onOpenSession(s.sessionId)}>
+                                                            <MessageSquare /> Open
+                                                        </ContextMenuItem>
+                                                        <ContextMenuItem disabled={isPinPending} onSelect={() => togglePinSession(s.sessionId, isPinned)}>
+                                                            {isPinned ? <PinOff /> : <Pin />} {isPinned ? "Unpin" : "Pin"}
+                                                        </ContextMenuItem>
+                                                        {s.runnerId && onDuplicateSession && (
+                                                            <ContextMenuItem onSelect={() => onDuplicateSession(s.runnerId!, s.cwd || "")}>
+                                                                <Copy /> Duplicate
+                                                            </ContextMenuItem>
+                                                        )}
+                                                        <ContextMenuItem onSelect={() => { void navigator.clipboard?.writeText(s.sessionId); }}>
+                                                            <Copy /> Copy session ID
+                                                        </ContextMenuItem>
+                                                        <ContextMenuItem onSelect={() => { setSelectMode(true); toggleSelectSession(s.sessionId); }}>
+                                                            <CheckSquare /> Select
+                                                        </ContextMenuItem>
+                                                        {onEndSession && (
+                                                            <>
+                                                                <ContextMenuSeparator />
+                                                                <ContextMenuItem variant="destructive" onSelect={() => setConfirmEndSessionId(s.sessionId)}>
+                                                                    <X /> End session
+                                                                </ContextMenuItem>
+                                                            </>
+                                                        )}
+                                                    </ContextMenuContent>
+                                                    </ContextMenu>
                                                 </div>
                                             );
                                             });
