@@ -146,6 +146,13 @@ const ownerDb = await installRunnerOwnerTestDb();
 
 const { initSioRegistry, runnersUserRoom, runnerSecrets } = await import("./context.js");
 const { initStateRedis } = await import("../sio-state.js");
+// The runner-secret path (validateAndPersistRunnerSecret -> getValue/setValue)
+// goes through redis-kv-store.js, a SEPARATE lazily-connecting client from
+// sio-state's. Without injecting it too, tests that register a runner with a
+// secret fall through to a real connect() attempt at redis://127.0.0.1:6379 --
+// which times out the whole test when no local Redis is listening, or writes
+// real `pizzapi:runner:secret:*` keys into a developer's live Redis when one is.
+const { _injectRedisForTesting: _injectKvRedis, _resetRedisKvStoreForTesting } = await import("../../redis-kv-store.js");
 const { registerRunner, removeRunner, updateRunnerSkills, updateRunnerAgents, updateRunnerPlugins, updateRunnerServices, getRunnerServices } =
     await import("./runners.js");
 
@@ -160,6 +167,8 @@ describe("runners broadcast", () => {
         runnerSecrets.clear();
         initSioRegistry(createFakeIo() as any);
         await initStateRedis(mockRedis as never);
+        _resetRedisKvStoreForTesting();
+        _injectKvRedis(mockRedis);
     });
 
     it("broadcasts runner_added when registerRunner succeeds", async () => {
@@ -239,10 +248,14 @@ describe("runners broadcast", () => {
         });
         expect(result).toBe(runnerId);
         expect(runnerSecrets.get(runnerId)).toBe(runnerSecret);
+        // Secret must be persisted through the injected redis-kv-store mock, not
+        // dropped by (or leaked to) a real Redis connection attempt.
+        expect(store.get(`pizzapi:runner:secret:${runnerId}`)).toBe(runnerSecret);
 
         await removeRunner(runnerId);
 
         expect(runnerSecrets.has(runnerId)).toBe(false);
+        expect(store.get(`pizzapi:runner:secret:${runnerId}`)).toBeUndefined();
     });
 
     it("broadcasts runner_updated after updateRunnerSkills", async () => {
