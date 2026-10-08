@@ -129,6 +129,11 @@ my-service/
 Layout is up to you — only the paths named in the declaration matter, and they
 are confined to the package root.
 
+**Dependencies:** never install pi (`@earendil-works/*`) into the package's own
+`node_modules` — the host provides it. Peer-dependency only; details and a
+verification probe in extension-sdk-reference → "Dependencies: never ship your
+own copy of pi".
+
 ---
 
 ## Service declaration fields
@@ -709,6 +714,7 @@ package can be reinstalled, moved, or resolved from a different checkout.
 | Not cleaning up in `dispose()` | `server.stop(true)`; release listeners/timers/processes |
 | Absolute panel API URLs | Use relative `./api/...` — the tunnel rewrites paths |
 | Panel designed too big | Bottom dock 280px tall, side dock 320px wide |
+| `@earendil-works/*` in the package's own `node_modules` (deps or devDeps) | Every session/daemon loads a duplicate pi (~50–60 MB each, wrong version). `peerDependencies` only + `[install] peer = false`; see extension-sdk-reference → "Dependencies: never ship your own copy of pi" |
 
 ---
 

@@ -59,6 +59,28 @@ export default myExtension;
 
 The factory runs synchronously during extension load. Async setup (e.g. HTTP server startup) is safe — it queues without blocking.
 
+### Dependencies: never ship your own copy of pi
+
+**Rule:** a pi package must not have `@earendil-works/*` or `@mariozechner/*` packages (pi-coding-agent, pi-ai, pi-agent-core, pi-tui) installed in its own `node_modules`. The same applies to `typebox` / `@sinclair/typebox` if you import them at runtime.
+
+**Why:** PizzaPi runs on Bun. pi's extension loader (jiti) uses Bun's native `import` under Bun, so pi's alias table, which would point you at the host's pi, is **ignored**. Every runtime import resolves to the nearest `node_modules` copy. One package with its own pi adds **~50–60 MB to every session worker** and runs your code against a different, often outdated, pi version. It loads in every session, so 100 sessions means 5 GB. If the package has no `node_modules` at all, Bun **auto-installs** pi into `~/.bun/install/cache` and loads that instead. On 2026-10-08 this was ~110 MB of every worker on a 16 GB Mac running ~113 sessions.
+
+**Do:**
+- Declare pi packages in `peerDependencies` only. **Not** in `dependencies` or `devDependencies`, because Bun installs both. Bun also installs peers by default, so turn that off with `bunfig.toml` → `[install] peer = false`.
+- Use `import type { … }` for anything type-only. Type imports are erased and cost nothing.
+- Value imports (`Type`, `defineTool`, `getAgentDir`, …) are fine **once there is no local copy**. The runner sets `NODE_PATH` for the daemon and every worker to the host pi's `node_modules`. In Bun, `NODE_PATH` wins over auto-install, so the import falls through to the host (`packages/cli/src/runner/host-pi-node-path.ts`). A copy in your own `node_modules` still wins over `NODE_PATH`, which is why the copy has to go.
+- Typecheck against the host's types, for example tsconfig `paths` pointing at the PizzaPi checkout's `node_modules/@earendil-works/*`, instead of installing pi locally. **`bun test` ignores `NODE_PATH`** but does honor tsconfig `paths`, so tests that import pi at runtime need the `paths` mapping.
+
+**Verify:** from the package root,
+```bash
+ls node_modules/@earendil-works 2>&1   # must show nothing installed
+HOSTNM=$(dirname "$(dirname "$(dirname "$(cd <PizzaPi>/packages/cli && bun -e 'console.log(require.resolve("@earendil-works/pi-coding-agent/package.json"))')")")")  # → …/node_modules
+echo 'console.log(import.meta.resolve("@earendil-works/pi-coding-agent"))' > /tmp/probe.ts
+NODE_PATH=$HOSTNM bun /tmp/probe.ts   # must print a path inside the PizzaPi checkout
+```
+
+**Diagnose an existing install:** load the package's extensions through pi's `loadExtensions`, then diff `globalThis.Loader.registry.keys()` before and after. Any key under `<your-package>/node_modules/@earendil-works/` or `~/.bun/install/cache/@earendil-works/` is a duplicate pi.
+
 ### Event subscriptions
 
 ```typescript

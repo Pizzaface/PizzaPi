@@ -18,6 +18,7 @@ import { watchWorkerStartup, WORKER_STARTUP_TIMEOUT_MS, type WorkerStartupResult
 import { loadConfig } from "../config.js";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { isStrippedSubprocessEnvName } from "@pizzapi/tools";
+import { hostPiNodePath } from "./host-pi-node-path.js";
 
 export interface RunnerSession {
     sessionId: string;
@@ -355,6 +356,9 @@ export function spawnSession(
         ...(options?.resumePath ? { PIZZAPI_WORKER_RESUME_PATH: options.resumePath } : {}),
         ...(options?.autoClose ? { PIZZAPI_WORKER_AUTO_CLOSE: "true" } : {}),
     };
+    // Pin pi packages' runtime pi imports to the host copy (see host-pi-node-path.ts).
+    const nodePath = hostPiNodePath(env.NODE_PATH);
+    if (nodePath) env.NODE_PATH = nodePath;
 
     const child = spawn(process.execPath, workerArgs, {
         env,
