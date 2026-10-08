@@ -201,7 +201,43 @@ describe("connection handler -> SessionHost -> AgentSession.prompt integration",
             streamingBehavior: undefined,
             images: undefined,
             source: "extension",
+            preflightResult: expect.any(Function),
         });
+    });
+
+    test("acks on acceptance, not when a long agent run finishes", async () => {
+        // pi resolves prompt()/sendCustomMessage() only after the whole run on an
+        // idle session; the relay gives up after 10s and reports "did not acknowledge".
+        const never = new Promise<void>(() => {});
+        const fakeSession = {
+            prompt: (_text: string, options: any) => { options.preflightResult?.("started"); return never; },
+            sendCustomMessage: () => never,
+        } as any;
+        const host = new SessionHost(() => fakeSession, {
+            newSession: async () => ({ cancelled: false }),
+            switchSession: async () => ({ cancelled: false }),
+            fork: async () => ({ cancelled: false }),
+        });
+        const { rctx } = makeRctx(host);
+        const { connectionHandlers } = createConnectionHandlers({
+            rctx,
+            state: makeState() as any,
+            triggerWaits: { cancelAll: () => 0 } as any,
+            delinkManager: {} as any,
+            cancellationManager: {} as any,
+            followUpGrace: { clearFollowUpGrace: () => {} } as any,
+            setModelFromWeb: async () => {},
+        });
+        const userAck = mock((_delivered: boolean) => {});
+        const linkedAck = mock((_delivered: boolean) => {});
+
+        connect(rctx, connectionHandlers);
+        lastSocket!.trigger("input", { text: "do a long task" }, userAck);
+        lastSocket!.trigger("input", { text: "Message from linked session child-1:\n\nhi", message: "hi", client: "agent", fromSessionId: "child-1" }, linkedAck);
+        await sleep(30);
+
+        expect(userAck).toHaveBeenCalledWith(true);
+        expect(linkedAck).toHaveBeenCalledWith(true);
     });
 
     test("agent input does not consume pending human approvals", async () => {

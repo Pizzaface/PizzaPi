@@ -30,6 +30,8 @@ export interface SendUserMessageOptions {
     deliverAs?: "steer" | "followUp";
     /** Opt into slash-command and prompt-template expansion (default false). */
     expandPromptTemplates?: boolean;
+    /** Called once pi accepts the prompt (started, queued, or handled) — before the run ends. */
+    onAccepted?: () => void;
 }
 
 /** Session lifecycle operations — backed by the runtime (TUI) or custom worker actions. */
@@ -108,6 +110,7 @@ export class SessionHost {
             streamingBehavior: options?.deliverAs,
             images,
             source: "extension",
+            ...(options?.onAccepted ? { preflightResult: () => options.onAccepted!() } : {}),
         };
         await this.session.prompt(text, promptOptions);
     }
