@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 
 const hashStore = new Map<string, Record<string, string>>();
 const setStore = new Map<string, Set<string>>();
+const stringStore = new Map<string, string>();
 
 const mockMulti = () => {
     const ops: Array<() => void> = [];
@@ -15,6 +16,18 @@ const mockMulti = () => {
         }),
         expire: mock((_key: string, _ttl: number) => {
             ops.push(() => {});
+            return chain;
+        }),
+        set: mock((key: string, value: string) => {
+            ops.push(() => {
+                stringStore.set(key, value);
+            });
+            return chain;
+        }),
+        incr: mock((key: string) => {
+            ops.push(() => {
+                stringStore.set(key, String((parseInt(stringStore.get(key) ?? "0", 10) || 0) + 1));
+            });
             return chain;
         }),
         sAdd: mock((key: string, member: string) => {
@@ -44,8 +57,11 @@ const mockRedis = {
         return fields.map((f) => hash[f] ?? null);
     }),
     exists: mock(async (key: string) => (hashStore.has(key) ? 1 : 0)),
-    get: mock(async () => null),
-    set: mock(async () => "OK"),
+    get: mock(async (key: string) => stringStore.get(key) ?? null),
+    set: mock(async (key: string, value: string) => {
+        stringStore.set(key, value);
+        return "OK";
+    }),
     del: mock(async () => 1),
     sMembers: mock(async (key: string) => Array.from(setStore.get(key) ?? [])),
     sRem: mock(async (key: string, ...members: string[]) => {
@@ -53,7 +69,11 @@ const mockRedis = {
         if (!current) return;
         for (const member of members) current.delete(member);
     }),
-    incr: mock(async () => 1),
+    incr: mock(async (key: string) => {
+        const next = (parseInt(stringStore.get(key) ?? "0", 10) || 0) + 1;
+        stringStore.set(key, String(next));
+        return next;
+    }),
     eval: mock(async (_script: string, options: { keys: string[] }) => {
         const hash = hashStore.get(options.keys[0]);
         if (!hash || hash.spawned !== "0") return 0;
@@ -65,16 +85,19 @@ const mockRedis = {
 // No mock.module needed — mock Redis client is injected directly via initStateRedis().
 import {
     claimTerminalSpawn,
+    getMessagesVersion,
     getSessionSummary,
     initStateRedis,
     setSession,
     setTerminal,
+    updateSessionFieldsAndBumpMessagesVersion,
 } from "./sio-state.js";
 
 describe("claimTerminalSpawn", () => {
     beforeEach(async () => {
         hashStore.clear();
         setStore.clear();
+        stringStore.clear();
         mockRedis.eval.mockClear();
         await initStateRedis(mockRedis as never);
     });
@@ -103,6 +126,7 @@ describe("getSessionSummary", () => {
     beforeEach(async () => {
         hashStore.clear();
         setStore.clear();
+        stringStore.clear();
         mockRedis.hmGet.mockClear();
         mockRedis.hGetAll.mockClear();
         await initStateRedis(mockRedis as never);
@@ -177,5 +201,47 @@ describe("getSessionSummary", () => {
         } finally {
             (mockRedis as any).hmGet = originalHmGet;
         }
+    });
+});
+
+describe("messages version", () => {
+    beforeEach(async () => {
+        hashStore.clear();
+        setStore.clear();
+        stringStore.clear();
+        await initStateRedis(mockRedis as never);
+    });
+
+    it("initializes, bumps, and reads the messages version marker", async () => {
+        const sessionId = "session-version";
+        await setSession(sessionId, {
+            sessionId,
+            token: "tkn",
+            collabMode: true,
+            shareUrl: "http://localhost/session",
+            cwd: "/tmp/project",
+            startedAt: new Date().toISOString(),
+            userId: "user-1",
+            userName: "Jordan",
+            sessionName: "Version Session",
+            isEphemeral: false,
+            expiresAt: null,
+            isActive: true,
+            lastHeartbeatAt: new Date().toISOString(),
+            lastHeartbeat: null,
+            lastState: JSON.stringify({ messages: ["old"] }),
+            runnerId: "runner-1",
+            runnerName: "Runner",
+            seq: 0,
+            parentSessionId: null,
+        });
+
+        expect(await getMessagesVersion(sessionId)).toBe(0);
+        await updateSessionFieldsAndBumpMessagesVersion(sessionId, {
+            lastState: JSON.stringify({ messages: ["new"] }),
+        });
+
+        expect(await getMessagesVersion(sessionId)).toBe(1);
+        expect(hashStore.get("pizzapi:sio:session:session-version")?.lastState).toBe(JSON.stringify({ messages: ["new"] }));
     });
 });

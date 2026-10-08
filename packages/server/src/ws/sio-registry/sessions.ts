@@ -25,6 +25,8 @@ import {
     refreshSessionTTL,
     incrementSeq,
     getSeq,
+    updateSessionFieldsAndBumpMessagesVersion,
+    getMessagesVersion,
     getPendingRunnerLink,
     deletePendingRunnerLink,
     getRunnerAssociation,
@@ -122,7 +124,15 @@ const SQLITE_STATE_WRITE_THROTTLE_MS = 30_000;
 // get their own shorter throttle than the multi-MB state writes.
 const lastRelaySessionOverlayWriteTimes = new Map<string, number>();
 const SQLITE_OVERLAY_WRITE_THROTTLE_MS = 5_000;
-const sessionMessagesCache = new Map<string, unknown[]>();
+// Process-local cache of parsed `lastState.messages` arrays, keyed by
+// sessionId. Each entry is stamped with the Redis-backed messages version
+// (see updateSessionFieldsAndBumpMessagesVersion/getMessagesVersion) at fill time; a read compares
+// its current version against that stamp so every relay node — not just the
+// one the runner is connected to — detects staleness after a state update on
+// another node. Bounded LRU (insertion order = recency; a hit re-inserts) so
+// memory can't grow unbounded across many paged sessions.
+const sessionMessagesCache = new Map<string, { version: number; messages: readonly unknown[] }>();
+const MAX_CACHED_SESSION_MESSAGES = 200;
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -602,7 +612,6 @@ export interface UpdateSessionStateOpts {
 
 /** Update session state (lastState + sessionName detection). */
 export async function updateSessionState(sessionId: string, state: unknown, opts?: UpdateSessionStateOpts): Promise<void> {
-    sessionMessagesCache.delete(sessionId);
     const session = await getSessionSummary(sessionId);
     if (!session) return;
 
@@ -638,7 +647,12 @@ export async function updateSessionState(sessionId: string, state: unknown, opts
         fields.expiresAt = nextEphemeralExpiry();
     }
 
-    await updateSessionFields(session.sessionId, fields);
+    // Write lastState and bump the Redis-shared messages version in one
+    // MULTI/EXEC transaction. Atomicity matters here: a concurrent
+    // getSessionMessages() (this node or a peer) must never observe the new
+    // lastState paired with the OLD version, which would wrongly treat a
+    // stale cached entry as still fresh until the NEXT update.
+    await updateSessionFieldsAndBumpMessagesVersion(session.sessionId, fields);
 
     const now = Date.now();
     // Throttle applies to ALL snapshots — including ones with messages. States
@@ -725,9 +739,24 @@ export async function getSessionState(sessionId: string): Promise<unknown | unde
     return applySnapshotOverlayToState(state, session.snapshotOverlay);
 }
 
-export async function getSessionMessages(sessionId: string): Promise<unknown[] | null> {
+/**
+ * Returns the session's parsed messages array. Cached arrays are frozen so a
+ * stray mutating caller cannot corrupt the cache for later viewers.
+ */
+export async function getSessionMessages(sessionId: string): Promise<readonly unknown[] | null> {
+    // Cheap cross-node freshness check: a single Redis GET of a small counter,
+    // not the multi-MB lastState blob. updateSessionState bumps this version
+    // atomically with every lastState write, on whichever node the runner is
+    // connected to — so every node (not just that one) can tell its cache is
+    // stale without re-parsing.
+    const version = await getMessagesVersion(sessionId);
     const cached = sessionMessagesCache.get(sessionId);
-    if (cached) return cached;
+    if (version !== null && cached && cached.version === version) {
+        // Re-insert to mark as most-recently-used (Map iteration order).
+        sessionMessagesCache.delete(sessionId);
+        sessionMessagesCache.set(sessionId, cached);
+        return cached.messages;
+    }
 
     const session = await getSession(sessionId);
     if (!session?.lastState) return null;
@@ -736,8 +765,15 @@ export async function getSessionMessages(sessionId: string): Promise<unknown[] |
         const parsed = JSON.parse(session.lastState);
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
         const candidate = (parsed as Record<string, unknown>).messages;
-        const messages = Array.isArray(candidate) ? candidate : [];
-        sessionMessagesCache.set(sessionId, messages);
+        const messages = Object.freeze(Array.isArray(candidate) ? candidate : []);
+        if (version !== null) {
+            sessionMessagesCache.set(sessionId, { version, messages });
+            // Bounded LRU: evict the oldest entry once over the cap.
+            if (sessionMessagesCache.size > MAX_CACHED_SESSION_MESSAGES) {
+                const oldestKey = sessionMessagesCache.keys().next().value;
+                if (oldestKey !== undefined) sessionMessagesCache.delete(oldestKey);
+            }
+        }
         return messages;
     } catch {
         return null;
@@ -1052,6 +1088,12 @@ async function endSharedSessionUnlocked(
         onOwnerConfirmed?: () => void | Promise<void>;
     } = {},
 ): Promise<boolean> {
+    // Drop this node's local parsed-messages cache unconditionally and first,
+    // before any early return below (owner mismatch, session already gone).
+    // Cheap to over-delete: a live session just re-fills the cache on the
+    // next load_messages call via the version check in getSessionMessages.
+    sessionMessagesCache.delete(sessionId);
+
     const io = getIo();
     if (opts.expectedOwnerToken !== undefined) {
         const currentOwnerToken = await getSessionOwnerToken(sessionId);
@@ -1189,7 +1231,8 @@ async function endSharedSessionUnlocked(
     }
     lastRelaySessionStateWriteTimes.delete(sessionId);
     lastRelaySessionOverlayWriteTimes.delete(sessionId);
-    sessionMessagesCache.delete(sessionId);
+    // sessionMessagesCache already dropped at the top of this function,
+    // before the owner-check/early-return paths above.
 
     // Persist end in SQLite
     void recordRelaySessionEnd(sessionId, session.generation).catch((error) => {

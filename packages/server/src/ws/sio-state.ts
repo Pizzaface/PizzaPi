@@ -104,6 +104,16 @@ function seqKey(sessionId: string): string {
     return `${KEY_PREFIX}:seq:${sessionId}`;
 }
 
+/**
+ * Version counter bumped whenever a session's lastState (messages) is
+ * overwritten. Lets every relay node cheaply detect that its process-local
+ * parsed-messages cache (sio-registry/sessions.ts) is stale, without
+ * re-reading/re-parsing the multi-MB lastState blob on every call.
+ */
+function messagesVersionKey(sessionId: string): string {
+    return `${KEY_PREFIX}:messages-version:${sessionId}`;
+}
+
 function runnerLinkKey(sessionId: string): string {
     return `${KEY_PREFIX}:runner-link:${sessionId}`;
 }
@@ -520,6 +530,8 @@ export async function setSession(sessionId: string, data: RedisSessionData): Pro
     const multi = r.multi();
     multi.hSet(key, fields);
     multi.expire(key, SESSION_TTL_SECONDS);
+    multi.set(messagesVersionKey(sessionId), "0");
+    multi.expire(messagesVersionKey(sessionId), SESSION_TTL_SECONDS);
 
     // Add to global index
     multi.sAdd(allSessionsKey(), sessionId);
@@ -617,6 +629,7 @@ export async function deleteSession(sessionId: string): Promise<void> {
     const multi = r.multi();
     multi.del(sessionKey(sessionId));
     multi.del(seqKey(sessionId));
+    multi.del(messagesVersionKey(sessionId));
     multi.sRem(allSessionsKey(), sessionId);
 
     if (session?.userId) {
@@ -634,14 +647,14 @@ export async function deleteSessionIfOwner(sessionId: string, expectedToken: str
             return 0
         end
         local userId = redis.call('HGET', KEYS[1], 'userId')
-        redis.call('DEL', KEYS[1], KEYS[2])
+        redis.call('DEL', KEYS[1], KEYS[2], KEYS[4])
         redis.call('SREM', KEYS[3], ARGV[2])
         if userId and userId ~= '' then
             redis.call('SREM', ARGV[3] .. userId, ARGV[2])
         end
         return 1
     `, {
-        keys: [sessionKey(sessionId), seqKey(sessionId), allSessionsKey()],
+        keys: [sessionKey(sessionId), seqKey(sessionId), allSessionsKey(), messagesVersionKey(sessionId)],
         arguments: [expectedToken, sessionId, `${KEY_PREFIX}:user-sessions:`],
     });
     return result === 1;
@@ -728,7 +741,10 @@ export async function getAllSessions(filterUserId?: string): Promise<RedisSessio
 
 export async function refreshSessionTTL(sessionId: string): Promise<void> {
     const r = requireRedis();
-    await r.expire(sessionKey(sessionId), SESSION_TTL_SECONDS);
+    const multi = r.multi();
+    multi.expire(sessionKey(sessionId), SESSION_TTL_SECONDS);
+    multi.expire(messagesVersionKey(sessionId), SESSION_TTL_SECONDS);
+    await multi.exec();
 }
 
 // ── Sequence counter ────────────────────────────────────────────────────────
@@ -745,6 +761,40 @@ export async function getSeq(sessionId: string): Promise<number> {
     const r = requireRedis();
     const val = await r.get(seqKey(sessionId));
     return val ? parseInt(val, 10) : 0;
+}
+
+// ── Messages cache version counter ──────────────────────────────────────────
+
+export async function getMessagesVersion(sessionId: string): Promise<number | null> {
+    const r = requireRedis();
+    const val = await r.get(messagesVersionKey(sessionId));
+    return val === null ? null : parseInt(val, 10) || 0;
+}
+
+/**
+ * Same as updateSessionFields, but also bumps the messages version in the
+ * SAME Redis MULTI/EXEC transaction. Used when `fields` includes a new
+ * lastState so the version change is atomic with the state write - a
+ * concurrent getSessionMessages() can never observe the new lastState paired
+ * with the old version (which would wrongly serve a stale cached entry).
+ */
+export async function updateSessionFieldsAndBumpMessagesVersion(
+    sessionId: string,
+    fields: Partial<RedisSessionData>,
+): Promise<void> {
+    const r = requireRedis();
+    const key = sessionKey(sessionId);
+    const exists = await r.exists(key);
+    if (!exists) return;
+
+    const hashFields = toHashFields(fields as unknown as Record<string, unknown>);
+    const versionKey = messagesVersionKey(sessionId);
+    const multi = r.multi();
+    multi.hSet(key, hashFields);
+    multi.expire(key, SESSION_TTL_SECONDS);
+    multi.incr(versionKey);
+    multi.expire(versionKey, SESSION_TTL_SECONDS);
+    await multi.exec();
 }
 
 // ── Runner CRUD ─────────────────────────────────────────────────────────────
