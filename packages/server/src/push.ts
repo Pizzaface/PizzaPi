@@ -1,6 +1,7 @@
 import webpush from "web-push";
 import https from "node:https";
 import { isIP } from "node:net";
+import { sql } from "kysely";
 import { getKysely } from "./auth.js";
 import {
     createPinnedLookup,
@@ -344,6 +345,26 @@ export async function ensureNativePushRegistrationTable(): Promise<void> {
         .column("topic")
         .execute();
 
+    // Dedupe before adding the unique index: pre-dish rows were check-then-insert
+    // with no constraint, so concurrent registrations (two devices launching at
+    // once, or an app-start racing a toggle) can leave more than one row per
+    // userId+platform+deviceId (most commonly deviceId='legacy' from the column
+    // migration above). Keep the newest row per group, delete the rest, so
+    // CREATE UNIQUE INDEX below can't fail and brick server startup on upgrade.
+    await sql`
+        DELETE FROM native_push_registration
+        WHERE id NOT IN (
+            SELECT id FROM (
+                SELECT id, ROW_NUMBER() OVER (
+                    PARTITION BY userId, platform, deviceId
+                    ORDER BY createdAt DESC, id DESC
+                ) AS rn
+                FROM native_push_registration
+            )
+            WHERE rn = 1
+        )
+    `.execute(getKysely());
+
     await getKysely().schema
         .createIndex("native_push_registration_device_idx")
         .ifNotExists()
@@ -404,11 +425,27 @@ export async function registerNativePush(input: RegisterNativeInput): Promise<Na
         suppressChildNotifications: input.suppressChildNotifications === false ? 0 : 1,
         createdAt: new Date().toISOString(),
     };
-    await getKysely()
-        .insertInto("native_push_registration" as any)
-        .values(row as any)
-        .execute();
-    return row;
+    try {
+        await getKysely()
+            .insertInto("native_push_registration" as any)
+            .values(row as any)
+            .execute();
+        return row;
+    } catch (err: unknown) {
+        // Two requests for the same userId+platform+deviceId raced past the
+        // existence check above; the unique index rejects the loser. Re-select
+        // the winner's row instead of surfacing a 500 for a harmless retry.
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!/unique constraint/i.test(msg)) throw err;
+        const winner = await getKysely()
+            .selectFrom("native_push_registration" as any)
+            .selectAll()
+            .where("userId", "=", input.userId)
+            .where("platform", "=", platform)
+            .where("deviceId", "=", deviceId)
+            .executeTakeFirstOrThrow();
+        return winner as unknown as NativePushRegistrationTable;
+    }
 }
 
 /**
@@ -486,7 +523,8 @@ function buildNtfyPublish(payload: PushPayload): Record<string, unknown> {
 
 /**
  * Publish a push payload to all native (ntfy) registrations for a user.
- * Never throws — failures are logged and stale registrations pruned. Caller
+ * Never throws — failures are logged; 403/404 no longer prunes the
+ * registration (see unregisterNativePush for the removal path). Caller
  * (sendPushToUser) treats this as best-effort alongside the Web Push fan-out.
  * Native devices alert only when the agent needs input or finishes.
  *

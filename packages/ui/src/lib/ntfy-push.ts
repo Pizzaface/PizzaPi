@@ -166,7 +166,7 @@ export type NtfyStartResult = { ok: true } | { ok: false; reason: "unconfigured"
  * Register with the server for native push and start the foreground-service
  * subscribe stream. No-op outside the Android native app. Safe to call on
  * every launch — registration is idempotent (server reuses the topic per
- * user+platform), and starting an already-running service re-configures it.
+ * user+platform+device), and starting an already-running service re-configures it.
  *
  * Requires `PIZZAPI_NTFY_URL` to be configured on the server; returns
  * `{ ok: false, reason: "unconfigured" }` if the server reports ntfy is not

@@ -197,6 +197,73 @@ describe("POST /api/push/register-native", () => {
     });
 });
 
+// ── POST /api/push/unregister-native ─────────────────────────────────────────
+
+describe("POST /api/push/unregister-native", () => {
+    beforeEach(() => {
+        mockRequireSession.mockReset();
+        mockUnregisterNativePush.mockReset();
+        mockRequireSession.mockImplementation(async () => ({ userId: "user-route-1", userName: "Test User" }));
+        mockUnregisterNativePush.mockImplementation(async () => true);
+    });
+
+    it("returns 401 without auth", async () => {
+        mockRequireSession.mockImplementation(async () => unauthorized());
+
+        const [req, url] = makeReq("/api/push/unregister-native", "POST");
+        const res = await handlePushRoute(req, url);
+        expect(res?.status).toBe(401);
+        expect(mockUnregisterNativePush).not.toHaveBeenCalled();
+    });
+
+    it("forwards deviceId to unregisterNativePush and returns removed=true", async () => {
+        const [req, url] = makeReq("/api/push/unregister-native", "POST", { deviceId: "device-route-1" });
+        const res = await handlePushRoute(req, url);
+        expect(res?.status).toBe(200);
+        const json = await res!.json();
+        expect(json).toEqual({ ok: true, removed: true });
+        expect(mockUnregisterNativePush).toHaveBeenCalledWith("user-route-1", "android", "device-route-1");
+    });
+
+    it("omits deviceId (legacy clients) and still succeeds", async () => {
+        const [req, url] = makeReq("/api/push/unregister-native", "POST", {});
+        const res = await handlePushRoute(req, url);
+        expect(res?.status).toBe(200);
+        expect(mockUnregisterNativePush).toHaveBeenCalledWith("user-route-1", "android", undefined);
+    });
+
+    it("returns removed=false when no matching registration existed", async () => {
+        mockUnregisterNativePush.mockImplementation(async () => false);
+
+        const [req, url] = makeReq("/api/push/unregister-native", "POST", { deviceId: "missing-device" });
+        const res = await handlePushRoute(req, url);
+        expect(res?.status).toBe(200);
+        const json = await res!.json();
+        expect(json).toEqual({ ok: true, removed: false });
+    });
+
+    it("rejects a non-string deviceId with 400 and does not call unregisterNativePush", async () => {
+        const [req, url] = makeReq("/api/push/unregister-native", "POST", { deviceId: 12345 });
+        const res = await handlePushRoute(req, url);
+        expect(res?.status).toBe(400);
+        expect(mockUnregisterNativePush).not.toHaveBeenCalled();
+    });
+
+    it("rejects an empty/whitespace deviceId with 400", async () => {
+        const [req, url] = makeReq("/api/push/unregister-native", "POST", { deviceId: "   " });
+        const res = await handlePushRoute(req, url);
+        expect(res?.status).toBe(400);
+        expect(mockUnregisterNativePush).not.toHaveBeenCalled();
+    });
+
+    it("rejects a deviceId longer than 128 characters with 400", async () => {
+        const [req, url] = makeReq("/api/push/unregister-native", "POST", { deviceId: "a".repeat(129) });
+        const res = await handlePushRoute(req, url);
+        expect(res?.status).toBe(400);
+        expect(mockUnregisterNativePush).not.toHaveBeenCalled();
+    });
+});
+
 // ── POST /api/push/subscribe ─────────────────────────────────────────────────
 // The endpoint validator is NOT mocked (routes import it from push-endpoint.js).
 

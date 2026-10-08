@@ -1,6 +1,7 @@
 import { createAuthClient } from "better-auth/react";
 import { apiKeyClient } from "better-auth/client/plugins";
 import { getMobileRuntimeConfig, clearMobileApiKey, loadMobileApiKey } from "./mobile-runtime.js";
+import { runMobileSignOutSteps } from "./mobile-sign-out.js";
 
 const { isMobileBundled, serverUrl } = getMobileRuntimeConfig();
 
@@ -16,41 +17,40 @@ interface ApiKeyListItem {
 
 const mobileSignOut = async () => {
     try {
-        // ponytail: best-effort server-side revocation. The mobile bootstrap
-        // only hands us the raw key, while /api-key/delete requires a keyId.
-        // We list the user's keys (mobile fetch patch sends x-api-key header),
-        // and if exactly one key matches this device's key prefix we revoke it.
-        // If there are zero or multiple prefix matches, we fall back to local
-        // cleanup only. A server delete-by-key endpoint would close this gap.
-        try {
-            let keyToRevoke = getMobileRuntimeConfig().apiKey;
-            if (!keyToRevoke) {
-                await loadMobileApiKey();
-                keyToRevoke = getMobileRuntimeConfig().apiKey;
-            }
-            if (keyToRevoke) {
-                const { data, error } = await authClient.$fetch<ApiKeyListItem[]>("/api-key/list");
-                if (!error && data) {
-                    const matches = data.filter((k) => k.start && keyToRevoke.startsWith(k.start));
-                    if (matches.length === 1) {
-                        await authClient.$fetch("/api-key/delete", {
-                            method: "POST",
-                            body: { keyId: matches[0]!.id },
-                        });
+        // Stop native push FIRST, while the API key is still valid server-side.
+        // Its unregister request uses x-api-key (mobile has no cookie session).
+        await runMobileSignOutSteps(
+            async () => import("./ntfy-push.js").then(({ stopNtfyPush }) => stopNtfyPush()),
+            async () => {
+                // ponytail: best-effort server-side revocation. The mobile bootstrap
+                // only hands us the raw key, while /api-key/delete requires a keyId.
+                // We list the user's keys (mobile fetch patch sends x-api-key header),
+                // and if exactly one key matches this device's key prefix we revoke it.
+                // If there are zero or multiple prefix matches, we fall back to local
+                // cleanup only. A server delete-by-key endpoint would close this gap.
+                let keyToRevoke = getMobileRuntimeConfig().apiKey;
+                if (!keyToRevoke) {
+                    await loadMobileApiKey();
+                    keyToRevoke = getMobileRuntimeConfig().apiKey;
+                }
+                if (keyToRevoke) {
+                    const { data, error } = await authClient.$fetch<ApiKeyListItem[]>("/api-key/list");
+                    if (!error && data) {
+                        const matches = data.filter((k) => k.start && keyToRevoke.startsWith(k.start));
+                        if (matches.length === 1) {
+                            await authClient.$fetch("/api-key/delete", {
+                                method: "POST",
+                                body: { keyId: matches[0]!.id },
+                            });
+                        }
                     }
                 }
-            }
-        } catch {
-            // Ignore network/revoke failures — local logout must still complete.
-        }
-
-        // Stop native push while the API key still exists so the server can remove
-        // only this device's registration.
-        await import("./ntfy-push.js").then(({ stopNtfyPush }) => stopNtfyPush());
+            },
+            clearMobileApiKey,
+        );
 
         // The real API key lives in native secure storage — remove it there so
         // it can't be reused, not just the localStorage breadcrumbs.
-        await clearMobileApiKey();
         localStorage.removeItem("pizzapi.serverUrl");
         localStorage.removeItem("pizzapi.apiKey");
     } catch { /* ignore */ }

@@ -262,7 +262,7 @@ export const handlePushRoute: RouteHandler = async (req, url) => {
         const identity = await requireSession(req);
         if (identity instanceof Response) return identity;
 
-        const body = (await req.json()) as { suppress?: boolean; deviceId?: unknown };
+        const body = (await req.json().catch(() => ({}))) as { suppress?: boolean; deviceId?: unknown };
         if (typeof body.suppress !== "boolean") {
             return Response.json({ error: "Missing suppress (boolean)" }, { status: 400 });
         }

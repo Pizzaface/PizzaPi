@@ -362,6 +362,73 @@ describe("native push registration", () => {
         }
     });
 
+    it("migration with duplicate legacy userId+platform rows does not brick startup", async () => {
+        // Pre-dish rows were check-then-insert with no unique constraint, so a
+        // real auth.db can have more than one row per userId+platform (e.g. two
+        // devices racing a first launch). The migration stamps all such rows
+        // deviceId='legacy', and without a dedupe step CREATE UNIQUE INDEX on
+        // (userId, platform, deviceId) throws, ensureNativePushRegistrationTable
+        // rejects, and runAllMigrations' process.exit(1) stops the server from
+        // booting on upgrade. This must not happen.
+        const migrationDir = mkdtempSync(join(tmpdir(), "push-migration-dup-test-"));
+        const migrationContext = createTestAuthContext({ dbPath: join(migrationDir, "test.db") });
+        try {
+            await runWithAuthContext(migrationContext, async () => {
+                const db = getKysely();
+                await db.schema
+                    .createTable("native_push_registration")
+                    .addColumn("id", "text", (col) => col.primaryKey())
+                    .addColumn("userId", "text", (col) => col.notNull())
+                    .addColumn("platform", "text", (col) => col.notNull())
+                    .addColumn("topic", "text", (col) => col.notNull())
+                    .addColumn("ntfyUser", "text")
+                    .addColumn("ntfyPass", "text")
+                    .addColumn("createdAt", "text", (col) => col.notNull())
+                    .execute();
+                await db
+                    .insertInto("native_push_registration" as any)
+                    .values([
+                        {
+                            id: "dup-old",
+                            userId: "dup-user",
+                            platform: "android",
+                            topic: "pizzapi-old",
+                            ntfyUser: null,
+                            ntfyPass: null,
+                            createdAt: "2026-01-01T00:00:00.000Z",
+                        },
+                        {
+                            id: "dup-new",
+                            userId: "dup-user",
+                            platform: "android",
+                            topic: "pizzapi-new",
+                            ntfyUser: null,
+                            ntfyPass: null,
+                            createdAt: "2026-02-01T00:00:00.000Z",
+                        },
+                    ])
+                    .execute();
+
+                // Must not throw.
+                await ensureNativePushRegistrationTable();
+
+                const rows = await db
+                    .selectFrom("native_push_registration" as any)
+                    .selectAll()
+                    .where("userId", "=", "dup-user")
+                    .where("platform", "=", "android")
+                    .execute();
+                // Dedupe kept exactly one row — the newest.
+                expect(rows).toHaveLength(1);
+                expect((rows[0] as any).id).toBe("dup-new");
+                expect((rows[0] as any).topic).toBe("pizzapi-new");
+                await db.destroy();
+            });
+        } finally {
+            rmSync(migrationDir, { recursive: true, force: true });
+        }
+    });
+
     authIt("registerNativePush assigns an unguessable topic and persists it", async () => {
         const reg = await registerNativePush({ userId: "user-A", platform: "android" });
         expect(reg.userId).toBe("user-A");
