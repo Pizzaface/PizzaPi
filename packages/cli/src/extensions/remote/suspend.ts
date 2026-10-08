@@ -11,7 +11,7 @@
 import type { RelayContext } from "../remote-types.js";
 
 /** How long a completed child sits idle before its worker exits. */
-export const SUSPEND_IDLE_MS = 60_000;
+export const SUSPEND_IDLE_MS = 30 * 60_000;
 const SUSPEND_ACK_TIMEOUT_MS = 5_000;
 
 export interface SuspendProbe {
