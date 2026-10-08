@@ -16,7 +16,7 @@ import { getMobileRuntimeConfig } from "@/lib/mobile-runtime";
 import { FrontendLogOverlay } from "@/components/FrontendLogOverlay";
 import { subscribeToast, installGlobalErrorCapture, logFrontendEvent } from "@/lib/frontend-log";
 import { cancelRestoreIntent, createRestoreIntent, takeRestoreTarget, type RestoreIntent } from "@/lib/deep-link-restore";
-import { useMobileNativeActivity } from "@/lib/mobile-native";
+import { useMobileNativeActivity, registerAppResumeListener } from "@/lib/mobile-native";
 import type {
   ViewerServerToClientEvents,
   ViewerClientToServerEvents,
@@ -47,7 +47,7 @@ import type { PanelPosition } from "@/hooks/usePanelLayout";
 import { ViewerSocketContext } from "@/lib/viewer-socket-context";
 import { getViewerVisibilityPayload } from "@/lib/viewer-visibility";
 import { HubSocketContext } from "@/lib/hub-socket-context";
-import { resetStaleBaselineOnVisibilityChange, shouldStopViewerReconnect } from "@/lib/viewer-connection";
+import { resetStaleBaselineOnVisibilityChange, shouldStopViewerReconnect, shouldEvaluateStaleWatchdog } from "@/lib/viewer-connection";
 import { mapUserError } from "@/lib/user-error-message";
 import { classifySessionInput } from "@/lib/session-empty-state";
 import { emitInputWithAck } from "@/lib/input-delivery";
@@ -845,9 +845,15 @@ export function App() {
     };
     window.addEventListener("online", kickSockets);
     document.addEventListener("visibilitychange", kickSockets);
+    // Capacitor backgrounds a WebView's whole JS runtime on some Android OEMs,
+    // where document.visibilitychange doesn't reliably fire on resume — the
+    // native App plugin's appStateChange is the one signal that's always
+    // delivered when the app comes back to the foreground. No-op on web.
+    const removeAppResumeListener = registerAppResumeListener(kickSockets);
     return () => {
       window.removeEventListener("online", kickSockets);
       document.removeEventListener("visibilitychange", kickSockets);
+      removeAppResumeListener();
     };
   }, []);
   // How long to ignore runner queue syncs after a local queue mutation.
@@ -3302,13 +3308,12 @@ export function App() {
 
       // Stale-connection watchdog: if the socket thinks it's connected but
       // no event has arrived for the current visibility-aware threshold, reconnect.
-      // Armed while the agent is active (events are expected, so silence is
-      // suspicious) and also while hydrating (a dead transport is exactly why a
-      // transcript never arrives). Idle, hydrated sessions are legitimately silent.
+      // Armed whenever there's an active session, regardless of agent activity:
+      // heartbeats arrive on a fixed ~10s cadence even while idle (see
+      // remote-heartbeat.ts), so a healthy idle connection keeps refreshing the
+      // last-event timestamp on its own — only a genuinely dead socket trips this.
       staleCheckTimerRef.current = setInterval(() => {
-        if (!lifecycleRefs.activeSessionId.current) return;
-        if (!nextSocket.connected) return;
-        if (!agentActiveRef.current && !lifecycleRefs.awaitingSnapshot.current) return;
+        if (!shouldEvaluateStaleWatchdog(!!lifecycleRefs.activeSessionId.current, nextSocket.connected)) return;
         const elapsed = Date.now() - lastViewerEventAtRef.current;
         if (elapsed > staleThresholdMsRef.current) {
           log.warn(`Stale connection detected (${Math.round(elapsed / 1000)}s since last event). Reconnecting…`);

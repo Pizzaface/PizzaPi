@@ -167,3 +167,50 @@ describe("mobile-native (android path)", () => {
         expect(pluginCalls.badgeClear).toBe(1);
     });
 });
+
+describe("registerAppResumeListener", () => {
+    test("calls back only when the app resumes to the foreground, not on backgrounding", async () => {
+        let listener: ((state: { isActive: boolean }) => void) | undefined;
+        const appPlugin = {
+            addListener: async (_event: "appStateChange", cb: (state: { isActive: boolean }) => void) => {
+                listener = cb;
+                return { remove: async () => {} };
+            },
+        };
+        const mod = await loadMobileNative(null, false);
+        let resumeCalls = 0;
+        mod.registerAppResumeListener(() => {
+            resumeCalls++;
+        }, appPlugin);
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(listener).toBeDefined();
+
+        listener!({ isActive: false }); // backgrounding must not trigger a reconnect
+        expect(resumeCalls).toBe(0);
+
+        listener!({ isActive: true }); // resuming must
+        expect(resumeCalls).toBe(1);
+
+        listener!({ isActive: true });
+        expect(resumeCalls).toBe(2);
+    });
+
+    test("removes the native listener once the returned cleanup runs", async () => {
+        let removeCalls = 0;
+        const appPlugin = {
+            addListener: async () => ({
+                remove: async () => {
+                    removeCalls++;
+                },
+            }),
+        };
+        const mod = await loadMobileNative(null, false);
+        const cleanup = mod.registerAppResumeListener(() => {}, appPlugin);
+        await Promise.resolve();
+        await Promise.resolve();
+        cleanup();
+        await Promise.resolve();
+        expect(removeCalls).toBe(1);
+    });
+});

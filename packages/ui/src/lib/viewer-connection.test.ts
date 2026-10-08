@@ -1,5 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { shouldStopViewerReconnect } from "./viewer-connection.js";
+import { shouldEvaluateStaleWatchdog, shouldStopViewerReconnect } from "./viewer-connection.js";
+
+describe("shouldEvaluateStaleWatchdog", () => {
+    test("checks an idle but connected session — heartbeats arrive regardless of agent activity", () => {
+        expect(shouldEvaluateStaleWatchdog(true, true)).toBe(true);
+    });
+
+    test("skips when there's no active session or the socket thinks it's disconnected", () => {
+        expect(shouldEvaluateStaleWatchdog(false, true)).toBe(false);
+        expect(shouldEvaluateStaleWatchdog(true, false)).toBe(false);
+        expect(shouldEvaluateStaleWatchdog(false, false)).toBe(false);
+    });
+});
 
 describe("shouldStopViewerReconnect", () => {
     test("stops reconnecting after snapshot replay disconnects", () => {
