@@ -9,8 +9,9 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { chromium, type Browser, type Page } from "@playwright/test";
+import type { Browser, Page } from "@playwright/test";
 import { RedisMemoryServer } from "redis-memory-server";
+import { ensurePlaywrightBrowsersPath } from "./harness/playwright-browsers";
 
 const TIMEOUT_MS = 120_000;
 
@@ -216,6 +217,8 @@ describe("browser smoke — sandbox UI", () => {
 
         urls = await parseSandboxReady(proc);
 
+        ensurePlaywrightBrowsersPath();
+        const { chromium } = await import("@playwright/test");
         browser = await chromium.launch({ headless: true });
         page = await browser.newPage();
     }, TIMEOUT_MS);
