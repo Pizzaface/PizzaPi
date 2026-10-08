@@ -206,7 +206,23 @@ export function canFinalizeChunkedSnapshot(pending: ChunkedSessionState): boolea
 // scrambling the viewer's message assembly.
 export const sessionEventQueues = new Map<string, Promise<void>>();
 
+/**
+ * Sessions whose queue is being drained by resetPerSessionRelayState. That
+ * drain runs inside registerTuiSession while it HOLDS the session ownership
+ * lock, and every queued event handler acquires that same lock — so letting
+ * queued work run would make each item wait out the 5s lock timeout (and the
+ * registration hold the lock for 5s × backlog). Everything queued before the
+ * reset belongs to the replaced generation and must be discarded anyway, so
+ * it is skipped instead. (2026-10-08 relay crash loop, GM GIo4GsJ9.)
+ */
+const resettingSessions = new Set<string>();
+
 export function enqueueSessionEvent(sessionId: string, fn: () => Promise<void>): Promise<void> {
+    const run = () => (resettingSessions.has(sessionId) ? undefined : fn());
+    return chainSessionEvent(sessionId, run);
+}
+
+function chainSessionEvent(sessionId: string, fn: () => Promise<void> | undefined): Promise<void> {
     const prev = sessionEventQueues.get(sessionId) ?? Promise.resolve();
     const next = prev
         .then(fn, fn) // always chain, even on prior rejection
@@ -242,9 +258,14 @@ export async function resetPerSessionRelayState(sessionId: string): Promise<void
     // that wakes up after we delete pendingChunkedStates would otherwise skip
     // final assembly, or worse, apply an old chunk to the new session's
     // pending state (same sessionId).
-    await enqueueSessionEvent(sessionId, async () => {
-        pendingChunkedStates.delete(sessionId);
-    });
+    resettingSessions.add(sessionId);
+    try {
+        await chainSessionEvent(sessionId, async () => {
+            pendingChunkedStates.delete(sessionId);
+        });
+    } finally {
+        resettingSessions.delete(sessionId);
+    }
     // Clear the relay event cache AFTER draining so any cache writes from
     // in-flight handlers are also removed.
     await deleteRelayEventCache(sessionId);

@@ -34,20 +34,37 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
         const isEphemeral = data.ephemeral !== false;
         const collabMode = data.collabMode !== false;
 
-        const { sessionId, token, shareUrl, parentSessionId, wasDelinked } = await registerTuiSession(socket, cwd, {
-            sessionId: data.sessionId,
-            isEphemeral,
-            collabMode,
-            sessionName: data.sessionName,
-            sessionFile,
-            userId: socket.data.userId,
-            userName: (socket.data as RelaySocketData & { userName?: string }).userName,
-            parentSessionId: data.parentSessionId ?? undefined,
-            // Delivery guarantees: the CLI generation that acks session_trigger
-            // emissions declares itself here; the trigger transport reads this
-            // to wait for receipt confirmation instead of handoff-optimism.
-            acksSessionTrigger: data.acksSessionTrigger === true,
-        });
+        // A registration failure (e.g. ownership-lock timeout while a stale
+        // lease from a crashed node is still live) must not escape this async
+        // handler: unhandled rejections are fatal, which turned one stuck
+        // session into a relay-wide crash loop. Drop the socket instead — the
+        // worker reconnects and re-registers once the lock frees up.
+        let registration: Awaited<ReturnType<typeof registerTuiSession>>;
+        try {
+            registration = await registerTuiSession(socket, cwd, {
+                sessionId: data.sessionId,
+                isEphemeral,
+                collabMode,
+                sessionName: data.sessionName,
+                sessionFile,
+                userId: socket.data.userId,
+                userName: (socket.data as RelaySocketData & { userName?: string }).userName,
+                parentSessionId: data.parentSessionId ?? undefined,
+                // Delivery guarantees: the CLI generation that acks session_trigger
+                // emissions declares itself here; the trigger transport reads this
+                // to wait for receipt confirmation instead of handoff-optimism.
+                acksSessionTrigger: data.acksSessionTrigger === true,
+            });
+        } catch (err) {
+            log.error(`register failed for socket ${socket.id} (session ${data.sessionId ?? "new"}) — closing transport so the worker retries:`, err);
+            // Close the transport, not socket.disconnect(): a server-initiated
+            // disconnect ("io server disconnect") disables client auto-reconnect,
+            // which would orphan the worker. A transport close reconnects with
+            // backoff and re-registers.
+            socket.conn.close();
+            return;
+        }
+        const { sessionId, token, shareUrl, parentSessionId, wasDelinked } = registration;
 
         // A disconnect may run while registerTuiSession awaits its ownership
         // lock. In that case the disconnect handler had no sessionId to clean
