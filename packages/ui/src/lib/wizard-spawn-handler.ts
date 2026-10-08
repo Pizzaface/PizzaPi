@@ -8,7 +8,7 @@
 
 export interface WizardSpawnHandlerOptions {
   /** Spawn a session and resolve only after it is live. */
-  spawnSession: (runnerId: string, cwd: string | undefined) => Promise<string>;
+  spawnSession: (runnerId: string, cwd: string | undefined, model?: { provider: string; id: string }) => Promise<string>;
   /** Open the newly spawned session. */
   openSession: (sessionId: string) => void;
   /** Close the wizard. */
@@ -16,8 +16,8 @@ export interface WizardSpawnHandlerOptions {
 }
 
 export function createWizardSpawnHandler(options: WizardSpawnHandlerOptions) {
-  return async (runnerId: string, cwd: string | undefined): Promise<void> => {
-    const sessionId = await options.spawnSession(runnerId, cwd);
+  return async (runnerId: string, cwd: string | undefined, model?: { provider: string; id: string }): Promise<void> => {
+    const sessionId = await options.spawnSession(runnerId, cwd, model);
     options.openSession(sessionId);
     options.setOpen(false);
   };

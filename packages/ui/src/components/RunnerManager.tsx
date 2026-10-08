@@ -184,12 +184,12 @@ export function RunnerManager({
         setSpawnRunnerId(runnerId);
     };
 
-    const handleWizardSpawn = async (runnerId: string, cwd: string | undefined) => {
+    const handleWizardSpawn = async (runnerId: string, cwd: string | undefined, model?: { provider: string; id: string }) => {
         const res = await fetch("/api/runners/spawn", {
             method: "POST",
             credentials: "include",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ runnerId, ...(cwd ? { cwd } : {}) }),
+            body: JSON.stringify({ runnerId, ...(cwd ? { cwd } : {}), ...(model ? { model } : {}) }),
         });
         const body = await res.json().catch(() => null) as { error?: string; sessionId?: string } | null;
         if (!res.ok) {

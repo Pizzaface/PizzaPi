@@ -83,7 +83,7 @@ export interface UseSessionLifecycleResult {
       tools?: string;
       disallowedTools?: string;
     },
-    opts?: { prompt?: string },
+    opts?: { prompt?: string; model?: { provider: string; id: string } },
   ) => Promise<string>;
   /** Lifecycle callback: viewer socket received `connected`. */
   onViewerConnected: (data: {
@@ -229,13 +229,14 @@ export function useSessionLifecycle(
         tools?: string;
         disallowedTools?: string;
       },
-      opts?: { prompt?: string },
+      opts?: { prompt?: string; model?: { provider: string; id: string } },
     ): Promise<string> => {
       dispatch(lifecycleActions.spawnRequested(runnerId, cwd));
 
       const payload: Record<string, unknown> = { runnerId };
       if (cwd) payload.cwd = cwd;
       if (agent) payload.agent = agent;
+      if (opts?.model) payload.model = opts.model;
       // Sent with the spawn so the task starts immediately, instead of
       // spawning empty and racing a follow-up message against session start.
       if (opts?.prompt?.trim()) payload.prompt = opts.prompt.trim();
