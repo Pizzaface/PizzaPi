@@ -27,9 +27,22 @@ Event types must be namespaced: `namespace:name`. Examples in the codebase inclu
 
 Use `list_available_triggers` in a session to see the trigger definitions declared by that runner's services. The output includes each trigger's type, label, description, optional schema, params, and which types the session is already subscribed to.
 
+Use `list_runner_triggers` when debugging active subscriptions. It keeps **session-local subscriptions** separate from **runner-global listeners**: session-local routes deliver only to the inspected session, while runner-global listeners are runner-wide and can spawn or target sessions independently.
+
 ---
 
 ## Agent tools
+
+### `list_runner_triggers`
+
+Lists active trigger subscriptions in two sections:
+
+| Section | Scope |
+|---------|-------|
+| Session-local subscriptions | Routes targeting the inspected session only. |
+| Runner-global listeners | Runner-wide listener routes for the inspected session's runner. |
+
+Each row shows the trigger type, source/service namespace, params, filters, filter mode, and the route/listener ID.
 
 ### `subscribe_trigger`
 

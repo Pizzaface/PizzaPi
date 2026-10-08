@@ -305,6 +305,7 @@ describe("GET /api/sessions/:id/available-triggers", () => {
         expect(res).toBeDefined();
         expect(res!.status).toBe(200);
         const body = await res!.json();
+        expect(body.runnerId).toBe("runner-A");
         expect(body.triggerDefs).toHaveLength(2);
         expect(body.triggerDefs[0].type).toBe("godmother:idea_moved");
     });

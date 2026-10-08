@@ -26,7 +26,7 @@ export const PLAN_MODE_READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
     TOGGLE_PLAN_MODE_TOOL, "plan_mode", "AskUserQuestion", "update_todo",
     // read-only PizzaPi tools
     "bash_output", "get_current_time", "list_models", "list_workflows", "list_tunnels",
-    "list_available_triggers", "list_available_sigils", "get_session_id",
+    "list_available_triggers", "list_runner_triggers", "list_available_sigils", "get_session_id",
     "check_messages", "wait_for_message", "memory_read", "memory_list",
     "web_search", "web_fetch", "set_session_name",
     // tool discovery / sandboxed code mode (nested calls are re-checked)

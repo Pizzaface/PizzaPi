@@ -95,7 +95,7 @@ const defaultDeps: TriggerClientDeps = {
     getRelaySocket: getRelaySocketDefault,
     getRelayHttpBaseUrl: defaultGetRelayHttpBaseUrl,
     getApiKey: defaultGetApiKey,
-    fetch: globalThis.fetch.bind(globalThis),
+    fetch: (url, init) => globalThis.fetch(url, init),
 };
 
 // ── Core client ───────────────────────────────────────────────────────────────
@@ -280,6 +280,25 @@ export interface TriggerSubscription {
     subscriptionId?: string;
     triggerType: string;
     runnerId: string;
+    params?: Record<string, unknown>;
+    filters?: Array<{ field: string; value: string | number | boolean | Array<string | number | boolean>; op?: "eq" | "contains"; caseSensitive?: boolean }>;
+    filterMode?: "and" | "or";
+}
+
+export interface AvailableTriggerContext {
+    runnerId?: string;
+    triggerDefs: TriggerDef[];
+}
+
+export interface RunnerTriggerListener {
+    listenerId: string;
+    triggerType: string;
+    params?: Record<string, unknown>;
+    filters?: Array<{ field: string; value: string | number | boolean | Array<string | number | boolean>; op?: "eq" | "contains"; caseSensitive?: boolean }>;
+    filterMode?: "and" | "or";
+    ownerSessionId?: string;
+    ownerSessionName?: string | null;
+    disabled?: boolean;
 }
 
 export type SigilDef = ServiceSigilDef;
@@ -295,17 +314,17 @@ export interface SubscriptionResult {
 /**
  * Get available trigger types for a session (from its runner's service catalog).
  */
-export async function getAvailableTriggers(
+export async function getAvailableTriggerContext(
     sessionId: string,
     deps: Partial<TriggerClientDeps> = {},
-): Promise<TriggerDef[]> {
+): Promise<AvailableTriggerContext> {
     const d: TriggerClientDeps = { ...defaultDeps, ...deps };
     const baseUrl = d.getRelayHttpBaseUrl();
     const apiKey = d.getApiKey();
 
     if (!baseUrl || !apiKey) {
         log.info(`getAvailableTriggers: no baseUrl/apiKey, returning empty`);
-        return [];
+        return { triggerDefs: [] };
     }
 
     try {
@@ -313,13 +332,23 @@ export async function getAvailableTriggers(
         const response = await d.fetch(url, {
             headers: { "x-api-key": apiKey },
         });
-        if (!response.ok) return [];
-        const data = await response.json() as { triggerDefs?: TriggerDef[] };
-        return data.triggerDefs ?? [];
+        if (!response.ok) return { triggerDefs: [] };
+        const data = await response.json() as { triggerDefs?: TriggerDef[]; runnerId?: string };
+        return {
+            triggerDefs: data.triggerDefs ?? [],
+            ...(typeof data.runnerId === "string" ? { runnerId: data.runnerId } : {}),
+        };
     } catch (err) {
         log.info(`getAvailableTriggers failed: ${err instanceof Error ? err.message : String(err)}`);
-        return [];
+        return { triggerDefs: [] };
     }
+}
+
+export async function getAvailableTriggers(
+    sessionId: string,
+    deps: Partial<TriggerClientDeps> = {},
+): Promise<TriggerDef[]> {
+    return (await getAvailableTriggerContext(sessionId, deps)).triggerDefs;
 }
 
 /**
@@ -477,7 +506,7 @@ export async function updateTriggerSubscription(
 async function listRoutesForSession(
     d: TriggerClientDeps,
     sessionId: string,
-): Promise<Array<{ routeId: string; eventType: string }>> {
+): Promise<Array<{ routeId: string; eventType: string; params?: Record<string, unknown>; filters?: TriggerSubscription["filters"]; filterMode?: "and" | "or" }>> {
     const baseUrl = d.getRelayHttpBaseUrl()!;
     const apiKey = d.getApiKey()!;
     const response = await d.fetch(`${baseUrl}/api/routes`, {
@@ -487,7 +516,13 @@ async function listRoutesForSession(
     const data = (await response.json().catch(() => ({}))) as { routes?: Array<any> };
     return (data.routes ?? [])
         .filter((r) => r?.target?.kind === "session" && r.target.sessionId === sessionId)
-        .map((r) => ({ routeId: r.routeId as string, eventType: r.eventType as string }));
+        .map((r) => ({
+            routeId: r.routeId as string,
+            eventType: r.eventType as string,
+            ...(r.params && typeof r.params === "object" && !Array.isArray(r.params) ? { params: r.params as Record<string, unknown> } : {}),
+            ...(Array.isArray(r.filters) ? { filters: r.filters as TriggerSubscription["filters"] } : {}),
+            ...(r.filterMode === "or" ? { filterMode: "or" as const } : r.filterMode === "and" ? { filterMode: "and" as const } : {}),
+        }));
 }
 
 /**
@@ -501,9 +536,38 @@ export async function listTriggerSubscriptions(
     if (!d.getRelayHttpBaseUrl() || !d.getApiKey()) return [];
     try {
         const routes = await listRoutesForSession(d, sessionId);
-        return routes.map((r) => ({ subscriptionId: r.routeId, triggerType: r.eventType, runnerId: "" }));
+        return routes.map((r) => ({
+            subscriptionId: r.routeId,
+            triggerType: r.eventType,
+            runnerId: "",
+            ...(r.params ? { params: r.params } : {}),
+            ...(r.filters ? { filters: r.filters } : {}),
+            ...(r.filterMode ? { filterMode: r.filterMode } : {}),
+        }));
     } catch (err) {
         log.info(`listTriggerSubscriptions failed: ${err instanceof Error ? err.message : String(err)}`);
+        return [];
+    }
+}
+
+/** List runner-global trigger listeners for a runner. */
+export async function listRunnerTriggerListeners(
+    runnerId: string,
+    deps: Partial<TriggerClientDeps> = {},
+): Promise<RunnerTriggerListener[]> {
+    const d: TriggerClientDeps = { ...defaultDeps, ...deps };
+    const baseUrl = d.getRelayHttpBaseUrl();
+    const apiKey = d.getApiKey();
+    if (!baseUrl || !apiKey) return [];
+    try {
+        const response = await d.fetch(`${baseUrl}/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners`, {
+            headers: { "x-api-key": apiKey },
+        });
+        if (!response.ok) return [];
+        const data = (await response.json().catch(() => ({}))) as { listeners?: RunnerTriggerListener[] };
+        return data.listeners ?? [];
+    } catch (err) {
+        log.info(`listRunnerTriggerListeners failed: ${err instanceof Error ? err.message : String(err)}`);
         return [];
     }
 }

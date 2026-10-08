@@ -56,6 +56,8 @@ interface ListenerInfo {
     cwd?: string;
     model?: { provider: string; id: string };
     params?: Record<string, unknown>;
+    filters?: Route["filters"];
+    filterMode?: Route["filterMode"];
     autoClose?: boolean;
     createdAt: string;
     runtime?: TriggerRuntimeStatus & { error?: string };
@@ -81,6 +83,8 @@ async function routeToListener(route: Route, userId?: string): Promise<ListenerI
         ...(spec?.cwd ? { cwd: spec.cwd } : sessionCwd ? { cwd: sessionCwd } : {}),
         ...(spec?.model ? { model: spec.model } : {}),
         ...(route.params ? { params: route.params } : {}),
+        ...(route.filters ? { filters: route.filters } : {}),
+        ...(route.filterMode ? { filterMode: route.filterMode } : {}),
         ...(spec?.autoClose ? { autoClose: true } : {}),
         ...(sessionId ? { ownerSessionId: sessionId, ownerSessionName: live?.sessionName ?? null } : {}),
         // Spawn listeners are managed by the runner's owner (existing

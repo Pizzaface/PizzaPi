@@ -7,7 +7,7 @@
 // ============================================================================
 
 import { describe, it, expect, beforeEach } from "bun:test";
-import { clearAndCancelPendingTriggers, finalizeSessionCompleteResponse, isSessionCompleteType, trackReceivedTrigger, receivedTriggers, SESSION_MESSAGE_ACK_TIMEOUT_MS, sendSessionMessageWithAck, sendTriggerResponseWithAck } from "./extension.js";
+import { clearAndCancelPendingTriggers, finalizeSessionCompleteResponse, isSessionCompleteType, trackReceivedTrigger, receivedTriggers, SESSION_MESSAGE_ACK_TIMEOUT_MS, sendSessionMessageWithAck, sendTriggerResponseWithAck, triggersExtension } from "./extension.js";
 import { handleTriggerResponse } from "../remote/connection.js";
 
 interface EmittedEvent {
@@ -167,6 +167,84 @@ async function simulateRespondToTrigger(
     receivedTriggers.delete(params.triggerId);
     return { text: `Response sent for trigger ${params.triggerId}` };
 }
+
+describe("list_runner_triggers", () => {
+    it("queries session-local and runner-global scopes independently", async () => {
+        const tools = new Map<string, any>();
+        triggersExtension({ registerTool: (tool: any) => tools.set(tool.name, tool) } as any);
+        const tool = tools.get("list_runner_triggers");
+        expect(tool).toBeDefined();
+
+        const originalFetch = globalThis.fetch;
+        const originalEnv = {
+            PIZZAPI_SESSION_ID: process.env.PIZZAPI_SESSION_ID,
+            PIZZAPI_RELAY_URL: process.env.PIZZAPI_RELAY_URL,
+            PIZZAPI_API_KEY: process.env.PIZZAPI_API_KEY,
+        };
+        const calls: Array<{ url: string; method: string }> = [];
+        process.env.PIZZAPI_SESSION_ID = "sess-1";
+        process.env.PIZZAPI_RELAY_URL = "http://relay.test";
+        process.env.PIZZAPI_API_KEY = "key-1";
+        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            calls.push({ url, method: init?.method ?? "GET" });
+            if (url.endsWith("/api/sessions/sess-1/available-triggers")) {
+                return new Response(JSON.stringify({
+                    runnerId: "runner-1",
+                    triggerDefs: [
+                        { type: "svc:local", label: "Local" },
+                        { type: "svc:global", label: "Global" },
+                    ],
+                }), { status: 200 });
+            }
+            if (url.endsWith("/api/routes")) {
+                return new Response(JSON.stringify({ routes: [{
+                    routeId: "rt-local",
+                    eventType: "svc:local",
+                    target: { kind: "session", sessionId: "sess-1" },
+                    params: { repo: "Pizzaface/PizzaPi" },
+                    filters: [{ field: "status", value: "open", op: "eq" }],
+                    filterMode: "or",
+                }] }), { status: 200 });
+            }
+            if (url.endsWith("/api/runners/runner-1/trigger-listeners")) {
+                return new Response(JSON.stringify({ listeners: [{
+                    listenerId: "gl-1",
+                    triggerType: "svc:global",
+                    params: { channel: "ops" },
+                    filters: [{ field: "priority", value: "P1" }],
+                    filterMode: "and",
+                }] }), { status: 200 });
+            }
+            return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+        }) as typeof fetch;
+
+        try {
+            const result = await tool.execute("call-1", {});
+            const text = result.content[0].text as string;
+            expect(calls.map((c) => c.url)).toEqual([
+                "http://relay.test/api/sessions/sess-1/available-triggers",
+                "http://relay.test/api/routes",
+                "http://relay.test/api/runners/runner-1/trigger-listeners",
+            ]);
+            expect(text).toContain("Session-local subscriptions (deliver only to this session):");
+            expect(text).toContain("Runner-global listeners (runner-wide):");
+            expect(text).toContain("scope: session-local");
+            expect(text).toContain("subscriptionId: rt-local");
+            expect(text).toContain("params: {\"repo\":\"Pizzaface/PizzaPi\"}");
+            expect(text).toContain("scope: runner-global");
+            expect(text).toContain("listenerId: gl-1");
+            expect(result.details.sessionSubscriptions).toHaveLength(1);
+            expect(result.details.runnerGlobalListeners).toHaveLength(1);
+        } finally {
+            globalThis.fetch = originalFetch;
+            for (const [key, value] of Object.entries(originalEnv)) {
+                if (value === undefined) delete process.env[key];
+                else process.env[key] = value;
+            }
+        }
+    });
+});
 
 describe("respond_to_trigger handling for session_complete", () => {
     beforeEach(() => {
