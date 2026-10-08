@@ -23,6 +23,15 @@ import { getSharedSession, getLocalTuiSocket } from "../ws/sio-registry.js";
 import { getPushPendingQuestion, consumePushPendingQuestionIfMatches } from "../ws/sio-state/index.js";
 import type { RouteHandler } from "./types.js";
 
+function nativeDeviceId(body: unknown): string | undefined | Response {
+    const value = body && typeof body === "object" ? (body as { deviceId?: unknown }).deviceId : undefined;
+    if (value === undefined) return undefined;
+    if (typeof value !== "string" || value.trim().length === 0 || value.length > 128) {
+        return Response.json({ error: "deviceId must be a non-empty string up to 128 characters" }, { status: 400 });
+    }
+    return value.trim();
+}
+
 export const handlePushRoute: RouteHandler = async (req, url) => {
     if (url.pathname === "/api/push/vapid-public-key" && req.method === "GET") {
         return Response.json({ publicKey: getVapidPublicKey() });
@@ -220,8 +229,11 @@ export const handlePushRoute: RouteHandler = async (req, url) => {
         // Only Android is supported today (iOS background push requires APNs,
         // intentionally out of scope for the Google-free path).
         const platform = "android";
+        const body = await req.json().catch(() => ({}));
+        const deviceId = nativeDeviceId(body);
+        if (deviceId instanceof Response) return deviceId;
 
-        const reg = await registerNativePush({ userId: identity.userId, platform });
+        const reg = await registerNativePush({ userId: identity.userId, platform, deviceId });
         return Response.json({
             ok: true,
             ntfyPublicUrl: getNtfyPublicUrl(),
@@ -239,7 +251,10 @@ export const handlePushRoute: RouteHandler = async (req, url) => {
         if (identity instanceof Response) return identity;
 
         const platform = "android";
-        const removed = await unregisterNativePush(identity.userId, platform);
+        const body = await req.json().catch(() => ({}));
+        const deviceId = nativeDeviceId(body);
+        if (deviceId instanceof Response) return deviceId;
+        const removed = await unregisterNativePush(identity.userId, platform, deviceId);
         return Response.json({ ok: true, removed });
     }
 
@@ -247,13 +262,15 @@ export const handlePushRoute: RouteHandler = async (req, url) => {
         const identity = await requireSession(req);
         if (identity instanceof Response) return identity;
 
-        const body = (await req.json()) as { suppress?: boolean };
+        const body = (await req.json()) as { suppress?: boolean; deviceId?: unknown };
         if (typeof body.suppress !== "boolean") {
             return Response.json({ error: "Missing suppress (boolean)" }, { status: 400 });
         }
+        const deviceId = nativeDeviceId(body);
+        if (deviceId instanceof Response) return deviceId;
 
         const platform = "android";
-        const updated = await updateNativeSuppressChildNotifications(identity.userId, platform, body.suppress);
+        const updated = await updateNativeSuppressChildNotifications(identity.userId, platform, body.suppress, deviceId);
         if (updated === 0) {
             return Response.json({ error: "No native push registration found" }, { status: 404 });
         }

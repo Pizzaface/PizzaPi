@@ -366,6 +366,7 @@ describe("native push registration", () => {
         const reg = await registerNativePush({ userId: "user-A", platform: "android" });
         expect(reg.userId).toBe("user-A");
         expect(reg.platform).toBe("android");
+        expect(reg.deviceId).toBe("legacy");
         expect(reg.topic).toMatch(/^pizzapi-[0-9a-f]{48}$/);
         expect(reg.ntfyUser).toBeNull();
         expect(reg.ntfyPass).toBeNull();
@@ -377,23 +378,26 @@ describe("native push registration", () => {
         expect(rows[0].topic).toBe(reg.topic);
     });
 
-    authIt("registerNativePush is idempotent per user+platform (reuses topic)", async () => {
-        const first = await registerNativePush({ userId: "user-B", platform: "android" });
-        const second = await registerNativePush({ userId: "user-B", platform: "android" });
+    authIt("registerNativePush is idempotent per user+platform+deviceId only", async () => {
+        const first = await registerNativePush({ userId: "user-B", platform: "android", deviceId: "device-1" });
+        const second = await registerNativePush({ userId: "user-B", platform: "android", deviceId: "device-1" });
+        const otherDevice = await registerNativePush({ userId: "user-B", platform: "android", deviceId: "device-2" });
         expect(second.topic).toBe(first.topic);
+        expect(otherDevice.topic).not.toBe(first.topic);
         const rows = await getNativeRegistrationsForUser("user-B");
-        expect(rows).toHaveLength(1);
+        expect(rows).toHaveLength(2);
     });
 
-    authIt("unregisterNativePush deletes the registration and reports removal", async () => {
-        await registerNativePush({ userId: "user-C", platform: "android" });
-        const removed = await unregisterNativePush("user-C", "android");
+    authIt("unregisterNativePush deletes only the requested device when provided", async () => {
+        await registerNativePush({ userId: "user-C", platform: "android", deviceId: "device-1" });
+        await registerNativePush({ userId: "user-C", platform: "android", deviceId: "device-2" });
+        const removed = await unregisterNativePush("user-C", "android", "device-1");
         expect(removed).toBe(true);
         const rows = await getNativeRegistrationsForUser("user-C");
-        expect(rows).toHaveLength(0);
+        expect(rows.map((row) => row.deviceId)).toEqual(["device-2"]);
 
         // Second call reports no removal.
-        const removed2 = await unregisterNativePush("user-C", "android");
+        const removed2 = await unregisterNativePush("user-C", "android", "device-1");
         expect(removed2).toBe(false);
     });
 
@@ -591,7 +595,7 @@ describe("native push registration", () => {
         expect(await getSubscriptionsForUser("user-connected")).toHaveLength(0);
     });
 
-    authIt("sendPushToUser prunes ntfy registrations on 403/404", async () => {
+    authIt("sendPushToUser keeps ntfy registrations on 403/404", async () => {
         await registerNativePush({ userId: "user-F", platform: "android" });
         process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
         process.env.PIZZAPI_NTFY_PUBLISH_TOKEN = "tk_test_publish";
@@ -612,9 +616,9 @@ describe("native push registration", () => {
             delete process.env.PIZZAPI_NTFY_PUBLISH_TOKEN;
         }
 
-        // The 403 should have pruned the registration.
+        // 403 can be a server token/config problem, not a stale device.
         const rows = await getNativeRegistrationsForUser("user-F");
-        expect(rows).toHaveLength(0);
+        expect(rows).toHaveLength(1);
     });
 
     authIt("sendPushToUser retries once on a 5xx ntfy failure then gives up and logs", async () => {
@@ -649,7 +653,7 @@ describe("native push registration", () => {
         expect(rows).toHaveLength(1);
     });
 
-    authIt("sendPushToUser does not retry on 403 (single fetch call) and prunes", async () => {
+    authIt("sendPushToUser does not retry on 403 (single fetch call) and keeps registration", async () => {
         await registerNativePush({ userId: "user-403-noretry", platform: "android" });
         process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
 
@@ -671,10 +675,10 @@ describe("native push registration", () => {
             delete process.env.PIZZAPI_NTFY_URL;
         }
 
-        // 403 is not transient (forbidden topic) — no retry, prune immediately.
+        // 403 is not retried, but it may be server auth/config, so keep the row.
         expect(callCount).toBe(1);
         const rows = await getNativeRegistrationsForUser("user-403-noretry");
-        expect(rows).toHaveLength(0);
+        expect(rows).toHaveLength(1);
     });
 });
 

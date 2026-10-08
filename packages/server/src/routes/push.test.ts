@@ -29,7 +29,8 @@ const mockRegisterNativePush = mock(async (_input: any) => ({
     createdAt: new Date().toISOString(),
 }));
 const mockSubscribePush = mock(async (_input: any) => "sub-1");
-const mockUpdateNativeSuppressChildNotifications = mock(async (_userId: string, _platform: string, _suppress: boolean): Promise<number> => 1);
+const mockUnregisterNativePush = mock(async () => true);
+const mockUpdateNativeSuppressChildNotifications = mock(async (_userId: string, _platform: string, _suppress: boolean, _deviceId?: string): Promise<number> => 1);
 
 mock.module("../middleware.js", () => ({ requireSession: mockRequireSession }));
 
@@ -43,7 +44,7 @@ mock.module("../push.js", () => ({
     isNtfyConfigured: mockIsNtfyConfigured,
     getNtfyPublicUrl: mockGetNtfyPublicUrl,
     registerNativePush: mockRegisterNativePush,
-    unregisterNativePush: mock(async () => true),
+    unregisterNativePush: mockUnregisterNativePush,
     updateNativeSuppressChildNotifications: mockUpdateNativeSuppressChildNotifications,
 }));
 
@@ -120,14 +121,14 @@ describe("PUT /api/push/child-notifications-native", () => {
         expect(res?.status).toBe(200);
         const json = await res!.json();
         expect(json.ok).toBe(true);
-        expect(mockUpdateNativeSuppressChildNotifications).toHaveBeenCalledWith("user-route-1", "android", true);
+        expect(mockUpdateNativeSuppressChildNotifications).toHaveBeenCalledWith("user-route-1", "android", true, undefined);
     });
 
     it("persists suppress=false and returns ok", async () => {
         const [req, url] = makeReq("/api/push/child-notifications-native", "PUT", { suppress: false });
         const res = await handlePushRoute(req, url);
         expect(res?.status).toBe(200);
-        expect(mockUpdateNativeSuppressChildNotifications).toHaveBeenCalledWith("user-route-1", "android", false);
+        expect(mockUpdateNativeSuppressChildNotifications).toHaveBeenCalledWith("user-route-1", "android", false, undefined);
     });
 });
 
@@ -151,13 +152,18 @@ describe("POST /api/push/register-native", () => {
             createdAt: new Date().toISOString(),
         }));
 
-        const [req, url] = makeReq("/api/push/register-native", "POST");
+        const [req, url] = makeReq("/api/push/register-native", "POST", { deviceId: "device-route-1" });
         const res = await handlePushRoute(req, url);
         expect(res?.status).toBe(200);
         const json = await res!.json();
         expect(json.ok).toBe(true);
         expect(typeof json.suppressChildNotifications).toBe("boolean");
         expect(json.suppressChildNotifications).toBe(true);
+        expect(mockRegisterNativePush).toHaveBeenCalledWith({
+            userId: "user-route-1",
+            platform: "android",
+            deviceId: "device-route-1",
+        });
     });
 
     it("response includes suppressChildNotifications=true when previously set", async () => {
@@ -175,6 +181,11 @@ describe("POST /api/push/register-native", () => {
         const res = await handlePushRoute(req, url);
         const json = await res!.json();
         expect(json.suppressChildNotifications).toBe(true);
+        expect(mockRegisterNativePush).toHaveBeenCalledWith({
+            userId: "user-route-1",
+            platform: "android",
+            deviceId: undefined,
+        });
     });
 
     it("returns 401 without auth", async () => {

@@ -64,6 +64,19 @@ export function isNativePushAvailable(): boolean {
 // render path.
 const NTFY_DISABLED_KEY = "pizzapi.ntfyPushDisabled";
 const NTFY_SUPPRESS_CHILD_KEY = "pizzapi.ntfySuppressChild";
+const NTFY_DEVICE_ID_KEY = "pizzapi.ntfyDeviceId";
+
+function getNativePushDeviceId(): string {
+    try {
+        const existing = localStorage.getItem(NTFY_DEVICE_ID_KEY);
+        if (existing) return existing;
+        const id = globalThis.crypto?.randomUUID?.() ?? `ntfy-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        localStorage.setItem(NTFY_DEVICE_ID_KEY, id);
+        return id;
+    } catch {
+        return "legacy";
+    }
+}
 
 /** User preference: native push explicitly disabled from the UI. */
 export function isNativePushDisabled(): boolean {
@@ -105,7 +118,7 @@ export async function setNativeSuppressChildNotifications(suppress: boolean): Pr
         const res = await fetch(resolveMobileUrl("/api/push/child-notifications-native"), {
             method: "PUT",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ suppress }),
+            body: JSON.stringify({ suppress, deviceId: getNativePushDeviceId() }),
         });
         if (!res.ok) return false;
         // Update local cache after confirmed server write.
@@ -167,7 +180,7 @@ export async function startNtfyPush(): Promise<NtfyStartResult> {
         const res = await fetch(resolveMobileUrl("/api/push/register-native"), {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ platform: "android" }),
+            body: JSON.stringify({ platform: "android", deviceId: getNativePushDeviceId() }),
         });
         if (!res.ok) {
             // 503 = ntfy not configured on the server → distinct state, not an error.
@@ -221,7 +234,7 @@ export async function stopNtfyPush(): Promise<void> {
         await fetch(resolveMobileUrl("/api/push/unregister-native"), {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ platform: "android" }),
+            body: JSON.stringify({ platform: "android", deviceId: getNativePushDeviceId() }),
         });
     } catch (err) {
         // Unregister is best-effort — don't surface.

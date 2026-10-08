@@ -244,6 +244,8 @@ export interface NativePushRegistrationTable {
     userId: string;
     /** "android" today (iOS background push is out of scope). */
     platform: string;
+    /** Stable app-install identifier supplied by the device. */
+    deviceId: string;
     /** Unguessable random topic, e.g. `pizzapi-<24-byte-hex>`. */
     topic: string;
     /** Per-device ntfy username (Phase 3; null in Phase 1). */

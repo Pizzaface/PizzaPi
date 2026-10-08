@@ -285,6 +285,7 @@ export interface NativePushRegistrationTable {
     id: string;
     userId: string;
     platform: string;
+    deviceId: string;
     topic: string;
     ntfyUser: string | null;
     ntfyPass: string | null;
@@ -300,14 +301,25 @@ export async function ensureNativePushRegistrationTable(): Promise<void> {
         .addColumn("id", "text", (col) => col.primaryKey())
         .addColumn("userId", "text", (col) => col.notNull())
         .addColumn("platform", "text", (col) => col.notNull())
+        .addColumn("deviceId", "text", (col) => col.notNull().defaultTo("legacy"))
         .addColumn("topic", "text", (col) => col.notNull())
         .addColumn("ntfyUser", "text")
         .addColumn("ntfyPass", "text")
         .addColumn("createdAt", "text", (col) => col.notNull())
         .execute();
 
-    // Migration: add suppressChildNotifications if the column doesn't exist yet.
-    // Same idempotent pattern used for push_subscription above.
+    // Migration: add deviceId/suppressChildNotifications if the columns don't exist yet.
+    // Existing rows become a single legacy device per user+platform.
+    try {
+        await getKysely().schema
+            .alterTable("native_push_registration")
+            .addColumn("deviceId", "text", (col) => col.notNull().defaultTo("legacy"))
+            .execute();
+    } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes("duplicate column name")) throw err;
+    }
+
     try {
         await getKysely().schema
             .alterTable("native_push_registration")
@@ -331,30 +343,41 @@ export async function ensureNativePushRegistrationTable(): Promise<void> {
         .on("native_push_registration")
         .column("topic")
         .execute();
+
+    await getKysely().schema
+        .createIndex("native_push_registration_device_idx")
+        .ifNotExists()
+        .unique()
+        .on("native_push_registration")
+        .columns(["userId", "platform", "deviceId"])
+        .execute();
 }
 
 export interface RegisterNativeInput {
     userId: string;
     platform: string;
+    /** Stable app-install identifier supplied by the device. */
+    deviceId?: string;
     /** When provided, persisted as the per-registration child-suppression preference. */
     suppressChildNotifications?: boolean;
 }
 
 /**
  * Register (or refresh) a native push registration for a user, returning the
- * unguessable topic the device should subscribe to. Idempotent per user+platform
- * — re-registering reuses the existing topic so the device keeps its topic
- * across reinstalls of the same user.
+ * unguessable topic the device should subscribe to. Idempotent per user+platform+deviceId
+ * — re-registering one device reuses its topic without sharing topics across devices.
  */
 export async function registerNativePush(input: RegisterNativeInput): Promise<NativePushRegistrationTable> {
     const platform = "android"; // only android today; input.platform reserved for later
     void input.platform;
-    // Upsert: reuse an existing registration for this user+platform if present.
+    const deviceId = input.deviceId?.trim() || "legacy";
+    // Upsert: reuse an existing registration for this user+platform+device if present.
     const existing = await getKysely()
         .selectFrom("native_push_registration" as any)
         .selectAll()
         .where("userId", "=", input.userId)
         .where("platform", "=", platform)
+        .where("deviceId", "=", deviceId)
         .executeTakeFirst();
     if (existing) {
         // Update suppressChildNotifications if a new preference was provided.
@@ -374,6 +397,7 @@ export async function registerNativePush(input: RegisterNativeInput): Promise<Na
         id: crypto.randomUUID(),
         userId: input.userId,
         platform,
+        deviceId,
         topic: generateNtfyTopic(),
         ntfyUser: null,
         ntfyPass: null,
@@ -395,22 +419,25 @@ export async function updateNativeSuppressChildNotifications(
     userId: string,
     platform: string,
     suppress: boolean,
+    deviceId?: string,
 ): Promise<number> {
-    const result = await getKysely()
+    let query = getKysely()
         .updateTable("native_push_registration" as any)
         .set({ suppressChildNotifications: suppress ? 1 : 0 })
         .where("userId", "=", userId)
-        .where("platform", "=", platform)
-        .execute();
+        .where("platform", "=", platform);
+    if (deviceId) query = query.where("deviceId", "=", deviceId.trim() || "legacy");
+    const result = await query.execute();
     return Number((result as any)[0]?.numUpdatedRows ?? 0);
 }
 
-export async function unregisterNativePush(userId: string, platform: string): Promise<boolean> {
-    const result = await getKysely()
+export async function unregisterNativePush(userId: string, platform: string, deviceId?: string): Promise<boolean> {
+    let query = getKysely()
         .deleteFrom("native_push_registration" as any)
         .where("userId", "=", userId)
-        .where("platform", "=", platform)
-        .execute();
+        .where("platform", "=", platform);
+    if (deviceId) query = query.where("deviceId", "=", deviceId.trim() || "legacy");
+    const result = await query.execute();
     return Number((result as any)[0]?.numDeletedRows ?? 0) > 0;
 }
 
@@ -481,7 +508,6 @@ async function sendNtfyToUser(userId: string, payload: PushPayload, isChildSessi
         headers["Authorization"] = `Bearer ${cfg.publishToken}`;
     }
     const base = cfg.url.replace(/\/+$/, "");
-    const staleIds: string[] = [];
 
     // ponytail: single immediate retry on transient failure (network throw or
     // 5xx) — no backoff, no queue, no retry framework. If ntfy is down for
@@ -518,12 +544,9 @@ async function sendNtfyToUser(userId: string, payload: PushPayload, isChildSessi
                 }
             }
 
-            // 403/404 = topic forbidden/unknown → prune the registration. Not
-            // transient — a retry can't fix an invalid/forbidden topic.
-            if (res.status === 403 || res.status === 404) {
-                staleIds.push(reg.id);
-                return;
-            }
+            // 403/404 can also mean bad server-side ntfy auth/config, not a stale device.
+            // Keep the registration; the next correctly-configured publish can still work.
+            if (res.status === 403 || res.status === 404) return;
             if (res.ok) return;
 
             if (res.status >= 500) {
@@ -534,10 +557,7 @@ async function sendNtfyToUser(userId: string, payload: PushPayload, isChildSessi
                     log.error(`ntfy publish to topic ${reg.topic.slice(0, 16)}… failed after retry:`, retryErr);
                     return;
                 }
-                if (res.status === 403 || res.status === 404) {
-                    staleIds.push(reg.id);
-                    return;
-                }
+                if (res.status === 403 || res.status === 404) return;
                 if (res.ok) return;
             }
 
@@ -545,12 +565,6 @@ async function sendNtfyToUser(userId: string, payload: PushPayload, isChildSessi
         }),
     );
 
-    if (staleIds.length > 0) {
-        await getKysely()
-            .deleteFrom("native_push_registration" as any)
-            .where("id", "in", staleIds)
-            .execute();
-    }
 }
 
 export async function subscribePush(input: PushSubscribeInput): Promise<string> {

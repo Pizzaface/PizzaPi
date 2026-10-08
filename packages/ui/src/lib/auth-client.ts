@@ -44,6 +44,10 @@ const mobileSignOut = async () => {
             // Ignore network/revoke failures — local logout must still complete.
         }
 
+        // Stop native push while the API key still exists so the server can remove
+        // only this device's registration.
+        await import("./ntfy-push.js").then(({ stopNtfyPush }) => stopNtfyPush());
+
         // The real API key lives in native secure storage — remove it there so
         // it can't be reused, not just the localStorage breadcrumbs.
         await clearMobileApiKey();
