@@ -138,7 +138,7 @@ describe("App.tsx wiring — stale-connection watchdog backs off instead of loop
     );
     expect(eventHandler).toMatch(/isLivenessOnlyHeartbeat/);
     expect(eventHandler).toMatch(/_livenessOnly/);
-    expect(eventHandler).toMatch(/if \(!isLivenessOnlyHeartbeat\) consecutiveStaleReconnectsRef\.current = 0;/);
+    expect(eventHandler).toMatch(/shouldResetStaleBackoffOnEvent\(isLivenessOnlyHeartbeat, isReplaySnapshot === true, deltaReplay === true\)/);
   });
 
   test("a real exec_result resets the backoff counter", () => {
