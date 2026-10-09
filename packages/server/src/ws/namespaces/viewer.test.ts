@@ -1,9 +1,9 @@
 // ============================================================================
 // viewer.test.ts — Unit tests for pure helper functions in viewer.ts
 //
-// The socket event handlers (resync, connect) require a full socket.io + Redis
-// stack and are covered by integration tests.  This file tests the pure
-// snapshot-scanning helpers that have no I/O dependencies.
+// Most socket event handlers require a full socket.io + Redis stack and are
+// covered by integration tests. This file tests pure helpers; focused handler
+// regressions live in adjacent *.test.ts files with mocked namespace wiring.
 // ============================================================================
 
 import { describe, test, expect, mock } from "bun:test";
