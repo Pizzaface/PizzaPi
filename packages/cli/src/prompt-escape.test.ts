@@ -1,13 +1,17 @@
 import { expect, test } from "bun:test";
 
-import { escapePromptXmlAttribute, escapePromptXmlText } from "./prompt-escape.js";
+import { escapePromptContainerContent, escapePromptXmlAttribute } from "./prompt-escape.js";
 
-test("element text escaping preserves quotes while blocking XML breakout", () => {
-    expect(escapePromptXmlText(`don't "quote" </project-memory>`)).toBe(`don't "quote" &lt;/project-memory&gt;`);
+test("container content escaping blocks the closing tag but preserves other markup", () => {
+    expect(escapePromptContainerContent(`don't "quote" </project-memory>`)).toBe(
+        `don't "quote" &lt;/project-memory>`,
+    );
 });
 
-test("element text escaping handles ampersands before tag delimiters", () => {
-    expect(escapePromptXmlText("A && B </project-memory>")).toBe("A &amp;&amp; B &lt;/project-memory&gt;");
+test("container content escaping leaves ampersands and non-closing angle brackets alone", () => {
+    expect(escapePromptContainerContent("A && B <tag> List<string> a < b </project-memory>")).toBe(
+        "A && B <tag> List<string> a < b &lt;/project-memory>",
+    );
 });
 
 test("attribute escaping covers quotes and apostrophes", () => {
