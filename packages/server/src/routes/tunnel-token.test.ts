@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { describe, expect, mock, test } from "bun:test";
 import { createTestAuthContext, runWithAuthContext } from "../auth.js";
 
@@ -134,9 +135,9 @@ describe("tunnel token — dedicated secret", () => {
             PIZZAPI_TUNNEL_TOKEN_SECRET_PREVIOUS: undefined,
         }, () => {
             runWithAuthContext(ctx, () => {
-                // The auth-secret-minted token has no kid, so it goes through the
-                // legacy path and is verified against the current dedicated secret —
-                // which differs from auth secret. It should be rejected.
+                // The token's kid was derived from the auth secret, which
+                // doesn't match the now-active dedicated secret (or any
+                // previous secret, since none is set). It should be rejected.
                 expect(verifyTunnelToken(mintedToken!, 1_000)).toBeNull();
             });
         });
@@ -145,18 +146,36 @@ describe("tunnel token — dedicated secret", () => {
 
 describe("tunnel token — aud validation", () => {
     test("rejects token with wrong aud", () => {
-        const ctx = createTestAuthContext({ dbPath: ":memory:" });
+        const secret = "aud-test-secret-aaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const ctx = createTestAuthContext({ dbPath: ":memory:", secret });
         runWithAuthContext(ctx, () => {
-            // Manually construct a token with a bad aud
             const { token } = createTunnelToken({ userId: "u-1", sessionId: "s-1", port: 3000 }, 1_000);
-            // Decode, tamper aud, re-sign with same secret
+            // Decode, tamper aud, then re-sign with the same secret used to mint
+            // so the signature matches the tampered payload — isolating aud
+            // rejection from an incidental signature mismatch.
             const [encoded] = token.split(".");
             const payload = JSON.parse(Buffer.from(encoded!, "base64url").toString("utf8"));
             payload.aud = "evil:audience";
             const tamperedEncoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
-            // Signature will not match tamperedEncoded — so this tests both paths
-            const tamperedToken = `${tamperedEncoded}.${token.split(".")[1]}`;
+            const tamperedSignature = createHmac("sha256", secret).update(tamperedEncoded).digest("base64url");
+            const tamperedToken = `${tamperedEncoded}.${tamperedSignature}`;
             expect(verifyTunnelToken(tamperedToken, 1_000)).toBeNull();
+        });
+    });
+});
+
+describe("tunnel token — legacy (no-kid) path removed", () => {
+    test("rejects a correctly-signed token that lacks aud/kid", () => {
+        const secret = "legacy-test-secret-aaaaaaaaaaaaaaaaaaaaaaaaa";
+        const ctx = createTestAuthContext({ dbPath: ":memory:", secret });
+        runWithAuthContext(ctx, () => {
+            // Hand-build a pre-v2 payload: no aud, iat or kid, just the original
+            // v1 claims, signed correctly with the current secret.
+            const payload = { v: 1, userId: "u-1", sessionId: "s-1", port: 3000, exp: 3_601 };
+            const encodedPayload = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+            const signature = createHmac("sha256", secret).update(encodedPayload).digest("base64url");
+            const legacyToken = `${encodedPayload}.${signature}`;
+            expect(verifyTunnelToken(legacyToken, 1_000)).toBeNull();
         });
     });
 });

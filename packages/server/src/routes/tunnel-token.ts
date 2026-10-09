@@ -14,7 +14,9 @@ export interface TunnelTokenPayload {
     sessionId: string;
     port: number;
     exp: number;
-    // v2 claims — absent on legacy tokens signed before this change
+    // Optional on the raw parsed type since verifyTunnelToken() hasn't
+    // enforced them yet at this point, but every token it accepts has all
+    // three — tokens without a kid are rejected outright.
     aud?: string;
     iat?: number;
     kid?: string;
@@ -113,40 +115,28 @@ export function verifyTunnelToken(token: string, nowMs = Date.now()): TunnelToke
         return null;
     }
 
+    // Legacy tokens pre-dating aud/iat/kid claims had a 1 h TTL and that
+    // compat window has long since closed — every live token now carries a
+    // kid. Reject anything without one instead of falling back to an
+    // aud-less verify.
+    if (!payload.kid) return null;
+
     const secret = getTunnelSecret();
     const prevSecret = getPreviousSecret();
 
     let verified = false;
-
-    if (payload.kid) {
-        // v2 path: match by kid, then verify signature with the matching key.
-        const currentKid = deriveKid(secret);
-        if (payload.kid === currentKid) {
-            verified = signaturesMatch(signature, signPayload(encodedPayload, secret));
-        } else if (prevSecret) {
-            const prevKid = deriveKid(prevSecret);
-            if (payload.kid === prevKid) {
-                // ponytail: previous-key window; tokens accepted until their own exp
-                verified = signaturesMatch(signature, signPayload(encodedPayload, prevSecret));
-            }
-        }
-        if (!verified) return null;
-        if (payload.aud !== TUNNEL_TOKEN_AUD) return null;
-    } else {
-        // Legacy path: tokens pre-dating aud/iat/kid claims. Verify signature
-        // against current secret (or previous if set) and accept during the
-        // natural 1-h TTL window. Log a deprecation warning.
-        //
-        // Policy: legacy tokens are accepted until they expire. After the 1-h
-        // window they are gone; no permanent compat shim is needed.
+    const currentKid = deriveKid(secret);
+    if (payload.kid === currentKid) {
         verified = signaturesMatch(signature, signPayload(encodedPayload, secret));
-        if (!verified && prevSecret) {
+    } else if (prevSecret) {
+        const prevKid = deriveKid(prevSecret);
+        if (payload.kid === prevKid) {
+            // ponytail: previous-key window; tokens accepted until their own exp
             verified = signaturesMatch(signature, signPayload(encodedPayload, prevSecret));
         }
-        if (!verified) return null;
-        // ponytail: legacy token accepted; log once, no metric infra needed yet
-        console.warn("[tunnel-token] deprecated: token missing aud/kid — re-mint to get v2 claims");
     }
+    if (!verified) return null;
+    if (payload.aud !== TUNNEL_TOKEN_AUD) return null;
 
     if (payload.v !== 1) return null;
     if (!payload.userId || !payload.sessionId) return null;
