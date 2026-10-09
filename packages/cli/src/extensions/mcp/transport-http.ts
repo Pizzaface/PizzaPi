@@ -236,10 +236,14 @@ export function createStreamableMcpClient(opts: {
     // Per spec, `initialize` MUST NOT be cancelled — never emit a cancellation
     // notification for it. Also skip once a response has already arrived
     // (abort-after-completion race): the request is done, there's nothing left
-    // to cancel server-side.
+    // to cancel server-side. And skip once the client is closed(): close()
+    // already tears the session down via DELETE, so sending a cancellation
+    // notification too would race that DELETE for the same mcp-session-id
+    // (the notify fetch uses its own timeout, not lifetime.signal, so close()
+    // has no way to cancel it once sent).
     let settled = false;
     const cancelNotification = () => {
-      if (settled || method === "initialize") return;
+      if (settled || closed || method === "initialize") return;
       if (!modernRequest) notify("notifications/cancelled", { requestId: id, reason: "Client cancelled request" }, AbortSignal.timeout(1000));
     };
     signal?.addEventListener("abort", cancelNotification, { once: true });

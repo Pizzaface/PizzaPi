@@ -181,15 +181,16 @@ describe("HTTP MCP protocol eras", () => {
     client.close();
   });
 
-  test("closing a legacy HTTP tool call notifies the server", async () => {
+  test("closing during an in-flight legacy HTTP tool call sends no notifications/cancelled", async () => {
     const started = Promise.withResolvers<number>();
-    const cancellations: unknown[] = [];
+    const methods: string[] = [];
     globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
+      methods.push(body.method);
       if (body.method === "server/discover") return response({ message: "legacy" }, 400);
       if (body.method === "initialize") return response({ jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-03-26" } });
       if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
-      if (body.method === "notifications/cancelled") { cancellations.push(body.params); return new Response(null, { status: 202 }); }
+      if (body.method === "notifications/cancelled") return new Response(null, { status: 202 });
       if (body.method === "tools/call") {
         started.resolve(body.id);
         return new Promise<Response>((_resolve, reject) => {
@@ -201,10 +202,12 @@ describe("HTTP MCP protocol eras", () => {
 
     const client = createHttpMcpClient({ name: "legacy", url: "https://example.test/mcp" });
     const call = client.callTool("slow", {});
-    const requestId = await started.promise;
+    await started.promise;
     client.close();
     await expect(call).rejects.toThrow();
-    expect(cancellations).toEqual([{ requestId, reason: "Client cancelled request" }]);
+    // close() tears the session down via DELETE; it must not also race that
+    // DELETE with a notifications/cancelled POST for the same session.
+    expect(methods).not.toContain("notifications/cancelled");
   });
 
   test("aborting legacy initialize never notifies cancellation", async () => {
