@@ -570,10 +570,19 @@ export async function unsubscribeTrigger(
  * cleanup: a late history write from the old generation could land after the
  * UI's DELETE, or the DELETE itself could arrive late and wipe the new
  * generation's just-recorded history.
+ *
+ * This call is fire-and-forget at the call site (see lifecycle-handlers.ts)
+ * and the request itself can be delayed in transit, so `before` — captured
+ * here as soon as this function is entered, i.e. at the moment the caller
+ * decided to transition — travels with it as a cutoff. The server only hides
+ * history recorded at or before that instant, so a slow-to-arrive request can
+ * never erase the next generation's already-recorded history no matter how
+ * long it takes to get here (see GM a8yAXXwa / trigger-store.ts).
  */
 export async function clearTriggerHistory(
     sessionId: string,
     deps: Partial<TriggerClientDeps> = {},
+    before: number = Date.now(),
 ): Promise<SubscriptionResult> {
     const d: TriggerClientDeps = { ...defaultDeps, ...deps };
     const baseUrl = d.getRelayHttpBaseUrl();
@@ -584,7 +593,7 @@ export async function clearTriggerHistory(
     }
 
     try {
-        const url = `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/triggers`;
+        const url = `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/triggers?before=${encodeURIComponent(String(before))}`;
         const response = await d.fetch(url, {
             method: "DELETE",
             headers: { "x-api-key": apiKey },

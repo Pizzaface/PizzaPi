@@ -4,6 +4,7 @@ import { RedisMemoryServer } from "redis-memory-server";
 import {
     _injectRedisForTesting,
     _resetRedisForTesting,
+    clearTriggerHistory,
     getTriggerHistory,
     pushTriggerHistory,
     recordTriggerResponse,
@@ -141,4 +142,119 @@ test("uses a single EVAL operation for response lookup and update", async () => 
     expect(evalCall?.script).toContain("redis.call('LRANGE'");
     expect(evalCall?.script).toContain("redis.call('LSET'");
     _injectRedisForTesting(redis!);
+});
+
+// ── Cutoff-scoped clear (GM a8yAXXwa) ───────────────────────────────────────
+//
+// The server-side DELETE /api/sessions/:id/triggers handler is fired by the
+// CLI without awaiting it (performSessionTransitionCleanup). If that clear
+// physically deleted the list whenever it happened to actually run, a DELETE
+// delayed in transit past the point where the new conversation generation's
+// first trigger is pushed and recorded would still wipe that new entry out
+// the moment it finally arrived. These tests simulate that delay directly
+// against the store.
+describe("clearTriggerHistory — cutoff scoping", () => {
+    test("a clear delayed past a new push does not erase the entry pushed after its cutoff", async () => {
+        const sessionId = "history-delayed-clear";
+        const historyKey = `pizzapi:triggers:history:${sessionId}`;
+        const cutoffKey = `pizzapi:triggers:clearedBefore:${sessionId}`;
+        await redis!.del(historyKey);
+        await redis!.del(cutoffKey);
+
+        await pushTriggerHistory(sessionId, { ...baseEntry, triggerId: "old-gen", type: "lifecycle:ask" });
+
+        // The cutoff is captured the instant the transition is decided — i.e.
+        // before the (unawaited) DELETE carrying it is even sent, let alone
+        // before it's processed here.
+        const before = Date.now();
+        // A real network round trip for the DELETE buys many milliseconds of
+        // margin in production; a tiny delay here keeps this test's "new-gen"
+        // push out of the same millisecond as `before` without depending on
+        // how fast the in-memory Redis happens to respond.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+
+        // Gate the Redis commands clearTriggerHistory might issue (`eval` in
+        // the fix, `del` in the pre-fix blind-delete version) so the clear's
+        // actual effect on Redis only happens once the test releases it —
+        // simulating a DELETE request that is fired but arrives late.
+        let releaseGate: () => void;
+        const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+        const realRedis = redis!;
+        _injectRedisForTesting({
+            isOpen: true,
+            get: (k: string) => realRedis.get(k),
+            del: async (k: string) => { await gate; return realRedis.del(k); },
+            expire: (k: string, s: number) => realRedis.expire(k, s),
+            eval: async (script: string, options: { keys: string[]; arguments: string[] }) => { await gate; return realRedis.eval(script, options); },
+            lRange: (k: string, s: number, e: number) => realRedis.lRange(k, s, e),
+            // Pushes are NOT delayed — only the clear is. These pass straight
+            // through so the new-generation push below lands immediately.
+            lPush: (k: string, v: string) => realRedis.lPush(k, v),
+            lTrim: (k: string, s: number, e: number) => realRedis.lTrim(k, s, e),
+        });
+
+        // Fire-and-forget, exactly like performSessionTransitionCleanup does —
+        // its Redis command is stuck behind the gate for now.
+        const clearPromise = clearTriggerHistory(sessionId, before);
+
+        // The new conversation generation starts and records its own trigger
+        // before the delayed clear actually reaches Redis.
+        await pushTriggerHistory(sessionId, { ...baseEntry, triggerId: "new-gen", type: "lifecycle:ask" });
+
+        // Now let the delayed clear land.
+        releaseGate!();
+        await clearPromise;
+        _injectRedisForTesting(realRedis);
+
+        const history = await getTriggerHistory(sessionId);
+        expect(history.map((h) => h.triggerId)).toEqual(["new-gen"]);
+    });
+
+    test("an ordinary (non-delayed) clear still hides history recorded before its cutoff", async () => {
+        const sessionId = "history-ordinary-clear";
+        const historyKey = `pizzapi:triggers:history:${sessionId}`;
+        const cutoffKey = `pizzapi:triggers:clearedBefore:${sessionId}`;
+        await redis!.del(historyKey);
+        await redis!.del(cutoffKey);
+
+        await pushTriggerHistory(sessionId, { ...baseEntry, triggerId: "old-gen", type: "lifecycle:ask" });
+        await clearTriggerHistory(sessionId, Date.now());
+        expect(await getTriggerHistory(sessionId)).toEqual([]);
+
+        // See the "delayed clear" test above for why this needs real margin.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        await pushTriggerHistory(sessionId, { ...baseEntry, triggerId: "new-gen", type: "lifecycle:ask" });
+        const history = await getTriggerHistory(sessionId);
+        expect(history.map((h) => h.triggerId)).toEqual(["new-gen"]);
+    });
+
+    test("omitting the cutoff falls back to an unconditional delete (legacy callers)", async () => {
+        const sessionId = "history-legacy-clear";
+        const historyKey = `pizzapi:triggers:history:${sessionId}`;
+        await redis!.del(historyKey);
+
+        await pushTriggerHistory(sessionId, { ...baseEntry, triggerId: "a", type: "lifecycle:ask" });
+        await clearTriggerHistory(sessionId);
+        expect(await getTriggerHistory(sessionId)).toEqual([]);
+    });
+
+    test("clamps a future cutoff to now so it can't hide history that hasn't landed yet", async () => {
+        const sessionId = "history-future-clamp";
+        const historyKey = `pizzapi:triggers:history:${sessionId}`;
+        const cutoffKey = `pizzapi:triggers:clearedBefore:${sessionId}`;
+        await redis!.del(historyKey);
+        await redis!.del(cutoffKey);
+
+        // A clock-skewed-forward (or malicious) caller sends a cutoff a minute
+        // in the future — it must be clamped to "now", not stored verbatim.
+        await clearTriggerHistory(sessionId, Date.now() + 60_000);
+        // A tiny real delay so the push below lands in a strictly later
+        // millisecond than the clamped cutoff — without the clamp, a cutoff
+        // a minute in the future would still hide it easily.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        await pushTriggerHistory(sessionId, { ...baseEntry, triggerId: "after-clear", type: "lifecycle:ask" });
+
+        const history = await getTriggerHistory(sessionId);
+        expect(history.map((h) => h.triggerId)).toEqual(["after-clear"]);
+    });
 });

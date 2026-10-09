@@ -253,7 +253,13 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
     }
 
     // ── DELETE /api/sessions/:id/triggers ─────────────────────────────
-    // Clears trigger history for a session (e.g. on /new).
+    // Clears trigger history for a session (e.g. on /new, /resume, /fork).
+    // Optional `?before=<epoch-ms>` is a cutoff the caller captured at the
+    // moment it decided to transition — only history recorded at or before
+    // that instant is hidden, so a request delayed in transit can't erase
+    // the next generation's already-recorded history (see trigger-store.ts
+    // clearTriggerHistory for why). Omitting it falls back to an
+    // unconditional clear, for callers that predate this parameter.
     if (getMatch && req.method === "DELETE") {
         const identity = await authenticate(req);
         if (identity instanceof Response) return identity;
@@ -265,7 +271,9 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Session not found" }, { status: 404 });
         }
 
-        await clearTriggerHistory(sessionId);
+        const beforeRaw = url.searchParams.get("before");
+        const before = beforeRaw !== null && beforeRaw.trim() !== "" ? Number(beforeRaw) : undefined;
+        await clearTriggerHistory(sessionId, before !== undefined && Number.isFinite(before) ? before : undefined);
         broadcastToSessionViewers(sessionId, "trigger_delivered", { cleared: true });
         return Response.json({ ok: true });
     }

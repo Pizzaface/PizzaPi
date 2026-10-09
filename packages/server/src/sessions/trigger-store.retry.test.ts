@@ -57,6 +57,10 @@ describe("trigger history Redis lazy client", () => {
                 const list = rows.get(key) ?? [];
                 return list.slice(start, end < 0 ? undefined : end + 1);
             },
+            // Minimal GET so getTriggerHistory's clear-cutoff lookup resolves
+            // (this test never calls clearTriggerHistory, so no cutoff key
+            // was ever written — always "not cleared").
+            get: async () => null,
         };
         connectImpl = async () => client;
 

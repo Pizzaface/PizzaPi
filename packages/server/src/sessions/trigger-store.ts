@@ -60,11 +60,33 @@ export interface TriggerHistoryEntry {
         text?: string;
         ts: string;
     };
+    /**
+     * Epoch-ms captured by `pushTriggerHistory` the instant it is called,
+     * before any Redis I/O. This is what `clearTriggerHistory`'s cutoff is
+     * compared against — see that function's doc comment for why. Absent on
+     * entries written before this field existed (treated as 0, i.e. always
+     * "older" than any real cutoff).
+     */
+    recordedAt?: number;
 }
 
 const TRIGGER_HISTORY_KEY = (sessionId: string) => `pizzapi:triggers:history:${sessionId}`;
+const TRIGGER_CLEARED_BEFORE_KEY = (sessionId: string) => `pizzapi:triggers:clearedBefore:${sessionId}`;
 const MAX_HISTORY = 200;
 const HISTORY_TTL_SECONDS = 24 * 60 * 60; // 24 hours
+
+// Raises the stored cutoff to ARGV[1] unless it's already higher — a clear
+// that arrives out of order (e.g. retried, or overtaken by a newer one) must
+// never drag the cutoff backward and un-hide history a later clear already hid.
+const RAISE_CUTOFF_SCRIPT = `
+local current = tonumber(redis.call('GET', KEYS[1])) or 0
+local candidate = tonumber(ARGV[1])
+if candidate > current then
+    redis.call('SET', KEYS[1], candidate)
+end
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
+return 1
+`;
 
 const RECORD_RESPONSE_SCRIPT = `
 local entries = redis.call('LRANGE', KEYS[1], 0, ARGV[2] - 1)
@@ -93,11 +115,15 @@ export async function pushTriggerHistory(
     sessionId: string,
     entry: TriggerHistoryEntry,
 ): Promise<void> {
+    // Captured synchronously, before any Redis I/O (including the connect-on-
+    // first-use await inside getClient()) — this must reflect the instant this
+    // push was initiated, not whenever its write happens to land.
+    const recordedAt = Date.now();
     const redis = await getClient();
     if (!redis) return;
     const key = TRIGGER_HISTORY_KEY(sessionId);
     try {
-        await redis.lPush(key, JSON.stringify(entry));
+        await redis.lPush(key, JSON.stringify({ ...entry, recordedAt }));
         await redis.lTrim(key, 0, MAX_HISTORY - 1);
         await redis.expire(key, HISTORY_TTL_SECONDS);
     } catch (err) {
@@ -107,7 +133,10 @@ export async function pushTriggerHistory(
 
 /**
  * Get recent trigger history for a session.
- * Returns most recent first.
+ * Returns most recent first. Entries at or before the session's current
+ * clear cutoff (set by `clearTriggerHistory`) are filtered out even though
+ * they may still be physically present in the list — see that function for
+ * why clearing doesn't delete them outright.
  */
 export async function getTriggerHistory(
     sessionId: string,
@@ -116,15 +145,23 @@ export async function getTriggerHistory(
     const redis = await getClient();
     if (!redis) return [];
     const key = TRIGGER_HISTORY_KEY(sessionId);
+    const cutoffKey = TRIGGER_CLEARED_BEFORE_KEY(sessionId);
     try {
-        const raw = await redis.lRange(key, 0, limit - 1);
+        const [raw, cutoffRaw] = await Promise.all([
+            redis.lRange(key, 0, limit - 1),
+            redis.get(cutoffKey),
+        ]);
+        // `null` (no clear has ever run for this session) means "don't
+        // filter by recordedAt at all" — entries written before this field
+        // existed must keep showing up normally until an actual clear happens.
+        const cutoff = cutoffRaw !== null ? Number(cutoffRaw) : null;
         return raw.map((s) => {
             try {
                 return JSON.parse(s) as TriggerHistoryEntry;
             } catch {
                 return null;
             }
-        }).filter((e): e is TriggerHistoryEntry => e !== null);
+        }).filter((e): e is TriggerHistoryEntry => e !== null && (cutoff === null || (e.recordedAt ?? 0) > cutoff));
     } catch (err) {
         log.warn("Failed to get trigger history:", err);
         return [];
@@ -168,15 +205,43 @@ export async function recordTriggerResponse(
 }
 
 /**
- * Clear all trigger history for a session.
- * Called on /new so the Triggers panel starts fresh.
+ * Clear trigger history for a session — called on a /new, /resume, or /fork
+ * transition so the Triggers panel starts fresh for the new generation.
+ *
+ * `before` (epoch ms) is a cutoff supplied by the caller — the CLI captures
+ * it synchronously at the moment it decides to transition, *before* firing
+ * the (unawaited) DELETE request. Only entries recorded at-or-before that
+ * instant are hidden; anything recorded after it survives no matter how long
+ * the request itself took to arrive here. This is what closes the original
+ * race: a blind delete, run whenever this function happened to finally be
+ * invoked, could wipe out a new generation's history that had already landed
+ * *before* this invocation but *after* the cutoff the caller actually meant
+ * (see GM a8yAXXwa). Clamped to `now` so a clock-skewed-forward caller can't
+ * push the cutoff into the future and hide history that hasn't landed yet.
+ *
+ * `before` is optional for callers that predate this cutoff (and for any
+ * other direct caller that doesn't track one) — omitting it falls back to
+ * the original unconditional delete.
  */
-export async function clearTriggerHistory(sessionId: string): Promise<void> {
+export async function clearTriggerHistory(sessionId: string, before?: number): Promise<void> {
     const redis = await getClient();
     if (!redis) return;
-    const key = TRIGGER_HISTORY_KEY(sessionId);
+    if (before === undefined || !Number.isFinite(before)) {
+        const key = TRIGGER_HISTORY_KEY(sessionId);
+        try {
+            await redis.del(key);
+        } catch (err) {
+            log.warn("Failed to clear trigger history:", err);
+        }
+        return;
+    }
+    const clamped = Math.min(before, Date.now());
+    const cutoffKey = TRIGGER_CLEARED_BEFORE_KEY(sessionId);
     try {
-        await redis.del(key);
+        await redis.eval(RAISE_CUTOFF_SCRIPT, {
+            keys: [cutoffKey],
+            arguments: [String(clamped), String(HISTORY_TTL_SECONDS)],
+        });
     } catch (err) {
         log.warn("Failed to clear trigger history:", err);
     }
