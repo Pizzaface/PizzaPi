@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { filterSessionsByMode } from "./SessionSidebar";
+import { filterSessionsByMode, getSelectableSessionIds } from "./SessionSidebar";
 import type { ServiceModeDef } from "@pizzapi/protocol";
 
 // ── Minimal type stubs ────────────────────────────────────────────────────────
@@ -49,6 +49,19 @@ function makeProjectComparator(pinnedSessionIds: Set<string>) {
         return latestTs(b) - latestTs(a);
     };
 }
+
+describe("sidebar bulk selection", () => {
+    it("selects only sessions visible after mode filtering and tree collapse", () => {
+        const sessions = [
+            { sessionId: "visible-root", cwd: "/work", runnerId: "runner-a", shareUrl: "", startedAt: "2025-01-03T00:00:00Z" },
+            { sessionId: "hidden-child", cwd: "/work", runnerId: "runner-a", parentSessionId: "visible-root", shareUrl: "", startedAt: "2025-01-04T00:00:00Z" },
+        ];
+        const groups = [{ projects: [{ sessions }] }];
+
+        expect(getSelectableSessionIds(groups, new Set())).toEqual(["visible-root"]);
+        expect(getSelectableSessionIds(groups, new Set(["visible-root"]))).toEqual(["visible-root", "hidden-child"]);
+    });
+});
 
 describe("session mode filtering", () => {
     const modes: ServiceModeDef[] = [{ id: "work", label: "Work", workspace: "/work" }];

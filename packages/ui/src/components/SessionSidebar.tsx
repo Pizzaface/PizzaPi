@@ -75,6 +75,22 @@ function isPinnedSession(value: unknown): value is PinnedSession {
 
 export type { HubSession };
 
+export function getSelectableSessionIds(
+    groups: Array<{ projects: Array<{ sessions: HubSession[] }> }>,
+    expandedNodeIds: Set<string>,
+): string[] {
+    const ids: string[] = [];
+    for (const group of groups) {
+        for (const project of group.projects) {
+            const tree = buildSessionTree(project.sessions);
+            for (const item of flattenSessionTree(tree, expandedNodeIds)) {
+                ids.push(item.session.sessionId);
+            }
+        }
+    }
+    return ids;
+}
+
 export interface SessionSidebarProps {
     onOpenSession: (sessionId: string) => void;
     onNewSession: (initialCwd?: string) => void;
@@ -592,28 +608,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         }
     }, [fetchPinnedSessions, setPinPending]);
 
-    const selectAllSessions = React.useCallback(() => {
-        setSelectedSessionIds(new Set(liveSessions.map((s) => s.sessionId)));
-    }, [liveSessions]);
-
-    // Exit select mode when there are no sessions left
-    React.useEffect(() => {
-        if (selectMode && liveSessions.length === 0) {
-            exitSelectMode();
-        }
-    }, [selectMode, liveSessions.length, exitSelectMode]);
-
-    // Prune selected IDs that no longer exist
-    React.useEffect(() => {
-        if (!selectMode) return;
-        const ids = new Set(liveSessions.map((s) => s.sessionId));
-        setSelectedSessionIds((prev) => {
-            const next = new Set([...prev].filter((id) => ids.has(id)));
-            if (next.size === prev.size) return prev;
-            return next;
-        });
-    }, [selectMode, liveSessions]);
-
     React.useEffect(() => {
         onRelayStatusChange?.(dotState);
     }, [dotState, onRelayStatusChange]);
@@ -946,6 +940,35 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         return result;
     }, [visibleSessions, pinnedSessionIds]);
 
+    const selectableSessionIds = React.useMemo(
+        () => getSelectableSessionIds(liveGroups, expandedNodeIds),
+        [liveGroups, expandedNodeIds],
+    );
+    const selectableSessionIdSet = React.useMemo(() => new Set(selectableSessionIds), [selectableSessionIds]);
+    const allSelectableSessionsSelected = selectableSessionIds.length > 0
+        && selectableSessionIds.every((id) => selectedSessionIds.has(id));
+
+    const selectAllSessions = React.useCallback(() => {
+        setSelectedSessionIds(new Set(selectableSessionIds));
+    }, [selectableSessionIds]);
+
+    // Exit select mode when there are no visible sessions left.
+    React.useEffect(() => {
+        if (selectMode && selectableSessionIds.length === 0) {
+            exitSelectMode();
+        }
+    }, [selectMode, selectableSessionIds.length, exitSelectMode]);
+
+    // Prune selected IDs that are no longer visible/selectable.
+    React.useEffect(() => {
+        if (!selectMode) return;
+        setSelectedSessionIds((prev) => {
+            const next = new Set([...prev].filter((id) => selectableSessionIdSet.has(id)));
+            if (next.size === prev.size) return prev;
+            return next;
+        });
+    }, [selectMode, selectableSessionIdSet]);
+
     // Find session name for the confirm dialog
     const confirmSession = confirmEndSessionId
         ? liveSessions.find((s) => s.sessionId === confirmEndSessionId)
@@ -1099,14 +1122,14 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                             size="icon"
                             className="h-11 w-11 md:h-7 md:w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
                             onClick={() => {
-                                if (selectedSessionIds.size === liveSessions.length) {
+                                if (allSelectableSessionsSelected) {
                                     setSelectedSessionIds(new Set());
                                 } else {
                                     selectAllSessions();
                                 }
                             }}
-                            aria-label={selectedSessionIds.size === liveSessions.length ? "Deselect all" : "Select all"}
-                            title={selectedSessionIds.size === liveSessions.length ? "Deselect all" : "Select all"}
+                            aria-label={allSelectableSessionsSelected ? "Deselect all" : "Select all"}
+                            title={allSelectableSessionsSelected ? "Deselect all" : "Select all"}
                         >
                             <CheckCheck className="h-4 w-4" />
                         </Button>
