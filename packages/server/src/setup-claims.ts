@@ -16,6 +16,7 @@
 
 import { sql } from "kysely";
 import { getKysely, type SetupClaimTable } from "./auth.js";
+import { hashApiKey } from "./api-key-hash.js";
 import { mintEphemeralApiKey } from "./routes/utils.js";
 import { createLogger } from "@pizzapi/tools";
 
@@ -226,15 +227,11 @@ export async function pollSetupClaim(token: string): Promise<SetupClaimStatus | 
 /**
  * Delete a freshly minted ephemeral key. Used when an approval loses the
  * atomic claim race, so the loser's key never survives as an orphaned
- * credential. Hashes exactly like mintEphemeralApiKey (better-auth's
- * defaultKeyHasher) and removes the stored row, making the raw key invalid.
+ * credential. Uses the shared better-auth API-key hash helper and removes the
+ * stored row, making the raw key invalid.
  */
 async function deleteEphemeralApiKey(rawKey: string, userId: string): Promise<void> {
-    const keyHashBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(rawKey));
-    const hashedKey = btoa(String.fromCharCode(...new Uint8Array(keyHashBuf)))
-        .replace(/\+/g, "-")
-        .replace(/\//g, "_")
-        .replace(/=/g, "");
+    const hashedKey = await hashApiKey(rawKey);
     await getKysely()
         .deleteFrom("apikey")
         .where("key", "=", hashedKey)

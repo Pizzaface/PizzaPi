@@ -6,6 +6,7 @@
  */
 
 import { getApiKeyRateLimitConfig, getKysely } from "../auth.js";
+import { hashApiKey } from "../api-key-hash.js";
 import { getRunners } from "../ws/sio-registry.js";
 import { cwdMatchesRoots } from "../security.js";
 
@@ -77,12 +78,7 @@ export async function mintEphemeralApiKey(
     const { randomBytes } = await import("crypto");
     const key = randomBytes(32).toString("hex");
 
-    // Hash key using SHA-256 + base64url (matches better-auth's defaultKeyHasher)
-    const keyHashBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
-    const hashedKey = btoa(String.fromCharCode(...new Uint8Array(keyHashBuf)))
-        .replace(/\+/g, "-")
-        .replace(/\//g, "_")
-        .replace(/=/g, "");
+    const hashedKey = await hashApiKey(key);
 
     const now = new Date();
     const nowIso = now.toISOString();
