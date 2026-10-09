@@ -87,9 +87,26 @@ const mockRedis = {
 // No mock.module for redis — mock client is injected directly via initStateRedis().
 mock.module("./hub.js", () => ({ broadcastToHub: mock(async () => {}) }));
 
+// The secret path (redis-kv-store.js getValue/setValue) short-circuits to a
+// no-op when PIZZAPI_REDIS_URL=off, bypassing the injected mock entirely
+// regardless of _injectRedisForTesting(). Pin it to a harmless non-"off"
+// value for this suite so the assertions below are robust to ambient env
+// state left over from other tests/shells.
+const _previousRedisUrl = process.env.PIZZAPI_REDIS_URL;
+
 // Restore all module mocks after this file so they don't bleed into other
 // test files running in the same worker process.
-afterAll(() => mock.restore());
+afterAll(() => {
+    mock.restore();
+    // Reset the module-level kv-store client so it doesn't leak this file's
+    // mock into a later test file sharing the same Bun worker process.
+    _resetRedisKvStoreForTesting();
+    if (_previousRedisUrl === undefined) {
+        delete process.env.PIZZAPI_REDIS_URL;
+    } else {
+        process.env.PIZZAPI_REDIS_URL = _previousRedisUrl;
+    }
+});
 
 // Instead of mocking ./runners-broadcast.js (which is brittle if another test
 // imports it first), we provide a fake Socket.IO server via initSioRegistry()
@@ -146,6 +163,13 @@ const ownerDb = await installRunnerOwnerTestDb();
 
 const { initSioRegistry, runnersUserRoom, runnerSecrets } = await import("./context.js");
 const { initStateRedis } = await import("../sio-state.js");
+// The runner-secret path (validateAndPersistRunnerSecret -> getValue/setValue)
+// goes through redis-kv-store.js, a SEPARATE lazily-connecting client from
+// sio-state's. Without injecting it too, tests that register a runner with a
+// secret fall through to a real connect() attempt at redis://127.0.0.1:6379 --
+// which times out the whole test when no local Redis is listening, or writes
+// real `pizzapi:runner:secret:*` keys into a developer's live Redis when one is.
+const { _injectRedisForTesting: _injectKvRedis, _resetRedisKvStoreForTesting } = await import("../../redis-kv-store.js");
 const { registerRunner, removeRunner, updateRunnerSkills, updateRunnerAgents, updateRunnerPlugins, updateRunnerServices, getRunnerServices } =
     await import("./runners.js");
 
@@ -153,6 +177,7 @@ const { registerRunner, removeRunner, updateRunnerSkills, updateRunnerAgents, up
 // cache on the barrel (../sio-state/index.js) cannot leak a fake into this file.
 describe("runners broadcast", () => {
     beforeEach(async () => {
+        process.env.PIZZAPI_REDIS_URL = "redis://mock-injected-for-testing";
         await ownerDb.reset();
         store.clear();
         setStore.clear();
@@ -160,6 +185,8 @@ describe("runners broadcast", () => {
         runnerSecrets.clear();
         initSioRegistry(createFakeIo() as any);
         await initStateRedis(mockRedis as never);
+        _resetRedisKvStoreForTesting();
+        _injectKvRedis(mockRedis);
     });
 
     it("broadcasts runner_added when registerRunner succeeds", async () => {
@@ -239,10 +266,14 @@ describe("runners broadcast", () => {
         });
         expect(result).toBe(runnerId);
         expect(runnerSecrets.get(runnerId)).toBe(runnerSecret);
+        // Secret must be persisted through the injected redis-kv-store mock, not
+        // dropped by (or leaked to) a real Redis connection attempt.
+        expect(store.get(`pizzapi:runner:secret:${runnerId}`)).toBe(runnerSecret);
 
         await removeRunner(runnerId);
 
         expect(runnerSecrets.has(runnerId)).toBe(false);
+        expect(store.get(`pizzapi:runner:secret:${runnerId}`)).toBeUndefined();
     });
 
     it("broadcasts runner_updated after updateRunnerSkills", async () => {

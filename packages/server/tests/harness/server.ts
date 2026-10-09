@@ -14,6 +14,7 @@ import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Server as SocketIOServer } from "socket.io";
 import { createAdapter } from "@socket.io/redis-adapter";
+import { RedisMemoryServer } from "redis-memory-server";
 // Type-only import — erased at compile time, no runtime module registry lookup.
 import type { RedisClientType } from "redis";
 
@@ -38,6 +39,53 @@ import type { TestServerOptions, TestServer } from "./types.js";
 // Read lazily so callers can set PIZZAPI_REDIS_URL before createTestServer() is called.
 function getRedisUrl(): string {
     return process.env.PIZZAPI_REDIS_URL ?? "redis://localhost:6379";
+}
+
+// The harness must never silently fall through to a real dev/production
+// Redis. If the caller hasn't set PIZZAPI_REDIS_URL explicitly, use a
+// disposable in-memory Redis instead (same pattern already used by
+// tests/harness/sandbox.ts and individual suites like
+// trigger-snapshot-offline.test.ts). Callers that set PIZZAPI_REDIS_URL
+// themselves (including "off") are unaffected.
+//
+// The instance is created ONCE per test process and reused across every
+// createTestServer() call that needs it (only one server is ever active at
+// a time, so sharing is safe) -- spinning up a fresh redis-server subprocess
+// per call made test files with many sequential servers (e.g.
+// mock-runner.test.ts's 16 tests) slow enough to make unrelated polling
+// assertions flaky. It's torn down at process exit, not per-call.
+let _sharedMemoryRedis: RedisMemoryServer | undefined;
+let _sharedMemoryRedisUrl: string | undefined;
+let _exitHookRegistered = false;
+
+async function ensureIsolatedRedisUrl(): Promise<{ previousUrl: string | undefined; usedSharedInstance: boolean }> {
+    const previousUrl = process.env.PIZZAPI_REDIS_URL;
+    if (previousUrl) return { previousUrl, usedSharedInstance: false };
+
+    if (!_sharedMemoryRedis) {
+        if (process.env.PIZZAPI_TEST_FORCE_REDIS_PROVISION_FAILURE === "1") {
+            throw new Error("[test-harness] forced RedisMemoryServer provisioning failure");
+        }
+        _sharedMemoryRedis = await RedisMemoryServer.create({
+            instance: { ip: "127.0.0.1", port: 0 },
+            autoStart: true,
+        } as any);
+        const host = await _sharedMemoryRedis.getHost();
+        const port = await _sharedMemoryRedis.getPort();
+        _sharedMemoryRedisUrl = `redis://${host}:${port}`;
+
+        if (!_exitHookRegistered) {
+            _exitHookRegistered = true;
+            process.once("exit", () => {
+                // Best-effort: the test process is exiting regardless, this just
+                // tries to avoid leaving an orphaned redis-server subprocess.
+                void _sharedMemoryRedis?.stop();
+            });
+        }
+    }
+
+    process.env.PIZZAPI_REDIS_URL = _sharedMemoryRedisUrl;
+    return { previousUrl, usedSharedInstance: true };
 }
 
 // ── Active-server guard ──────────────────────────────────────────────────────
@@ -163,14 +211,27 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
     const savedTrustProxy = process.env.PIZZAPI_TRUST_PROXY;
     process.env.PIZZAPI_TRUST_PROXY = "true";
 
-    // Shared helper — restores PIZZAPI_TRUST_PROXY to its original value.
-    // Called both from cleanup() on success and from the catch block on failure
-    // so that a throw during setup never leaves a mutated env var behind.
+    let isolatedRedis: Awaited<ReturnType<typeof ensureIsolatedRedisUrl>> | null = null;
+
+    // Shared helper — restores PIZZAPI_TRUST_PROXY/PIZZAPI_REDIS_URL to their
+    // original values. Called both from cleanup() on success and from the
+    // catch block on failure so that a throw during setup never leaves a
+    // mutated env var behind. Does NOT stop the in-memory Redis server
+    // The shared in-memory Redis instance itself is NOT stopped here — it
+    // outlives individual servers and is torn down at process exit (see
+    // ensureIsolatedRedisUrl() above).
     function restoreEnv(): void {
         if (savedTrustProxy === undefined) {
             delete process.env.PIZZAPI_TRUST_PROXY;
         } else {
             process.env.PIZZAPI_TRUST_PROXY = savedTrustProxy;
+        }
+        if (isolatedRedis?.usedSharedInstance) {
+            if (isolatedRedis.previousUrl === undefined) {
+                delete process.env.PIZZAPI_REDIS_URL;
+            } else {
+                process.env.PIZZAPI_REDIS_URL = isolatedRedis.previousUrl;
+            }
         }
     }
 
@@ -195,6 +256,13 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
     let subClient: RedisClientType | null = null;
 
     try {
+
+    // 2b. Never silently fall through to a real dev/production Redis — spin
+    // up a disposable in-memory instance when the caller hasn't set
+    // PIZZAPI_REDIS_URL explicitly. Keep this inside the guarded setup block
+    // so RedisMemoryServer provisioning failures still restore env and clear
+    // the active-server guard.
+    isolatedRedis = await ensureIsolatedRedisUrl();
 
     // 3. Init auth with temp DB
     const authContext = createTestAuthContext({
@@ -401,9 +469,6 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
         // Clear the active-server guard so a new server can be created.
         _activeServer = false;
 
-        // Restore PIZZAPI_TRUST_PROXY
-        restoreEnv();
-
         // Gracefully disconnect Socket.IO clients first so their async
         // disconnect handlers can flush Redis-backed broadcasts before the
         // adapter clients are closed.
@@ -424,8 +489,14 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
         // Tear down tunnel relay WebSocket server
         disposeTunnelRelay();
 
-        // Disconnect Redis clients (adapter pub/sub + dedicated state client)
+        // Disconnect Redis clients (adapter pub/sub + dedicated state client).
+        // The shared in-memory Redis instance itself keeps running for reuse
+        // by later servers in this process (see ensureIsolatedRedisUrl()).
         await Promise.allSettled([pubClient?.quit(), subClient?.quit(), closeStateRedis()]);
+
+        // Restore env only after every Redis-dependent teardown path has run;
+        // disconnect handlers may lazily use PIZZAPI_REDIS_URL while flushing.
+        restoreEnv();
 
         // Clean up temp directory
         try {

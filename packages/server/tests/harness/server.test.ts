@@ -16,6 +16,23 @@ import type { TestServer } from "./types.js";
 // Tests spin up real servers + Redis + Socket.IO, so we need a generous timeout.
 const TEST_TIMEOUT_MS = 30_000;
 
+function redisConnectUrls(): string[] {
+    const globals = globalThis as unknown as { __harnessRedisConnectUrls?: string[] };
+    globals.__harnessRedisConnectUrls ??= [];
+    return globals.__harnessRedisConnectUrls;
+}
+
+function isDefaultDevRedisUrl(url: string): boolean {
+    try {
+        const parsed = new URL(url);
+        const usesDefaultDb = parsed.pathname === "" || parsed.pathname === "/" || parsed.pathname === "/0";
+        return parsed.protocol === "redis:" && (parsed.port || "6379") === "6379" && usesDefaultDb &&
+            (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1");
+    } catch {
+        return false;
+    }
+}
+
 async function registerTestSession(server: TestServer): Promise<{ sessionId: string; relay: ReturnType<typeof clientIo> }> {
     const relay = clientIo(`${server.baseUrl}/relay`, {
         auth: { apiKey: server.apiKey },
@@ -87,6 +104,27 @@ async function connectViewerWithOrigin(
 }
 
 describe("createTestServer", () => {
+    test("cleans up env and active guard when auto Redis provisioning fails", async () => {
+        const previousRedisUrl = process.env.PIZZAPI_REDIS_URL;
+        const previousTrustProxy = process.env.PIZZAPI_TRUST_PROXY;
+        delete process.env.PIZZAPI_REDIS_URL;
+        process.env.PIZZAPI_TEST_FORCE_REDIS_PROVISION_FAILURE = "1";
+
+        try {
+            await expect(createTestServer()).rejects.toThrow("forced RedisMemoryServer provisioning failure");
+            expect(process.env.PIZZAPI_TRUST_PROXY).toBe(previousTrustProxy);
+        } finally {
+            delete process.env.PIZZAPI_TEST_FORCE_REDIS_PROVISION_FAILURE;
+            if (previousRedisUrl === undefined) delete process.env.PIZZAPI_REDIS_URL;
+            else process.env.PIZZAPI_REDIS_URL = previousRedisUrl;
+            if (previousTrustProxy === undefined) delete process.env.PIZZAPI_TRUST_PROXY;
+            else process.env.PIZZAPI_TRUST_PROXY = previousTrustProxy;
+        }
+
+        const server = await createTestServer();
+        await server.cleanup();
+    }, TEST_TIMEOUT_MS);
+
     test("creates server and responds to health check", async () => {
         const server = await createTestServer();
         try {
@@ -198,5 +236,81 @@ describe("createTestServer", () => {
             threw = true;
         }
         expect(threw).toBe(true);
+    }, TEST_TIMEOUT_MS);
+
+    test("test preload refuses direct connections to the default dev Redis port", async () => {
+        const { createClient } = await import("redis");
+        const client = createClient({ url: "redis://127.0.0.1:6379" });
+        await expect(client.connect()).rejects.toThrow("Refusing to connect to live dev Redis");
+    });
+
+    test("never connects to the default dev Redis port when PIZZAPI_REDIS_URL is unset", async () => {
+        // The harness must provision its own disposable Redis when the caller
+        // hasn't opted into an explicit PIZZAPI_REDIS_URL -- it must never
+        // silently fall through to redis://127.0.0.1:6379 (a real dev/prod
+        // Redis a developer or CI service container may have listening).
+        const previousUrl = process.env.PIZZAPI_REDIS_URL;
+        delete process.env.PIZZAPI_REDIS_URL;
+
+        try {
+            redisConnectUrls().length = 0;
+            const server = await createTestServer();
+            try {
+                // PIZZAPI_REDIS_URL must now be set to an isolated instance,
+                // not the hardcoded default port.
+                const urlDuringLifetime = process.env.PIZZAPI_REDIS_URL;
+                expect(urlDuringLifetime).toBeDefined();
+                expect(urlDuringLifetime).not.toBe("redis://localhost:6379");
+                expect(urlDuringLifetime).not.toContain(":6379");
+            } finally {
+                await server.cleanup();
+            }
+
+            // The env var must be restored (here: deleted again) once the
+            // isolated server is torn down, so it doesn't leak into later tests.
+            expect(process.env.PIZZAPI_REDIS_URL).toBeUndefined();
+            expect(redisConnectUrls().some(isDefaultDevRedisUrl)).toBe(false);
+        } finally {
+            if (previousUrl === undefined) {
+                delete process.env.PIZZAPI_REDIS_URL;
+            } else {
+                process.env.PIZZAPI_REDIS_URL = previousUrl;
+            }
+        }
+    }, TEST_TIMEOUT_MS);
+
+    test("respects an explicitly-set PIZZAPI_REDIS_URL instead of auto-provisioning", async () => {
+        // Callers that already manage their own isolated Redis (e.g. via
+        // RedisMemoryServer, matching trigger-snapshot-offline.test.ts) must
+        // not have it silently swapped out from under them.
+        const { RedisMemoryServer } = await import("redis-memory-server");
+        const ownRedis = await RedisMemoryServer.create({
+            instance: { ip: "127.0.0.1", port: 0 },
+            autoStart: true,
+        } as any);
+        const ownUrl = `redis://${await ownRedis.getHost()}:${await ownRedis.getPort()}`;
+
+        const previousUrl = process.env.PIZZAPI_REDIS_URL;
+        process.env.PIZZAPI_REDIS_URL = ownUrl;
+
+        try {
+            const server = await createTestServer();
+            try {
+                // The caller's own URL must be left untouched (not overwritten
+                // by an auto-provisioned isolated instance).
+                expect(process.env.PIZZAPI_REDIS_URL).toBe(ownUrl);
+            } finally {
+                await server.cleanup();
+            }
+            // Cleanup must not stop/clear a Redis instance it didn't provision.
+            expect(process.env.PIZZAPI_REDIS_URL).toBe(ownUrl);
+        } finally {
+            if (previousUrl === undefined) {
+                delete process.env.PIZZAPI_REDIS_URL;
+            } else {
+                process.env.PIZZAPI_REDIS_URL = previousUrl;
+            }
+            await ownRedis.stop();
+        }
     }, TEST_TIMEOUT_MS);
 });
