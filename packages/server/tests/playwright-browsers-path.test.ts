@@ -17,7 +17,17 @@ function runInFakeHome(fakeHome: string, extraEnv: Record<string, string | undef
                 "harness/playwright-browsers.ts",
             )}"); ensurePlaywrightBrowsersPath(); process.stdout.write(process.env.PLAYWRIGHT_BROWSERS_PATH ?? "");`,
         ],
-        env: { ...process.env, HOME: fakeHome, PLAYWRIGHT_BROWSERS_PATH: undefined, ...extraEnv },
+        env: {
+            ...process.env,
+            HOME: fakeHome,
+            // A real XDG_CACHE_HOME/LOCALAPPDATA inherited from this test process
+            // would outrank the fake HOME-derived candidate below and leak the
+            // real cache into the "clean HOME" fixture.
+            XDG_CACHE_HOME: undefined,
+            LOCALAPPDATA: undefined,
+            PLAYWRIGHT_BROWSERS_PATH: undefined,
+            ...extraEnv,
+        },
     });
     if (result.exitCode !== 0) {
         throw new Error(`subprocess failed: ${result.stderr.toString()}`);
@@ -44,6 +54,24 @@ describe("Playwright browser cache resolution", () => {
                 expect(runInFakeHome(fakeHome)).toBe(cacheDir);
             } finally {
                 rmSync(fakeHome, { recursive: true, force: true });
+            }
+        },
+    );
+
+    // XDG_CACHE_HOME outranks HOME on Linux; only applies there.
+    test.skipIf(process.platform !== "linux")(
+        "prefers a real XDG_CACHE_HOME browser cache over the HOME-derived candidate",
+        () => {
+            const fakeHome = mkdtempSync(path.join(tmpdir(), "pizzapi-playwright-home-"));
+            const fakeXdgCacheHome = mkdtempSync(path.join(tmpdir(), "pizzapi-playwright-xdg-"));
+            try {
+                const xdgCacheDir = path.join(fakeXdgCacheHome, "ms-playwright");
+                mkdirSync(path.join(xdgCacheDir, "chromium-1234"), { recursive: true });
+
+                expect(runInFakeHome(fakeHome, { XDG_CACHE_HOME: fakeXdgCacheHome })).toBe(xdgCacheDir);
+            } finally {
+                rmSync(fakeHome, { recursive: true, force: true });
+                rmSync(fakeXdgCacheHome, { recursive: true, force: true });
             }
         },
     );
@@ -78,7 +106,13 @@ describe("Playwright browser cache resolution", () => {
                          ensurePlaywrightBrowsersPath();
                          process.stdout.write(process.env.PLAYWRIGHT_BROWSERS_PATH ?? "");`,
                     ],
-                    env: { ...process.env, HOME: fakeHome, PLAYWRIGHT_BROWSERS_PATH: undefined },
+                    env: {
+                        ...process.env,
+                        HOME: fakeHome,
+                        XDG_CACHE_HOME: undefined,
+                        LOCALAPPDATA: undefined,
+                        PLAYWRIGHT_BROWSERS_PATH: undefined,
+                    },
                 });
                 expect(result.exitCode).toBe(0);
                 expect(result.stdout.toString().trim()).toBe(cacheDir);
