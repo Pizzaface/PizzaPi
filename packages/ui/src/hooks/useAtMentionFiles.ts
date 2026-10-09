@@ -65,6 +65,25 @@ export function useAtMentionFiles(
         prevEnabledRef.current = enabled;
     }, [enabled]);
 
+    // Clear the path-keyed cache and cancel any in-flight request whenever the
+    // SCOPE changes (runner, session, or base cwd). The cache is keyed only by
+    // relative path, so without this a session switch that revisits the same
+    // relative path (e.g. "" for the root, or "src") would instantly serve the
+    // PREVIOUS session's stale listing, and a still-in-flight request from the
+    // old scope could later resolve and overwrite the new scope's result.
+    useEffect(() => {
+        cacheRef.current.clear();
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+            abortControllerRef.current = null;
+        }
+        if (debounceTimerRef.current) {
+            clearTimeout(debounceTimerRef.current);
+            debounceTimerRef.current = null;
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [runnerId, basePath, sessionId]);
+
     // Cleanup on unmount
     useEffect(() => {
         return () => {

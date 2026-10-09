@@ -165,7 +165,28 @@ export function FileExplorer({ runnerId, cwd, sessionId, className, openFile }: 
     saveExpandedPaths(storageKey, expandedPaths);
   }, [storageKey, expandedPaths]);
 
+  // Scope generation: bumped whenever the runner/session/cwd identity changes.
+  // The component stays mounted across session switches (it isn't remounted
+  // by the parent), so a slow in-flight request from the OLD scope can
+  // resolve AFTER a fast one from the NEW scope. Every async write below
+  // captures the generation it started under and discards its result if the
+  // generation has since moved on — that's what stops a late response for
+  // session A from overwriting session B's listing.
+  const generationRef = React.useRef(0);
+  React.useEffect(() => {
+    generationRef.current += 1;
+    setFiles(null);
+    setError(null);
+    setChildrenCache(new Map());
+    setLoadingPaths(new Set());
+    setExpandingAll(false);
+    setExpandedPaths(loadExpandedPaths(storageKey));
+    setViewingFile(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runnerId, cwd, sessionId]);
+
   const fetchFiles = React.useCallback(async () => {
+    const generation = generationRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -180,11 +201,13 @@ export function FileExplorer({ runnerId, cwd, sessionId, className, openFile }: 
         throw new Error(data?.error || `HTTP ${res.status}`);
       }
       const data = await res.json() as { ok: boolean; files: FileEntry[] };
+      if (generationRef.current !== generation) return; // stale — scope changed since this request started
       setFiles(data.files ?? []);
     } catch (err) {
+      if (generationRef.current !== generation) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (generationRef.current === generation) setLoading(false);
     }
   }, [runnerId, cwd, sessionId]);
 
@@ -211,8 +234,10 @@ export function FileExplorer({ runnerId, cwd, sessionId, className, openFile }: 
 
     // Expand — fetch children if not cached
     if (!childrenCache.has(entry.path)) {
+      const generation = generationRef.current;
       setLoadingPaths((prev) => new Set([...prev, entry.path]));
       const children = await fetchChildren(runnerId, entry.path, sessionId);
+      if (generationRef.current !== generation) return; // stale — scope changed mid-fetch
       setChildrenCache((prev) => new Map([...prev, [entry.path, children]]));
       setLoadingPaths((prev) => {
         const next = new Set(prev);
@@ -232,6 +257,7 @@ export function FileExplorer({ runnerId, cwd, sessionId, className, openFile }: 
   // Expand All (BFS up to depth 3, fetching missing children)
   const handleExpandAll = React.useCallback(async () => {
     if (!files) return;
+    const generation = generationRef.current;
     setExpandingAll(true);
 
     const newCache = new Map(childrenCache);
@@ -257,6 +283,7 @@ export function FileExplorer({ runnerId, cwd, sessionId, className, openFile }: 
       }
     }
 
+    if (generationRef.current !== generation) return; // stale — scope changed mid-expand
     setChildrenCache(newCache);
     setExpandedPaths((prev) => new Set([...prev, ...toExpand]));
     setExpandingAll(false);

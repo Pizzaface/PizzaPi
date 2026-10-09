@@ -32,3 +32,16 @@ if (!g.window) {
     g.document = win.document;
     g.navigator = win.navigator;
 }
+
+// Eagerly capture the REAL useAtMentionFiles function before any test file's
+// mock.module("@/hooks/useAtMentionFiles", ...) can shadow it process-wide.
+// Per Bun's docs, mock.module OVERWRITES THE EXPORTS OF THE ALREADY-LOADED
+// MODULE IN PLACE rather than swapping in a separate module record — so
+// holding onto the *module namespace object* (e.g. `await import(...)`) is
+// NOT a safe snapshot: any later mock.module call for that path mutates the
+// very same object, and every existing reference to it observes the mocked
+// value too. Pulling the function OUT of the namespace right now, into a
+// plain globalThis property, copies the value instead of aliasing the live
+// binding, so it stays real even after AtMentionPopover.test.tsx (or any
+// other file) mocks this hook for its own purposes.
+g.__realUseAtMentionFiles = (await import("./hooks/useAtMentionFiles")).useAtMentionFiles;
