@@ -90,19 +90,62 @@ describe("App.tsx wiring — native app resume forces a reconnect", () => {
     expect(handlerBody).not.toMatch(/visibilityState/);
   });
 
-  test("the native resume handler force-reconnects even when a socket still reports connected", () => {
+  test("the native resume handler only force-disconnects+reconnects when the connection could plausibly be stale", () => {
     const resumeCall = effect.match(/registerAppResumeListener\((\w+)\)/);
     const handlerName = resumeCall![1];
     const handlerBody = effect.slice(
       effect.indexOf(`const ${handlerName} = () => {`),
       effect.indexOf(`registerAppResumeListener(${handlerName})`),
     );
-    // Must call connect() unconditionally (not gated behind `if (!x.connected)`),
-    // and must disconnect() first when already connected so a half-dead
-    // transport actually gets torn down rather than left in place.
+    // Must consult shouldForceReconnectOnResume rather than unconditionally
+    // tearing down a healthy socket (see viewer-connection.test.ts for the
+    // pure-function behavior), but still be ABLE to disconnect()+connect()
+    // a genuinely stale one.
+    expect(handlerBody).toMatch(/shouldForceReconnectOnResume\(/);
     expect(handlerBody).toMatch(/viewer\.disconnect\(\)/);
     expect(handlerBody).toMatch(/viewer\.connect\(\)/);
     expect(handlerBody).toMatch(/hub\.disconnect\(\)/);
     expect(handlerBody).toMatch(/hub\.connect\(\)/);
+  });
+
+  test("the native resume handler is debounced against bursts of appStateChange events", () => {
+    const resumeCall = effect.match(/registerAppResumeListener\((\w+)\)/);
+    const handlerName = resumeCall![1];
+    const handlerBody = effect.slice(
+      effect.indexOf(`const ${handlerName} = () => {`),
+      effect.indexOf(`registerAppResumeListener(${handlerName})`),
+    );
+    expect(handlerBody).toMatch(/APP_RESUME_DEBOUNCE_MS/);
+  });
+});
+
+describe("App.tsx wiring — stale-connection watchdog backs off instead of looping", () => {
+  const src = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+
+  test("the watchdog interval consults the backoff-aware trigger function", () => {
+    const watchdog = src.slice(
+      src.indexOf("staleCheckTimerRef.current = setInterval"),
+      src.indexOf("}, STALE_CHECK_INTERVAL_MS);"),
+    );
+    expect(watchdog).toMatch(/shouldTriggerStaleWatchdogReconnect\(/);
+    expect(watchdog).toMatch(/consecutiveStaleReconnectsRef\.current \+= 1/);
+  });
+
+  test("a liveness-only heartbeat replay does not reset the backoff counter", () => {
+    const eventHandler = src.slice(
+      src.indexOf('nextSocket.on("event", (data) => {'),
+      src.indexOf('nextSocket.on("session_messages_page"'),
+    );
+    expect(eventHandler).toMatch(/isLivenessOnlyHeartbeat/);
+    expect(eventHandler).toMatch(/_livenessOnly/);
+    expect(eventHandler).toMatch(/if \(!isLivenessOnlyHeartbeat\) consecutiveStaleReconnectsRef\.current = 0;/);
+  });
+
+  test("a real exec_result resets the backoff counter", () => {
+    const execResultHandler = src.slice(
+      src.indexOf('nextSocket.on("exec_result"'),
+      src.indexOf('nextSocket.on("disconnected"'),
+    );
+    expect(execResultHandler).toMatch(/consecutiveStaleReconnectsRef\.current = 0;/);
   });
 });

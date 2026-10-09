@@ -11,16 +11,24 @@ import { gzipSync } from "zlib";
 
 const DIST_DIR = path.resolve(import.meta.dir, "../dist");
 const INDEX_HTML = path.join(DIST_DIR, "index.html");
-// 512 KB gzip. The local gzip size for a given commit is reproducible
-// (±0.05 KB across repeated builds here), but CI's esbuild/Rollup minify
-// pass is not: on 2026-10-08, PR #945's unchanged commit produced two
+// 508 KB gzip. gzip itself is deterministic — this is about build output,
+// not compression: on 2026-10-08, PR #945's unchanged commit produced two
 // *different* "within budget" vs "exceeds budget" results in the very same
-// CI job — identical 1712.84 KB raw minified output both times, but gzip
-// 500.76 KB then 505.49 KB on the next build (run ids 37799888572, job
-// npm-local). 505 KB left ~0 KB of margin against that swing even though
-// neither build actually grew the app. Budget bumped to restore headroom;
-// shrink real growth instead of creeping this number back down.
-const BUDGET_BYTES = 512 * 1024;
+// CI job, gzip 500.76 KB then 505.49 KB on the next build (run ids
+// 37799888572, job npm-local). Both builds reported the same 1712.84 KB raw
+// size to 2 decimal places, but that's not proof of byte-identical output —
+// Rollup/esbuild's chunk splitting isn't fully deterministic across runs, so
+// two builds can land on the same total length while differing in content
+// (e.g. different per-chunk content-hash strings of the same length), which
+// gzips to a different size. The old 505 KB budget left ~0 KB of margin
+// against that swing. Measured on this branch: ~501.25 KB locally across
+// five rebuilds (513265–513283 bytes, <0.02 KB jitter — the CI-observed
+// 4.73 KB swing hasn't reproduced locally). 508 KB leaves ~2.5 KB over the
+// worst CI result seen so far and ~7 KB over today's actual size — tighter
+// than the previous 512 KB bump, which silently handed main ~11 KB of slack.
+// If CI keeps seeing swings this large, investigate the chunk-splitting
+// nondeterminism directly rather than creeping this number up again.
+const BUDGET_BYTES = 508 * 1024;
 
 function formatBytes(bytes: number): string {
     return `${(bytes / 1024).toFixed(2)} KB`;
