@@ -78,8 +78,9 @@ test("bounds network-error retries and resets the exhausted budget on reconnect"
       await act(async () => { timers.callbacks.shift()!(); });
     }
     expect(calls).toBe(4);
-    expect(timers.delays).toEqual([1000, 2000, 4000]);
-    expect(timers.callbacks).toHaveLength(0);
+    // Exhausting the backoff budget schedules the long error-TTL invalidation timer.
+    expect(timers.delays).toEqual([1000, 2000, 4000, 30_000]);
+    expect(timers.callbacks).toHaveLength(1);
     expect(result.current.error).toContain("Network unavailable");
     expect(result.current.loading).toBe(false);
     online = false;
@@ -93,16 +94,26 @@ test("bounds network-error retries and resets the exhausted budget on reconnect"
   } finally { timers.restore(); }
 });
 
-test("does not retry a permanent HTTP error", async () => {
+test("retries a permanent HTTP error once the stale-error TTL elapses, without a reconnect", async () => {
   let calls = 0;
-  globalThis.fetch = (async () => { calls++; return new Response(null, { status: 404 }); }) as typeof fetch;
+  globalThis.fetch = (async () => {
+    calls++;
+    if (calls === 1) return new Response(null, { status: 404 });
+    return Response.json({ title: "Service recovered" });
+  }) as typeof fetch;
   const timers = captureTimers();
   try {
     const { result } = mountSigil();
     await act(async () => {});
     expect(result.current.error).toContain("404");
     expect(calls).toBe(1);
-    expect(timers.callbacks).toHaveLength(0);
+    // ... but a stale-error invalidation timer is scheduled so the pill can
+    // self-heal when the service comes back, without a page reload.
+    expect(timers.callbacks).toHaveLength(1);
+    await act(async () => { timers.callbacks.shift()!(); });
+    expect(result.current.data?.title).toBe("Service recovered");
+    expect(result.current.error).toBeUndefined();
+    expect(calls).toBe(2);
   } finally { timers.restore(); }
 });
 
