@@ -81,6 +81,7 @@ mock.module("../ws/namespaces/runner.js", () => ({
     emitTriggerSubscriptionDelta: mockEmitTriggerSubscriptionDelta,
 }));
 mock.module("../ws/runner-control.js", () => ({ waitForSpawnAck: mock(() => Promise.resolve({ ok: true })) }));
+const mockRecordChildSpawnBinding = mock((_sessionId: string, _info: { runnerId: string; parentSessionId: string | null; userId?: string }) => Promise.resolve());
 mock.module("../events/transport.js", () => ({ createEngineDeps: mock(() => ({}) ) }));
 const mockPublishEvent = mock(() => Promise.resolve({ event: { eventId: "event-test" } }));
 mock.module("../events/engine.js", () => ({ publishEvent: mockPublishEvent }));
@@ -97,6 +98,7 @@ const mockGetRunnerOwner = mock((_runnerId: string) => Promise.resolve(null as s
 spyOn(_runnerOwnerModule, "getRunnerOwner").mockImplementation(mockGetRunnerOwner as any);
 spyOn(_runnerRegistryModule, "getRunnerServices").mockImplementation(mockGetRunnerServices as any);
 spyOn(_sioStateModule, "getSession").mockImplementation(mockGetSession as any);
+spyOn(_sioStateModule, "recordChildSpawnBinding").mockImplementation(mockRecordChildSpawnBinding as any);
 
 const { handleRunnersRoute } = await import("./runners.js");
 
@@ -1126,6 +1128,57 @@ describe("runner spawn effort", () => {
 
         expect(res!.status).toBe(400);
         expect(mockGetLocalRunnerSocket).not.toHaveBeenCalled();
+    });
+});
+
+describe("runner spawn parent binding (review R2 security fix)", () => {
+    beforeEach(() => {
+        mockRequireSession.mockReset();
+        mockRequireSession.mockReturnValue(Promise.resolve({ userId: "user-1", userName: "TestUser" } as any));
+        mockGetRunnerData.mockReset();
+        mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
+        mockGetLocalRunnerSocket.mockReset();
+        mockGetSession.mockReset();
+        mockRecordChildSpawnBinding.mockReset();
+    });
+
+    test("records the validated parentSessionId server-side before dispatching the spawn", async () => {
+        const emit = mock(() => {});
+        mockGetLocalRunnerSocket.mockReturnValue({ emit } as any);
+        mockGetSession.mockReturnValue(Promise.resolve({ userId: "user-1", sessionId: "parent-1" } as any));
+
+        const [req, url] = makeReq("POST", "/api/runners/spawn", {
+            runnerId: "runner-A",
+            parentSessionId: "parent-1",
+        });
+        const res = await handleRunnersRoute(req, url);
+
+        expect(res!.status).toBe(200);
+        expect(emit).toHaveBeenCalledWith("new_session", expect.objectContaining({ parentSessionId: "parent-1" }));
+        expect(mockRecordChildSpawnBinding).toHaveBeenCalledWith(
+            expect.any(String),
+            expect.objectContaining({ runnerId: "runner-A", parentSessionId: "parent-1", userId: "user-1" }),
+        );
+    });
+
+    test("records no parentSessionId (and never forwards one) when the requested parent belongs to another user", async () => {
+        const emit = mock(() => {});
+        mockGetLocalRunnerSocket.mockReturnValue({ emit } as any);
+        // The requested parent is owned by a different user than the caller.
+        mockGetSession.mockReturnValue(Promise.resolve({ userId: "user-2-victim", sessionId: "parent-1" } as any));
+
+        const [req, url] = makeReq("POST", "/api/runners/spawn", {
+            runnerId: "runner-A",
+            parentSessionId: "parent-1",
+        });
+        const res = await handleRunnersRoute(req, url);
+
+        expect(res!.status).toBe(200);
+        expect(emit).toHaveBeenCalledWith("new_session", expect.not.objectContaining({ parentSessionId: expect.anything() }));
+        expect(mockRecordChildSpawnBinding).toHaveBeenCalledWith(
+            expect.any(String),
+            expect.objectContaining({ runnerId: "runner-A", parentSessionId: null, userId: "user-1" }),
+        );
     });
 });
 

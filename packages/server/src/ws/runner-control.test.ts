@@ -37,3 +37,9 @@ describe("runner spawn ack coordination", () => {
         });
     });
 });
+
+// Note: the (runnerId, parentSessionId, userId) spawn binding used to
+// authorize session_error reports moved to a durable Redis record
+// (recordChildSpawnBinding/getChildSpawnBinding in sio-state.ts) so it
+// survives both the full child lifetime and multi-node relays — see
+// sio-state-children.test.ts.

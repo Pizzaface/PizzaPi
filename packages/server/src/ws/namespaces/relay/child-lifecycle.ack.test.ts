@@ -45,6 +45,7 @@ mock.module("../../sio-state/index.js", () => ({
     isChildOfParent: async (parentId: string, childId: string) =>
         childSets.get(parentId)?.has(childId) ?? false,
     clearParentSessionId: async () => {},
+    deleteChildSpawnBinding: async () => {},
 }));
 
 afterAll(() => mock.restore());

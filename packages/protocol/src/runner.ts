@@ -81,6 +81,14 @@ export interface TriggerSubscriptionsApplied {
 // Client → Server (Runner daemon sends to server)
 // ---------------------------------------------------------------------------
 
+export type SpawnFailureKind = "auth" | "crash" | "timeout" | "spawn_error";
+
+export interface SpawnFailureDetails {
+  kind: SpawnFailureKind;
+  detail: string;
+  exitCode?: number | null;
+}
+
 export interface RunnerClientToServerEvents {
   /** Runner registers itself with the server */
   register_runner: (data: {
@@ -199,6 +207,10 @@ export interface RunnerClientToServerEvents {
   session_error: (data: {
     sessionId: string;
     message: string;
+    /** Parent session to notify when a linked child dies before it can report. */
+    parentSessionId?: string;
+    /** Typed failure for linked child death/startup errors. */
+    failure?: SpawnFailureDetails;
   }) => void;
 
   /** Worker session was killed */

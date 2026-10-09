@@ -1021,6 +1021,64 @@ export async function refreshRunnerAssociationTTL(sessionId: string): Promise<vo
     await r.expire(runnerAssocKey(sessionId), RUNNER_ASSOC_TTL_SECONDS);
 }
 
+// ── Child spawn binding (authorizes self-reported child spawn failures) ────
+// Durable Redis key recording the (runnerId, parentSessionId, userId) binding
+// established the moment the server accepts a spawn request — BEFORE the
+// child session ever registers with the relay. Unlike the child's own
+// session hash (deleted on the FIRST relay disconnect, even a transient one —
+// see endSharedSession), this binding is only removed on the child's
+// CONFIRMED terminal end (mirrors removeChildSession). That means a runner's
+// session_error report for a child that crashed long after it registered —
+// and whose session hash is therefore already gone — can still be verified
+// against a server-side record instead of being dropped as unauthorized.
+// It also replaces the old per-node in-memory binding: a runner's socket can
+// reconnect to a different relay node than the one that originally accepted
+// the HTTP spawn request, so the binding must be visible cluster-wide.
+
+export interface ChildSpawnBinding {
+    runnerId: string;
+    parentSessionId: string | null;
+    userId?: string;
+}
+
+/** TTL for the binding — matches session TTL (24h) as a backstop; normally
+ *  removed explicitly on confirmed terminal end. */
+const CHILD_SPAWN_BINDING_TTL_SECONDS = SESSION_TTL_SECONDS;
+
+function childSpawnBindingKey(sessionId: string): string {
+    return `${KEY_PREFIX}:child-spawn-binding:${sessionId}`;
+}
+
+/** Record the authoritative (runner, parent, user) binding for a spawned child. */
+export async function recordChildSpawnBinding(sessionId: string, info: ChildSpawnBinding): Promise<void> {
+    const r = requireRedis();
+    await r.set(childSpawnBindingKey(sessionId), JSON.stringify(info), { EX: CHILD_SPAWN_BINDING_TTL_SECONDS });
+}
+
+/** Get the recorded spawn binding for a child session, if any. */
+export async function getChildSpawnBinding(sessionId: string): Promise<ChildSpawnBinding | null> {
+    const r = requireRedis();
+    const value = await r.get(childSpawnBindingKey(sessionId));
+    if (!value) return null;
+    try {
+        const parsed = JSON.parse(value);
+        if (typeof parsed.runnerId !== "string") return null;
+        return {
+            runnerId: parsed.runnerId,
+            parentSessionId: typeof parsed.parentSessionId === "string" ? parsed.parentSessionId : null,
+            userId: typeof parsed.userId === "string" ? parsed.userId : undefined,
+        };
+    } catch {
+        return null;
+    }
+}
+
+/** Delete the spawn binding for a child session (confirmed terminal end). */
+export async function deleteChildSpawnBinding(sessionId: string): Promise<void> {
+    const r = requireRedis();
+    await r.del(childSpawnBindingKey(sessionId));
+}
+
 // ── Child session index ─────────────────────────────────────────────────────
 // Tracks which child sessions belong to a parent session.
 

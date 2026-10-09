@@ -128,6 +128,9 @@ import {
     markChildAsDelinked,
     isChildDelinked,
     clearDelinkedMark,
+    recordChildSpawnBinding,
+    getChildSpawnBinding,
+    deleteChildSpawnBinding,
 } from "./sio-state.js";
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -518,5 +521,54 @@ describe("child session helpers (sio-state)", () => {
         await removeChildren("parent-1", ["nonexistent"]);
         const remaining = await getChildSessions("parent-1");
         expect(remaining).toEqual(["child-1"]);
+    });
+});
+
+describe("child spawn-failure authorization binding (sio-state)", () => {
+    beforeEach(async () => {
+        store.clear();
+        setStore.clear();
+        ttlStore.clear();
+        await initStateRedis(mockRedis as never);
+    });
+
+    it("records and retrieves the (runnerId, parentSessionId, userId) binding for a spawn request", async () => {
+        await recordChildSpawnBinding("child-1", { runnerId: "runner-a", parentSessionId: "parent-1", userId: "user-a" });
+
+        expect(await getChildSpawnBinding("child-1")).toEqual({ runnerId: "runner-a", parentSessionId: "parent-1", userId: "user-a" });
+    });
+
+    it("records a null parentSessionId when no parent was requested", async () => {
+        await recordChildSpawnBinding("child-2", { runnerId: "runner-a", parentSessionId: null });
+
+        expect(await getChildSpawnBinding("child-2")).toEqual({ runnerId: "runner-a", parentSessionId: null, userId: undefined });
+    });
+
+    it("returns null for a sessionId with no recorded binding", async () => {
+        expect(await getChildSpawnBinding("never-requested")).toBeNull();
+    });
+
+    it("a later record for the same sessionId replaces the earlier one", async () => {
+        await recordChildSpawnBinding("child-3", { runnerId: "runner-a", parentSessionId: "parent-1" });
+        await recordChildSpawnBinding("child-3", { runnerId: "runner-b", parentSessionId: "parent-2" });
+
+        expect(await getChildSpawnBinding("child-3")).toEqual({ runnerId: "runner-b", parentSessionId: "parent-2", userId: undefined });
+    });
+
+    it("deleteChildSpawnBinding removes the binding", async () => {
+        await recordChildSpawnBinding("child-4", { runnerId: "runner-a", parentSessionId: "parent-1" });
+        await deleteChildSpawnBinding("child-4");
+
+        expect(await getChildSpawnBinding("child-4")).toBeNull();
+    });
+
+    it("survives well past the old 5-minute pending-spawn TTL (durable until explicit delete)", async () => {
+        await recordChildSpawnBinding("child-5", { runnerId: "runner-a", parentSessionId: "parent-1" });
+
+        // The mock Redis client has no real TTL expiry, but this asserts the
+        // binding is still readable without any TTL-driven cleanup call —
+        // regression guard for the old in-memory 5-minute TTL that dropped
+        // crash reports for children that failed long after spawn.
+        expect(await getChildSpawnBinding("child-5")).not.toBeNull();
     });
 });

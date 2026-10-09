@@ -57,6 +57,7 @@ mock.module("../../sio-registry.js", () => ({
 mock.module("../../sio-state/index.js", () => ({
     clearPushPendingQuestion: async () => {},
     deleteRunnerAssociation: async () => {},
+    deleteChildSpawnBinding: async () => {},
 }));
 
 mock.module("./event-pipeline.js", () => ({

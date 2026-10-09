@@ -21,7 +21,7 @@ mock.module("./context.js", () => ({
 
 mock.module("./runner.js", () => ({ getRunnerServiceAnnounce: () => null }));
 mock.module("./runner-ref.js", () => ({ withRunnerRefHint: () => ({}) }));
-mock.module("../sio-state/index.js", () => ({ isChildOfParent: async () => false }));
+mock.module("../sio-state/index.js", () => ({ isChildOfParent: async () => false, deleteChildSpawnBinding: async () => {} }));
 mock.module("./relay/index.js", () => ({ getPendingChunkedSnapshot: () => null }));
 mock.module("../../sessions/redis.js", () => ({ getLatestCachedSnapshotEvent: async () => null }));
 mock.module("../../sessions/store.js", () => ({ getPersistedRelaySessionSnapshot: async () => null }));

@@ -67,6 +67,7 @@ mock.module("../../sio-state/index.js", () => ({
     releaseSessionOwnershipLock: async () => {},
     clearPushPendingQuestion: async () => {},
     deleteRunnerAssociation: async () => {},
+    deleteChildSpawnBinding: async () => {},
 }));
 
 mock.module("./event-pipeline.js", () => ({

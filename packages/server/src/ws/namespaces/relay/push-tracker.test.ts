@@ -17,6 +17,7 @@ mock.module("../../sio-state/index.js", () => ({
     setPushPendingQuestion: async () => {},
     clearPushPendingQuestion: async () => {},
     isLinkedChildForSuppression: async () => false,
+    deleteChildSpawnBinding: async () => {},
 }));
 mock.module("../../sio-registry.js", () => ({
     getSharedSession: async () => ({

@@ -114,6 +114,7 @@ mock.module("../../sio-state/index.js", () => ({
         }
     },
     updateSessionFields: async () => {},
+    deleteChildSpawnBinding: async () => {},
 }));
 
 mock.module("@pizzapi/protocol", () => ({

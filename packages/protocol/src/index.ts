@@ -121,6 +121,8 @@ export type {
   TriggerSubscriptionsSnapshot,
   TriggerSubscriptionDelta,
   TriggerSubscriptionsApplied,
+  SpawnFailureKind,
+  SpawnFailureDetails,
 } from "./runner.js";
 
 // /terminal namespace (Browser terminal viewer ↔ Server)

@@ -20,6 +20,33 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { isStrippedSubprocessEnvName } from "@pizzapi/tools";
 import { hostPiNodePath } from "./host-pi-node-path.js";
 
+export type SpawnFailureKind = "auth" | "crash" | "timeout" | "spawn_error";
+export interface SpawnFailureDetails {
+    kind: SpawnFailureKind;
+    detail: string;
+    exitCode?: number | null;
+}
+
+// Word-boundary anchored: an unanchored /auth|401|403/ matched "author",
+// "OAuth" (the "auth" inside is not itself word-bounded, but "author"'s is,
+// and so is the standalone "auth" below), and PIDs/ports like "14013"
+// (contains "401" as a free substring). \b requires a non-word boundary on
+// each side, so it only fires on "401"/"403" as their own token and on
+// "auth" as its own word (not as a prefix/substring of a longer word).
+const AUTH_FAILURE_PATTERN = /\b40[13]\b|\bunauthori[sz]ed\b|\bapi[-\s]?key\b|\bauth\b/;
+
+export function classifySpawnFailure(detail: string, exitCode?: number | null): SpawnFailureDetails {
+    const lower = detail.toLowerCase();
+    const kind: SpawnFailureKind = AUTH_FAILURE_PATTERN.test(lower)
+        ? "auth"
+        : /timeout|timed out/.test(lower)
+            ? "timeout"
+            : /spawn|entrypoint|enoent|cwd does not exist|not a directory/.test(lower)
+                ? "spawn_error"
+                : "crash";
+    return { kind, detail, ...(exitCode !== undefined ? { exitCode } : {}) };
+}
+
 export interface RunnerSession {
     sessionId: string;
     child: ChildProcess | null;
@@ -256,6 +283,8 @@ export function spawnSession(
          * call it (the replacement worker reports for itself).
          */
         onStartup?: (result: WorkerStartupResult) => void;
+        /** Called when a linked child process exits abnormally after spawn. */
+        onSessionFailure?: (sessionId: string, failure: SpawnFailureDetails) => void;
         /** @internal Override the startup report timeout for tests. */
         startupTimeoutMs?: number;
     },
@@ -441,6 +470,19 @@ export function spawnSession(
             logInfo(`re-spawning session ${sessionId} (worker restart requested)`);
             onRestartRequested();
         } else {
+            // An intentional kill_session teardown (including one that
+            // escalates SIGTERM to SIGKILL after the grace window, or one that
+            // raced a restart-in-place exit code 43 into this branch above)
+            // is not a crash — killedSessions is set BEFORE the signal is sent,
+            // so it is still present here even though the worker already exited.
+            // Reporting a failure for a deliberate teardown would falsely steer
+            // the parent session after the user/tool asked for this session to end.
+            if (options?.parentSessionId && (code !== 0 || signal) && !killedSessions.has(sessionId)) {
+                options.onSessionFailure?.(
+                    sessionId,
+                    classifySpawnFailure(`Session worker exited (code=${code}, signal=${signal})`, code),
+                );
+            }
             // True termination — clean up persisted attachments now.
             // session_ended will also arrive later but runningSessions will be empty
             // by then, so this is the reliable cleanup point for spawned sessions.

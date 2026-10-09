@@ -1102,9 +1102,56 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
         });
 
         // ── session_error — worker session failed to spawn ───────────────────
-        socket.on("session_error", (data) => {
+        socket.on("session_error", async (data) => {
             if (data.sessionId) {
                 resolveSpawnError(data.sessionId, data.message ?? "Runner spawn failed");
+                if (data.parentSessionId && data.failure) {
+                    try {
+                        const [{ createEngineDeps }, { publishChildSpawnFailure, isAuthorizedChildSpawnFailure }, { getChildSpawnBinding }] = await Promise.all([
+                            import("../../events/transport.js"),
+                            import("./runner-spawn-failure.js"),
+                            import("../sio-state.js"),
+                        ]);
+                        const socketData = socket.data as { userId?: string };
+                        const runnerId = socket.data.runnerId;
+                        // SECURITY: never trust the runner's self-reported
+                        // parentSessionId on its own — verify it against durable
+                        // server-side records before publishing a steer into the
+                        // named parent session (see isAuthorizedChildSpawnFailure).
+                        const [parentSession, childSession] = await Promise.all([
+                            getSharedSession(data.parentSessionId),
+                            getSharedSession(data.sessionId),
+                        ]);
+                        // childSession is only present while the child is still
+                        // registered with the relay — its hash is deleted on the
+                        // FIRST disconnect (even transient ones, e.g. a crash).
+                        // The durable spawn binding survives until the child's
+                        // CONFIRMED terminal end, so it is the authority for any
+                        // report arriving after that (a crash, however long after
+                        // the child registered, not just before it ever did).
+                        const pendingSpawn = childSession ? undefined : await getChildSpawnBinding(data.sessionId);
+                        const authorized = !!runnerId && isAuthorizedChildSpawnFailure({
+                            runnerId,
+                            runnerUserId: socketData.userId,
+                            parentSessionId: data.parentSessionId,
+                            parentSession,
+                            childSession,
+                            pendingSpawn,
+                        });
+                        if (!authorized) {
+                            log.warn(`session_error: dropping child spawn failure report for session ${data.sessionId} (parent ${data.parentSessionId}) — runner ${runnerId ?? "unknown"} is not authorized for this parent/child pair`);
+                            return;
+                        }
+                        await publishChildSpawnFailure({
+                            sessionId: data.sessionId,
+                            parentSessionId: data.parentSessionId,
+                            failure: data.failure,
+                            userId: socketData.userId,
+                        }, createEngineDeps());
+                    } catch (err) {
+                        log.error(`failed to publish child spawn failure for ${data.sessionId}:`, err);
+                    }
+                }
             }
         });
 

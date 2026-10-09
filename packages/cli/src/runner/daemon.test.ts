@@ -126,6 +126,7 @@ describe("reapSessionGroups", () => {
             killSessionProcessGroup: (pid: number) => { killCalls.push(pid); return true; },
             spawnSession: () => {},
             notifyWorkersOfRestart: async () => {},
+            classifySpawnFailure: (detail: string) => ({ kind: "crash", detail }),
         }));
 
         const { reapSessionGroups } = await import("./daemon.js");
