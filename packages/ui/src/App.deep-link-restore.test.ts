@@ -57,12 +57,29 @@ describe("deep-link restore intent", () => {
     expect(intent.restored).toBe(false);
   });
 
-  test("absent deep-link target blocks the lastSessionId fallback while armed", () => {
+  test("absent deep-link target on the first live batch expires and falls back to lastSessionId", () => {
     const intent = createRestoreIntent("/session/absent");
-    // Deep link wins over lastSessionId; while "absent" isn't live the intent
-    // stays armed instead of falling back.
-    expect(takeRestoreTarget(intent, ["s1"], "s1")).toBeNull();
+    // Deep link wins over lastSessionId while it's still a live possibility,
+    // but once "absent" isn't in the first non-empty live-session batch, the
+    // intent gives up on it instead of blocking the fallback forever.
+    const hit = takeRestoreTarget(intent, ["s1"], "s1");
+    expect(hit).toEqual({ targetId: "s1", wasDeepLink: false });
+    expect(intent.restored).toBe(true);
+    expect(intent.deepLinkSessionId).toBeNull();
+  });
+
+  test("absent deep-link target with no lastSessionId yet: stays unresolved, then falls back once lastSessionId appears", () => {
+    const intent = createRestoreIntent("/session/absent");
+    // First batch: deep link absent, no lastSessionId either — nothing to
+    // restore, but the deep link is expired so it can't come back later.
+    expect(takeRestoreTarget(intent, ["s1"], null)).toBeNull();
     expect(intent.restored).toBe(false);
+    expect(intent.deepLinkSessionId).toBeNull();
+
+    // "absent" goes live later, but it's already expired as a deep link — it
+    // must not hijack the view. lastSessionId now resolves to "s1".
+    const hit = takeRestoreTarget(intent, ["s1", "absent"], "s1");
+    expect(hit).toEqual({ targetId: "s1", wasDeepLink: false });
   });
 
   test("decodes URL-encoded deep-link IDs and ignores non-session paths", () => {

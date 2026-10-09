@@ -3,8 +3,10 @@
  *
  * On load, a /session/<id> URL (deep link) takes priority over the stored
  * lastSessionId. The intent is armed until the restore actually fires OR the
- * user navigates manually — whichever comes first. While armed and the target
- * is absent, no restore happens; if the user then opens a session by hand and
+ * user navigates manually — whichever comes first. If the deep-link target
+ * isn't present in the first non-empty live-session batch, the deep link is
+ * given up on (expired) so the lastSessionId fallback can proceed instead of
+ * being blocked indefinitely; if the user then opens a session by hand and
  * the deep-link target goes live later, the already-cancelled intent must not
  * fire (it would hijack the session the user chose).
  */
@@ -49,6 +51,14 @@ export function takeRestoreTarget(
   lastSessionId: string | null,
 ): { targetId: string; wasDeepLink: boolean } | null {
   if (intent.restored || liveSessionIds.length === 0) return null;
+
+  if (intent.deepLinkSessionId !== null && !liveSessionIds.includes(intent.deepLinkSessionId)) {
+    // The deep-link target wasn't in this (the first non-empty) live-session
+    // batch — give up waiting for it so the lastSessionId fallback below can
+    // proceed instead of being blocked indefinitely.
+    intent.deepLinkSessionId = null;
+  }
+
   const targetId = intent.deepLinkSessionId ?? lastSessionId;
   if (!targetId || !liveSessionIds.includes(targetId)) return null;
   intent.restored = true;
