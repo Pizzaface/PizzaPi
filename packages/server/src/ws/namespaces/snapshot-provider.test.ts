@@ -402,6 +402,9 @@ describe("tryMemoryState", () => {
         });
         expect(payload.event._metaViaHub).toBe(true);
         expect(payload.generation).toBe(5);
+        // Server-stored state, not proof the runner is alive — the viewer's
+        // stale-watchdog backoff must not reset on it.
+        expect((socket.calls[0].payload as any).replay).toBe(true);
     });
 
     test("returns null for null lastState", () => {
@@ -459,6 +462,8 @@ describe("tryPersistedSnapshot", () => {
         });
         expect(payload.event._metaViaHub).toBeUndefined();
         expect(payload.generation).toBe(2);
+        // Persisted SQLite state, not proof the runner is alive.
+        expect((socket.calls[0].payload as any).replay).toBe(true);
     });
 
     test("returns null when no persisted session found", async () => {
@@ -524,6 +529,32 @@ describe("tryPersistedSnapshot", () => {
 
         const payload = socket.calls[0].payload as any;
         expect(payload.event.state.sessionName).toBe("Live");
+    });
+});
+
+describe("every snapshot source marks itself as replay", () => {
+    test("tryDeltaReplay, tryCacheSnapshot, tryMemoryState, tryPersistedSnapshot all emit replay: true", async () => {
+        // A dead runner's heartbeat/state can linger (Redis TTL, cold event
+        // cache, SQLite). None of these sources is proof the runner is alive,
+        // so the viewer's stale-watchdog backoff must never reset from any of
+        // them — only a live runner-sourced event may do that.
+        const deltaReplay = await tryDeltaReplay("sess-replay-1", 10, createDeps({
+            getCachedRelayEventsAfterSeq: mock(async () => [{ seq: 11, event: { type: "message_end" } }]),
+        }));
+        const cacheSnapshot = await tryCacheSnapshot("sess-replay-2", createDeps({
+            getLatestCachedSnapshotEvent: mock(async () => ({ event: { type: "session_active", state: { messages: [] } }, eventsAfter: [] })),
+        }));
+        const memoryState = tryMemoryState(JSON.stringify({ messages: [] }));
+        const persistedSnapshot = await tryPersistedSnapshot("sess-replay-3", "user-1", createDeps({
+            getPersistedRelaySessionSnapshot: mock(async () => ({ state: { messages: [] } })),
+        }));
+
+        for (const result of [deltaReplay, cacheSnapshot, memoryState, persistedSnapshot]) {
+            expect(result).not.toBeNull();
+            const socket = createMockSocket();
+            result!.send(socket, 1);
+            expect(socket.calls[0].payload).toMatchObject({ replay: true });
+        }
     });
 });
 

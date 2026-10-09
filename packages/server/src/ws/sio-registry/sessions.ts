@@ -977,7 +977,12 @@ export async function sendSnapshotToViewer(sessionId: string, socket: Socket): P
     const seq = session.seq;
     if (session.lastHeartbeat) {
         const heartbeat = safeJsonParse(session.lastHeartbeat);
-        socket.emit("event", { event: heartbeat, seq, sessionId });
+        // _livenessOnly: this is a cached heartbeat replayed from Redis, not
+        // proof the runner is alive right now — the stale-watchdog backoff
+        // must not reset on it. Matches withLivenessOnlyHint in viewer.ts
+        // (not imported directly here to avoid a sessions.js → viewer.js →
+        // sio-registry.js → sessions.js import cycle).
+        socket.emit("event", { event: { ...heartbeat, _livenessOnly: true }, seq, sessionId });
     }
     if (session.lastState) {
         const state = applySnapshotOverlayToState(safeJsonParse(session.lastState), session.snapshotOverlay);
@@ -985,7 +990,8 @@ export async function sendSnapshotToViewer(sessionId: string, socket: Socket): P
         // initial page load / reconnect only sends the tail.  Full state
         // is available via load_messages pagination.
         const hydratedEvent = prepareBroadcastEvent({ type: "session_active", state });
-        socket.emit("event", { event: hydratedEvent, seq, sessionId });
+        // replay: true — server-stored state, not runner liveness; see above.
+        socket.emit("event", { event: hydratedEvent, seq, sessionId, replay: true });
     }
 }
 

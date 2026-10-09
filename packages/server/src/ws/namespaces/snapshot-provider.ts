@@ -216,9 +216,14 @@ export function tryMemoryState(
         send(socket, generation, messagesHash) {
             // Add _metaViaHub hint so the client knows metadata came from hub,
             // matching the original behavior in viewer.ts
+            // `replay: true` marks this as server-stored state rather than
+            // proof the runner is alive, so the viewer's stale-watchdog
+            // backoff must not reset on it (a dead runner's Redis hash
+            // survives until TTL and would otherwise loop reconnects forever).
             socket.emit("event", {
                 event: { type: "session_active", state: withConditionalMessages(state, messagesHash), _metaViaHub: true },
                 generation,
+                replay: true,
             });
         },
     };
@@ -245,9 +250,12 @@ export async function tryPersistedSnapshot(
     return {
         snapshot: { type: "persisted", source: "SQLite persisted relay session state" },
         send(socket, generation, messagesHash) {
+            // `replay: true` — see tryMemoryState above; this is persisted
+            // SQLite state, not runner liveness.
             socket.emit("event", {
                 event: { type: "session_active", state: withConditionalMessages(state, messagesHash) },
                 generation,
+                replay: true,
             });
         },
     };
