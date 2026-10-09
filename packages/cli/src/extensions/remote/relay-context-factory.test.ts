@@ -21,7 +21,9 @@ mock.module("../trigger-client.js", () => ({
     unsubscribeTrigger: async () => ({ ok: true }),
     updateTriggerSubscription: async () => ({ ok: true }),
     listTriggerSubscriptions: async () => [],
+    listRunnerTriggerListeners: async () => [],
     getAvailableTriggers: async () => [],
+    getAvailableTriggerContext: async () => ({ triggerDefs: [] }),
     getAvailableSigils: async () => [],
 }));
 
