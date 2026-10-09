@@ -18,7 +18,7 @@ import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
 import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, Code2, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare, Copy } from "lucide-react";
 import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSessionIds, getGroupCwd } from "@/lib/session-tree";
 import { pruneSwipeOffsets } from "@/lib/swipe-reveal";
-import { getSessionVisualState } from "@/lib/session-visual-state";
+import { countSessionStatuses, getSessionVisualState, type SessionStatusCounts } from "@/lib/session-visual-state";
 import { parseHubSessionsPayload } from "@/lib/hub-sessions";
 import { cwdInWorkspace, type ServiceModeDef, type ServicePanelInfo } from "@pizzapi/protocol";
 
@@ -211,6 +211,28 @@ function LiveDot({ state }: { state: DotState }) {
 }
 
 import { Skeleton } from "@/components/ui/skeleton";
+
+/** Small segmented chip: awaiting input / working / completed — segments render only when > 0. */
+function StatusCountChip({ counts }: { counts: SessionStatusCounts }) {
+    const segments = [
+        { n: counts.awaiting, label: "awaiting input", cls: "text-amber-500" },
+        { n: counts.working, label: "working", cls: "text-sky-500" },
+        { n: counts.completed, label: "completed", cls: "text-green-500" },
+    ].filter((s) => s.n > 0);
+    if (segments.length === 0) return null;
+    const title = segments.map((s) => `${s.n} ${s.label}`).join(" · ");
+    return (
+        <span
+            className="flex flex-shrink-0 items-center divide-x divide-sidebar-border rounded-full border border-sidebar-border bg-sidebar text-[0.5rem] font-mono font-bold leading-none tabular-nums"
+            title={title}
+            aria-label={title}
+        >
+            {segments.map((s) => (
+                <span key={s.label} className={cn("px-[3px] py-px", s.cls)}>{s.n}</span>
+            ))}
+        </span>
+    );
+}
 
 function SidebarSkeleton() {
     return (
@@ -1389,6 +1411,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                             const provider = s.model?.provider ??
                                                 (activeSessionId === s.sessionId ? activeModel?.provider : undefined) ??
                                                 "unknown";
+                                            // Linked-session group: status counts across all descendants.
+                                            const groupCounts = childrenByParent.has(s.sessionId)
+                                                ? (() => {
+                                                    const ids = new Set(getDescendantSessionIds(s.sessionId, project.sessions));
+                                                    return countSessionStatuses(project.sessions.filter((c) => ids.has(c.sessionId)), sessionsAwaitingInput, sessionsCompacting, completedUnreadSessions);
+                                                })()
+                                                : null;
                                             const timeLabel = isToday(s.startedAt)
                                                 ? formatTime(s.lastHeartbeatAt ?? s.startedAt)
                                                 : formatRelativeDate(s.startedAt);
@@ -1615,6 +1644,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         )}
 
                                                         {/* Provider icon — status indicated via background/glow */}
+                                                        <div className="relative flex-shrink-0">
                                                         <div
                                                             className={cn(
                                                                 "relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md transition-all duration-300",
@@ -1638,6 +1668,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                           : "unknown"
                                                                 }
                                                             />
+                                                        </div>
+                                                        {groupCounts && (
+                                                            <span className="absolute -top-2 left-0 z-10 whitespace-nowrap">
+                                                                <StatusCountChip counts={groupCounts} />
+                                                            </span>
+                                                        )}
                                                         </div>
 
                                                         {/* Text info */}
