@@ -82,6 +82,42 @@ export function resolveSpawnError(sessionId: string, message: string) {
     storeEarlySpawnAck(sessionId, { ok: false, message });
 }
 
+/**
+ * Authoritative (runnerId, parentSessionId) binding for a spawn request,
+ * recorded the moment the server validates and dispatches `new_session` —
+ * well before the child session ever registers with the relay. A worker
+ * that fails before registering (e.g. a fail-closed sandbox) has no Redis
+ * session record yet, so this is the only server-side source of truth that
+ * authorizes the runner's `session_error` report for that sessionId. Never
+ * trust the runner's own wire payload for this binding (see
+ * isAuthorizedChildSpawnFailure in runner-spawn-failure.ts).
+ */
+type PendingChildSpawn = {
+    runnerId: string;
+    parentSessionId: string | null;
+    userId?: string;
+    timer: ReturnType<typeof setTimeout>;
+};
+
+// Generous enough to cover the worker startup window (WORKER_STARTUP_TIMEOUT_MS)
+// plus retry/restart attempts before the child either registers (superseded by
+// the durable Redis record) or is abandoned.
+const PENDING_CHILD_SPAWN_TTL_MS = 5 * 60_000;
+const pendingChildSpawns = new Map<string, PendingChildSpawn>();
+
+export function recordPendingChildSpawn(sessionId: string, info: { runnerId: string; parentSessionId?: string; userId?: string }): void {
+    const existing = pendingChildSpawns.get(sessionId);
+    if (existing) clearTimeout(existing.timer);
+    const timer = setTimeout(() => pendingChildSpawns.delete(sessionId), PENDING_CHILD_SPAWN_TTL_MS);
+    pendingChildSpawns.set(sessionId, { runnerId: info.runnerId, parentSessionId: info.parentSessionId ?? null, userId: info.userId, timer });
+}
+
+export function getPendingChildSpawn(sessionId: string): { runnerId: string; parentSessionId: string | null; userId?: string } | undefined {
+    const entry = pendingChildSpawns.get(sessionId);
+    if (!entry) return undefined;
+    return { runnerId: entry.runnerId, parentSessionId: entry.parentSessionId, userId: entry.userId };
+}
+
 /** @internal Test-only helper to clear module-global coordination state. */
 export function _resetRunnerControlForTesting() {
     for (const pending of pendingSpawns.values()) {
@@ -93,4 +129,9 @@ export function _resetRunnerControlForTesting() {
         clearTimeout(early.timer);
     }
     earlySpawnAcks.clear();
+
+    for (const entry of pendingChildSpawns.values()) {
+        clearTimeout(entry.timer);
+    }
+    pendingChildSpawns.clear();
 }

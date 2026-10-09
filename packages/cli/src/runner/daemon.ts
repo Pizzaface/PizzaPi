@@ -1858,7 +1858,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     const onStartup = (result: WorkerStartupResult) => {
                         if (result.ok) {
                             socket.emit("session_ready", { sessionId });
-                        } else {
+                        } else if (!killedSessions.has(sessionId)) {
+                            // kill_session marks killedSessions BEFORE signaling the
+                            // worker; a kill_session racing the worker's startup
+                            // window (before startup_ready/startup_error) makes
+                            // watchWorkerStartup's onExit report a startup failure
+                            // for what was actually a deliberate teardown. Suppress
+                            // the false failure report in that case.
                             logWarn(`session ${sessionId} failed to start: ${result.message}`);
                             emitChildFailure(result.message, classifySpawnFailure(result.message, 1));
                         }

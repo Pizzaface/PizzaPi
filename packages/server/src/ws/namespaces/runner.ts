@@ -1107,11 +1107,33 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
                 resolveSpawnError(data.sessionId, data.message ?? "Runner spawn failed");
                 if (data.parentSessionId && data.failure) {
                     try {
-                        const [{ createEngineDeps }, { publishChildSpawnFailure }] = await Promise.all([
+                        const [{ createEngineDeps }, { publishChildSpawnFailure, isAuthorizedChildSpawnFailure }, { getPendingChildSpawn }] = await Promise.all([
                             import("../../events/transport.js"),
                             import("./runner-spawn-failure.js"),
+                            import("../runner-control.js"),
                         ]);
                         const socketData = socket.data as { userId?: string };
+                        const runnerId = socket.data.runnerId;
+                        // SECURITY: never trust the runner's self-reported
+                        // parentSessionId on its own — verify it against durable
+                        // server-side records before publishing a steer into the
+                        // named parent session (see isAuthorizedChildSpawnFailure).
+                        const [parentSession, childSession] = await Promise.all([
+                            getSharedSession(data.parentSessionId),
+                            getSharedSession(data.sessionId),
+                        ]);
+                        const authorized = !!runnerId && isAuthorizedChildSpawnFailure({
+                            runnerId,
+                            runnerUserId: socketData.userId,
+                            parentSessionId: data.parentSessionId,
+                            parentSession,
+                            childSession,
+                            pendingSpawn: childSession ? undefined : getPendingChildSpawn(data.sessionId),
+                        });
+                        if (!authorized) {
+                            log.warn(`session_error: dropping child spawn failure report for session ${data.sessionId} (parent ${data.parentSessionId}) — runner ${runnerId ?? "unknown"} is not authorized for this parent/child pair`);
+                            return;
+                        }
                         await publishChildSpawnFailure({
                             sessionId: data.sessionId,
                             parentSessionId: data.parentSessionId,

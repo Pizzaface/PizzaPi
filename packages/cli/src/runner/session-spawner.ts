@@ -462,7 +462,14 @@ export function spawnSession(
             logInfo(`re-spawning session ${sessionId} (worker restart requested)`);
             onRestartRequested();
         } else {
-            if (options?.parentSessionId && (code !== 0 || signal)) {
+            // An intentional kill_session teardown (including one that
+            // escalates SIGTERM to SIGKILL after the grace window, or one that
+            // raced a restart-in-place exit code 43 into this branch above)
+            // is not a crash — killedSessions is set BEFORE the signal is sent,
+            // so it is still present here even though the worker already exited.
+            // Reporting a failure for a deliberate teardown would falsely steer
+            // the parent session after the user/tool asked for this session to end.
+            if (options?.parentSessionId && (code !== 0 || signal) && !killedSessions.has(sessionId)) {
                 options.onSessionFailure?.(
                     sessionId,
                     classifySpawnFailure(`Session worker exited (code=${code}, signal=${signal})`, code),

@@ -27,7 +27,7 @@ import type { JsonValue, Route, TriggerRuntimeStatus } from "@pizzapi/protocol";
 import { getPersistedRelaySessionOwner } from "../sessions/store.js";
 import { getSession } from "../ws/sio-state/index.js";
 import { sendSkillCommand, sendAgentCommand, sendRunnerCommand, sendRunnerServiceRequest } from "../ws/namespaces/runner.js";
-import { waitForSpawnAck } from "../ws/runner-control.js";
+import { recordPendingChildSpawn, waitForSpawnAck } from "../ws/runner-control.js";
 import { requireSession, validateApiKey } from "../middleware.js";
 import { deleteRecentFolder, getRecentFolders, recordRecentFolder } from "../runner-recent-folders.js";
 import { legacyFiltersFromParams } from "../events/legacy-filters.js";
@@ -370,6 +370,13 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 validatedParentSessionId = requestedParentSessionId;
             }
         }
+
+        // Record the authoritative (runner, parent) binding for this sessionId
+        // BEFORE dispatching the spawn — a worker that fails before it ever
+        // registers with the relay (e.g. a fail-closed sandbox) leaves no Redis
+        // session record, so this is the only thing session_error's handler can
+        // trust later instead of the runner's self-reported parentSessionId.
+        recordPendingChildSpawn(sessionId, { runnerId, parentSessionId: validatedParentSessionId, userId: identity.userId });
 
         const ackPromise = waitForSpawnAck(sessionId, 5_000);
 
