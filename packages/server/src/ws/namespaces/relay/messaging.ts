@@ -118,7 +118,9 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
                     if (!child || child.userId !== senderSession.userId) continue;
                     if ((child.parentSessionId ?? child.linkedParentId) !== sessionId) continue;
                     if (!await isChildOfParent(sessionId, childId)) continue;
-                    if (!getLocalTuiSocket(childId)?.connected && !await hasRelaySessionListener(childId)) continue;
+                    // getLocalTuiSocket is already connected-aware — no need
+                    // to re-check `.connected` here.
+                    if (!getLocalTuiSocket(childId) && !await hasRelaySessionListener(childId)) continue;
                     direct.push(childId);
                 }
                 return { ids: direct };

@@ -531,10 +531,21 @@ async function registerTuiSessionUnlocked(
 
 /**
  * Get the local TUI socket for a session (only available on the server
- * that owns the session).
+ * that owns the session). Treats a map entry pointing at a disconnected
+ * socket as absent: a disconnect-handler early return (recovery mark,
+ * ownership-lookup failure, stale owner, shutdown preserve) can leave a
+ * stale socket pinned here, and callers emitting into a dead socket would
+ * otherwise hang until an ack timeout instead of seeing "not connected"
+ * immediately. Lazily clears the stale entry (only if it is still the
+ * same socket) so the next read is a plain Map hit.
  */
 export function getLocalTuiSocket(sessionId: string): Socket | undefined {
-    return localTuiSockets.get(sessionId);
+    const socket = localTuiSockets.get(sessionId);
+    if (socket && socket.connected !== true) {
+        forgetLocalTuiSocketIfCurrent(sessionId, socket);
+        return undefined;
+    }
+    return socket;
 }
 
 /**
@@ -542,8 +553,8 @@ export function getLocalTuiSocket(sessionId: string): Socket | undefined {
  * or false after timeoutMs. Only observes sockets on this server node.
  * Event-driven replacement for 200ms polling loops.
  */
-export function waitForLocalTuiSocket(sessionId: string, timeoutMs: number): Promise<boolean> {
-    return waitForTuiSocket(sessionId, timeoutMs, (id) => localTuiSockets.get(id));
+export function waitForLocalTuiSocket(sessionId: string, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
+    return waitForTuiSocket(sessionId, timeoutMs, (id) => localTuiSockets.get(id), signal);
 }
 
 /**
@@ -551,6 +562,24 @@ export function waitForLocalTuiSocket(sessionId: string, timeoutMs: number): Pro
  */
 export function removeLocalTuiSocket(sessionId: string): void {
     localTuiSockets.delete(sessionId);
+}
+
+/**
+ * Remove the local TUI socket entry for a session, but only if it is still
+ * the given socket. Disconnect handlers that skip teardown (recovery mark,
+ * ownership-lookup failure, stale owner, shutdown preserve) must not leave
+ * a dead socket pinned in the map: `.has()` checks elsewhere (notably
+ * `sweepOrphanedSessions`) would then treat the session as having a live
+ * local socket forever. A replacement socket that has already re-registered
+ * is a different map value, so it is never disturbed by this call.
+ */
+export function forgetLocalTuiSocketIfCurrent(sessionId: string, socket: Socket): void {
+    if (localTuiSockets.get(sessionId) === socket) localTuiSockets.delete(sessionId);
+}
+
+/** True only when the session has a local TUI socket that is still connected. */
+function hasLiveLocalTuiSocket(sessionId: string): boolean {
+    return localTuiSockets.get(sessionId)?.connected === true;
 }
 
 /** Returns a public summary of active sessions from Redis. */
@@ -1296,8 +1325,11 @@ export async function sweepOrphanedSessions(nowMs: number): Promise<void> {
     for (const session of allSessions) {
         const { sessionId } = session;
 
-        // Skip sessions that have an active local relay socket
-        if (localTuiSockets.has(sessionId)) continue;
+        // Skip sessions that have an active local relay socket. A map entry
+        // whose socket already disconnected (e.g. a dead socket left behind
+        // by an early-returning disconnect handler) must NOT count as live —
+        // `.has()` alone would skip these sessions forever.
+        if (hasLiveLocalTuiSocket(sessionId)) continue;
 
         // Check heartbeat staleness locally FIRST (fast memory check)
         // to avoid expensive cluster-wide N+1 socket queries for healthy sessions
@@ -1328,7 +1360,7 @@ export async function sweepOrphanedSessions(nowMs: number): Promise<void> {
         if (presence.kind !== "count" || presence.count !== 0) continue;
 
         // Verify locally right before teardown to catch fresh reconnections
-        if (localTuiSockets.has(candidate.sessionId)) continue;
+        if (hasLiveLocalTuiSocket(candidate.sessionId)) continue;
 
         log.info(
             `Sweeping orphaned session ${candidate.sessionId} ` +

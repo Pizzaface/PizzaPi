@@ -589,9 +589,32 @@ export async function getRunnerData(runnerId: string): Promise<RedisRunnerData |
     return getRunnerState(runnerId);
 }
 
-/** Get the local runner socket (only on the server that owns the connection). */
+/** Get the local runner socket (only on the server that owns the connection).
+ *  Treats a map entry pointing at a disconnected socket as absent — same
+ *  class of bug as getLocalTuiSocket: a disconnect-handler early return
+ *  (e.g. the Redis-adapter-recovery mark) can leave a dead socket pinned
+ *  here, and consumers (spawn, sendRunnerCommand, terminal input) would
+ *  otherwise emit into it and hang until an ack timeout instead of seeing
+ *  "runner not connected" immediately. Lazily clears the stale entry (only
+ *  if it is still the same socket). */
 export function getLocalRunnerSocket(runnerId: string): Socket | undefined {
-    return localRunnerSockets.get(runnerId);
+    const socket = localRunnerSockets.get(runnerId);
+    if (socket && socket.connected !== true) {
+        forgetLocalRunnerSocketIfCurrent(runnerId, socket);
+        return undefined;
+    }
+    return socket;
+}
+
+/**
+ * Remove the local runner socket entry, but only if it is still the given
+ * socket. Disconnect-handler early returns (redis adapter recovery mark,
+ * shutdown preserve) must not leave a dead socket pinned in the map; a
+ * replacement socket that has already re-registered is a different map
+ * value, so it is never disturbed by this call.
+ */
+export function forgetLocalRunnerSocketIfCurrent(runnerId: string, socket: Socket): void {
+    if (localRunnerSockets.get(runnerId) === socket) localRunnerSockets.delete(runnerId);
 }
 
 /** Remove a runner from Redis and local socket map. */

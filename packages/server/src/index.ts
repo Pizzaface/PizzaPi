@@ -106,8 +106,13 @@ import { Server as SocketIOServer } from "socket.io";
 import { createAdapter } from "@socket.io/redis-adapter";
 import { createClient } from "redis";
 import { registerNamespaces } from "./ws/namespaces/index.js";
-import { initSioRegistry } from "./ws/sio-registry.js";
+import { initSioRegistry, waitForLocalTuiSocket } from "./ws/sio-registry.js";
 import { initStateRedis } from "./ws/sio-state/index.js";
+import {
+    createRedisAdapterRecoveryController,
+    recoverLiveSocketsAfterRedisReconnect,
+    type RedisAdapterRecoveryController,
+} from "./redis-adapter-recovery.js";
 
 const PORT = parseInt(process.env.PORT ?? "7492");
 
@@ -255,6 +260,8 @@ try {
 
     let pubReady = false;
     let subReady = false;
+    let redisRecovery: RedisAdapterRecoveryController | null = null;
+    let redisRecoveryAbort: AbortController | null = null;
 
     function syncRedisHealth(): void {
         const allReady = pubReady && subReady;
@@ -265,6 +272,7 @@ try {
     pubClient.on("ready", () => {
         pubReady = true;
         syncRedisHealth();
+        redisRecovery?.redisReady("pub");
         healthLog.info("Redis pub connected — health flags updated");
     });
 
@@ -272,6 +280,7 @@ try {
         const wasHealthy = serverHealth.redis;
         pubReady = false;
         syncRedisHealth();
+        redisRecovery?.redisDegraded("pub");
         if (wasHealthy) {
             healthLog.warn("Redis pub connection error — health flags set to degraded:", err.message);
         }
@@ -280,12 +289,14 @@ try {
     pubClient.on("reconnecting", () => {
         pubReady = false;
         syncRedisHealth();
+        redisRecovery?.redisDegraded("pub");
         healthLog.warn("Redis pub reconnecting — health flags set to degraded");
     });
 
     subClient.on("ready", () => {
         subReady = true;
         syncRedisHealth();
+        redisRecovery?.redisReady("sub");
         healthLog.info("Redis sub connected — health flags updated");
     });
 
@@ -293,6 +304,7 @@ try {
         const wasHealthy = serverHealth.redis;
         subReady = false;
         syncRedisHealth();
+        redisRecovery?.redisDegraded("sub");
         if (wasHealthy) {
             healthLog.warn("Redis sub connection error — health flags set to degraded:", err.message);
         }
@@ -301,6 +313,7 @@ try {
     subClient.on("reconnecting", () => {
         subReady = false;
         syncRedisHealth();
+        redisRecovery?.redisDegraded("sub");
         healthLog.warn("Redis sub reconnecting — health flags set to degraded");
     });
 
@@ -342,6 +355,24 @@ try {
         initSioRegistry(io);
 
         registerNamespaces(io, authContext);
+
+        redisRecovery = createRedisAdapterRecoveryController({
+            initialPubReady: pubReady,
+            initialSubReady: subReady,
+            cancelRecovery: () => {
+                redisRecoveryAbort?.abort();
+                redisRecoveryAbort = null;
+            },
+            recover: (reason) => {
+                redisRecoveryAbort?.abort();
+                redisRecoveryAbort = new AbortController();
+                recoverLiveSocketsAfterRedisReconnect(io!, reason, {
+                    signal: redisRecoveryAbort.signal,
+                    shouldCancel: () => isServerShuttingDown,
+                    waitForSession: (sessionId, timeoutMs, signal) => waitForLocalTuiSocket(sessionId, timeoutMs, signal),
+                });
+            },
+        });
 
         // Mark Socket.IO as initialized so the Redis event listeners above
         // can also flip serverHealth.socketio on future reconnects/disconnects.

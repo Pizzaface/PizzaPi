@@ -306,11 +306,14 @@ export function emitToRelaySession(sessionId: string, eventName: string, data: u
     } catch (err) {
         // Redis adapter publishes before local fan-out, so EPIPE drops the
         // event for local sockets too. Fall back to local-only delivery, but
-        // only if the session's TUI socket is actually on this server —
-        // otherwise the local room is empty and returning true would mislead
-        // callers (e.g. MCP OAuth would consume the nonce for a dropped callback).
+        // only if the session's TUI socket is actually on this server AND
+        // still connected — a present-but-disconnected entry (the same class
+        // of zombie map entry a disconnect-handler early-return can leave
+        // behind) would make the local room empty, and returning true would
+        // mislead callers (e.g. MCP OAuth would consume the nonce for a
+        // dropped callback).
         log.warn("emitToRelaySession failed, falling back to local:", (err as Error)?.message);
-        if (!localTuiSockets.has(sessionId)) return false;
+        if (localTuiSockets.get(sessionId)?.connected !== true) return false;
         try {
             io.of("/relay")
                 .local

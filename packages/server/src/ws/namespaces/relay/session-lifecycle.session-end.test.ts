@@ -39,6 +39,7 @@ mock.module("../../../events/transport.js", () => ({
 mock.module("../../sio-registry.js", () => ({
     registerTuiSession: (...args: unknown[]) => registerSession(...args),
     getLocalTuiSocket: () => undefined,
+    forgetLocalTuiSocketIfCurrent: () => {},
     broadcastToViewers: () => {},
     endSharedSession: async (
         sessionId: string,

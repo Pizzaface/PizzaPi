@@ -149,7 +149,7 @@ export async function emitTriggerSubscriptionDelta(
 
 // Forward declaration — filled in during registerRunnerNamespace() below.
 let emitToRunnerRoom: (runnerId: string, event: string, data: unknown) => void = () => {};
-import { runnerRoom } from "../sio-registry/context.js";
+import { runnerRoom, localRunnerSockets } from "../sio-registry/context.js";
 import {
     registerRunner,
     RetryableRunnerRegistrationError,
@@ -162,6 +162,7 @@ import {
     removeRunnerSession,
     removeRunner,
     getLocalRunnerSocket,
+    forgetLocalRunnerSocketIfCurrent,
     getLocalTuiSocket,
     sendToTerminalViewer,
     removeTerminal,
@@ -176,6 +177,7 @@ import {
 } from "../sio-registry.js";
 import { resolveSpawnReady, resolveSpawnError } from "../runner-control.js";
 import { createLogger } from "@pizzapi/tools";
+import { isRedisAdapterRecoverySocket } from "../../redis-adapter-recovery.js";
 
 const log = createLogger("sio/runner");
 
@@ -1561,6 +1563,24 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
                 runnerTtlTimer = null;
             }
             if (runnerId) {
+                // Redis adapter recovery intentionally closes the transport so
+                // Socket.IO clients reconnect and re-register. Do not remove
+                // runner state: the daemon is still alive.
+                if (isRedisAdapterRecoverySocket(socket)) {
+                    log.info(`redis adapter recovery — preserving runner ${runnerId} during forced reconnect`);
+                    // Redis state is preserved (the daemon is still alive and
+                    // will reconnect), but THIS socket is dead — the forced
+                    // transport close means it will never carry traffic again.
+                    // Leaving it pinned in localRunnerSockets would make
+                    // getLocalRunnerSocket's connected-check the only thing
+                    // standing between consumers and a zombie entry; clear it
+                    // proactively so a concurrent read never has to rely on
+                    // that fallback alone, and so registerRunner's own stale-
+                    // socket check (which reads the map directly) doesn't race it.
+                    forgetLocalRunnerSocketIfCurrent(runnerId, socket);
+                    return;
+                }
+
                 // During graceful shutdown (io.close()), Socket.IO disconnects
                 // all sockets with reason "server shutting down".  Skip
                 // destructive Redis cleanup for those — the runner is still
@@ -1580,7 +1600,14 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
                 // ownership, and the localRunnerSockets entry — so a replaced
                 // socket's disconnect is a NO-OP. Only the currently-
                 // registered socket performs real teardown.
-                if (getLocalRunnerSocket(runnerId) !== socket) {
+                //
+                // Must read the RAW map here, not getLocalRunnerSocket(): by
+                // the time "disconnect" fires, THIS socket's own .connected
+                // is already false (normal Socket.IO lifecycle) — the
+                // connected-aware accessor would return undefined for the
+                // very socket we're checking identity against, making every
+                // disconnect look "stale" and skipping real teardown entirely.
+                if (localRunnerSockets.get(runnerId) !== socket) {
                     log.info(
                         `ignoring stale disconnect for runner ${runnerId}: `
                         + `socket ${socket.id} is no longer the registered connection`,

@@ -9,6 +9,7 @@ import {
     broadcastToViewers,
     endSharedSession,
     getSessionOwnerToken,
+    forgetLocalTuiSocketIfCurrent,
 } from "../../sio-registry.js";
 import {
     clearPushPendingQuestion,
@@ -23,6 +24,7 @@ import { getUserPreference, PREF_SUBAGENT_MODEL } from "../../../user-preference
 import { drainPendingDeliveries, drainPendingResponseRelays } from "../../../events/engine.js";
 import { createEngineDeps } from "../../../events/transport.js";
 import { createLogger } from "@pizzapi/tools";
+import { isRedisAdapterRecoverySocket } from "../../../redis-adapter-recovery.js";
 
 const log = createLogger("sio/relay");
 
@@ -189,6 +191,19 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
         log.info(`disconnected: ${socket.id} (${reason})`);
         const sessionId = socket.data.sessionId;
         if (sessionId) {
+            // Redis adapter recovery intentionally closes the transport so
+            // Socket.IO clients reconnect and re-register. Do not run normal
+            // disconnect teardown: the worker/runner is still alive.
+            if (isRedisAdapterRecoverySocket(socket)) {
+                log.info(`redis adapter recovery — preserving session ${sessionId} during forced reconnect`);
+                socketAckedSeqs.delete(socket.id);
+                // This socket isn't coming back on its own — it was force-closed
+                // to make the worker reconnect. If it never does, the map entry
+                // must not pin the session as "has a live local socket" forever.
+                forgetLocalTuiSocketIfCurrent(sessionId, socket);
+                return;
+            }
+
             // Guard 1 (single-node): if a newer socket already re-registered
             // this session on THIS node, don't tear down the new session.
             // registerTuiSession clears our sessionId as a primary guard, but
@@ -213,6 +228,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             } catch {
                 log.warn(`disconnect for ${socket.id} — Redis ownership lookup failed; skipping teardown`);
                 socketAckedSeqs.delete(socket.id);
+                forgetLocalTuiSocketIfCurrent(sessionId, socket);
                 return;
             }
             if (sharedOwnerToken !== socket.data.token) {
@@ -220,6 +236,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
                     `disconnect for ${socket.id} — stale or unknown owner for session ${sessionId}, skipping teardown`,
                 );
                 socketAckedSeqs.delete(socket.id);
+                forgetLocalTuiSocketIfCurrent(sessionId, socket);
                 return;
             }
 
@@ -230,6 +247,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             if (shouldPreserveOnSocketDisconnect(reason)) {
                 log.info(`server shutting down — preserving Redis state for session ${sessionId}`);
                 socketAckedSeqs.delete(socket.id);
+                forgetLocalTuiSocketIfCurrent(sessionId, socket);
                 return;
             }
 
