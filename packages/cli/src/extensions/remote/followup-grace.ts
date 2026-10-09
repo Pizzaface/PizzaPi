@@ -23,7 +23,7 @@
 import { createLogger } from "@pizzapi/tools";
 import type { RelayContext } from "../remote-types.js";
 import { buildSessionCompleteTrigger } from "./session-complete-delivery.js";
-import { SUSPEND_IDLE_MS } from "./suspend.js";
+import { getSuspendIdleMs } from "./suspend.js";
 import type { ConversationTrigger } from "../triggers/types.js";
 
 const SESSION_COMPLETE_RETRY_MS = 3_000;
@@ -108,8 +108,10 @@ export function createFollowUpGrace(
      * to ack, follow up (clearFollowUpGrace via turn_start), or explicitly
      * delink (shutdownFollowUpGraceImmediately).
      *
-     * With `trySuspend`, every SUSPEND_IDLE_MS the grace asks it to suspend
-     * the worker; it re-arms until that succeeds or the grace is cleared.
+     * With `trySuspend`, every getSuspendIdleMs() the grace asks it to
+     * suspend the worker; it re-arms until that succeeds or the grace is
+     * cleared. Read fresh on each re-arm so a changed
+     * PIZZAPI_SUSPEND_IDLE_MS takes effect without a restart.
      */
     function startFollowUpGrace(ctx: { shutdown: () => void }, trySuspend?: () => Promise<boolean>): void {
         clearFollowUpGrace();
@@ -123,7 +125,7 @@ export function createFollowUpGrace(
                 const suspended = await trySuspend().catch(() => false);
                 // Re-arm only while this same grace is still the active one.
                 if (!suspended && state.followUpGraceShutdown === shutdown && !state.suspendTimer) arm();
-            }, SUSPEND_IDLE_MS);
+            }, getSuspendIdleMs());
         };
         arm();
     }

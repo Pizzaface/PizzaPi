@@ -10,9 +10,27 @@
 
 import type { RelayContext } from "../remote-types.js";
 
-/** How long a completed child sits idle before its worker exits. */
-export const SUSPEND_IDLE_MS = 30 * 60_000;
+/** Default idle period before a completed child's worker exits. */
+const DEFAULT_SUSPEND_IDLE_MS = 30 * 60_000;
+/** Never suspend faster than this, even with an overridden env value. */
+const MIN_SUSPEND_IDLE_MS = 5_000;
 const SUSPEND_ACK_TIMEOUT_MS = 5_000;
+
+/**
+ * How long a completed child sits idle before its worker exits. Overridable
+ * via PIZZAPI_SUSPEND_IDLE_MS (integer ms) for manual testing — the runner
+ * forwards it to spawned workers (see session-spawner.ts). An invalid value
+ * is ignored; any valid value is clamped to MIN_SUSPEND_IDLE_MS so a typo
+ * can't suspend on every idle tick. Read at call time (not cached) so a
+ * respawned worker picks up the current env value.
+ */
+export function getSuspendIdleMs(): number {
+    const raw = process.env.PIZZAPI_SUSPEND_IDLE_MS;
+    if (!raw) return DEFAULT_SUSPEND_IDLE_MS;
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_SUSPEND_IDLE_MS;
+    return Math.max(parsed, MIN_SUSPEND_IDLE_MS);
+}
 
 export interface SuspendProbe {
     /** session_complete reached the parent (only then is it safe to exit). */
