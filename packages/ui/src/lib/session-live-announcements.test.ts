@@ -86,4 +86,30 @@ describe("computeLiveAnnouncements", () => {
     const result = computeLiveAnnouncements(state("Restarting CLI…", true), state("Connection failed", true));
     expect(result.assertive).toBe("Connection failed");
   });
+
+  // A manual STATUS_SET toast (e.g. the user clicked "Copy") can land while
+  // the lifecycle phase is still reconnecting/error. That must never be
+  // read as a changed disconnect reason.
+  test("a status override toast while still offline is not announced as a reason change", () => {
+    const prev: LiveAnnouncementState = { status: "Restarting CLI…", disconnected: true, agentActive: false };
+    const next: LiveAnnouncementState = {
+      status: "Copied",
+      disconnected: true,
+      agentActive: false,
+      statusIsOverride: true,
+    };
+    expect(computeLiveAnnouncements(prev, next).assertive).toBeNull();
+  });
+
+  // A real reason change (not an override) while still offline is still announced.
+  test("a non-override reason change while still offline is still announced", () => {
+    const prev: LiveAnnouncementState = { status: "Restarting CLI…", disconnected: true, agentActive: false };
+    const next: LiveAnnouncementState = {
+      status: "Connection failed",
+      disconnected: true,
+      agentActive: false,
+      statusIsOverride: false,
+    };
+    expect(computeLiveAnnouncements(prev, next).assertive).toBe("Connection failed");
+  });
 });

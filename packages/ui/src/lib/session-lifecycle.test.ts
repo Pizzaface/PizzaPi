@@ -252,6 +252,31 @@ describe("session lifecycle reducer", () => {
     });
   });
 
+  describe("status override tracking", () => {
+    test("statusSet (STATUS_SET) marks the status as a manual override", () => {
+      const state = sessionLifecycleReducer(initial(), a.statusSet("Copied"));
+      expect(state.status).toBe("Copied");
+      expect(state.statusIsOverride).toBe(true);
+    });
+
+    test("a lifecycle-owned transition (e.g. DISCONNECTED) clears the override flag", () => {
+      const overridden = sessionLifecycleReducer(goLive("session-abc"), a.statusSet("Copied"));
+      const state = sessionLifecycleReducer(overridden, a.disconnected({ reason: "Disconnected", stopReconnect: true }));
+      expect(state.statusIsOverride).toBe(false);
+    });
+
+    test("a STATUS_SET toast while already in error phase stays override, not a disconnect reason", () => {
+      const errored = sessionLifecycleReducer(
+        goLive("session-abc"),
+        a.disconnected({ reason: "Disconnected", stopReconnect: true }),
+      );
+      const state = sessionLifecycleReducer(errored, a.statusSet("Copied"));
+      expect(state.phase).toBe("error");
+      expect(state.status).toBe("Copied");
+      expect(state.statusIsOverride).toBe(true);
+    });
+  });
+
   describe("clearing", () => {
     test("cleared resets to idle and wipes session identity", () => {
       const live = goLive("session-abc");

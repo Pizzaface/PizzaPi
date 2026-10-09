@@ -24,6 +24,15 @@ export interface SessionLifecycleState {
   phase: SessionLifecyclePhase;
   /** Human-readable connection status derived from the phase and events. */
   status: string;
+  /**
+   * True when `status` was last set by `STATUS_SET` (a manual toast like
+   * "Copied"/"Model set", independent of `phase`) rather than by a
+   * phase-owning action (CONNECTED/DISCONNECTED/ERROR/etc). Lets ARIA live
+   * announcements ignore toast text that happens to land while `phase` is
+   * still "reconnecting"/"error" instead of mistaking it for a changed
+   * disconnect reason.
+   */
+  statusIsOverride: boolean;
   /** Terminal or retryable error message, if any. */
   error: string | null;
   /** Currently focused relay session id, or null when none is selected. */
@@ -148,6 +157,7 @@ function makeIdleState(): SessionLifecycleState {
   return {
     phase: "idle",
     status: "Idle",
+    statusIsOverride: false,
     error: null,
     activeSessionId: null,
     generation: 0,
@@ -202,6 +212,7 @@ export function sessionLifecycleReducer(
         ...state,
         phase: "spawning",
         status: "Spawning session…",
+        statusIsOverride: false,
         error: null,
         spawn: {
           ...state.spawn,
@@ -219,6 +230,7 @@ export function sessionLifecycleReducer(
         ...state,
         phase: "registering",
         status: "Session is starting…",
+        statusIsOverride: false,
         spawn: {
           ...state.spawn,
           pendingSessionId: action.sessionId,
@@ -232,6 +244,7 @@ export function sessionLifecycleReducer(
         ...state,
         phase: "error",
         status: action.error,
+        statusIsOverride: false,
         error: action.error,
         spawn: {
           ...state.spawn,
@@ -290,6 +303,7 @@ export function sessionLifecycleReducer(
         ...state,
         phase: replayOnly ? "snapshot_replay" : resumed ? "live" : "connecting",
         status: replayOnly ? "Snapshot replay" : "Connected",
+        statusIsOverride: false,
         error: null,
         hydration: {
           ...state.hydration,
@@ -311,6 +325,7 @@ export function sessionLifecycleReducer(
           ...state,
           phase: "error",
           status: action.reason || "Disconnected",
+          statusIsOverride: false,
           error: action.reason || "Disconnected",
           reconnect: {
             restartPendingSessionId: null,
@@ -322,6 +337,7 @@ export function sessionLifecycleReducer(
         ...state,
         phase: isRestarting ? "reconnecting" : "error",
         status: isRestarting ? "Restarting CLI…" : (action.reason || "Disconnected"),
+        statusIsOverride: false,
         error: isRestarting ? null : (action.reason || "Disconnected"),
         reconnect: {
           restartPendingSessionId: isRestarting ? state.activeSessionId : null,
@@ -335,6 +351,7 @@ export function sessionLifecycleReducer(
         ...state,
         phase: "reconnecting",
         status: "Restarting CLI…",
+        statusIsOverride: false,
         error: null,
       };
     }
@@ -355,6 +372,7 @@ export function sessionLifecycleReducer(
         ...state,
         phase: state.phase === "snapshot_replay" ? "snapshot_replay" : "connecting",
         status: state.phase === "snapshot_replay" ? "Snapshot replay" : "Connected",
+        statusIsOverride: false,
         hydration: {
           ...state.hydration,
           awaitingSnapshot: false,
@@ -370,6 +388,7 @@ export function sessionLifecycleReducer(
       return {
         ...state,
         status: `Loading session (${Math.min(action.loaded, action.total)} of ${action.total} messages)…`,
+        statusIsOverride: false,
       };
     }
 
@@ -379,6 +398,7 @@ export function sessionLifecycleReducer(
         ...state,
         phase: "live",
         status: isTransientStatusPreservedOnSnapshotComplete(state.status) ? state.status : "Connected",
+        statusIsOverride: isTransientStatusPreservedOnSnapshotComplete(state.status) ? state.statusIsOverride : false,
         error: null,
         hydration: {
           ...state.hydration,
@@ -393,6 +413,7 @@ export function sessionLifecycleReducer(
         ...state,
         phase: "error",
         status: action.error,
+        statusIsOverride: false,
         error: action.error,
       };
     }
@@ -401,6 +422,7 @@ export function sessionLifecycleReducer(
       return {
         ...state,
         status: action.status,
+        statusIsOverride: true,
       };
     }
 

@@ -1,7 +1,7 @@
 import { afterEach, expect, mock, test } from "bun:test";
 import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { SigilProvider } from "@/components/sigils/SigilContext";
-import { MessageCopyButton } from "./conversation";
+import { Conversation, MessageCopyButton } from "./conversation";
 
 (globalThis.window as unknown as { SyntaxError?: typeof SyntaxError }).SyntaxError = SyntaxError;
 
@@ -32,4 +32,15 @@ test("MessageCopyButton copies a sigil's resolved text", async () => {
   });
 
   expect(writeText).toHaveBeenCalledWith("See Fix authentication flow");
+});
+
+test("Conversation disables its implicit role=log live region instead of announcing streamed additions", () => {
+  const view = render(<Conversation>content</Conversation>);
+  const log = view.container.querySelector('[role="log"]')!;
+  // role="log" implies aria-live="polite" by default; it must be explicitly
+  // turned off so streamed markdown nodes and pagination prepends are never
+  // auto-announced. Completed-turn announcements happen via SessionViewer's
+  // dedicated polite sr-only region instead.
+  expect(log.getAttribute("aria-live")).toBe("off");
+  expect(log.hasAttribute("aria-relevant")).toBe(false);
 });

@@ -19,6 +19,13 @@ export interface LiveAnnouncementState {
   disconnected: boolean;
   /** Whether the agent is currently processing a turn. */
   agentActive: boolean;
+  /**
+   * True when `status` is a manual toast override (e.g. "Copied", "Model
+   * set") rather than a lifecycle-owned disconnect/error reason. While still
+   * disconnected, an override status change must NOT be announced as a new
+   * disconnect reason.
+   */
+  statusIsOverride?: boolean;
 }
 
 export interface LiveAnnouncements {
@@ -41,9 +48,17 @@ export function computeLiveAnnouncements(
       assertive = next.status || "Disconnected";
     } else if (!next.disconnected && prev.disconnected) {
       assertive = "Session reconnected";
-    } else if (next.disconnected && prev.disconnected && next.status !== prev.status) {
+    } else if (
+      next.disconnected &&
+      prev.disconnected &&
+      next.status !== prev.status &&
+      !next.statusIsOverride
+    ) {
       // Still offline, but the reason changed (e.g. a connect_error message
-      // replaced the initial "Restarting CLI…").
+      // replaced the initial "Restarting CLI…"). A manual status override
+      // (next.statusIsOverride, e.g. a "Copied"/"Model set" toast dispatched
+      // while the phase happens to still be reconnecting/error) is never a
+      // disconnect-reason change and must not be announced.
       assertive = next.status || null;
     }
   }

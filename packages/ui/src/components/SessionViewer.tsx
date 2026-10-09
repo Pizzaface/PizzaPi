@@ -146,6 +146,7 @@ export function SessionViewer({
   lastHeartbeatAt,
   viewerStatus,
   viewerDisconnected,
+  viewerStatusIsOverride,
   retryState,
   messageQueue,
   onRemoveQueuedMessage,
@@ -220,25 +221,53 @@ export function SessionViewer({
   // unrelated toast-style messages like "Copied" or "Model set"). Reset
   // whenever the viewed session changes so a leftover announcement doesn't
   // bleed over.
+  //
+  // A region is only ever SET when this run actually computed a new
+  // announcement — never cleared back to "" just because an unrelated dep
+  // (e.g. agentActive) changed, otherwise a pending announcement can be
+  // wiped within ms, before a screen reader gets to read it. To let the same
+  // text re-announce twice in a row (DOM text would otherwise be unchanged,
+  // so no mutation to pick up), a trailing zero-width space is toggled on
+  // each announcement instead of clearing the region in between.
   const [assertiveAnnouncement, setAssertiveAnnouncement] = React.useState("");
   const [politeAnnouncement, setPoliteAnnouncement] = React.useState("");
+  const assertiveToggleRef = React.useRef(false);
+  const politeToggleRef = React.useRef(false);
   const prevLiveStateRef = React.useRef({
     status: viewerStatus,
     disconnected: !!viewerDisconnected,
     agentActive: !!agentActive,
+    statusIsOverride: !!viewerStatusIsOverride,
     sessionId,
   });
   React.useEffect(() => {
     const prev = prevLiveStateRef.current;
-    const next = { status: viewerStatus, disconnected: !!viewerDisconnected, agentActive: !!agentActive };
-    const { assertive, polite } =
-      prev.sessionId === sessionId
-        ? computeLiveAnnouncements(prev, next)
-        : { assertive: null, polite: null };
+    const next = {
+      status: viewerStatus,
+      disconnected: !!viewerDisconnected,
+      agentActive: !!agentActive,
+      statusIsOverride: !!viewerStatusIsOverride,
+    };
+    const sessionChanged = prev.sessionId !== sessionId;
     prevLiveStateRef.current = { ...next, sessionId };
-    setAssertiveAnnouncement(assertive ?? "");
-    setPoliteAnnouncement(polite ?? "");
-  }, [viewerStatus, viewerDisconnected, agentActive, sessionId]);
+
+    if (sessionChanged) {
+      // Switching sessions: clear any leftover announcement from the
+      // previously viewed session rather than letting it bleed over.
+      setAssertiveAnnouncement("");
+      setPoliteAnnouncement("");
+      return;
+    }
+    const { assertive, polite } = computeLiveAnnouncements(prev, next);
+    if (assertive !== null) {
+      assertiveToggleRef.current = !assertiveToggleRef.current;
+      setAssertiveAnnouncement(assertive + (assertiveToggleRef.current ? "\u200B" : ""));
+    }
+    if (polite !== null) {
+      politeToggleRef.current = !politeToggleRef.current;
+      setPoliteAnnouncement(polite + (politeToggleRef.current ? "\u200B" : ""));
+    }
+  }, [viewerStatus, viewerDisconnected, viewerStatusIsOverride, agentActive, sessionId]);
 
   const sendActionSigilResponse = React.useCallback(
     async (text: string): Promise<boolean> => {
@@ -1018,7 +1047,7 @@ export function SessionViewer({
                 )}
               </ConversationEmptyState>
             ) : shouldShowSessionTranscript(sessionId, viewerStatus, visibleMessages.length > 0) ? (
-              <Conversation key={sessionId} className="overflow-x-hidden">
+              <Conversation key={sessionId} className="overflow-x-hidden" aria-busy={!!agentActive}>
                 <ConversationContent className="w-full gap-0 p-0 py-2">
                   <PaginationSentinel
                     hasMore={hasMore || !!hasMoreServerMessages}
