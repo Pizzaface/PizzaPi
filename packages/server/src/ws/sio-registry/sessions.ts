@@ -108,6 +108,7 @@ import {
     withTimeout,
 } from "./context.js";
 import { broadcastToHub } from "./hub.js";
+import { getTerminalsForSession } from "./terminals.js";
 import { createLogger } from "@pizzapi/tools";
 import { pushTriggerHistory } from "../../sessions/trigger-store.js";
 import { deleteSessionRoutes, expireUndeliverable, sessionReferencedByOtherTenant } from "../../events/store.js";
@@ -1136,6 +1137,25 @@ async function endSharedSessionUnlocked(
             reason,
             ...(sessionFile ? { sessionFile } : {}),
         });
+    }
+
+    // Kill every terminal this session opened — but ONLY on a CONFIRMED
+    // terminal end (session_end, TTL expiry, orphan sweep). A transient
+    // disconnect/reconnect must never kill a live PTY the same session ID
+    // might resume into; opts.confirmedTerminal is exactly that gate (see
+    // the route-deletion block below, which uses the same signal).
+    // emitToRunner is cross-node safe (Redis-adapter room) — unlike reaching
+    // for a local-only runner socket, it still works when the runner is
+    // connected to a different relay node than the one tearing down here.
+    if (opts.confirmedTerminal && session.runnerId) {
+        try {
+            const terminals = await getTerminalsForSession(sessionId, session.runnerId);
+            for (const terminal of terminals) {
+                emitToRunner(session.runnerId, "kill_terminal", { terminalId: terminal.terminalId, sessionId });
+            }
+        } catch (err) {
+            log.warn(`endSharedSession: failed to kill terminals for ${sessionId}:`, err);
+        }
     }
 
     // Ordinary disconnects are transient: session-owned subscriptions must

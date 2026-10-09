@@ -71,6 +71,7 @@ export {
     removeTerminal,
     sendToTerminalViewer,
     getTerminalIdsForRunner,
+    getTerminalsForSession,
 } from "./terminals.js";
 export {
     getSessionMetaState,

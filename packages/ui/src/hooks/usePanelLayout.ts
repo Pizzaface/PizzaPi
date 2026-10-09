@@ -142,8 +142,35 @@ export interface PanelLayoutState {
   handleTriggersPositionChange: (pos: PanelPosition) => void;
 }
 
+// ── Terminal-prune grace period ───────────────────────────────────────────────
+// How long a session may be absent from liveSessionIds before we treat it as
+// ended. A same-ID reconnect broadcasts session_removed *before*
+// session_added (server: registerTuiSession -> endSharedSessionUnlocked), and
+// an empty/partial "sessions" resync can transiently drop an entry too — both
+// recover well within this window in the normal case.
+const TERMINAL_PRUNE_GRACE_MS = 5000;
+
 // ── Hook ──────────────────────────────────────────────────────────────────────
-export function usePanelLayout(activeSessionId: string | null): PanelLayoutState {
+export function usePanelLayout(
+  activeSessionId: string | null,
+  liveSessionIds?: string[],
+  /**
+   * Fresh, authoritative re-check for whether a session that's been absent
+   * from liveSessionIds for the full grace period is REALLY gone (e.g. a
+   * dedicated /api/sessions fetch), independent of the live discovery feed's
+   * own (possibly still-recovering) state. Required to actually prune —
+   * without it, absent sessions are never confirmed ended and their tabs are
+   * left alone (fail safe: never prune on an unconfirmed signal).
+   *
+   * This is UI-only bookkeeping: pruning here only removes a stale tab so its
+   * WebTerminal unmounts and drops its socket. It never emits kill_terminal —
+   * the remote PTY is killed by the SERVER on confirmed session end (see
+   * endSharedSession), cross-node-safe via emitToRunner, so a wrongly-kept or
+   * wrongly-dropped tab here is a display nit, never an orphaned-or-killed
+   * live shell.
+   */
+  confirmSessionEnded?: (sessionId: string) => Promise<boolean>,
+): PanelLayoutState {
   // ── Column widths ───────────────────────────────────────────────────────
   const [leftColumnWidth, setLeftColumnWidth] = React.useState(() =>
     // Migrate from legacy pp-terminal-width / pp-files-width if present
@@ -365,6 +392,148 @@ export function usePanelLayout(activeSessionId: string | null): PanelLayoutState
       });
       return next;
     });
+  }, []);
+
+  // Prune terminal tabs whose session has been CONFIRMED ended, so their
+  // WebTerminal unmounts and the WS connection closes. We only consider a
+  // session for pruning once we've actually observed it as live (via
+  // seenLiveSessionIdsRef) — this avoids wiping tabs on first mount before
+  // the sessions feed has hydrated (liveSessionIds starts empty/undefined).
+  //
+  // Mere absence from liveSessionIds does NOT prune on its own: it only
+  // starts a grace-period timer (TERMINAL_PRUNE_GRACE_MS). If the session
+  // reappears before the timer fires (reconnect, corrected resync), the
+  // timer is cancelled and nothing is touched. Only if it's still absent
+  // after the grace period AND confirmSessionEnded independently agrees does
+  // the tab actually get pruned — see GM VD0KKFpB.
+  //
+  // Pruning here is UI-only bookkeeping (drops a stale tab); it never emits
+  // kill_terminal. The server kills the session's terminals on confirmed end
+  // (endSharedSession, cross-node via emitToRunner) — see sio-registry/sessions.ts.
+  //
+  // Only tracks sessions that currently own a terminal tab (requirement:
+  // bounded growth — never accumulates every session the feed has ever
+  // reported, only the handful with an open tab right now).
+  const seenLiveSessionIdsRef = React.useRef<Set<string>>(new Set());
+  const pendingEndTimersRef = React.useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // Bumped by clearPendingEnd every time a session is seen live again — lets
+  // an in-flight confirmSessionEnded() await detect (after it resolves) that
+  // the session reappeared while the fetch was in flight, even though its
+  // timer entry was already cleared by then.
+  const sessionGenerationRef = React.useRef<Map<string, number>>(new Map());
+  // Most recent liveSessionIds snapshot, so a tab created for an
+  // already-confirmed-live session can be marked "seen" immediately instead
+  // of waiting for the next liveSessionIds change (which may be the session
+  // actually ending — too late to start the gate then).
+  const lastLiveSetRef = React.useRef<Set<string> | null>(null);
+  // Kept current every render (not in an effect) so the grace-period effect
+  // below can read the latest tabs without depending on `terminalTabs` as an
+  // effect dependency (which would re-run the scheduling loop on every tab
+  // mutation, including ones made by this same effect).
+  const terminalTabsRef = React.useRef<TerminalTab[]>(terminalTabs);
+  terminalTabsRef.current = terminalTabs;
+
+  const clearPendingEnd = React.useCallback((sessionId: string) => {
+    sessionGenerationRef.current.set(sessionId, (sessionGenerationRef.current.get(sessionId) ?? 0) + 1);
+    const timer = pendingEndTimersRef.current.get(sessionId);
+    if (timer) {
+      clearTimeout(timer);
+      pendingEndTimersRef.current.delete(sessionId);
+    }
+  }, []);
+
+  const pruneSession = React.useCallback((sessionId: string) => {
+    clearPendingEnd(sessionId);
+    seenLiveSessionIdsRef.current.delete(sessionId); // bounded: forget once resolved
+    setTerminalTabs((prev) => {
+      const next = prev.filter((t) => t.sessionId !== sessionId);
+      if (next.length === prev.length) return prev;
+      setActiveTerminalId((current) => {
+        if (current == null || next.some((t) => t.terminalId === current)) return current;
+        const removed = prev.find((t) => t.terminalId === current);
+        const sameSess = next.filter((t) => t.sessionId === (removed?.sessionId ?? null));
+        return sameSess.length > 0 ? sameSess[sameSess.length - 1].terminalId : null;
+      });
+      return next;
+    });
+  }, [clearPendingEnd]);
+
+  // Schedule (or cancel) grace-period confirmation as liveSessionIds changes.
+  // Uses terminalTabsRef (not the reactive `terminalTabs`) so pruning a
+  // session below doesn't re-run this scheduling loop.
+  React.useEffect(() => {
+    if (!liveSessionIds) return;
+    const liveSet = new Set(liveSessionIds);
+    lastLiveSetRef.current = liveSet;
+
+    const ownedSessionIds = new Set(
+      terminalTabsRef.current.map((t) => t.sessionId).filter((id): id is string => id != null),
+    );
+
+    // Mark currently-owned sessions that are live right now as "seen" — the
+    // gate that allows them to be pruned later if they disappear.
+    for (const id of ownedSessionIds) {
+      if (liveSet.has(id)) seenLiveSessionIdsRef.current.add(id);
+    }
+
+    for (const id of ownedSessionIds) {
+      if (liveSet.has(id)) {
+        clearPendingEnd(id); // reappeared — cancel any countdown
+        continue;
+      }
+      if (!seenLiveSessionIdsRef.current.has(id)) continue; // never confirmed live yet
+      if (pendingEndTimersRef.current.has(id)) continue; // already counting down
+
+      const scheduledGeneration = sessionGenerationRef.current.get(id) ?? 0;
+      pendingEndTimersRef.current.set(id, setTimeout(() => {
+        pendingEndTimersRef.current.delete(id);
+        void (async () => {
+          let reallyEnded: boolean;
+          try {
+            reallyEnded = confirmSessionEnded ? await confirmSessionEnded(id) : false;
+          } catch {
+            reallyEnded = false; // can't confirm — fail safe, don't prune
+          }
+          if (!reallyEnded) return;
+          // The session may have reappeared while confirmSessionEnded's fetch
+          // was in flight — by now pendingEndTimersRef already has nothing to
+          // cancel, so re-check directly against the live set / generation
+          // token before pruning a session that's actually back.
+          if (lastLiveSetRef.current?.has(id)) return;
+          if ((sessionGenerationRef.current.get(id) ?? 0) !== scheduledGeneration) return;
+          pruneSession(id);
+        })();
+      }, TERMINAL_PRUNE_GRACE_MS));
+    }
+  }, [liveSessionIds, confirmSessionEnded, clearPendingEnd, pruneSession]);
+
+  // Track newly-owned sessions (tab just opened) against the last known live
+  // set, and stop tracking a session once its last tab closes for any reason
+  // (user close, confirmed prune) — bounds seenLiveSessionIdsRef / timer
+  // growth instead of retaining every session ID ever seen for the tab's
+  // lifetime.
+  React.useEffect(() => {
+    const owned = new Set(
+      terminalTabs.map((t) => t.sessionId).filter((id): id is string => id != null),
+    );
+    const liveSet = lastLiveSetRef.current;
+    if (liveSet) {
+      for (const id of owned) {
+        if (liveSet.has(id)) seenLiveSessionIdsRef.current.add(id);
+      }
+    }
+    for (const id of Array.from(seenLiveSessionIdsRef.current)) {
+      if (!owned.has(id)) {
+        seenLiveSessionIdsRef.current.delete(id);
+        clearPendingEnd(id);
+      }
+    }
+  }, [terminalTabs, clearPendingEnd]);
+
+  // Clear any in-flight grace timers on unmount.
+  React.useEffect(() => () => {
+    for (const timer of pendingEndTimersRef.current.values()) clearTimeout(timer);
+    pendingEndTimersRef.current.clear();
   }, []);
 
   // ── Terminal panel ──────────────────────────────────────────────────────
