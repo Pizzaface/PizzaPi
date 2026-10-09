@@ -17,7 +17,10 @@ import { tunnelIframeSandbox, useTunnelSrc } from "@/hooks/useTunnelSrc";
 import { reportError } from "@/lib/frontend-log";
 
 interface IframeServicePanelProps {
+    /** Stable session used only to mint/route the tunnel URL. */
     sessionId: string;
+    /** Currently selected session, forwarded to panels for session-scoped actions. */
+    activeSessionId?: string;
     port: number;
     /** Query string (without leading "?") forwarded from a deep link. */
     query?: string;
@@ -31,7 +34,7 @@ interface IframeServicePanelProps {
     runnerId?: string;
 }
 
-export function IframeServicePanel({ sessionId, port, query, fragment, panelParams, cwd, runnerId }: IframeServicePanelProps) {
+export function IframeServicePanel({ sessionId, activeSessionId, port, query, fragment, panelParams, cwd, runnerId }: IframeServicePanelProps) {
     // Bumped to force an iframe remount (reload). It also remints the URL so a
     // reload recovers from an expired link or one minted for an earlier
     // exposure of the port (e.g. the service restarted).
@@ -57,11 +60,13 @@ export function IframeServicePanel({ sessionId, port, query, fragment, panelPara
             const existing = new URLSearchParams(query);
             for (const [key, value] of existing) params.set(key, value);
         }
+        if (activeSessionId) params.set("activeSessionId", activeSessionId);
+        else params.delete("activeSessionId");
         const qs = params.toString();
         if (qs) url = `${base}${base.includes("?") ? "&" : "?"}${qs}`;
         if (fragment) url += `#${fragment}`;
         return url;
-    }, [base, sessionId, port, query, fragment, panelParams, cwd, runnerId]);
+    }, [base, sessionId, activeSessionId, port, query, fragment, panelParams, cwd, runnerId]);
 
     useEffect(() => {
         setLoadTimedOut(false);

@@ -5071,7 +5071,7 @@ export function App() {
             runnerName={runnerLabel}
             runnerOnline={scopedRunnerId ? feedRunners.some((runner) => runner.runnerId === scopedRunnerId) : undefined}
           />
-        : <IframeServicePanel sessionId={panelSessionId!} port={dynamicDef!.port} query={navParams?.query} fragment={navParams?.fragment} panelParams={dynamicDef!.panelParams} cwd={activeSessionInfo?.cwd ?? undefined} />;
+        : <IframeServicePanel sessionId={panelSessionId!} activeSessionId={activeSessionId ?? undefined} port={dynamicDef!.port} query={navParams?.query} fragment={navParams?.fragment} panelParams={dynamicDef!.panelParams} cwd={activeSessionInfo?.cwd ?? undefined} />;
 
       tabs.push({
         id: panelId,
