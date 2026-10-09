@@ -37,6 +37,7 @@ mock.module("./viewer-cache.js", () => ({
 
 mock.module("../sio-registry.js", () => ({
     getSharedSessionSummary: async (sessionId: string) => ({ sessionId, userId: "user-1" }),
+    getSessionMessages: async () => null,
     addViewer: async () => true,
     removeViewer: async () => undefined,
     getSharedSession: mock((sessionId: string) => {
