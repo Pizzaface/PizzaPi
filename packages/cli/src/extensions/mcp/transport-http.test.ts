@@ -207,6 +207,32 @@ describe("HTTP MCP protocol eras", () => {
     expect(cancellations).toEqual([{ requestId, reason: "Client cancelled request" }]);
   });
 
+  test("aborting legacy initialize never notifies cancellation", async () => {
+    const started = Promise.withResolvers<void>();
+    const methods: string[] = [];
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      methods.push(body.method);
+      if (body.method === "server/discover") return response({ message: "legacy" }, 400);
+      if (body.method === "initialize") {
+        started.resolve();
+        return new Promise<Response>((_resolve, reject) => {
+          init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
+        });
+      }
+      throw new Error(`unexpected ${body.method}`);
+    }) as typeof fetch;
+
+    const client = createHttpMcpClient({ name: "legacy", url: "https://example.test/mcp" });
+    const abort = new AbortController();
+    const init = client.initialize(abort.signal);
+    await started.promise;
+    abort.abort(new DOMException("cancelled", "AbortError"));
+    await expect(init).rejects.toThrow();
+    expect(methods).not.toContain("notifications/cancelled");
+    client.close();
+  });
+
   test("aborting a modern HTTP tool call only closes the stream", async () => {
     const started = Promise.withResolvers<void>();
     const methods: string[] = [];

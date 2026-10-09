@@ -233,7 +233,13 @@ export function createStreamableMcpClient(opts: {
   async function rawRequestImpl(method: string, params?: any, signal?: AbortSignal, modernRequest = modern): Promise<{ result: any; status: number; response: Response; rpcError?: any }> {
     const id = nextId++;
     const payload = { jsonrpc: "2.0", id, method, params };
+    // Per spec, `initialize` MUST NOT be cancelled — never emit a cancellation
+    // notification for it. Also skip once a response has already arrived
+    // (abort-after-completion race): the request is done, there's nothing left
+    // to cancel server-side.
+    let settled = false;
     const cancelNotification = () => {
+      if (settled || method === "initialize") return;
       if (!modernRequest) notify("notifications/cancelled", { requestId: id, reason: "Client cancelled request" }, AbortSignal.timeout(1000));
     };
     signal?.addEventListener("abort", cancelNotification, { once: true });
@@ -268,6 +274,7 @@ export function createStreamableMcpClient(opts: {
 
       if (!res.ok) {
         const json = (await res.clone().json().catch(() => null)) as any;
+        settled = true;
         return { result: null, status: res.status, response: res, rpcError: json?.error };
       }
 
@@ -275,6 +282,7 @@ export function createStreamableMcpClient(opts: {
 
       if (ct.includes("text/event-stream")) {
         const result = await parseSSE(res, id, signal);
+        settled = true;
         return { result, status: res.status, response: res };
       }
 
@@ -282,6 +290,7 @@ export function createStreamableMcpClient(opts: {
       const json = (await res.json().catch(() => null)) as any;
       if (!json || typeof json !== "object" || json.method) throw new Error("MCP streamable: invalid response (server requests are not supported)");
       if (json.id !== id && json.id !== String(id)) throw new Error("MCP response id mismatch");
+      settled = true;
       return { result: json.result, status: res.status, response: res, rpcError: json.error };
     } finally {
       signal?.removeEventListener("abort", cancelNotification);

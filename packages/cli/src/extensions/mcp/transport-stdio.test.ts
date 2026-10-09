@@ -76,6 +76,38 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
 });
 `;
 
+const legacyInitializeHangScript = `
+const fs = require('node:fs');
+require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+  const m = JSON.parse(line);
+  if (m.method === 'server/discover') return process.stdout.write(JSON.stringify({ jsonrpc:'2.0', id:m.id, error:{code:-32601,message:'Unknown method'} }) + '\\n');
+  if (m.method === 'initialize') { fs.writeFileSync(process.env.TEST_STARTED_FILE, String(m.id)); return; }
+  if (m.method === 'notifications/cancelled') fs.writeFileSync(process.env.TEST_CANCEL_FILE, JSON.stringify(m.params));
+});
+`;
+
+test("aborting a legacy stdio initialize never notifies cancellation", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mcp-stdio-init-cancel-"));
+  const startedFile = join(dir, "started");
+  const cancelFile = join(dir, "cancelled");
+  const client = await createStdioMcpClient({ name: "legacy", command: process.execPath, args: ["--eval", legacyInitializeHangScript], env: { TEST_STARTED_FILE: startedFile, TEST_CANCEL_FILE: cancelFile } });
+  const abort = new AbortController();
+  try {
+    const init = client.initialize(abort.signal);
+    for (let i = 0; i < 100; i++) {
+      try { readFileSync(startedFile, "utf8"); break; } catch { await Bun.sleep(10); }
+    }
+    abort.abort(new DOMException("cancelled", "AbortError"));
+    await expect(init).rejects.toThrow();
+    // Give any (incorrect) cancellation notification time to be written.
+    await Bun.sleep(100);
+    expect(() => readFileSync(cancelFile, "utf8")).toThrow();
+  } finally {
+    client.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("aborting a legacy stdio tool call notifies the server", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mcp-stdio-cancel-"));
   const startedFile = join(dir, "started");

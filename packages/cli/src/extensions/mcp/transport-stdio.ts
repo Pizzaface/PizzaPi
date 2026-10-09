@@ -90,7 +90,11 @@ export async function createStdioMcpClient(opts: {
     return new Promise((resolve, reject) => {
       const onAbort = () => {
         pending.delete(id);
-        notifyCancelled(id);
+        // Per spec, `initialize` MUST NOT be cancelled — never notify for it.
+        // A response that already arrived removed this listener via
+        // cleanup() before onAbort could run, so no extra guard is needed
+        // for the abort-after-completion race.
+        if (method !== "initialize") notifyCancelled(id);
         reject(signal?.reason ?? new DOMException("The operation was aborted", "AbortError"));
       };
       const cleanup = () => signal?.removeEventListener("abort", onAbort);
