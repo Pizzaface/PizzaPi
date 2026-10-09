@@ -50,7 +50,7 @@ import {
     broadcastToSessionViewers,
     markPendingRecovery,
 } from "../sio-registry.js";
-import { isChildOfParent, getSessionMessagesCount, getSessionMessagesRange } from "../sio-state/index.js";
+import { isChildOfParent, getSessionMessagesPage } from "../sio-state/index.js";
 import { getPendingChunkedSnapshot } from "./relay/index.js";
 import { getLatestCachedSnapshotEvent } from "../../sessions/redis.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
@@ -1244,28 +1244,22 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             if (typeof data.limit !== "number" || !Number.isFinite(data.limit)) return;
 
             // Fast path: serve the page straight from the split Redis message
-            // list via LRANGE, without JSON.parse'ing the (possibly multi-MB)
-            // monolithic lastState blob. Falls back below when the list is
-            // absent (older session, Redis eviction, dual-write failure) or
-            // when any entry fails to parse (getSessionMessagesRange returns
-            // null wholesale in that case rather than a null placeholder).
-            const messageCount = await getSessionMessagesCount(currentSessionId).catch(() => null);
-            if (messageCount !== null) {
-                const before = Math.max(0, Math.min(Math.trunc(data.before), messageCount));
-                const limit = Math.max(0, Math.trunc(data.limit));
-                const startIndex = Math.max(0, before - limit);
-                const endIndex = before;
-                const page = await getSessionMessagesRange(currentSessionId, startIndex, endIndex).catch(() => null);
-                if (page !== null) {
-                    socket.emit("session_messages_page", {
-                        sessionId: currentSessionId,
-                        messages: page,
-                        hasMore: startIndex > 0,
-                        oldestIndex: startIndex,
-                        generation: getCurrentGeneration(),
-                    });
-                    return;
-                }
+            // list via one atomic read (existence + length + contents in a
+            // single MULTI/EXEC — see getSessionMessagesPage), without
+            // JSON.parse'ing the (possibly multi-MB) monolithic lastState
+            // blob. Falls back below when the list is absent (older session,
+            // Redis eviction, dual-write failure, or it vanished between
+            // requests) or when any entry fails to parse.
+            const page = await getSessionMessagesPage(currentSessionId, data.before, data.limit).catch(() => null);
+            if (page !== null) {
+                socket.emit("session_messages_page", {
+                    sessionId: currentSessionId,
+                    messages: page.messages,
+                    hasMore: page.startIndex > 0,
+                    oldestIndex: page.startIndex,
+                    generation: getCurrentGeneration(),
+                });
+                return;
             }
 
             let fullState: Record<string, unknown> | null = null;

@@ -22,7 +22,12 @@ function keyExists(key: string): boolean {
 }
 
 const mockMulti = () => {
-    const ops: Array<() => void> = [];
+    // Each queued op's closure both applies its side effect AND returns the
+    // value real node-redis would return for that command, so exec() can
+    // hand back a per-command results array — getSessionMessagesPage reads
+    // its EXISTS/LLEN/LRANGE results positionally out of that array, just
+    // like the real client.
+    const ops: Array<() => unknown> = [];
     const chain = {
         hSet: mock((key: string, fields: Record<string, string>) => {
             ops.push(() => {
@@ -67,13 +72,34 @@ const mockMulti = () => {
             });
             return chain;
         }),
-        exec: mock(async () => {
-            for (const op of ops) op();
-            return [];
+        exists: mock((key: string) => {
+            ops.push(() => (keyExists(key) ? 1 : 0));
+            return chain;
         }),
+        lLen: mock((key: string) => {
+            ops.push(() => listStore.get(key)?.length ?? 0);
+            return chain;
+        }),
+        lRange: mock((key: string, start: number, stop: number) => {
+            ops.push(() => {
+                const list = listStore.get(key) ?? [];
+                const end = stop < 0 ? list.length + stop + 1 : stop + 1;
+                return list.slice(start, end);
+            });
+            return chain;
+        }),
+        exec: mock(async () => ops.map((op) => op())),
     };
     return chain;
 };
+
+// When set, the NEXT top-level `exists(key)` check for this exact key
+// answers truthfully based on the CURRENT state, then immediately deletes
+// the key before returning — simulating an eviction/TTL expiry landing in
+// the gap between a reader's own EXISTS check and its next command (e.g.
+// LRANGE) on the SAME key. Used to reproduce the pre-fix two-round-trip
+// race that getSessionMessagesPage's single MULTI/EXEC closes.
+let raceDeleteAfterExistsFor: string | null = null;
 
 const mockRedis = {
     isOpen: true,
@@ -82,7 +108,15 @@ const mockRedis = {
     quit: mock(async () => {}),
     multi: mock(() => mockMulti()),
     hGetAll: mock(async (key: string) => ({ ...(hashStore.get(key)) })),
-    exists: mock(async (key: string) => (keyExists(key) ? 1 : 0)),
+    exists: mock(async (key: string) => {
+        const result = keyExists(key) ? 1 : 0;
+        if (raceDeleteAfterExistsFor === key) {
+            raceDeleteAfterExistsFor = null;
+            hashStore.delete(key);
+            listStore.delete(key);
+        }
+        return result;
+    }),
     get: mock(async () => null),
     set: mock(async () => "OK"),
     del: mock(async (key: string) => {
@@ -116,10 +150,11 @@ import {
     updateSessionFieldsAndMessagesList,
     getSessionMessagesCount,
     getSessionMessagesRange,
+    getSessionMessagesPage,
     deleteSessionMessagesList,
 } from "./sio-state.js";
 
-function fullSessionRecord(sessionId: string, lastState: string) {
+function fullSessionRecord(sessionId: string, lastState: string | null) {
     return {
         sessionId,
         token: "tkn",
@@ -148,6 +183,7 @@ describe("split session message list", () => {
         hashStore.clear();
         setStore.clear();
         listStore.clear();
+        raceDeleteAfterExistsFor = null;
         await initStateRedis(mockRedis as never);
     });
 
@@ -314,5 +350,91 @@ describe("split session message list", () => {
 
         const page = await getSessionMessagesRange(sessionId, 0, 3);
         expect(page).toBeNull();
+    });
+
+    // ── Regression: registration must invalidate the PREVIOUS generation's list ──
+    //
+    // setSession() always writes `lastState: null` on (re-)registration (see
+    // sio-registry/sessions.ts: a fresh `generation` on every registration).
+    // Before this fix, setSession() didn't touch the split list, so a session
+    // restarting/reconnecting under the SAME sessionId would overwrite
+    // lastState to null while load_messages kept serving the PREVIOUS
+    // generation's list (a separate key with its own TTL that can easily
+    // outlive the registration that just invalidated it).
+
+    it("re-registration (setSession writing lastState: null) clears the previous generation's split list — no old page survives", async () => {
+        const sessionId = "session-reregister";
+        await setSession(sessionId, fullSessionRecord(sessionId, JSON.stringify({ messages: [{ id: "old-gen" }] })));
+        await updateSessionFieldsAndMessagesList(
+            sessionId,
+            { lastState: JSON.stringify({ messages: [{ id: "old-gen" }] }) },
+            [{ id: "old-gen" }],
+        );
+        expect(await getSessionMessagesRange(sessionId, 0, 1)).toEqual([{ id: "old-gen" }]);
+
+        // Session re-registers under the SAME sessionId (restart/reconnect) —
+        // the real registration flow always (re)writes lastState: null.
+        await setSession(sessionId, fullSessionRecord(sessionId, null));
+
+        const reregistered = await getSession(sessionId);
+        expect(reregistered?.lastState).toBeNull();
+
+        // The PREVIOUS generation's split list must be gone too — a reader
+        // falling back must not find the old generation's messages via
+        // either the direct helper or the atomic page reader.
+        expect(await getSessionMessagesCount(sessionId)).toBeNull();
+        expect(await getSessionMessagesRange(sessionId, 0, 1)).toBeNull();
+        expect(await getSessionMessagesPage(sessionId, 1, 5)).toBeNull();
+    });
+
+    // ── Regression: an atomic read closes the exists-then-range race window ──
+    //
+    // getSessionMessagesRange() (and getSessionMessagesCount()) each do their
+    // OWN "EXISTS, then act" pair of separate Redis round-trips. If the list
+    // is deleted (TTL expiry, eviction, re-registration) in the gap between
+    // a function's own EXISTS check and its next command on the SAME key,
+    // that next command (LRANGE on a now-missing key) returns `[]` rather
+    // than an error, so the caller can't tell "list is gone, fall back to
+    // lastState" apart from "list is just empty" — load_messages would have
+    // served a bogus empty page. getSessionMessagesPage() reads existence +
+    // length + contents in ONE MULTI/EXEC, so there is no gap for a
+    // concurrent deletion to land in.
+
+    it("documents the bug: getSessionMessagesRange can return [] (not null) when the list is deleted between its own EXISTS check and its LRANGE call", async () => {
+        const sessionId = "session-race-old-pattern";
+        await setSessionMessagesList(sessionId, [{ id: 1 }, { id: 2 }]);
+
+        // Simulate an eviction/TTL expiry landing in the gap between this
+        // function's own EXISTS check and its subsequent LRANGE call.
+        raceDeleteAfterExistsFor = `pizzapi:sio:session-messages:${sessionId}`;
+
+        const range = await getSessionMessagesRange(sessionId, 0, 2);
+        // BUG: an empty array, indistinguishable from "list exists but has no
+        // messages in range" — the caller can't tell the list is actually gone.
+        expect(range).toEqual([]);
+    });
+
+    it("getSessionMessagesPage returns null (not an empty page) once the list is gone — no two-call gap for a race to land in", async () => {
+        const sessionId = "session-atomic-no-gap";
+        await setSessionMessagesList(sessionId, [{ id: 1 }, { id: 2 }]);
+        await deleteSessionMessagesList(sessionId);
+
+        const page = await getSessionMessagesPage(sessionId, 2, 5);
+        expect(page).toBeNull();
+    });
+
+    it("getSessionMessagesPage returns the correct windowed page and clamps a stale/out-of-range `before` cursor", async () => {
+        const sessionId = "session-atomic-page";
+        const messages = Array.from({ length: 5 }, (_, i) => ({ id: i, text: `msg-${i}` }));
+        await setSessionMessagesList(sessionId, messages);
+
+        // Normal window: before=5, limit=2 → startIndex=3, endIndex=5.
+        const normal = await getSessionMessagesPage(sessionId, 5, 2);
+        expect(normal).toEqual({ messages: [messages[3], messages[4]], length: 5, startIndex: 3, endIndex: 5 });
+
+        // Stale client cursor (before exceeds the real length) must clamp to
+        // the actual length instead of requesting a phantom out-of-range page.
+        const stale = await getSessionMessagesPage(sessionId, 999, 2);
+        expect(stale).toEqual({ messages: [messages[3], messages[4]], length: 5, startIndex: 3, endIndex: 5 });
     });
 });

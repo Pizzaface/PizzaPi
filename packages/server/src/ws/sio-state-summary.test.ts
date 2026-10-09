@@ -25,6 +25,12 @@ const mockMulti = () => {
             });
             return chain;
         }),
+        del: mock((...keys: string[]) => {
+            ops.push(() => {
+                for (const key of keys) hashStore.delete(key);
+            });
+            return chain;
+        }),
         exec: mock(async () => {
             for (const op of ops) op();
             return [];

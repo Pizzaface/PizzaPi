@@ -521,6 +521,16 @@ export async function setSession(sessionId: string, data: RedisSessionData): Pro
     multi.hSet(key, fields);
     multi.expire(key, SESSION_TTL_SECONDS);
 
+    // (Re-)registration always writes `lastState: null` (see
+    // sio-registry/sessions.ts's fresh `generation` on every registration).
+    // The split message list from a PREVIOUS generation must be cleared in
+    // THIS SAME transaction — otherwise a session re-registering under the
+    // same sessionId (restart, reconnect) would overwrite lastState to null
+    // while load_messages kept serving the old generation's list (it's a
+    // separate key with its own TTL, so it can easily outlive the
+    // registration that just invalidated it).
+    multi.del(sessionMessagesKey(sessionId));
+
     // Add to global index
     multi.sAdd(allSessionsKey(), sessionId);
     multi.expire(allSessionsKey(), INDEX_TTL_SECONDS);
@@ -729,7 +739,17 @@ export async function getAllSessions(filterUserId?: string): Promise<RedisSessio
 
 export async function refreshSessionTTL(sessionId: string): Promise<void> {
     const r = requireRedis();
-    await r.expire(sessionKey(sessionId), SESSION_TTL_SECONDS);
+    const multi = r.multi();
+    multi.expire(sessionKey(sessionId), SESSION_TTL_SECONDS);
+    // The split message list is written with the same TTL (see
+    // queueMessagesListReplace), but only AT WRITE TIME. A session that's
+    // still active (heartbeats refreshing this hash) but hasn't produced a
+    // new lastState snapshot in a while would otherwise have the list's TTL
+    // lapse independently of the session it belongs to, forcing an
+    // unnecessary fallback to lastState. EXPIRE on a missing key is a safe
+    // no-op, so this is fine even for sessions that never dual-wrote.
+    multi.expire(sessionMessagesKey(sessionId), SESSION_TTL_SECONDS);
+    await multi.exec();
 }
 
 // ── Sequence counter ────────────────────────────────────────────────────────
@@ -869,6 +889,69 @@ export async function getSessionMessagesRange(
         }
     }
     return parsed;
+}
+
+/**
+ * Atomically read the split list's existence, length, and contents in ONE
+ * Redis transaction, then compute the requested [start, before) page in JS.
+ *
+ * This replaces calling getSessionMessagesCount() and getSessionMessagesRange()
+ * back-to-back at the load_messages call site: those are two independent
+ * round-trips, so a concurrent DEL (TTL expiry, eviction, or setSession()
+ * clearing the list on re-registration) landing between them could leave
+ * the EXISTS check from the first call paired with an LRANGE, in the second
+ * call, that observes an already-vanished list. LRANGE on a missing key
+ * returns `[]` rather than an error, so the caller couldn't tell "the list
+ * is gone, fall back to lastState" apart from "the list is just empty" —
+ * load_messages would serve a bogus empty page instead of falling back. A
+ * MULTI/EXEC guarantees Redis executes every queued command as one unit
+ * with no other client's commands interleaved, so the existence check,
+ * length, and contents here all reflect the exact same point in time.
+ *
+ * ponytail: fetches the whole list rather than LRANGE-ing only the needed
+ * slice, because clamping a possibly-stale client `before` cursor needs the
+ * real length, and a plain MULTI can't use one queued command's result to
+ * bound another queued in the same batch. Fine for current list sizes; if
+ * that stops being true, move the clamp+slice into a Lua script (EVAL) so
+ * Redis computes the bounded LRANGE server-side in one atomic script.
+ *
+ * Returns null if the list doesn't exist, or if any entry fails to parse —
+ * either way the caller must fall back to parsing lastState.
+ */
+export async function getSessionMessagesPage(
+    sessionId: string,
+    before: number,
+    limit: number,
+): Promise<{ messages: unknown[]; length: number; startIndex: number; endIndex: number } | null> {
+    const r = requireRedis();
+    const key = sessionMessagesKey(sessionId);
+
+    const multi = r.multi();
+    multi.exists(key);
+    multi.lLen(key);
+    multi.lRange(key, 0, -1);
+    const results = await multi.exec();
+
+    const exists = results[0];
+    if (!exists) return null;
+
+    const length = Number(results[1]) || 0;
+    const raw = (results[2] as string[] | null) ?? [];
+
+    const clampedBefore = Math.max(0, Math.min(Math.trunc(before), length));
+    const clampedLimit = Math.max(0, Math.trunc(limit));
+    const startIndex = Math.max(0, clampedBefore - clampedLimit);
+    const endIndex = clampedBefore;
+
+    const messages: unknown[] = [];
+    for (const entry of raw.slice(startIndex, endIndex)) {
+        try {
+            messages.push(JSON.parse(entry));
+        } catch {
+            return null;
+        }
+    }
+    return { messages, length, startIndex, endIndex };
 }
 
 /** Delete the split message list (session teardown). */
