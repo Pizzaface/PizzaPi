@@ -63,14 +63,32 @@ Making that marker visible also required fixing how sessions are seeded: `messag
 cached server-side for a cold viewer (`updateSessionState()` only runs for `session_active`), so a mock relay
 session seeded with only deltas rendered nothing but the "waiting for session events" placeholder for *any*
 viewer that connects after the events were sent — including `measureOpen`'s first page load and every
-session switch. Seeding now sends one `session_active` snapshot carrying the full message history instead,
-the same way a real pi runner answers a cold connect.
+session switch. Seeding now sends one `session_active` snapshot carrying the full message history for small
+histories, the same way a real pi runner answers a cold connect. For snapshots above the runner's
+5 MiB estimated-size threshold, the benchmark sends metadata with `chunked: true` followed by
+`session_messages_chunk` frames (200-message/6 MiB boundaries), matching the real runner protocol;
+the relay assembles the snapshot before the viewer hydrates.
 
 The previous numbers in this doc (switch median 7829 ms, then 34 ms) were both invalid for different reasons:
 the first because it slept a fixed 250 ms and reported the sleep as the switch time; the second because it
 stopped the clock on the header name alone, which (as above) was never proof that any content had rendered
 at all. Confirmed non-vacuous: pointing the dispatch at a nonexistent event name (`pp-navigate-session-broken`)
 makes the benchmark fail loudly with a timeout instead of reporting a number.
+
+## Default media-size chunking verification
+
+Run: `2026-10-09T13:04:04.504Z`
+
+Command:
+
+```bash
+bun packages/server/benchmarks/slowdown.ts --histories= --media-kb=65,1024,4096 --burst-runners=0 --burst-sessions=0 --soak-ms=0 --out=/tmp/pizzapi-977-benchmark-r4
+```
+
+All three default media sizes opened and switched to their rendered transcript markers successfully,
+including 1024 KB and 4096 KB messages that require chunked snapshot delivery. Switch median: 3360 ms;
+p95: 11991 ms; max: 11991 ms. This isolates default media sizes; it does not exercise the default
+history, burst, or soak workloads.
 
 ## Known limits
 

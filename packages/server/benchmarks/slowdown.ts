@@ -9,6 +9,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
+import { randomUUID } from "node:crypto";
 import { RedisMemoryServer } from "redis-memory-server";
 import { createTestServer } from "../tests/harness/server.js";
 import { createMockRelay } from "../tests/harness/mock-relay.js";
@@ -58,8 +59,42 @@ async function seedSession(server: Awaited<ReturnType<typeof createTestServer>>,
   // relay has no runner behind it to answer that signal, so seed the snapshot
   // directly; otherwise a cold/switched-to viewer renders nothing but the "waiting
   // for session events" placeholder, no matter how the switch is measured.
-  relay.emitEvent(session.sessionId, session.token, { type: "session_active", state: { messages, sessionName } }, count - 1);
-  relay.emitEvent(session.sessionId, session.token, buildHeartbeat({ active: false, sessionName }), count + 1);
+  const messageBytes = Math.ceil(messages.reduce((total, message) => total + Buffer.byteLength(JSON.stringify(message)), 2) * 1.1);
+  let nextSeq = count + 1;
+  if (messageBytes <= 5 * 1024 * 1024) {
+    relay.emitEvent(session.sessionId, session.token, { type: "session_active", state: { messages, sessionName } }, count - 1);
+  } else {
+    const snapshotId = randomUUID();
+    relay.emitEvent(session.sessionId, session.token, {
+      type: "session_active",
+      state: { messages: [], sessionName, chunked: true, snapshotId, totalMessages: messages.length },
+    }, count - 1);
+    const chunks: typeof messages[] = [];
+    let chunk: typeof messages = [];
+    let chunkBytes = 0;
+    for (const message of messages) {
+      const size = Buffer.byteLength(JSON.stringify(message));
+      if (chunk.length && (chunk.length >= 200 || chunkBytes + size > 6 * 1024 * 1024)) {
+        chunks.push(chunk);
+        chunk = [];
+        chunkBytes = 0;
+      }
+      chunk.push(message);
+      chunkBytes += size;
+    }
+    if (chunk.length) chunks.push(chunk);
+    chunks.forEach((chunkMessages, chunkIndex) => relay.emitEvent(session.sessionId, session.token, {
+      type: "session_messages_chunk",
+      snapshotId,
+      chunkIndex,
+      totalChunks: chunks.length,
+      totalMessages: messages.length,
+      messages: chunkMessages,
+      final: chunkIndex === chunks.length - 1,
+    }, count + chunkIndex));
+    nextSeq = count + chunks.length;
+  }
+  relay.emitEvent(session.sessionId, session.token, buildHeartbeat({ active: false, sessionName }), nextSeq);
   return { relay, sessionName, lastRow, ...session };
 }
 
@@ -97,7 +132,7 @@ async function measureSwitch(page, sessionId, sessionName, lastRow) {
   const start = performance.now();
   await page.evaluate((id) => window.dispatchEvent(new CustomEvent("pp-navigate-session", { detail: { sessionId: id } })), sessionId);
   await page.locator("#main-content").getByText(sessionName, { exact: true }).waitFor({ timeout: 120000 });
-  await page.locator("#main-content").getByText(lastRow).waitFor({ timeout: 120000 });
+  await page.locator("#main-content").getByText(lastRow, { exact: true }).waitFor({ timeout: 120000 });
   return Math.round(performance.now() - start);
 }
 const browser = await chromium.launch({ headless });
