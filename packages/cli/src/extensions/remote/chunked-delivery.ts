@@ -380,7 +380,13 @@ export const CHUNK_RETRY_MAX_DELAY_MS = 10 * 60 * 1000; // 10 min cap
 interface ChunkRetryState {
     leafId: string | null;
     attempts: number;
-    /** Date.now() when this leafId's last attempt outcome was recorded. */
+    /**
+     * Date.now() when this leafId's last attempt STARTED (not completed).
+     * Backoff must count from when we began probing, not when the probe
+     * eventually finishes — otherwise a slow/stuck-pending probe never
+     * advances the clock and a second throttled caller mid-probe sees a
+     * stale "not recently attempted" window and starts a redundant one.
+     */
     lastAttemptAt: number;
 }
 let chunkRetryState: ChunkRetryState | null = null;
@@ -398,6 +404,19 @@ function currentChunkRetryIntervalMs(leafId: string | null): number {
     return CHUNKED_SNAPSHOT_MIN_INTERVAL_MS;
 }
 
+/**
+ * Record that a chunked-delivery attempt is starting for leafId, for
+ * backoff timing. Called once per attempt, right before the upload begins
+ * (not on completion) — see ChunkRetryState.lastAttemptAt.
+ */
+function recordChunkAttemptStart(leafId: string | null): void {
+    if (chunkRetryState && chunkRetryState.leafId === leafId) {
+        chunkRetryState.lastAttemptAt = Date.now();
+    } else {
+        chunkRetryState = { leafId, attempts: 0, lastAttemptAt: Date.now() };
+    }
+}
+
 /** Record the outcome of a chunked-delivery attempt for backoff tracking. */
 function recordChunkDeliveryOutcome(leafId: string | null, delivered: boolean): void {
     if (delivered) {
@@ -406,8 +425,9 @@ function recordChunkDeliveryOutcome(leafId: string | null, delivered: boolean): 
     }
     if (chunkRetryState && chunkRetryState.leafId === leafId) {
         chunkRetryState.attempts++;
-        chunkRetryState.lastAttemptAt = Date.now();
     } else {
+        // Attempt start wasn't recorded for this leafId (e.g. direct test call) —
+        // fall back to recording the outcome time as a best-effort start time.
         chunkRetryState = { leafId, attempts: 1, lastAttemptAt: Date.now() };
     }
 }
@@ -511,6 +531,7 @@ export function recordEmittedMessageState(rctx: RelayContext, leafId?: string | 
 /** Mark a chunked checkpoint as actively draining without claiming success. */
 export function recordInFlightMessageState(rctx: RelayContext): string | null {
     inFlightMessageLeafId = rctx.latestCtx?.sessionManager.getLeafId() ?? null;
+    recordChunkAttemptStart(inFlightMessageLeafId);
     return inFlightMessageLeafId;
 }
 
@@ -578,6 +599,26 @@ export function emitSessionActive(rctx: RelayContext, recoveryNonce?: string, th
     // the bounded-retry give-up below.
     if (throttle) {
         const currentLeafId = rctx.latestCtx.sessionManager.getLeafId();
+        if (inFlightMessageLeafId !== null) {
+            // A chunked upload is already draining and awaiting its ack —
+            // don't start a second, concurrent upload on top of it. Each
+            // throttled caller (heartbeat tick, agent_end) that superseded an
+            // in-flight sender would reset chunkIndex to 0 and never let a
+            // send finish, especially during the exhausted-state recovery
+            // probe (which can sit on an ack for up to CHUNK_ACK_TIMEOUT_MS).
+            // Let the current attempt finish; a trailing timer (or the next
+            // throttled caller, once it's no longer in flight) retries later.
+            // Explicit unthrottled resyncs (connect/recovery/compaction/
+            // session-switch) still bypass this and supersede immediately —
+            // they never reach this branch (throttle=false).
+            forwardMetadataUpdate(rctx);
+            trailingSnapshotTimer ??= setTimeout(() => {
+                trailingSnapshotTimer = null;
+                emitSessionActive(rctx, undefined, true);
+            }, CHUNKED_SNAPSHOT_MIN_INTERVAL_MS);
+            trailingSnapshotTimer.unref?.();
+            return;
+        }
         if (chunkDeliveryGaveUp(currentLeafId)) {
             // Bounded auto-retries exhausted for this transcript state — don't
             // loop at full speed, but don't give up forever either: a relay

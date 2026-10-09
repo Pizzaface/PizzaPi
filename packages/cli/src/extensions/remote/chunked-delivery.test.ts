@@ -399,6 +399,78 @@ describe("messagesChangedSinceLastEmit", () => {
         }
     });
 
+    test("exhausted-state recovery probe in flight: a second throttled emit does not supersede it, but an unthrottled emit still does", async () => {
+        const entries = [{
+            type: "message",
+            id: "stuck-leaf",
+            parentId: null,
+            timestamp: new Date(0).toISOString(),
+            message: { role: "user", content: "x".repeat(4_800_000), timestamp: Date.now() },
+        }];
+        const ctx = makeContext({ leafId: "stuck-leaf", supportsChunkAck: true, entries });
+
+        // Exhaust the fast bounded retries for this leafId.
+        for (let i = 0; i < CHUNK_RETRY_MAX_ATTEMPTS; i++) {
+            recordInFlightMessageState(ctx);
+            finishInFlightMessageState(ctx, "stuck-leaf", false);
+        }
+
+        // Advance past the capped recovery-probe delay so the next throttled
+        // emit actually attempts a fresh chunked upload (the recovery probe).
+        const realNow = Date.now.bind(Date);
+        const mockedNow = realNow() + CHUNK_RETRY_MAX_DELAY_MS + 1_000;
+        Date.now = () => mockedNow;
+
+        let pendingAck: ((result: { ok: boolean }) => void) | undefined;
+        const chunkEvents: unknown[] = [];
+        ctx.relay = { sessionId: "sess", token: "tok", shareUrl: "http://localhost/sess", seq: 0, ackedSeq: 0 };
+        ctx.sioSocket = {
+            connected: true,
+            emit: (_name: string, payload: any, ack?: (result: { ok: boolean }) => void) => {
+                chunkEvents.push(payload.event);
+                pendingAck = ack; // capture — do not invoke yet, simulating a pending ack
+            },
+        } as any;
+
+        try {
+            // Recovery probe starts: session_active + chunk 0 upload, ack pending.
+            ctx.emitted.length = 0;
+            emitSessionActive(ctx, undefined, true);
+            expect((ctx.emitted[0] as any).state.chunked).toBe(true);
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            expect(chunkEvents).toHaveLength(1);
+            expect(pendingAck).toBeDefined();
+
+            // A second throttled call fires (e.g. agent_end during the
+            // heartbeat-started probe). It must NOT start a replacement
+            // snapshot while the first chunk's ack is still outstanding.
+            ctx.emitted.length = 0;
+            emitSessionActive(ctx, undefined, true);
+            expect(chunkEvents).toHaveLength(1); // no second upload
+            expect((ctx.emitted[0] as any).type).toBe("session_metadata_update");
+
+            // The pending ack now arrives — the in-flight probe completes and
+            // state updates accordingly.
+            pendingAck?.({ ok: true });
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            expect(messagesChangedSinceLastEmit(ctx)).toBe(false);
+
+            // An explicit unthrottled resync must still be able to supersede
+            // an in-flight chunked sender — verify directly: start a new
+            // in-flight send, then confirm an unthrottled call starts
+            // immediately rather than waiting.
+            recordInFlightMessageState(ctx);
+            chunkEvents.length = 0;
+            ctx.emitted.length = 0;
+            emitSessionActive(ctx); // unthrottled — bypasses the in-flight guard
+            expect((ctx.emitted[0] as any).type).toBe("session_active");
+            expect((ctx.emitted[0] as any).state.chunked).toBe(true);
+        } finally {
+            Date.now = realNow;
+        }
+    });
+
     test("throttles opt-in chunked snapshots to metadata-only + one trailing snapshot", async () => {
         const large = (id: string) => ({
             type: "message", id, parentId: null, timestamp: new Date(0).toISOString(),
