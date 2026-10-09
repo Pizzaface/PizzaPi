@@ -119,7 +119,7 @@ const ownerDb = await installRunnerOwnerTestDb();
 
 const { initStateRedis, setSession, setRunner } = await import("../sio-state/index.js");
 const { initSioRegistry, runnerSecrets, localRunnerSockets, localTuiSockets } = await import("./context.js");
-const { registerRunner, removeRunner, getRunnerData, getLocalRunnerSocket, getConnectedSessionsForRunner } = await import("./runners.js");
+const { registerRunner, removeRunner, getRunnerData, getLocalRunnerSocket, getConnectedSessionsForRunner, RetryableRunnerRegistrationError } = await import("./runners.js");
 const { getRunnerOwner, rememberRunnerOwner } = await import("../../runner-owner.js");
 // The runner-secret path (validateAndPersistRunnerSecret -> getValue/setValue)
 // goes through redis-kv-store.js, a SEPARATE lazily-connecting client from
@@ -307,6 +307,52 @@ describe("runner ownership guard", () => {
 
         expect(result).toBeInstanceOf(Error);
         expect((result as Error).message).toContain("secret mismatch");
+        // A genuine auth rejection, not an infra hiccup -- register_runner's
+        // handler must hard-disconnect this one (no retry loop hammering).
+        expect(result).not.toBeInstanceOf(RetryableRunnerRegistrationError);
+    });
+
+    it("fails closed (retryably) when Redis errors during a NEW runner's first secret claim, and a later retry registers once Redis recovers", async () => {
+        // Regression for PR #965 round 2: registerRunner distinguishes a
+        // transient Redis failure during the secret claim from a genuine
+        // wrong-secret rejection, so the register_runner handler in
+        // runner.ts doesn't permanently strand a legitimate runner behind a
+        // server-initiated disconnect() when Redis briefly hiccups.
+        const originalSet = mockRedis.set;
+        let shouldFail = true;
+        mockRedis.set = mock(async (key: string, value: string) => {
+            if (shouldFail && key.startsWith("pizzapi:runner:secret:")) {
+                throw new Error("ECONNRESET (simulated)");
+            }
+            return originalSet(key, value);
+        });
+        try {
+            const result = await registerRunner(fakeSocket(), {
+                ...baseOpts,
+                requestedRunnerId: "runner-redis-down",
+                runnerSecret: "s2",
+                userId: USER_A,
+            });
+            expect(result).toBeInstanceOf(Error);
+            expect(result).toBeInstanceOf(RetryableRunnerRegistrationError);
+            expect((result as Error).message).toContain("could not verify identity");
+            // Rejected cleanly -- no half-claimed secret or runner state left behind.
+            expect(runnerSecrets.has("runner-redis-down")).toBe(false);
+            expect(await getRunnerData("runner-redis-down")).toBeNull();
+
+            // Redis recovers; the SAME runner retries registration (as a real
+            // daemon would after its socket reconnects) and succeeds.
+            shouldFail = false;
+            const retry = await registerRunner(fakeSocket(), {
+                ...baseOpts,
+                requestedRunnerId: "runner-redis-down",
+                runnerSecret: "s2",
+                userId: USER_A,
+            });
+            expect(retry).toBe("runner-redis-down");
+        } finally {
+            mockRedis.set = originalSet;
+        }
     });
 
     it("allows re-registration when both registrations are unauthenticated (null owners)", async () => {
@@ -414,7 +460,7 @@ describe("runner ownership guard — offline runner (durable owner)", () => {
         expect(await getRunnerOwner("runner-off-anon")).toBe(USER_A);
     });
 
-    it("fails closed when the durable owner store is unavailable", async () => {
+    it("fails closed when the durable owner store is unavailable, and the error is retryable (not a hard auth rejection)", async () => {
         ownerDb.setBroken(true);
         const result = await registerRunner(fakeSocket(), {
             ...baseOpts,
@@ -424,6 +470,10 @@ describe("runner ownership guard — offline runner (durable owner)", () => {
         });
         ownerDb.setBroken(false);
         expect(result).toBeInstanceOf(Error);
+        // Infra failure, not an auth mismatch -- register_runner's handler uses
+        // this to avoid a server-initiated disconnect() that would strand a
+        // legitimate runner (see RetryableRunnerRegistrationError's docs).
+        expect(result).toBeInstanceOf(RetryableRunnerRegistrationError);
         expect((result as Error).message).toContain("could not be verified");
         expect(await getRunnerData("runner-db-down")).toBeNull();
         expect(runnerSecrets.has("runner-db-down")).toBe(false);

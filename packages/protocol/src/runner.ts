@@ -558,6 +558,15 @@ export interface RunnerServerToClientEvents {
   /** Generic error */
   error: (data: {
     message: string;
+    /**
+     * True when the rejection was caused by a transient infra failure (e.g.
+     * Redis unreachable during a runner-secret claim) rather than a genuine
+     * auth mismatch. The server does not disconnect the socket in that case
+     * (see register_runner in packages/server/src/ws/namespaces/runner.ts) —
+     * its existing Socket.IO reconnection/backoff will retry registration.
+     * Informational only; daemons that ignore it behave correctly either way.
+     */
+    retryable?: boolean;
   }) => void;
 }
 

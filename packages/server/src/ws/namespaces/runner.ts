@@ -81,6 +81,7 @@ let emitToRunnerRoom: (runnerId: string, event: string, data: unknown) => void =
 import { runnerRoom } from "../sio-registry/context.js";
 import {
     registerRunner,
+    RetryableRunnerRegistrationError,
     updateRunnerSkills,
     updateRunnerAgents,
     updateRunnerPlugins,
@@ -585,8 +586,28 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
             });
 
             if (result instanceof Error) {
-                socket.emit("error", { message: result.message });
-                socket.disconnect(true);
+                const retryable = result instanceof RetryableRunnerRegistrationError;
+                socket.emit("error", { message: result.message, retryable });
+                if (retryable) {
+                    // A transient infra failure (e.g. Redis unreachable), not a
+                    // genuine auth rejection. socket.disconnect() sends an
+                    // application-level DISCONNECT packet, which socket.io-client
+                    // reports as reason "io server disconnect" and deliberately
+                    // does NOT auto-reconnect from (see socket.io-client's
+                    // Socket#ondisconnect) — that would permanently strand an
+                    // otherwise-legitimate runner until it's manually restarted.
+                    // Closing the raw transport instead (bypassing the namespace
+                    // DISCONNECT packet) gives the client an ordinary
+                    // reconnectable disconnect reason, so its existing bounded
+                    // reconnection backoff retries registration once Redis
+                    // recovers — with no daemon-side changes required, including
+                    // already-deployed older daemons.
+                    socket.conn.close();
+                } else {
+                    // Genuine auth rejection (wrong secret / wrong owner): disconnect
+                    // for real so a bad credential can't hammer reconnect attempts.
+                    socket.disconnect(true);
+                }
                 return;
             }
 

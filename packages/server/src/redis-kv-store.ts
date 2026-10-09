@@ -62,6 +62,20 @@ export async function getValue(key: string): Promise<string | null> {
     }
 }
 
+/**
+ * Like getValue, but distinguishes "key missing" (resolves `null`) from
+ * "Redis is enabled but unreachable/erroring" (rejects), for callers with
+ * security implications (e.g. runner secret claims) that must not treat a
+ * transient GET failure the same as "this was never set" and fall through to
+ * an unconditional write. Callers should check `isRedisDisabled()` separately
+ * to handle the explicitly-disabled case before calling this.
+ */
+export async function getValueStrict(key: string): Promise<string | null> {
+    const redis = await getClient();
+    if (!redis) throw new Error(`Redis client unavailable for GET ${key}`);
+    return await redis.get(key);
+}
+
 export async function setValue(key: string, value: string, ttlMs?: number): Promise<void> {
     if (isRedisDisabled()) return;
     const redis = await getClient();
@@ -85,6 +99,27 @@ export async function deleteValue(key: string): Promise<void> {
         await redis.del(key);
     } catch (err) {
         log.warn(`Redis DEL ${key} failed:`, err);
+    }
+}
+
+/**
+ * Atomically set a key only if it does not already exist (SET NX).
+ * Returns `true` if this call won the claim, `false` if the key already
+ * existed, or `null` when Redis is disabled/unavailable (callers must fall
+ * back to a process-local claim strategy in that case).
+ */
+export async function setValueIfAbsent(key: string, value: string, ttlMs?: number): Promise<boolean | null> {
+    if (isRedisDisabled()) return null;
+    const redis = await getClient();
+    if (!redis) return null;
+    try {
+        const opts: Record<string, unknown> = { NX: true };
+        if (ttlMs && ttlMs > 0) opts.PX = ttlMs;
+        const result = await redis.set(key, value, opts);
+        return result === "OK";
+    } catch (err) {
+        log.warn(`Redis SET NX ${key} failed:`, err);
+        return null;
     }
 }
 

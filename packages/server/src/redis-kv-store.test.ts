@@ -6,6 +6,7 @@ import {
     releaseNonce,
     getValue,
     setValue,
+    setValueIfAbsent,
     deleteValue,
 } from "./redis-kv-store";
 
@@ -149,5 +150,16 @@ describe("generic kv helpers", () => {
 
         await new Promise((r) => setTimeout(r, 80));
         expect(await getValue("pizzapi:test:k2")).toBeNull();
+    });
+
+    test("setValueIfAbsent only lets the first caller win", async () => {
+        const first = await setValueIfAbsent("pizzapi:test:k3", "a");
+        expect(first).toBe(true);
+
+        const second = await setValueIfAbsent("pizzapi:test:k3", "b");
+        expect(second).toBe(false);
+
+        // The loser's value must not have overwritten the winner's.
+        expect(await getValue("pizzapi:test:k3")).toBe("a");
     });
 });
