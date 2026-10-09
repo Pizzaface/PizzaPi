@@ -173,6 +173,15 @@ export interface RelayServerToClientEvents {
     /** True when the relay supports ack callbacks for session_trigger delivery. */
     supportsSessionTriggerAck?: boolean;
     /**
+     * True when the relay acks `session_messages_chunk` events (ok:true/false
+     * via the event's callback) instead of silently accepting them.  Runners
+     * must check this before relying on chunk acks for delivery confirmation —
+     * an older relay never invokes the callback, so a runner that waited for
+     * one would time out and loop forever. Absent/false means "assume legacy
+     * fire-and-forget" (mirrors supportsSessionTriggerAck's negotiation).
+     */
+    supportsChunkAck?: boolean;
+    /**
      * True when parentSessionId is null because the parent explicitly delinked
      * this child (ran /new). Absent or false for transient parent-offline cases.
      * The client uses this to distinguish "permanent delink" from "retry later".

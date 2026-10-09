@@ -218,6 +218,60 @@ export function computeChunkBoundaries(messages: unknown[], sizes?: number[]): A
  * Each chunk carries a `snapshotId` that matches the session_active event,
  * so the UI can discard stale chunks from a previous snapshot stream.
  */
+const CHUNK_ACK_TIMEOUT_MS = 15_000;
+
+/**
+ * Send one chunk event. When the relay has confirmed chunk-ack support
+ * (`rctx.supportsChunkAck`), we wait for `{ ok: true }` before considering the
+ * chunk delivered. Against a relay that hasn't confirmed support — either an
+ * older server that predates chunk acks, or one we haven't registered with
+ * yet — we fall back to the pre-ack behavior: fire-and-forget, treating a
+ * connected-socket emit as delivered. Without this fallback, a newer runner
+ * talking to an older relay would wait the full CHUNK_ACK_TIMEOUT_MS on every
+ * chunk (the old relay never invokes the ack callback) and treat the timeout
+ * as a failure, looping forever re-sending the same snapshot.
+ *
+ * The emit itself is wrapped in try/catch in both paths: a synchronous throw
+ * from socket.io's `emit` must resolve to `false`/log rather than reject this
+ * promise — `sendNextChunk` is invoked fire-and-forget via `setImmediate`
+ * with no `.catch`, so an unhandled rejection here would crash the worker.
+ */
+function forwardChunkWithAck(rctx: RelayContext, event: Record<string, unknown>): Promise<boolean> {
+    if (!rctx.relay || !rctx.sioSocket?.connected) return Promise.resolve(false);
+    const seq = ++rctx.relay.seq;
+    const payload = {
+        sessionId: rctx.relay.sessionId,
+        token: rctx.relay.token,
+        event,
+        seq,
+    };
+
+    if (!rctx.supportsChunkAck) {
+        try {
+            (rctx.sioSocket as any).emit("event", payload);
+        } catch (err) {
+            log.warn("pizzapi: chunk emit failed (legacy relay, no ack support)", err);
+            return Promise.resolve(false);
+        }
+        return Promise.resolve(true);
+    }
+
+    return new Promise((resolve) => {
+        const timeout = setTimeout(() => resolve(false), CHUNK_ACK_TIMEOUT_MS);
+        timeout.unref?.();
+        try {
+            (rctx.sioSocket as any).emit("event", payload, (ack?: { ok?: boolean }) => {
+                clearTimeout(timeout);
+                resolve(ack?.ok === true);
+            });
+        } catch (err) {
+            clearTimeout(timeout);
+            log.warn("pizzapi: chunk emit failed", err);
+            resolve(false);
+        }
+    });
+}
+
 function sendChunkedMessages(
     rctx: RelayContext,
     rawMessages: unknown[],
@@ -237,7 +291,7 @@ function sendChunkedMessages(
 
     let chunkIndex = 0;
 
-    function sendNextChunk() {
+    async function sendNextChunk() {
         // A newer emitSessionActive() superseded this sender — stop before any
         // cleanup, because the newer sender owns the in-flight marker.
         if (activeChunkedSnapshotId !== snapshotId) return;
@@ -250,7 +304,7 @@ function sendChunkedMessages(
         const [start, end] = chunks[chunkIndex];
         const isFinal = chunkIndex === totalChunks - 1;
 
-        rctx.forwardEvent({
+        const delivered = await forwardChunkWithAck(rctx, {
             type: "session_messages_chunk",
             snapshotId,
             chunkIndex,
@@ -259,6 +313,11 @@ function sendChunkedMessages(
             messages: messages.slice(start, end),
             final: isFinal,
         });
+        if (activeChunkedSnapshotId !== snapshotId) return;
+        if (!delivered) {
+            onComplete(false);
+            return;
+        }
 
         chunkIndex++;
 
@@ -306,6 +365,85 @@ let trailingSnapshotTimer: ReturnType<typeof setTimeout> | null = null;
 function clearTrailingSnapshot(): void {
     if (trailingSnapshotTimer !== null) clearTimeout(trailingSnapshotTimer);
     trailingSnapshotTimer = null;
+}
+
+// ── Bounded retry/backoff for persistent chunked-delivery failure ─────────────
+// Without this, a transcript state that can never be delivered (dead/slow
+// link, or a relay that keeps nacking) gets a full multi-MB re-upload attempt
+// every CHUNKED_SNAPSHOT_MIN_INTERVAL_MS forever. This only gates the
+// *throttled* auto-retry path (heartbeat / trailing-snapshot timer) — an
+// explicit demand (connect, compaction, /new, model change, agent_end calls
+// emitSessionActive(rctx) directly, unthrottled) always gets a fresh attempt
+// and, on success, clears this state.
+export const CHUNK_RETRY_MAX_ATTEMPTS = 6;
+export const CHUNK_RETRY_MAX_DELAY_MS = 10 * 60 * 1000; // 10 min cap
+interface ChunkRetryState {
+    leafId: string | null;
+    attempts: number;
+    /**
+     * Date.now() when this leafId's last attempt STARTED (not completed).
+     * Backoff must count from when we began probing, not when the probe
+     * eventually finishes — otherwise a slow/stuck-pending probe never
+     * advances the clock and a second throttled caller mid-probe sees a
+     * stale "not recently attempted" window and starts a redundant one.
+     */
+    lastAttemptAt: number;
+}
+let chunkRetryState: ChunkRetryState | null = null;
+
+/** Exponential backoff delay before the next auto-retry, in ms. */
+function chunkRetryDelayMs(attempts: number): number {
+    return Math.min(CHUNK_RETRY_MAX_DELAY_MS, CHUNKED_SNAPSHOT_MIN_INTERVAL_MS * 2 ** Math.max(0, attempts - 1));
+}
+
+/** Backoff-aware interval to use before the next throttled retry for leafId. */
+function currentChunkRetryIntervalMs(leafId: string | null): number {
+    if (chunkRetryState && chunkRetryState.leafId === leafId && chunkRetryState.attempts > 0) {
+        return chunkRetryDelayMs(chunkRetryState.attempts);
+    }
+    return CHUNKED_SNAPSHOT_MIN_INTERVAL_MS;
+}
+
+/**
+ * Record that a chunked-delivery attempt is starting for leafId, for
+ * backoff timing. Called once per attempt, right before the upload begins
+ * (not on completion) — see ChunkRetryState.lastAttemptAt.
+ */
+function recordChunkAttemptStart(leafId: string | null): void {
+    if (chunkRetryState && chunkRetryState.leafId === leafId) {
+        chunkRetryState.lastAttemptAt = Date.now();
+    } else {
+        chunkRetryState = { leafId, attempts: 0, lastAttemptAt: Date.now() };
+    }
+}
+
+/** Record the outcome of a chunked-delivery attempt for backoff tracking. */
+function recordChunkDeliveryOutcome(leafId: string | null, delivered: boolean): void {
+    if (delivered) {
+        chunkRetryState = null;
+        return;
+    }
+    if (chunkRetryState && chunkRetryState.leafId === leafId) {
+        chunkRetryState.attempts++;
+    } else {
+        // Attempt start wasn't recorded for this leafId (e.g. direct test call) —
+        // fall back to recording the outcome time as a best-effort start time.
+        chunkRetryState = { leafId, attempts: 1, lastAttemptAt: Date.now() };
+    }
+}
+
+/** True once bounded auto-retries for this leafId are exhausted. */
+function chunkDeliveryGaveUp(leafId: string | null): boolean {
+    return chunkRetryState !== null && chunkRetryState.leafId === leafId && chunkRetryState.attempts >= CHUNK_RETRY_MAX_ATTEMPTS;
+}
+
+/**
+ * Once exhausted, how long since the last attempt for this leafId — used to
+ * gate a capped low-frequency recovery probe instead of giving up forever.
+ */
+function msSinceLastGivenUpAttempt(leafId: string | null): number {
+    if (!chunkRetryState || chunkRetryState.leafId !== leafId) return Infinity;
+    return Date.now() - chunkRetryState.lastAttemptAt;
 }
 
 function getLiveModel(rctx: RelayContext, fallback: unknown | (() => unknown)) {
@@ -393,6 +531,7 @@ export function recordEmittedMessageState(rctx: RelayContext, leafId?: string | 
 /** Mark a chunked checkpoint as actively draining without claiming success. */
 export function recordInFlightMessageState(rctx: RelayContext): string | null {
     inFlightMessageLeafId = rctx.latestCtx?.sessionManager.getLeafId() ?? null;
+    recordChunkAttemptStart(inFlightMessageLeafId);
     return inFlightMessageLeafId;
 }
 
@@ -404,7 +543,18 @@ export function finishInFlightMessageState(
 ): void {
     if (inFlightMessageLeafId !== leafId) return;
     inFlightMessageLeafId = null;
-    if (delivered) recordEmittedMessageState(rctx, leafId);
+    recordChunkDeliveryOutcome(leafId, delivered);
+    if (delivered) {
+        recordEmittedMessageState(rctx, leafId);
+    } else if (chunkRetryState && chunkRetryState.leafId === leafId && chunkRetryState.attempts === CHUNK_RETRY_MAX_ATTEMPTS) {
+        // Log once when first exhausted, not on every subsequent low-frequency
+        // probe failure (recordChunkDeliveryOutcome keeps incrementing attempts).
+        log.warn(
+            `pizzapi: chunked delivery failed ${CHUNK_RETRY_MAX_ATTEMPTS} times in a row — ` +
+            "giving up on fast automatic retries for this transcript state (metadata-only updates continue; " +
+            "a low-frequency recovery probe, a new message, or an explicit resync will retry).",
+        );
+    }
 }
 
 /** @internal — reset module state between tests. */
@@ -413,6 +563,7 @@ export function _resetChunkedDeliveryStateForTesting(): void {
     lastEmittedMessageState = null;
     inFlightMessageLeafId = null;
     lastChunkedSnapshotAt = 0;
+    chunkRetryState = null;
     clearTrailingSnapshot();
 }
 
@@ -443,16 +594,62 @@ export function emitSessionActive(rctx: RelayContext, recoveryNonce?: string, th
 
     // Throttle full re-uploads of large sessions (see CHUNKED_SNAPSHOT_MIN_INTERVAL_MS).
     // Opt-in for the high-frequency callers (heartbeat, agent_end) only;
-    // connect/recovery/compaction/session-switch snapshots always go out.
-    const sinceLastChunked = Date.now() - lastChunkedSnapshotAt;
-    if (throttle && sinceLastChunked < CHUNKED_SNAPSHOT_MIN_INTERVAL_MS) {
-        forwardMetadataUpdate(rctx);
-        trailingSnapshotTimer ??= setTimeout(() => {
-            trailingSnapshotTimer = null;
-            emitSessionActive(rctx);
-        }, CHUNKED_SNAPSHOT_MIN_INTERVAL_MS - sinceLastChunked);
-        trailingSnapshotTimer.unref?.();
-        return;
+    // connect/recovery/compaction/session-switch snapshots always go out
+    // (throttle=false), so they always attempt fresh and are never subject to
+    // the bounded-retry give-up below.
+    if (throttle) {
+        const currentLeafId = rctx.latestCtx.sessionManager.getLeafId();
+        if (inFlightMessageLeafId !== null) {
+            // A chunked upload is already draining and awaiting its ack —
+            // don't start a second, concurrent upload on top of it. Each
+            // throttled caller (heartbeat tick, agent_end) that superseded an
+            // in-flight sender would reset chunkIndex to 0 and never let a
+            // send finish, especially during the exhausted-state recovery
+            // probe (which can sit on an ack for up to CHUNK_ACK_TIMEOUT_MS).
+            // Let the current attempt finish; a trailing timer (or the next
+            // throttled caller, once it's no longer in flight) retries later.
+            // Explicit unthrottled resyncs (connect/recovery/compaction/
+            // session-switch) still bypass this and supersede immediately —
+            // they never reach this branch (throttle=false).
+            forwardMetadataUpdate(rctx);
+            trailingSnapshotTimer ??= setTimeout(() => {
+                trailingSnapshotTimer = null;
+                emitSessionActive(rctx, undefined, true);
+            }, CHUNKED_SNAPSHOT_MIN_INTERVAL_MS);
+            trailingSnapshotTimer.unref?.();
+            return;
+        }
+        if (chunkDeliveryGaveUp(currentLeafId)) {
+            // Bounded auto-retries exhausted for this transcript state — don't
+            // loop at full speed, but don't give up forever either: a relay
+            // persistence/ownership outage can lift while the socket stays up,
+            // with no reconnect (which would otherwise force an unthrottled
+            // retry) and no new message (new leafId) to re-trigger one. Probe
+            // again at the capped delay; metadata keeps flowing in between.
+            const sinceLastAttempt = msSinceLastGivenUpAttempt(currentLeafId);
+            if (sinceLastAttempt < CHUNK_RETRY_MAX_DELAY_MS) {
+                forwardMetadataUpdate(rctx);
+                trailingSnapshotTimer ??= setTimeout(() => {
+                    trailingSnapshotTimer = null;
+                    emitSessionActive(rctx, undefined, true);
+                }, CHUNK_RETRY_MAX_DELAY_MS - sinceLastAttempt);
+                trailingSnapshotTimer.unref?.();
+                return;
+            }
+            // Capped probe interval elapsed — fall through and attempt again.
+        } else {
+            const retryIntervalMs = currentChunkRetryIntervalMs(currentLeafId);
+            const sinceLastChunked = Date.now() - lastChunkedSnapshotAt;
+            if (sinceLastChunked < retryIntervalMs) {
+                forwardMetadataUpdate(rctx);
+                trailingSnapshotTimer ??= setTimeout(() => {
+                    trailingSnapshotTimer = null;
+                    emitSessionActive(rctx, undefined, true);
+                }, retryIntervalMs - sinceLastChunked);
+                trailingSnapshotTimer.unref?.();
+                return;
+            }
+        }
     }
     clearTrailingSnapshot();
 

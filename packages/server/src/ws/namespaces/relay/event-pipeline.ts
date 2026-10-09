@@ -204,10 +204,19 @@ export async function abortChunkedSnapshot(
 /** Register the main event pipeline handler on the given socket. */
 export function registerEventHandler(socket: RelaySocket): void {
     // ── event — main event pipeline ──────────────────────────────────────
-    socket.on("event", (data) => {
+    socket.on("event", (data, ack?: (result: { ok: boolean; error?: string }) => void) => {
+        const ackOnce = (() => {
+            let sent = false;
+            return (result: { ok: boolean; error?: string }) => {
+                if (sent || typeof ack !== "function") return;
+                sent = true;
+                ack(result);
+            };
+        })();
         const sessionId = socket.data.sessionId;
         if (!sessionId || data.token !== socket.data.token) {
             socket.emit("error", { message: "Invalid token" });
+            ackOnce({ ok: false, error: "invalid_token" });
             return;
         }
 
@@ -217,7 +226,10 @@ export function registerEventHandler(socket: RelaySocket): void {
         }
 
         const incomingEvent = data.event as Record<string, unknown> | undefined;
-        if (!incomingEvent) return;
+        if (!incomingEvent) {
+            ackOnce({ ok: false, error: "missing_event" });
+            return;
+        }
         // Older workers forward Pi's full-history boundary context. Strip it
         // before queueing, caching or broadcasting, without mutating the input.
         const event = incomingEvent.type === "turn_end" ? { ...incomingEvent } : incomingEvent;
@@ -225,17 +237,20 @@ export function registerEventHandler(socket: RelaySocket): void {
 
         // Serialize async processing per session to guarantee chunk order.
         enqueueSessionEvent(sessionId, async () => {
-        // Registration and teardown use this same distributed lock. Holding it
-        // across the full event prevents a replacement from rotating ownership
-        // after the check while this event is still mutating shared state.
-        const lockOwner = randomUUID();
-        try {
-            await acquireSessionOwnershipLock(sessionId, lockOwner);
-        } catch (err) {
-            log.warn(`Could not acquire ownership lock for event on ${sessionId}; dropping event:`, err);
-            return;
-        }
-        try {
+            const wantsChunkAck = incomingEvent.type === "session_messages_chunk";
+            let chunkAccepted = !wantsChunkAck;
+            // Registration and teardown use this same distributed lock. Holding it
+            // across the full event prevents a replacement from rotating ownership
+            // after the check while this event is still mutating shared state.
+            const lockOwner = randomUUID();
+            try {
+                await acquireSessionOwnershipLock(sessionId, lockOwner);
+            } catch (err) {
+                log.warn(`Could not acquire ownership lock for event on ${sessionId}; dropping event:`, err);
+                if (wantsChunkAck) ackOnce({ ok: false, error: "lock_failed" });
+                return;
+            }
+            try {
 
         // ── Cross-node stale socket guard ────────────────────────────────
         // A replacement session may have registered on a different relay node.
@@ -248,9 +263,11 @@ export function registerEventHandler(socket: RelaySocket): void {
             sharedOwnerToken = await getSessionOwnerToken(sessionId);
         } catch {
             console.warn(`[sio/relay] Redis ownership lookup failed for ${sessionId}; dropping event`);
+            if (wantsChunkAck) ackOnce({ ok: false, error: "owner_lookup_failed" });
             return;
         }
         if (sharedOwnerToken !== socket.data.token) {
+            if (wantsChunkAck) ackOnce({ ok: false, error: "stale_owner" });
             return; // stale or unknown owner; never process sensitive events
         }
 
@@ -350,7 +367,9 @@ export function registerEventHandler(socket: RelaySocket): void {
                     // retried by later chunk retransmits.
                     await finalizeChunkedSnapshot(sessionId, pending);
                     pendingChunkedStates.delete(sessionId);
+                    chunkAccepted = true;
                 } else {
+                    chunkAccepted = true;
                     await touchSessionActivity(sessionId);
                     // Message-less progress for hydrating viewers: drives the
                     // "Loading session (x of y)" status and keeps the UI's
@@ -526,12 +545,16 @@ export function registerEventHandler(socket: RelaySocket): void {
         await checkPushNotifications(sessionId, event).catch((err) => {
             log.error(`push notification check failed for session ${sessionId} (event=${event.type}):`, err);
         });
+        if (wantsChunkAck) ackOnce(chunkAccepted ? { ok: true } : { ok: false, error: "chunk_rejected" });
 
-        } finally {
-            await releaseSessionOwnershipLock(sessionId, lockOwner).catch((err) => {
-                log.error(`Failed to release ownership lock for event on ${sessionId}:`, err);
-            });
-        }
+            } catch (err) {
+                if (wantsChunkAck) ackOnce({ ok: false, error: "processing_failed" });
+                throw err;
+            } finally {
+                await releaseSessionOwnershipLock(sessionId, lockOwner).catch((err) => {
+                    log.error(`Failed to release ownership lock for event on ${sessionId}:`, err);
+                });
+            }
         }); // end enqueueSessionEvent
     });
 }

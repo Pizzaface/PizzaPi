@@ -447,6 +447,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
             handlers.setServerClockOffset(data.serverTime - Date.now());
         }
         rctx.supportsSessionTriggerAck = data.supportsSessionTriggerAck === true;
+        rctx.supportsChunkAck = data.supportsChunkAck === true;
 
         messageBus.setOwnSessionId(rctx.relaySessionId);
         messageBus.setSendFn((targetSessionId: string, message: string) => {

@@ -140,9 +140,9 @@ function makeSocket(sessionId: string, token: string) {
             },
             emit: () => {},
         } as never,
-        fire: async (event: string, data?: unknown) => {
+        fire: async (event: string, data?: unknown, ack?: (result: { ok: boolean; error?: string }) => void) => {
             const h = handlers.get(event);
-            if (h) await h(data);
+            if (h) await h(data, ack);
         },
     };
 }
@@ -294,13 +294,14 @@ describe("F10: chunked snapshot bounds through the event handler", () => {
         expect(pendingChunkedStates.has("sess-chunks")).toBe(true);
     }
 
-    it("aborts the snapshot on an attacker-sized chunkIndex without allocating", async () => {
+    it("nacks rejected chunks and acks chunks only after processing", async () => {
         const { socket, fire } = makeSocket("sess-chunks", "token-node-a");
         registerEventHandler(socket);
         await startSnapshot(fire, "snap-huge");
         const pending = pendingChunkedStates.get("sess-chunks");
         expect(pending).toBeDefined();
 
+        let hugeAck: { ok: boolean; error?: string } | undefined;
         await fire("event", {
             token: "token-node-a",
             seq: 2,
@@ -312,13 +313,34 @@ describe("F10: chunked snapshot bounds through the event handler", () => {
                 messages: [{ role: "user" }],
                 final: true,
             },
-        });
+        }, (ack) => { hugeAck = ack; });
         await drainPipeline("sess-chunks");
 
+        expect(hugeAck).toEqual({ ok: false, error: "chunk_rejected" });
         expect(pending?.chunks.length).toBe(0);
         expect(pendingChunkedStates.has("sess-chunks")).toBe(false);
         expect(stateUpdates).toHaveLength(0);
         expect(publishedEvents).toHaveLength(0);
+
+        await startSnapshot(fire, "snap-ok");
+        let okAck: { ok: boolean; error?: string } | undefined;
+        await fire("event", {
+            token: "token-node-a",
+            seq: 3,
+            event: {
+                type: "session_messages_chunk",
+                snapshotId: "snap-ok",
+                chunkIndex: 0,
+                totalChunks: 1,
+                messages: [{ role: "user" }],
+                final: true,
+            },
+        }, (ack) => { okAck = ack; });
+        await drainPipeline("sess-chunks");
+
+        expect(okAck).toEqual({ ok: true });
+        expect(pendingChunkedStates.has("sess-chunks")).toBe(false);
+        expect(stateUpdates).toEqual(["sess-chunks"]);
     });
 
     it("aborts the snapshot when the deferred-event budget is exhausted, preserving event order", async () => {
