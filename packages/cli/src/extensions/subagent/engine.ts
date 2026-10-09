@@ -16,6 +16,7 @@ import {
     createReadOnlyTools,
 } from "@earendil-works/pi-coding-agent";
 import { defaultAgentDir } from "../../config.js";
+import { createAgentsFilesOverride } from "../../skills.js";
 import { findCachedOllamaCloudModel } from "../../ollama-cloud-models.js";
 import { isModelHidden } from "../../hidden-models.js";
 import { getSubagentDefaultModelKey } from "../../subagent-default-model.js";
@@ -336,7 +337,11 @@ export async function runSingleAgent(
         }
 
         // Use a lightweight resource loader — no extensions, skills, themes, etc.
-        // Just the system prompt from the agent definition.
+        // Just the system prompt from the agent definition plus the same
+        // AGENTS.md / project-rules context the main session receives,
+        // routed through the same sanitizing override (escapes a
+        // `</project_instructions>` breakout the same way as the parent).
+        const agentsFilesOverride = createAgentsFilesOverride(sessionCwd);
         const loader = new DefaultResourceLoader({
             cwd: sessionCwd,
             agentDir: defaultAgentDir(),
@@ -344,6 +349,7 @@ export async function runSingleAgent(
             noSkills: true,
             noPromptTemplates: true,
             noThemes: true,
+            ...(agentsFilesOverride && { agentsFilesOverride }),
             ...(agent.systemPrompt.trim() && { appendSystemPrompt: [agent.systemPrompt] }),
         });
         await loader.reload();
