@@ -40,14 +40,15 @@ async function run(cmd: string[], cwd = process.cwd()): Promise<void> {
 }
 
 async function seedSession(server: Awaited<ReturnType<typeof createTestServer>>, count: number, mediaKb?: number) {
+  const sessionName = `history-${count}${mediaKb ? `-media-${mediaKb}kb` : ""}`;
   const relay = await createMockRelay(server, { forceNew: true });
-  const session = await relay.registerSession({ cwd: process.cwd(), sessionName: `history-${count}${mediaKb ? `-media-${mediaKb}kb` : ""}` });
+  const session = await relay.registerSession({ cwd: process.cwd(), sessionName });
   for (let i = 0; i < count; i++) relay.emitEvent(session.sessionId, session.token, buildAssistantMessage(messageText(i, mediaKb)), i);
-  relay.emitEvent(session.sessionId, session.token, buildHeartbeat({ active: false }), count + 1);
-  return { relay, ...session };
+  relay.emitEvent(session.sessionId, session.token, buildHeartbeat({ active: false, sessionName }), count + 1);
+  return { relay, sessionName, ...session };
 }
 
-async function runBrowserMeasurements(baseUrl: string, sessionCookie: string, sessionIds: string[], outDir: string, headless: boolean) {
+async function runBrowserMeasurements(baseUrl: string, sessionCookie: string, sessions: Array<{ sessionId: string; sessionName: string }>, outDir: string, headless: boolean) {
   const childOut = join(outDir, "browser-measurements.json");
   const childScript = `
 import { chromium } from "@playwright/test";
@@ -55,7 +56,7 @@ import { writeFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 const baseUrl = process.env.BENCH_BASE_URL;
 const sessionCookie = process.env.BENCH_SESSION_COOKIE;
-const sessionIds = JSON.parse(process.env.BENCH_SESSION_IDS || "[]");
+const sessions = JSON.parse(process.env.BENCH_SESSIONS || "[]");
 const out = process.env.BENCH_OUT;
 const headless = process.env.BENCH_HEADLESS !== "0";
 function addAuthCookie(page) {
@@ -70,10 +71,14 @@ async function measureOpen(page, sessionId) {
   await page.waitForLoadState("networkidle", { timeout: 120000 }).catch(() => {});
   return Math.round(performance.now() - start);
 }
-async function measureSwitch(page, sessionId) {
+// Switches the way a real user does: the same "pp-navigate-session" CustomEvent App.tsx
+// listens for (used today by notification-tap navigation), then waits for a signal that
+// is specific to the TARGET session — its name rendered in the session header — not a
+// fixed sleep. This fails loudly (timeout) if the switch never actually lands.
+async function measureSwitch(page, sessionId, sessionName) {
   const start = performance.now();
-  await page.evaluate((id) => window.dispatchEvent(new CustomEvent("pizzapi:open-session", { detail: { sessionId: id } })), sessionId);
-  await page.waitForTimeout(250);
+  await page.evaluate((id) => window.dispatchEvent(new CustomEvent("pp-navigate-session", { detail: { sessionId: id } })), sessionId);
+  await page.locator("#main-content").getByText(sessionName, { exact: true }).waitFor({ timeout: 120000 });
   return Math.round(performance.now() - start);
 }
 const browser = await chromium.launch({ headless });
@@ -87,9 +92,9 @@ try {
     }).observe({ type: "longtask", buffered: true });
   });
   const openMs = {};
-  for (const id of sessionIds) openMs[id] = await measureOpen(page, id);
+  for (const s of sessions) openMs[s.sessionId] = await measureOpen(page, s.sessionId);
   const switchMs = [];
-  for (const id of sessionIds) switchMs.push(await measureSwitch(page, id));
+  for (const s of sessions) switchMs.push(await measureSwitch(page, s.sessionId, s.sessionName));
   const longTasks = await page.evaluate(() => window.__pizzapiLongTasks || []);
   writeFileSync(out, JSON.stringify({ openMs, switchMs, longTasks }, null, 2));
 } finally {
@@ -103,7 +108,7 @@ try {
       ...process.env,
       BENCH_BASE_URL: baseUrl,
       BENCH_SESSION_COOKIE: sessionCookie,
-      BENCH_SESSION_IDS: JSON.stringify(sessionIds),
+      BENCH_SESSIONS: JSON.stringify(sessions),
       BENCH_OUT: childOut,
       BENCH_HEADLESS: headless ? "1" : "0",
     },
@@ -133,7 +138,7 @@ async function main() {
     for (let i = 0; i < opts.burstRunners; i++) {
       runners.push(await createMockRunner(server, { name: `benchmark-runner-${i}`, roots: [process.cwd()], serviceIds: ["terminal", "file-explorer", "git"] }));
     }
-    const sessions = [] as Array<{ sessionId: string; token: string }>;
+    const sessions = [] as Array<{ sessionId: string; token: string; sessionName: string }>;
     for (const history of opts.histories) {
       const seeded = await seedSession(server, history);
       relays.push(seeded);
@@ -145,20 +150,22 @@ async function main() {
       sessions.push(seeded);
     }
 
-    const browserMetrics = await runBrowserMeasurements(server.baseUrl, server.sessionCookie, sessions.map((s) => s.sessionId), opts.outDir, opts.headless);
+    const browserMetrics = await runBrowserMeasurements(server.baseUrl, server.sessionCookie, sessions.map((s) => ({ sessionId: s.sessionId, sessionName: s.sessionName })), opts.outDir, opts.headless);
     console.log(`Measured ${Object.keys(browserMetrics.openMs).length} open paths and ${browserMetrics.switchMs.length} session switches`);
 
     const burstRelays = [] as Awaited<ReturnType<typeof createMockRelay>>[];
-    let delivered = 0;
+    // Fire-and-forget: this only proves the relay/server accepted the emit, not that a
+    // viewer rendered it, so the metric is named "emitted" rather than "delivered".
+    let emitted = 0;
     for (let i = 0; i < opts.burstSessions; i++) {
       const relay = await createMockRelay(server, { forceNew: true });
       burstRelays.push(relay);
       const session = await relay.registerSession({ cwd: process.cwd(), sessionName: `burst-${i}` });
       relay.emitEvent(session.sessionId, session.token, buildAssistantMessage(`burst ${i}`), 0);
-      delivered++;
+      emitted++;
     }
     for (const relay of burstRelays) relays.push(relay);
-    console.log(`Delivered ${delivered} burst sessions`);
+    console.log(`Emitted ${emitted} burst sessions`);
 
     const soakEnd = Date.now() + opts.soakMs;
     let soakEvents = 0;
@@ -178,7 +185,7 @@ async function main() {
       mediaKb: opts.mediaKb,
       openMs: browserMetrics.openMs,
       switchMs: { samples: browserMetrics.switchMs, median: percentile(browserMetrics.switchMs, 50), p95: percentile(browserMetrics.switchMs, 95), max: Math.max(...browserMetrics.switchMs) },
-      burst: { runners: opts.burstRunners, sessions: opts.burstSessions, delivered },
+      burst: { runners: opts.burstRunners, sessions: opts.burstSessions, emitted },
       soak: { durationMs: opts.soakMs, events: soakEvents },
       longTasks: { count: browserMetrics.longTasks.length, maxMs: Math.round(Math.max(0, ...browserMetrics.longTasks)) },
     };

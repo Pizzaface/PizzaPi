@@ -29,13 +29,13 @@ describe("slowdown benchmark", () => {
       histories: [5, 10],
       mediaKb: [65],
       switchMs: { median: 12, p95: 20, max: 25 },
-      burst: { delivered: 2, sessions: 2 },
+      burst: { emitted: 2, sessions: 2 },
       soak: { events: 1 },
       longTasks: { maxMs: 0 },
     });
 
     expect(report).toContain("Session UI slowdown benchmark results");
-    expect(report).toContain("Burst sessions delivered | 2/2");
+    expect(report).toContain("Burst sessions emitted | 2/2");
     expect(report).toContain("Raw JSON: `slowdown-results.json`");
   });
 });
