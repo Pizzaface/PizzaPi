@@ -96,6 +96,16 @@ export interface LifecycleHandlerState {
     pendingDelinkEpoch: number | null;
     pendingDelinkOwnParent: boolean;
     stalePrimaryParentId: string | null;
+    /**
+     * Relay-clock offset (ms), updated from each `registered` event's
+     * `serverTime` (see `remote/connection.ts`'s `setServerClockOffset`).
+     * Same mechanism `delink-management.ts` uses for epoch-based delink
+     * filtering; reused here to express `clearTriggerHistory`'s cutoff in
+     * the relay's clock space instead of this host's raw local clock (see
+     * GM a8yAXXwa round 2 — trigger-store.ts's `clearTriggerHistory`).
+     * Optional/defaults to 0 so existing state fixtures don't need updating.
+     */
+    serverClockOffset?: number;
     // Cancellation
     pendingCancellations: Array<{ triggerId: string; childSessionId: string }>;
     // Grace (session_complete fired flag)
@@ -203,7 +213,16 @@ export function performSessionTransitionCleanup({
         // call site — do NOT rely on the web UI's exec_result handler to also
         // issue this DELETE; a second caller reintroduces the race this fix
         // closes (see GM a8yAXXwa).
-        clearTriggerHistory(sid).then((result) => {
+        //
+        // The cutoff must be expressed in the relay's clock, not this host's
+        // raw local one — the relay compares it against relay-local
+        // timestamps, and an uncorrected cross-host comparison lets clock
+        // skew misclassify entries in either direction (see trigger-store.ts
+        // `clearTriggerHistory`'s doc comment). Apply the same relay-clock
+        // offset `delink-management.ts` already uses for epoch-based delink
+        // filtering (see GM a8yAXXwa round 2).
+        const clearHistoryBefore = Date.now() + (state.serverClockOffset ?? 0);
+        clearTriggerHistory(sid, {}, clearHistoryBefore).then((result) => {
             if (!result.ok) {
                 log.info(`pizzapi: trigger history clear failed on session transition: ${result.error}`);
             }

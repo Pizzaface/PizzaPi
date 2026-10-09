@@ -258,3 +258,54 @@ describe("clearTriggerHistory — cutoff scoping", () => {
         expect(history.map((h) => h.triggerId)).toEqual(["after-clear"]);
     });
 });
+
+// ── Marker/list TTL desync (GM a8yAXXwa round 2) ────────────────────────────
+//
+// The clear-cutoff marker and the history list used to be refreshed on
+// different schedules: a clear sets the marker's TTL once; only the *list's*
+// TTL gets refreshed afterward, by every subsequent push. In a long-lived,
+// actively-used session the list's expiry keeps getting pushed further and
+// further out while the marker's expiry stays pinned to its original
+// clear-time + 24h — so the marker can lapse while the list (and any
+// pre-clear entries still physically inside it) is very much still alive,
+// and those entries silently reappear. Fixed by having every push refresh
+// the marker's TTL in lockstep with the list's.
+describe("clearTriggerHistory — marker/list TTL desync", () => {
+    test("ongoing pushes keep the clear marker alive past its original fixed-TTL window", async () => {
+        const sessionId = "history-marker-ttl-desync";
+        const historyKey = `pizzapi:triggers:history:${sessionId}`;
+        const cutoffKey = `pizzapi:triggers:clearedBefore:${sessionId}`;
+        await redis!.del(historyKey);
+        await redis!.del(cutoffKey);
+
+        await pushTriggerHistory(sessionId, { ...baseEntry, triggerId: "old", type: "lifecycle:ask" });
+        await clearTriggerHistory(sessionId, Date.now());
+        expect(await getTriggerHistory(sessionId)).toEqual([]);
+
+        // Fast-forward: simulate the marker being 1 second away from its
+        // *original*, un-refreshed 24h-from-clear expiry (standing in for
+        // "23h59m59s have passed") by shrinking its TTL directly, bypassing
+        // the normal refresh path entirely.
+        await redis!.expire(cutoffKey, 1);
+
+        // Ongoing session activity continues within that window — a new
+        // trigger is pushed well before the marker's shrunk TTL fires.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        await pushTriggerHistory(sessionId, { ...baseEntry, triggerId: "new", type: "lifecycle:ask" });
+
+        // The push must have refreshed the marker's TTL back up (in lockstep
+        // with the list's), not left it on its original ~1s countdown.
+        const ttlAfterPush = await redis!.ttl(cutoffKey);
+        expect(ttlAfterPush).toBeGreaterThan(3600);
+
+        // Let the marker's *original* 1-second countdown fully elapse. If the
+        // push above didn't refresh it, it would be gone by now and the
+        // "old" entry — still physically present in the list — would
+        // reappear.
+        await new Promise((resolve) => setTimeout(resolve, 1100));
+
+        expect(await redis!.exists(cutoffKey)).toBe(1);
+        const history = await getTriggerHistory(sessionId);
+        expect(history.map((h) => h.triggerId)).toEqual(["new"]);
+    });
+});

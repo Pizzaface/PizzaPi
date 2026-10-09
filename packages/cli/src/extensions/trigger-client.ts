@@ -572,12 +572,22 @@ export async function unsubscribeTrigger(
  * generation's just-recorded history.
  *
  * This call is fire-and-forget at the call site (see lifecycle-handlers.ts)
- * and the request itself can be delayed in transit, so `before` — captured
- * here as soon as this function is entered, i.e. at the moment the caller
- * decided to transition — travels with it as a cutoff. The server only hides
- * history recorded at or before that instant, so a slow-to-arrive request can
- * never erase the next generation's already-recorded history no matter how
- * long it takes to get here (see GM a8yAXXwa / trigger-store.ts).
+ * and the request itself can be delayed in transit, so `before` travels with
+ * it as a cutoff captured at the moment the caller decided to transition. The
+ * server only hides history recorded at or before that instant, so a
+ * slow-to-arrive request can never erase the next generation's
+ * already-recorded history no matter how long it takes to get here (see GM
+ * a8yAXXwa / trigger-store.ts).
+ *
+ * `before` MUST be expressed in the relay's clock, not this host's raw local
+ * one — the server compares it directly against relay-local timestamps, and
+ * cross-host clock skew breaks that comparison in either direction (see
+ * trigger-store.ts's `clearTriggerHistory` doc comment). The default below
+ * (bare `Date.now()`) is an uncorrected fallback for callers with no offset
+ * tracking; the authoritative call site in `performSessionTransitionCleanup`
+ * always passes an explicit, relay-clock-corrected value using the same
+ * `serverClockOffset` tracking `delink-management.ts` uses for epoch-based
+ * delink filtering (see GM a8yAXXwa round 2).
  */
 export async function clearTriggerHistory(
     sessionId: string,

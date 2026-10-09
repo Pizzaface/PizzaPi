@@ -122,10 +122,22 @@ export async function pushTriggerHistory(
     const redis = await getClient();
     if (!redis) return;
     const key = TRIGGER_HISTORY_KEY(sessionId);
+    const cutoffKey = TRIGGER_CLEARED_BEFORE_KEY(sessionId);
     try {
         await redis.lPush(key, JSON.stringify({ ...entry, recordedAt }));
         await redis.lTrim(key, 0, MAX_HISTORY - 1);
         await redis.expire(key, HISTORY_TTL_SECONDS);
+        // Refresh the clear-cutoff marker's TTL in lockstep with the list's,
+        // on every single push — a no-op if no clear has ever run (EXPIRE on
+        // a missing key is a safe no-op). Without this, the marker (stamped
+        // with its own fixed TTL once, by clearTriggerHistory) and the list
+        // (whose TTL keeps getting pushed out by ongoing activity) can drift
+        // apart: the marker lapses on its original timer while the list is
+        // still very much alive, and any pre-clear entries that are still
+        // physically present in the list reappear the moment the marker is
+        // gone (see GM a8yAXXwa round 2). Tying both TTLs to "every push"
+        // means they can only ever expire together.
+        await redis.expire(cutoffKey, HISTORY_TTL_SECONDS);
     } catch (err) {
         log.warn("Failed to push trigger history:", err);
     }
@@ -216,8 +228,26 @@ export async function recordTriggerResponse(
  * race: a blind delete, run whenever this function happened to finally be
  * invoked, could wipe out a new generation's history that had already landed
  * *before* this invocation but *after* the cutoff the caller actually meant
- * (see GM a8yAXXwa). Clamped to `now` so a clock-skewed-forward caller can't
- * push the cutoff into the future and hide history that hasn't landed yet.
+ * (see GM a8yAXXwa).
+ *
+ * `before` MUST already be expressed in the *relay's* clock, not the caller's
+ * raw local clock — it is compared directly against `recordedAt`, which is
+ * stamped by `pushTriggerHistory` using the relay's own `Date.now()`. A CLI
+ * and the relay it talks to are different hosts with independently drifting
+ * clocks; comparing a CLI-local timestamp against a relay-local one doesn't
+ * establish real ordering (a CLI clock 10s behind lets recent pre-clear
+ * entries survive the clear; a CLI clock 10s ahead combined with transit
+ * delay can hide genuinely-new post-clear entries once the clamp below pulls
+ * the cutoff back to receipt time). The fix is on the *caller's* side: it
+ * must correct its local timestamp with the same relay-clock-offset tracking
+ * already used for delink epoch filtering (see `serverClockOffset` /
+ * `remote/connection.ts`'s `setServerClockOffset`, and how
+ * `delink-management.ts` adds it to a raw local epoch before sending) before
+ * calling this function — see `performSessionTransitionCleanup` in
+ * `remote/lifecycle-handlers.ts` (see GM a8yAXXwa round 2). Once `before` is
+ * in the relay's clock space, the clamp below is just a defensive guard
+ * against a bogus/stale offset pushing the cutoff into the future, not the
+ * primary ordering mechanism.
  *
  * `before` is optional for callers that predate this cutoff (and for any
  * other direct caller that doesn't track one) — omitting it falls back to
