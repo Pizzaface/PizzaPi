@@ -104,6 +104,34 @@ describe("rewriteUpdateArgs self-update guard", () => {
             argsForUpstream: ["update", "--self", "pi", "--extensions"],
         });
     });
+
+    test("update --models passes through unchanged (not rewritten to --extensions)", () => {
+        expect(rewriteUpdateArgs(["update", "--models"])).toEqual({
+            includeSelf: false,
+            argsForUpstream: ["update", "--models"],
+        });
+    });
+
+    test("update --models --force passes through unchanged", () => {
+        expect(rewriteUpdateArgs(["update", "--models", "--force"])).toEqual({
+            includeSelf: false,
+            argsForUpstream: ["update", "--models", "--force"],
+        });
+    });
+
+    test("update --extension self is not false-positive blocked as self-update", () => {
+        expect(rewriteUpdateArgs(["update", "--extension", "self"])).toEqual({
+            includeSelf: false,
+            argsForUpstream: ["update", "--extension", "self"],
+        });
+    });
+
+    test("update --extension pi is not false-positive blocked as self-update", () => {
+        expect(rewriteUpdateArgs(["update", "--extension", "pi"])).toEqual({
+            includeSelf: false,
+            argsForUpstream: ["update", "--extension", "pi"],
+        });
+    });
 });
 
 describe("runPackageCommand", () => {
