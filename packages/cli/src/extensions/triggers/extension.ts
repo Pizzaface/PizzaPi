@@ -13,12 +13,14 @@ import { createLogger } from "@pizzapi/tools";
 import { getRelaySocket, getRelaySessionId } from "../remote.js";
 import {
     getAvailableTriggers,
-    getAvailableTriggerContext,
+    getAvailableTriggerContextStatus,
     getAvailableSigils,
     subscribeTrigger,
     listTriggerSubscriptions,
-    listRunnerTriggerListeners,
+    listTriggerSubscriptionsStatus,
+    listRunnerTriggerListenersStatus,
     unsubscribeTrigger,
+    type RunnerTriggerListener,
     updateTriggerSubscription,
     publishEvent,
     respondToDelivery,
@@ -839,14 +841,31 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 return { content: [{ type: "text" as const, text: "Error: Could not determine session ID." }], details: null as any };
             }
 
-            const [context, sessionSubs] = await Promise.all([
-                getAvailableTriggerContext(targetId),
-                listTriggerSubscriptions(targetId),
+            const [context, sessionSubsResult] = await Promise.all([
+                getAvailableTriggerContextStatus(targetId),
+                listTriggerSubscriptionsStatus(targetId),
             ]);
             const labelByType = new Map(context.triggerDefs.map((d) => [d.type, d.label]));
-            const globalListeners = context.runnerId
-                ? await listRunnerTriggerListeners(context.runnerId)
-                : [];
+            const sessionSubs = sessionSubsResult.subscriptions;
+
+            // The listener endpoint returns every route stamped for this runner,
+            // including session-target routes (this session's own subscriptions
+            // — already listed above — and, on a shared runner, other sessions'
+            // too). Only spawn/runner-target routes are actually "runner-global";
+            // session routes never belong in this section (ownerSessionId is only
+            // set on session-kind routes).
+            let globalListeners: RunnerTriggerListener[] = [];
+            let globalUnavailable: string | null = null;
+            if (!context.ok) {
+                globalUnavailable = context.error ?? "unknown error";
+            } else if (context.runnerId) {
+                const globalResult = await listRunnerTriggerListenersStatus(context.runnerId);
+                if (!globalResult.ok) {
+                    globalUnavailable = globalResult.error ?? "unknown error";
+                } else {
+                    globalListeners = globalResult.listeners.filter((l) => !l.ownerSessionId);
+                }
+            }
 
             const sessionLines = sessionSubs.map((s) => {
                 const label = labelByType.get(s.triggerType);
@@ -862,7 +881,6 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             });
             const globalLines = globalListeners.map((l) => {
                 const label = labelByType.get(l.triggerType);
-                const owner = l.ownerSessionId ? `\n  ownerSessionId: ${l.ownerSessionId}` : "";
                 const disabled = l.disabled ? "\n  disabled: true" : "";
                 return [
                     `• ${l.triggerType}${label ? ` — ${label}` : ""}`,
@@ -871,26 +889,35 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                     `  listenerId: ${l.listenerId}`,
                     `  params: ${compactJson(l.params)}`,
                     `  filters: ${compactJson(l.filters)}`,
-                    `  filterMode: ${l.filterMode ?? "and"}${owner}${disabled}`,
+                    `  filterMode: ${l.filterMode ?? "and"}${disabled}`,
                 ].join("\n");
             });
 
-            const runnerNote = context.runnerId
-                ? `Runner: ${context.runnerId}`
-                : "Runner: unknown (global listeners unavailable; session has no runner or the relay did not return one)";
+            const runnerNote = !context.ok
+                ? `Runner: unavailable (${context.error ?? "unknown error"})`
+                : context.runnerId
+                    ? `Runner: ${context.runnerId}`
+                    : "Runner: unknown (global listeners unavailable; session has no runner or the relay did not return one)";
             const text = [
                 `Trigger scopes for session ${targetId}`,
                 runnerNote,
                 "",
                 "Session-local subscriptions (deliver only to this session):",
-                sessionLines.length > 0 ? sessionLines.join("\n") : "  none",
+                !sessionSubsResult.ok ? `  unavailable: ${sessionSubsResult.error ?? "unknown error"}` : sessionLines.length > 0 ? sessionLines.join("\n") : "  none",
                 "",
                 "Runner-global listeners (runner-wide):",
-                globalLines.length > 0 ? globalLines.join("\n") : "  none",
+                globalUnavailable !== null ? `  unavailable: ${globalUnavailable}` : globalLines.length > 0 ? globalLines.join("\n") : "  none",
             ].join("\n");
             return {
                 content: [{ type: "text" as const, text }],
-                details: { sessionId: targetId, runnerId: context.runnerId, sessionSubscriptions: sessionSubs, runnerGlobalListeners: globalListeners } as any,
+                details: {
+                    sessionId: targetId,
+                    runnerId: context.runnerId,
+                    sessionSubscriptions: sessionSubs,
+                    sessionSubscriptionsAvailable: sessionSubsResult.ok,
+                    runnerGlobalListeners: globalListeners,
+                    runnerGlobalListenersAvailable: globalUnavailable === null,
+                } as any,
             };
         },
         renderCall: (args: any, theme: any) => {
