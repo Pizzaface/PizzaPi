@@ -8,6 +8,7 @@
     "url": "git+https://github.com/Pizzaface/PizzaPi.git",
     "directory": "packages/extension-sdk"
   },
+  "homepage": "https://github.com/Pizzaface/PizzaPi",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -30,7 +31,7 @@
     "typecheck:tests": "tsc -p tsconfig.test.json --noEmit"
   },
   "dependencies": {
-    "@pizzapi/protocol": "workspace:*"
+    "@pizzapi/protocol": "^0.1.32"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
