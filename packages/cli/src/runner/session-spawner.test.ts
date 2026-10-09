@@ -1,4 +1,4 @@
-import { describe, expect, mock, spyOn, test } from "bun:test";
+import { describe, expect, jest, mock, spyOn, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -1228,6 +1228,185 @@ describe("session-spawner child", () => {
             expect(children).toHaveLength(1);
             expect(runningSessions.has("sess-wake-killed")).toBe(false);
         } finally {
+            killSpy.mockRestore();
+            rmSync(tempCwd, { recursive: true, force: true });
+        }
+    });
+
+    test("a deferred wake respawn that throws synchronously is caught and reported, not left to crash the daemon (review 994-r3 #1)", async () => {
+        // Allowed for the first (real) spawn, then denied for the second — the
+        // deferred respawn's own spawnSession call — simulating a cwd that
+        // became invalid (e.g. a .worktrees/x checkout deleted) while the
+        // session was suspending.
+        let cwdChecks = 0;
+        const isCwdAllowed = mock((_cwd: string | undefined) => {
+            cwdChecks += 1;
+            return cwdChecks === 1;
+        });
+        class FakeChild extends EventEmitter {
+            pid = 7001;
+            killed = false;
+            exitCode: number | null = null;
+            send = mock((_msg: unknown) => {});
+        }
+        const children: FakeChild[] = [];
+        const spawnMock = mock((_execPath: string, _args: string[], _options: any) => {
+            const c = new FakeChild();
+            c.pid = 7001 + children.length;
+            children.push(c);
+            return c;
+        });
+        mock.module("node:child_process", () => ({ ...realChildProcess, spawn: spawnMock, execFile: mock(() => {}) }));
+        mock.module("../extensions/session-attachments.js", () => ({ cleanupSessionAttachments: mock(async () => {}) }));
+        mock.module("./logger.js", () => ({ logInfo: mock(() => {}) }));
+        mock.module("./runner-usage-cache.js", () => ({
+            runnerUsageCacheFilePath: () => "/tmp/test-usage-cache.json",
+            trackSessionCwd: mock(() => {}),
+            untrackSessionCwd: mock(() => {}),
+            refreshAndWriteRunnerUsageCache: mock(async () => {}),
+        }));
+        mock.module("./workspace.js", () => ({ isCwdAllowed }));
+        mock.module("./session-procs.js", () => ({
+            ensureSessionProcDir: () => {},
+            sessionProcFilePath: (_sessionId: string) => "/tmp/test-session-wake-respawn-throws.procs",
+            readRecordedGroupPids: () => [],
+            recordSessionGroupPid: () => {},
+            removeSessionProcFile: () => {},
+        }));
+
+        const { spawnSession } = await import("./session-spawner.js");
+        const tempCwd = mkdtempSync(join(tmpdir(), "session-spawner-wake-respawn-throws-"));
+        const killSpy = spyOn(process, "kill").mockImplementation((() => true) as any);
+        try {
+            const runningSessions = new Map();
+            const restartingSessions = new Set<string>();
+            const killedSessions = new Set<string>();
+
+            spawnSession("sess-wake-throws", "k", "https://relay.example", tempCwd, runningSessions, restartingSessions, killedSessions);
+            const oldChild = children[0]!;
+            oldChild.emit("message", { type: "pre_suspend" });
+
+            const ready: unknown[] = [];
+            spawnSession("sess-wake-throws", "k", "https://relay.example", tempCwd, runningSessions, restartingSessions, killedSessions, undefined, {
+                onStartup: (r) => ready.push(r),
+            });
+
+            // The old worker finally exits; its own "exit" handler invokes the
+            // deferred respawn synchronously. That respawn's spawnSession call
+            // now throws (isCwdAllowed denies it) — this must be caught inside
+            // the exit handler instead of propagating out of EventEmitter.emit
+            // and crashing the runner daemon.
+            expect(() => oldChild.emit("exit", 0, null)).not.toThrow();
+            await Promise.resolve();
+            await Promise.resolve();
+
+            // No second worker was ever actually spawned.
+            expect(children).toHaveLength(1);
+            expect(runningSessions.has("sess-wake-throws")).toBe(false);
+            // The failure was reported through onStartup instead of being lost.
+            expect(ready).toHaveLength(1);
+            expect(ready[0]).toMatchObject({ ok: false });
+            expect((ready[0] as { message: string }).message).toContain("outside allowed workspace");
+        } finally {
+            killSpy.mockRestore();
+            rmSync(tempCwd, { recursive: true, force: true });
+        }
+    });
+
+    test("a second wake superseding a deferred respawn cancels the first wake's stale timeout and both hear the single outcome (review 994-r3 #2)", async () => {
+        const isCwdAllowed = mock((_cwd: string | undefined) => true);
+        class FakeChild extends EventEmitter {
+            pid = 8001;
+            killed = false;
+            exitCode: number | null = null;
+            send = mock((_msg: unknown) => {});
+        }
+        const children: FakeChild[] = [];
+        const spawnMock = mock((_execPath: string, _args: string[], _options: any) => {
+            const c = new FakeChild();
+            c.pid = 8001 + children.length;
+            children.push(c);
+            return c;
+        });
+        mock.module("node:child_process", () => ({ ...realChildProcess, spawn: spawnMock, execFile: mock(() => {}) }));
+        mock.module("../extensions/session-attachments.js", () => ({ cleanupSessionAttachments: mock(async () => {}) }));
+        mock.module("./logger.js", () => ({ logInfo: mock(() => {}) }));
+        mock.module("./runner-usage-cache.js", () => ({
+            runnerUsageCacheFilePath: () => "/tmp/test-usage-cache.json",
+            trackSessionCwd: mock(() => {}),
+            untrackSessionCwd: mock(() => {}),
+            refreshAndWriteRunnerUsageCache: mock(async () => {}),
+        }));
+        mock.module("./workspace.js", () => ({ isCwdAllowed }));
+        mock.module("./session-procs.js", () => ({
+            ensureSessionProcDir: () => {},
+            sessionProcFilePath: (_sessionId: string) => "/tmp/test-session-wake-overlap.procs",
+            readRecordedGroupPids: () => [],
+            recordSessionGroupPid: () => {},
+            removeSessionProcFile: () => {},
+        }));
+
+        const { spawnSession } = await import("./session-spawner.js");
+        const { WORKER_STARTUP_TIMEOUT_MS } = await import("./worker-startup.js");
+        const tempCwd = mkdtempSync(join(tmpdir(), "session-spawner-wake-overlap-"));
+        const killSpy = spyOn(process, "kill").mockImplementation((() => true) as any);
+        jest.useFakeTimers();
+        try {
+            const runningSessions = new Map();
+            const restartingSessions = new Set<string>();
+            const killedSessions = new Set<string>();
+
+            spawnSession("sess-wake-overlap", "k", "https://relay.example", tempCwd, runningSessions, restartingSessions, killedSessions);
+            const oldChild = children[0]!;
+            oldChild.emit("message", { type: "pre_suspend" });
+
+            // Wake 1 defers (its own WORKER_STARTUP_TIMEOUT_MS timer starts now).
+            const ready1: unknown[] = [];
+            spawnSession("sess-wake-overlap", "k", "https://relay.example", tempCwd, runningSessions, restartingSessions, killedSessions, undefined, {
+                onStartup: (r) => ready1.push(r),
+            });
+
+            jest.advanceTimersByTime(5_000);
+
+            // Wake 2 lands before the old worker actually exits — it supersedes
+            // wake 1's deferred respawn and must cancel wake 1's timer, not just
+            // overwrite the respawn and leave it ticking.
+            const ready2: unknown[] = [];
+            spawnSession("sess-wake-overlap", "k", "https://relay.example", tempCwd, runningSessions, restartingSessions, killedSessions, undefined, {
+                onStartup: (r) => ready2.push(r),
+            });
+            expect(children).toHaveLength(1);
+
+            // Advance past wake 1's original deadline (5_000 + 15_000 = its 20s
+            // mark). If wake 1's timer were still live, it would fire here with
+            // { ok: false } even though wake 2's respawn goes on to succeed.
+            jest.advanceTimersByTime(WORKER_STARTUP_TIMEOUT_MS - 5_000);
+            expect(ready1).toEqual([]);
+            expect(ready2).toEqual([]);
+
+            // The old worker finally exits (within wake 2's own, later deadline).
+            // Only the latest (wake 2) respawn ever actually runs.
+            oldChild.exitCode = 0;
+            oldChild.emit("exit", 0, null);
+            await Promise.resolve();
+            await Promise.resolve();
+            expect(children).toHaveLength(2);
+            const newChild = children[1]!;
+
+            newChild.emit("message", { type: "startup_ready" });
+            // Both waiters queued during the suspending window hear the single
+            // outcome — the first wake is not dropped, and it is not told the
+            // respawn failed when it actually succeeded.
+            expect(ready1).toEqual([{ ok: true }]);
+            expect(ready2).toEqual([{ ok: true }]);
+
+            // Advancing well past both original deadlines must not produce any
+            // further (stale) notifications.
+            jest.advanceTimersByTime(WORKER_STARTUP_TIMEOUT_MS);
+            expect(ready1).toEqual([{ ok: true }]);
+            expect(ready2).toEqual([{ ok: true }]);
+        } finally {
+            jest.useRealTimers();
             killSpy.mockRestore();
             rmSync(tempCwd, { recursive: true, force: true });
         }

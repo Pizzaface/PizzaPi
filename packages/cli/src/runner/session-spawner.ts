@@ -77,8 +77,17 @@ export interface RunnerSession {
      * instead. Checking `killedSessions` again at invocation time would race
      * that branch's own cleanup, which deletes the session from
      * `killedSessions` as part of settling it.
+     *
+     * A later wake landing in the same suspending window replaces this with
+     * its own respawn and cancels `pendingWakeTimer` below — only the latest
+     * wake's attempt is ever actually run — but every waiter queued up while
+     * superseded (`pendingWakeWaiters`) still hears that attempt's outcome.
      */
     pendingWakeRespawn?: () => void;
+    /** Startup-timeout timer backing the current `pendingWakeRespawn`; cleared and replaced whenever a newer wake supersedes it. */
+    pendingWakeTimer?: ReturnType<typeof setTimeout>;
+    /** `onStartup` callbacks of every wake queued in this suspending window, notified together once `pendingWakeRespawn` settles. */
+    pendingWakeWaiters?: Array<(result: WorkerStartupResult) => void>;
 }
 
 /**
@@ -321,23 +330,56 @@ export function spawnSession(
             // from its suspended branch once the slot is actually free.
             // Bounded by the worker-startup timeout.
             logInfo(`session ${sessionId} wake arrived before its suspending worker exited; deferring respawn to its exit`);
+
+            // A later wake landing in this same suspending window supersedes
+            // this one: cancel the previous timer right away instead of
+            // leaving it to independently fire `onStartup({ ok: false })`
+            // later even though the newer wake's respawn goes on to succeed
+            // (review 994-r3 #2). Its onStartup is kept in `pendingWakeWaiters`
+            // so it still hears the single outcome once the (now sole) pending
+            // respawn settles, instead of being dropped.
+            if (existing.pendingWakeTimer) clearTimeout(existing.pendingWakeTimer);
+            const waiters = existing.pendingWakeWaiters ?? [];
+            if (options?.onStartup) waiters.push(options.onStartup);
+            existing.pendingWakeWaiters = waiters;
+
             let settled = false;
-            const respawn = (): void => {
+            const settle = (result: WorkerStartupResult): void => {
                 if (settled) return;
                 settled = true;
                 clearTimeout(timer);
-                spawnSession(sessionId, apiKey, relayUrl, requestedCwd, runningSessions, restartingSessions, killedSessions, onRestartRequested, options);
+                // Only clear the shared entry if we're still the current deferred
+                // attempt — a newer wake may have superseded us already (and
+                // already cleared/replaced these fields itself).
+                if (existing.pendingWakeRespawn === respawn) {
+                    existing.pendingWakeRespawn = undefined;
+                    existing.pendingWakeTimer = undefined;
+                    existing.pendingWakeWaiters = undefined;
+                }
+                for (const notify of waiters) notify(result);
+            };
+            const respawn = (): void => {
+                // The daemon's own doSpawn() wraps its top-level spawnSession
+                // call in try/catch (cwd deleted/not-a-dir/outside workspace
+                // root, worker entrypoint missing, …) — but this deferred call
+                // runs from inside the old worker's own "exit" handler, bypassing
+                // that. An uncaught throw here would crash the runner daemon and
+                // take every other session on it down too (review 994-r3 #1).
+                try {
+                    spawnSession(sessionId, apiKey, relayUrl, requestedCwd, runningSessions, restartingSessions, killedSessions, onRestartRequested, {
+                        ...options,
+                        onStartup: settle,
+                    });
+                } catch (err) {
+                    settle({ ok: false, message: err instanceof Error ? err.message : String(err) });
+                }
             };
             const timer = setTimeout(() => {
-                if (settled) return;
-                settled = true;
-                // Only clear it if we're still the current deferred respawn — a
-                // newer wake may have superseded us already.
-                if (existing.pendingWakeRespawn === respawn) existing.pendingWakeRespawn = undefined;
                 logInfo(`session ${sessionId} suspending worker did not exit within ${WORKER_STARTUP_TIMEOUT_MS}ms; giving up on the deferred respawn`);
-                options?.onStartup?.({ ok: false, message: `Session ${sessionId} did not finish suspending in time to resume it` });
+                settle({ ok: false, message: `Session ${sessionId} did not finish suspending in time to resume it` });
             }, WORKER_STARTUP_TIMEOUT_MS);
             existing.pendingWakeRespawn = respawn;
+            existing.pendingWakeTimer = timer;
             return;
         }
         throw new Error(`Session already running: ${sessionId}`);
