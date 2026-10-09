@@ -185,7 +185,7 @@ export interface HeaderOverflowMenuProps {
   isAnalyzerOpen?: boolean;
   triggerCount?: TriggerCounts;
   onDuplicateSession?: () => void;
-  messages: RelayMessage[];
+  messages: RelayMessage[] | (() => RelayMessage[]);
   sessionId: string | null;
   /** Extra menu items (e.g. service panel toggles) shown on mobile. */
   extraItems?: React.ReactNode;
@@ -228,7 +228,8 @@ export function HeaderOverflowMenu({
   React.useEffect(() => () => clearTimeout(timerRef.current), []);
 
   const handleCopyExport = async () => {
-    const md = await resolveMarkdown(exportToMarkdown(messages));
+    const input = typeof messages === "function" ? messages() : messages;
+    const md = await resolveMarkdown(exportToMarkdown(input));
     try {
       await navigator.clipboard.writeText(md);
       setCopyState("copied");
@@ -240,7 +241,8 @@ export function HeaderOverflowMenu({
   };
 
   const handleDownloadExport = async () => {
-    const md = await resolveMarkdown(exportToMarkdown(messages));
+    const input = typeof messages === "function" ? messages() : messages;
+    const md = await resolveMarkdown(exportToMarkdown(input));
     const blob = new Blob([md], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");

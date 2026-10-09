@@ -1012,7 +1012,7 @@ export function groupSubAgentConversations(messages: RelayMessage[]): RelayMessa
   return result;
 }
 
-const isPluginResult = (m: RelayMessage) => m.role === "custom" && m.customType === PLUGIN_COMMAND_MESSAGE_TYPE;
+export const isPluginResult = (m: RelayMessage) => m.role === "custom" && m.customType === PLUGIN_COMMAND_MESSAGE_TYPE;
 
 /**
  * Third grouping pass: a run of `/plugin` results — typically the result of
