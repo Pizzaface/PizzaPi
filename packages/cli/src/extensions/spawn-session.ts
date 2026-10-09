@@ -65,6 +65,13 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
         }
     }
 
+    function formatCwdDisplay(rawCwd: unknown): string {
+        if (typeof rawCwd !== "string" || rawCwd.length === 0) return "";
+        const parts = rawCwd.replace(/[\\/]+$/, "").split(/[\\/]+/).filter(Boolean);
+        const display = parts.slice(-2).join("/");
+        return display ? ` in ${display}` : "";
+    }
+
     pi.registerTool({
         name: "spawn_session",
         label: "Spawn Session",
@@ -253,8 +260,7 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
         renderCall: (args: any, theme: any) => {
             const model = args.model ? ` [${args.model.provider}/${args.model.id}]` : "";
             const effort = args.effort ? ` [${args.effort}]` : "";
-            const rawCwd = args.cwd ?? "";
-            const cwdDisplay = rawCwd ? ` in ${rawCwd.split("/").slice(-2).join("/")}` : "";
+            const cwdDisplay = formatCwdDisplay(args.cwd);
             return new Text(
                 theme.fg("accent", "⟳") + " " +
                 theme.fg("muted", "spawning session") +
@@ -262,13 +268,17 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                 0, 0
             );
         },
-        renderResult: (result: any, _opts: any, theme: any) => {
+        renderResult: (result: any, opts: any, theme: any) => {
+            if (opts?.isPartial) {
+                return new Text(theme.fg("muted", "spawning session…"), 0, 0);
+            }
+
             const details = result?.details as Record<string, unknown> | undefined;
             const text: string = result?.content?.[0]?.text ?? "";
 
-            // Error: details has an "error" key, or text starts with "Error"
-            if (details?.error || text.startsWith("Error")) {
-                const msg = (typeof details?.error === "string" ? details.error : text);
+            // Error state is carried by structured details.error.
+            if (details?.error) {
+                const msg = (typeof details.error === "string" ? details.error : text);
                 const display = msg.length > 80 ? msg.slice(0, 77) + "..." : msg;
                 return new Text(theme.fg("error", "✗ " + display), 0, 0);
             }

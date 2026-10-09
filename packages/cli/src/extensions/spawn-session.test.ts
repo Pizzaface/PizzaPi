@@ -106,6 +106,33 @@ describe("list_models tool — Ollama Cloud merge", () => {
 // Completed children must self-terminate (auto-close) instead of idling on
 // the runner forever. Default is true; explicit false opts out.
 
+describe("spawn_session tool — rendering", () => {
+    const theme = {
+        fg: (_kind: string, value: string) => value,
+    };
+
+    function render(component: { render(width: number): string[] }) {
+        return component.render(80).join("\n");
+    }
+
+    function spawnTool() {
+        const pi = createMockPi();
+        spawnSessionExtension(pi as any);
+        return pi.tools.get("spawn_session");
+    }
+
+    test("renders cwd segments, partial results, and structured errors correctly", () => {
+        const tool = spawnTool();
+
+        expect(render(tool.renderCall({ cwd: "/foo" }, theme))).toContain(" in foo");
+        expect(render(tool.renderCall({ cwd: "C:\\Users\\Jordan\\PizzaPi" }, theme))).toContain(" in Jordan/PizzaPi");
+
+        expect(render(tool.renderResult({ details: {} }, { isPartial: true }, theme))).toContain("spawning session…");
+        expect(render(tool.renderResult({ content: [{ text: "Error-like success" }], details: { sessionId: "child-12345678" } }, {}, theme))).toContain("session 12345678");
+        expect(render(tool.renderResult({ content: [{ text: "Error spawning session: boom" }], details: { error: "boom" } }, {}, theme))).toContain("✗ boom");
+    });
+});
+
 describe("spawn_session tool — autoClose", () => {
     const saved = {
         RELAY: process.env.PIZZAPI_RELAY_URL,
