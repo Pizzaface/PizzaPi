@@ -1,13 +1,26 @@
 import * as React from "react";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 
 const win = new Window({ url: "http://localhost/" });
 (win as any).SyntaxError = globalThis.SyntaxError;
 (win as any).TypeError = globalThis.TypeError;
-for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "NodeFilter", "SVGElement", "MutationObserver", "Event", "CustomEvent", "HTMLInputElement", "getComputedStyle"]) {
+
+// Radix's Dialog (used by the multi-select confirm dialog below) dispatches
+// CustomEvents onto this happy-dom document, so CustomEvent/Event must come
+// from the SAME happy-dom realm as `win`, or happy-dom's EventTarget throws
+// on its `instanceof Event` check. That conflicts with lib/ntfy-push.test.ts,
+// which relies on bun's NATIVE CustomEvent/EventTarget pair — so these globals
+// must be restored once this file's tests finish, not left clobbered for the
+// rest of the test run.
+const OVERRIDE_KEYS = ["window", "document", "navigator", "HTMLElement", "Element", "Node", "NodeFilter", "SVGElement", "MutationObserver", "Event", "CustomEvent", "HTMLInputElement", "getComputedStyle"];
+const originalGlobals = new Map(OVERRIDE_KEYS.map((key) => [key, (globalThis as any)[key]]));
+for (const key of OVERRIDE_KEYS) {
     (globalThis as any)[key] = key === "window" ? win : (win as any)[key];
 }
+afterAll(() => {
+    for (const [key, value] of originalGlobals) (globalThis as any)[key] = value;
+});
 
 const { act, cleanup, fireEvent, render } = await import("@testing-library/react");
 const { HubSocketContext } = await import("@/lib/hub-socket-context");
@@ -103,6 +116,11 @@ describe("SessionSidebar touch targets", () => {
         expect(expandButton.className).toContain("pointer-coarse:h-11");
         expect(expandButton.className).toContain("pointer-coarse:w-11");
         expect(expandButton.className).not.toContain(" h-11");
+
+        // Expand the linked-session group so the child becomes visible/selectable —
+        // Select all only selects what's currently visible (#948), so a collapsed
+        // child is otherwise excluded from the bulk-end count.
+        fireEvent.click(expandButton);
 
         fireEvent.click(screen.getByRole("button", { name: "Select sessions" }));
 
