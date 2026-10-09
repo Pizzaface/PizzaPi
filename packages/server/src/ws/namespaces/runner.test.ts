@@ -7,6 +7,10 @@ import {
     isPendingRequestCapReached,
     pendingSocketMatches,
     serviceResponseMatches,
+    recordRequestScope,
+    takeRequestScope,
+    isScopeRecoverableServiceId,
+    recoverServiceMessageScope,
 } from "./runner.js";
 
 // NOTE: These tests deliberately import ONLY the pure helpers and do NOT use
@@ -123,5 +127,116 @@ describe("forwardServiceMessageToSession", () => {
 
         // Original envelope must remain untouched.
         expect(envelope).toEqual({ serviceId: "svc", type: "y", payload: { bar: 2 } });
+    });
+});
+
+describe("recoverServiceMessageScope (unscoped service_message echoes)", () => {
+    test("file-explorer: recovers the session recorded for the original request", async () => {
+        const requestId = randomUUID();
+        recordRequestScope(requestId, "sess-a");
+
+        const scope = await recoverServiceMessageScope(
+            { serviceId: "file-explorer", payload: { requestId, ok: true, files: [] } },
+            { takeRequestScope, getTerminalSessionId: async () => undefined },
+        );
+
+        expect(scope).toEqual({ sessionId: "sess-a", broadcastToAll: false });
+    });
+
+    test("file-explorer: an OLD runner that never echoes sessionId is still scoped (not broadcast)", async () => {
+        // Simulates an old runner binary: the echo envelope has no top-level
+        // sessionId at all (as if the field didn't exist), but the server
+        // still recorded the scope itself when it forwarded the request.
+        const requestId = randomUUID();
+        recordRequestScope(requestId, "sess-b");
+
+        const scope = await recoverServiceMessageScope(
+            { serviceId: "file-explorer", payload: { requestId, ok: true, directories: [] } },
+            { takeRequestScope, getTerminalSessionId: async () => undefined },
+        );
+
+        expect(scope.broadcastToAll).toBe(false);
+        expect(scope.sessionId).toBe("sess-b");
+    });
+
+    test("file-explorer: unrecoverable scope (unknown/expired requestId) is suppressed, never broadcast", async () => {
+        const scope = await recoverServiceMessageScope(
+            { serviceId: "file-explorer", payload: { requestId: randomUUID(), ok: true, files: [] } },
+            { takeRequestScope, getTerminalSessionId: async () => undefined },
+        );
+
+        // This is the regression this test pins: before the fix, a missing
+        // sessionId on the envelope fell through to "broadcast to every
+        // session on the runner". Now it must be dropped instead.
+        expect(scope.broadcastToAll).toBe(false);
+        expect(scope.sessionId).toBeUndefined();
+    });
+
+    test("file-explorer: a request that was explicitly unscoped (no sessionId) stays suppressed", async () => {
+        const requestId = randomUUID();
+        recordRequestScope(requestId, undefined);
+
+        const scope = await recoverServiceMessageScope(
+            { serviceId: "file-explorer", payload: { requestId, ok: true, files: [] } },
+            { takeRequestScope, getTerminalSessionId: async () => undefined },
+        );
+
+        expect(scope).toEqual({ sessionId: undefined, broadcastToAll: false });
+    });
+
+    test("terminal: recovers the session from the stored terminal entry by terminalId", async () => {
+        const scope = await recoverServiceMessageScope(
+            { serviceId: "terminal", payload: { terminalId: "term-1", exitCode: 0 } },
+            {
+                takeRequestScope,
+                getTerminalSessionId: async (terminalId) => (terminalId === "term-1" ? "sess-c" : undefined),
+            },
+        );
+
+        expect(scope).toEqual({ sessionId: "sess-c", broadcastToAll: false });
+    });
+
+    test("terminal: unknown terminalId is suppressed, never broadcast to every session", async () => {
+        const scope = await recoverServiceMessageScope(
+            { serviceId: "terminal", payload: { terminalId: "ghost-terminal" } },
+            { takeRequestScope, getTerminalSessionId: async () => undefined },
+        );
+
+        expect(scope.broadcastToAll).toBe(false);
+        expect(scope.sessionId).toBeUndefined();
+    });
+
+    test("non-scopable services (e.g. tunnel announcements) keep the runner-wide broadcast", async () => {
+        const scope = await recoverServiceMessageScope(
+            { serviceId: "tunnel", payload: {} },
+            { takeRequestScope, getTerminalSessionId: async () => undefined },
+        );
+
+        expect(scope).toEqual({ broadcastToAll: true });
+    });
+
+    test("isScopeRecoverableServiceId matches only the services that must never fan out", () => {
+        expect(isScopeRecoverableServiceId("file-explorer")).toBe(true);
+        expect(isScopeRecoverableServiceId("terminal")).toBe(true);
+        expect(isScopeRecoverableServiceId("tunnel")).toBe(false);
+    });
+});
+
+describe("recordRequestScope / takeRequestScope", () => {
+    test("round-trips the sessionId recorded for a requestId", () => {
+        const requestId = randomUUID();
+        recordRequestScope(requestId, "sess-x");
+        expect(takeRequestScope(requestId)).toEqual({ sessionId: "sess-x" });
+    });
+
+    test("is single-use: a second take sees nothing", () => {
+        const requestId = randomUUID();
+        recordRequestScope(requestId, "sess-y");
+        takeRequestScope(requestId);
+        expect(takeRequestScope(requestId)).toBeUndefined();
+    });
+
+    test("an unrecorded requestId has no scope", () => {
+        expect(takeRequestScope(randomUUID())).toBeUndefined();
     });
 });

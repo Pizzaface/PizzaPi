@@ -23,7 +23,7 @@ export class TerminalService implements ServiceHandler {
     private _onTerminalInput: ((data: any) => void) | null = null;
     private _onTerminalResize: ((data: any) => void) | null = null;
     private _onKillTerminal: ((data: any) => void) | null = null;
-    private _onListTerminals: (() => void) | null = null;
+    private _onListTerminals: ((data?: any) => void) | null = null;
 
     init(socket: Socket, { isShuttingDown }: ServiceInitOptions): void {
         this._socket = socket;
@@ -31,6 +31,7 @@ export class TerminalService implements ServiceHandler {
         this._onNewTerminal = (data: any) => {
             if (isShuttingDown()) return;
             const { terminalId, cwd: requestedCwd, cols, rows, shell } = data;
+            const sessionId = typeof data?.sessionId === "string" ? data.sessionId : undefined;
             logInfo(
                 `[terminal] new_terminal received: terminalId=${terminalId} cwd=${requestedCwd ?? "(default)"} cols=${cols ?? 80} rows=${rows ?? 24} shell=${shell ?? "(default)"}`,
             );
@@ -40,6 +41,7 @@ export class TerminalService implements ServiceHandler {
                 (socket as any).emit("service_message", {
                     serviceId: "terminal",
                     type: "terminal_error",
+                    ...(sessionId ? { sessionId } : {}),
                     payload: { terminalId: "", message: "Missing terminalId" },
                 });
                 return;
@@ -55,6 +57,7 @@ export class TerminalService implements ServiceHandler {
                 (socket as any).emit("service_message", {
                     serviceId: "terminal",
                     type: "terminal_error",
+                    ...(sessionId ? { sessionId } : {}),
                     payload: { terminalId, message: `cwd outside allowed roots: ${requestedCwd}` },
                 });
                 return;
@@ -72,6 +75,7 @@ export class TerminalService implements ServiceHandler {
                         (socket as any).emit("service_message", {
                             serviceId: "terminal",
                             type,
+                            ...(sessionId ? { sessionId } : {}),
                             payload: rest,
                         });
                     }
@@ -118,6 +122,7 @@ export class TerminalService implements ServiceHandler {
         this._onKillTerminal = (data: any) => {
             if (isShuttingDown()) return;
             const { terminalId } = data;
+            const sessionId = typeof data?.sessionId === "string" ? data.sessionId : undefined;
             if (!terminalId) {
                 logWarn("[terminal] kill_terminal: missing terminalId");
                 return;
@@ -131,6 +136,7 @@ export class TerminalService implements ServiceHandler {
                 (socket as any).emit("service_message", {
                     serviceId: "terminal",
                     type: "terminal_exit",
+                    ...(sessionId ? { sessionId } : {}),
                     payload: { terminalId, exitCode: -1 },
                 });
             } else {
@@ -139,14 +145,16 @@ export class TerminalService implements ServiceHandler {
                 (socket as any).emit("service_message", {
                     serviceId: "terminal",
                     type: "terminal_error",
+                    ...(sessionId ? { sessionId } : {}),
                     payload: { terminalId, message: "Terminal not found" },
                 });
             }
         };
         socket.on("kill_terminal", this._onKillTerminal);
 
-        this._onListTerminals = () => {
+        this._onListTerminals = (data: any = {}) => {
             if (isShuttingDown()) return;
+            const sessionId = typeof data?.sessionId === "string" ? data.sessionId : undefined;
             const list = listTerminals();
             logInfo(`[terminal] list_terminals: ${list.length} active (${list.join(", ") || "none"})`);
             // terminals_list is not in the typed protocol yet — emit untyped
@@ -155,6 +163,7 @@ export class TerminalService implements ServiceHandler {
             (socket as any).emit("service_message", {
                 serviceId: "terminal",
                 type: "terminals_list",
+                ...(sessionId ? { sessionId } : {}),
                 payload: { terminals: list },
             });
         };

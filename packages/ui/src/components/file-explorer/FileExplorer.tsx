@@ -49,12 +49,12 @@ function flattenTree(
 }
 
 /** Load children for a directory from the API. */
-async function fetchChildren(runnerId: string, dirPath: string): Promise<FileEntry[]> {
+async function fetchChildren(runnerId: string, dirPath: string, sessionId?: string): Promise<FileEntry[]> {
   const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/files`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ path: dirPath }),
+    body: JSON.stringify({ path: dirPath, ...(sessionId ? { sessionId } : {}) }),
   });
   if (!res.ok) return [];
   const data = await res.json() as { ok: boolean; files: FileEntry[] };
@@ -138,7 +138,7 @@ const FileTreeRow = React.memo(function FileTreeRow({ node, isExpanded, isLoadin
 
 // ── Main File Explorer Component ──────────────────────────────────────────────
 
-export function FileExplorer({ runnerId, cwd, className, openFile }: FileExplorerProps) {
+export function FileExplorer({ runnerId, cwd, sessionId, className, openFile }: FileExplorerProps) {
   const storageKey = `file-explorer:${runnerId}:${cwd}`;
   const git = useGitService(cwd);
   const canBlame = Boolean(git.available && git.status);
@@ -165,7 +165,28 @@ export function FileExplorer({ runnerId, cwd, className, openFile }: FileExplore
     saveExpandedPaths(storageKey, expandedPaths);
   }, [storageKey, expandedPaths]);
 
+  // Scope generation: bumped whenever the runner/session/cwd identity changes.
+  // The component stays mounted across session switches (it isn't remounted
+  // by the parent), so a slow in-flight request from the OLD scope can
+  // resolve AFTER a fast one from the NEW scope. Every async write below
+  // captures the generation it started under and discards its result if the
+  // generation has since moved on — that's what stops a late response for
+  // session A from overwriting session B's listing.
+  const generationRef = React.useRef(0);
+  React.useEffect(() => {
+    generationRef.current += 1;
+    setFiles(null);
+    setError(null);
+    setChildrenCache(new Map());
+    setLoadingPaths(new Set());
+    setExpandingAll(false);
+    setExpandedPaths(loadExpandedPaths(storageKey));
+    setViewingFile(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runnerId, cwd, sessionId]);
+
   const fetchFiles = React.useCallback(async () => {
+    const generation = generationRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -173,20 +194,22 @@ export function FileExplorer({ runnerId, cwd, className, openFile }: FileExplore
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ path: cwd }),
+        body: JSON.stringify({ path: cwd, ...(sessionId ? { sessionId } : {}) }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => null) as any;
         throw new Error(data?.error || `HTTP ${res.status}`);
       }
       const data = await res.json() as { ok: boolean; files: FileEntry[] };
+      if (generationRef.current !== generation) return; // stale — scope changed since this request started
       setFiles(data.files ?? []);
     } catch (err) {
+      if (generationRef.current !== generation) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (generationRef.current === generation) setLoading(false);
     }
-  }, [runnerId, cwd]);
+  }, [runnerId, cwd, sessionId]);
 
   React.useEffect(() => {
     void fetchFiles();
@@ -211,8 +234,10 @@ export function FileExplorer({ runnerId, cwd, className, openFile }: FileExplore
 
     // Expand — fetch children if not cached
     if (!childrenCache.has(entry.path)) {
+      const generation = generationRef.current;
       setLoadingPaths((prev) => new Set([...prev, entry.path]));
-      const children = await fetchChildren(runnerId, entry.path);
+      const children = await fetchChildren(runnerId, entry.path, sessionId);
+      if (generationRef.current !== generation) return; // stale — scope changed mid-fetch
       setChildrenCache((prev) => new Map([...prev, [entry.path, children]]));
       setLoadingPaths((prev) => {
         const next = new Set(prev);
@@ -222,7 +247,7 @@ export function FileExplorer({ runnerId, cwd, className, openFile }: FileExplore
     }
 
     setExpandedPaths((prev) => new Set([...prev, entry.path]));
-  }, [runnerId, expandedPaths, childrenCache]);
+  }, [runnerId, sessionId, expandedPaths, childrenCache]);
 
   // Collapse All
   const handleCollapseAll = React.useCallback(() => {
@@ -232,6 +257,7 @@ export function FileExplorer({ runnerId, cwd, className, openFile }: FileExplore
   // Expand All (BFS up to depth 3, fetching missing children)
   const handleExpandAll = React.useCallback(async () => {
     if (!files) return;
+    const generation = generationRef.current;
     setExpandingAll(true);
 
     const newCache = new Map(childrenCache);
@@ -250,17 +276,18 @@ export function FileExplorer({ runnerId, cwd, className, openFile }: FileExplore
 
         let children = newCache.get(entry.path);
         if (!children) {
-          children = await fetchChildren(runnerId, entry.path);
+          children = await fetchChildren(runnerId, entry.path, sessionId);
           newCache.set(entry.path, children);
         }
         queue.push({ entries: children, depth: item.depth + 1 });
       }
     }
 
+    if (generationRef.current !== generation) return; // stale — scope changed mid-expand
     setChildrenCache(newCache);
     setExpandedPaths((prev) => new Set([...prev, ...toExpand]));
     setExpandingAll(false);
-  }, [runnerId, files, childrenCache]);
+  }, [runnerId, sessionId, files, childrenCache]);
 
   // Flat list for virtualization
   const flatNodes = React.useMemo(() => {

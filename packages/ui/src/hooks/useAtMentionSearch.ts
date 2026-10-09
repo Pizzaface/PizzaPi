@@ -22,12 +22,14 @@ interface UseAtMentionSearchResult {
  * @param query - Search query (file name substring)
  * @param enabled - Whether searching is active
  * @param basePath - Absolute session CWD
+ * @param sessionId - Session whose search request should scope service_message echoes
  */
 export function useAtMentionSearch(
     runnerId: string | undefined,
     query: string,
     enabled: boolean,
     basePath?: string,
+    sessionId?: string,
 ): UseAtMentionSearchResult {
     const [entries, setEntries] = useState<(Entry & { relativePath?: string })[]>([]);
     const [loading, setLoading] = useState(false);
@@ -64,7 +66,7 @@ export function useAtMentionSearch(
                 const response = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/search-files`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ cwd: basePath, query: searchQuery, limit: 50 }),
+                    body: JSON.stringify({ cwd: basePath, query: searchQuery, limit: 50, ...(sessionId ? { sessionId } : {}) }),
                     credentials: "include",
                     signal,
                 });
@@ -96,7 +98,7 @@ export function useAtMentionSearch(
                 if (!signal.aborted) setLoading(false);
             }
         },
-        [runnerId, basePath],
+        [runnerId, basePath, sessionId],
     );
 
     useEffect(() => {

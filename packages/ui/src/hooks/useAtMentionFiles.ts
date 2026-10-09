@@ -32,12 +32,14 @@ interface UseAtMentionFilesResult {
  * @param path - Relative directory path to list (e.g., "", "src/", "src/components/")
  * @param enabled - Whether fetching is enabled (cache clears on true → false)
  * @param basePath - Absolute base path (session CWD) to resolve relative paths against
+ * @param sessionId - Session whose file request should scope service_message echoes
  */
 export function useAtMentionFiles(
     runnerId: string | undefined,
     path: string,
     enabled: boolean,
     basePath?: string,
+    sessionId?: string,
 ): UseAtMentionFilesResult {
     const [entries, setEntries] = useState<Entry[]>([]);
     const [loading, setLoading] = useState(false);
@@ -62,6 +64,25 @@ export function useAtMentionFiles(
         }
         prevEnabledRef.current = enabled;
     }, [enabled]);
+
+    // Clear the path-keyed cache and cancel any in-flight request whenever the
+    // SCOPE changes (runner, session, or base cwd). The cache is keyed only by
+    // relative path, so without this a session switch that revisits the same
+    // relative path (e.g. "" for the root, or "src") would instantly serve the
+    // PREVIOUS session's stale listing, and a still-in-flight request from the
+    // old scope could later resolve and overwrite the new scope's result.
+    useEffect(() => {
+        cacheRef.current.clear();
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+            abortControllerRef.current = null;
+        }
+        if (debounceTimerRef.current) {
+            clearTimeout(debounceTimerRef.current);
+            debounceTimerRef.current = null;
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [runnerId, basePath, sessionId]);
 
     // Cleanup on unmount
     useEffect(() => {
@@ -99,7 +120,7 @@ export function useAtMentionFiles(
                 const response = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/files`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ path: absolutePath }),
+                    body: JSON.stringify({ path: absolutePath, ...(sessionId ? { sessionId } : {}) }),
                     credentials: "include",
                     signal,
                 });
@@ -137,7 +158,7 @@ export function useAtMentionFiles(
                 }
             }
         },
-        [runnerId, resolvePath]
+        [runnerId, resolvePath, sessionId]
     );
 
     // Main effect: debounced fetch with caching

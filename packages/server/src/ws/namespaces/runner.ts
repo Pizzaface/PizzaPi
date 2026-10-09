@@ -53,6 +53,77 @@ export function forwardServiceMessageToSession(
     relay(sessionId, "service_message", stamped);
 }
 
+// ── Request-scope recovery for service_message echoes ───────────────────────
+// file-explorer/terminal dual-emit their response: once via a direct
+// per-request event (resolved through pendingRunnerCommands) and once via the
+// generic service_message relay so OTHER viewer tabs on the same session stay
+// in sync. The relay can only route that second copy correctly if the
+// envelope carries a sessionId — which old runners never send, and which may
+// legitimately be absent when the original request wasn't scoped. Record the
+// scope the SERVER already knew when it forwarded the request so the relay
+// can recover it without depending on the runner's envelope at all. Bounded +
+// TTL-swept — this is a short-lived echo-scoping hint, not a request map.
+const MAX_REQUEST_SCOPES = 2_000;
+const REQUEST_SCOPE_TTL_MS = 30_000;
+const requestScopes = new Map<string, { sessionId?: string; ts: number }>();
+
+export function recordRequestScope(requestId: string, sessionId?: string): void {
+    if (requestScopes.size >= MAX_REQUEST_SCOPES) {
+        const oldestKey = requestScopes.keys().next().value;
+        if (oldestKey !== undefined) requestScopes.delete(oldestKey);
+    }
+    requestScopes.set(requestId, { sessionId, ts: Date.now() });
+}
+
+/** Single-use lookup: consumes the recorded scope (if still fresh) for `requestId`. */
+export function takeRequestScope(requestId: string): { sessionId?: string } | undefined {
+    const entry = requestScopes.get(requestId);
+    if (!entry) return undefined;
+    requestScopes.delete(requestId);
+    if (Date.now() - entry.ts > REQUEST_SCOPE_TTL_MS) return undefined;
+    return { sessionId: entry.sessionId };
+}
+
+/** Service IDs whose service_message echoes must always be session-scoped —
+ *  never fanned out to every session on the runner, even when the runner
+ *  (old or new) failed to stamp an explicit sessionId on the envelope. */
+const SCOPE_RECOVERABLE_SERVICE_IDS = new Set(["file-explorer", "terminal"]);
+
+export function isScopeRecoverableServiceId(serviceId: string): boolean {
+    return SCOPE_RECOVERABLE_SERVICE_IDS.has(serviceId);
+}
+
+/**
+ * Decide how to deliver a service_message envelope that carries no explicit
+ * sessionId. For file-explorer/terminal echoes this recovers the session the
+ * ORIGINAL request was scoped to (via requestId or terminalId, both tracked
+ * server-side regardless of runner version) instead of ever broadcasting the
+ * response to every session on the runner. Everything else keeps the
+ * existing runner-wide broadcast behaviour (e.g. push announcements).
+ */
+export async function recoverServiceMessageScope(
+    envelope: { serviceId: string; payload: unknown },
+    deps: {
+        takeRequestScope: (requestId: string) => { sessionId?: string } | undefined;
+        getTerminalSessionId: (terminalId: string) => Promise<string | undefined>;
+    },
+): Promise<{ sessionId?: string; broadcastToAll: boolean }> {
+    if (!isScopeRecoverableServiceId(envelope.serviceId)) {
+        return { broadcastToAll: true };
+    }
+    const payload = envelope.payload as Record<string, unknown> | null | undefined;
+    if (envelope.serviceId === "terminal") {
+        const terminalId = typeof payload?.terminalId === "string" ? payload.terminalId : undefined;
+        const sessionId = terminalId ? await deps.getTerminalSessionId(terminalId) : undefined;
+        return { sessionId, broadcastToAll: false };
+    }
+    // file-explorer: scope was recorded under the server-generated requestId
+    // when the request was forwarded (see sendRunnerCommand).
+    const requestId = typeof payload?.requestId === "string" ? payload.requestId : undefined;
+    const scope = requestId ? deps.takeRequestScope(requestId) : undefined;
+    return { sessionId: scope?.sessionId, broadcastToAll: false };
+}
+
 // ── Trigger subscription reconciliation ──────────────────────────────────────
 // Revision counter is now Redis-backed (globally monotonic across all server
 // nodes). See nextReconcileRevision() in events/reconcile.ts.
@@ -371,6 +442,7 @@ export async function sendRunnerCommand(
     const requestId = randomUUID();
     const eventName = typeof command.type === "string" ? command.type : "";
     if (!eventName) throw new Error("Missing command type");
+    recordRequestScope(requestId, typeof command.sessionId === "string" ? command.sessionId : undefined);
 
     return new Promise((resolve, reject) => {
         if (isPendingRequestCapReached(pendingRunnerCommands.size)) {
@@ -1272,13 +1344,12 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
                     return;
                 }
             }
-            // If envelope carries a sessionId, route only to that session's viewers.
-            // Otherwise broadcast to all sessions on this runner (e.g. push announcements).
-            const targetSessionId = (envelope as ServiceEnvelope & { sessionId?: string }).sessionId;
-            if (targetSessionId) {
+            // Deliver to one specific session's viewers, honoring the in-flight
+            // ownership check and the cross-runner-injection guard.
+            const deliverToSession = async (sessionId: string): Promise<void> => {
                 // If session_ready is still awaiting its ownership check, block here
                 // until it resolves (owned) or rejects (not owned / disconnected).
-                const pendingSession = pendingSessionChecks.get(targetSessionId);
+                const pendingSession = pendingSessionChecks.get(sessionId);
                 if (pendingSession) {
                     try {
                         await pendingSession.promise;
@@ -1289,18 +1360,40 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
                 }
                 // Security: verify the target session belongs to this runner to prevent
                 // cross-session injection by a compromised or malicious runner.
-                if (!runnerSessionIds.get(runnerId)?.has(targetSessionId)) {
-                    log.warn(`service_message rejected: session ${targetSessionId} not owned by runner ${runnerId}`);
+                if (!runnerSessionIds.get(runnerId)?.has(sessionId)) {
+                    log.warn(`service_message rejected: session ${sessionId} not owned by runner ${runnerId}`);
                     return;
                 }
-                forwardServiceMessageToSession(envelope, targetSessionId, broadcastToSessionViewers, emitToRelaySession);
+                forwardServiceMessageToSession(envelope, sessionId, broadcastToSessionViewers, emitToRelaySession);
+            };
+
+            // If envelope carries a sessionId, route only to that session's viewers.
+            const targetSessionId = (envelope as ServiceEnvelope & { sessionId?: string }).sessionId;
+            if (targetSessionId) {
+                await deliverToSession(targetSessionId);
             } else {
-                const sessionIds = runnerSessionIds.get(runnerId);
-                if (sessionIds) {
-                    for (const sid of sessionIds) {
-                        forwardServiceMessageToSession(envelope, sid, broadcastToSessionViewers, emitToRelaySession);
+                // No sessionId on the envelope — either the runner is too old to send
+                // one, or the field was legitimately omitted. For services whose
+                // responses must stay session-scoped (file-explorer, terminal),
+                // recover the original request's scope server-side instead of ever
+                // fanning the echo out to every session on the runner. Anything else
+                // keeps the existing runner-wide broadcast (e.g. push announcements).
+                const scope = await recoverServiceMessageScope(envelope, {
+                    takeRequestScope,
+                    getTerminalSessionId: async (terminalId) => (await getTerminalEntry(terminalId))?.sessionId,
+                });
+                if (scope.broadcastToAll) {
+                    const sessionIds = runnerSessionIds.get(runnerId);
+                    if (sessionIds) {
+                        for (const sid of sessionIds) {
+                            await deliverToSession(sid);
+                        }
                     }
+                } else if (scope.sessionId) {
+                    await deliverToSession(scope.sessionId);
                 }
+                // else: scope-recoverable service with no recoverable sessionId — drop
+                // rather than leak the echo to every session on the runner.
             }
             // Runner-scoped followers (traveling panels): viewers following this
             // (serviceId, runnerId) pair get the same envelope regardless of which

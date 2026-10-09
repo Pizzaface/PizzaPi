@@ -35,12 +35,13 @@ export class FileExplorerService implements ServiceHandler {
 
         // REST reads use only the correlated direct response so file content
         // is never broadcast to unrelated session viewers.
-        const emitFileResult = (payload: Record<string, unknown>, broadcast = true) => {
+        const emitFileResult = (payload: Record<string, unknown>, broadcast = true, sessionId?: string) => {
             socket.emit("file_result" as any, payload);
             if (broadcast) {
                 (socket as any).emit("service_message", {
                     serviceId: "file-explorer",
                     type: "file_result",
+                    ...(sessionId ? { sessionId } : {}),
                     payload,
                 });
             }
@@ -49,13 +50,14 @@ export class FileExplorerService implements ServiceHandler {
         this._onListFiles = async (data: any) => {
             if (isShuttingDown()) return;
             const requestId = data.requestId;
+            const sessionId = typeof data.sessionId === "string" ? data.sessionId : undefined;
             const dirPath = data.path ?? "";
             if (!dirPath) {
-                emitFileResult({ requestId, ok: false, message: "Missing path" });
+                emitFileResult({ requestId, ok: false, message: "Missing path" }, true, sessionId);
                 return;
             }
             if (!isCwdAllowed(dirPath)) {
-                emitFileResult({ requestId, ok: false, message: "Path outside allowed roots" });
+                emitFileResult({ requestId, ok: false, message: "Path outside allowed roots" }, true, sessionId);
                 return;
             }
             try {
@@ -88,13 +90,13 @@ export class FileExplorerService implements ServiceHandler {
                     if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
                     return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
                 });
-                emitFileResult({ requestId, ok: true, files: items });
+                emitFileResult({ requestId, ok: true, files: items }, true, sessionId);
             } catch (err) {
                 emitFileResult({
                     requestId,
                     ok: false,
                     message: err instanceof Error ? err.message : String(err),
-                });
+                }, true, sessionId);
             }
         };
         socket.on("list_files", this._onListFiles);
@@ -103,13 +105,14 @@ export class FileExplorerService implements ServiceHandler {
         this._onBrowseDirectory = async (data: any) => {
             if (isShuttingDown()) return;
             const requestId = data.requestId;
+            const sessionId = typeof data.sessionId === "string" ? data.sessionId : undefined;
             const dirPath = data.path ?? "";
             if (!dirPath) {
-                emitFileResult({ requestId, ok: false, message: "Missing path" });
+                emitFileResult({ requestId, ok: false, message: "Missing path" }, true, sessionId);
                 return;
             }
             if (!isCwdAllowed(dirPath)) {
-                emitFileResult({ requestId, ok: false, message: "Path outside allowed roots" });
+                emitFileResult({ requestId, ok: false, message: "Path outside allowed roots" }, true, sessionId);
                 return;
             }
             try {
@@ -151,13 +154,13 @@ export class FileExplorerService implements ServiceHandler {
                 }
 
                 dirResults.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
-                emitFileResult({ requestId, ok: true, directories: dirResults });
+                emitFileResult({ requestId, ok: true, directories: dirResults }, true, sessionId);
             } catch (err) {
                 emitFileResult({
                     requestId,
                     ok: false,
                     message: err instanceof Error ? err.message : String(err),
-                });
+                }, true, sessionId);
             }
         };
         socket.on("browse_directory", this._onBrowseDirectory);
@@ -165,20 +168,21 @@ export class FileExplorerService implements ServiceHandler {
         this._onSearchFiles = async (data: any) => {
             if (isShuttingDown()) return;
             const requestId = data.requestId;
+            const sessionId = typeof data.sessionId === "string" ? data.sessionId : undefined;
             const cwd = (data as any).cwd ?? "";
             const query = (data as any).query ?? "";
             const limit = typeof (data as any).limit === "number" ? (data as any).limit : 100;
 
             if (!cwd) {
-                emitFileResult({ requestId, ok: false, message: "Missing cwd" });
+                emitFileResult({ requestId, ok: false, message: "Missing cwd" }, true, sessionId);
                 return;
             }
             if (!isCwdAllowed(cwd)) {
-                emitFileResult({ requestId, ok: false, message: "Path outside allowed roots" });
+                emitFileResult({ requestId, ok: false, message: "Path outside allowed roots" }, true, sessionId);
                 return;
             }
             if (!query) {
-                emitFileResult({ requestId, ok: true, files: [] });
+                emitFileResult({ requestId, ok: true, files: [] }, true, sessionId);
                 return;
             }
             try {
@@ -205,19 +209,19 @@ export class FileExplorerService implements ServiceHandler {
                         isDirectory: false,
                         isSymlink: false,
                     }));
-                emitFileResult({ requestId, ok: true, files });
+                emitFileResult({ requestId, ok: true, files }, true, sessionId);
             } catch (err) {
                 // If git fails (not a git repo, etc.), return empty list
                 const isGitError = err instanceof Error && (err as any).code !== undefined;
                 if (isGitError) {
-                    emitFileResult({ requestId, ok: true, files: [] });
+                    emitFileResult({ requestId, ok: true, files: [] }, true, sessionId);
                     return;
                 }
                 emitFileResult({
                     requestId,
                     ok: false,
                     message: err instanceof Error ? err.message : String(err),
-                });
+                }, true, sessionId);
             }
         };
         socket.on("search_files", this._onSearchFiles);

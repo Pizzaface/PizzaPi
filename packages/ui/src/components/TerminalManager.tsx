@@ -165,6 +165,7 @@ export function TerminalManager({
         body: JSON.stringify({
           runnerId: runnerIdToUse,
           cwd: cwdToUse?.trim() || undefined,
+          sessionId: sessionId ?? undefined,
           cols: 120,
           rows: 30,
         }),
@@ -214,6 +215,7 @@ export function TerminalManager({
         body: JSON.stringify({
           runnerId: selectedRunnerId,
           cwd: cwd.trim() || undefined,
+          sessionId: selectedRunnerId === runnerId ? sessionId ?? undefined : undefined,
           cols: 120,
           rows: 30,
         }),
@@ -246,7 +248,7 @@ export function TerminalManager({
     } finally {
       setSpawning(false);
     }
-  }, [selectedRunnerId, cwd, effectiveRunners, sessionId, onTabAdd]);
+  }, [selectedRunnerId, cwd, effectiveRunners, runnerId, sessionId, onTabAdd]);
 
   /**
    * Handle the "+" button — direct spawn when session context is available,

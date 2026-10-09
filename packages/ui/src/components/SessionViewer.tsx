@@ -1483,6 +1483,7 @@ export function SessionViewer({
                   onClose={handleAtMentionClose}
                   onBack={handleAtMentionBack}
                   sessionCwd={sessionCwd}
+                  sessionId={sessionId}
                   highlightedIndex={atMentionHighlightedIndex}
                   onHighlightedIndexChange={setAtMentionHighlightedIndex}
                   onHighlightedEntryChange={setAtMentionHighlightedEntry}
