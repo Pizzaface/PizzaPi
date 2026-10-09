@@ -14,9 +14,13 @@ import {
     fireTrigger,
     createTriggerClient,
     getAvailableTriggers,
+    getAvailableTriggerContextStatus,
     getAvailableSigils,
     subscribeTrigger,
     listTriggerSubscriptions,
+    listTriggerSubscriptionsStatus,
+    listRunnerTriggerListeners,
+    listRunnerTriggerListenersStatus,
     unsubscribeTrigger,
     updateTriggerSubscription,
     publishEvent,
@@ -624,6 +628,74 @@ describe("listTriggerSubscriptions (unified routes)", () => {
         const deps = subsDeps(async () => ({ ok: false, status: 401, json: async () => ({}) } as Response));
         const subs = await listTriggerSubscriptions("session-1", deps);
         expect(subs).toEqual([]);
+    });
+});
+
+describe("listTriggerSubscriptionsStatus / listRunnerTriggerListenersStatus / getAvailableTriggerContextStatus — outage reporting", () => {
+    test("listTriggerSubscriptionsStatus reports ok:false with an error on a non-OK response (not an empty list)", async () => {
+        const deps = subsDeps(async () => ({ ok: false, status: 500, json: async () => ({ error: "boom" }) } as Response));
+        const result = await listTriggerSubscriptionsStatus("session-1", deps);
+        expect(result.ok).toBe(false);
+        expect(result.error).toBeTruthy();
+        expect(result.subscriptions).toEqual([]);
+        // The old plain-array API keeps collapsing failures to [] for existing callers.
+        const subs = await listTriggerSubscriptions("session-1", deps);
+        expect(subs).toEqual([]);
+    });
+
+    test("listTriggerSubscriptionsStatus reports ok:false on a network error", async () => {
+        const deps = subsDeps(async () => { throw new Error("network down"); });
+        const result = await listTriggerSubscriptionsStatus("session-1", deps);
+        expect(result.ok).toBe(false);
+        expect(result.error).toContain("network down");
+    });
+
+    test("listTriggerSubscriptionsStatus reports ok:false when no relay is configured", async () => {
+        const deps: TriggerClientDeps = {
+            getRelaySocket: () => null,
+            getRelayHttpBaseUrl: () => null,
+            getApiKey: () => undefined,
+            fetch: async () => { throw new Error("should not be called"); },
+        };
+        const result = await listTriggerSubscriptionsStatus("session-1", deps);
+        expect(result.ok).toBe(false);
+        expect(result.error).toBeTruthy();
+    });
+
+    test("listRunnerTriggerListenersStatus reports ok:false with an error on a non-OK response (not an empty list)", async () => {
+        const deps = subsDeps(async () => ({ ok: false, status: 503, json: async () => ({ error: "boom" }) } as Response));
+        const result = await listRunnerTriggerListenersStatus("runner-1", deps);
+        expect(result.ok).toBe(false);
+        expect(result.error).toBeTruthy();
+        expect(result.listeners).toEqual([]);
+        // The old plain-array API keeps collapsing failures to [] for existing callers.
+        const listeners = await listRunnerTriggerListeners("runner-1", deps);
+        expect(listeners).toEqual([]);
+    });
+
+    test("listRunnerTriggerListenersStatus reports ok:false on a network error", async () => {
+        const deps = subsDeps(async () => { throw new Error("network down"); });
+        const result = await listRunnerTriggerListenersStatus("runner-1", deps);
+        expect(result.ok).toBe(false);
+        expect(result.error).toContain("network down");
+    });
+
+    test("getAvailableTriggerContextStatus reports ok:false with an error on a non-OK response", async () => {
+        const deps = subsDeps(async () => ({ ok: false, status: 500, json: async () => ({}) } as Response));
+        const result = await getAvailableTriggerContextStatus("session-1", deps);
+        expect(result.ok).toBe(false);
+        expect(result.error).toBeTruthy();
+        expect(result.triggerDefs).toEqual([]);
+        // The old plain-object API keeps collapsing failures for existing callers.
+        const defs = await getAvailableTriggers("session-1", deps);
+        expect(defs).toEqual([]);
+    });
+
+    test("getAvailableTriggerContextStatus reports ok:false on a network error", async () => {
+        const deps = subsDeps(async () => { throw new Error("network down"); });
+        const result = await getAvailableTriggerContextStatus("session-1", deps);
+        expect(result.ok).toBe(false);
+        expect(result.error).toContain("network down");
     });
 });
 

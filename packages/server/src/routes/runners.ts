@@ -66,6 +66,8 @@ interface ListenerInfo {
     cwd?: string;
     model?: { provider: string; id: string };
     params?: Record<string, unknown>;
+    filters?: Route["filters"];
+    filterMode?: Route["filterMode"];
     autoClose?: boolean;
     createdAt: string;
     runtime?: TriggerRuntimeStatus & { error?: string };
@@ -84,18 +86,25 @@ async function routeToListener(route: Route, userId?: string): Promise<ListenerI
     const owner = sessionId ? await getPersistedRelaySessionOwner(sessionId).catch(() => null) : null;
     const live = sessionId ? await getSession(sessionId).catch(() => null) : null;
     const sessionCwd = live?.cwd ?? owner?.cwd ?? undefined;
+    // Spawn listeners are managed by the runner's owner (existing semantics);
+    // session routes only by the user who owns them. On a shared runner this
+    // surface lists OTHER users' session routes too (so the runner owner can
+    // see they exist) — their params/filters (repo names, author handles,
+    // etc.) must stay redacted since this listing feeds straight into the
+    // agent transcript via the list_runner_triggers tool.
+    const owned = route.target.kind === "session" ? route.ownerUserId === userId : true;
     return {
         listenerId: route.routeId,
         triggerType: route.eventType,
         ...(spec?.promptTemplate ? { prompt: spec.promptTemplate } : {}),
         ...(spec?.cwd ? { cwd: spec.cwd } : sessionCwd ? { cwd: sessionCwd } : {}),
         ...(spec?.model ? { model: spec.model } : {}),
-        ...(route.params ? { params: route.params } : {}),
+        ...(owned && route.params ? { params: route.params } : {}),
+        ...(owned && route.filters ? { filters: route.filters } : {}),
+        ...(owned && route.filterMode ? { filterMode: route.filterMode } : {}),
         ...(spec?.autoClose ? { autoClose: true } : {}),
         ...(sessionId ? { ownerSessionId: sessionId, ownerSessionName: live?.sessionName ?? null } : {}),
-        // Spawn listeners are managed by the runner's owner (existing
-        // semantics); session routes only by the user who owns them.
-        ...(route.target.kind === "session" ? { owned: route.ownerUserId === userId } : { owned: true }),
+        owned,
         ...(route.disabled ? { disabled: true } : {}),
         createdAt: route.createdAt,
     };

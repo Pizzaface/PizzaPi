@@ -931,6 +931,33 @@ describe("session-owned routes on the listener surface", () => {
         expect(theirs.owned).toBe(false);
     });
 
+    test("GET redacts params/filters for other users' session routes on a shared runner", async () => {
+        seedSessionRoute("rt_mine", "user-1", {
+            params: { repo: "my-org/my-repo" },
+            filters: [{ field: "repo", value: "my-org/my-repo", op: "eq" }],
+            filterMode: "and",
+        });
+        seedSessionRoute("rt_theirs", "user-2", {
+            params: { repo: "their-org/secret-repo", author: "alice" },
+            filters: [{ field: "repo", value: "their-org/secret-repo", op: "eq" }],
+            filterMode: "and",
+        });
+
+        const [req, url] = makeReq("GET", "/api/runners/runner-A/trigger-listeners");
+        const res = await handleRunnersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        const mine = body.listeners.find((l: any) => l.listenerId === "rt_mine");
+        const theirs = body.listeners.find((l: any) => l.listenerId === "rt_theirs");
+        expect(mine.owned).toBe(true);
+        expect(mine.params).toEqual({ repo: "my-org/my-repo" });
+        expect(mine.filters).toEqual([{ field: "repo", value: "my-org/my-repo", op: "eq" }]);
+        expect(theirs.owned).toBe(false);
+        expect(theirs.params).toBeUndefined();
+        expect(theirs.filters).toBeUndefined();
+        expect(theirs.filterMode).toBeUndefined();
+    });
+
     test("PUT disables an owned session route by route id", async () => {
         seedSessionRoute("rt_mine");
 

@@ -95,7 +95,7 @@ const defaultDeps: TriggerClientDeps = {
     getRelaySocket: getRelaySocketDefault,
     getRelayHttpBaseUrl: defaultGetRelayHttpBaseUrl,
     getApiKey: defaultGetApiKey,
-    fetch: globalThis.fetch.bind(globalThis),
+    fetch: (url, init) => globalThis.fetch(url, init),
 };
 
 // ── Core client ───────────────────────────────────────────────────────────────
@@ -280,6 +280,46 @@ export interface TriggerSubscription {
     subscriptionId?: string;
     triggerType: string;
     runnerId: string;
+    params?: Record<string, unknown>;
+    filters?: Array<{ field: string; value: string | number | boolean | Array<string | number | boolean>; op?: "eq" | "contains"; caseSensitive?: boolean }>;
+    filterMode?: "and" | "or";
+}
+
+export interface AvailableTriggerContext {
+    runnerId?: string;
+    triggerDefs: TriggerDef[];
+}
+
+/** Same data as the plain lookups below, but distinguishes "fetched
+ *  successfully, nothing there" from "the fetch itself failed" (no relay
+ *  creds, network error, non-OK status) — an outage must not look like an
+ *  empty list to callers that print it or decide whether to re-subscribe. */
+export interface AvailableTriggerContextStatus extends AvailableTriggerContext {
+    ok: boolean;
+    error?: string;
+}
+
+export interface RunnerTriggerListener {
+    listenerId: string;
+    triggerType: string;
+    params?: Record<string, unknown>;
+    filters?: Array<{ field: string; value: string | number | boolean | Array<string | number | boolean>; op?: "eq" | "contains"; caseSensitive?: boolean }>;
+    filterMode?: "and" | "or";
+    ownerSessionId?: string;
+    ownerSessionName?: string | null;
+    disabled?: boolean;
+}
+
+export interface TriggerSubscriptionsStatus {
+    ok: boolean;
+    error?: string;
+    subscriptions: TriggerSubscription[];
+}
+
+export interface RunnerTriggerListenersStatus {
+    ok: boolean;
+    error?: string;
+    listeners: RunnerTriggerListener[];
 }
 
 export type SigilDef = ServiceSigilDef;
@@ -295,17 +335,21 @@ export interface SubscriptionResult {
 /**
  * Get available trigger types for a session (from its runner's service catalog).
  */
-export async function getAvailableTriggers(
+/**
+ * Same as {@link getAvailableTriggerContext} but reports WHY the fetch came
+ * back empty (no creds, network error, non-OK status) instead of collapsing
+ * every failure mode into "no runner / no triggers".
+ */
+export async function getAvailableTriggerContextStatus(
     sessionId: string,
     deps: Partial<TriggerClientDeps> = {},
-): Promise<TriggerDef[]> {
+): Promise<AvailableTriggerContextStatus> {
     const d: TriggerClientDeps = { ...defaultDeps, ...deps };
     const baseUrl = d.getRelayHttpBaseUrl();
     const apiKey = d.getApiKey();
 
     if (!baseUrl || !apiKey) {
-        log.info(`getAvailableTriggers: no baseUrl/apiKey, returning empty`);
-        return [];
+        return { ok: false, error: "Not connected to relay (no relay URL or API key configured)", triggerDefs: [] };
     }
 
     try {
@@ -313,13 +357,33 @@ export async function getAvailableTriggers(
         const response = await d.fetch(url, {
             headers: { "x-api-key": apiKey },
         });
-        if (!response.ok) return [];
-        const data = await response.json() as { triggerDefs?: TriggerDef[] };
-        return data.triggerDefs ?? [];
+        if (!response.ok) return { ok: false, error: `HTTP ${response.status}`, triggerDefs: [] };
+        const data = await response.json() as { triggerDefs?: TriggerDef[]; runnerId?: string };
+        return {
+            ok: true,
+            triggerDefs: data.triggerDefs ?? [],
+            ...(typeof data.runnerId === "string" ? { runnerId: data.runnerId } : {}),
+        };
     } catch (err) {
-        log.info(`getAvailableTriggers failed: ${err instanceof Error ? err.message : String(err)}`);
-        return [];
+        const error = err instanceof Error ? err.message : String(err);
+        log.info(`getAvailableTriggers failed: ${error}`);
+        return { ok: false, error, triggerDefs: [] };
     }
+}
+
+export async function getAvailableTriggerContext(
+    sessionId: string,
+    deps: Partial<TriggerClientDeps> = {},
+): Promise<AvailableTriggerContext> {
+    const { ok: _ok, error: _error, ...context } = await getAvailableTriggerContextStatus(sessionId, deps);
+    return context;
+}
+
+export async function getAvailableTriggers(
+    sessionId: string,
+    deps: Partial<TriggerClientDeps> = {},
+): Promise<TriggerDef[]> {
+    return (await getAvailableTriggerContext(sessionId, deps)).triggerDefs;
 }
 
 /**
@@ -477,17 +541,58 @@ export async function updateTriggerSubscription(
 async function listRoutesForSession(
     d: TriggerClientDeps,
     sessionId: string,
-): Promise<Array<{ routeId: string; eventType: string }>> {
+): Promise<Array<{ routeId: string; eventType: string; params?: Record<string, unknown>; filters?: TriggerSubscription["filters"]; filterMode?: "and" | "or" }>> {
     const baseUrl = d.getRelayHttpBaseUrl()!;
     const apiKey = d.getApiKey()!;
     const response = await d.fetch(`${baseUrl}/api/routes`, {
         headers: { "x-api-key": apiKey },
     });
-    if (!response.ok) return [];
+    // Non-OK is a real failure, not "no routes" — throw so callers can tell
+    // an outage apart from a genuinely empty list (caught by every caller
+    // below, so this is not a behavior change for them).
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = (await response.json().catch(() => ({}))) as { routes?: Array<any> };
     return (data.routes ?? [])
         .filter((r) => r?.target?.kind === "session" && r.target.sessionId === sessionId)
-        .map((r) => ({ routeId: r.routeId as string, eventType: r.eventType as string }));
+        .map((r) => ({
+            routeId: r.routeId as string,
+            eventType: r.eventType as string,
+            ...(r.params && typeof r.params === "object" && !Array.isArray(r.params) ? { params: r.params as Record<string, unknown> } : {}),
+            ...(Array.isArray(r.filters) ? { filters: r.filters as TriggerSubscription["filters"] } : {}),
+            ...(r.filterMode === "or" ? { filterMode: "or" as const } : r.filterMode === "and" ? { filterMode: "and" as const } : {}),
+        }));
+}
+
+/**
+ * Same as {@link listTriggerSubscriptions} but distinguishes a fetch failure
+ * (no creds, network error, non-OK status) from a genuinely empty list.
+ */
+export async function listTriggerSubscriptionsStatus(
+    sessionId: string,
+    deps: Partial<TriggerClientDeps> = {},
+): Promise<TriggerSubscriptionsStatus> {
+    const d: TriggerClientDeps = { ...defaultDeps, ...deps };
+    if (!d.getRelayHttpBaseUrl() || !d.getApiKey()) {
+        return { ok: false, error: "Not connected to relay (no relay URL or API key configured)", subscriptions: [] };
+    }
+    try {
+        const routes = await listRoutesForSession(d, sessionId);
+        return {
+            ok: true,
+            subscriptions: routes.map((r) => ({
+                subscriptionId: r.routeId,
+                triggerType: r.eventType,
+                runnerId: "",
+                ...(r.params ? { params: r.params } : {}),
+                ...(r.filters ? { filters: r.filters } : {}),
+                ...(r.filterMode ? { filterMode: r.filterMode } : {}),
+            })),
+        };
+    } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        log.info(`listTriggerSubscriptions failed: ${error}`);
+        return { ok: false, error, subscriptions: [] };
+    }
 }
 
 /**
@@ -497,15 +602,44 @@ export async function listTriggerSubscriptions(
     sessionId: string,
     deps: Partial<TriggerClientDeps> = {},
 ): Promise<TriggerSubscription[]> {
+    return (await listTriggerSubscriptionsStatus(sessionId, deps)).subscriptions;
+}
+
+/**
+ * Same as {@link listRunnerTriggerListeners} but distinguishes a fetch
+ * failure (no creds, network error, non-OK status) from a genuinely empty
+ * list — an outage must not look like "this runner has no listeners".
+ */
+export async function listRunnerTriggerListenersStatus(
+    runnerId: string,
+    deps: Partial<TriggerClientDeps> = {},
+): Promise<RunnerTriggerListenersStatus> {
     const d: TriggerClientDeps = { ...defaultDeps, ...deps };
-    if (!d.getRelayHttpBaseUrl() || !d.getApiKey()) return [];
-    try {
-        const routes = await listRoutesForSession(d, sessionId);
-        return routes.map((r) => ({ subscriptionId: r.routeId, triggerType: r.eventType, runnerId: "" }));
-    } catch (err) {
-        log.info(`listTriggerSubscriptions failed: ${err instanceof Error ? err.message : String(err)}`);
-        return [];
+    const baseUrl = d.getRelayHttpBaseUrl();
+    const apiKey = d.getApiKey();
+    if (!baseUrl || !apiKey) {
+        return { ok: false, error: "Not connected to relay (no relay URL or API key configured)", listeners: [] };
     }
+    try {
+        const response = await d.fetch(`${baseUrl}/api/runners/${encodeURIComponent(runnerId)}/trigger-listeners`, {
+            headers: { "x-api-key": apiKey },
+        });
+        if (!response.ok) return { ok: false, error: `HTTP ${response.status}`, listeners: [] };
+        const data = (await response.json().catch(() => ({}))) as { listeners?: RunnerTriggerListener[] };
+        return { ok: true, listeners: data.listeners ?? [] };
+    } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        log.info(`listRunnerTriggerListeners failed: ${error}`);
+        return { ok: false, error, listeners: [] };
+    }
+}
+
+/** List runner-global trigger listeners for a runner. */
+export async function listRunnerTriggerListeners(
+    runnerId: string,
+    deps: Partial<TriggerClientDeps> = {},
+): Promise<RunnerTriggerListener[]> {
+    return (await listRunnerTriggerListenersStatus(runnerId, deps)).listeners;
 }
 
 /**

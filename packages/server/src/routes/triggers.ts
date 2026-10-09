@@ -304,7 +304,7 @@ export const handleTriggersRoute: RouteHandler = async (req, url) => {
         const runnerId = session.runnerId;
         const triggerDefs = (services?.triggerDefs ?? []).filter((def) =>
             triggerAllowedForCwd(def, services?.sessionModes, session.cwd, runnerId));
-        return Response.json({ triggerDefs });
+        return Response.json({ runnerId, triggerDefs });
     }
 
     // ── GET /api/sessions/:id/available-sigils ──────────────────────
