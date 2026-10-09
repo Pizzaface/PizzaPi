@@ -96,6 +96,7 @@ import type { MetaGoalStatus } from "@pizzapi/protocol";
 import { metaEventToStatePatch, clearAnsweredApproval, type MetaStatePatch } from "@/lib/meta-state-apply";
 import { deriveSessionMetadataUpdatePatch } from "@/lib/session-metadata-update";
 import { reconcileMessageQueue } from "@/lib/message-queue";
+import { applyMessageQueueUpdate, applyMessagesUpdate, resetSessionStateWithMessageQueueRef } from "@/app-session-state";
 import { usePanelLayout } from "@/hooks/usePanelLayout";
 import { useTriggerCount } from "@/hooks/useTriggerCount";
 import { useButtonPosition, type ToolbarButtonId, type ButtonSlot } from "@/hooks/useButtonPosition";
@@ -318,8 +319,7 @@ export function App() {
     []
   );
   const setMessages = React.useCallback(
-    (v: React.SetStateAction<RelayMessage[]>) =>
-      setSessionState((p: SessionState) => ({ ...p, messages: typeof v === "function" ? v(p.messages) : v })),
+    (v: React.SetStateAction<RelayMessage[]>) => applyMessagesUpdate(v, messagesRef, setSessionState),
     []
   );
   const setRetryState = React.useCallback(
@@ -357,9 +357,15 @@ export function App() {
       setSessionState((p: SessionState) => ({ ...p, mcpOAuthPastes: typeof v === "function" ? v(p.mcpOAuthPastes) : v })),
     []
   );
+  // Every writer — not just the three call sites that originally motivated
+  // messageQueueRef — must keep the ref in sync, or batched handlers that read
+  // the ref right after a sibling setMessageQueue() call in the same tick (or
+  // across a session switch) see a stale/previous-session queue. Do it once
+  // here instead of at each call site so the invariant can't be forgotten.
   const setMessageQueue = React.useCallback(
-    (v: React.SetStateAction<QueuedMessage[]>) =>
-      setSessionState((p: SessionState) => ({ ...p, messageQueue: typeof v === "function" ? v(p.messageQueue) : v })),
+    (v: React.SetStateAction<QueuedMessage[]>) => {
+      applyMessageQueueUpdate(v, messageQueueRef, setSessionState);
+    },
     []
   );
   const setActiveModel = React.useCallback(
@@ -467,12 +473,24 @@ export function App() {
   // dead CLI), fall back to server-persisted sessions instead of spinning forever.
   const resumeSessionsFallbackTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   // ────────────────────────────────────────────────────────────────────────────
-  // Ref kept in sync with `messages` via useLayoutEffect so we can read the
-  // latest committed value in event handlers without needing functional updaters.
-  // This lets us move patchSessionCache side effects OUT of setMessages updaters,
-  // which would otherwise be called speculatively in React concurrent mode.
+  // Write-through ref: setMessages (above) routes through applyMessagesUpdate,
+  // which writes this ref synchronously on every call before touching React
+  // state, so every writer stays in sync by construction — unlike reading a
+  // setState updater's return value back out through an outer variable, which
+  // only works when the fiber has no other update already pending (React's
+  // eager-bailout optimization), not guaranteed while a heartbeat or streaming
+  // update is in flight. patchSessionCache call sites should always read
+  // messagesRef.current directly for the current `messages` value — never
+  // recompute from it (that would double-apply the pending change) and never
+  // hold onto an earlier local snapshot across a nested call that might also
+  // write messages (e.g. applyMcpReport flushed mid-handler). The useLayoutEffect
+  // below is just a backstop for the initial render / any direct
+  // setSessionState({ messages }) spread that bypasses the setter.
   const messagesRef = React.useRef<RelayMessage[]>(messages);
   React.useLayoutEffect(() => { messagesRef.current = messages; }, [messages]);
+  // Same write-through pattern as messagesRef, for the follow-up queue.
+  const messageQueueRef = React.useRef<QueuedMessage[]>(messageQueue);
+  React.useLayoutEffect(() => { messageQueueRef.current = messageQueue; }, [messageQueue]);
   const activeModelRef = React.useRef<ConfiguredModelInfo | null>(activeModel);
   React.useLayoutEffect(() => { activeModelRef.current = activeModel; }, [activeModel]);
   const [relayStatus, setRelayStatus] = React.useState<DotState>("connecting");
@@ -1100,8 +1118,10 @@ export function App() {
     injectedMessagesRef.current = [];
     // Single atomic reset — all session-scoped fields defined in SessionState
     // are cleared together. New fields added to SessionState are automatically
-    // included; nothing can be accidentally left stale between sessions.
-    setSessionState(createInitialSessionState());
+    // included; keep messageQueueRef and messagesRef in sync before any
+    // same-batch write, so a stale cross-session value can never leak into the
+    // next session's sessionUiCache entry.
+    resetSessionStateWithMessageQueueRef(createInitialSessionState, messageQueueRef, messagesRef, setSessionState);
     lifecycleClearSelection();
     // Reset live-status fields that are intentionally outside SessionState
     // (they are driven by heartbeats, not snapshots) but must still be cleared
@@ -1317,9 +1337,12 @@ export function App() {
       content: typeof content === "string" ? content.trim() : content,
     };
 
-    const next = [...messagesRef.current, message];
-    setMessages(next);
-    patchSessionCache({ messages: next });
+    // Functional updater so an in-flight streaming/RAF update to `messages`
+    // can't be clobbered by an absolute replacement. setMessages writes
+    // messagesRef synchronously, so read it back afterward for the cache
+    // patch instead of recomputing the append (which would double-apply it).
+    setMessages((prev) => [...prev, message]);
+    patchSessionCache({ messages: messagesRef.current });
   }, [patchSessionCache]);
 
   /** Remove a queued message whose text matches an incoming user message from the stream. */
@@ -1341,16 +1364,20 @@ export function App() {
     if (!text) return;
 
     const trimmed = text.trim();
-    let nextQueue: QueuedMessage[] | null = null;
-    setMessageQueue((prev) => {
-      if (prev.length === 0) return prev;
-      // Find the first queued message whose text matches and remove it
-      const idx = prev.findIndex((qm) => qm.text.trim() === trimmed);
-      if (idx === -1) return prev;
-      nextQueue = [...prev.slice(0, idx), ...prev.slice(idx + 1)];
-      return nextQueue;
-    });
-    if (nextQueue) patchSessionCache({ messageQueue: nextQueue });
+    // Compute from the ref (always a plain, synchronously-correct read) rather
+    // than assigning an outer variable inside the setMessageQueue updater and
+    // reading it back right after — that read is only reliable when no other
+    // update is already pending on this fiber, which streaming/heartbeats can
+    // violate. Write the ref through immediately so a same-tick follow-up call
+    // (e.g. another queue mutation in the same handler) also sees the result.
+    const prevQueue = messageQueueRef.current;
+    if (prevQueue.length === 0) return;
+    const idx = prevQueue.findIndex((qm) => qm.text.trim() === trimmed);
+    if (idx === -1) return;
+    const nextQueue = [...prevQueue.slice(0, idx), ...prevQueue.slice(idx + 1)];
+    messageQueueRef.current = nextQueue;
+    setMessageQueue(nextQueue);
+    patchSessionCache({ messageQueue: nextQueue });
   }, [patchSessionCache]);
 
   // Ignore runner queue syncs briefly after a local mutation / optimistic add
@@ -1361,14 +1388,15 @@ export function App() {
   /** Apply the authoritative pending follow-up queue reported by the runner. */
   const applyQueuedMessagesSync = React.useCallback((texts: string[]) => {
     if (Date.now() < queueSyncSuppressUntilRef.current) return;
-    let changed = false;
-    let nextQueue: QueuedMessage[] = [];
-    setMessageQueue((prev) => {
-      nextQueue = reconcileMessageQueue(prev, texts);
-      changed = nextQueue !== prev;
-      return nextQueue;
-    });
-    if (changed) patchSessionCache({ messageQueue: nextQueue });
+    // Read the ref directly instead of assigning an outer variable inside the
+    // setMessageQueue updater and reading it back afterward (see
+    // messageQueueRef's comment for why that read can be stale).
+    const prevQueue = messageQueueRef.current;
+    const nextQueue = reconcileMessageQueue(prevQueue, texts);
+    if (nextQueue === prevQueue) return;
+    messageQueueRef.current = nextQueue;
+    setMessageQueue(nextQueue);
+    patchSessionCache({ messageQueue: nextQueue });
   }, [patchSessionCache]);
 
   const applyMcpReport = React.useCallback((mcpReport: {
@@ -1413,18 +1441,21 @@ export function App() {
     };
     // Use a functional updater so this chains correctly with any preceding
     // setMessages(prev => ...) call in the same React batch (e.g. the final
-    // snapshot chunk updater).  Reading messagesRef.current here would be
-    // stale because the ref is only synced after the React commit.
-    let mcpNext: RelayMessage[] | null = null;
+    // snapshot chunk updater). setMessages writes messagesRef synchronously
+    // (applyMessagesUpdate), so compare against a snapshot taken right before
+    // the call to know whether the message was actually appended, then read
+    // messagesRef.current — not an outer variable captured inside the updater
+    // (unreliable: React only runs a functional updater eagerly/synchronously
+    // when no other update is already pending on the fiber) — for the patch.
+    const beforeMessages = messagesRef.current;
     setMessages((prev) => {
       if (prev.some((m) => m.key?.startsWith(`mcp_startup:${reportTs}`))) {
         return prev; // already appended — no change
       }
-      mcpNext = [...prev, message];
-      return mcpNext;
+      return [...prev, message];
     });
-    if (mcpNext !== null) {
-      patchSessionCache({ messages: mcpNext });
+    if (messagesRef.current !== beforeMessages) {
+      patchSessionCache({ messages: messagesRef.current });
     }
   }, [patchSessionCache]);
 
@@ -2028,8 +2059,12 @@ export function App() {
         const stateTodos = Array.isArray(state?.todoList) ? (state.todoList as TodoItem[]) : [];
         setTodoList(stateTodos);
 
+        // Read messagesRef.current, not the local normalizedMessages — the
+        // pending-MCP-report flush above may have appended another message
+        // to it since normalizedMessages was computed, and this is the last
+        // cache write for this snapshot so it must not clobber that append.
         patchSessionCache({
-          messages: normalizedMessages,
+          messages: messagesRef.current,
           activeModel: stateModel,
           ...(hasSessionName ? { sessionName: nextSessionName } : {}),
           availableModels: stateModels,
@@ -2041,7 +2076,7 @@ export function App() {
         });
       } else {
         patchSessionCache({
-          messages: normalizedMessages,
+          messages: messagesRef.current,
           availableModels: stateModels,
           ...(hasStateCommands ? { availableCommands: stateCommands } : {}),
           ...(hasStateAnalysis ? { analysis: stateAnalysis ?? null } : {}),
@@ -2518,9 +2553,11 @@ export function App() {
         // have changed on retry), or append if first time.
         const nextInjected = replaceMessageByStableKey(injectedMessagesRef.current, stableKey, message);
         injectedMessagesRef.current = nextInjected;
-        const nextMessages = replaceMessageByStableKey(messagesRef.current, stableKey, message);
-        setMessages(nextMessages);
-        patchSessionCache({ messages: nextMessages });
+        // Functional updater — avoids clobbering an in-flight streaming update
+        // with an absolute array. setMessages writes messagesRef
+        // synchronously, so read it back afterward for the cache patch.
+        setMessages((prev) => replaceMessageByStableKey(prev, stableKey, message));
+        patchSessionCache({ messages: messagesRef.current });
       }
       return;
     }
@@ -2546,9 +2583,8 @@ export function App() {
         // Upsert: replace existing message (nonce/URL may change on retry)
         const nextInjected = replaceMessageByStableKey(injectedMessagesRef.current, stableKey, message);
         injectedMessagesRef.current = nextInjected;
-        const nextMessages = replaceMessageByStableKey(messagesRef.current, stableKey, message);
-        setMessages(nextMessages);
-        patchSessionCache({ messages: nextMessages });
+        setMessages((prev) => replaceMessageByStableKey(prev, stableKey, message));
+        patchSessionCache({ messages: messagesRef.current });
         // Add/update pending paste prompt (always update nonce/authUrl)
         setMcpOAuthPastes((prev) => [
           ...prev.filter((p) => p.serverName !== serverName),
@@ -2563,11 +2599,19 @@ export function App() {
       const stableKey = `mcp_auth:${serverName}`;
       // Remove the auth banner for this server — auth succeeded
       injectedMessagesRef.current = removeMessagesByStableKey(injectedMessagesRef.current, stableKey);
-      // Also remove from rendered messages
-      const filteredNext = removeMessagesByStableKey(messagesRef.current, stableKey);
-      if (filteredNext.length !== messagesRef.current.length) {
-        setMessages(filteredNext);
-        patchSessionCache({ messages: filteredNext });
+      // Also remove from rendered messages. Functional updater avoids clobbering
+      // an in-flight streaming update with an absolute array. Snapshot
+      // messagesRef before the call so we can tell whether anything was
+      // actually removed (messagesRef.current is already post-removal by the
+      // time we'd otherwise re-run removeMessagesByStableKey on it, which
+      // would make that length comparison vacuously false).
+      const beforeMessages = messagesRef.current;
+      setMessages((prev) => {
+        const filtered = removeMessagesByStableKey(prev, stableKey);
+        return filtered.length !== prev.length ? filtered : prev;
+      });
+      if (messagesRef.current !== beforeMessages) {
+        patchSessionCache({ messages: messagesRef.current });
       }
       // Remove from pending paste prompts
       setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
@@ -2586,9 +2630,11 @@ export function App() {
         content: `⚠ ${label}: ${message}`,
         isError: true,
       };
-      const next = [...messagesRef.current, errMessage];
-      setMessages(next);
-      patchSessionCache({ messages: next });
+      // Functional updater — avoids clobbering an in-flight streaming update.
+      // setMessages writes messagesRef synchronously, so read it back for the
+      // cache patch instead of recomputing the append.
+      setMessages((prev) => [...prev, errMessage]);
+      patchSessionCache({ messages: messagesRef.current });
       return;
     }
 
@@ -3822,27 +3868,28 @@ export function App() {
             timestamp: now,
             content: trimmed,
           };
-          const next = [...messagesRef.current, optimisticSteerMessage];
-          setMessages(next);
-          patchSessionCache({ messages: next });
+          // Functional updater so an in-flight streaming/RAF update to
+          // `messages` can't be clobbered by an absolute replacement here.
+          // setMessages writes messagesRef synchronously, so read it back
+          // for the cache patch instead of recomputing the append.
+          setMessages((prev) => [...prev, optimisticSteerMessage]);
+          patchSessionCache({ messages: messagesRef.current });
           setLifecycleStatus("Steering message sent");
         } else {
           // Suppress runner queue syncs briefly — a heartbeat built before
           // the runner received this input would wipe the optimistic entry.
           queueSyncSuppressUntilRef.current = Date.now() + QUEUE_SYNC_SUPPRESS_MS;
-          let nextQueue: QueuedMessage[] = [];
-          setMessageQueue((prev) => {
-            nextQueue = [
-              ...prev,
-              {
-                id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-                text: trimmed,
-                deliverAs,
-                timestamp: Date.now(),
-              },
-            ];
-            return nextQueue;
-          });
+          const nextQueue = [
+            ...messageQueueRef.current,
+            {
+              id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+              text: trimmed,
+              deliverAs,
+              timestamp: Date.now(),
+            },
+          ];
+          messageQueueRef.current = nextQueue;
+          setMessageQueue(nextQueue);
           patchSessionCache({ messageQueue: nextQueue });
           setLifecycleStatus("Follow-up queued");
         }
@@ -5766,20 +5813,26 @@ export function App() {
                           setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
                           const stableKey = `mcp_auth:${serverName}`;
                           injectedMessagesRef.current = removeMessagesByStableKey(injectedMessagesRef.current, stableKey);
-                          const next = removeMessagesByStableKey(messagesRef.current, stableKey);
-                          if (next.length !== messagesRef.current.length) {
-                            setMessages(next);
-                            patchSessionCache({ messages: next });
+                          // Functional updater: an absolute setMessages(next) built from
+                          // messagesRef.current here could clobber a pending RAF/streaming
+                          // functional update already queued in this batch (same bug class
+                          // as messageQueueRef). setMessages writes messagesRef
+                          // synchronously, so snapshot it beforehand to detect whether
+                          // anything was actually removed, then read it back for the patch.
+                          const beforePasteMessages = messagesRef.current;
+                          setMessages((prev) => removeMessagesByStableKey(prev, stableKey));
+                          if (messagesRef.current !== beforePasteMessages) {
+                            patchSessionCache({ messages: messagesRef.current });
                           }
                         }}
                         onMcpServerDisable={(serverName) => {
                           setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
                           const stableKey = `mcp_auth:${serverName}`;
                           injectedMessagesRef.current = removeMessagesByStableKey(injectedMessagesRef.current, stableKey);
-                          const disableNext = removeMessagesByStableKey(messagesRef.current, stableKey);
-                          if (disableNext.length !== messagesRef.current.length) {
-                            setMessages(disableNext);
-                            patchSessionCache({ messages: disableNext });
+                          const beforeDisableMessages = messagesRef.current;
+                          setMessages((prev) => removeMessagesByStableKey(prev, stableKey));
+                          if (messagesRef.current !== beforeDisableMessages) {
+                            patchSessionCache({ messages: messagesRef.current });
                           }
                           const socket = viewerWsRef.current;
                           if (socket?.connected) {
