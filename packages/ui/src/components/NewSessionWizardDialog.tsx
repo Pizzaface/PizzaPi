@@ -530,7 +530,7 @@ export function NewSessionWizardDialog({
                                                             onClick={() => void handleRemoveRecent(folder)}
                                                             disabled={spawning}
                                                             title="Remove from recent"
-                                                            className="flex-shrink-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity"
+                                                            className="flex-shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 text-muted-foreground hover:text-destructive transition-opacity"
                                                         >
                                                             <X className="h-3 w-3" />
                                                         </button>

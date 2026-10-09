@@ -90,7 +90,7 @@ function AgentRow({ agent, onEdit, onDelete, deleting }: AgentRowProps) {
                     )}
                 </div>
             </div>
-            <div className="flex items-center gap-1 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className="flex items-center gap-1 flex-shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity">
                 <Button
                     variant="ghost"
                     size="icon-sm"
