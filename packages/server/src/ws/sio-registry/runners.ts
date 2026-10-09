@@ -122,12 +122,25 @@ export interface RegisterRunnerOpts {
 }
 
 /**
+ * Thrown when a transient infra failure (e.g. Redis unreachable) made it
+ * impossible to verify runner ownership/secret — as opposed to a genuine
+ * auth rejection (wrong secret, wrong owner). Callers (register_runner in
+ * runner.ts) use this to decide HOW to reject the connection: a retryable
+ * failure must not use a server-initiated Socket.IO disconnect(), which
+ * disables the client's auto-reconnect and would permanently strand an
+ * otherwise-legitimate runner until the next full restart.
+ */
+export class RetryableRunnerRegistrationError extends Error {}
+
+/**
  * Register a runner via Socket.IO.
  *
  * Handles persistent identity via runnerId + runnerSecret (same logic
  * as the existing registry.ts).
  *
- * Returns the runnerId on success, or an Error on auth failure.
+ * Returns the runnerId on success, or an Error on auth failure. The Error is
+ * a RetryableRunnerRegistrationError when the rejection was caused by a
+ * transient infra failure rather than a genuine auth mismatch.
  */
 export async function registerRunner(
     socket: Socket,
@@ -162,10 +175,11 @@ export async function registerRunner(
             claim = await claimRunnerOwner(requestedId, opts.userId ?? null);
         } catch (err) {
             // Fail closed: without the durable owner we cannot tell a
-            // reconnect from a cross-user claim of an offline runner.
+            // reconnect from a cross-user claim of an offline runner. This is
+            // an infra failure, not an auth rejection — retryable.
             log.error(`Runner owner lookup failed for ${requestedId}; rejecting registration:`, err);
-            return new Error(
-                `Runner authentication failed: ownership of runner ${requestedId} could not be verified`,
+            return new RetryableRunnerRegistrationError(
+                `Runner authentication failed: ownership of runner ${requestedId} could not be verified (try again)`,
             );
         }
         if (claim === "conflict") {
@@ -184,8 +198,9 @@ export async function registerRunner(
             // Fail closed: a Redis error during the claim means we can't prove
             // no one else holds this runnerId's secret, so reject rather than
             // risk overwriting (or being overwritten by) a legitimate owner.
+            // This is an infra failure, not an auth rejection — retryable.
             log.error(`Runner secret claim failed for ${requestedId}; rejecting registration:`, err);
-            return new Error(
+            return new RetryableRunnerRegistrationError(
                 `Runner authentication failed: could not verify identity for runner ${requestedId} (try again)`,
             );
         }

@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, beforeEach, afterAll } from "bun:tes
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { Database } from "bun:sqlite";
 import { sql } from "kysely";
 import {
     recordRecentFolder,
@@ -235,6 +236,127 @@ describe("mergeDuplicateFolderRows", () => {
                     .execute();
                 expect(finalRows).toHaveLength(1);
                 expect(finalRows[0].usageCount).toBe(5);
+            });
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    // Regression for GM EqNrZtr1 round 2: the dedupe used to COMMIT, then
+    // separately run CREATE UNIQUE INDEX as its own statement. During a
+    // rolling upgrade, an older relay node still running the pre-fix
+    // select-then-insert recordRecentFolder() could land a fresh duplicate in
+    // the gap between those two statements, so CREATE UNIQUE INDEX then
+    // failed outright with "UNIQUE constraint failed" and the server never
+    // finished starting (confirmed with an isolated SQLite interleaving
+    // probe). The fix folds both into ONE `BEGIN IMMEDIATE ... COMMIT`
+    // transaction, so the write lock is held across the whole thing and no
+    // concurrent writer can land in between.
+    //
+    // This spies on every statement bun:sqlite prepares during the merge to
+    // prove that property directly, rather than trying to force genuine
+    // thread-level interleaving against the real SQL timing: the pre-fix
+    // code opens with a plain `begin` (not `begin immediate`) and commits
+    // before the separate CREATE UNIQUE INDEX call, so both assertions below
+    // fail against it.
+    test("dedupe and unique-index creation share one BEGIN IMMEDIATE...COMMIT transaction", async () => {
+        const dir = mkdtempSync(join(tmpdir(), "pizzapi-recent-folders-tx-test-"));
+        const ctx = createTestAuthContext({ dbPath: join(dir, "test.db") });
+        try {
+            await runWithAuthContext(ctx, async () => {
+                await getKysely().schema
+                    .createTable("runner_recent_folder")
+                    .ifNotExists()
+                    .addColumn("id", "text", (col) => col.primaryKey())
+                    .addColumn("userId", "text", (col) => col.notNull())
+                    .addColumn("runnerId", "text", (col) => col.notNull())
+                    .addColumn("path", "text", (col) => col.notNull())
+                    .addColumn("lastUsedAt", "text", (col) => col.notNull())
+                    .addColumn("usageCount", "integer", (col) => col.notNull().defaultTo(1))
+                    .execute();
+
+                await getKysely().insertInto("runner_recent_folder").values({
+                    id: "dup-a",
+                    userId: USER,
+                    runnerId: RUNNER,
+                    path: "/code/dup",
+                    lastUsedAt: "2026-01-01T00:00:00.000Z",
+                    usageCount: 2,
+                }).execute();
+                await getKysely().insertInto("runner_recent_folder").values({
+                    id: "dup-b",
+                    userId: USER,
+                    runnerId: RUNNER,
+                    path: "/code/dup",
+                    lastUsedAt: "2026-01-02T00:00:00.000Z",
+                    usageCount: 3,
+                }).execute();
+
+                const statements: string[] = [];
+                const originalPrepare = Database.prototype.prepare;
+                // ponytail: monkeypatching a global prototype method is the only
+                // way to observe the exact SQL text/order Kysely's Bun SQLite
+                // driver issues (it calls db.prepare() directly) without adding a
+                // logging seam to production code for one test.
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                (Database.prototype as any).prepare = function (this: Database, sqlText: string, ...rest: unknown[]) {
+                    statements.push(sqlText);
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    return (originalPrepare as any).call(this, sqlText, ...rest);
+                };
+                try {
+                    await mergeDuplicateFolderRows();
+                } finally {
+                    Database.prototype.prepare = originalPrepare;
+                }
+
+                const relevant = statements.filter(
+                    (s) => /^(begin|commit|rollback)/i.test(s.trim()) || /runner_recent_folder/i.test(s),
+                );
+
+                const beginIdx = relevant.findIndex((s) => /^begin/i.test(s.trim()));
+                expect(beginIdx).toBeGreaterThanOrEqual(0);
+                // Plain `begin` (deferred) takes no lock until the first write --
+                // a dedupe run with nothing to merge would leave the exact same
+                // race. Must be BEGIN IMMEDIATE.
+                expect(relevant[beginIdx].trim().toLowerCase()).toBe("begin immediate");
+
+                const createIndexIdx = relevant.findIndex((s) => /create unique index/i.test(s));
+                expect(createIndexIdx).toBeGreaterThan(beginIdx);
+
+                // No commit/rollback between acquiring the lock and creating the
+                // index -- i.e. they're the same transaction, not two.
+                const between = relevant.slice(beginIdx + 1, createIndexIdx);
+                expect(between.some((s) => /^(commit|rollback)/i.test(s.trim()))).toBe(false);
+
+                // And it really commits afterward (lock isn't left held).
+                const commitAfterIdx = relevant.findIndex(
+                    (s, i) => i > createIndexIdx && /^commit/i.test(s.trim()),
+                );
+                expect(commitAfterIdx).toBeGreaterThan(createIndexIdx);
+
+                // Behavioral outcome: the duplicate is merged and the index now
+                // enforces uniqueness going forward.
+                const rows = await getKysely()
+                    .selectFrom("runner_recent_folder")
+                    .select(["id", "usageCount"])
+                    .where("userId", "=", USER)
+                    .where("runnerId", "=", RUNNER)
+                    .where("path", "=", "/code/dup")
+                    .execute();
+                expect(rows).toHaveLength(1);
+                expect(rows[0].usageCount).toBe(5);
+
+                await expect(
+                    getKysely().insertInto("runner_recent_folder").values({
+                        id: "dup-c",
+                        userId: USER,
+                        runnerId: RUNNER,
+                        path: "/code/dup",
+                        lastUsedAt: "2026-01-03T00:00:00.000Z",
+                        usageCount: 1,
+                    }).execute(),
+                ).rejects.toThrow(/unique/i);
             });
         } finally {
             rmSync(dir, { recursive: true, force: true });

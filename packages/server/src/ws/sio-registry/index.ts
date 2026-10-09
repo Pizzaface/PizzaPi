@@ -42,6 +42,7 @@ export {
 export type { RegisterRunnerOpts } from "./runners.js";
 export {
     registerRunner,
+    RetryableRunnerRegistrationError,
     updateRunnerSkills,
     updateRunnerAgents,
     updateRunnerPlugins,

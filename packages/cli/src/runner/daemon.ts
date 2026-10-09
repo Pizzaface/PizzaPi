@@ -2043,7 +2043,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         // ── Error handling ────────────────────────────────────────────────
 
         socket.on("error", (data: any) => {
-            logError(`server error: ${data.message}`);
+            // A retryable registration error (e.g. the relay's Redis was briefly
+            // unreachable) is not disconnected server-side -- Socket.IO's own
+            // reconnection/backoff will retry registration once it recovers.
+            logError(`server error: ${data.message}${data.retryable ? " (retryable — will retry via reconnect)" : ""}`);
         });
     });
 }

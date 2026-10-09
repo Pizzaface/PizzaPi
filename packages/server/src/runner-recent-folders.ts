@@ -36,21 +36,11 @@ export async function ensureRunnerRecentFoldersTable(): Promise<void> {
         .execute();
 
     // Existing installations may already have duplicate (userId, runnerId,
-    // path) rows from the old select-then-insert race; merge them before
-    // adding the unique index below, or the index creation fails outright.
+    // path) rows from the old select-then-insert race; merge them and create
+    // the unique index that backs recordRecentFolder()'s atomic upsert below
+    // (both inside mergeDuplicateFolderRows() — see its docs for why they
+    // must share one transaction).
     await mergeDuplicateFolderRows();
-
-    // Unique index backs the atomic upsert in recordRecentFolder() below —
-    // without it, concurrent recordRecentFolder() calls for the same triple
-    // can both miss the pre-existing row and insert duplicates, splitting
-    // usage counts and eating entries in the MAX_RECENT_FOLDERS cap.
-    await getKysely().schema
-        .createIndex("runner_recent_folder_user_runner_path_uidx")
-        .unique()
-        .ifNotExists()
-        .on("runner_recent_folder")
-        .columns(["userId", "runnerId", "path"])
-        .execute();
 }
 
 /**
@@ -73,21 +63,42 @@ async function withBusyRetry<T>(fn: () => Promise<T>, attempts = 5): Promise<T> 
 }
 
 /**
- * Collapse pre-existing duplicate (userId, runnerId, path) rows into one.
+ * Collapse pre-existing duplicate (userId, runnerId, path) rows into one, AND
+ * create the unique index that backs recordRecentFolder()'s atomic upsert —
+ * both inside the SAME transaction.
  *
- * Reads + the merged UPDATE + the duplicate DELETE all happen inside a single
- * transaction. Without that, a crash (or a second server process running this
- * same migration concurrently) could commit the UPDATE without the DELETE,
- * leaving both the merged row and its not-yet-removed duplicate behind —
- * re-running the merge would then sum them again (2 + 3 -> 5, then 5 + 3 -> 8
- * on the next restart). Wrapping it keeps each group's merge atomic and
- * idempotent: a crash mid-way rolls back to the pre-merge state instead of
- * leaving a half-applied one.
+ * They must share one transaction: during a rolling upgrade, an older relay
+ * node can still be running the pre-fix select-then-insert recordRecentFolder()
+ * path. If the dedupe committed on its own and the CREATE UNIQUE INDEX ran as
+ * a separate later statement (as this used to), that older node's insert
+ * could land a fresh duplicate in the gap between them — the CREATE UNIQUE
+ * INDEX then fails outright with "UNIQUE constraint failed" and the server
+ * never finishes starting up (confirmed with an isolated SQLite interleaving
+ * probe).
+ *
+ * Kysely's Bun SQLite dialect always issues a plain `begin` (deferred) for
+ * `.transaction().execute()` — there's no isolation-level knob to ask for
+ * more. A deferred transaction takes NO lock until its first write, so a
+ * dupGroups SELECT that happens to find nothing to merge would run entirely
+ * lock-free right up to the CREATE INDEX, leaving the exact same race even
+ * with both statements nominally "in one transaction". We open the
+ * transaction with raw `BEGIN IMMEDIATE` instead so the write lock is taken
+ * up front, before the dupGroups SELECT ever runs — any concurrent writer
+ * blocks on it (via PRAGMA busy_timeout) until we COMMIT or ROLLBACK.
+ *
+ * A crash (or lock contention that ends in SQLITE_BUSY after busy_timeout)
+ * rolls the whole thing back and withBusyRetry() retries from a fresh BEGIN
+ * IMMEDIATE — a crash can never leave the merged UPDATE committed without
+ * its DELETE (re-running the merge would otherwise sum the surviving row
+ * again: 2 + 3 -> 5, then 5 + 3 -> 8 on the next restart), and can never
+ * leave a half-deduped table with the unique index already created.
  */
 export async function mergeDuplicateFolderRows(): Promise<void> {
-    await withBusyRetry(() =>
-        getKysely().transaction().execute(async (trx) => {
-            const dupGroups = await trx
+    await withBusyRetry(async () => {
+        const db = getKysely();
+        await sql`BEGIN IMMEDIATE`.execute(db);
+        try {
+            const dupGroups = await db
                 .selectFrom("runner_recent_folder")
                 .select(["userId", "runnerId", "path"])
                 .groupBy(["userId", "runnerId", "path"])
@@ -95,7 +106,7 @@ export async function mergeDuplicateFolderRows(): Promise<void> {
                 .execute();
 
             for (const group of dupGroups) {
-                const rows = await trx
+                const rows = await db
                     .selectFrom("runner_recent_folder")
                     .select(["id", "lastUsedAt", "usageCount"])
                     .where("userId", "=", group.userId)
@@ -112,18 +123,34 @@ export async function mergeDuplicateFolderRows(): Promise<void> {
                     keep.lastUsedAt,
                 );
 
-                await trx
+                await db
                     .updateTable("runner_recent_folder")
                     .set({ usageCount: mergedUsageCount, lastUsedAt: mergedLastUsedAt })
                     .where("id", "=", keep.id)
                     .execute();
-                await trx
+                await db
                     .deleteFrom("runner_recent_folder")
                     .where("id", "in", rest.map((r) => r.id))
                     .execute();
             }
-        }),
-    );
+
+            // Safe now: no (userId, runnerId, path) duplicates can exist, and
+            // the write lock held since BEGIN IMMEDIATE means no concurrent
+            // process could have inserted a fresh one since.
+            await db.schema
+                .createIndex("runner_recent_folder_user_runner_path_uidx")
+                .unique()
+                .ifNotExists()
+                .on("runner_recent_folder")
+                .columns(["userId", "runnerId", "path"])
+                .execute();
+
+            await sql`COMMIT`.execute(db);
+        } catch (err) {
+            await sql`ROLLBACK`.execute(db).catch(() => {});
+            throw err;
+        }
+    });
 }
 
 export async function recordRecentFolder(
