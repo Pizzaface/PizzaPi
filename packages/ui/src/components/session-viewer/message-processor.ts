@@ -1,10 +1,14 @@
 import * as React from "react";
 import type { RelayMessage } from "./types";
-import { groupToolExecutionMessages, groupSubAgentConversations, groupPluginResults } from "./grouping";
+import {
+  groupToolExecutionMessages,
+  groupSubAgentConversations,
+  groupPluginResults,
+  isPluginResult,
+} from "./grouping";
 import { hasVisibleContent } from "./utils";
 
 const PAGE_SIZE = 50;
-const GROUP_LOOKBEHIND = 20;
 
 export interface MessageProcessorResult {
   visibleMessages: RelayMessage[];
@@ -12,7 +16,7 @@ export interface MessageProcessorResult {
   loadMoreMessages: () => void;
 }
 
-function isVisibleMessage(message: RelayMessage): boolean {
+export function isVisibleMessage(message: RelayMessage): boolean {
   if (message.role === "subAgentConversation")
     return (message.subAgentTurns?.length ?? 0) > 0;
   if (
@@ -32,10 +36,6 @@ function groupMessages(messages: RelayMessage[]): RelayMessage[] {
   return groupPluginResults(groupSubAgentConversations(groupToolExecutionMessages(messages)));
 }
 
-function processMessages(messages: RelayMessage[]): RelayMessage[] {
-  return groupMessages(messages).filter(isVisibleMessage);
-}
-
 function timestampSort(messages: RelayMessage[]): RelayMessage[] {
   return messages.slice().sort((a, b) => (a.timestamp ?? Infinity) - (b.timestamp ?? Infinity));
 }
@@ -44,86 +44,122 @@ export function getExportMessages(messages: RelayMessage[]): RelayMessage[] {
   return timestampSort(groupMessages(messages));
 }
 
-function toolCallId(block: unknown): string | undefined {
-  if (!block || typeof block !== "object") return;
-  const value = block as Record<string, unknown>;
-  return value.type === "toolCall" && typeof (value.id ?? value.toolCallId) === "string"
-    ? String(value.id ?? value.toolCallId)
-    : undefined;
-}
-
-// Extend a raw window to include call origins that grouping needs, and keep a
-// contiguous sub-agent run intact when the window starts in its middle.
-function safeWindowStart(messages: RelayMessage[], start: number): number {
-  let safeStart = start;
-  const ids = new Set<string>();
-  let hasUnkeyedToolResult = false;
-  for (const message of messages.slice(start)) {
-    if (message.role !== "tool" && message.role !== "toolResult") continue;
-    if (message.toolCallId) ids.add(message.toolCallId);
-    else if (message.role === "toolResult") hasUnkeyedToolResult = true;
-  }
-  if (ids.size || hasUnkeyedToolResult) {
-    for (let i = 0; i < start; i += 1) {
-      const message = messages[i]!;
-      if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
-      if (message.content.some((block) => {
-        const id = toolCallId(block);
-        return id !== undefined && (hasUnkeyedToolResult || ids.has(id));
-      })) {
-        safeStart = Math.min(safeStart, i);
-        if (hasUnkeyedToolResult) break;
-        // Keep scanning: more than one call in the window can originate earlier.
-      }
-    }
-  }
-  while (safeStart > 0 && isSubAgentToolMessage(messages[safeStart - 1]!)) safeStart -= 1;
-  return safeStart;
-}
-
 function isSubAgentToolMessage(message: RelayMessage): boolean {
   return (message.role === "tool" || message.role === "toolResult") &&
     /(?:^|\.)(send_message|wait_for_message|check_messages)$/i.test(message.toolName ?? "");
 }
 
-function hasVisibleBefore(messages: RelayMessage[], end: number): boolean {
-  for (let i = 0; i < end; i += 1) {
-    if (isVisibleMessage(messages[i]!)) return true;
+/** True when some grouped tool-execution item is still waiting on its result. */
+function hasOpenToolCall(stage1: RelayMessage[]): boolean {
+  return stage1.some((m) => (m.role === "tool" || m.role === "toolResult") && m.content === null);
+}
+
+/** True when stage1's trailing item is mid a send_message/wait_for_message/check_messages run
+ *  that groupSubAgentConversations would still extend if more such items follow. */
+function hasOpenSubAgentRun(stage1: RelayMessage[]): boolean {
+  const last = stage1[stage1.length - 1];
+  return last !== undefined && isSubAgentToolMessage(last);
+}
+
+/** True when stage3's trailing plugin-result run hasn't been closed by a visible
+ *  or tool/toolResult message yet, matching groupPluginResults' own close condition. */
+function hasOpenPluginRun(stage3: RelayMessage[]): boolean {
+  for (let i = stage3.length - 1; i >= 0; i--) {
+    const m = stage3[i]!;
+    if (isPluginResult(m)) return true;
+    if (hasVisibleContent(m.content) || m.role === "tool" || m.role === "toolResult") return false;
   }
   return false;
 }
 
+interface ProcessedCache {
+  /** The raw messages array this cache was built from (by reference). */
+  raw: RelayMessage[];
+  /** Number of leading raw messages whose grouped form can never change again,
+   *  no matter what gets appended after them (see incrementalGroup below). */
+  settledRawCount: number;
+  /** groupMessages(raw.slice(0, settledRawCount)) — reused verbatim across calls. */
+  settledGrouped: RelayMessage[];
+}
+
 /**
- * Builds a bounded tail window for the transcript. Export grouping is deferred
- * until the user requests a copy or download.
+ * Groups the full raw transcript, reusing the previous call's work for the
+ * leading portion of `raw` that hasn't changed. Transcripts mostly append, so
+ * once a prefix settles (no dangling tool call, sub-agent run or plugin run,
+ * and its last message is finalized) it never needs regrouping — only the
+ * live tail does. Any divergence from a pure append (edit, truncation, new
+ * session) is detected by reference comparison and falls back to a full
+ * regroup, so correctness never depends on the cache being right, only speed
+ * does. The result is byte-for-byte identical to `groupMessages(raw)`.
+ */
+function incrementalGroup(raw: RelayMessage[], cache: ProcessedCache | null): {
+  grouped: RelayMessage[];
+  cache: ProcessedCache;
+} {
+  let start = 0;
+  let settledGrouped: RelayMessage[] = [];
+
+  if (cache && raw.length >= cache.settledRawCount) {
+    let prefixMatches = true;
+    for (let i = 0; i < cache.settledRawCount; i++) {
+      if (raw[i] !== cache.raw[i]) {
+        prefixMatches = false;
+        break;
+      }
+    }
+    if (prefixMatches) {
+      start = cache.settledRawCount;
+      settledGrouped = cache.settledGrouped;
+    }
+  }
+
+  const tail = start === 0 ? raw : raw.slice(start);
+  const tailStage1 = groupToolExecutionMessages(tail);
+  const tailStage2 = groupSubAgentConversations(tailStage1);
+  const tailStage3 = groupPluginResults(tailStage2);
+  const grouped = settledGrouped.length > 0 ? settledGrouped.concat(tailStage3) : tailStage3;
+
+  const lastMessage = raw[raw.length - 1];
+  const tailClosed =
+    raw.length > start &&
+    lastMessage?.timestamp !== undefined &&
+    !hasOpenToolCall(tailStage1) &&
+    !hasOpenSubAgentRun(tailStage1) &&
+    !hasOpenPluginRun(tailStage3);
+
+  return {
+    grouped,
+    cache: tailClosed
+      ? { raw, settledRawCount: raw.length, settledGrouped: grouped }
+      : { raw, settledRawCount: start, settledGrouped },
+  };
+}
+
+/**
+ * Builds the visible transcript tail. Grouping/sorting/filtering runs over the
+ * full message list (incrementally cached — see incrementalGroup), so the
+ * visible tail and item keys always match what processing the whole transcript
+ * from scratch would produce. Only the final render slice is bounded.
  */
 export function useMessageProcessor(
   messages: RelayMessage[],
   sessionId: string | null,
 ): MessageProcessorResult {
   const [renderedCount, setRenderedCount] = React.useState(PAGE_SIZE);
+  const cacheRef = React.useRef<ProcessedCache | null>(null);
 
-  // Reset the pagination window whenever the session changes.
+  // Reset the pagination window and incremental cache whenever the session changes.
   React.useEffect(() => {
     setRenderedCount(PAGE_SIZE);
+    cacheRef.current = null;
   }, [sessionId]);
 
   const { visibleMessages, hasMore } = React.useMemo(() => {
-    let start = Math.max(0, messages.length - renderedCount);
-    let lookbehindStart = start;
-    let processed: RelayMessage[] = [];
-
-    while (true) {
-      lookbehindStart = safeWindowStart(messages, Math.max(0, start - GROUP_LOOKBEHIND));
-      processed = timestampSort(processMessages(messages.slice(lookbehindStart)));
-      if (processed.length >= renderedCount || lookbehindStart === 0) break;
-      start = Math.max(0, start - PAGE_SIZE);
-    }
-
-    const rendered = processed.slice(-renderedCount);
-    const hasOlderVisible = processed.length > rendered.length ||
-      (lookbehindStart > 0 && hasVisibleBefore(messages, lookbehindStart));
-    return { visibleMessages: rendered, hasMore: hasOlderVisible };
+    const { grouped, cache } = incrementalGroup(messages, cacheRef.current);
+    cacheRef.current = cache;
+    const allVisible = timestampSort(grouped).filter(isVisibleMessage);
+    const rendered = allVisible.slice(-renderedCount);
+    return { visibleMessages: rendered, hasMore: allVisible.length > rendered.length };
   }, [messages, renderedCount]);
 
   const loadMoreMessages = React.useCallback(() => {
