@@ -254,7 +254,21 @@ describe("DELETE /api/sessions/:id/triggers", () => {
         );
     });
 
-    test("clears trigger history for the session", async () => {
+    test("clears trigger history with the caller's cutoff", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1" } as any),
+        );
+
+        const [req, url] = makeReq("DELETE", "/api/sessions/sess-1/triggers?before=1700000000000");
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        const body = await res!.json();
+        expect(body.ok).toBe(true);
+        expect(mockClearTriggerHistory).toHaveBeenCalledWith("sess-1", 1700000000000);
+        expect(mockBroadcastToSessionViewers).toHaveBeenCalled();
+    });
+
+    test("omitting the cutoff still clears (legacy caller compatibility)", async () => {
         mockGetSharedSession.mockReturnValue(
             Promise.resolve({ userId: "user-1", sessionId: "sess-1" } as any),
         );
@@ -262,10 +276,18 @@ describe("DELETE /api/sessions/:id/triggers", () => {
         const [req, url] = makeReq("DELETE", "/api/sessions/sess-1/triggers");
         const res = await handleTriggersRoute(req, url);
         expect(res!.status).toBe(200);
-        const body = await res!.json();
-        expect(body.ok).toBe(true);
-        expect(mockClearTriggerHistory).toHaveBeenCalledWith("sess-1");
-        expect(mockBroadcastToSessionViewers).toHaveBeenCalled();
+        expect(mockClearTriggerHistory).toHaveBeenCalledWith("sess-1", undefined);
+    });
+
+    test("an unparseable cutoff is ignored rather than rejected", async () => {
+        mockGetSharedSession.mockReturnValue(
+            Promise.resolve({ userId: "user-1", sessionId: "sess-1" } as any),
+        );
+
+        const [req, url] = makeReq("DELETE", "/api/sessions/sess-1/triggers?before=not-a-number");
+        const res = await handleTriggersRoute(req, url);
+        expect(res!.status).toBe(200);
+        expect(mockClearTriggerHistory).toHaveBeenCalledWith("sess-1", undefined);
     });
 
     test("returns 404 for wrong user", async () => {

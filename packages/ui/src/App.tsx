@@ -2442,16 +2442,12 @@ export function App() {
           agentActive: false,
           messageQueue: [],
         });
-        // Clear trigger history so the Triggers panel starts fresh
-        const sid = lifecycleRefs.activeSessionId.current;
-        if (sid) {
-          void fetch(`/api/sessions/${encodeURIComponent(sid)}/triggers`, {
-            method: "DELETE",
-            credentials: "include",
-          }).then((res) => {
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          }).catch((err) => console.error("Failed to clear trigger history:", err));
-        }
+        // Trigger history for this session is cleared authoritatively by the
+        // CLI's generation-aware transition cleanup (performSessionTransitionCleanup
+        // in packages/cli/src/extensions/remote/lifecycle-handlers.ts), not from
+        // here. A second DELETE call from the UI raced with that cleanup: a late
+        // history write could land after this fetch, or this fetch could land
+        // late and erase the next generation's just-recorded history. See GM a8yAXXwa.
         setLifecycleStatus("New session started");
         return;
       }

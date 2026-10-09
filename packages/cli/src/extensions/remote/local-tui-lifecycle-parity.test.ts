@@ -29,9 +29,17 @@ mock.module("../triggers/extension.js", () => ({
     receivedTriggers: new Map(),
 }));
 
+// Mutable capture so tests can inspect the `before` cutoff a given
+// clearTriggerHistory call was invoked with (GM a8yAXXwa round 2).
+const _clearTriggerHistoryCalls: Array<number | undefined> = [];
+
 mock.module("../trigger-client.js", () => ({
     listTriggerSubscriptions: async (_sid: string) => [],
     unsubscribeTrigger: async () => ({ ok: true }),
+    clearTriggerHistory: async (_sid: string, _deps: unknown, before?: number) => {
+        _clearTriggerHistoryCalls.push(before);
+        return { ok: true };
+    },
 }));
 
 // Mocked after module mocks are registered:
@@ -93,7 +101,7 @@ function makeRctx(overrides: Partial<RelayContext> = {}): RelayContext {
     } as unknown as RelayContext;
 }
 
-function makeMinimalDeps() {
+function makeMinimalDeps(rctxOverrides: Partial<RelayContext> = {}) {
     const handlers = new Map<string, (event: any, ctx: any) => void>();
     const pi: any = {
         on: (name: string, fn: any) => handlers.set(name, fn),
@@ -102,7 +110,7 @@ function makeMinimalDeps() {
         registerCommand: () => {},
     };
     const state = makeState();
-    const rctx = makeRctx();
+    const rctx = makeRctx(rctxOverrides);
     const followUpGrace = createFollowUpGrace(rctx, state as any);
 
     const delinkManager: any = {
@@ -304,5 +312,103 @@ describe("local-TUI transition cleanup parity", () => {
             // sessionCompleteGeneration bumped once by performSessionTransitionCleanup
             expect(state.sessionCompleteGeneration).toBe(genBefore + 1);
         });
+
+        test("session_switch with reason:resume and reason:fork also clean (worker/local-TUI parity — GM a8yAXXwa)", () => {
+            // Regression guard: worker session_switch must clean stale child
+            // state on resume/fork exactly like local-TUI session_start does.
+            // Before the fix, only reason:"new" ran performSessionTransitionCleanup
+            // on the worker path, so a /resume or /fork there silently inherited
+            // the previous generation's stale child links and trigger subscriptions.
+            process.env.PIZZAPI_WORKER_CWD = "/tmp/worker-cwd";
+            const { handlers, state } = makeMinimalDeps();
+            const sessionStart = handlers.get("session_start")!;
+            const sessionSwitch = handlers.get("session_switch")!;
+
+            sessionStart({ reason: "startup" }, minimalCtx);
+
+            state.staleChildIds.add("child-resume-stale");
+            state.sessionCompleteFired = true;
+            let genBefore = state.sessionCompleteGeneration;
+
+            sessionSwitch({ reason: "resume" }, minimalCtx);
+
+            expect(state.staleChildIds.has("child-resume-stale")).toBe(false);
+            expect(state.pendingDelink).toBe(true);
+            expect(state.sessionCompleteFired).toBe(false);
+            expect(state.sessionCompleteGeneration).toBe(genBefore + 1);
+
+            state.staleChildIds.add("child-fork-stale");
+            state.sessionCompleteFired = true;
+            state.pendingDelink = false;
+            genBefore = state.sessionCompleteGeneration;
+
+            sessionSwitch({ reason: "fork" }, minimalCtx);
+
+            expect(state.staleChildIds.has("child-fork-stale")).toBe(false);
+            expect(state.pendingDelink).toBe(true);
+            expect(state.sessionCompleteFired).toBe(false);
+            expect(state.sessionCompleteGeneration).toBe(genBefore + 1);
+        });
+    });
+});
+
+// ── clearTriggerHistory cutoff must be relay-clock-corrected (GM a8yAXXwa round 2) ──
+//
+// `clearTriggerHistory`'s `before` cutoff is compared against relay-local
+// `recordedAt` timestamps (trigger-store.ts). A CLI host's raw local clock
+// can drift from the relay's by many seconds; sending it uncorrected either
+// lets recent pre-transition entries survive (CLI clock behind) or hides
+// genuinely-new post-transition entries once the server's future-cutoff
+// clamp kicks in (CLI clock ahead + any transit delay). The fix applies the
+// same relay-clock-offset tracking `delink-management.ts` already uses for
+// epoch-based delink filtering (`serverClockOffset`, maintained from each
+// `registered` event's `serverTime` — see `remote/connection.ts`).
+describe("clearTriggerHistory cutoff is relay-clock-corrected", () => {
+    test("performSessionTransitionCleanup passes before = local now + serverClockOffset, not raw local Date.now()", () => {
+        delete process.env.PIZZAPI_WORKER_CWD;
+        _clearTriggerHistoryCalls.length = 0;
+
+        const { handlers, state } = makeMinimalDeps({ relaySessionId: "session-under-test" });
+        // Simulate a CLI host clock running 10s BEHIND the relay's. The offset
+        // is `serverTime - Date.now()` measured at registration, so a
+        // behind-clock CLI yields a *positive* correction.
+        state.serverClockOffset = 10_000;
+        const sessionStart = handlers.get("session_start")!;
+
+        sessionStart({ reason: "startup" }, minimalCtx);
+
+        const localBefore = Date.now();
+        sessionStart({ reason: "new" }, minimalCtx);
+        const localAfter = Date.now();
+
+        expect(_clearTriggerHistoryCalls).toHaveLength(1);
+        const cutoff = _clearTriggerHistoryCalls[0];
+        expect(cutoff).toBeDefined();
+        // Must land near (local now + 10s), not near bare local now — proving
+        // the offset was actually applied rather than ignored.
+        expect(cutoff!).toBeGreaterThanOrEqual(localBefore + 10_000);
+        expect(cutoff!).toBeLessThanOrEqual(localAfter + 10_000);
+    });
+
+    test("a CLI clock running ahead is corrected too (negative offset)", () => {
+        delete process.env.PIZZAPI_WORKER_CWD;
+        _clearTriggerHistoryCalls.length = 0;
+
+        const { handlers, state } = makeMinimalDeps({ relaySessionId: "session-under-test-2" });
+        // CLI clock running 10s AHEAD of the relay's → negative correction.
+        state.serverClockOffset = -10_000;
+        const sessionStart = handlers.get("session_start")!;
+
+        sessionStart({ reason: "startup" }, minimalCtx);
+
+        const localBefore = Date.now();
+        sessionStart({ reason: "new" }, minimalCtx);
+        const localAfter = Date.now();
+
+        expect(_clearTriggerHistoryCalls).toHaveLength(1);
+        const cutoff = _clearTriggerHistoryCalls[0];
+        expect(cutoff).toBeDefined();
+        expect(cutoff!).toBeGreaterThanOrEqual(localBefore - 10_000);
+        expect(cutoff!).toBeLessThanOrEqual(localAfter - 10_000);
     });
 });

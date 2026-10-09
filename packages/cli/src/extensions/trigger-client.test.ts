@@ -20,6 +20,7 @@ import {
     unsubscribeTrigger,
     updateTriggerSubscription,
     publishEvent,
+    clearTriggerHistory,
 } from "./trigger-client.js";
 import type { TriggerClientDeps } from "./trigger-client.js";
 
@@ -748,6 +749,64 @@ describe("updateTriggerSubscription (unified routes)", () => {
         const result = await updateTriggerSubscription("session-1", { triggerType: "svc:event" }, { params: { a: 1 } }, deps);
         expect(result.ok).toBe(false);
         expect(result.error).toContain("No route found");
+    });
+});
+
+describe("clearTriggerHistory", () => {
+    test("sends the default (now) cutoff as a query param", async () => {
+        const before = Date.now();
+        let capturedUrl = "";
+        const deps = httpOnlyDeps({
+            fetch: async (url: string) => {
+                capturedUrl = url;
+                return { ok: true, status: 200, json: async () => ({ ok: true }) } as Response;
+            },
+        });
+
+        const result = await clearTriggerHistory("session-1", deps);
+        const after = Date.now();
+
+        expect(result.ok).toBe(true);
+        const match = capturedUrl.match(/\/api\/sessions\/session-1\/triggers\?before=(\d+)$/);
+        expect(match).not.toBeNull();
+        const sentBefore = Number(match![1]);
+        // Captured at call time (before any await) — must fall within the
+        // call's own window, not be assigned later e.g. after the fetch.
+        expect(sentBefore).toBeGreaterThanOrEqual(before);
+        expect(sentBefore).toBeLessThanOrEqual(after);
+    });
+
+    test("sends an explicit cutoff as given", async () => {
+        let capturedUrl = "";
+        const deps = httpOnlyDeps({
+            fetch: async (url: string) => {
+                capturedUrl = url;
+                return { ok: true, status: 200, json: async () => ({ ok: true }) } as Response;
+            },
+        });
+
+        const result = await clearTriggerHistory("session-1", deps, 1700000000000);
+        expect(result.ok).toBe(true);
+        expect(capturedUrl).toBe("http://localhost:7492/api/sessions/session-1/triggers?before=1700000000000");
+    });
+
+    test("returns an error when no relay URL or API key is configured", async () => {
+        const result = await clearTriggerHistory("session-1", { getRelayHttpBaseUrl: () => null });
+        expect(result.ok).toBe(false);
+    });
+
+    test("surfaces a server-reported error", async () => {
+        const deps = httpOnlyDeps({ fetch: mockFetch(404, { error: "Session not found" }) });
+        const result = await clearTriggerHistory("session-1", deps);
+        expect(result.ok).toBe(false);
+        expect(result.error).toContain("Session not found");
+    });
+
+    test("surfaces a network error", async () => {
+        const deps = httpOnlyDeps({ fetch: mockNetworkError("ECONNRESET") });
+        const result = await clearTriggerHistory("session-1", deps);
+        expect(result.ok).toBe(false);
+        expect(result.error).toContain("ECONNRESET");
     });
 });
 

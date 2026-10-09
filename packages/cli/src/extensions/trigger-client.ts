@@ -558,3 +558,62 @@ export async function unsubscribeTrigger(
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
 }
+
+/**
+ * Clear a session's server-side trigger history (DELETE /api/sessions/:id/triggers).
+ *
+ * This is the authoritative call for "this is a new conversation generation,
+ * forget the old trigger history" — it must be driven from the CLI's
+ * generation-aware transition cleanup (performSessionTransitionCleanup), not
+ * reactively from a UI event handler. Calling it from the UI only (keyed off
+ * a specific exec_result like new_session) raced with the server-authoritative
+ * cleanup: a late history write from the old generation could land after the
+ * UI's DELETE, or the DELETE itself could arrive late and wipe the new
+ * generation's just-recorded history.
+ *
+ * This call is fire-and-forget at the call site (see lifecycle-handlers.ts)
+ * and the request itself can be delayed in transit, so `before` travels with
+ * it as a cutoff captured at the moment the caller decided to transition. The
+ * server only hides history recorded at or before that instant, so a
+ * slow-to-arrive request can never erase the next generation's
+ * already-recorded history no matter how long it takes to get here (see GM
+ * a8yAXXwa / trigger-store.ts).
+ *
+ * `before` MUST be expressed in the relay's clock, not this host's raw local
+ * one — the server compares it directly against relay-local timestamps, and
+ * cross-host clock skew breaks that comparison in either direction (see
+ * trigger-store.ts's `clearTriggerHistory` doc comment). The default below
+ * (bare `Date.now()`) is an uncorrected fallback for callers with no offset
+ * tracking; the authoritative call site in `performSessionTransitionCleanup`
+ * always passes an explicit, relay-clock-corrected value using the same
+ * `serverClockOffset` tracking `delink-management.ts` uses for epoch-based
+ * delink filtering (see GM a8yAXXwa round 2).
+ */
+export async function clearTriggerHistory(
+    sessionId: string,
+    deps: Partial<TriggerClientDeps> = {},
+    before: number = Date.now(),
+): Promise<SubscriptionResult> {
+    const d: TriggerClientDeps = { ...defaultDeps, ...deps };
+    const baseUrl = d.getRelayHttpBaseUrl();
+    const apiKey = d.getApiKey();
+
+    if (!baseUrl || !apiKey) {
+        return { ok: false, error: "No relay URL or API key configured" };
+    }
+
+    try {
+        const url = `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/triggers?before=${encodeURIComponent(String(before))}`;
+        const response = await d.fetch(url, {
+            method: "DELETE",
+            headers: { "x-api-key": apiKey },
+        });
+        const data = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+        if (!response.ok || !data.ok) {
+            return { ok: false, error: data.error ?? `HTTP ${response.status}` };
+        }
+        return { ok: true };
+    } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+}

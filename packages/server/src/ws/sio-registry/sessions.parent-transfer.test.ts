@@ -251,6 +251,27 @@ describe("endSharedSession confirmedTerminal membership removal", () => {
         // Membership must survive so delink_children can still find the child.
         expect(setStore.get(childrenKey("parent-1"))?.has("child-z")).toBe(true);
     });
+
+    it("does NOT delink or remove its own children on confirmed terminal end (GM a8yAXXwa policy)", async () => {
+        // Explicit policy: a PARENT ending terminally must leave its own
+        // children's membership and parent links untouched — see the comment
+        // at the confirmedTerminal block in endSharedSessionUnlocked. Children
+        // discover the gone parent via the existing "missing parent is
+        // transient" reconnect path, not via a cascading delink/terminate here.
+        await seedSession("parent-dying");
+        await seedSession("child-of-dying-parent", { parentSessionId: "parent-dying" });
+        setStore.set(childrenKey("parent-dying"), new Set(["child-of-dying-parent"]));
+
+        await endSharedSession("parent-dying", "Session ended", { confirmedTerminal: true });
+
+        // The parent's own session row is gone...
+        expect(store.has(sessionHashKey("parent-dying"))).toBe(false);
+        // ...but its child's membership and parent link survive untouched.
+        expect(setStore.get(childrenKey("parent-dying"))?.has("child-of-dying-parent")).toBe(true);
+        const childRaw = store.get(sessionHashKey("child-of-dying-parent"));
+        expect(childRaw).toBeTruthy();
+        expect(JSON.parse(childRaw!).parentSessionId).toBe("parent-dying");
+    });
 });
 
 describe("endSharedSession stamps disconnected with sessionId", () => {
