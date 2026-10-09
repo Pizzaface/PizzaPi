@@ -47,6 +47,7 @@ import type { PanelPosition } from "@/hooks/usePanelLayout";
 import { ViewerSocketContext } from "@/lib/viewer-socket-context";
 import { getViewerVisibilityPayload } from "@/lib/viewer-visibility";
 import { HubSocketContext } from "@/lib/hub-socket-context";
+import { parseHubSessionsPayload } from "@/lib/hub-sessions";
 import { resetStaleBaselineOnVisibilityChange, shouldStopViewerReconnect, shouldEvaluateStaleWatchdog, shouldTriggerStaleWatchdogReconnect, staleWatchdogBackoffMultiplier, shouldForceReconnectOnResume, shouldResetStaleBackoffOnEvent } from "@/lib/viewer-connection";
 import { mapUserError } from "@/lib/user-error-message";
 import { classifySessionInput } from "@/lib/session-empty-state";
@@ -623,7 +624,28 @@ export function App() {
     sessionNames: sessionNamesMap,
   });
 
-  const panelLayout = usePanelLayout(activeSessionId);
+  const liveSessionIds = React.useMemo(
+    () => liveSessions.map((s) => s.sessionId),
+    [liveSessions],
+  );
+  // Fresh authoritative re-check for usePanelLayout's terminal-tab pruning:
+  // independent of the (possibly still-recovering) liveSessions state, so a
+  // reconnect blip or an empty/partial hub snapshot can't look like a
+  // confirmed session end. See GM VD0KKFpB. Pruning here is UI-only bookkeeping
+  // (removes a stale tab) — the actual terminal kill is server-authoritative
+  // on confirmed session end, not driven by this check.
+  const confirmSessionEnded = React.useCallback(async (sessionId: string): Promise<boolean> => {
+    try {
+      const res = await fetch("/api/sessions?includePersisted=0", { credentials: "include" });
+      if (!res.ok) return false; // can't confirm — don't prune on a flaky check
+      const body = await res.json();
+      const sessions = parseHubSessionsPayload(body);
+      return !sessions.some((s) => s.sessionId === sessionId);
+    } catch {
+      return false; // network hiccup — treat as unconfirmed, don't prune
+    }
+  }, []);
+  const panelLayout = usePanelLayout(activeSessionId, liveSessionIds, confirmSessionEnded);
   const {
     showTerminal, setShowTerminal,
     terminalPosition,

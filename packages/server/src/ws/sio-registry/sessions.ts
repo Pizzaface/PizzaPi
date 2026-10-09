@@ -108,6 +108,7 @@ import {
     withTimeout,
 } from "./context.js";
 import { broadcastToHub } from "./hub.js";
+import { getTerminalsForSession, deleteTerminalEntry } from "./terminals.js";
 import { createLogger } from "@pizzapi/tools";
 import { pushTriggerHistory } from "../../sessions/trigger-store.js";
 import { deleteSessionRoutes, expireUndeliverable, sessionReferencedByOtherTenant } from "../../events/store.js";
@@ -1014,6 +1015,16 @@ export async function endSharedSession(
         confirmedTerminal?: boolean;
         /** Keep subscriptions during orphan/process-disconnect cleanup. */
         preserveSubscriptions?: boolean;
+        /**
+         * Kill every terminal this session opened. Distinct from
+         * `confirmedTerminal`: that gate also covers reload/new/resume/fork
+         * and `/remote reconnect`, where the SAME session id re-registers
+         * right after — killing terminals there would tear down a live PTY
+         * the reconnecting session still owns. Only set this for an end that
+         * is truly final (a real CLI quit, or TTL expiry with no reconnect
+         * expected) — never for the orphan sweep (preserveSubscriptions).
+         */
+        killTerminals?: boolean;
         expectedOwnerToken?: string;
         onOwnerConfirmed?: () => void | Promise<void>;
     } = {},
@@ -1034,6 +1045,8 @@ async function endSharedSessionUnlocked(
         confirmedTerminal?: boolean;
         /** Keep subscriptions during orphan/process-disconnect cleanup. */
         preserveSubscriptions?: boolean;
+        /** See endSharedSession's doc comment — distinct from confirmedTerminal. */
+        killTerminals?: boolean;
         expectedOwnerToken?: string;
         onOwnerConfirmed?: () => void | Promise<void>;
     } = {},
@@ -1138,6 +1151,37 @@ async function endSharedSessionUnlocked(
         });
     }
 
+    // Kill every terminal this session opened — but ONLY when the caller has
+    // asserted a TRUE final end via opts.killTerminals. This is deliberately
+    // NOT opts.confirmedTerminal: that broader gate also fires for
+    // reload/new/resume/fork and `/remote reconnect`, all of which re-register
+    // the SAME session id right after — killing terminals there would tear
+    // down a live PTY the reconnecting session still owns. killTerminals is
+    // only set by a session_end carrying the CLI's explicit `final` flag (a
+    // real quit) and by TTL expiry (no reconnect is coming); the orphan sweep
+    // never sets it (preserveSubscriptions — the session may still return).
+    // emitToRunner is cross-node safe (Redis-adapter room) — unlike reaching
+    // for a local-only runner socket, it still works when the runner is
+    // connected to a different relay node than the one tearing down here.
+    if (opts.killTerminals && session.runnerId) {
+        try {
+            const terminals = await getTerminalsForSession(sessionId, session.runnerId);
+            for (const terminal of terminals) {
+                emitToRunner(session.runnerId, "kill_terminal", { terminalId: terminal.terminalId, sessionId });
+                // Best-effort immediate cleanup: if the runner is offline the
+                // emit above goes nowhere and no terminal_exit ever arrives to
+                // trigger the normal GC path, leaking this hash + its
+                // runner-set membership until TERMINAL_TTL_SECONDS. The owning
+                // session is gone for good, so drop the Redis record now too.
+                await deleteTerminalEntry(terminal.terminalId).catch((err) => {
+                    log.warn(`endSharedSession: failed to delete terminal entry ${terminal.terminalId}:`, err);
+                });
+            }
+        } catch (err) {
+            log.warn(`endSharedSession: failed to kill terminals for ${sessionId}:`, err);
+        }
+    }
+
     // Ordinary disconnects are transient: session-owned subscriptions must
     // survive until an explicit terminal close. Standalone time:* schedules
     // also survive terminal close only when they are not session-owned; the
@@ -1226,7 +1270,11 @@ export async function sweepExpiredSessions(nowMs: number = Date.now()): Promise<
             tuiSocket.disconnect(true);
         }
 
-        await endSharedSession(sessionId, "Session expired", { confirmedTerminal: true });
+        // TTL expiry is a genuine final end — the ephemeral Redis record for
+        // this session id is gone and nothing will reconnect into it, unlike
+        // the orphan sweep below (which explicitly preserves subscriptions
+        // because the session may still return). Safe to kill terminals.
+        await endSharedSession(sessionId, "Session expired", { confirmedTerminal: true, killTerminals: true });
     }
 
     // Sweep orphaned sessions: sessions in Redis with no active relay socket
@@ -1288,6 +1336,10 @@ export async function sweepOrphanedSessions(nowMs: number): Promise<void> {
         );
         // An orphan proves only that the relay process/socket disappeared; it
         // is not an explicit session close, so subscriptions survive restart.
+        // Never kill terminals here either (no killTerminals): a worker that
+        // lost its relay connection but is still alive locally may reconnect
+        // into this same session id, and its live PTYs must not be killed
+        // out from under it.
         await endSharedSession(candidate.sessionId, "Session orphaned (no active relay connection)", {
             confirmedTerminal: true,
             preserveSubscriptions: true,

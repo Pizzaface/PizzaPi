@@ -175,8 +175,8 @@ export function createConnectionHandlers(deps: ConnectionHandlersDeps) {
         connect(rctx, connectionHandlers);
     }
 
-    function doDisconnect(): void {
-        disconnect(rctx, connectionHandlers);
+    function doDisconnect(opts?: { final?: boolean }): void {
+        disconnect(rctx, connectionHandlers, opts);
     }
 
     return { connectionHandlers, doConnect, doDisconnect };

@@ -228,6 +228,30 @@ export async function getTerminalIdsForRunner(runnerId: string): Promise<string[
     return terminals.map((t) => t.terminalId);
 }
 
+/**
+ * Terminals opened from a specific session, scoped to its runner. Used to
+ * kill every PTY a session owns on CONFIRMED session end (see
+ * endSharedSession) — terminals registered without a sessionId (opened
+ * outside any session context, or from a pre-#974 client) are never matched
+ * here and are left alone.
+ */
+export async function getTerminalsForSession(sessionId: string, runnerId: string): Promise<RedisTerminalData[]> {
+    const terminals = await getTerminalsForRunnerState(runnerId);
+    return terminals.filter((t) => t.sessionId === sessionId);
+}
+
+/**
+ * Remove a terminal's Redis hash (and its runner-set membership) immediately.
+ * Used right after emitting `kill_terminal` on a confirmed final session end:
+ * if the runner is offline the emit goes nowhere, so no `terminal_exit` ever
+ * arrives to drive the normal exited→GC cleanup path, leaking the entry until
+ * its TTL. The owning session is gone for good at that point, so this is a
+ * safe best-effort delete (idempotent — a no-op if already removed).
+ */
+export async function deleteTerminalEntry(terminalId: string): Promise<void> {
+    await deleteTerminalState(terminalId);
+}
+
 /** Internal cleanup helper — removes all local + Redis state for a terminal. */
 async function cleanupTerminal(terminalId: string): Promise<void> {
     const timer = localTerminalGcTimers.get(terminalId);

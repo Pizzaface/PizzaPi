@@ -48,6 +48,13 @@ export function createSioStateRedisFixture(): SioStateRedisFixture {
                 ops.push(() => readHash(key));
                 return multi;
             },
+            hGet(key: string, field: string) {
+                ops.push(() => {
+                    if (hGetError) throw hGetError;
+                    return readHash(key)[field] ?? null;
+                });
+                return multi;
+            },
             hmGet(key: string, fields: readonly string[]) {
                 ops.push(() => {
                     const hash = readHash(key);

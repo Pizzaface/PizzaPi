@@ -826,8 +826,15 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
  * Tear down the active Socket.IO connection cleanly.
  * Cancels any pending ask-user-question / plan-mode prompts, clears the
  * message bus send function, and emits `session_end` before disconnecting.
+ *
+ * `opts.final` must be true ONLY for a real quit (see
+ * shouldReportCompleteOnShutdown) — reload/new/resume/fork restart the
+ * runtime and `/remote reconnect` immediately re-registers the SAME session
+ * id, so `final` defaults to false (fail safe): the server tears down
+ * routes/subscriptions as before but must never kill this session's
+ * terminals when `final` is not set.
  */
-export function disconnect(rctx: RelayContext, handlers?: ConnectionHandlers): void {
+export function disconnect(rctx: RelayContext, handlers?: ConnectionHandlers, opts?: { final?: boolean }): void {
     stopHeartbeat();
     handlers?.onSocketTeardown();
     handlers?.onDelinkDisconnect();
@@ -839,7 +846,11 @@ export function disconnect(rctx: RelayContext, handlers?: ConnectionHandlers): v
     bridge?.setRelayContext?.(null);
     if (rctx.sioSocket) {
         if (rctx.relay && rctx.sioSocket.connected) {
-            rctx.sioSocket.emit("session_end", { sessionId: rctx.relay.sessionId, token: rctx.relay.token });
+            rctx.sioSocket.emit("session_end", {
+                sessionId: rctx.relay.sessionId,
+                token: rctx.relay.token,
+                final: opts?.final === true,
+            });
         }
         rctx.sioSocket.removeAllListeners();
         rctx.sioSocket.disconnect();

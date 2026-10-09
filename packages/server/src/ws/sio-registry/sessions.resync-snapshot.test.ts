@@ -43,6 +43,18 @@ mock.module("../sio-state/index.js", () => ({
     removePendingParentDelinkChild: noopAsync,
     getRunner: async () => null,
     deleteChildSpawnBinding: noopAsync,
+    // sessions.ts statically imports getTerminalsForSession from ./terminals.js
+    // (server-authoritative terminal kill on confirmed session end), which in
+    // turn imports these terminal CRUD helpers — unused by this test's
+    // sendSnapshotToViewer scenarios, but Bun's mock.module replaces the
+    // whole module's exports, so they must still exist or the static import
+    // binding fails.
+    setTerminal: noopAsync,
+    getTerminal: async () => null,
+    updateTerminalFields: noopAsync,
+    claimTerminalSpawn: async () => false,
+    deleteTerminal: noopAsync,
+    getTerminalsForRunner: async () => [],
 }));
 
 mock.module("./meta.js", () => ({
