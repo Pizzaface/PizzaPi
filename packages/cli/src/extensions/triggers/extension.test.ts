@@ -628,7 +628,6 @@ describe("mergeWithBuiltinSigils", () => {
 // list_available_sigils — child-session action sigil omission
 // ============================================================================
 
-import { triggersExtension } from "./extension.js";
 import { getRelaySessionId } from "../remote.js";
 import { afterEach } from "bun:test";
 
