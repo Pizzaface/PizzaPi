@@ -42,6 +42,7 @@ mock.module("../../sio-registry.js", () => ({
     forgetLocalTuiSocketIfCurrent: () => {},
     broadcastToViewers: () => {},
     suspendSharedSession: async () => false,
+    cancelSuspendedSession: async () => false,
     endSharedSession: async (
         sessionId: string,
         reason?: string,

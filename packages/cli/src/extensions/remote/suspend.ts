@@ -63,3 +63,28 @@ export function requestSuspend(rctx: RelayContext): Promise<boolean> {
         );
     });
 }
+
+/**
+ * Abort a suspend the relay already accepted: work arrived on this
+ * still-connected socket during the requestSuspend ack round trip (a final
+ * local check caught it before the worker exited). The relay has already
+ * stopped routing to us — restore it on this same socket instead of
+ * spinning up a new worker. Resolves true only on an explicit ok; the caller
+ * must not shut down regardless (we never committed to exiting).
+ */
+export function cancelSuspend(rctx: RelayContext): Promise<boolean> {
+    const socket = rctx.sioSocket;
+    const relay = rctx.relay;
+    if (!socket?.connected || !relay) return Promise.resolve(false);
+    return new Promise((resolve) => {
+        const timeout = setTimeout(() => resolve(false), SUSPEND_ACK_TIMEOUT_MS);
+        socket.emit(
+            "session_suspend_cancel",
+            { sessionId: relay.sessionId, token: relay.token },
+            (result: { ok: boolean }) => {
+                clearTimeout(timeout);
+                resolve(result?.ok === true);
+            },
+        );
+    });
+}

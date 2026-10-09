@@ -45,6 +45,7 @@ mock.module("../../sio-registry.js", () => ({
     getSessionOwnerToken: async () => "tok",
     broadcastToViewers: mockBroadcastToViewers,
     suspendSharedSession: async () => false,
+    cancelSuspendedSession: async () => false,
     endSharedSession: async () => {},
     getSharedSession: async () => null,
     emitToRunner: () => {},

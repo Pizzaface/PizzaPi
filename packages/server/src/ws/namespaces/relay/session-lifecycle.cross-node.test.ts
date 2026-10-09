@@ -56,6 +56,7 @@ mock.module("../../sio-registry.js", () => ({
     },
     broadcastToViewers: () => {},
     suspendSharedSession: async () => false,
+    cancelSuspendedSession: async () => false,
     endSharedSession: async (
         sessionId: string,
         reason?: string,

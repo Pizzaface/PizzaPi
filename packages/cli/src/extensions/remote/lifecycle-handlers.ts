@@ -58,8 +58,9 @@ import type { CancellationManager } from "./trigger-cancellation.js";
 import { isManualAbort } from "./followup-grace.js";
 import type { FollowUpGraceManager } from "./followup-grace.js";
 import { slimForwardedEvent } from "./slim-forwarded-event.js";
-import { canSuspendWorker, requestSuspend, shouldSuspend } from "./suspend.js";
+import { canSuspendWorker, cancelSuspend, requestSuspend, shouldSuspend } from "./suspend.js";
 import { runningBackgroundJobCount } from "../background-bash.js";
+import { messageBus } from "../session-message-bus.js";
 
 const log = createLogger("remote");
 const LINKED_CHILD_COUNT_TIMEOUT_MS = 2_000;
@@ -523,7 +524,11 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         const generation = state.sessionCompleteGeneration;
         const localProbe = () => ({
             sessionCompleteDelivered: state.sessionCompleteFired,
-            hasPendingMessages: ctx.hasPendingMessages(),
+            // ctx.hasPendingMessages() only sees pi's own turn-input queue; a plain
+            // send_message (no deliverAs) is queued separately in the inter-session
+            // message bus and is invisible to pi, so fold it in here too — otherwise
+            // an unconsumed message sitting in the bus would never block suspension.
+            hasPendingMessages: ctx.hasPendingMessages() || messageBus.pendingCount() > 0,
             isAgentBusy: rctx.isAgentActive || rctx.isAgentSettling || rctx.shuttingDown,
             activeSubagents: hasActiveSubagents(),
             runningBackgroundJobs: runningBackgroundJobCount(),
@@ -540,8 +545,30 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         if (!shouldSuspend({ ...localProbe(), activeSubscriptionCount, linkedChildCount })) return false;
 
         if (!(await requestSuspend(rctx))) return false;
-        // ponytail: work arriving during the ack round-trip is lost with the
-        // worker; the relay stops routing to us once it has acked.
+
+        // The relay stopped routing to us the instant it accepted the suspend
+        // above — but this socket stayed fully connected throughout that ack
+        // round trip, so a send_message / trigger / user input arriving during
+        // it was handled by its own listener same as always (just with the
+        // relay already treating us as suspended). Re-check right before
+        // committing to exit: if anything is no longer idle, the work already
+        // landed here and would be lost with the worker — abort instead and ask
+        // the relay to restore routing on this same, still-live socket.
+        if (state.sessionCompleteGeneration !== generation || !shouldSuspend({ ...localProbe(), activeSubscriptionCount, linkedChildCount })) {
+            const cancelled = await cancelSuspend(rctx);
+            if (!cancelled) {
+                // ponytail: the relay may be unreachable right when we need to undo
+                // the suspend it already committed; a future delivery to this
+                // (still suspended-on-relay, still-alive) session would then take
+                // the wake path and spawn a redundant second worker rather than
+                // reaching this one directly. Self-heals on the next natural
+                // reconnect/register; upgrade path is a retry loop here if this
+                // proves to happen in practice.
+                log.warn("pizzapi: could not cancel suspend after new work arrived — relay may route via wake until this worker reconnects");
+            }
+            return false;
+        }
+
         rctx.suspending = true;
         log.info("pizzapi: idle child suspended — exiting worker; the next message wakes it");
         // Tell the daemon first so it keeps attachments for the resume.

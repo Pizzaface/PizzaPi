@@ -81,7 +81,7 @@ mock.module("./hub.js", () => ({
 
 afterAll(() => mock.restore());
 
-const { registerTuiSession, suspendSharedSession, touchSessionActivity, sweepOrphanedSessions } = await import("./sessions.js");
+const { registerTuiSession, suspendSharedSession, cancelSuspendedSession, touchSessionActivity, sweepOrphanedSessions } = await import("./sessions.js");
 const { initSioRegistry, localTuiSockets } = await import("./context.js");
 
 const fakeNamespace = {
@@ -147,6 +147,35 @@ describe("suspendSharedSession", () => {
         expect(calls.hub).toContainEqual(expect.objectContaining({
             event: "session_status",
             data: expect.objectContaining({ sessionId: "s1", suspended: true }),
+        }));
+    });
+});
+
+describe("cancelSuspendedSession", () => {
+    it("refuses a caller that no longer owns the session", async () => {
+        seed("s1", { suspended: true, expiresAt: null });
+        const socket = {} as never;
+        expect(await cancelSuspendedSession(socket, "s1", "stale-token")).toBe(false);
+        expect(localTuiSockets.has("s1")).toBe(false);
+    });
+
+    it("refuses a session that isn't currently suspended (nothing to cancel)", async () => {
+        seed("s1");
+        const socket = {} as never;
+        expect(await cancelSuspendedSession(socket, "s1", "tok")).toBe(false);
+    });
+
+    it("restores routing on the same socket — no new worker, nothing lost", async () => {
+        seed("s1", { suspended: true, expiresAt: null });
+        const socket = { id: "sock-1" } as never;
+
+        expect(await cancelSuspendedSession(socket, "s1", "tok")).toBe(true);
+
+        expect(store.get("s1")).toMatchObject({ suspended: false, parentSessionId: "parent-1" });
+        expect(localTuiSockets.get("s1")).toBe(socket);
+        expect(calls.hub).toContainEqual(expect.objectContaining({
+            event: "session_status",
+            data: expect.objectContaining({ sessionId: "s1", suspended: false }),
         }));
     });
 });

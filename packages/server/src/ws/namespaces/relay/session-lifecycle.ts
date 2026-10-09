@@ -9,6 +9,7 @@ import {
     broadcastToViewers,
     endSharedSession,
     suspendSharedSession,
+    cancelSuspendedSession,
     getSessionOwnerToken,
     forgetLocalTuiSocketIfCurrent,
 } from "../../sio-registry.js";
@@ -207,6 +208,43 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             // exiting worker — a message now has to wake the session.
             await socket.leave(relaySessionRoom(sessionId));
             log.info(`session ${sessionId} suspended`);
+        }
+        if (typeof acknowledge === "function") acknowledge({ ok });
+    });
+
+    // ── session_suspend_cancel — abort a suspend the relay already accepted ──
+    // Work (send_message, trigger, user input) arrived on this still-connected
+    // socket during the session_suspend ack round trip. The worker detected it
+    // via a final local check and is aborting instead of exiting — restore
+    // routing on the SAME socket (no new worker process) and drain anything
+    // that fell back to a pending Delivery row while we were briefly
+    // unroutable, exactly as a fresh register would.
+    socket.on("session_suspend_cancel", async (data, acknowledge?: (result: { ok: boolean }) => void) => {
+        const sessionId = typeof data?.sessionId === "string" ? data.sessionId : undefined;
+        const token = typeof data?.token === "string" ? data.token : undefined;
+        if (!sessionId || !token) {
+            if (typeof acknowledge === "function") acknowledge({ ok: false });
+            return;
+        }
+        let ok = false;
+        await enqueueSessionEvent(sessionId, async () => {
+            ok = await cancelSuspendedSession(socket, sessionId, token).catch((err) => {
+                log.warn(`session_suspend_cancel failed for ${sessionId}:`, err);
+                return false;
+            });
+        });
+        if (ok) {
+            socket.data.sessionId = sessionId;
+            socketAckedSeqs.set(socket.id, 0);
+            await socket.join(relaySessionRoom(sessionId));
+            // Drain deliveries that fell back to "pending" (or were marked for a
+            // wake) while this session was briefly marked suspended — the usual
+            // drain-on-register never runs here since the worker never restarted.
+            const drainOwner = socket.data.userId ?? null;
+            void drainPendingDeliveries(sessionId, createEngineDeps(), drainOwner).catch((err) => {
+                log.error(`pending-delivery drain failed after cancelling suspend of ${sessionId}:`, err);
+            });
+            log.info(`session ${sessionId} suspend cancelled — worker found new work during the ack round trip`);
         }
         if (typeof acknowledge === "function") acknowledge({ ok });
     });

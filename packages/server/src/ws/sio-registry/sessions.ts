@@ -1347,6 +1347,49 @@ export async function suspendSharedSession(sessionId: string, expectedOwnerToken
     }
 }
 
+/**
+ * Cancel a suspend the relay already committed, because work arrived on the
+ * still-connected socket during the ack round trip (the worker detects this
+ * and aborts before exiting — see trySuspendIdleChild). Restores routing on
+ * the SAME socket: no new worker process, nothing lost. Returns false when
+ * the caller no longer owns the session, or the session is no longer marked
+ * suspended (already woken or ended — nothing to cancel).
+ */
+export async function cancelSuspendedSession(socket: Socket, sessionId: string, expectedOwnerToken: string): Promise<boolean> {
+    const lockOwner = randomUUID();
+    await acquireSessionOwnershipLock(sessionId, lockOwner);
+    try {
+        if ((await getSessionOwnerToken(sessionId)) !== expectedOwnerToken) return false;
+        const session = await getSessionSummary(sessionId);
+        if (!session?.suspended) return false;
+
+        await updateSessionFields(sessionId, {
+            suspended: false,
+            expiresAt: session.isEphemeral ? nextEphemeralExpiry() : null,
+        });
+        await touchRelaySession(sessionId).catch((error) => {
+            log.error(`Failed to restore relay_session expiry after cancelling suspend of ${sessionId}:`, error);
+        });
+        localTuiSockets.set(sessionId, socket);
+
+        await broadcastToHub(
+            "session_status",
+            {
+                sessionId,
+                isActive: session.isActive ?? false,
+                lastHeartbeatAt: session.lastHeartbeatAt,
+                sessionName: session.sessionName,
+                model: modelFromHeartbeat(session.lastHeartbeat ? safeJsonParse(session.lastHeartbeat) : null),
+                suspended: false,
+            },
+            session.userId ?? undefined,
+        );
+        return true;
+    } finally {
+        await releaseSessionOwnershipLock(sessionId, lockOwner);
+    }
+}
+
 /** Sweep expired ephemeral sessions (Redis + Socket.IO rooms). */
 export async function sweepExpiredSessions(nowMs: number = Date.now()): Promise<void> {
     const expiredIds = await scanExpiredSessions(nowMs);
