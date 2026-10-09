@@ -18,6 +18,7 @@ import {
     finishInFlightMessageState,
     _resetChunkedDeliveryStateForTesting,
     CHUNK_RETRY_MAX_ATTEMPTS,
+    CHUNK_RETRY_MAX_DELAY_MS,
 } from "./chunked-delivery.js";
 import type { RelayContext } from "../remote-types.js";
 import { resetSessionAnalysis, sessionAnalysisExtension } from "../session-analysis.js";
@@ -341,6 +342,61 @@ describe("messagesChangedSinceLastEmit", () => {
         const freshCtx = makeContext({ leafId: "fresh-leaf" });
         emitSessionActive(freshCtx, undefined, true);
         expect((freshCtx.emitted[0] as any).type).toBe("session_active");
+    });
+
+    test("bounded retries: a capped low-frequency probe retries and delivers after the relay recovers on the same connection", async () => {
+        // Same transcript/leafId stuck through a temporary relay persistence
+        // outage — exhaust the fast bounded retries exactly like above.
+        const ctx = makeContext({
+            leafId: "stuck-leaf",
+            supportsChunkAck: true,
+            entries: [{
+                type: "message",
+                id: "stuck-leaf",
+                parentId: null,
+                timestamp: new Date(0).toISOString(),
+                message: { role: "user", content: "x".repeat(4_800_000), timestamp: Date.now() },
+            }],
+        });
+        for (let i = 0; i < CHUNK_RETRY_MAX_ATTEMPTS; i++) {
+            recordInFlightMessageState(ctx);
+            finishInFlightMessageState(ctx, "stuck-leaf", false);
+        }
+
+        // Right after exhaustion, a throttled emit still only sends metadata —
+        // no immediate hammering.
+        ctx.emitted.length = 0;
+        emitSessionActive(ctx, undefined, true);
+        expect((ctx.emitted[0] as any).type).toBe("session_metadata_update");
+
+        // The relay outage lifts, but the socket connection never dropped — no
+        // reconnect occurs, and no new message arrives to change the leafId.
+        // Once the capped low-frequency probe interval has elapsed, a later
+        // throttled emit (e.g. the next heartbeat tick) must still retry.
+        const realNow = Date.now.bind(Date);
+        const mockedNow = realNow() + CHUNK_RETRY_MAX_DELAY_MS + 1_000;
+        try {
+            Date.now = () => mockedNow;
+            ctx.relay = { sessionId: "sess", token: "tok", shareUrl: "http://localhost/sess", seq: 0, ackedSeq: 0 };
+            ctx.sioSocket = {
+                connected: true,
+                emit: (_name: string, _payload: any, ack?: (result: { ok: boolean }) => void) => ack?.({ ok: true }),
+            } as any;
+
+            ctx.emitted.length = 0;
+            emitSessionActive(ctx, undefined, true);
+            expect((ctx.emitted[0] as any).type).toBe("session_active");
+            expect((ctx.emitted[0] as any).state.chunked).toBe(true);
+
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            await new Promise<void>((resolve) => setImmediate(resolve));
+
+            // Delivered — the stuck state is cleared, so this leafId is no longer
+            // considered "changed" (pending re-emission) and no longer gave up.
+            expect(messagesChangedSinceLastEmit(ctx)).toBe(false);
+        } finally {
+            Date.now = realNow;
+        }
     });
 
     test("throttles opt-in chunked snapshots to metadata-only + one trailing snapshot", async () => {

@@ -376,10 +376,12 @@ function clearTrailingSnapshot(): void {
 // emitSessionActive(rctx) directly, unthrottled) always gets a fresh attempt
 // and, on success, clears this state.
 export const CHUNK_RETRY_MAX_ATTEMPTS = 6;
-const CHUNK_RETRY_MAX_DELAY_MS = 10 * 60 * 1000; // 10 min cap
+export const CHUNK_RETRY_MAX_DELAY_MS = 10 * 60 * 1000; // 10 min cap
 interface ChunkRetryState {
     leafId: string | null;
     attempts: number;
+    /** Date.now() when this leafId's last attempt outcome was recorded. */
+    lastAttemptAt: number;
 }
 let chunkRetryState: ChunkRetryState | null = null;
 
@@ -404,14 +406,24 @@ function recordChunkDeliveryOutcome(leafId: string | null, delivered: boolean): 
     }
     if (chunkRetryState && chunkRetryState.leafId === leafId) {
         chunkRetryState.attempts++;
+        chunkRetryState.lastAttemptAt = Date.now();
     } else {
-        chunkRetryState = { leafId, attempts: 1 };
+        chunkRetryState = { leafId, attempts: 1, lastAttemptAt: Date.now() };
     }
 }
 
 /** True once bounded auto-retries for this leafId are exhausted. */
 function chunkDeliveryGaveUp(leafId: string | null): boolean {
     return chunkRetryState !== null && chunkRetryState.leafId === leafId && chunkRetryState.attempts >= CHUNK_RETRY_MAX_ATTEMPTS;
+}
+
+/**
+ * Once exhausted, how long since the last attempt for this leafId — used to
+ * gate a capped low-frequency recovery probe instead of giving up forever.
+ */
+function msSinceLastGivenUpAttempt(leafId: string | null): number {
+    if (!chunkRetryState || chunkRetryState.leafId !== leafId) return Infinity;
+    return Date.now() - chunkRetryState.lastAttemptAt;
 }
 
 function getLiveModel(rctx: RelayContext, fallback: unknown | (() => unknown)) {
@@ -513,11 +525,13 @@ export function finishInFlightMessageState(
     recordChunkDeliveryOutcome(leafId, delivered);
     if (delivered) {
         recordEmittedMessageState(rctx, leafId);
-    } else if (chunkDeliveryGaveUp(leafId)) {
+    } else if (chunkRetryState && chunkRetryState.leafId === leafId && chunkRetryState.attempts === CHUNK_RETRY_MAX_ATTEMPTS) {
+        // Log once when first exhausted, not on every subsequent low-frequency
+        // probe failure (recordChunkDeliveryOutcome keeps incrementing attempts).
         log.warn(
             `pizzapi: chunked delivery failed ${CHUNK_RETRY_MAX_ATTEMPTS} times in a row — ` +
-            "giving up on automatic retries for this transcript state (metadata-only updates continue; " +
-            "a new message or explicit resync will retry).",
+            "giving up on fast automatic retries for this transcript state (metadata-only updates continue; " +
+            "a low-frequency recovery probe, a new message, or an explicit resync will retry).",
         );
     }
 }
@@ -565,22 +579,35 @@ export function emitSessionActive(rctx: RelayContext, recoveryNonce?: string, th
     if (throttle) {
         const currentLeafId = rctx.latestCtx.sessionManager.getLeafId();
         if (chunkDeliveryGaveUp(currentLeafId)) {
-            // Bounded auto-retries exhausted for this transcript state — stop
-            // looping. Metadata keeps flowing; a new message (new leafId) or
-            // an explicit unthrottled demand will retry.
-            forwardMetadataUpdate(rctx);
-            return;
-        }
-        const retryIntervalMs = currentChunkRetryIntervalMs(currentLeafId);
-        const sinceLastChunked = Date.now() - lastChunkedSnapshotAt;
-        if (sinceLastChunked < retryIntervalMs) {
-            forwardMetadataUpdate(rctx);
-            trailingSnapshotTimer ??= setTimeout(() => {
-                trailingSnapshotTimer = null;
-                emitSessionActive(rctx, undefined, true);
-            }, retryIntervalMs - sinceLastChunked);
-            trailingSnapshotTimer.unref?.();
-            return;
+            // Bounded auto-retries exhausted for this transcript state — don't
+            // loop at full speed, but don't give up forever either: a relay
+            // persistence/ownership outage can lift while the socket stays up,
+            // with no reconnect (which would otherwise force an unthrottled
+            // retry) and no new message (new leafId) to re-trigger one. Probe
+            // again at the capped delay; metadata keeps flowing in between.
+            const sinceLastAttempt = msSinceLastGivenUpAttempt(currentLeafId);
+            if (sinceLastAttempt < CHUNK_RETRY_MAX_DELAY_MS) {
+                forwardMetadataUpdate(rctx);
+                trailingSnapshotTimer ??= setTimeout(() => {
+                    trailingSnapshotTimer = null;
+                    emitSessionActive(rctx, undefined, true);
+                }, CHUNK_RETRY_MAX_DELAY_MS - sinceLastAttempt);
+                trailingSnapshotTimer.unref?.();
+                return;
+            }
+            // Capped probe interval elapsed — fall through and attempt again.
+        } else {
+            const retryIntervalMs = currentChunkRetryIntervalMs(currentLeafId);
+            const sinceLastChunked = Date.now() - lastChunkedSnapshotAt;
+            if (sinceLastChunked < retryIntervalMs) {
+                forwardMetadataUpdate(rctx);
+                trailingSnapshotTimer ??= setTimeout(() => {
+                    trailingSnapshotTimer = null;
+                    emitSessionActive(rctx, undefined, true);
+                }, retryIntervalMs - sinceLastChunked);
+                trailingSnapshotTimer.unref?.();
+                return;
+            }
         }
     }
     clearTrailingSnapshot();
