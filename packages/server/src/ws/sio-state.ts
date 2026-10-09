@@ -17,6 +17,7 @@
 
 
 import { createClient, type RedisClientType } from "redis";
+import { randomUUID } from "crypto";
 import { createLogger } from "@pizzapi/tools";
 
 const log = createLogger("sio-state");
@@ -105,10 +106,20 @@ function seqKey(sessionId: string): string {
 }
 
 /**
- * Version counter bumped whenever a session's lastState (messages) is
+ * Opaque token bumped whenever a session's lastState (messages) is
  * overwritten. Lets every relay node cheaply detect that its process-local
  * parsed-messages cache (sio-registry/sessions.ts) is stale, without
  * re-reading/re-parsing the multi-MB lastState blob on every call.
+ *
+ * Stored as a random token (randomUUID), not a monotonic integer counter.
+ * This key has its own TTL (refreshed alongside the session) and is never
+ * explicitly deleted on teardown, so a long-idle session's key can expire on
+ * its own well before (or after) the session row itself is recreated under
+ * the same ID. A monotonic counter restarting from a small number after that
+ * expiry could coincidentally reproduce a value a peer node still has cached
+ * from the PREVIOUS generation, serving stale (wrong-generation) messages. A
+ * random token cannot collide with a prior generation's token in practice,
+ * regardless of when/whether the key expired in between.
  */
 function messagesVersionKey(sessionId: string): string {
     return `${KEY_PREFIX}:messages-version:${sessionId}`;
@@ -531,7 +542,7 @@ export async function setSession(sessionId: string, data: RedisSessionData): Pro
     const versionKey = messagesVersionKey(sessionId);
     multi.hSet(key, fields);
     multi.expire(key, SESSION_TTL_SECONDS);
-    multi.incr(versionKey);
+    multi.set(versionKey, randomUUID());
     multi.expire(versionKey, SESSION_TTL_SECONDS);
 
     // Add to global index
@@ -766,10 +777,31 @@ export async function getSeq(sessionId: string): Promise<number> {
 
 // ── Messages cache version counter ──────────────────────────────────────────
 
-export async function getMessagesVersion(sessionId: string): Promise<number | null> {
+export interface MessagesVersionInfo {
+    /** Opaque per-write token — see messagesVersionKey() for why this is a
+     * random UUID rather than a monotonic counter. */
+    token: string;
+    /**
+     * HSTRLEN of the session hash's `lastState` field at read time. A single
+     * cheap O(1) Redis command (no value transfer) used as defense-in-depth
+     * against an old (pre-upgrade) relay node writing `lastState` via the
+     * plain `updateSessionFields` path during a rolling deploy, which does
+     * not bump `token`. Catches any write that changes the byte length of
+     * `lastState` — true for virtually all real transcript changes — even
+     * though the token alone would miss it. A same-length overwrite by an
+     * unupgraded node is the one residual gap this does not close.
+     */
+    lastStateLength: number;
+}
+
+export async function getMessagesVersion(sessionId: string): Promise<MessagesVersionInfo | null> {
     const r = requireRedis();
-    const val = await r.get(messagesVersionKey(sessionId));
-    return val === null ? null : parseInt(val, 10) || 0;
+    const [token, lastStateLength] = await Promise.all([
+        r.get(messagesVersionKey(sessionId)),
+        r.hStrLen(sessionKey(sessionId), "lastState"),
+    ]);
+    if (token === null) return null;
+    return { token, lastStateLength: lastStateLength ?? 0 };
 }
 
 /**
@@ -793,7 +825,7 @@ export async function updateSessionFieldsAndBumpMessagesVersion(
     const multi = r.multi();
     multi.hSet(key, hashFields);
     multi.expire(key, SESSION_TTL_SECONDS);
-    multi.incr(versionKey);
+    multi.set(versionKey, randomUUID());
     multi.expire(versionKey, SESSION_TTL_SECONDS);
     await multi.exec();
 }

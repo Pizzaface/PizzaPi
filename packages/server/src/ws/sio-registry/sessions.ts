@@ -126,20 +126,103 @@ const lastRelaySessionOverlayWriteTimes = new Map<string, number>();
 const SQLITE_OVERLAY_WRITE_THROTTLE_MS = 5_000;
 // Process-local cache of parsed `lastState.messages` arrays, keyed by
 // sessionId. Each entry is stamped with the Redis-backed messages version
-// (see updateSessionFieldsAndBumpMessagesVersion/getMessagesVersion) at fill time; a read compares
-// its current version against that stamp so every relay node — not just the
-// one the runner is connected to — detects staleness after a state update on
-// another node. Bounded LRU (insertion order = recency; a hit re-inserts) so
-// memory can't grow unbounded across many paged sessions.
-const sessionMessagesCache = new Map<string, { version: number; messages: readonly unknown[] }>();
+// token + lastState byte length (see updateSessionFieldsAndBumpMessagesVersion/
+// getMessagesVersion) at fill time; a read compares both against the live
+// values so every relay node — not just the one the runner is connected to —
+// detects staleness after a state update on another node, including from an
+// old (pre-upgrade) node that writes lastState without bumping the token.
+// Bounded by both entry count and total estimated bytes (lastState.length is
+// used as a cheap byte-size proxy — see cacheSessionMessages). Map iteration
+// order = insertion order; a hit or fill re-inserts, so the oldest entry is
+// always both the count-LRU and idle-LRU candidate.
+interface CachedSessionMessages {
+    token: string;
+    lastStateLength: number;
+    messages: readonly unknown[];
+    byteSize: number;
+    lastAccessedAt: number;
+}
+
+const sessionMessagesCache = new Map<string, CachedSessionMessages>();
+let sessionMessagesCacheBytes = 0;
 const MAX_CACHED_SESSION_MESSAGES = 200;
+// ponytail: a flat total-byte budget, not a per-session one — a handful of
+// huge sessions can still starve smaller ones out of the cache. Upgrade to
+// per-user/per-session fairness if that shows up in practice.
+const DEFAULT_MAX_CACHED_SESSION_MESSAGES_BYTES = 256 * 1024 * 1024;
+let MAX_CACHED_SESSION_MESSAGES_BYTES = DEFAULT_MAX_CACHED_SESSION_MESSAGES_BYTES;
+// Entries unread for this long are dropped even under budget — a session
+// that stops being paged (closed tab, ended session whose version key
+// hasn't expired yet) shouldn't hold memory indefinitely.
+const CACHED_SESSION_MESSAGES_IDLE_MS = 10 * 60 * 1000;
+
+function evictCachedSessionMessages(sessionId: string): void {
+    const entry = sessionMessagesCache.get(sessionId);
+    if (!entry) return;
+    sessionMessagesCache.delete(sessionId);
+    sessionMessagesCacheBytes -= entry.byteSize;
+}
+
+/** Evict entries idle past CACHED_SESSION_MESSAGES_IDLE_MS. Map iteration
+ * order tracks access recency (see above), so this can stop at the first
+ * fresh entry instead of scanning the whole cache. */
+function pruneIdleCachedSessionMessages(now = Date.now()): void {
+    for (const [sessionId, entry] of sessionMessagesCache) {
+        if (now - entry.lastAccessedAt <= CACHED_SESSION_MESSAGES_IDLE_MS) break;
+        evictCachedSessionMessages(sessionId);
+    }
+}
+
+function touchCachedSessionMessages(sessionId: string, entry: CachedSessionMessages): void {
+    sessionMessagesCache.delete(sessionId);
+    entry.lastAccessedAt = Date.now();
+    sessionMessagesCache.set(sessionId, entry);
+}
+
+function cacheSessionMessages(
+    sessionId: string,
+    token: string,
+    lastStateLength: number,
+    messages: readonly unknown[],
+    byteSize: number,
+): void {
+    // An entry bigger than the whole budget would just evict everything else
+    // on its own — skip caching it and return the parsed messages uncached.
+    if (byteSize > MAX_CACHED_SESSION_MESSAGES_BYTES) return;
+
+    evictCachedSessionMessages(sessionId);
+    sessionMessagesCache.set(sessionId, { token, lastStateLength, messages, byteSize, lastAccessedAt: Date.now() });
+    sessionMessagesCacheBytes += byteSize;
+
+    while (
+        sessionMessagesCache.size > MAX_CACHED_SESSION_MESSAGES ||
+        sessionMessagesCacheBytes > MAX_CACHED_SESSION_MESSAGES_BYTES
+    ) {
+        const oldestKey = sessionMessagesCache.keys().next().value;
+        if (oldestKey === undefined) break;
+        evictCachedSessionMessages(oldestKey);
+    }
+}
 
 export function _clearSessionMessagesCacheForTesting(): void {
     sessionMessagesCache.clear();
+    sessionMessagesCacheBytes = 0;
 }
 
 export function _hasCachedSessionMessagesForTesting(sessionId: string): boolean {
     return sessionMessagesCache.has(sessionId);
+}
+
+/** Test-only: shrink the byte budget so tests don't need to allocate a real
+ * 256MB string. Pass null to restore the production default. */
+export function _setMaxCachedSessionMessagesBytesForTesting(bytes: number | null): void {
+    MAX_CACHED_SESSION_MESSAGES_BYTES = bytes ?? DEFAULT_MAX_CACHED_SESSION_MESSAGES_BYTES;
+}
+
+/** Test-only: run the idle-eviction sweep with an injected clock instead of
+ * waiting CACHED_SESSION_MESSAGES_IDLE_MS of real time. */
+export function _pruneIdleCachedSessionMessagesForTesting(nowMs: number): void {
+    pruneIdleCachedSessionMessages(nowMs);
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
@@ -436,7 +519,7 @@ async function registerTuiSessionUnlocked(
         }
     }
 
-    sessionMessagesCache.delete(sessionId);
+    evictCachedSessionMessages(sessionId);
 
     const sessionData: RedisSessionData = {
         sessionId,
@@ -754,19 +837,35 @@ export async function getSessionState(sessionId: string): Promise<unknown | unde
  * stray mutating caller cannot corrupt the cache for later viewers.
  */
 export async function getSessionMessages(sessionId: string): Promise<readonly unknown[] | null> {
-    // Cheap cross-node freshness check: a single Redis GET of a small counter,
-    // not the multi-MB lastState blob. updateSessionState bumps this version
+    pruneIdleCachedSessionMessages();
+
+    // Cheap cross-node freshness check: a Redis GET of a small token plus an
+    // HSTRLEN of lastState (length only, no value transfer) — not the
+    // multi-MB lastState blob itself. updateSessionState bumps the token
     // atomically with every lastState write, on whichever node the runner is
     // connected to — so every node (not just that one) can tell its cache is
-    // stale without re-parsing.
-    const version = await getMessagesVersion(sessionId);
+    // stale without re-parsing. The length check additionally catches an old
+    // (pre-upgrade) node writing lastState without bumping the token — see
+    // MessagesVersionInfo.
+    const versionInfo = await getMessagesVersion(sessionId);
     const cached = sessionMessagesCache.get(sessionId);
-    if (version !== null && cached && cached.version === version) {
-        // Re-insert to mark as most-recently-used (Map iteration order).
-        sessionMessagesCache.delete(sessionId);
-        sessionMessagesCache.set(sessionId, cached);
+    if (
+        versionInfo !== null &&
+        cached &&
+        cached.token === versionInfo.token &&
+        cached.lastStateLength === versionInfo.lastStateLength
+    ) {
+        touchCachedSessionMessages(sessionId, cached);
         return cached.messages;
     }
+
+    // The cached entry (if any) no longer provably matches the live session —
+    // evict it now rather than merely skipping the return above. Otherwise a
+    // later generation that happens to regenerate the same token+length stamp
+    // (session recreated under the same ID after this cache entry's session
+    // was torn down and its version key expired) would wrongly hit this dead
+    // entry instead of refilling it below.
+    if (cached) evictCachedSessionMessages(sessionId);
 
     const session = await getSession(sessionId);
     if (!session?.lastState) return null;
@@ -776,13 +875,10 @@ export async function getSessionMessages(sessionId: string): Promise<readonly un
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
         const candidate = (parsed as Record<string, unknown>).messages;
         const messages = Object.freeze(Array.isArray(candidate) ? candidate : []);
-        if (version !== null) {
-            sessionMessagesCache.set(sessionId, { version, messages });
-            // Bounded LRU: evict the oldest entry once over the cap.
-            if (sessionMessagesCache.size > MAX_CACHED_SESSION_MESSAGES) {
-                const oldestKey = sessionMessagesCache.keys().next().value;
-                if (oldestKey !== undefined) sessionMessagesCache.delete(oldestKey);
-            }
+        if (versionInfo !== null) {
+            // lastState.length is a cheap proxy for byte size (the string is
+            // JSON text); good enough for a memory budget, not an exact count.
+            cacheSessionMessages(sessionId, versionInfo.token, versionInfo.lastStateLength, messages, session.lastState.length);
         }
         return messages;
     } catch {
@@ -1102,7 +1198,7 @@ async function endSharedSessionUnlocked(
     // before any early return below (owner mismatch, session already gone).
     // Cheap to over-delete: a live session just re-fills the cache on the
     // next load_messages call via the version check in getSessionMessages.
-    sessionMessagesCache.delete(sessionId);
+    evictCachedSessionMessages(sessionId);
 
     const io = getIo();
     if (opts.expectedOwnerToken !== undefined) {

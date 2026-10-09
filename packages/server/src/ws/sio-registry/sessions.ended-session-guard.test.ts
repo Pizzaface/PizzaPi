@@ -57,6 +57,10 @@ const mockMulti = () => {
             });
             return mockMulti();
         }),
+        set: mock((key: string, value: string) => {
+            ops.push(() => store.set(key, value));
+            return mockMulti();
+        }),
         exec: mock(async () => {
             for (const op of ops) op();
             return ops.map(() => "OK");

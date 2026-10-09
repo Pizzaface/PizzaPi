@@ -70,6 +70,10 @@ const mockRedis = {
         return fields.map((f) => hash[f] ?? null);
     }),
     exists: mock(async (key: string) => (hashStore.has(key) ? 1 : 0)),
+    hStrLen: mock(async (key: string, field: string) => {
+        const hash = hashStore.get(key);
+        return hash?.[field]?.length ?? 0;
+    }),
     get: mock(async (key: string) => stringStore.get(key) ?? null),
     set: mock(async (key: string, value: string) => {
         stringStore.set(key, value);
@@ -251,9 +255,8 @@ describe("messages version", () => {
         await initStateRedis(mockRedis as never);
     });
 
-    it("initializes, bumps, and reads the messages version marker", async () => {
-        const sessionId = "session-version";
-        await setSession(sessionId, {
+    function baseSessionData(sessionId: string, lastState: string) {
+        return {
             sessionId,
             token: "tkn",
             collabMode: true,
@@ -268,121 +271,117 @@ describe("messages version", () => {
             isActive: true,
             lastHeartbeatAt: new Date().toISOString(),
             lastHeartbeat: null,
-            lastState: JSON.stringify({ messages: ["old"] }),
-            runnerId: "runner-1",
-            runnerName: "Runner",
-            seq: 0,
-            parentSessionId: null,
-        });
-
-        expect(await getMessagesVersion(sessionId)).toBe(1);
-        await updateSessionFieldsAndBumpMessagesVersion(sessionId, {
-            lastState: JSON.stringify({ messages: ["new"] }),
-        });
-
-        expect(await getMessagesVersion(sessionId)).toBe(2);
-        expect(hashStore.get("pizzapi:sio:session:session-version")?.lastState).toBe(JSON.stringify({ messages: ["new"] }));
-    });
-
-    it("keeps the messages version monotonic across same-ID re-registration", async () => {
-        const sessionId = "session-version-reregister";
-        const data = {
-            sessionId,
-            token: "tkn",
-            collabMode: true,
-            shareUrl: "http://localhost/session",
-            cwd: "/tmp/project",
-            startedAt: new Date().toISOString(),
-            userId: "user-1",
-            userName: "Jordan",
-            sessionName: "Version Session",
-            isEphemeral: false,
-            expiresAt: null,
-            isActive: true,
-            lastHeartbeatAt: new Date().toISOString(),
-            lastHeartbeat: null,
-            lastState: JSON.stringify({ messages: ["gen1"] }),
+            lastState,
             runnerId: "runner-1",
             runnerName: "Runner",
             seq: 0,
             parentSessionId: null,
         };
+    }
+
+    it("initializes, bumps, and reads the messages version token + lastState length", async () => {
+        const sessionId = "session-version";
+        const oldState = JSON.stringify({ messages: ["old"] });
+        await setSession(sessionId, baseSessionData(sessionId, oldState));
+
+        const initial = await getMessagesVersion(sessionId);
+        expect(initial?.token).toBeTruthy();
+        expect(initial?.lastStateLength).toBe(oldState.length);
+
+        const newState = JSON.stringify({ messages: ["new"] });
+        await updateSessionFieldsAndBumpMessagesVersion(sessionId, { lastState: newState });
+
+        const updated = await getMessagesVersion(sessionId);
+        expect(updated?.token).toBeTruthy();
+        expect(updated?.token).not.toBe(initial?.token);
+        expect(updated?.lastStateLength).toBe(newState.length);
+        expect(hashStore.get("pizzapi:sio:session:session-version")?.lastState).toBe(newState);
+    });
+
+    it("changes the messages version token on every write across same-ID re-registration", async () => {
+        const sessionId = "session-version-reregister";
+        const data = baseSessionData(sessionId, JSON.stringify({ messages: ["gen1"] }));
 
         await setSession(sessionId, data);
+        const afterRegister = await getMessagesVersion(sessionId);
+
         await updateSessionFieldsAndBumpMessagesVersion(sessionId, {
             lastState: JSON.stringify({ messages: ["gen1-v2"] }),
         });
-        expect(await getMessagesVersion(sessionId)).toBe(2);
+        const afterUpdate = await getMessagesVersion(sessionId);
+        expect(afterUpdate?.token).not.toBe(afterRegister?.token);
 
         await setSession(sessionId, { ...data, lastState: JSON.stringify({ messages: ["gen2"] }) });
-        expect(await getMessagesVersion(sessionId)).toBe(3);
+        const afterReregister = await getMessagesVersion(sessionId);
+        expect(afterReregister?.token).not.toBe(afterUpdate?.token);
+        expect(afterReregister?.token).not.toBe(afterRegister?.token);
     });
 
-    it("keeps the messages version monotonic across deleteSession + re-registration", async () => {
+    it("never reuses a prior generation's version token across deleteSession + re-registration", async () => {
         const sessionId = "session-version-delete-reregister";
-        const data = {
-            sessionId,
-            token: "tkn",
-            collabMode: true,
-            shareUrl: "http://localhost/session",
-            cwd: "/tmp/project",
-            startedAt: new Date().toISOString(),
-            userId: "user-1",
-            userName: "Jordan",
-            sessionName: "Version Session",
-            isEphemeral: false,
-            expiresAt: null,
-            isActive: true,
-            lastHeartbeatAt: new Date().toISOString(),
-            lastHeartbeat: null,
-            lastState: JSON.stringify({ messages: ["gen1"] }),
-            runnerId: "runner-1",
-            runnerName: "Runner",
-            seq: 0,
-            parentSessionId: null,
-        };
+        const data = baseSessionData(sessionId, JSON.stringify({ messages: ["gen1"] }));
 
         await setSession(sessionId, data);
-        expect(await getMessagesVersion(sessionId)).toBe(1);
+        const beforeDelete = await getMessagesVersion(sessionId);
+        expect(beforeDelete?.token).toBeTruthy();
 
         await deleteSession(sessionId);
         await setSession(sessionId, { ...data, lastState: JSON.stringify({ messages: ["gen2"] }) });
 
-        expect(await getMessagesVersion(sessionId)).toBe(2);
+        const afterReregister = await getMessagesVersion(sessionId);
+        expect(afterReregister?.token).toBeTruthy();
+        expect(afterReregister?.token).not.toBe(beforeDelete?.token);
     });
 
-    it("keeps the messages version monotonic across deleteSessionIfOwner + re-registration", async () => {
+    it("never reuses a prior generation's version token across deleteSessionIfOwner + re-registration", async () => {
         const sessionId = "session-version-delete-if-owner-reregister";
-        const data = {
-            sessionId,
-            token: "tkn",
-            collabMode: true,
-            shareUrl: "http://localhost/session",
-            cwd: "/tmp/project",
-            startedAt: new Date().toISOString(),
-            userId: "user-1",
-            userName: "Jordan",
-            sessionName: "Version Session",
-            isEphemeral: false,
-            expiresAt: null,
-            isActive: true,
-            lastHeartbeatAt: new Date().toISOString(),
-            lastHeartbeat: null,
-            lastState: JSON.stringify({ messages: ["gen1"] }),
-            runnerId: "runner-1",
-            runnerName: "Runner",
-            seq: 0,
-            parentSessionId: null,
-        };
+        const data = baseSessionData(sessionId, JSON.stringify({ messages: ["gen1"] }));
 
         await setSession(sessionId, data);
-        expect(await getMessagesVersion(sessionId)).toBe(1);
+        const beforeDelete = await getMessagesVersion(sessionId);
 
         const deleted = await deleteSessionIfOwner(sessionId, "tkn");
         expect(deleted).toBe(true);
 
         await setSession(sessionId, { ...data, lastState: JSON.stringify({ messages: ["gen2"] }) });
 
-        expect(await getMessagesVersion(sessionId)).toBe(2);
+        const afterReregister = await getMessagesVersion(sessionId);
+        expect(afterReregister?.token).not.toBe(beforeDelete?.token);
+    });
+
+    it("never reproduces a prior generation's version token after the version key's own TTL expires and the session is re-registered (cross-generation collision regression)", async () => {
+        // This is the exact hazard a monotonic INCR counter has: teardown does
+        // not delete the version key (see messagesVersionKey doc comment), so
+        // it survives on its own TTL. If that TTL eventually lapses (24h idle)
+        // and the session is re-registered under the same ID, a counter that
+        // restarts from 0 would reproduce the SAME small integer a peer node's
+        // process-local cache is still keyed on for the PREVIOUS generation —
+        // serving that peer the wrong generation's messages. A random token
+        // can't collide with a prior generation's token this way.
+        const sessionId = "session-version-ttl-expiry-reregister";
+        const versionKeyName = `pizzapi:sio:messages-version:${sessionId}`;
+        const data = baseSessionData(sessionId, JSON.stringify({ messages: ["gen1"] }));
+
+        await setSession(sessionId, data); // 1st write of this generation
+        await updateSessionFieldsAndBumpMessagesVersion(sessionId, {
+            lastState: JSON.stringify({ messages: ["gen1-v2"] }),
+        }); // 2nd write — this is the stamp a peer node's cache would hold
+        const peerCachedToken = (await getMessagesVersion(sessionId))?.token;
+        expect(peerCachedToken).toBeTruthy();
+
+        // Teardown, then the version key's own TTL independently expires.
+        await deleteSession(sessionId);
+        stringStore.delete(versionKeyName);
+
+        // Re-registration under the same ID, followed by its first snapshot —
+        // the same two-write sequence that produced `peerCachedToken` above.
+        await setSession(sessionId, { ...data, lastState: JSON.stringify({ messages: ["gen2"] }) });
+        await updateSessionFieldsAndBumpMessagesVersion(sessionId, {
+            lastState: JSON.stringify({ messages: ["gen2-v2"] }),
+        });
+
+        const newGenerationToken = (await getMessagesVersion(sessionId))?.token;
+        expect(newGenerationToken).toBeTruthy();
+        expect(newGenerationToken).not.toBe(peerCachedToken);
     });
 });

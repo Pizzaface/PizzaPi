@@ -85,7 +85,17 @@ mock.module("../sio-state/index.js", () => ({
     getSessionField: async () => null,
     updateSessionFields: async () => {},
     updateSessionFieldsAndBumpMessagesVersion: async () => {},
-    getMessagesVersion: async (sessionId: string) => versionStore.get(sessionId) ?? null,
+    // lastStateLength mirrors live `store` content (like a real HSTRLEN would),
+    // independent of whether/when versionStore's token was last bumped — so
+    // tests that write `store` directly (seedSession) without going through
+    // the `setSession` mock above still see an accurate length.
+    getMessagesVersion: async (sessionId: string) => {
+        const v = versionStore.get(sessionId);
+        if (v === undefined) return null;
+        const raw = store.get(sessionHashKey(sessionId));
+        const lastState = raw ? (JSON.parse(raw) as Record<string, unknown>).lastState : undefined;
+        return { token: `v${v}`, lastStateLength: typeof lastState === "string" ? lastState.length : 0 };
+    },
     deleteSession: async (sessionId: string) => {
         store.delete(sessionHashKey(sessionId));
     },
