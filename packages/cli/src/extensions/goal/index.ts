@@ -188,6 +188,7 @@ function buildEvaluationContext(
     state: GoalState,
     event: TurnEndEvent,
     ctx: ExtensionContext,
+    includeTranscript: boolean,
 ): GoalEvaluationContext {
     const latestTurnText = extractLatestTurnText({
         assistantContent: isAssistantMessage(event.message)
@@ -195,7 +196,9 @@ function buildEvaluationContext(
             : undefined,
         toolResults: event.toolResults as ToolResultMessage[],
     });
-    const transcript = buildTranscript(ctx.sessionManager.getEntries() as any[]);
+    const transcript = includeTranscript
+        ? buildTranscript(ctx.sessionManager.getEntries() as any[])
+        : "";
 
     return {
         latestTurnText,
@@ -438,8 +441,8 @@ async function runGoalStopCheck(
         return;
     }
 
-    const evalContext = buildEvaluationContext(state, event, ctx);
     const evaluator = await resolveEvaluator(sessionId, state, config, ctx);
+    const evalContext = buildEvaluationContext(state, event, ctx, evaluator.usesTranscript === true);
 
     try {
         const feedback = await evaluator.evaluate(state, evalContext);

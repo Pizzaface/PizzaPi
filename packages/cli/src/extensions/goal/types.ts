@@ -176,7 +176,7 @@ export interface GoalEvaluationContext {
     /** Plain-text summary of the latest assistant message and tool results. */
     latestTurnText: string;
 
-    /** Compact conversation transcript used by the LLM evaluator. */
+    /** Compact conversation transcript used by the standalone LLM evaluator. */
     transcript: string;
 
     /** All prior evaluator feedback for this goal. */
@@ -193,6 +193,8 @@ export interface GoalEvaluationContext {
  * Pluggable goal evaluator.
  */
 export interface GoalEvaluator {
+    /** True only for evaluators that need the synthesized text transcript. */
+    usesTranscript?: boolean;
     evaluate(state: GoalState, context: GoalEvaluationContext): Promise<GoalEvaluatorFeedback>;
 }
 
