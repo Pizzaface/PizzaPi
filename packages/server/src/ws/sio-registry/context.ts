@@ -14,7 +14,8 @@ import type { Server as SocketIOServer, Socket, Namespace } from "socket.io";
 import type { ModelInfo } from "@pizzapi/protocol";
 import { getEphemeralTtlMs } from "../../sessions/store.js";
 import { createLogger } from "@pizzapi/tools";
-import { getValue, setValue, deleteValue, setValueIfAbsent } from "../../redis-kv-store.js";
+import { getValue, setValue, deleteValue, setValueIfAbsent, getValueStrict } from "../../redis-kv-store.js";
+import { isRedisDisabled } from "../../redis-client.js";
 
 const log = createLogger("sio-registry");
 
@@ -126,6 +127,11 @@ export function _resetRunnerSecretsForTesting(): void {
     claimChains.clear();
 }
 
+/** Expose the in-flight claim chain map for tests (leak/GC assertions). */
+export function _claimChainsForTesting(): Map<string, Promise<unknown>> {
+    return claimChains;
+}
+
 function secretKey(runnerId: string): string {
     return `pizzapi:runner:secret:${runnerId}`;
 }
@@ -158,12 +164,23 @@ export async function deleteRunnerSecret(runnerId: string): Promise<void> {
 async function claimRunnerSecret(
     runnerId: string,
     secret: string,
+    attempt = 0,
 ): Promise<"match" | "mismatch" | "claimed"> {
     // Re-check the cache: another call in this process may have just won the
     // claim while we were queued behind it.
     const cached = runnerSecrets.get(runnerId);
     if (cached !== undefined) {
         return cached === secret ? "match" : "mismatch";
+    }
+
+    if (isRedisDisabled()) {
+        // Local-only mode: there's no cross-node store to race against, and
+        // the in-flight chain (see validateAndPersistRunnerSecret) already
+        // serializes concurrent first-claims within this process, so a plain
+        // Map write is safe here.
+        runnerSecrets.set(runnerId, secret);
+        await setValue(secretKey(runnerId), secret);
+        return "claimed";
     }
 
     // Redis SET NX makes the cross-process (and cross-node) claim atomic: only
@@ -174,22 +191,31 @@ async function claimRunnerSecret(
         return "claimed";
     }
     if (won === false) {
-        // Someone else (this call or another node) already claimed it.
-        const stored = await getValue(secretKey(runnerId));
+        // Someone else (this call or another node) already claimed it. Use
+        // getValueStrict so a Redis GET failure THROWS instead of resolving
+        // null — getValue()'s null-on-error would otherwise be
+        // indistinguishable from "key never existed" and fall through to the
+        // unconditional claim below, overwriting a legitimate secret.
+        const stored = await getValueStrict(secretKey(runnerId));
         if (stored !== null) {
             runnerSecrets.set(runnerId, stored);
             return stored === secret ? "match" : "mismatch";
         }
-        // Vanishingly unlikely race: the key was deleted between the failed NX
-        // and the read. Fall through and claim it ourselves.
+        // Genuinely missing: the key was deleted between the failed NX and
+        // this read (e.g. a concurrent deleteRunnerSecret). Retry the NX —
+        // bounded — instead of unconditionally SETting, so a losing racer can
+        // never just overwrite whoever wins the retry.
+        if (attempt >= 5) {
+            throw new Error(`Runner secret claim for ${runnerId} did not converge after retries`);
+        }
+        return claimRunnerSecret(runnerId, secret, attempt + 1);
     }
 
-    // Redis disabled/unavailable (won === null), or the key disappeared out
-    // from under us above: the in-flight chain already serializes this branch
-    // within the process, so a plain Map write is safe here.
-    runnerSecrets.set(runnerId, secret);
-    await setValue(secretKey(runnerId), secret);
-    return "claimed";
+    // won === null and Redis is NOT disabled: setValueIfAbsent hit a real
+    // error (unreachable/erroring). We cannot prove no one else holds this
+    // runnerId's secret, so fail closed — a false "claimed" here could let an
+    // impostor runner take over, or bounce the genuine owner on reconnect.
+    throw new Error(`Redis unavailable while claiming runner secret for ${runnerId}`);
 }
 
 /**
@@ -221,7 +247,17 @@ export async function validateAndPersistRunnerSecret(
     );
     // Swallow rejections in the chain itself (not in the value we return) so a
     // failed attempt doesn't permanently wedge later callers.
-    claimChains.set(runnerId, chained.catch(() => undefined));
+    const settled = chained.catch(() => undefined);
+    claimChains.set(runnerId, settled);
+    // Drop the entry once settled so claimChains doesn't grow forever — but
+    // only if it still holds THIS chain. A newer call may have already
+    // chained itself behind this one and swapped in its own (later-settling)
+    // promise; an identity check keeps this cleanup from deleting that one.
+    void settled.finally(() => {
+        if (claimChains.get(runnerId) === settled) {
+            claimChains.delete(runnerId);
+        }
+    });
     return chained;
 }
 

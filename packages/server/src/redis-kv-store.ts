@@ -62,6 +62,20 @@ export async function getValue(key: string): Promise<string | null> {
     }
 }
 
+/**
+ * Like getValue, but distinguishes "key missing" (resolves `null`) from
+ * "Redis is enabled but unreachable/erroring" (rejects), for callers with
+ * security implications (e.g. runner secret claims) that must not treat a
+ * transient GET failure the same as "this was never set" and fall through to
+ * an unconditional write. Callers should check `isRedisDisabled()` separately
+ * to handle the explicitly-disabled case before calling this.
+ */
+export async function getValueStrict(key: string): Promise<string | null> {
+    const redis = await getClient();
+    if (!redis) throw new Error(`Redis client unavailable for GET ${key}`);
+    return await redis.get(key);
+}
+
 export async function setValue(key: string, value: string, ttlMs?: number): Promise<void> {
     if (isRedisDisabled()) return;
     const redis = await getClient();

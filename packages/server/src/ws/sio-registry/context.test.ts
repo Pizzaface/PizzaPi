@@ -4,6 +4,7 @@ import {
     validateAndPersistRunnerSecret,
     getRunnerSecret,
     _resetRunnerSecretsForTesting,
+    _claimChainsForTesting,
     initSioRegistry,
     localRunnerSockets,
     runnerRoom,
@@ -24,11 +25,16 @@ describe("service follow rooms", () => {
 
 
 const store = new Map<string, string>();
+let failNextGet = false;
 
 const mockRedisClient = {
     isOpen: true,
 
     get: mock((key: string) => {
+        if (failNextGet) {
+            failNextGet = false;
+            return Promise.reject(new Error("simulated Redis GET failure"));
+        }
         return Promise.resolve(store.get(key) ?? null);
     }),
 
@@ -49,6 +55,7 @@ const mockRedisClient = {
 
 function resetState() {
     store.clear();
+    failNextGet = false;
     _resetRedisKvStoreForTesting();
     _injectRedisForTesting(mockRedisClient);
     _resetRunnerSecretsForTesting();
@@ -197,5 +204,93 @@ describe("runner secret persistence", () => {
         const winnerSecret = results[0] === "claimed" ? "secret-a" : "secret-b";
         expect(runnerSecrets.get("runner-race")).toBe(winnerSecret);
         expect(store.get("pizzapi:runner:secret:runner-race")).toBe(winnerSecret);
+    });
+
+    test("a Redis GET failure after a lost NX race fails closed instead of overwriting the winner", async () => {
+        // Regression (P1): getValue() returns null both when a key is
+        // missing AND when the GET call itself errors. The old fallback
+        // treated both the same and fell through to an unconditional SET,
+        // letting a losing racer whose follow-up GET merely failed clobber
+        // the legitimate owner's already-persisted secret.
+        const winner = await validateAndPersistRunnerSecret("runner-fail-get", "secret-winner");
+        expect(winner).toBe("claimed");
+
+        // Simulate a second claimant with no local cache (e.g. a different
+        // process, or this one after a cache miss): its NX loses because the
+        // key already exists, and the follow-up GET then fails.
+        _resetRunnerSecretsForTesting();
+        failNextGet = true;
+
+        await expect(
+            validateAndPersistRunnerSecret("runner-fail-get", "secret-attacker"),
+        ).rejects.toThrow();
+
+        // The legitimate secret must still be the one stored, both in Redis
+        // and in the local cache — never overwritten by the failed claimant.
+        expect(store.get("pizzapi:runner:secret:runner-fail-get")).toBe("secret-winner");
+        expect(runnerSecrets.get("runner-fail-get")).toBeUndefined();
+    });
+
+    test("a missing key after a lost NX race retries the claim instead of blindly SETting", async () => {
+        // The key can legitimately vanish between a failed NX and the
+        // follow-up GET (e.g. a concurrent deleteRunnerSecret). The retry
+        // must re-run the atomic NX rather than unconditionally writing, so
+        // whichever caller's retry actually wins is the one Redis accepted.
+        const first = await validateAndPersistRunnerSecret("runner-vanish", "secret-x");
+        expect(first).toBe("claimed");
+
+        _resetRunnerSecretsForTesting();
+        // Make the GET right after the (losing) NX come back empty exactly
+        // once, simulating the key being deleted between the failed NX and
+        // the read, then behave normally so the retry can actually converge.
+        const key = "pizzapi:runner:secret:runner-vanish";
+        let forcedMissOnce = true;
+        const originalGetImpl = mockRedisClient.get;
+        (mockRedisClient as any).get = mock((k: string) => {
+            if (k === key && forcedMissOnce) {
+                forcedMissOnce = false;
+                return Promise.resolve(null);
+            }
+            return Promise.resolve(store.get(k) ?? null);
+        });
+
+        let result: string;
+        try {
+            result = await validateAndPersistRunnerSecret("runner-vanish", "secret-y");
+        } finally {
+            (mockRedisClient as any).get = originalGetImpl;
+        }
+
+        // The retry re-ran the atomic NX against the still-present "secret-x"
+        // key, so it correctly reports mismatch rather than blindly winning.
+        expect(result).toBe("mismatch");
+        expect(store.get(key)).toBe("secret-x");
+    });
+});
+
+describe("claimChains cleanup", () => {
+    beforeEach(resetState);
+
+    test("drops the per-runnerId chain once the claim settles", async () => {
+        // Regression (P2): claimChains kept every runnerId's settled promise
+        // forever, growing unbounded across the server's lifetime.
+        await validateAndPersistRunnerSecret("runner-chain-gc", "secret-1");
+        // The settle callback runs in a microtask after the awaited promise
+        // resolves, so give it a couple more ticks to fire.
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(_claimChainsForTesting().has("runner-chain-gc")).toBe(false);
+    });
+
+    test("a slower, still-settling newer chain is not dropped by an older chain's cleanup", async () => {
+        // Identity check: queue two claims for the same runnerId back to
+        // back. The first settles and tries to delete its map entry — it
+        // must not delete the second (newer) chain that replaced it.
+        const first = validateAndPersistRunnerSecret("runner-chain-order", "secret-1");
+        const second = validateAndPersistRunnerSecret("runner-chain-order", "secret-2");
+        await Promise.all([first, second]);
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(_claimChainsForTesting().has("runner-chain-order")).toBe(false);
     });
 });

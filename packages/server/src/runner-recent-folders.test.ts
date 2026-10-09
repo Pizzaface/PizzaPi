@@ -2,7 +2,14 @@ import { describe, test, expect, beforeAll, beforeEach, afterAll } from "bun:tes
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { recordRecentFolder, getRecentFolders, deleteRecentFolder, ensureRunnerRecentFoldersTable } from "./runner-recent-folders.js";
+import { sql } from "kysely";
+import {
+    recordRecentFolder,
+    getRecentFolders,
+    deleteRecentFolder,
+    ensureRunnerRecentFoldersTable,
+    mergeDuplicateFolderRows,
+} from "./runner-recent-folders.js";
 import { createTestAuthContext, getKysely, runWithAuthContext } from "./auth.js";
 
 const USER = "user-1";
@@ -135,5 +142,102 @@ describe("deleteRecentFolder", () => {
     authTest("returns false when folder does not exist", async () => {
         const deleted = await deleteRecentFolder(USER, RUNNER, "/code/nonexistent");
         expect(deleted).toBe(false);
+    });
+});
+
+describe("mergeDuplicateFolderRows", () => {
+    // Regression for GM EqNrZtr1: the old merge did its UPDATE and DELETE as
+    // two separate statements. A crash between them (or a second server
+    // process running the same startup migration at the same moment) could
+    // leave the merged sum committed on the surviving row AND still find the
+    // not-yet-deleted duplicate, so re-running the merge summed them again
+    // (2 + 3 -> 5, then 5 + 3 -> 8). Wrapping the whole merge in one
+    // transaction makes an interrupted run roll back cleanly instead of
+    // leaving that half-applied state behind.
+    test("a failure between the UPDATE and DELETE rolls back instead of leaving a half-merged row", async () => {
+        // Own temp DB with the table but WITHOUT the unique index yet —
+        // mirroring an existing installation that still has duplicate rows
+        // from the old select-then-insert race (see
+        // ensureRunnerRecentFoldersTable). The shared suite DB above already
+        // has the unique index, which would reject these duplicate inserts.
+        const dir = mkdtempSync(join(tmpdir(), "pizzapi-recent-folders-merge-test-"));
+        const ctx = createTestAuthContext({ dbPath: join(dir, "test.db") });
+        try {
+            await runWithAuthContext(ctx, async () => {
+                await getKysely().schema
+                    .createTable("runner_recent_folder")
+                    .ifNotExists()
+                    .addColumn("id", "text", (col) => col.primaryKey())
+                    .addColumn("userId", "text", (col) => col.notNull())
+                    .addColumn("runnerId", "text", (col) => col.notNull())
+                    .addColumn("path", "text", (col) => col.notNull())
+                    .addColumn("lastUsedAt", "text", (col) => col.notNull())
+                    .addColumn("usageCount", "integer", (col) => col.notNull().defaultTo(1))
+                    .execute();
+
+                await getKysely().insertInto("runner_recent_folder").values({
+                    id: "dup-a",
+                    userId: USER,
+                    runnerId: RUNNER,
+                    path: "/code/dup",
+                    lastUsedAt: "2026-01-01T00:00:00.000Z",
+                    usageCount: 2,
+                }).execute();
+                await getKysely().insertInto("runner_recent_folder").values({
+                    id: "dup-b",
+                    userId: USER,
+                    runnerId: RUNNER,
+                    path: "/code/dup",
+                    lastUsedAt: "2026-01-02T00:00:00.000Z",
+                    usageCount: 3,
+                }).execute();
+
+                // Simulate "crashes right before the DELETE" with a trigger
+                // that aborts any delete from this table. If the UPDATE and
+                // DELETE aren't in the same transaction, the UPDATE commits
+                // anyway and the duplicate row survives — the exact half-
+                // merged state that double-counts on the next run.
+                await sql`
+                    CREATE TRIGGER fail_delete_dup
+                    BEFORE DELETE ON runner_recent_folder
+                    BEGIN
+                        SELECT RAISE(ABORT, 'simulated crash before delete');
+                    END
+                `.execute(getKysely());
+
+                await expect(mergeDuplicateFolderRows()).rejects.toThrow();
+
+                const midRows = await getKysely()
+                    .selectFrom("runner_recent_folder")
+                    .select(["id", "usageCount"])
+                    .where("userId", "=", USER)
+                    .where("runnerId", "=", RUNNER)
+                    .where("path", "=", "/code/dup")
+                    .orderBy("id", "asc")
+                    .execute();
+                // Both original rows must be untouched — the failed DELETE
+                // must have rolled back the UPDATE too, not left it committed.
+                expect(midRows).toEqual([
+                    { id: "dup-a", usageCount: 2 },
+                    { id: "dup-b", usageCount: 3 },
+                ]);
+
+                await sql`DROP TRIGGER fail_delete_dup`.execute(getKysely());
+
+                // A clean run now correctly merges the still-pristine duplicate.
+                await mergeDuplicateFolderRows();
+                const finalRows = await getKysely()
+                    .selectFrom("runner_recent_folder")
+                    .select(["id", "usageCount"])
+                    .where("userId", "=", USER)
+                    .where("runnerId", "=", RUNNER)
+                    .where("path", "=", "/code/dup")
+                    .execute();
+                expect(finalRows).toHaveLength(1);
+                expect(finalRows[0].usageCount).toBe(5);
+            });
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
     });
 });

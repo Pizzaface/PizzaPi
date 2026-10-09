@@ -53,40 +53,77 @@ export async function ensureRunnerRecentFoldersTable(): Promise<void> {
         .execute();
 }
 
-/** Collapse pre-existing duplicate (userId, runnerId, path) rows into one. */
-async function mergeDuplicateFolderRows(): Promise<void> {
-    const dupGroups = await getKysely()
-        .selectFrom("runner_recent_folder")
-        .select(["userId", "runnerId", "path"])
-        .groupBy(["userId", "runnerId", "path"])
-        .having((eb) => eb.fn.count("id"), ">", 1)
-        .execute();
-
-    for (const group of dupGroups) {
-        const rows = await getKysely()
-            .selectFrom("runner_recent_folder")
-            .select(["id", "lastUsedAt", "usageCount"])
-            .where("userId", "=", group.userId)
-            .where("runnerId", "=", group.runnerId)
-            .where("path", "=", group.path)
-            .orderBy("id", "asc")
-            .execute();
-        if (rows.length < 2) continue;
-
-        const [keep, ...rest] = rows;
-        const mergedUsageCount = rows.reduce((sum, r) => sum + r.usageCount, 0);
-        const mergedLastUsedAt = rows.reduce((max, r) => (r.lastUsedAt > max ? r.lastUsedAt : max), keep.lastUsedAt);
-
-        await getKysely()
-            .updateTable("runner_recent_folder")
-            .set({ usageCount: mergedUsageCount, lastUsedAt: mergedLastUsedAt })
-            .where("id", "=", keep.id)
-            .execute();
-        await getKysely()
-            .deleteFrom("runner_recent_folder")
-            .where("id", "in", rest.map((r) => r.id))
-            .execute();
+/**
+ * Retry a SQLite write on SQLITE_BUSY-family errors (lock contention, or a
+ * stale read snapshot losing a race to a concurrent writer). PRAGMA
+ * busy_timeout already waits out plain lock contention at the driver level;
+ * this covers the case where that wait still ends in an error (e.g. two
+ * server processes running this migration at the same moment).
+ */
+async function withBusyRetry<T>(fn: () => Promise<T>, attempts = 5): Promise<T> {
+    for (let attempt = 1; ; attempt++) {
+        try {
+            return await fn();
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            if (attempt >= attempts || !/busy|locked/i.test(message)) throw err;
+            await new Promise((r) => setTimeout(r, 20 * attempt));
+        }
     }
+}
+
+/**
+ * Collapse pre-existing duplicate (userId, runnerId, path) rows into one.
+ *
+ * Reads + the merged UPDATE + the duplicate DELETE all happen inside a single
+ * transaction. Without that, a crash (or a second server process running this
+ * same migration concurrently) could commit the UPDATE without the DELETE,
+ * leaving both the merged row and its not-yet-removed duplicate behind —
+ * re-running the merge would then sum them again (2 + 3 -> 5, then 5 + 3 -> 8
+ * on the next restart). Wrapping it keeps each group's merge atomic and
+ * idempotent: a crash mid-way rolls back to the pre-merge state instead of
+ * leaving a half-applied one.
+ */
+export async function mergeDuplicateFolderRows(): Promise<void> {
+    await withBusyRetry(() =>
+        getKysely().transaction().execute(async (trx) => {
+            const dupGroups = await trx
+                .selectFrom("runner_recent_folder")
+                .select(["userId", "runnerId", "path"])
+                .groupBy(["userId", "runnerId", "path"])
+                .having((eb) => eb.fn.count("id"), ">", 1)
+                .execute();
+
+            for (const group of dupGroups) {
+                const rows = await trx
+                    .selectFrom("runner_recent_folder")
+                    .select(["id", "lastUsedAt", "usageCount"])
+                    .where("userId", "=", group.userId)
+                    .where("runnerId", "=", group.runnerId)
+                    .where("path", "=", group.path)
+                    .orderBy("id", "asc")
+                    .execute();
+                if (rows.length < 2) continue;
+
+                const [keep, ...rest] = rows;
+                const mergedUsageCount = rows.reduce((sum, r) => sum + r.usageCount, 0);
+                const mergedLastUsedAt = rows.reduce(
+                    (max, r) => (r.lastUsedAt > max ? r.lastUsedAt : max),
+                    keep.lastUsedAt,
+                );
+
+                await trx
+                    .updateTable("runner_recent_folder")
+                    .set({ usageCount: mergedUsageCount, lastUsedAt: mergedLastUsedAt })
+                    .where("id", "=", keep.id)
+                    .execute();
+                await trx
+                    .deleteFrom("runner_recent_folder")
+                    .where("id", "in", rest.map((r) => r.id))
+                    .execute();
+            }
+        }),
+    );
 }
 
 export async function recordRecentFolder(

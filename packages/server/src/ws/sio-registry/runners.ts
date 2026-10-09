@@ -177,7 +177,18 @@ export async function registerRunner(
                     `(to register this machine under another account, remove runnerId/runnerSecret from ~/.pizzapi/runner.json)`,
             );
         }
-        const auth = await validateAndPersistRunnerSecret(requestedId, secret);
+        let auth: "match" | "mismatch" | "claimed";
+        try {
+            auth = await validateAndPersistRunnerSecret(requestedId, secret);
+        } catch (err) {
+            // Fail closed: a Redis error during the claim means we can't prove
+            // no one else holds this runnerId's secret, so reject rather than
+            // risk overwriting (or being overwritten by) a legitimate owner.
+            log.error(`Runner secret claim failed for ${requestedId}; rejecting registration:`, err);
+            return new Error(
+                `Runner authentication failed: could not verify identity for runner ${requestedId} (try again)`,
+            );
+        }
         if (auth === "mismatch") {
             return new Error(`Runner authentication failed: secret mismatch for runner ${requestedId}`);
         }
