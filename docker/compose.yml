@@ -145,7 +145,7 @@ services:
     # ports:
     #   - "2586:80"
     healthcheck:
-      test: ["CMD", "ntfy", "healthy"]
+      test: ["CMD-SHELL", "wget -q --tries=1 http://localhost:80/v1/health -O - | grep -Eo '\"healthy\"[[:space:]]*:[[:space:]]*true' || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5

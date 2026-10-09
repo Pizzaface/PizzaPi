@@ -927,13 +927,15 @@ export function generateComposeFile(opts: {
     imageTag: string;
     prebuiltUi: boolean;
     uiDistHash?: string;
+    webDir?: string;
 }): string {
-    const composePath = join(WEB_DIR, "compose.yml");
-    ensureSecureDir(WEB_DIR);
+    const webDir = opts.webDir ?? WEB_DIR;
+    const composePath = join(webDir, "compose.yml");
+    ensureSecureDir(webDir);
 
     const { repoPath, config, useDevUi, useLocalUiBuild, imageTag, prebuiltUi, uiDistHash } = opts;
 
-    const dataDir = join(WEB_DIR, "data");
+    const dataDir = join(webDir, "data");
     mkdirSync(dataDir, { recursive: true });
 
     let template: string;
@@ -1036,7 +1038,7 @@ export function generateComposeFile(opts: {
             "Android native push will not work; see deployment/mobile-push.mdx"
         );
     }
-    const ntfyServiceBlock = `  ntfy:\n    image: binwiederhier/ntfy:v2.25.0\n    command: serve\n    restart: unless-stopped\n    environment:\n      - NTFY_BASE_URL=${ntfyPublicUrl || "http://localhost:2586"}\n      - NTFY_AUTH_FILE=/var/lib/ntfy/auth.db\n      - NTFY_AUTH_DEFAULT_ACCESS=deny-all\n      - NTFY_BEHIND_PROXY=true\n      - NTFY_CACHE_FILE=/var/lib/ntfy/cache.db\n    volumes:\n      - ntfy-data:/var/lib/ntfy\n    healthcheck:\n      test: ["CMD", "ntfy", "healthy"]\n      interval: 15s\n      timeout: 5s\n      retries: 5\n\n`;
+    const ntfyServiceBlock = `  ntfy:\n    image: binwiederhier/ntfy:v2.25.0\n    command: serve\n    restart: unless-stopped\n    environment:\n      - NTFY_BASE_URL=${ntfyPublicUrl || "http://localhost:2586"}\n      - NTFY_AUTH_FILE=/var/lib/ntfy/auth.db\n      - NTFY_AUTH_DEFAULT_ACCESS=deny-all\n      - NTFY_BEHIND_PROXY=true\n      - NTFY_CACHE_FILE=/var/lib/ntfy/cache.db\n    volumes:\n      - ntfy-data:/var/lib/ntfy\n    healthcheck:\n      test: ["CMD-SHELL", "wget -q --tries=1 http://localhost:80/v1/health -O - | grep -Eo '\\"healthy\\"[[:space:]]*:[[:space:]]*true' || exit 1"]\n      interval: 15s\n      timeout: 5s\n      retries: 5\n\n`;
 
     const devServiceBlock = `  dev:\n    build:\n      context: ${repoPath}\n      dockerfile: Dockerfile\n      target: builder\n    command: bun run dev\n    ports:\n      - "${config.port}:7492"\n      - "5173:5173"\n    environment:\n      - PORT=7492\n      - PIZZAPI_REDIS_URL=redis://redis:6379\n      - BETTER_AUTH_SECRET=${config.betterAuthSecret}\n      - AUTH_DB_PATH=/app/data/auth.db\n      - VAPID_PUBLIC_KEY=${config.vapid.publicKey}\n      - VAPID_PRIVATE_KEY=${config.vapid.privateKey}\n      - VAPID_SUBJECT=${config.vapidSubject}\n${extraOriginsLine}${trustProxyLine}${proxyDepthLine}${tunnelDomainLine}    volumes:\n      - ${repoPath}:/app:Z\n      - /app/node_modules\n      - ${dataDir}:/app/data:Z\n    depends_on:\n      redis:\n        condition: service_healthy\n    restart: unless-stopped\n    stop_grace_period: 30s\n\n`;
 
@@ -1046,7 +1048,7 @@ export function generateComposeFile(opts: {
     const volumesSection = useDevUi ? "" : "volumes:\n  ui-dist:\n  ntfy-data:\n";
 
     // ── Caddy (wildcard TLS for host-based tunnels) ──
-    const caddyfilePath = join(WEB_DIR, "Caddyfile");
+    const caddyfilePath = join(webDir, "Caddyfile");
     const { caddy, warning: caddyWarning, error: caddyError } = resolveCaddyConfig(config, useDevUi ? "dev" : "server");
     if (caddyError) {
         log.error(`Caddy not configured: ${caddyError}`);
