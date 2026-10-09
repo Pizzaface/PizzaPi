@@ -44,10 +44,20 @@ function slugPath(slug: string): string | null {
     }) ?? null;
 }
 
+// Strip HTML/MDX tags by repeating the replace until a pass makes no further
+// change, so a single-pass regex can't be defeated by overlapping tags like
+// "<<script>script>" (CodeQL: incomplete multi-character sanitization).
+function stripTags(text: string): string {
+    let prev = text;
+    for (;;) {
+        const next = prev.replace(/<[^>]*>/g, "");
+        if (next === prev) return next;
+        prev = next;
+    }
+}
+
 function slugifyHeading(text: string): string {
-    return text
-        .replace(/\[([^\]]+)]\([^)]+\)/g, "$1")
-        .replace(/<[^>]+>/g, "")
+    return stripTags(text.replace(/\[([^\]]+)]\([^)]+\)/g, "$1"))
         .replace(/[`*_~]/g, "")
         .trim()
         .toLowerCase()
@@ -140,5 +150,10 @@ describe("internal docs links", () => {
 
     test("Astro redirects target existing pages and anchors", () => {
         expect(danglingTargets(extractRedirectTargets())).toEqual([]);
+    });
+
+    test("slugifyHeading strips embedded HTML/MDX tags from headings", () => {
+        expect(slugifyHeading("Hello <strong>World</strong>")).toBe("hello-world");
+        expect(slugifyHeading("<<nested>>Tag")).toBe("tag");
     });
 });
