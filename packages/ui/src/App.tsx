@@ -47,7 +47,7 @@ import type { PanelPosition } from "@/hooks/usePanelLayout";
 import { ViewerSocketContext } from "@/lib/viewer-socket-context";
 import { getViewerVisibilityPayload } from "@/lib/viewer-visibility";
 import { HubSocketContext } from "@/lib/hub-socket-context";
-import { resetStaleBaselineOnVisibilityChange, shouldStopViewerReconnect, shouldEvaluateStaleWatchdog, shouldTriggerStaleWatchdogReconnect, staleWatchdogBackoffMultiplier, shouldForceReconnectOnResume } from "@/lib/viewer-connection";
+import { resetStaleBaselineOnVisibilityChange, shouldStopViewerReconnect, shouldEvaluateStaleWatchdog, shouldTriggerStaleWatchdogReconnect, staleWatchdogBackoffMultiplier, shouldForceReconnectOnResume, shouldResetStaleBackoffOnEvent } from "@/lib/viewer-connection";
 import { mapUserError } from "@/lib/user-error-message";
 import { classifySessionInput } from "@/lib/session-empty-state";
 import { emitInputWithAck } from "@/lib/input-delivery";
@@ -3240,6 +3240,11 @@ export function App() {
     localStorage.setItem("pp.lastSessionId", relaySessionId);
     lastSeqRef.current = null;
     lastViewerEventAtRef.current = Date.now(); // treat open as an "event" so we don't fire immediately
+    // The stale-watchdog backoff counter is per-connection, not per-session —
+    // a newly opened session hasn't failed any reconnects yet, so starting it
+    // at a leftover 8x multiplier from the previous (dead-runner) session
+    // would make its watchdog wait up to 240s instead of the base 30s.
+    consecutiveStaleReconnectsRef.current = 0;
     renderedMcpReportTsRef.current = null;
     pendingMcpReportRef.current = null;
     injectedMessagesRef.current = [];
@@ -3455,7 +3460,7 @@ export function App() {
           logFrontendEvent("viewer", "warning", "Malformed viewer event envelope", envelope.error);
           return;
         }
-        const { event: rawEvent, seq: envelopeSeq, deltaReplay, generation, sessionId: envelopeSessionId } = envelope.value;
+        const { event: rawEvent, seq: envelopeSeq, replay: isReplaySnapshot, deltaReplay, generation, sessionId: envelopeSessionId } = envelope.value;
 
         // Session-stamped envelopes from another session are cross-session
         // bleed (in-flight old-room broadcasts during a tab switch) — drop
@@ -3492,7 +3497,9 @@ export function App() {
           eventType === "heartbeat" &&
           rawEvent !== null && typeof rawEvent === "object" &&
           (rawEvent as Record<string, unknown>)._livenessOnly === true;
-        if (!isLivenessOnlyHeartbeat) consecutiveStaleReconnectsRef.current = 0;
+        if (shouldResetStaleBackoffOnEvent(isLivenessOnlyHeartbeat, isReplaySnapshot === true, deltaReplay === true)) {
+          consecutiveStaleReconnectsRef.current = 0;
+        }
 
         const seq = envelopeSeq ?? null;
         if (seq !== null) {

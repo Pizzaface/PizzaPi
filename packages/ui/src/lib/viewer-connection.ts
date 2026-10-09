@@ -74,3 +74,25 @@ export function shouldTriggerStaleWatchdogReconnect(
 export function shouldForceReconnectOnResume(lastEventAtMs: number, nowMs: number, heartbeatIntervalMs: number): boolean {
     return nowMs - lastEventAtMs > heartbeatIntervalMs * 1.5;
 }
+
+/**
+ * Whether an incoming viewer event proves the runner that owns the session
+ * is actually alive, and so should reset the stale-watchdog backoff counter.
+ *
+ * Three kinds of events reach the viewer without any live runner involved:
+ * a liveness-only replayed heartbeat (withLivenessOnlyHint in viewer.ts), a
+ * cache-hydration snapshot replay (tryCacheSnapshot, envelope.replay), and
+ * its trailing cached deltas (sendCachedDeltaReplayEvents, envelope.deltaReplay).
+ * All three are served straight from Redis/cache on reconnect regardless of
+ * whether the runner is dead, so counting them as proof of life lets a dead
+ * runner's cursor-less reconnect replay a cached snapshot every stale tick,
+ * resetting the counter back to 0 and turning the backoff into a permanent
+ * 30-45s reconnect loop instead of decaying.
+ */
+export function shouldResetStaleBackoffOnEvent(
+    isLivenessOnlyHeartbeat: boolean,
+    isReplay: boolean,
+    isDeltaReplay: boolean,
+): boolean {
+    return !isLivenessOnlyHeartbeat && !isReplay && !isDeltaReplay;
+}

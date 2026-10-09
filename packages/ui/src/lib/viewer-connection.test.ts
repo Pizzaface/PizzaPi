@@ -5,6 +5,7 @@ import {
     staleWatchdogBackoffMultiplier,
     shouldTriggerStaleWatchdogReconnect,
     shouldForceReconnectOnResume,
+    shouldResetStaleBackoffOnEvent,
 } from "./viewer-connection.js";
 
 describe("shouldEvaluateStaleWatchdog", () => {
@@ -91,6 +92,28 @@ describe("shouldForceReconnectOnResume", () => {
     test("a fresh last-event (just connected) never forces a reconnect", () => {
         const now = 100_000;
         expect(shouldForceReconnectOnResume(now, now, HEARTBEAT_INTERVAL_MS)).toBe(false);
+    });
+});
+
+describe("shouldResetStaleBackoffOnEvent", () => {
+    test("a genuinely live runner-originated event resets the backoff", () => {
+        expect(shouldResetStaleBackoffOnEvent(false, false, false)).toBe(true);
+    });
+
+    test("a liveness-only replayed heartbeat does not reset the backoff", () => {
+        expect(shouldResetStaleBackoffOnEvent(true, false, false)).toBe(false);
+    });
+
+    test("a cache-hydration snapshot replay after a stale reconnect does not reset the backoff", () => {
+        // Regression: a cursor-less reconnect (lastSeq undefined) gets a cached
+        // session_active replay (envelope.replay === true) for a dead runner.
+        // Treating that as proof of life would reset the counter to 0 on every
+        // stale tick, turning the backoff into a permanent 30-45s reconnect loop.
+        expect(shouldResetStaleBackoffOnEvent(false, true, false)).toBe(false);
+    });
+
+    test("a trailing cached delta replay does not reset the backoff", () => {
+        expect(shouldResetStaleBackoffOnEvent(false, false, true)).toBe(false);
     });
 });
 
