@@ -59,6 +59,12 @@ mock.module("../sio-state/index.js", () => ({
     recordChildSpawnBinding: noopAsync,
     getChildSpawnBinding: async () => null,
     deleteChildSpawnBinding: noopAsync,
+    setTerminal: noopAsync,
+    getTerminal: async () => null,
+    updateTerminalFields: noopAsync,
+    claimTerminalSpawn: async () => true,
+    deleteTerminal: noopAsync,
+    getTerminalsForRunner: async () => [],
 }));
 
 mock.module("./meta.js", () => ({ extractMetaFromHeartbeat: () => ({}) }));
