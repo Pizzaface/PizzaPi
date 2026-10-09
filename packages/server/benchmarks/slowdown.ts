@@ -124,7 +124,10 @@ async function main() {
   process.env.PIZZAPI_UI_DIR = opts.uiDir;
 
   const server = await createTestServer({ disableSignupAfterFirstUser: false });
-  const relays: Array<{ disconnect(): Promise<void>; emitSessionEnd?: (sessionId: string, token: string) => void; sessionId?: string; token?: string }> = [];
+  // ponytail: heterogeneous bag — seedSession() results nest their relay under `.relay`, burst relays are the
+  // relay object itself; every read site already normalizes via `(r as any)`, so keep the array untyped rather
+  // than fight a union that buys nothing here.
+  const relays: any[] = [];
   const runners: Array<{ disconnect(): Promise<void> }> = [];
   try {
     for (let i = 0; i < opts.burstRunners; i++) {
