@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, spyOn } from "bun:test";
+import { sql } from "kysely";
 import { createTestAuthContext, getKysely, runWithAuthContext } from "./auth.js";
-import { unsubscribePush, updateSuppressChildNotifications, getSubscriptionsForUser, isValidPushEndpoint, registerNativePush, unregisterNativePush, getNativeRegistrationsForUser, ensureNativePushRegistrationTable, sendPushToUser, updateNativeSuppressChildNotifications, sendWebPushPinned, pushEndpointRejectionReason, IPV6_LITERAL_PUSH_ENDPOINT_ERROR } from "./push.js";
+import { unsubscribePush, updateSuppressChildNotifications, getSubscriptionsForUser, isValidPushEndpoint, registerNativePush, unregisterNativePush, getNativeRegistrationsForUser, ensureNativePushRegistrationTable, sendPushToUser, updateNativeSuppressChildNotifications, sendWebPushPinned, pushEndpointRejectionReason, IPV6_LITERAL_PUSH_ENDPOINT_ERROR, NATIVE_PUSH_MAX_CONSECUTIVE_FAILURES, NATIVE_PUSH_FAILURE_GRACE_MS, NATIVE_PUSH_MAX_DEVICES_PER_USER, NATIVE_PUSH_PUBLISH_CONCURRENCY, NATIVE_PUSH_RETIREMENT_DAYS } from "./push.js";
 import https from "node:https";
 import { createECDH, randomBytes } from "crypto";
 import { EventEmitter } from "events";
@@ -362,10 +363,217 @@ describe("native push registration", () => {
         }
     });
 
+    it("migration with duplicate legacy userId+platform rows preserves both distinct devices", async () => {
+        // Pre-dish rows were check-then-insert with no unique constraint, so a
+        // real auth.db can have more than one row per userId+platform (e.g. two
+        // DIFFERENT devices that each registered before per-device IDs existed).
+        // The migration stamps all such rows deviceId='legacy'. Naively keeping
+        // only the newest row (the old behavior) silently dropped the other
+        // device's distinct topic, so it stopped getting push notifications
+        // forever. The fix must keep both rows alive — one as 'legacy', the
+        // other under a synthetic deviceId — while still letting
+        // CREATE UNIQUE INDEX on (userId, platform, deviceId) succeed so
+        // startup doesn't throw and brick the server on upgrade.
+        const migrationDir = mkdtempSync(join(tmpdir(), "push-migration-dup-test-"));
+        const migrationContext = createTestAuthContext({ dbPath: join(migrationDir, "test.db") });
+        try {
+            await runWithAuthContext(migrationContext, async () => {
+                const db = getKysely();
+                await db.schema
+                    .createTable("native_push_registration")
+                    .addColumn("id", "text", (col) => col.primaryKey())
+                    .addColumn("userId", "text", (col) => col.notNull())
+                    .addColumn("platform", "text", (col) => col.notNull())
+                    .addColumn("topic", "text", (col) => col.notNull())
+                    .addColumn("ntfyUser", "text")
+                    .addColumn("ntfyPass", "text")
+                    .addColumn("createdAt", "text", (col) => col.notNull())
+                    .execute();
+                await db
+                    .insertInto("native_push_registration" as any)
+                    .values([
+                        {
+                            id: "dup-old",
+                            userId: "dup-user",
+                            platform: "android",
+                            topic: "pizzapi-old",
+                            ntfyUser: null,
+                            ntfyPass: null,
+                            createdAt: "2026-01-01T00:00:00.000Z",
+                        },
+                        {
+                            id: "dup-new",
+                            userId: "dup-user",
+                            platform: "android",
+                            topic: "pizzapi-new",
+                            ntfyUser: null,
+                            ntfyPass: null,
+                            createdAt: "2026-02-01T00:00:00.000Z",
+                        },
+                    ])
+                    .execute();
+
+                // Must not throw.
+                await ensureNativePushRegistrationTable();
+
+                const rows = await db
+                    .selectFrom("native_push_registration" as any)
+                    .selectAll()
+                    .where("userId", "=", "dup-user")
+                    .where("platform", "=", "android")
+                    .execute();
+                // Both distinct-topic rows survive — nobody silently loses push.
+                expect(rows).toHaveLength(2);
+                const byId = new Map(rows.map((r) => [(r as any).id, r as any]));
+                expect(byId.get("dup-new").deviceId).toBe("legacy");
+                expect(byId.get("dup-new").topic).toBe("pizzapi-new");
+                // The older row keeps its own topic under a synthetic deviceId
+                // instead of being deleted.
+                expect(byId.get("dup-old").deviceId).toBe("legacy:dup-old");
+                expect(byId.get("dup-old").topic).toBe("pizzapi-old");
+                // The unique index exists and actually enforces uniqueness going forward.
+                const indexRows = await sql<{ name: string }>`
+                    SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'native_push_registration_device_idx'
+                `.execute(db);
+                expect(indexRows.rows).toHaveLength(1);
+                await db.destroy();
+            });
+        } finally {
+            rmSync(migrationDir, { recursive: true, force: true });
+        }
+    });
+
+    it("migration collapses TRUE duplicates (identical topic) to the newest row only", async () => {
+        // Unlike the distinct-topic case above, two rows sharing BOTH deviceId
+        // and topic are a genuine check-then-insert race on the same device —
+        // these should still collapse to one row, not be split into two.
+        const migrationDir = mkdtempSync(join(tmpdir(), "push-migration-truedup-test-"));
+        const migrationContext = createTestAuthContext({ dbPath: join(migrationDir, "test.db") });
+        try {
+            await runWithAuthContext(migrationContext, async () => {
+                const db = getKysely();
+                await db.schema
+                    .createTable("native_push_registration")
+                    .addColumn("id", "text", (col) => col.primaryKey())
+                    .addColumn("userId", "text", (col) => col.notNull())
+                    .addColumn("platform", "text", (col) => col.notNull())
+                    .addColumn("topic", "text", (col) => col.notNull())
+                    .addColumn("ntfyUser", "text")
+                    .addColumn("ntfyPass", "text")
+                    .addColumn("createdAt", "text", (col) => col.notNull())
+                    .execute();
+                await db
+                    .insertInto("native_push_registration" as any)
+                    .values([
+                        {
+                            id: "race-loser",
+                            userId: "race-user",
+                            platform: "android",
+                            topic: "pizzapi-same",
+                            ntfyUser: null,
+                            ntfyPass: null,
+                            createdAt: "2026-01-01T00:00:00.000Z",
+                        },
+                        {
+                            id: "race-winner",
+                            userId: "race-user",
+                            platform: "android",
+                            topic: "pizzapi-same",
+                            ntfyUser: null,
+                            ntfyPass: null,
+                            createdAt: "2026-01-01T00:00:01.000Z",
+                        },
+                    ])
+                    .execute();
+
+                await ensureNativePushRegistrationTable();
+
+                const rows = await db
+                    .selectFrom("native_push_registration" as any)
+                    .selectAll()
+                    .where("userId", "=", "race-user")
+                    .execute();
+                expect(rows).toHaveLength(1);
+                expect((rows[0] as any).id).toBe("race-winner");
+                expect((rows[0] as any).deviceId).toBe("legacy");
+                await db.destroy();
+            });
+        } finally {
+            rmSync(migrationDir, { recursive: true, force: true });
+        }
+    });
+
+    it("migration dedupe is idempotent — a second ensureNativePushRegistrationTable call doesn't reshuffle rows", async () => {
+        const migrationDir = mkdtempSync(join(tmpdir(), "push-migration-idempotent-test-"));
+        const migrationContext = createTestAuthContext({ dbPath: join(migrationDir, "test.db") });
+        try {
+            await runWithAuthContext(migrationContext, async () => {
+                const db = getKysely();
+                await db.schema
+                    .createTable("native_push_registration")
+                    .addColumn("id", "text", (col) => col.primaryKey())
+                    .addColumn("userId", "text", (col) => col.notNull())
+                    .addColumn("platform", "text", (col) => col.notNull())
+                    .addColumn("topic", "text", (col) => col.notNull())
+                    .addColumn("ntfyUser", "text")
+                    .addColumn("ntfyPass", "text")
+                    .addColumn("createdAt", "text", (col) => col.notNull())
+                    .execute();
+                await db
+                    .insertInto("native_push_registration" as any)
+                    .values([
+                        {
+                            id: "idem-old",
+                            userId: "idem-user",
+                            platform: "android",
+                            topic: "pizzapi-idem-old",
+                            ntfyUser: null,
+                            ntfyPass: null,
+                            createdAt: "2026-01-01T00:00:00.000Z",
+                        },
+                        {
+                            id: "idem-new",
+                            userId: "idem-user",
+                            platform: "android",
+                            topic: "pizzapi-idem-new",
+                            ntfyUser: null,
+                            ntfyPass: null,
+                            createdAt: "2026-02-01T00:00:00.000Z",
+                        },
+                    ])
+                    .execute();
+
+                await ensureNativePushRegistrationTable();
+                const afterFirst = await db
+                    .selectFrom("native_push_registration" as any)
+                    .selectAll()
+                    .where("userId", "=", "idem-user")
+                    .execute();
+
+                // Simulate a server restart: run the migration again.
+                await ensureNativePushRegistrationTable();
+                const afterSecond = await db
+                    .selectFrom("native_push_registration" as any)
+                    .selectAll()
+                    .where("userId", "=", "idem-user")
+                    .execute();
+
+                expect(afterSecond).toHaveLength(afterFirst.length);
+                expect(new Set(afterSecond.map((r) => (r as any).deviceId))).toEqual(
+                    new Set(afterFirst.map((r) => (r as any).deviceId)),
+                );
+                await db.destroy();
+            });
+        } finally {
+            rmSync(migrationDir, { recursive: true, force: true });
+        }
+    });
+
     authIt("registerNativePush assigns an unguessable topic and persists it", async () => {
         const reg = await registerNativePush({ userId: "user-A", platform: "android" });
         expect(reg.userId).toBe("user-A");
         expect(reg.platform).toBe("android");
+        expect(reg.deviceId).toBe("legacy");
         expect(reg.topic).toMatch(/^pizzapi-[0-9a-f]{48}$/);
         expect(reg.ntfyUser).toBeNull();
         expect(reg.ntfyPass).toBeNull();
@@ -377,24 +585,47 @@ describe("native push registration", () => {
         expect(rows[0].topic).toBe(reg.topic);
     });
 
-    authIt("registerNativePush is idempotent per user+platform (reuses topic)", async () => {
-        const first = await registerNativePush({ userId: "user-B", platform: "android" });
-        const second = await registerNativePush({ userId: "user-B", platform: "android" });
+    authIt("registerNativePush is idempotent per user+platform+deviceId only", async () => {
+        const first = await registerNativePush({ userId: "user-B", platform: "android", deviceId: "device-1" });
+        const second = await registerNativePush({ userId: "user-B", platform: "android", deviceId: "device-1" });
+        const otherDevice = await registerNativePush({ userId: "user-B", platform: "android", deviceId: "device-2" });
         expect(second.topic).toBe(first.topic);
+        expect(otherDevice.topic).not.toBe(first.topic);
         const rows = await getNativeRegistrationsForUser("user-B");
-        expect(rows).toHaveLength(1);
+        expect(rows).toHaveLength(2);
     });
 
-    authIt("unregisterNativePush deletes the registration and reports removal", async () => {
-        await registerNativePush({ userId: "user-C", platform: "android" });
-        const removed = await unregisterNativePush("user-C", "android");
+    authIt("unregisterNativePush deletes only the requested device when provided", async () => {
+        await registerNativePush({ userId: "user-C", platform: "android", deviceId: "device-1" });
+        await registerNativePush({ userId: "user-C", platform: "android", deviceId: "device-2" });
+        const removed = await unregisterNativePush("user-C", "android", "device-1");
         expect(removed).toBe(true);
         const rows = await getNativeRegistrationsForUser("user-C");
-        expect(rows).toHaveLength(0);
+        expect(rows.map((row) => row.deviceId)).toEqual(["device-2"]);
 
         // Second call reports no removal.
-        const removed2 = await unregisterNativePush("user-C", "android");
+        const removed2 = await unregisterNativePush("user-C", "android", "device-1");
         expect(removed2).toBe(false);
+    });
+
+    authIt("unregisterNativePush with NO deviceId (old client) only removes the legacy device, not a newer client's device", async () => {
+        // An old app build never sends deviceId at all. Before the fix,
+        // unregister without deviceId had no device predicate and deleted
+        // every row for the user — including a different, newer-client
+        // device that DOES send deviceId. The old client must only ever be
+        // able to affect the 'legacy' bucket it implicitly registered under.
+        await registerNativePush({ userId: "user-mixed", platform: "android" }); // old client → deviceId defaults to 'legacy'
+        await registerNativePush({ userId: "user-mixed", platform: "android", deviceId: "device-new" }); // new client
+        expect((await getNativeRegistrationsForUser("user-mixed")).map((r) => r.deviceId).sort()).toEqual([
+            "device-new",
+            "legacy",
+        ]);
+
+        const removed = await unregisterNativePush("user-mixed", "android", undefined);
+        expect(removed).toBe(true);
+
+        const rows = await getNativeRegistrationsForUser("user-mixed");
+        expect(rows.map((r) => r.deviceId)).toEqual(["device-new"]);
     });
 
     authIt("sendPushToUser is a no-op for ntfy when PIZZAPI_NTFY_URL is unset", async () => {
@@ -591,7 +822,7 @@ describe("native push registration", () => {
         expect(await getSubscriptionsForUser("user-connected")).toHaveLength(0);
     });
 
-    authIt("sendPushToUser prunes ntfy registrations on 403/404", async () => {
+    authIt("sendPushToUser keeps ntfy registrations on 403/404", async () => {
         await registerNativePush({ userId: "user-F", platform: "android" });
         process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
         process.env.PIZZAPI_NTFY_PUBLISH_TOKEN = "tk_test_publish";
@@ -612,9 +843,9 @@ describe("native push registration", () => {
             delete process.env.PIZZAPI_NTFY_PUBLISH_TOKEN;
         }
 
-        // The 403 should have pruned the registration.
+        // 403 can be a server token/config problem, not a stale device.
         const rows = await getNativeRegistrationsForUser("user-F");
-        expect(rows).toHaveLength(0);
+        expect(rows).toHaveLength(1);
     });
 
     authIt("sendPushToUser retries once on a 5xx ntfy failure then gives up and logs", async () => {
@@ -649,7 +880,7 @@ describe("native push registration", () => {
         expect(rows).toHaveLength(1);
     });
 
-    authIt("sendPushToUser does not retry on 403 (single fetch call) and prunes", async () => {
+    authIt("sendPushToUser does not retry on 403 (single fetch call) and keeps registration", async () => {
         await registerNativePush({ userId: "user-403-noretry", platform: "android" });
         process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
 
@@ -671,10 +902,195 @@ describe("native push registration", () => {
             delete process.env.PIZZAPI_NTFY_URL;
         }
 
-        // 403 is not transient (forbidden topic) — no retry, prune immediately.
+        // 403 is not retried, but it may be server auth/config, so keep the row.
         expect(callCount).toBe(1);
         const rows = await getNativeRegistrationsForUser("user-403-noretry");
+        expect(rows).toHaveLength(1);
+    });
+});
+
+// ── Native push device retirement (lastSeenAt, cap, bounded concurrency) ────
+
+describe("native push device retirement", () => {
+    authIt("registerNativePush refreshes lastSeenAt on re-registration", async () => {
+        const first = await registerNativePush({ userId: "user-lastseen", platform: "android", deviceId: "d1" });
+        const staleTimestamp = "2000-01-01T00:00:00.000Z";
+        await getKysely()
+            .updateTable("native_push_registration" as any)
+            .set({ lastSeenAt: staleTimestamp })
+            .where("id", "=", first.id)
+            .execute();
+
+        const before = (await getNativeRegistrationsForUser("user-lastseen"))[0];
+        expect(before.lastSeenAt).toBe(staleTimestamp);
+
+        await registerNativePush({ userId: "user-lastseen", platform: "android", deviceId: "d1" });
+
+        const after = (await getNativeRegistrationsForUser("user-lastseen"))[0];
+        expect(after.lastSeenAt).not.toBe(staleTimestamp);
+        expect(new Date(after.lastSeenAt).getTime()).toBeGreaterThan(new Date(staleTimestamp).getTime());
+    });
+
+    authIt("ensureNativePushRegistrationTable prunes a device unseen for over the retirement window", async () => {
+        const reg = await registerNativePush({ userId: "user-abandoned", platform: "android" });
+        const longAgo = new Date(Date.now() - (NATIVE_PUSH_RETIREMENT_DAYS + 1) * 24 * 60 * 60 * 1000).toISOString();
+        await getKysely()
+            .updateTable("native_push_registration" as any)
+            .set({ lastSeenAt: longAgo })
+            .where("id", "=", reg.id)
+            .execute();
+
+        // Simulate a server restart.
+        await ensureNativePushRegistrationTable();
+
+        const rows = await getNativeRegistrationsForUser("user-abandoned");
         expect(rows).toHaveLength(0);
+    });
+
+    authIt("ensureNativePushRegistrationTable keeps a device seen within the retirement window", async () => {
+        await registerNativePush({ userId: "user-active", platform: "android" });
+        await ensureNativePushRegistrationTable();
+        const rows = await getNativeRegistrationsForUser("user-active");
+        expect(rows).toHaveLength(1);
+    });
+
+    authIt("registerNativePush caps live devices per user, evicting the least-recently-seen one first", async () => {
+        const userId = "user-capped";
+        for (let i = 0; i < NATIVE_PUSH_MAX_DEVICES_PER_USER; i++) {
+            await registerNativePush({ userId, platform: "android", deviceId: `d${i}` });
+        }
+        let rows = await getNativeRegistrationsForUser(userId);
+        expect(rows).toHaveLength(NATIVE_PUSH_MAX_DEVICES_PER_USER);
+
+        // Make "d0" the oldest by lastSeenAt so it's the one evicted.
+        await getKysely()
+            .updateTable("native_push_registration" as any)
+            .set({ lastSeenAt: "2000-01-01T00:00:00.000Z" })
+            .where("userId", "=", userId)
+            .where("deviceId", "=", "d0")
+            .execute();
+
+        // One more device past the cap — reinstall/clear-storage scenario.
+        await registerNativePush({ userId, platform: "android", deviceId: "d-new" });
+
+        rows = await getNativeRegistrationsForUser(userId);
+        expect(rows).toHaveLength(NATIVE_PUSH_MAX_DEVICES_PER_USER);
+        const deviceIds = rows.map((r) => r.deviceId);
+        expect(deviceIds).not.toContain("d0"); // evicted (oldest)
+        expect(deviceIds).toContain("d-new"); // new device fit under the cap
+    });
+
+    authIt("sendPushToUser bounds ntfy publish concurrency instead of firing all requests at once", async () => {
+        const userId = "user-fanout";
+        const deviceCount = NATIVE_PUSH_PUBLISH_CONCURRENCY + 3;
+        for (let i = 0; i < deviceCount; i++) {
+            await registerNativePush({ userId, platform: "android", deviceId: `fanout-${i}` });
+        }
+        process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
+
+        let inFlight = 0;
+        let maxInFlight = 0;
+        const origFetch = globalThis.fetch;
+        (globalThis as any).fetch = () => {
+            inFlight++;
+            maxInFlight = Math.max(maxInFlight, inFlight);
+            return Promise.resolve(new Response("ok", { status: 200 })).finally(() => {
+                inFlight--;
+            });
+        };
+        try {
+            await sendPushToUser(userId, {
+                type: "agent_finished",
+                title: "done",
+                body: "x",
+                sessionId: "s",
+            });
+        } finally {
+            (globalThis as any).fetch = origFetch;
+            delete process.env.PIZZAPI_NTFY_URL;
+        }
+
+        expect(maxInFlight).toBe(NATIVE_PUSH_PUBLISH_CONCURRENCY);
+        expect(maxInFlight).toBeLessThan(deviceCount);
+    });
+
+    authIt("retires a registration after sustained consecutive publish failures spanning the grace window", async () => {
+        const reg = await registerNativePush({ userId: "user-retire", platform: "android" });
+        process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
+        const origFetch = globalThis.fetch;
+        const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+        (globalThis as any).fetch = () => Promise.resolve(new Response("fail", { status: 500 }));
+        try {
+            await sendPushToUser("user-retire", { type: "agent_finished", title: "t", body: "b", sessionId: "s" });
+            let rows = await getNativeRegistrationsForUser("user-retire");
+            expect(rows).toHaveLength(1);
+            expect(rows[0].consecutiveFailures).toBe(1);
+
+            // Simulate the failure streak having spanned the grace window —
+            // a brief outage must not retire a device, only a sustained one.
+            await getKysely()
+                .updateTable("native_push_registration" as any)
+                .set({ firstFailureAt: new Date(Date.now() - NATIVE_PUSH_FAILURE_GRACE_MS - 1000).toISOString() })
+                .where("id", "=", reg.id)
+                .execute();
+
+            for (let i = 1; i < NATIVE_PUSH_MAX_CONSECUTIVE_FAILURES; i++) {
+                await sendPushToUser("user-retire", { type: "agent_finished", title: "t", body: "b", sessionId: "s" });
+            }
+
+            rows = await getNativeRegistrationsForUser("user-retire");
+            expect(rows).toHaveLength(0);
+        } finally {
+            (globalThis as any).fetch = origFetch;
+            delete process.env.PIZZAPI_NTFY_URL;
+            errorSpy.mockRestore();
+        }
+    });
+
+    authIt("does NOT retire a registration from a failure burst that hasn't spanned the grace window", async () => {
+        // Same failure count as the test above, but firstFailureAt is never
+        // backdated — the whole burst happens "now" (well under the grace
+        // window), so the device must survive.
+        await registerNativePush({ userId: "user-burst", platform: "android" });
+        process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
+        const origFetch = globalThis.fetch;
+        const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+        (globalThis as any).fetch = () => Promise.resolve(new Response("fail", { status: 500 }));
+        try {
+            for (let i = 0; i < NATIVE_PUSH_MAX_CONSECUTIVE_FAILURES + 2; i++) {
+                await sendPushToUser("user-burst", { type: "agent_finished", title: "t", body: "b", sessionId: "s" });
+            }
+            const rows = await getNativeRegistrationsForUser("user-burst");
+            expect(rows).toHaveLength(1);
+            expect(rows[0].consecutiveFailures).toBeGreaterThanOrEqual(NATIVE_PUSH_MAX_CONSECUTIVE_FAILURES);
+        } finally {
+            (globalThis as any).fetch = origFetch;
+            delete process.env.PIZZAPI_NTFY_URL;
+            errorSpy.mockRestore();
+        }
+    });
+
+    authIt("a publish success resets the failure streak", async () => {
+        await registerNativePush({ userId: "user-recover", platform: "android" });
+        process.env.PIZZAPI_NTFY_URL = "http://ntfy-test";
+        const origFetch = globalThis.fetch;
+        const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+        try {
+            (globalThis as any).fetch = () => Promise.resolve(new Response("fail", { status: 500 }));
+            await sendPushToUser("user-recover", { type: "agent_finished", title: "t", body: "b", sessionId: "s" });
+            expect((await getNativeRegistrationsForUser("user-recover"))[0].consecutiveFailures).toBe(1);
+
+            (globalThis as any).fetch = () => Promise.resolve(new Response("ok", { status: 200 }));
+            await sendPushToUser("user-recover", { type: "agent_finished", title: "t", body: "b", sessionId: "s" });
+            const rows = await getNativeRegistrationsForUser("user-recover");
+            expect(rows).toHaveLength(1);
+            expect(rows[0].consecutiveFailures).toBe(0);
+            expect(rows[0].firstFailureAt).toBeNull();
+        } finally {
+            (globalThis as any).fetch = origFetch;
+            delete process.env.PIZZAPI_NTFY_URL;
+            errorSpy.mockRestore();
+        }
     });
 });
 
@@ -926,6 +1342,30 @@ describe("updateNativeSuppressChildNotifications", () => {
         await registerNativePush({ userId: "user-nscn-3", platform: "android" });
         const count = await updateNativeSuppressChildNotifications("user-nscn-3", "android", true);
         expect(count).toBe(1);
+    });
+
+    authIt("with NO deviceId (old client) only affects the legacy device, not a newer client's device", async () => {
+        // Mirrors the unregister fix: an old client's preference PUT omits
+        // deviceId. Before the fix this had no device predicate and changed
+        // EVERY device's preference for the user, including a device
+        // registered by a newer client build that sends its own deviceId.
+        await registerNativePush({ userId: "user-nscn-mixed", platform: "android" }); // → 'legacy'
+        await registerNativePush({
+            userId: "user-nscn-mixed",
+            platform: "android",
+            deviceId: "device-new",
+            suppressChildNotifications: false,
+        });
+
+        const count = await updateNativeSuppressChildNotifications("user-nscn-mixed", "android", true, undefined);
+        expect(count).toBe(1);
+
+        const rows = await getNativeRegistrationsForUser("user-nscn-mixed");
+        const legacy = rows.find((r) => r.deviceId === "legacy");
+        const newer = rows.find((r) => r.deviceId === "device-new");
+        expect(legacy?.suppressChildNotifications).toBe(1);
+        // The newer client's device must be untouched.
+        expect(newer?.suppressChildNotifications).toBe(0);
     });
 });
 
