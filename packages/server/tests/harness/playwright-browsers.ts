@@ -10,28 +10,40 @@ function hasChromiumBrowser(dir: string): boolean {
     }
 }
 
+function safeUsername(): string | undefined {
+    // os.userInfo() throws when the current UID has no /etc/passwd entry
+    // (common in minimal containers). Account-specific candidates are a
+    // bonus on top of the HOME/XDG/LOCALAPPDATA-derived paths below, so
+    // never let this abort resolution.
+    try {
+        return os.userInfo().username;
+    } catch {
+        return undefined;
+    }
+}
+
 function candidateBrowserPaths(): string[] {
     const home = os.homedir();
-    const username = os.userInfo().username;
+    const username = safeUsername();
 
     if (process.platform === "darwin") {
         return [
             path.join(home, "Library", "Caches", "ms-playwright"),
-            path.join("/Users", username, "Library", "Caches", "ms-playwright"),
-        ];
+            username ? path.join("/Users", username, "Library", "Caches", "ms-playwright") : "",
+        ].filter(Boolean);
     }
 
     if (process.platform === "win32") {
         return [
             process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "ms-playwright") : "",
-            path.join("C:\\Users", username, "AppData", "Local", "ms-playwright"),
+            username ? path.join("C:\\Users", username, "AppData", "Local", "ms-playwright") : "",
         ].filter(Boolean);
     }
 
     return [
         process.env.XDG_CACHE_HOME ? path.join(process.env.XDG_CACHE_HOME, "ms-playwright") : "",
         path.join(home, ".cache", "ms-playwright"),
-        path.join("/home", username, ".cache", "ms-playwright"),
+        username ? path.join("/home", username, ".cache", "ms-playwright") : "",
         username === "root" ? path.join("/root", ".cache", "ms-playwright") : "",
     ].filter(Boolean);
 }
