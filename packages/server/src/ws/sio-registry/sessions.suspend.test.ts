@@ -178,6 +178,28 @@ describe("cancelSuspendedSession", () => {
             data: expect.objectContaining({ sessionId: "s1", suspended: false }),
         }));
     });
+
+    it("restores isActive:true for the live worker instead of the false value suspend already wrote", async () => {
+        // Mirrors the real sequence: a connected worker goes isActive:true →
+        // trySuspendIdleChild calls suspendSharedSession (which stamps
+        // isActive:false in anticipation of exiting) → new work arrives before
+        // the worker actually exits → cancelSuspendedSession undoes it on the
+        // SAME still-live socket.
+        seed("s1", { isActive: true });
+        const socket = { id: "sock-1" } as never;
+        localTuiSockets.set("s1", socket);
+
+        expect(await suspendSharedSession("s1", "tok")).toBe(true);
+        expect(store.get("s1")?.isActive).toBe(false);
+
+        expect(await cancelSuspendedSession(socket, "s1", "tok")).toBe(true);
+
+        expect(store.get("s1")?.isActive).toBe(true);
+        expect(calls.hub).toContainEqual(expect.objectContaining({
+            event: "session_status",
+            data: expect.objectContaining({ sessionId: "s1", suspended: false, isActive: true }),
+        }));
+    });
 });
 
 describe("suspended session upkeep", () => {

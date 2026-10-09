@@ -1363,8 +1363,14 @@ export async function cancelSuspendedSession(socket: Socket, sessionId: string, 
         const session = await getSessionSummary(sessionId);
         if (!session?.suspended) return false;
 
+        // suspendSharedSession already overwrote isActive to false in
+        // anticipation of the worker exiting; it never did (the worker
+        // detected new work during the ack round trip and aborted on this
+        // same still-live socket), so restore true here rather than reading
+        // the stale false back out of the record we just fetched.
         await updateSessionFields(sessionId, {
             suspended: false,
+            isActive: true,
             expiresAt: session.isEphemeral ? nextEphemeralExpiry() : null,
         });
         await touchRelaySession(sessionId).catch((error) => {
@@ -1376,7 +1382,7 @@ export async function cancelSuspendedSession(socket: Socket, sessionId: string, 
             "session_status",
             {
                 sessionId,
-                isActive: session.isActive ?? false,
+                isActive: true,
                 lastHeartbeatAt: session.lastHeartbeatAt,
                 sessionName: session.sessionName,
                 model: modelFromHeartbeat(session.lastHeartbeat ? safeJsonParse(session.lastHeartbeat) : null),
