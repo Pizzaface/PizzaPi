@@ -11,7 +11,16 @@ import { gzipSync } from "zlib";
 
 const DIST_DIR = path.resolve(import.meta.dir, "../dist");
 const INDEX_HTML = path.join(DIST_DIR, "index.html");
-const BUDGET_BYTES = 505 * 1024; // 505 KB gzip
+// 512 KB gzip. The local gzip size for a given commit is reproducible
+// (±0.05 KB across repeated builds here), but CI's esbuild/Rollup minify
+// pass is not: on 2026-10-08, PR #945's unchanged commit produced two
+// *different* "within budget" vs "exceeds budget" results in the very same
+// CI job — identical 1712.84 KB raw minified output both times, but gzip
+// 500.76 KB then 505.49 KB on the next build (run ids 37799888572, job
+// npm-local). 505 KB left ~0 KB of margin against that swing even though
+// neither build actually grew the app. Budget bumped to restore headroom;
+// shrink real growth instead of creeping this number back down.
+const BUDGET_BYTES = 512 * 1024;
 
 function formatBytes(bytes: number): string {
     return `${(bytes / 1024).toFixed(2)} KB`;
