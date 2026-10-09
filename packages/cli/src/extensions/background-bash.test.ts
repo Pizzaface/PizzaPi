@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { backgroundBashExtension, backgroundPendingJobs, pendingCommands, backgroundAfterSeconds, resetBackgroundBashConfigCache, readFrom } from "./background-bash.js";
@@ -251,11 +251,61 @@ describe("bash override with backgrounding", () => {
         expect(Date.now() - started).toBeLessThan(5000);
     });
 
-    test("abort while a stubborn command runs rejects instead of backgrounding", async () => {
-        const { tool } = getTool();
-        const ac = new AbortController();
-        setTimeout(() => ac.abort(), 200);
-        await expect(tool.execute("id", { command: "trap '' TERM; sleep 20", title: "stubborn" }, ac.signal, undefined, undefined)).rejects.toThrow(/aborted/);
+    test("foreground timeout removes its temp log", async () => {
+        const dir = mkdtempSync(join(tmpdir(), "bgbash-timeout-"));
+        const prevTmp = process.env.TMPDIR;
+        process.env.TMPDIR = dir;
+        try {
+            const { tool } = getTool();
+            await expect(run(tool, { command: "echo before; sleep 20", title: "timeout cleanup", timeout: 0.2 })).rejects.toThrow(/timed out/);
+            expect(readdirSync(dir).filter((name) => name.startsWith("pizzapi-bash-")).length).toBe(0);
+        } finally {
+            if (prevTmp === undefined) delete process.env.TMPDIR;
+            else process.env.TMPDIR = prevTmp;
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("timeout that loses the race to auto-backgrounding (SIGTERM-stubborn command) still removes its temp log", async () => {
+        // Reproduces Ramsey's finding: the bg promise (auto-background timer)
+        // can win Promise.race even though timedOut is already set, because
+        // the stubborn command ignores SIGTERM and isn't dead yet. That throw
+        // site used to fire before any unlink.
+        const dir = mkdtempSync(join(tmpdir(), "bgbash-race-"));
+        const prevTmp = process.env.TMPDIR;
+        const prevBg = process.env.PIZZAPI_BASH_BACKGROUND_SECONDS;
+        process.env.TMPDIR = dir;
+        process.env.PIZZAPI_BASH_BACKGROUND_SECONDS = "0.6";
+        try {
+            const { tool } = getTool();
+            await expect(
+                run(tool, { command: "trap '' TERM; sleep 20", title: "stubborn", timeout: 0.3 }),
+            ).rejects.toThrow(/timed out/);
+            expect(readdirSync(dir).filter((name) => name.startsWith("pizzapi-bash-")).length).toBe(0);
+        } finally {
+            if (prevTmp === undefined) delete process.env.TMPDIR;
+            else process.env.TMPDIR = prevTmp;
+            if (prevBg === undefined) delete process.env.PIZZAPI_BASH_BACKGROUND_SECONDS;
+            else process.env.PIZZAPI_BASH_BACKGROUND_SECONDS = prevBg;
+            rmSync(dir, { recursive: true, force: true });
+        }
+    }, 10000);
+
+    test("abort while a stubborn command runs rejects instead of backgrounding and removes its temp log", async () => {
+        const dir = mkdtempSync(join(tmpdir(), "bgbash-abort-"));
+        const prevTmp = process.env.TMPDIR;
+        process.env.TMPDIR = dir;
+        try {
+            const { tool } = getTool();
+            const ac = new AbortController();
+            setTimeout(() => ac.abort(), 200);
+            await expect(tool.execute("id", { command: "trap '' TERM; sleep 20", title: "stubborn" }, ac.signal, undefined, undefined)).rejects.toThrow(/aborted/);
+            expect(readdirSync(dir).filter((name) => name.startsWith("pizzapi-bash-")).length).toBe(0);
+        } finally {
+            if (prevTmp === undefined) delete process.env.TMPDIR;
+            else process.env.TMPDIR = prevTmp;
+            rmSync(dir, { recursive: true, force: true });
+        }
     });
 
     test("background timeout is reported as a timeout", async () => {
@@ -275,6 +325,22 @@ describe("bash override with backgrounding", () => {
         expect(out.content[0].text).toContain("Showing last");
         expect(out.content[0].text).toContain("\n5000");
         expect(out.content[0].text).not.toContain("\n1\n");
+    });
+
+    test("bash_output flags when the 256KB per-call read cap truncated the log, not just truncateTail's own line limit", async () => {
+        // readFrom caps a single read at 256KB; with >256KB of unread output,
+        // that silently drops the tail of the log with no signal distinct from
+        // truncateTail's own (line-count-based) truncation banner.
+        const { pi, tool } = getTool();
+        const res = await run(tool, {
+            command: "head -c 300000 /dev/zero | tr '\\0' 'a'",
+            title: "huge",
+            run_in_background: true,
+        });
+        const pid = Number(res.content[0].text.match(/pid (\d+)/)![1]);
+        await Bun.sleep(400);
+        const out = await pi.tools.get("bash_output")!.execute("id", { pid });
+        expect(out.content[0].text).toContain("More output pending");
     });
 
     test("shortcut, /background, and /shells commands are registered", () => {
@@ -398,6 +464,20 @@ describe("process tracking and lifecycle", () => {
 });
 
 describe("readFrom UTF-8 boundaries", () => {
+    test("caps each read to a bounded chunk", () => {
+        const dir = mkdtempSync(join(tmpdir(), "readfrom-"));
+        const file = join(dir, "log.txt");
+        try {
+            writeFileSync(file, Buffer.alloc(300 * 1024, "a"));
+            const r = readFrom(file, 0);
+            expect(Buffer.byteLength(r.text, "utf8")).toBeLessThanOrEqual(256 * 1024);
+            expect(r.newOffset).toBe(Buffer.byteLength(r.text, "utf8"));
+            expect(r.newOffset).toBeLessThan(300 * 1024);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
     test("incremental reads never split an emoji", () => {
         const dir = mkdtempSync(join(tmpdir(), "readfrom-"));
         const file = join(dir, "log.txt");

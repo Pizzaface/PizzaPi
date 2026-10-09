@@ -37,6 +37,7 @@ const MAX_DELIVERY_ATTEMPTS = 3;
 const KILL_GRACE_MS = 2_000;
 /** After the shell exits, stop reading once its pipes are idle this long (a `cmd &` descendant may hold them open forever). */
 const EXIT_STDIO_GRACE_MS = 100;
+const READ_FROM_MAX_BYTES = 256 * 1024;
 
 /** Seconds a bash call streams in the foreground before it auto-backgrounds. 0 = immediate. */
 export function backgroundAfterSeconds(): number {
@@ -139,19 +140,20 @@ function loadJobs(): void {
  * ponytail: StringDecoder is stateful but a fresh one per call is enough because
  * newOffset always lands on a character boundary (offsets start at 0).
  */
-export function readFrom(path: string, offset: number): { text: string; newOffset: number } {
+export function readFrom(path: string, offset: number): { text: string; newOffset: number; capped: boolean } {
     let fd: number | undefined;
     try {
         const size = statSync(path).size;
-        if (size <= offset) return { text: "", newOffset: offset };
-        const len = size - offset;
+        if (size <= offset) return { text: "", newOffset: offset, capped: false };
+        const len = Math.min(size - offset, READ_FROM_MAX_BYTES);
         const buf = Buffer.allocUnsafe(len);
         fd = openSync(path, "r");
-        readSync(fd, buf, 0, len, offset);
-        const text = new StringDecoder("utf8").write(buf);
-        return { text, newOffset: offset + Buffer.byteLength(text, "utf8") };
+        const bytesRead = readSync(fd, buf, 0, len, offset);
+        const text = new StringDecoder("utf8").write(buf.subarray(0, bytesRead));
+        const newOffset = offset + Buffer.byteLength(text, "utf8");
+        return { text, newOffset, capped: newOffset < size };
     } catch {
-        return { text: "", newOffset: offset };
+        return { text: "", newOffset: offset, capped: false };
     } finally {
         if (fd !== undefined) closeSync(fd);
     }
@@ -466,16 +468,28 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
 
             if (raced !== "bg") {
                 // Foreground completion — built-in semantics.
-                if (signal?.aborted) throw new Error("aborted");
-                if (timedOut) throw new Error(`timeout:${timeout}`);
-                try { unlinkSync(logPath); } catch { /* best effort */ }
-                return { exitCode: raced.code };
+                try {
+                    if (signal?.aborted) throw new Error("aborted");
+                    if (timedOut) throw new Error(`timeout:${timeout}`);
+                    return { exitCode: raced.code };
+                } finally {
+                    try { unlinkSync(logPath); } catch { /* best effort */ }
+                }
             }
 
             // Stopped/timed out before the backgrounding kicked in — report that,
-            // don't hand back a zombie "background shell" with exit 0.
-            if (signal?.aborted) throw new Error("aborted");
-            if (timedOut) throw new Error(`timeout:${timeout}`);
+            // don't hand back a zombie "background shell" with exit 0. The bg
+            // promise can win the race (auto-background timer) even though
+            // signal/timedOut already fired — same leak as the foreground
+            // throw above, same fix: unlink before the throw escapes.
+            if (signal?.aborted || timedOut) {
+                try {
+                    if (signal?.aborted) throw new Error("aborted");
+                    throw new Error(`timeout:${timeout}`);
+                } finally {
+                    try { unlinkSync(logPath); } catch { /* best effort */ }
+                }
+            }
 
             // Backgrounded: stop streaming, let it run, notify on exit.
             backgrounded = true;
@@ -564,7 +578,7 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
                     details: undefined,
                 };
             }
-            const { text: raw, newOffset } = readFrom(job.logPath, job.readOffset);
+            const { text: raw, newOffset, capped } = readFrom(job.logPath, job.readOffset);
             // Cap like the bash tool so a chatty log can't flood context.
             const t = truncateTail(raw);
             const text = t.truncated
@@ -576,8 +590,12 @@ export const backgroundBashExtension: ExtensionFactory = (pi) => {
             }
             const runtime = Math.round(((job.endedAt ?? Date.now()) - job.startedAt) / 1000);
             const header = `[pid ${job.pid}, ${jobStatus(job)}, ${runtime}s] ${job.command}`;
+            // readFrom caps at READ_FROM_MAX_BYTES per call; a few-long-lines log can hit
+            // that byte cap without producing enough lines to trip truncateTail's own
+            // banner, so the model would otherwise believe it saw everything.
+            const moreNotice = capped ? "\n[More output pending \u2014 call bash_output again to continue reading.]" : "";
             return {
-                content: [{ type: "text" as const, text: `${header}\n${text || "(no new output)"}` }],
+                content: [{ type: "text" as const, text: `${header}\n${text || "(no new output)"}${moreNotice}` }],
                 details: { pid: job.pid, status: jobStatus(job), exitCode: job.exitCode },
             };
         },
