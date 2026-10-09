@@ -152,4 +152,113 @@ describe("HTTP MCP protocol eras", () => {
     await client.listTools();
     expect(methods).toEqual(["server/discover", "initialize", "notifications/initialized", "tools/list"]);
   });
+
+  test("aborting a legacy HTTP tool call notifies the server", async () => {
+    const started = Promise.withResolvers<number>();
+    const cancellations: unknown[] = [];
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      if (body.method === "server/discover") return response({ message: "legacy" }, 400);
+      if (body.method === "initialize") return response({ jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-03-26" } });
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      if (body.method === "notifications/cancelled") { cancellations.push(body.params); return new Response(null, { status: 202 }); }
+      if (body.method === "tools/call") {
+        started.resolve(body.id);
+        return new Promise<Response>((_resolve, reject) => {
+          init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
+        });
+      }
+      throw new Error(`unexpected ${body.method}`);
+    }) as typeof fetch;
+
+    const client = createHttpMcpClient({ name: "legacy", url: "https://example.test/mcp" });
+    const abort = new AbortController();
+    const call = client.callTool("slow", {}, abort.signal);
+    const requestId = await started.promise;
+    abort.abort(new DOMException("cancelled", "AbortError"));
+    await expect(call).rejects.toThrow();
+    expect(cancellations).toEqual([{ requestId, reason: "Client cancelled request" }]);
+    client.close();
+  });
+
+  test("closing during an in-flight legacy HTTP tool call sends no notifications/cancelled", async () => {
+    const started = Promise.withResolvers<number>();
+    const methods: string[] = [];
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      methods.push(body.method);
+      if (body.method === "server/discover") return response({ message: "legacy" }, 400);
+      if (body.method === "initialize") return response({ jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-03-26" } });
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      if (body.method === "notifications/cancelled") return new Response(null, { status: 202 });
+      if (body.method === "tools/call") {
+        started.resolve(body.id);
+        return new Promise<Response>((_resolve, reject) => {
+          init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
+        });
+      }
+      throw new Error(`unexpected ${body.method}`);
+    }) as typeof fetch;
+
+    const client = createHttpMcpClient({ name: "legacy", url: "https://example.test/mcp" });
+    const call = client.callTool("slow", {});
+    await started.promise;
+    client.close();
+    await expect(call).rejects.toThrow();
+    // close() tears the session down via DELETE; it must not also race that
+    // DELETE with a notifications/cancelled POST for the same session.
+    expect(methods).not.toContain("notifications/cancelled");
+  });
+
+  test("aborting legacy initialize never notifies cancellation", async () => {
+    const started = Promise.withResolvers<void>();
+    const methods: string[] = [];
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      methods.push(body.method);
+      if (body.method === "server/discover") return response({ message: "legacy" }, 400);
+      if (body.method === "initialize") {
+        started.resolve();
+        return new Promise<Response>((_resolve, reject) => {
+          init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
+        });
+      }
+      throw new Error(`unexpected ${body.method}`);
+    }) as typeof fetch;
+
+    const client = createHttpMcpClient({ name: "legacy", url: "https://example.test/mcp" });
+    const abort = new AbortController();
+    const init = client.initialize(abort.signal);
+    await started.promise;
+    abort.abort(new DOMException("cancelled", "AbortError"));
+    await expect(init).rejects.toThrow();
+    expect(methods).not.toContain("notifications/cancelled");
+    client.close();
+  });
+
+  test("aborting a modern HTTP tool call only closes the stream", async () => {
+    const started = Promise.withResolvers<void>();
+    const methods: string[] = [];
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      methods.push(body.method);
+      if (body.method === "server/discover") return response({ jsonrpc: "2.0", id: body.id, result: { supportedVersions: ["2026-07-28"] } });
+      if (body.method === "tools/call") {
+        started.resolve();
+        return new Promise<Response>((_resolve, reject) => {
+          init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
+        });
+      }
+      throw new Error(`unexpected ${body.method}`);
+    }) as typeof fetch;
+
+    const client = createHttpMcpClient({ name: "modern", url: "https://example.test/mcp" });
+    const abort = new AbortController();
+    const call = client.callTool("slow", {}, abort.signal);
+    await started.promise;
+    abort.abort(new DOMException("cancelled", "AbortError"));
+    await expect(call).rejects.toThrow();
+    expect(methods).not.toContain("notifications/cancelled");
+    client.close();
+  });
 });

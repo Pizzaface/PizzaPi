@@ -71,6 +71,16 @@ export async function createStdioMcpClient(opts: {
     child.stdin.write(JSON.stringify(msg) + "\n");
   }
 
+  function notifyCancelled(requestId: number) {
+    try {
+      if (!child.stdin.destroyed) {
+        send({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId, reason: "Client cancelled request" } });
+      }
+    } catch {
+      // Best-effort notification; local cancellation must still win.
+    }
+  }
+
   function request(method: string, params?: any, signal?: AbortSignal): Promise<any> {
     signal = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal;
     if (signal.aborted) return Promise.reject(signal.reason);
@@ -80,7 +90,11 @@ export async function createStdioMcpClient(opts: {
     return new Promise((resolve, reject) => {
       const onAbort = () => {
         pending.delete(id);
-        if (modern) send({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason: "Client cancelled request" } });
+        // Per spec, `initialize` MUST NOT be cancelled — never notify for it.
+        // A response that already arrived removed this listener via
+        // cleanup() before onAbort could run, so no extra guard is needed
+        // for the abort-after-completion race.
+        if (method !== "initialize") notifyCancelled(id);
         reject(signal?.reason ?? new DOMException("The operation was aborted", "AbortError"));
       };
       const cleanup = () => signal?.removeEventListener("abort", onAbort);

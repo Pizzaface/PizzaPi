@@ -233,51 +233,72 @@ export function createStreamableMcpClient(opts: {
   async function rawRequestImpl(method: string, params?: any, signal?: AbortSignal, modernRequest = modern): Promise<{ result: any; status: number; response: Response; rpcError?: any }> {
     const id = nextId++;
     const payload = { jsonrpc: "2.0", id, method, params };
+    // Per spec, `initialize` MUST NOT be cancelled — never emit a cancellation
+    // notification for it. Also skip once a response has already arrived
+    // (abort-after-completion race): the request is done, there's nothing left
+    // to cancel server-side. And skip once the client is closed(): close()
+    // already tears the session down via DELETE, so sending a cancellation
+    // notification too would race that DELETE for the same mcp-session-id
+    // (the notify fetch uses its own timeout, not lifetime.signal, so close()
+    // has no way to cancel it once sent).
+    let settled = false;
+    const cancelNotification = () => {
+      if (settled || closed || method === "initialize") return;
+      if (!modernRequest) notify("notifications/cancelled", { requestId: id, reason: "Client cancelled request" }, AbortSignal.timeout(1000));
+    };
+    signal?.addEventListener("abort", cancelNotification, { once: true });
 
-    const res = await fetch(opts.url, {
-      method: "POST",
-      headers: buildHeaders(modernRequest ? {
-        "MCP-Protocol-Version": MCP_MODERN_PROTOCOL_VERSION,
-        "Mcp-Method": method,
-        ...(typeof params?.name === "string" ? { "Mcp-Name": encodeHeaderValue(params.name) } : {}),
-      } : undefined),
-      body: JSON.stringify(payload),
-      signal,
-    });
+    try {
+      const res = await fetch(opts.url, {
+        method: "POST",
+        headers: buildHeaders(modernRequest ? {
+          "MCP-Protocol-Version": MCP_MODERN_PROTOCOL_VERSION,
+          "Mcp-Method": method,
+          ...(typeof params?.name === "string" ? { "Mcp-Name": encodeHeaderValue(params.name) } : {}),
+        } : undefined),
+        body: JSON.stringify(payload),
+        signal,
+      });
 
-    // Capture / update session ID.
-    // If the client was already closed (e.g. init timeout fired while this
-    // request was in flight), don't adopt the session — send DELETE immediately
-    // to prevent an orphaned remote session.
-    const sid = res.headers.get("mcp-session-id");
-    if (sid && !modernRequest) {
-      if (closed) {
-        fetch(opts.url, {
-          method: "DELETE",
-          headers: { ...(opts.headers), "mcp-session-id": sid },
-        }).catch(() => {});
-      } else {
-        sessionId = sid;
+      // Capture / update session ID.
+      // If the client was already closed (e.g. init timeout fired while this
+      // request was in flight), don't adopt the session — send DELETE immediately
+      // to prevent an orphaned remote session.
+      const sid = res.headers.get("mcp-session-id");
+      if (sid && !modernRequest) {
+        if (closed) {
+          fetch(opts.url, {
+            method: "DELETE",
+            headers: { ...(opts.headers), "mcp-session-id": sid },
+          }).catch(() => {});
+        } else {
+          sessionId = sid;
+        }
       }
+
+      if (!res.ok) {
+        const json = (await res.clone().json().catch(() => null)) as any;
+        settled = true;
+        return { result: null, status: res.status, response: res, rpcError: json?.error };
+      }
+
+      const ct = res.headers.get("content-type") ?? "";
+
+      if (ct.includes("text/event-stream")) {
+        const result = await parseSSE(res, id, signal);
+        settled = true;
+        return { result, status: res.status, response: res };
+      }
+
+      // Fallback: plain JSON
+      const json = (await res.json().catch(() => null)) as any;
+      if (!json || typeof json !== "object" || json.method) throw new Error("MCP streamable: invalid response (server requests are not supported)");
+      if (json.id !== id && json.id !== String(id)) throw new Error("MCP response id mismatch");
+      settled = true;
+      return { result: json.result, status: res.status, response: res, rpcError: json.error };
+    } finally {
+      signal?.removeEventListener("abort", cancelNotification);
     }
-
-    if (!res.ok) {
-      const json = (await res.clone().json().catch(() => null)) as any;
-      return { result: null, status: res.status, response: res, rpcError: json?.error };
-    }
-
-    const ct = res.headers.get("content-type") ?? "";
-
-    if (ct.includes("text/event-stream")) {
-      const result = await parseSSE(res, id, signal);
-      return { result, status: res.status, response: res };
-    }
-
-    // Fallback: plain JSON
-    const json = (await res.json().catch(() => null)) as any;
-    if (!json || typeof json !== "object" || json.method) throw new Error("MCP streamable: invalid response (server requests are not supported)");
-    if (json.id !== id && json.id !== String(id)) throw new Error("MCP response id mismatch");
-    return { result: json.result, status: res.status, response: res, rpcError: json.error };
   }
 
   /** Guard to prevent infinite OAuth loops within a single request. */
@@ -423,7 +444,7 @@ export function createStreamableMcpClient(opts: {
     return result;
   }
 
-  async function notify(method: string, params?: any): Promise<void> {
+  async function notify(method: string, params?: any, signal: AbortSignal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(1000)])): Promise<void> {
     // Notifications have no id and expect no response body.
     const payload: any = { jsonrpc: "2.0", method };
     if (params !== undefined) payload.params = params;
@@ -432,7 +453,7 @@ export function createStreamableMcpClient(opts: {
       method: "POST",
       headers: buildHeaders(),
       body: JSON.stringify(payload),
-      signal: lifetime.signal,
+      signal,
     }).catch(() => {}); // best-effort
   }
 
