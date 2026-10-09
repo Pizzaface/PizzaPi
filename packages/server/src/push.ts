@@ -293,6 +293,39 @@ export interface NativePushRegistrationTable {
     createdAt: string;
     /** 0 = deliver child-session notifications; 1 = suppress them. Defaults to 1. */
     suppressChildNotifications: number;
+    /** Refreshed every time the device (re-)registers. Drives unseen-device retirement. */
+    lastSeenAt: string;
+    /** Consecutive ntfy publish failures since the last success or registration. */
+    consecutiveFailures: number;
+    /** When the current failure streak started, or null if the last publish succeeded. */
+    firstFailureAt: string | null;
+}
+
+/** Devices that haven't re-registered in this long are abandoned (reinstall/uninstall
+ *  without unregistering) and are pruned at server startup. */
+export const NATIVE_PUSH_RETIREMENT_DAYS = 60;
+/** A single registration is retired after this many consecutive publish failures... */
+export const NATIVE_PUSH_MAX_CONSECUTIVE_FAILURES = 10;
+/** ...provided the failure streak has lasted at least this long — a short ntfy outage
+ *  must not retire an otherwise-healthy device. */
+export const NATIVE_PUSH_FAILURE_GRACE_MS = 24 * 60 * 60 * 1000;
+/** Hard cap on live registrations per user+platform; the least-recently-seen device
+ *  is evicted to make room for a new one past the cap. */
+export const NATIVE_PUSH_MAX_DEVICES_PER_USER = 20;
+/** Max concurrent ntfy publish requests in flight for one notification fan-out. */
+export const NATIVE_PUSH_PUBLISH_CONCURRENCY = 5;
+
+/** Run `fn` over `items` with at most `limit` concurrent calls in flight. */
+async function mapWithConcurrency<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+    let next = 0;
+    async function worker(): Promise<void> {
+        while (true) {
+            const i = next++;
+            if (i >= items.length) return;
+            await fn(items[i]);
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
 }
 
 export async function ensureNativePushRegistrationTable(): Promise<void> {
@@ -331,6 +364,52 @@ export async function ensureNativePushRegistrationTable(): Promise<void> {
         if (!msg.includes("duplicate column name")) throw err;
     }
 
+    // lastSeenAt backfills to the moment of THIS migration (not createdAt) for
+    // pre-existing rows: a device registered a year ago under the pre-lastSeenAt
+    // schema may still be perfectly healthy today, just never had a reason to
+    // re-register since. Backfilling from createdAt would make the retirement
+    // prune below immediately delete any such long-lived-but-healthy device on
+    // the very first startup after upgrade. Stamping "now" instead gives every
+    // pre-existing device a full retirement window counted from the upgrade.
+    let lastSeenAtJustAdded = false;
+    try {
+        await getKysely().schema
+            .alterTable("native_push_registration")
+            .addColumn("lastSeenAt", "text", (col) => col.notNull().defaultTo(""))
+            .execute();
+        lastSeenAtJustAdded = true;
+    } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes("duplicate column name")) throw err;
+    }
+    if (lastSeenAtJustAdded) {
+        await getKysely()
+            .updateTable("native_push_registration" as any)
+            .set({ lastSeenAt: new Date().toISOString() })
+            .where("lastSeenAt", "=", "")
+            .execute();
+    }
+
+    try {
+        await getKysely().schema
+            .alterTable("native_push_registration")
+            .addColumn("consecutiveFailures", "integer", (col) => col.notNull().defaultTo(0))
+            .execute();
+    } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes("duplicate column name")) throw err;
+    }
+
+    try {
+        await getKysely().schema
+            .alterTable("native_push_registration")
+            .addColumn("firstFailureAt", "text")
+            .execute();
+    } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes("duplicate column name")) throw err;
+    }
+
     await getKysely().schema
         .createIndex("native_push_registration_user_idx")
         .ifNotExists()
@@ -345,25 +424,22 @@ export async function ensureNativePushRegistrationTable(): Promise<void> {
         .column("topic")
         .execute();
 
-    // Dedupe before adding the unique index: pre-dish rows were check-then-insert
-    // with no constraint, so concurrent registrations (two devices launching at
-    // once, or an app-start racing a toggle) can leave more than one row per
-    // userId+platform+deviceId (most commonly deviceId='legacy' from the column
-    // migration above). Keep the newest row per group, delete the rest, so
-    // CREATE UNIQUE INDEX below can't fail and brick server startup on upgrade.
-    await sql`
-        DELETE FROM native_push_registration
-        WHERE id NOT IN (
-            SELECT id FROM (
-                SELECT id, ROW_NUMBER() OVER (
-                    PARTITION BY userId, platform, deviceId
-                    ORDER BY createdAt DESC, id DESC
-                ) AS rn
-                FROM native_push_registration
-            )
-            WHERE rn = 1
-        )
+    // One-time migration, guarded by the unique index not existing yet (so it
+    // can never re-run and reshuffle deviceIds assigned by a later server
+    // version). Pre-dish rows were check-then-insert with no constraint, so
+    // concurrent registrations (two devices racing a first launch, or the
+    // deviceId column migration above collapsing every old row to 'legacy')
+    // can leave more than one row per userId+platform+deviceId. True
+    // duplicates (identical topic — a real check-then-insert race) collapse to
+    // the newest; rows that only SHARE a deviceId but have DISTINCT topics are
+    // different devices that predate per-device IDs and must keep receiving
+    // push, so they get a synthetic unique deviceId instead of being deleted.
+    const deviceIndexExists = await sql<{ name: string }>`
+        SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'native_push_registration_device_idx'
     `.execute(getKysely());
+    if (deviceIndexExists.rows.length === 0) {
+        await migrateLegacyNativeRegistrations();
+    }
 
     await getKysely().schema
         .createIndex("native_push_registration_device_idx")
@@ -372,6 +448,75 @@ export async function ensureNativePushRegistrationTable(): Promise<void> {
         .on("native_push_registration")
         .columns(["userId", "platform", "deviceId"])
         .execute();
+
+    // Bounded retirement: devices that haven't re-registered in a long time are
+    // treated as abandoned (uninstall/reinstall never unregisters) and pruned
+    // at startup. ponytail: a startup sweep, not a scheduled job — good enough
+    // for a server that restarts regularly; add a periodic background sweep if
+    // long-lived deployments need tighter bounds between restarts.
+    const retirementCutoff = new Date(Date.now() - NATIVE_PUSH_RETIREMENT_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    await getKysely()
+        .deleteFrom("native_push_registration" as any)
+        .where("lastSeenAt", "<", retirementCutoff)
+        .execute();
+}
+
+async function migrateLegacyNativeRegistrations(): Promise<void> {
+    await getKysely().transaction().execute(async (trx) => {
+        const rows = (await trx
+            .selectFrom("native_push_registration" as any)
+            .selectAll()
+            .execute()) as unknown as NativePushRegistrationTable[];
+
+        const groups = new Map<string, NativePushRegistrationTable[]>();
+        for (const row of rows) {
+            const key = `${row.userId}\u0000${row.platform}\u0000${row.deviceId}`;
+            const list = groups.get(key) ?? [];
+            list.push(row);
+            groups.set(key, list);
+        }
+
+        const byRecency = (a: NativePushRegistrationTable, b: NativePushRegistrationTable) =>
+            a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : b.id.localeCompare(a.id);
+
+        for (const group of groups.values()) {
+            if (group.length <= 1) continue;
+
+            // True duplicates (identical topic) collapse to the newest row.
+            const byTopic = new Map<string, NativePushRegistrationTable[]>();
+            for (const row of group) {
+                const list = byTopic.get(row.topic) ?? [];
+                list.push(row);
+                byTopic.set(row.topic, list);
+            }
+
+            const survivors: NativePushRegistrationTable[] = [];
+            for (const dupRows of byTopic.values()) {
+                dupRows.sort(byRecency);
+                const [newest, ...stale] = dupRows;
+                survivors.push(newest);
+                for (const row of stale) {
+                    await trx.deleteFrom("native_push_registration" as any).where("id", "=", row.id).execute();
+                }
+            }
+
+            // Distinct topics sharing one deviceId are different devices that
+            // predate per-device IDs. Keep the newest under the shared deviceId
+            // (usually 'legacy') and give the rest a synthetic unique deviceId
+            // scoped by row id (already unique) so the index below can't collide.
+            if (survivors.length > 1) {
+                survivors.sort(byRecency);
+                const [, ...rest] = survivors;
+                for (const row of rest) {
+                    await trx
+                        .updateTable("native_push_registration" as any)
+                        .set({ deviceId: `${row.deviceId}:${row.id}` })
+                        .where("id", "=", row.id)
+                        .execute();
+                }
+            }
+        }
+    });
 }
 
 export interface RegisterNativeInput {
@@ -391,7 +536,7 @@ export interface RegisterNativeInput {
 export async function registerNativePush(input: RegisterNativeInput): Promise<NativePushRegistrationTable> {
     const platform = "android"; // only android today; input.platform reserved for later
     void input.platform;
-    const deviceId = input.deviceId?.trim() || "legacy";
+    const deviceId = normalizeNativeDeviceId(input.deviceId);
     // Upsert: reuse an existing registration for this user+platform+device if present.
     const existing = await getKysely()
         .selectFrom("native_push_registration" as any)
@@ -401,19 +546,57 @@ export async function registerNativePush(input: RegisterNativeInput): Promise<Na
         .where("deviceId", "=", deviceId)
         .executeTakeFirst();
     if (existing) {
-        // Update suppressChildNotifications if a new preference was provided.
+        // Re-registering (e.g. every app launch) is the "device is alive" signal:
+        // refresh lastSeenAt (so retirement pruning doesn't treat it as abandoned)
+        // and reset any failure streak, in addition to any new preference.
+        const patch: Record<string, unknown> = {
+            lastSeenAt: new Date().toISOString(),
+            consecutiveFailures: 0,
+            firstFailureAt: null,
+        };
         if (input.suppressChildNotifications !== undefined) {
-            const val = input.suppressChildNotifications ? 1 : 0;
-            await getKysely()
-                .updateTable("native_push_registration" as any)
-                .set({ suppressChildNotifications: val })
-                .where("id", "=", (existing as any).id)
-                .execute();
-            return { ...(existing as unknown as NativePushRegistrationTable), suppressChildNotifications: val };
+            patch.suppressChildNotifications = input.suppressChildNotifications ? 1 : 0;
         }
-        return existing as unknown as NativePushRegistrationTable;
+        await getKysely()
+            .updateTable("native_push_registration" as any)
+            .set(patch)
+            .where("id", "=", (existing as any).id)
+            .execute();
+        return { ...(existing as unknown as NativePushRegistrationTable), ...patch } as NativePushRegistrationTable;
     }
 
+    // Cap live devices per user+platform: evict the least-recently-seen
+    // registration(s) to make room before adding a new one past the limit.
+    // Without this, a reinstalling/clear-storage client (a fresh deviceId every
+    // time) accumulates rows forever, and every notification fans out to all of
+    // them, including permanently dead ones.
+    const existingCount = Number(
+        (await getKysely()
+            .selectFrom("native_push_registration" as any)
+            .select((eb) => eb.fn.countAll().as("count"))
+            .where("userId", "=", input.userId)
+            .where("platform", "=", platform)
+            .executeTakeFirst() as any)?.count ?? 0,
+    );
+    if (existingCount >= NATIVE_PUSH_MAX_DEVICES_PER_USER) {
+        const evictCount = existingCount - NATIVE_PUSH_MAX_DEVICES_PER_USER + 1;
+        const stale = await getKysely()
+            .selectFrom("native_push_registration" as any)
+            .select(["id"])
+            .where("userId", "=", input.userId)
+            .where("platform", "=", platform)
+            .orderBy("lastSeenAt", "asc")
+            .limit(evictCount)
+            .execute();
+        if (stale.length > 0) {
+            await getKysely()
+                .deleteFrom("native_push_registration" as any)
+                .where("id", "in", stale.map((row) => (row as any).id))
+                .execute();
+        }
+    }
+
+    const now = new Date().toISOString();
     const row: NativePushRegistrationTable = {
         id: crypto.randomUUID(),
         userId: input.userId,
@@ -423,7 +606,10 @@ export async function registerNativePush(input: RegisterNativeInput): Promise<Na
         ntfyUser: null,
         ntfyPass: null,
         suppressChildNotifications: input.suppressChildNotifications === false ? 0 : 1,
-        createdAt: new Date().toISOString(),
+        createdAt: now,
+        lastSeenAt: now,
+        consecutiveFailures: 0,
+        firstFailureAt: null,
     };
     try {
         await getKysely()
@@ -449,6 +635,18 @@ export async function registerNativePush(input: RegisterNativeInput): Promise<Na
 }
 
 /**
+ * Normalize an omitted/blank deviceId to the same 'legacy' bucket registerNativePush
+ * defaults to. An old app build never sends deviceId at all — without this, its
+ * unregister/preference-update calls had NO device predicate and silently hit every
+ * device a user owns (including devices from a newer build that DOES send deviceId).
+ * Normalizing consistently scopes old-client requests to only the 'legacy' row(s),
+ * so old and new clients can coexist.
+ */
+function normalizeNativeDeviceId(deviceId: string | undefined): string {
+    return deviceId?.trim() || "legacy";
+}
+
+/**
  * Update the child-notification suppression preference for a user's native registration.
  * Returns the number of rows updated (0 if no registration exists for user+platform).
  */
@@ -458,23 +656,23 @@ export async function updateNativeSuppressChildNotifications(
     suppress: boolean,
     deviceId?: string,
 ): Promise<number> {
-    let query = getKysely()
+    const result = await getKysely()
         .updateTable("native_push_registration" as any)
         .set({ suppressChildNotifications: suppress ? 1 : 0 })
         .where("userId", "=", userId)
-        .where("platform", "=", platform);
-    if (deviceId) query = query.where("deviceId", "=", deviceId.trim() || "legacy");
-    const result = await query.execute();
+        .where("platform", "=", platform)
+        .where("deviceId", "=", normalizeNativeDeviceId(deviceId))
+        .execute();
     return Number((result as any)[0]?.numUpdatedRows ?? 0);
 }
 
 export async function unregisterNativePush(userId: string, platform: string, deviceId?: string): Promise<boolean> {
-    let query = getKysely()
+    const result = await getKysely()
         .deleteFrom("native_push_registration" as any)
         .where("userId", "=", userId)
-        .where("platform", "=", platform);
-    if (deviceId) query = query.where("deviceId", "=", deviceId.trim() || "legacy");
-    const result = await query.execute();
+        .where("platform", "=", platform)
+        .where("deviceId", "=", normalizeNativeDeviceId(deviceId))
+        .execute();
     return Number((result as any)[0]?.numDeletedRows ?? 0) > 0;
 }
 
@@ -563,46 +761,97 @@ async function sendNtfyToUser(userId: string, payload: PushPayload, isChildSessi
         });
     }
 
-    await Promise.allSettled(
-        registrations.map(async (reg) => {
-            // Per-registration child-session suppression: skip if the user opted out
-            // of child-session notifications for this device registration.
-            if (isChildSession && reg.suppressChildNotifications) return;
-
-            let res: Response;
+    // attemptPublish preserves the exact retry/status handling above, just as
+    // an outcome instead of bare `return`s, so applyPublishOutcome below can
+    // track consecutive failures per registration without duplicating the
+    // retry logic.
+    async function attemptPublish(reg: NativePushRegistrationTable): Promise<"ok" | "fail"> {
+        let res: Response;
+        try {
+            res = await publishOnce(reg);
+        } catch (_err) {
+            // Network-level failure (throw) — retry once.
             try {
                 res = await publishOnce(reg);
-            } catch (_err) {
-                // Network-level failure (throw) — retry once.
-                try {
-                    res = await publishOnce(reg);
-                } catch (retryErr) {
-                    log.error(`ntfy publish to topic ${reg.topic.slice(0, 16)}… failed after retry:`, retryErr);
-                    return;
-                }
+            } catch (retryErr) {
+                log.error(`ntfy publish to topic ${reg.topic.slice(0, 16)}… failed after retry:`, retryErr);
+                return "fail";
             }
+        }
 
-            // 403/404 can also mean bad server-side ntfy auth/config, not a stale device.
-            // Keep the registration; the next correctly-configured publish can still work.
-            if (res.status === 403 || res.status === 404) return;
-            if (res.ok) return;
+        // 403/404 can also mean bad server-side ntfy auth/config, not a stale device.
+        // Keep the registration; the next correctly-configured publish can still work.
+        // (It still counts as a failure toward bounded retirement, below.)
+        if (res.status === 403 || res.status === 404) return "fail";
+        if (res.ok) return "ok";
 
-            if (res.status >= 500) {
-                // Transient server error — retry once.
-                try {
-                    res = await publishOnce(reg);
-                } catch (retryErr) {
-                    log.error(`ntfy publish to topic ${reg.topic.slice(0, 16)}… failed after retry:`, retryErr);
-                    return;
-                }
-                if (res.status === 403 || res.status === 404) return;
-                if (res.ok) return;
+        if (res.status >= 500) {
+            // Transient server error — retry once.
+            try {
+                res = await publishOnce(reg);
+            } catch (retryErr) {
+                log.error(`ntfy publish to topic ${reg.topic.slice(0, 16)}… failed after retry:`, retryErr);
+                return "fail";
             }
+            if (res.status === 403 || res.status === 404) return "fail";
+            if (res.ok) return "ok";
+        }
 
-            log.error(`ntfy publish to topic ${reg.topic.slice(0, 16)}… failed: ${res.status}`);
-        }),
-    );
+        log.error(`ntfy publish to topic ${reg.topic.slice(0, 16)}… failed: ${res.status}`);
+        return "fail";
+    }
 
+    // Bounded concurrency: a user with many accumulated registrations (see the
+    // per-user cap in registerNativePush) must not fan out unboundedly — that
+    // would let one notification open dozens of simultaneous HTTP requests.
+    await mapWithConcurrency(registrations, NATIVE_PUSH_PUBLISH_CONCURRENCY, async (reg) => {
+        // Per-registration child-session suppression: skip if the user opted out
+        // of child-session notifications for this device registration.
+        if (isChildSession && reg.suppressChildNotifications) return;
+        const outcome = await attemptPublish(reg);
+        await applyPublishOutcome(reg, outcome === "ok");
+    });
+}
+
+/**
+ * Record a publish success/failure against a registration's retirement
+ * counters. On sustained failure (NATIVE_PUSH_MAX_CONSECUTIVE_FAILURES in a
+ * row, spanning at least NATIVE_PUSH_FAILURE_GRACE_MS so a brief ntfy outage
+ * doesn't retire a healthy device) the registration is deleted. This is the
+ * only place a registration is removed for publish failures — a single
+ * ambiguous 403/404 or 5xx never deletes it immediately.
+ */
+async function applyPublishOutcome(reg: NativePushRegistrationTable, success: boolean): Promise<void> {
+    if (success) {
+        if (reg.consecutiveFailures === 0 && reg.firstFailureAt === null) return;
+        await getKysely()
+            .updateTable("native_push_registration" as any)
+            .set({ consecutiveFailures: 0, firstFailureAt: null })
+            .where("id", "=", reg.id)
+            .execute();
+        return;
+    }
+
+    const now = Date.now();
+    const firstFailureAt = reg.firstFailureAt ?? new Date(now).toISOString();
+    const consecutiveFailures = reg.consecutiveFailures + 1;
+    const sustained =
+        consecutiveFailures >= NATIVE_PUSH_MAX_CONSECUTIVE_FAILURES &&
+        now - new Date(firstFailureAt).getTime() >= NATIVE_PUSH_FAILURE_GRACE_MS;
+
+    if (sustained) {
+        await getKysely()
+            .deleteFrom("native_push_registration" as any)
+            .where("id", "=", reg.id)
+            .execute();
+        return;
+    }
+
+    await getKysely()
+        .updateTable("native_push_registration" as any)
+        .set({ consecutiveFailures, firstFailureAt })
+        .where("id", "=", reg.id)
+        .execute();
 }
 
 export async function subscribePush(input: PushSubscribeInput): Promise<string> {
