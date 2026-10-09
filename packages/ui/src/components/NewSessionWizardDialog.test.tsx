@@ -1,19 +1,61 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
+import { Window } from "happy-dom";
 import * as React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { NewSessionWizardDialog } from "./NewSessionWizardDialog";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { filterFolders } from "../lib/filterFolders.js";
 
-(window as unknown as { SyntaxError?: ErrorConstructor; TypeError?: ErrorConstructor }).SyntaxError = globalThis.SyntaxError;
-(window as unknown as { TypeError?: ErrorConstructor }).TypeError = globalThis.TypeError;
-(globalThis as unknown as { Event?: typeof window.Event }).Event = window.Event;
-(globalThis as unknown as { CustomEvent?: typeof window.CustomEvent }).CustomEvent = window.CustomEvent;
-(globalThis as unknown as { getComputedStyle?: typeof window.getComputedStyle }).getComputedStyle = window.getComputedStyle.bind(window);
-(globalThis as unknown as { MutationObserver?: typeof window.MutationObserver }).MutationObserver = window.MutationObserver;
+// Install our own happy-dom Window, matching the pattern sibling test files
+// use (CombinedPanel.test.tsx, DockedPanelGroup.test.tsx, GitDiffModal.test.tsx,
+// etc.) — rather than patching a few constructors onto whatever `window`
+// happens to be ambient. Patching the ambient window instead of owning it
+// was fragile: the global `screen` export from @testing-library/dom binds to
+// `document.body` once, the first time the module is imported in this
+// process. If a *prior* file already swapped in its own Window without
+// restoring it, `screen` would query a stale document while `render()`
+// mounts into the live (different) one — `screen.findByText` then times out
+// against an empty `<body />`.
+const win = new Window({ url: "http://localhost/" });
+/* eslint-disable @typescript-eslint/no-explicit-any */
+(win as any).SyntaxError = SyntaxError;
+(globalThis as any).window = win;
+(globalThis as any).document = win.document;
+(globalThis as any).navigator = win.navigator;
+(globalThis as any).HTMLElement = win.HTMLElement;
+(globalThis as any).Element = win.Element;
+(globalThis as any).Node = win.Node;
+(globalThis as any).SVGElement = win.SVGElement;
+(globalThis as any).MutationObserver = win.MutationObserver;
+(globalThis as any).getComputedStyle = win.getComputedStyle.bind(win);
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+// The real Radix Dialog mounts a FocusScope that dispatches a native
+// CustomEvent on mount (`focusScope.autoFocusOnMount`) through happy-dom's
+// EventTarget, which checks `instanceof` its own internal Event class.
+// Making that pass means patching `globalThis.CustomEvent`/`Event` to a
+// happy-dom-compatible pair — but that patch has no file-scoped way to
+// unpatch itself, and it leaks into whichever test file runs next (it broke
+// lib/ntfy-push.test.ts, which needs the native constructors). Sibling
+// dialog-rendering tests (GitDiffModal.test.tsx) avoid the whole problem by
+// mocking the dialog chrome instead of exercising real Radix internals —
+// this test does the same.
+mock.module("@/components/ui/dialog", () => ({
+    Dialog: ({ open = true, children }: { open?: boolean; children: React.ReactNode }) => (open ? <div>{children}</div> : null),
+    DialogContent: ({ children, ...props }: React.HTMLAttributes<HTMLDivElement>) => <div {...props}>{children}</div>,
+    DialogHeader: ({ children, ...props }: React.HTMLAttributes<HTMLDivElement>) => <div {...props}>{children}</div>,
+    DialogTitle: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => <h2 {...props}>{children}</h2>,
+    DialogDescription: ({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) => <p {...props}>{children}</p>,
+    DialogFooter: ({ children, ...props }: React.HTMLAttributes<HTMLDivElement>) => <div {...props}>{children}</div>,
+}));
+
+const { NewSessionWizardDialog } = await import("./NewSessionWizardDialog");
+
+afterAll(() => mock.restore());
 
 const originalFetch = globalThis.fetch;
 
 afterEach(() => {
+    cleanup();
+    document.body.innerHTML = "";
     globalThis.fetch = originalFetch;
 });
 
@@ -59,7 +101,7 @@ describe("NewSessionWizardDialog", () => {
         }) as unknown as typeof fetch;
         const onSpawn = mock(async () => {});
 
-        render(React.createElement(NewSessionWizardDialog, {
+        const { findByText, findByLabelText, getByText } = render(React.createElement(NewSessionWizardDialog, {
             open: true,
             onOpenChange: () => {},
             runners: [RUNNER],
@@ -67,12 +109,12 @@ describe("NewSessionWizardDialog", () => {
             onSpawn,
         }));
 
-        expect(await screen.findByText("Step 2 of 2")).toBeTruthy();
-        const modelSelect = await screen.findByLabelText("Model") as HTMLSelectElement;
+        expect(await findByText("Step 2 of 2")).toBeTruthy();
+        const modelSelect = await findByLabelText("Model") as HTMLSelectElement;
         await waitFor(() => expect(modelSelect.options.length).toBe(2));
 
         fireEvent.change(modelSelect, { target: { value: "openrouter\topenai/gpt-5.5" } });
-        fireEvent.click(screen.getByText("Start Session"));
+        fireEvent.click(getByText("Start Session"));
 
         await waitFor(() => expect(onSpawn).toHaveBeenCalledWith(
             "runner-1",
