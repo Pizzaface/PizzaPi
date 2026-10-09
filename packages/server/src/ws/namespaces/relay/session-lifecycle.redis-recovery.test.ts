@@ -60,6 +60,8 @@ mock.module("../../sio-registry.js", () => ({
         if (ownerLookupShouldThrow) throw new Error("redis down (test)");
         return sharedOwnerToken;
     },
+    suspendSharedSession: async () => true,
+    cancelSuspendedSession: async () => false,
     getSharedSession: async () => null,
     emitToRunner: () => {},
     getLocalRunnerSocket: () => null,

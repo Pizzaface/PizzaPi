@@ -73,16 +73,34 @@ mock.module("../sio-state/index.js", () => ({
     refreshChildSessionsTTL: async () => {},
     removePendingParentDelinkChild: async () => {},
     getRunner: async () => null,
+    deleteChildSpawnBinding: async () => {},
+    // Not exercised here — only needed because sessions.ts imports
+    // terminals.js (killTerminals), which imports these from sio-state.
+    setTerminal: async () => {},
+    getTerminal: async () => null,
+    updateTerminalFields: async () => {},
+    claimTerminalSpawn: async () => false,
+    deleteTerminal: async () => {},
+    getTerminalsForRunner: async () => [],
 }));
 
 mock.module("./hub.js", () => ({
     broadcastToHub: async (event: string, data: Record<string, unknown>) => { calls.hub.push({ event, data }); },
 }));
 
-afterAll(() => mock.restore());
-
 const { registerTuiSession, suspendSharedSession, cancelSuspendedSession, touchSessionActivity, sweepOrphanedSessions } = await import("./sessions.js");
 const { initSioRegistry, localTuiSockets } = await import("./context.js");
+// sessions.ts also appends every event to the relay Redis cache
+// (appendRelayEventToCache). Inject a fake client so that path never falls
+// through to a real Redis connection (see redis.ts's pure-factory contract).
+const { _injectRedisForTesting: _injectRelayRedis, _resetRedisForTesting: _resetRelayRedis } =
+    await import("../../sessions/redis.js");
+_injectRelayRedis({ isOpen: true, eval: async () => {}, del: async () => 0 });
+
+afterAll(() => {
+    mock.restore();
+    _resetRelayRedis();
+});
 
 const fakeNamespace = {
     to: () => ({ emit: (event: string) => { if (event === "disconnected") calls.disconnects++; } }),

@@ -82,6 +82,7 @@ mock.module("../../sessions/store.js", () => ({
     recordRelaySessionOverlay: noopAsync,
     touchRelaySession: noopAsync,
     updateRelaySessionName: noopAsync,
+    markRelaySessionSuspended: noopAsync,
 }));
 
 mock.module("../strip-images.js", () => ({
