@@ -1,11 +1,40 @@
 ---
-title: Your First Working Session
-description: Connect PizzaPi to a relay, run a real model response, and stop cleanly.
+title: Install & Run Your First Session
+description: Install the PizzaPi CLI, connect it to a relay, run a real model response, and stop cleanly.
 ---
+
+PizzaPi runs the pi coding agent on your computer. The CLI is available as `pizzapi` and `pizza`.
+
+## Requirements
+
+- Node.js 18+ or Bun 1.x (the package is distributed through npm).
+- An AI provider account, subscription, or API key. See [Providers & Models](/PizzaPi/features/providers-and-models/).
+- Docker is only needed if you use `pizzapi local` to start a local relay, or self-host the relay separately.
+
+## Install
+
+```bash
+npm install -g @pizzapi/pizza
+pizzapi --version
+```
+
+Or run without installing:
+
+```bash
+npx @pizzapi/pizza --help
+```
+
+## Where data is stored
+
+PizzaPi stores global settings and provider credentials under `~/.pizzapi/`. The relay API key and relay URL are in `~/.pizzapi/config.json`; provider auth is in `~/.pizzapi/auth.json`; sessions and logs are also kept under this directory. Project-specific configuration lives in `.pizzapi/` in the project. Back up files before resetting or uninstalling.
+
+To remove provider credentials, delete `~/.pizzapi/auth.json`. To remove all PizzaPi local data, stop its processes and remove `~/.pizzapi/`.
+
+## Run your first session
 
 Choose one of these paths. A relay is needed to view sessions in a browser; the terminal-only path works without one.
 
-## Path 1: Local relay (Docker)
+### Path 1: Local relay (Docker)
 
 With Docker running, start the local relay and runner:
 
@@ -17,7 +46,7 @@ On first use, the command starts the web hub on port 7492, opens setup if no loc
 
 Use `pizzapi local --port 8080` for another port or `--no-browser` to suppress browser launch. It reuses a healthy local relay. If your saved credentials point to a remote relay, it refuses to switch automatically; run `pizzapi setup` first and choose the local relay URL. See [CLI reference](/PizzaPi/running/cli-reference/#pizzapi-local).
 
-## Path 2: Existing relay
+### Path 2: Existing relay
 
 If you already have a PizzaPi relay, connect the CLI to it:
 
@@ -34,7 +63,7 @@ pizzapi
 
 Open the relay's web UI in a browser to see the session stream.
 
-## Path 3: Terminal only
+### Path 3: Terminal only
 
 To use the CLI without connecting to a relay, run:
 
@@ -42,7 +71,7 @@ To use the CLI without connecting to a relay, run:
 PIZZAPI_RELAY_URL=off pizzapi
 ```
 
-This disables relay connection for that invocation; the agent still runs in the terminal. For persistent relay-free use, set `"relayUrl": "off"` in `~/.pizzapi/config.json`; see [installation notes](/PizzaPi/start-here/installation/#relay-free-and-interactive-use).
+This disables relay connection for that invocation; `pizzapi --no-relay` is the equivalent flag form. The agent and local session history still work, but browser streaming and remote spawning do not. For persistent relay-free use, set `"relayUrl": "off"` in `~/.pizzapi/config.json`. Use `pizzapi runner` only when you want headless sessions spawned from the web UI.
 
 ## Authenticate and select a model
 
@@ -67,3 +96,7 @@ pizzapi web stop
 ```
 
 With the standalone `pizzapi` runner daemon, use `pizzapi runner stop` to stop it. See [Runner Daemon](/PizzaPi/running/runner-daemon/) for managed/background operation.
+
+## Troubleshooting
+
+If the runner repeatedly crashes on Windows, try running it inside WSL2, which uses the Linux runtime. Capture the runner logs and check the current release notes before switching versions; older reports about specific crash addresses and version ranges may no longer apply.
