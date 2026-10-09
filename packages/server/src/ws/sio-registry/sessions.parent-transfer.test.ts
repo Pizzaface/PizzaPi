@@ -69,7 +69,7 @@ mock.module("../sio-state/index.js", () => ({
     releaseSessionOwnershipLock: async () => {},
     deleteSessionIfOwner: async () => true,
     initStateRedis: async () => {},
-    setSessionMessagesList: async () => {},
+    updateSessionFieldsAndMessagesList: async () => {},
     setSession: async (sessionId: string, data: Record<string, unknown>) => {
         store.set(sessionHashKey(sessionId), JSON.stringify(data));
     },

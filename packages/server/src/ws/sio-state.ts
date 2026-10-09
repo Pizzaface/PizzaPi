@@ -759,26 +759,79 @@ export async function getSeq(sessionId: string): Promise<number> {
 // monolithic blob. Readers must fall back to the monolithic `lastState` when
 // the list is absent (older sessions, Redis eviction, list write failure) —
 // this list is a cache, not the source of truth.
+//
+// The list write MUST land in the same Redis transaction as the lastState
+// hash write (see `updateSessionFieldsAndMessagesList` below). Writing them
+// separately let a failed/reordered list write survive alongside a newer
+// lastState, so `load_messages` could serve stale or out-of-order pages
+// from a list that no longer matched the current snapshot.
 
 function sessionMessagesKey(sessionId: string): string {
     return `${KEY_PREFIX}:session-messages:${sessionId}`;
 }
 
 /**
+ * Queue the split message list's replacement (DEL, then RPUSH+EXPIRE when
+ * non-empty) onto an already-open multi/pipeline, so callers can land it in
+ * the same transaction as other writes. If a message can't be serialized
+ * (e.g. a circular reference), the list is left deleted rather than stale —
+ * callers must still fall back to parsing lastState.
+ */
+function queueMessagesListReplace(multi: ReturnType<RedisClientType["multi"]>, key: string, messages: unknown[]): void {
+    multi.del(key);
+    let serialized: string[];
+    try {
+        serialized = messages.map((m) => JSON.stringify(m));
+    } catch (error) {
+        log.error("Failed to serialize session messages for split list, clearing stale list:", error);
+        return;
+    }
+    if (serialized.length > 0) {
+        multi.rPush(key, serialized);
+        multi.expire(key, SESSION_TTL_SECONDS);
+    }
+}
+
+/**
  * Replace the session's message list wholesale with the given array.
- * Best-effort: callers should not let a failure here block the primary
- * `lastState` write. A fresh snapshot always fully supersedes the old list,
- * so this does DEL + RPUSH rather than incremental append.
+ * Exposed for direct/standalone use (e.g. tests); production writes go
+ * through `updateSessionFieldsAndMessagesList` so the list never drifts
+ * from lastState.
  */
 export async function setSessionMessagesList(sessionId: string, messages: unknown[]): Promise<void> {
     const r = requireRedis();
     const key = sessionMessagesKey(sessionId);
     const multi = r.multi();
-    multi.del(key);
-    if (messages.length > 0) {
-        multi.rPush(key, messages.map((m) => JSON.stringify(m)));
-        multi.expire(key, SESSION_TTL_SECONDS);
-    }
+    queueMessagesListReplace(multi, key, messages);
+    await multi.exec();
+}
+
+/**
+ * Atomically write the session's lastState hash fields AND replace the split
+ * message list in ONE Redis transaction (MULTI/EXEC). Redis executes a
+ * transaction's commands as a single atomic unit with no other client's
+ * commands interleaved, so a `load_messages` reader can never observe a list
+ * that was written by one update and a lastState from another: whichever
+ * transaction lands last at the server wins for BOTH halves, consistently.
+ *
+ * If the messages can't be serialized, the list is cleared instead of left
+ * stale — readers fall back to parsing lastState, which still writes here.
+ */
+export async function updateSessionFieldsAndMessagesList(
+    sessionId: string,
+    fields: Partial<RedisSessionData>,
+    messages: unknown[],
+): Promise<void> {
+    const r = requireRedis();
+    const key = sessionKey(sessionId);
+    const exists = await r.exists(key);
+    if (!exists) return;
+
+    const hashFields = toHashFields(fields as unknown as Record<string, unknown>);
+    const multi = r.multi();
+    multi.hSet(key, hashFields);
+    multi.expire(key, SESSION_TTL_SECONDS);
+    queueMessagesListReplace(multi, sessionMessagesKey(sessionId), messages);
     await multi.exec();
 }
 
@@ -792,8 +845,9 @@ export async function getSessionMessagesCount(sessionId: string): Promise<number
 
 /**
  * Fetch messages[start, end) from the split list via LRANGE (no full-blob
- * deserialization). Returns null if the list doesn't exist — caller must
- * fall back to parsing lastState.
+ * deserialization). Returns null if the list doesn't exist, or if any entry
+ * fails to parse — either way the caller must fall back to parsing
+ * lastState rather than serve a page with a null placeholder message.
  */
 export async function getSessionMessagesRange(
     sessionId: string,
@@ -806,13 +860,15 @@ export async function getSessionMessagesRange(
     if (end <= start) return [];
     // LRANGE's stop index is inclusive.
     const raw = await r.lRange(key, start, end - 1);
-    return raw.map((entry) => {
+    const parsed: unknown[] = [];
+    for (const entry of raw) {
         try {
-            return JSON.parse(entry);
+            parsed.push(JSON.parse(entry));
         } catch {
             return null;
         }
-    });
+    }
+    return parsed;
 }
 
 /** Delete the split message list (session teardown). */

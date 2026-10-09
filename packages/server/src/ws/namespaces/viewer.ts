@@ -1246,7 +1246,9 @@ log.info(`connected: ${socket.id} userId=${viewerUserId}`);
             // Fast path: serve the page straight from the split Redis message
             // list via LRANGE, without JSON.parse'ing the (possibly multi-MB)
             // monolithic lastState blob. Falls back below when the list is
-            // absent (older session, Redis eviction, dual-write failure).
+            // absent (older session, Redis eviction, dual-write failure) or
+            // when any entry fails to parse (getSessionMessagesRange returns
+            // null wholesale in that case rather than a null placeholder).
             const messageCount = await getSessionMessagesCount(currentSessionId).catch(() => null);
             if (messageCount !== null) {
                 const before = Math.max(0, Math.min(Math.trunc(data.before), messageCount));

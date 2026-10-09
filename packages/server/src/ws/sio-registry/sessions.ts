@@ -25,7 +25,7 @@ import {
     refreshSessionTTL,
     incrementSeq,
     getSeq,
-    setSessionMessagesList,
+    updateSessionFieldsAndMessagesList,
     getPendingRunnerLink,
     deletePendingRunnerLink,
     getRunnerAssociation,
@@ -637,17 +637,15 @@ export async function updateSessionState(sessionId: string, state: unknown, opts
         fields.expiresAt = nextEphemeralExpiry();
     }
 
-    await updateSessionFields(session.sessionId, fields);
-
     // Dual-write: mirror the messages array into a separate Redis List so hot
     // paths (load_messages) can LRANGE a page instead of JSON.parse'ing the
-    // whole lastState blob. Best-effort and fire-and-forget — a failure here
-    // must never block or fail the primary lastState write; readers fall back
-    // to parsing lastState whenever this list is missing or stale.
+    // whole lastState blob. Written in the SAME Redis transaction as the
+    // lastState hash fields (see updateSessionFieldsAndMessagesList) so a
+    // reader can never observe a list that doesn't correspond to the
+    // lastState it was written alongside — no stale/out-of-order list from a
+    // partial or interleaved write.
     const messagesForList = Array.isArray(stateObj?.messages) ? (stateObj.messages as unknown[]) : [];
-    void setSessionMessagesList(sessionId, messagesForList).catch((error) => {
-        log.error("Failed to dual-write session messages list:", error);
-    });
+    await updateSessionFieldsAndMessagesList(session.sessionId, fields, messagesForList);
 
     const now = Date.now();
     // Throttle applies to ALL snapshots — including ones with messages. States

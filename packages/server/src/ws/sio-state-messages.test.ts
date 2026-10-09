@@ -110,12 +110,38 @@ import {
     closeStateRedis,
     initStateRedis,
     setSession,
+    getSession,
     deleteSession,
     setSessionMessagesList,
+    updateSessionFieldsAndMessagesList,
     getSessionMessagesCount,
     getSessionMessagesRange,
     deleteSessionMessagesList,
 } from "./sio-state.js";
+
+function fullSessionRecord(sessionId: string, lastState: string) {
+    return {
+        sessionId,
+        token: "tkn",
+        collabMode: false,
+        shareUrl: "http://localhost/session",
+        cwd: "/tmp/project",
+        startedAt: new Date().toISOString(),
+        userId: "user-1",
+        userName: "Jordan",
+        sessionName: "Session",
+        isEphemeral: false,
+        expiresAt: null,
+        isActive: true,
+        lastHeartbeatAt: null,
+        lastHeartbeat: null,
+        lastState,
+        runnerId: "runner-1",
+        runnerName: "Runner",
+        seq: 0,
+        parentSessionId: null,
+    };
+}
 
 describe("split session message list", () => {
     beforeEach(async () => {
@@ -199,5 +225,94 @@ describe("split session message list", () => {
         await deleteSessionMessagesList(sessionId);
 
         expect(await getSessionMessagesCount(sessionId)).toBeNull();
+    });
+
+    // ── Regression: the list must never diverge from lastState ────────────
+    //
+    // The dual-write used to be two independent Redis round-trips: the
+    // `lastState` hash write (updateSessionFields) and the split list write
+    // (setSessionMessagesList, fire-and-forget). If the list write failed or
+    // landed after a newer write, an older list would survive paired with a
+    // newer lastState, and the load_messages fast path trusted any existing
+    // list as fresh. updateSessionFieldsAndMessagesList closes that gap by
+    // writing both halves in one Redis transaction.
+
+    it("a transaction failure leaves the previous (lastState, list) pair fully intact — never updates one half only", async () => {
+        const sessionId = "session-atomic-failure";
+        await setSession(sessionId, fullSessionRecord(sessionId, JSON.stringify({ messages: [{ id: "v1" }] })));
+        await updateSessionFieldsAndMessagesList(
+            sessionId,
+            { lastState: JSON.stringify({ messages: [{ id: "v1" }] }) },
+            [{ id: "v1" }],
+        );
+        expect((await getSession(sessionId))?.lastState).toBe(JSON.stringify({ messages: [{ id: "v1" }] }));
+        expect(await getSessionMessagesRange(sessionId, 0, 1)).toEqual([{ id: "v1" }]);
+
+        // Simulate the next write's transaction failing outright (e.g. a
+        // dropped connection) — EXEC never applies any of its queued
+        // commands, so NEITHER half should move to the "v2" values.
+        mockRedis.multi.mockImplementationOnce(() => {
+            const chain = mockMulti();
+            chain.exec = mock(async () => {
+                throw new Error("simulated redis transaction failure");
+            });
+            return chain;
+        });
+
+        await expect(
+            updateSessionFieldsAndMessagesList(
+                sessionId,
+                { lastState: JSON.stringify({ messages: [{ id: "v2" }] }) },
+                [{ id: "v2" }],
+            ),
+        ).rejects.toThrow("simulated redis transaction failure");
+
+        // The old pair must still be fully intact — not lastState=v2 paired
+        // with the stale v1 list (the bug this fix closes), and not a v2
+        // list paired with a stale v1 lastState either.
+        expect((await getSession(sessionId))?.lastState).toBe(JSON.stringify({ messages: [{ id: "v1" }] }));
+        expect(await getSessionMessagesRange(sessionId, 0, 1)).toEqual([{ id: "v1" }]);
+    });
+
+    it("clears the split list atomically with the lastState write when messages can't be serialized, instead of leaving it stale", async () => {
+        const sessionId = "session-serialize-failure";
+        await setSession(sessionId, fullSessionRecord(sessionId, JSON.stringify({ messages: [{ id: "old" }] })));
+        await updateSessionFieldsAndMessagesList(
+            sessionId,
+            { lastState: JSON.stringify({ messages: [{ id: "old" }] }) },
+            [{ id: "old" }],
+        );
+        expect(await getSessionMessagesCount(sessionId)).toBe(1);
+
+        const circular: Record<string, unknown> = { id: "new" };
+        circular.self = circular; // JSON.stringify throws on this
+
+        await updateSessionFieldsAndMessagesList(
+            sessionId,
+            { lastState: JSON.stringify({ messages: ["unserializable"] }) },
+            [circular],
+        );
+
+        // The lastState write must still land (never blocked by the list
+        // failure)...
+        expect((await getSession(sessionId))?.lastState).toBe(JSON.stringify({ messages: ["unserializable"] }));
+        // ...but the list must be cleared, not left holding the old "old"
+        // entry — a stale list paired with the new lastState is exactly the
+        // bug this closes.
+        expect(await getSessionMessagesCount(sessionId)).toBeNull();
+    });
+
+    it("getSessionMessagesRange falls back to null (not a null placeholder message) when an entry fails to parse", async () => {
+        const sessionId = "session-corrupt-entry";
+        await setSessionMessagesList(sessionId, [{ id: 1 }, { id: 2 }]);
+        // Simulate corruption: inject a non-JSON entry directly into the
+        // backing list store, bypassing setSessionMessagesList.
+        const key = `pizzapi:sio:session-messages:${sessionId}`;
+        const list = listStore.get(key) ?? [];
+        list.splice(1, 0, "not-json{{{");
+        listStore.set(key, list);
+
+        const page = await getSessionMessagesRange(sessionId, 0, 3);
+        expect(page).toBeNull();
     });
 });
