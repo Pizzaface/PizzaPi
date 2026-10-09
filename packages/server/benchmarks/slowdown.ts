@@ -43,12 +43,27 @@ async function seedSession(server: Awaited<ReturnType<typeof createTestServer>>,
   const sessionName = `history-${count}${mediaKb ? `-media-${mediaKb}kb` : ""}`;
   const relay = await createMockRelay(server, { forceNew: true });
   const session = await relay.registerSession({ cwd: process.cwd(), sessionName });
-  for (let i = 0; i < count; i++) relay.emitEvent(session.sessionId, session.token, buildAssistantMessage(messageText(i, mediaKb)), i);
+  // Unique signal the target session's transcript (not just its header) contains, once
+  // fully hydrated: a marker baked into the last seeded row. `count` repeats across
+  // media sessions (always seeded with 25 rows), so the marker is keyed off the
+  // (always-unique) sessionName rather than the row index.
+  const lastRow = `switch-marker:${sessionName}`;
+  const messages = Array.from({ length: count }, (_, i) => {
+    const text = i === count - 1 ? `${messageText(i, mediaKb)}\n\n${lastRow}` : messageText(i, mediaKb);
+    return { role: "assistant", content: [{ type: "text", text }], messageId: `seed-${i}` };
+  });
+  // A real pi runner answers a cold load or a switch-to with a full session_active
+  // snapshot (state.messages) — message_update deltas are never cached for that path
+  // (updateSessionState() in event-pipeline.ts only runs for session_active). A mock
+  // relay has no runner behind it to answer that signal, so seed the snapshot
+  // directly; otherwise a cold/switched-to viewer renders nothing but the "waiting
+  // for session events" placeholder, no matter how the switch is measured.
+  relay.emitEvent(session.sessionId, session.token, { type: "session_active", state: { messages, sessionName } }, count - 1);
   relay.emitEvent(session.sessionId, session.token, buildHeartbeat({ active: false, sessionName }), count + 1);
-  return { relay, sessionName, ...session };
+  return { relay, sessionName, lastRow, ...session };
 }
 
-async function runBrowserMeasurements(baseUrl: string, sessionCookie: string, sessions: Array<{ sessionId: string; sessionName: string }>, outDir: string, headless: boolean) {
+async function runBrowserMeasurements(baseUrl: string, sessionCookie: string, sessions: Array<{ sessionId: string; sessionName: string; lastRow: string }>, outDir: string, headless: boolean) {
   const childOut = join(outDir, "browser-measurements.json");
   const childScript = `
 import { chromium } from "@playwright/test";
@@ -72,13 +87,17 @@ async function measureOpen(page, sessionId) {
   return Math.round(performance.now() - start);
 }
 // Switches the way a real user does: the same "pp-navigate-session" CustomEvent App.tsx
-// listens for (used today by notification-tap navigation), then waits for a signal that
-// is specific to the TARGET session — its name rendered in the session header — not a
-// fixed sleep. This fails loudly (timeout) if the switch never actually lands.
-async function measureSwitch(page, sessionId, sessionName) {
+// listens for (used today by notification-tap navigation). The session header flips to
+// the target's name almost immediately (App.tsx sets it from the UI cache/live list
+// before any snapshot/message arrives), so waiting on the header alone measures a
+// header re-render, not the transcript load. Instead wait for the TARGET session's
+// transcript to actually render: its last seeded row, unique per session since counts
+// differ. This fails loudly (timeout) if the target transcript never renders.
+async function measureSwitch(page, sessionId, sessionName, lastRow) {
   const start = performance.now();
   await page.evaluate((id) => window.dispatchEvent(new CustomEvent("pp-navigate-session", { detail: { sessionId: id } })), sessionId);
   await page.locator("#main-content").getByText(sessionName, { exact: true }).waitFor({ timeout: 120000 });
+  await page.locator("#main-content").getByText(lastRow).waitFor({ timeout: 120000 });
   return Math.round(performance.now() - start);
 }
 const browser = await chromium.launch({ headless });
@@ -94,7 +113,7 @@ try {
   const openMs = {};
   for (const s of sessions) openMs[s.sessionId] = await measureOpen(page, s.sessionId);
   const switchMs = [];
-  for (const s of sessions) switchMs.push(await measureSwitch(page, s.sessionId, s.sessionName));
+  for (const s of sessions) switchMs.push(await measureSwitch(page, s.sessionId, s.sessionName, s.lastRow));
   const longTasks = await page.evaluate(() => window.__pizzapiLongTasks || []);
   writeFileSync(out, JSON.stringify({ openMs, switchMs, longTasks }, null, 2));
 } finally {
@@ -138,7 +157,7 @@ async function main() {
     for (let i = 0; i < opts.burstRunners; i++) {
       runners.push(await createMockRunner(server, { name: `benchmark-runner-${i}`, roots: [process.cwd()], serviceIds: ["terminal", "file-explorer", "git"] }));
     }
-    const sessions = [] as Array<{ sessionId: string; token: string; sessionName: string }>;
+    const sessions = [] as Array<{ sessionId: string; token: string; sessionName: string; lastRow: string }>;
     for (const history of opts.histories) {
       const seeded = await seedSession(server, history);
       relays.push(seeded);
@@ -150,7 +169,7 @@ async function main() {
       sessions.push(seeded);
     }
 
-    const browserMetrics = await runBrowserMeasurements(server.baseUrl, server.sessionCookie, sessions.map((s) => ({ sessionId: s.sessionId, sessionName: s.sessionName })), opts.outDir, opts.headless);
+    const browserMetrics = await runBrowserMeasurements(server.baseUrl, server.sessionCookie, sessions.map((s) => ({ sessionId: s.sessionId, sessionName: s.sessionName, lastRow: s.lastRow })), opts.outDir, opts.headless);
     console.log(`Measured ${Object.keys(browserMetrics.openMs).length} open paths and ${browserMetrics.switchMs.length} session switches`);
 
     const burstRelays = [] as Awaited<ReturnType<typeof createMockRelay>>[];

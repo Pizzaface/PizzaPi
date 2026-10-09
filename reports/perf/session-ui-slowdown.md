@@ -31,28 +31,46 @@ The harness serves `packages/ui/dist` through the real server harness, seeds rel
 
 ## Measured smoke numbers
 
-Run: `2026-10-09T11:54:34.795Z`
+Run: `2026-10-09T12:38:31.670Z`
 
 Command:
 
 ```bash
-bun packages/server/benchmarks/slowdown.ts --histories=5,25 --media-kb= --burst-runners=1 --burst-sessions=2 --soak-ms=0 --out=/tmp/pizzapi-slowdown-smoke-WYNiJiY5-r2
+bun packages/server/benchmarks/slowdown.ts --histories=5,25 --media-kb= --burst-runners=1 --burst-sessions=2 --soak-ms=0 --out=/tmp/pizzapi-slowdown-smoke-WYNiJiY5-r3
 ```
 
 | Metric | Value |
 | --- | ---: |
-| Switch median | 34 ms |
-| Switch p95 | 34 ms |
-| Switch max | 34 ms |
+| Switch median | 69 ms |
+| Switch p95 | 69 ms |
+| Switch max | 69 ms |
 | Burst sessions emitted | 2/2 |
 | Soak events | 0 |
 | Max long task | 0 ms |
 
 This is a tiny smoke run to prove the production path works; it is not enough to justify a UI optimization.
-The previous numbers in this doc (switch median 7829 ms) were invalid: the switch measurement dispatched
-an event nothing listened for, then slept a fixed 250 ms and reported the sleep as the switch time. It now
-navigates the same way a notification-tap does (`pp-navigate-session` CustomEvent, the real path App.tsx
-listens for) and waits for the target session's name to render in the header before stopping the clock.
+
+What the switch metric measures, precisely: the clock starts on the `pp-navigate-session` CustomEvent
+dispatch (the real path App.tsx listens for, used today by notification-tap navigation) and stops only once
+the TARGET session's transcript has actually rendered — not just its name in the header. App.tsx sets the
+header from the UI cache/live-session list immediately on switch, before any snapshot or message arrives,
+so a header-only wait measures a header re-render rather than the transcript load. The wait instead looks
+for a marker baked into the target session's last seeded message (`switch-marker:<sessionName>`, unique per
+session), which can only appear once that session's real content has rendered, and the wait fails loudly
+(120s timeout) if it never does.
+
+Making that marker visible also required fixing how sessions are seeded: `message_update` deltas are never
+cached server-side for a cold viewer (`updateSessionState()` only runs for `session_active`), so a mock relay
+session seeded with only deltas rendered nothing but the "waiting for session events" placeholder for *any*
+viewer that connects after the events were sent — including `measureOpen`'s first page load and every
+session switch. Seeding now sends one `session_active` snapshot carrying the full message history instead,
+the same way a real pi runner answers a cold connect.
+
+The previous numbers in this doc (switch median 7829 ms, then 34 ms) were both invalid for different reasons:
+the first because it slept a fixed 250 ms and reported the sleep as the switch time; the second because it
+stopped the clock on the header name alone, which (as above) was never proof that any content had rendered
+at all. Confirmed non-vacuous: pointing the dispatch at a nonexistent event name (`pp-navigate-session-broken`)
+makes the benchmark fail loudly with a timeout instead of reporting a number.
 
 ## Known limits
 
