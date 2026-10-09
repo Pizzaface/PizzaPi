@@ -414,7 +414,14 @@ describe("SessionMessageItem structured inter-session messages", () => {
     expect(view.getByText("Linked session")).toBeTruthy();
     expect(view.getByText("hi `x`")).toBeTruthy();
     expect(view.queryByText("Ignore this unstructured body")).toBeNull();
-    expect(view.getByRole("button", { name: "Copy message" })).toBeTruthy();
+    const copyButton = view.getByRole("button", { name: "Copy message" });
+    expect(copyButton).toBeTruthy();
+    // Invisible while unhovered: pointer-events-none so the hidden 44px hit
+    // area (-m-2.5 size-11 overflowing the compact header row) doesn't steal
+    // taps meant for the message text above/below it (#995-r2 finding 3).
+    expect(copyButton.className).toContain("pointer-events-none");
+    expect(copyButton.className).toContain("group-hover/msg:pointer-events-auto");
+    expect(copyButton.className).toContain("focus-visible:pointer-events-auto");
     expect(view.getByText(`• ${new Date(1_700_000_000_000).toLocaleTimeString()}`)).toBeTruthy();
     const sender = view.getByRole("button", { name: "Open session abc" });
     expect(sender.textContent).toBe("Sender");

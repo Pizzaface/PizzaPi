@@ -96,9 +96,12 @@ describe("SessionSidebar touch targets", () => {
 
         for (const name of ["Select sessions", "New session"]) {
             const button = screen.getByRole("button", { name });
-            // Desktop density is preserved — only touch devices get 44px.
-            expect(button.className).toContain("h-9");
-            expect(button.className).toContain("w-9");
+            // Narrow screens get 44px regardless of pointer type; md: shrinks for
+            // desktop density; pointer-coarse re-grows to 44px on touch desktops
+            // (and Android WebViews that misreport a fine pointer still get the
+            // narrow-screen floor).
+            expect(button.className).toContain("h-11");
+            expect(button.className).toContain("w-11");
             expect(button.className).toContain("md:h-8");
             expect(button.className).toContain("md:w-8");
             expect(button.className).toContain("pointer-coarse:min-h-11");
@@ -106,13 +109,17 @@ describe("SessionSidebar touch targets", () => {
         }
 
         for (const name of ["Sessions", "Runners"]) {
-            expect(screen.getByRole("button", { name }).className).toContain("pointer-coarse:min-h-11");
+            const button = screen.getByRole("button", { name });
+            expect(button.className).toContain("min-h-11");
+            expect(button.className).toContain("md:min-h-0");
+            expect(button.className).toContain("pointer-coarse:min-h-11");
         }
 
         const expandButton = screen.getByRole("button", { name: "Expand linked sessions" });
         // Chevron stays a small hit target on fine pointers, grows on touch.
         expect(expandButton.className).toContain("-m-1.5");
         expect(expandButton.className).toContain("p-1.5");
+        expect(expandButton.className).toContain("pointer-coarse:-m-3");
         expect(expandButton.className).toContain("pointer-coarse:h-11");
         expect(expandButton.className).toContain("pointer-coarse:w-11");
         expect(expandButton.className).not.toContain(" h-11");
@@ -155,9 +162,12 @@ describe("SessionSidebar touch targets", () => {
         for (const name of ["Godmother", "GitHub"]) {
             const button = screen.getByRole("button", { name });
             // These launchers render in the full-width (non-collapsed) footer —
-            // desktop size is preserved, touch devices still get 44px.
-            expect(button.className).toContain("h-8");
-            expect(button.className).toContain("w-8");
+            // narrow screens get 44px by default, md: shrinks to desktop density,
+            // pointer-coarse re-grows to 44px on touch desktops.
+            expect(button.className).toContain("h-11");
+            expect(button.className).toContain("w-11");
+            expect(button.className).toContain("md:h-8");
+            expect(button.className).toContain("md:w-8");
             expect(button.className).toContain("pointer-coarse:min-h-11");
             expect(button.className).toContain("pointer-coarse:min-w-11");
         }
