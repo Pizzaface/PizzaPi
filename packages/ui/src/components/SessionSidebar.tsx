@@ -811,13 +811,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         hubSocket.on("session_status", handleSessionStatus);
 
         // If the shared socket is already connected by the time this effect runs,
-        // we may have missed the server's initial "sessions" emit that fires on
-        // namespace join. Schedule the same delayed REST fallback used for normal
-        // connect events.
+        // we already missed the server's initial "sessions" emit that fires on
+        // namespace join — no future socket event will repopulate it, so fetch
+        // immediately instead of waiting out the delayed fallback timer.
         if (hubSocket.connected) {
             setDotState("connected");
             const epoch = ++connectEpoch;
-            scheduleResyncFallback(epoch);
+            void resyncLiveSessionsFromApi(epoch);
         }
 
         return () => {
