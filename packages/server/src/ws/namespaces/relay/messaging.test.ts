@@ -30,6 +30,7 @@ mock.module("../../sio-state/index.js", () => ({
     isChildOfParent: mockIsChildOfParent,
     isPendingParentDelinkChild: mockIsPendingParentDelinkChild,
     refreshChildSessionsTTL: mockRefreshChildSessionsTTL,
+    deleteChildSpawnBinding: async () => {},
 }));
 
 mock.module("../../../sessions/trigger-store.js", () => ({
