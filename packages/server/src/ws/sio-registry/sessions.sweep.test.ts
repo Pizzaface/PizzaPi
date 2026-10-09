@@ -56,6 +56,9 @@ mock.module("../sio-state/index.js", () => ({
     refreshChildSessionsTTL: noopAsync,
     removePendingParentDelinkChild: noopAsync,
     getRunner: async () => null,
+    recordChildSpawnBinding: noopAsync,
+    getChildSpawnBinding: async () => null,
+    deleteChildSpawnBinding: noopAsync,
 }));
 
 mock.module("./meta.js", () => ({ extractMetaFromHeartbeat: () => ({}) }));
