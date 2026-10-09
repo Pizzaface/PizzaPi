@@ -280,7 +280,8 @@ export interface LifecycleHandlersDeps {
     startSessionNameSync: () => void;
     stopSessionNameSync: () => void;
     doConnect: () => void;
-    doDisconnect: () => void;
+    /** `final: true` only for a real quit — see shouldReportCompleteOnShutdown. */
+    doDisconnect: (opts?: { final?: boolean }) => void;
     /** Called during session_shutdown to clear the module-level _ctx pointer. */
     clearCtx: () => void;
 }
@@ -454,11 +455,15 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         // Only a real quit ends the session. reload/new/resume/fork restart the
         // runtime (e.g. runner hot-reload after a rebuild); reporting those as
         // session_complete made parents ack — and SIGTERM — children mid-task.
-        if (shouldReportCompleteOnShutdown(event?.reason)) {
+        const isFinalShutdown = shouldReportCompleteOnShutdown(event?.reason);
+        if (isFinalShutdown) {
             const shutdownExitReason = rctx.wasAborted ? "killed" : rctx.lastRetryableError ? "error" : "completed";
             await followUpGrace.fireSessionComplete(undefined, undefined, shutdownExitReason);
         }
-        doDisconnect();
+        // Only a real quit may tell the server to kill this session's
+        // terminals (opts.final → server killTerminals). reload/new/resume/
+        // fork restart the runtime and must leave live PTYs running.
+        doDisconnect({ final: isFinalShutdown });
     });
 
     // Goal state is emitted by the `/goal` extension. Forward it as a

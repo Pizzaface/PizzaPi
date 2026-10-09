@@ -92,6 +92,7 @@ function setup(lastRetryableError: { errorMessage: string; detectedAt: number } 
 
     const state = makeState();
     const followUpGrace = createFollowUpGrace(rctx, state as any);
+    const doDisconnectCalls: Array<{ final?: boolean } | undefined> = [];
 
     registerLifecycleHandlers({
         pi,
@@ -104,13 +105,22 @@ function setup(lastRetryableError: { errorMessage: string; detectedAt: number } 
         startSessionNameSync: () => {},
         stopSessionNameSync: () => {},
         doConnect: () => {},
-        doDisconnect: () => {},
+        doDisconnect: (opts?: { final?: boolean }) => { doDisconnectCalls.push(opts); },
         clearCtx: () => {},
     });
 
     const agentEnd = handlers.get("agent_end")!;
     const agentSettled = handlers.get("agent_settled")!;
-    return { agentEnd, agentSettled, turnEnd: handlers.get("turn_end")!, emitted, rctx, handlers };
+    return {
+        agentEnd,
+        agentSettled,
+        turnEnd: handlers.get("turn_end")!,
+        sessionShutdown: handlers.get("session_shutdown")!,
+        doDisconnectCalls,
+        emitted,
+        rctx,
+        handlers,
+    };
 }
 
 const agentEndCtx = { hasPendingMessages: () => false, shutdown: () => {} };
@@ -313,6 +323,30 @@ describe("turn_end — omit Pi boundary context from relay traffic", () => {
         expect(forwarded).toEqual({ type: "turn_end", turnIndex: 3, message, toolResults });
         expect(JSON.stringify(forwarded).length).toBeLessThan(1_000);
         expect(event.context).toBe(context);
+    });
+});
+
+describe("session_shutdown — doDisconnect final flag", () => {
+    // GM VD0KKFpB: only a real quit may tell the server to kill this
+    // session's terminals. session_shutdown fires for reload/new/resume/fork
+    // too (runtime restarts), which must leave live PTYs running.
+    test("a real quit (or legacy reasonless shutdown) passes final: true to doDisconnect", async () => {
+        const { sessionShutdown, doDisconnectCalls } = setup(null);
+
+        await sessionShutdown({ reason: "quit" }, {});
+        await sessionShutdown(undefined, {});
+
+        expect(doDisconnectCalls).toEqual([{ final: true }, { final: true }]);
+    });
+
+    test("reload/new/resume/fork pass final: false to doDisconnect", async () => {
+        const { sessionShutdown, doDisconnectCalls } = setup(null);
+
+        for (const reason of ["reload", "new", "resume", "fork"]) {
+            await sessionShutdown({ reason }, {});
+        }
+
+        expect(doDisconnectCalls).toEqual([{ final: false }, { final: false }, { final: false }, { final: false }]);
     });
 });
 

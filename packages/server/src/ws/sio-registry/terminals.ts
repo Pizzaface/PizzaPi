@@ -240,6 +240,18 @@ export async function getTerminalsForSession(sessionId: string, runnerId: string
     return terminals.filter((t) => t.sessionId === sessionId);
 }
 
+/**
+ * Remove a terminal's Redis hash (and its runner-set membership) immediately.
+ * Used right after emitting `kill_terminal` on a confirmed final session end:
+ * if the runner is offline the emit goes nowhere, so no `terminal_exit` ever
+ * arrives to drive the normal exited→GC cleanup path, leaking the entry until
+ * its TTL. The owning session is gone for good at that point, so this is a
+ * safe best-effort delete (idempotent — a no-op if already removed).
+ */
+export async function deleteTerminalEntry(terminalId: string): Promise<void> {
+    await deleteTerminalState(terminalId);
+}
+
 /** Internal cleanup helper — removes all local + Redis state for a terminal. */
 async function cleanupTerminal(terminalId: string): Promise<void> {
     const timer = localTerminalGcTimers.get(terminalId);

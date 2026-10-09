@@ -65,11 +65,15 @@ describe("relay — RelayClientToServerEvents payloads", () => {
     expect(withSeq.seq).toBe(42);
   });
 
-  test("session_end carries sessionId and token", () => {
+  test("session_end carries sessionId and token, with an optional final flag", () => {
     type Payload = Parameters<RelayClientToServerEvents["session_end"]>[0];
     const p: Payload = { sessionId: "sess-1", token: "tok-abc" };
     expect(typeof p.sessionId).toBe("string");
     expect(typeof p.token).toBe("string");
+    expect(p.final).toBeUndefined();
+
+    const withFinal: Payload = { ...p, final: true };
+    expect(withFinal.final).toBe(true);
 
     type Ack = NonNullable<Parameters<RelayClientToServerEvents["session_end"]>[1]>;
     const acknowledgements: Array<{ ended: boolean }> = [];

@@ -139,6 +139,32 @@ describe("session_end handler", () => {
         });
     });
 
+    it("a session_end with final:true asks endSharedSession to kill terminals", async () => {
+        // A real CLI quit sends `final: true` — this is the ONLY thing that
+        // may authorize killing the session's terminals (see GM VD0KKFpB).
+        const { socket, fire } = makeSocket("child-mirror");
+        registerSessionLifecycleHandlers(socket);
+
+        await fire("session_end", { token: "tok", final: true }, () => {});
+
+        expect(endedSessions).toHaveLength(1);
+        expect(endedSessions[0].opts).toMatchObject({ confirmedTerminal: true, killTerminals: true });
+    });
+
+    it("a session_end WITHOUT final (reload/new/resume/fork, /remote reconnect) never kills terminals", async () => {
+        // Every session_shutdown reason other than a real quit — and
+        // `/remote reconnect`, which re-registers the SAME session id right
+        // after — must leave live PTYs running. Older CLIs that don't send
+        // `final` at all must also fail safe to "not final".
+        const { socket, fire } = makeSocket("child-mirror");
+        registerSessionLifecycleHandlers(socket);
+
+        await fire("session_end", { token: "tok" }, () => {});
+
+        expect(endedSessions).toHaveLength(1);
+        expect(endedSessions[0].opts).toMatchObject({ confirmedTerminal: true, killTerminals: false });
+    });
+
     it("ignores non-function acknowledgement arguments", async () => {
         const { socket, fire } = makeSocket("child-mirror");
         registerSessionLifecycleHandlers(socket);

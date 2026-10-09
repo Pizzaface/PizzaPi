@@ -1,10 +1,13 @@
 // ============================================================================
-// sessions.terminal-kill.test.ts — Regression tests: a CONFIRMED terminal
-// session end (session_end, TTL expiry, orphan sweep) must kill every
-// terminal the session opened — cross-node safe, via emitToRunner — while a
-// transient disconnect/reconnect must leave them running. See GM VD0KKFpB
-// (redesign: the server is now authoritative for the PTY kill; the UI only
-// does local tab bookkeeping and never emits kill_terminal itself).
+// sessions.terminal-kill.test.ts — Regression tests: a TRUE final session end
+// (opts.killTerminals) must kill every terminal the session opened —
+// cross-node safe, via emitToRunner — and remove its Redis entry immediately.
+// `confirmedTerminal` alone (reload/new/resume/fork, `/remote reconnect`, and
+// the orphan sweep) must NEVER kill terminals — only an explicit
+// `killTerminals: true` (threaded from the CLI's session_end `final` flag, or
+// TTL expiry) may. See GM VD0KKFpB (redesign: the server is now authoritative
+// for the PTY kill; the UI only does local tab bookkeeping and never emits
+// kill_terminal itself).
 // ============================================================================
 
 import { afterAll, describe, it, expect, beforeEach, mock } from "bun:test";
@@ -42,7 +45,7 @@ mock.module("./hub.js", () => ({
     broadcastToHub: async () => {},
 }));
 
-const { initStateRedis, setSession, setTerminal } = await import("../sio-state.js");
+const { initStateRedis, setSession, setTerminal, getTerminal } = await import("../sio-state.js");
 const { endSharedSession } = await import("./sessions.js");
 const { initSioRegistry, runnerRoom } = await import("./context.js");
 const { _injectRedisForTesting: _injectTriggerStoreRedis, _resetRedisForTesting: _resetTriggerStoreRedis } =
@@ -110,12 +113,12 @@ describe("endSharedSession — server-authoritative terminal kill on confirmed e
         _injectRelayRedis(stateRedis.client);
     });
 
-    it("kills every terminal the session opened on a CONFIRMED terminal end", async () => {
+    it("kills every terminal the session opened on a TRUE final end (killTerminals) and deletes its Redis entry", async () => {
         await seedSession("sess-a");
         await seedTerminal("term-1", "sess-a");
         await seedTerminal("term-2", "sess-a");
 
-        await endSharedSession("sess-a", "Session ended", { confirmedTerminal: true });
+        await endSharedSession("sess-a", "Session ended", { confirmedTerminal: true, killTerminals: true });
 
         const kills = killTerminalEmits("runner-1");
         expect(kills.map((k) => (k.payload as { terminalId: string }).terminalId).sort()).toEqual([
@@ -124,15 +127,49 @@ describe("endSharedSession — server-authoritative terminal kill on confirmed e
         for (const kill of kills) {
             expect(kill.payload).toMatchObject({ sessionId: "sess-a" });
         }
+        // Redis entries are removed immediately (not left to leak until TTL if
+        // the runner never sends terminal_exit back, e.g. it is offline).
+        expect(await getTerminal("term-1")).toBeNull();
+        expect(await getTerminal("term-2")).toBeNull();
     });
 
-    it("does NOT kill terminals on a transient disconnect (not confirmed terminal)", async () => {
+    it("does NOT kill terminals on a transient disconnect (no confirmedTerminal, no killTerminals)", async () => {
         await seedSession("sess-b");
         await seedTerminal("term-3", "sess-b");
 
-        await endSharedSession("sess-b", "Session ended"); // no confirmedTerminal
+        await endSharedSession("sess-b", "Session ended"); // no confirmedTerminal / killTerminals
 
         expect(killTerminalEmits("runner-1")).toEqual([]);
+        expect(await getTerminal("term-3")).not.toBeNull();
+    });
+
+    it("does NOT kill terminals on confirmedTerminal alone (reload/new/resume/fork, /remote reconnect)", async () => {
+        // This is the exact shape session_end sends when the CLI's `final` flag
+        // is not set: confirmedTerminal still tears down routes/subscriptions,
+        // but the same session id may re-register right after, so its PTYs
+        // must survive.
+        await seedSession("sess-reload");
+        await seedTerminal("term-reload", "sess-reload");
+
+        await endSharedSession("sess-reload", "Session ended", { confirmedTerminal: true });
+
+        expect(killTerminalEmits("runner-1")).toEqual([]);
+        expect(await getTerminal("term-reload")).not.toBeNull();
+    });
+
+    it("does NOT kill terminals from the orphan sweep (confirmedTerminal + preserveSubscriptions)", async () => {
+        // Same opts shape sweepOrphanedSessions passes: the session may still
+        // reconnect, so its terminals must never be killed from here.
+        await seedSession("sess-orphan");
+        await seedTerminal("term-orphan", "sess-orphan");
+
+        await endSharedSession("sess-orphan", "Session orphaned (no active relay connection)", {
+            confirmedTerminal: true,
+            preserveSubscriptions: true,
+        });
+
+        expect(killTerminalEmits("runner-1")).toEqual([]);
+        expect(await getTerminal("term-orphan")).not.toBeNull();
     });
 
     it("leaves other sessions' terminals on the same runner untouched", async () => {
@@ -140,7 +177,7 @@ describe("endSharedSession — server-authoritative terminal kill on confirmed e
         await seedTerminal("term-4", "sess-c");
         await seedTerminal("term-other", "sess-other", "runner-1");
 
-        await endSharedSession("sess-c", "Session ended", { confirmedTerminal: true });
+        await endSharedSession("sess-c", "Session ended", { confirmedTerminal: true, killTerminals: true });
 
         const kills = killTerminalEmits("runner-1");
         expect(kills.map((k) => (k.payload as { terminalId: string }).terminalId)).toEqual(["term-4"]);
@@ -150,7 +187,7 @@ describe("endSharedSession — server-authoritative terminal kill on confirmed e
         await seedSession("sess-d");
         await seedTerminal("term-untagged", undefined);
 
-        await endSharedSession("sess-d", "Session ended", { confirmedTerminal: true });
+        await endSharedSession("sess-d", "Session ended", { confirmedTerminal: true, killTerminals: true });
 
         expect(killTerminalEmits("runner-1")).toEqual([]);
     });
@@ -159,7 +196,7 @@ describe("endSharedSession — server-authoritative terminal kill on confirmed e
         await seedSession("sess-e", { runnerId: null });
         await seedTerminal("term-5", "sess-e");
 
-        await endSharedSession("sess-e", "Session ended", { confirmedTerminal: true });
+        await endSharedSession("sess-e", "Session ended", { confirmedTerminal: true, killTerminals: true });
 
         expect(emitted.some((e) => e.event === "kill_terminal")).toBe(false);
         // sanity: the session row did get torn down (not a no-op from a bug elsewhere)

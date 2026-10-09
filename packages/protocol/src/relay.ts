@@ -67,6 +67,12 @@ export interface RelayClientToServerEvents {
   session_end: (data: {
     sessionId: string;
     token: string;
+    /** True only for a real quit (never reload/new/resume/fork/`/remote reconnect`).
+     *  Gates server-side PTY teardown (killTerminals) — a session_end without
+     *  `final` tears down routes/subscriptions as before but must never kill
+     *  the session's terminals, since the same ID may re-register right after.
+     *  Omitted (older CLIs) is treated as not final — fail safe. */
+    final?: boolean;
   }, acknowledge?: (result: { ended: boolean }) => void) => void;
 
   /** TUI responds to a previously-received exec command */

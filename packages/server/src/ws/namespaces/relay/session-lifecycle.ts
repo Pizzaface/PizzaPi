@@ -151,10 +151,15 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
 
         // Drain older events first, then perform every cleanup step only after
         // endSharedSession has revalidated ownership under its distributed lock.
+        // `killTerminals` is gated on the CLI's explicit `final` flag — NOT on
+        // confirmedTerminal, which also fires for reload/new/resume/fork and
+        // `/remote reconnect` (same session id re-registers right after). Only
+        // a real quit (data.final === true) may kill this session's PTYs.
         let ended = false;
         await enqueueSessionEvent(sessionId, async () => {
             ended = await endSharedSession(sessionId, "Session ended", {
                 confirmedTerminal: true,
+                killTerminals: data.final === true,
                 expectedOwnerToken: socket.data.token,
                 onOwnerConfirmed: async () => {
                     clearThinkingMaps(sessionId);
