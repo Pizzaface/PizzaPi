@@ -1,36 +1,89 @@
 import { describe, test, expect } from "bun:test";
-import { computeLiveAnnouncement } from "./session-live-announcements.js";
+import { computeLiveAnnouncements, type LiveAnnouncementState } from "./session-live-announcements.js";
 
-describe("computeLiveAnnouncement", () => {
-  test("announces disconnect when status goes from Connected to Disconnected", () => {
-    expect(computeLiveAnnouncement("Connected", "Disconnected", false, false)).toBe("Disconnected");
+function state(status: string | undefined, disconnected: boolean, agentActive = false): LiveAnnouncementState {
+  return { status, disconnected, agentActive };
+}
+
+describe("computeLiveAnnouncements", () => {
+  test("announces disconnect when phase flips to reconnecting/error", () => {
+    expect(computeLiveAnnouncements(state("Connected", false), state("Disconnected", true)).assertive).toBe(
+      "Disconnected",
+    );
   });
 
-  test("announces reconnection when status returns to Connected after a disconnect", () => {
-    expect(computeLiveAnnouncement("Disconnected", "Connected", false, false)).toBe("Session reconnected");
+  test("announces reconnection when phase returns to connected after a real disconnect", () => {
+    expect(computeLiveAnnouncements(state("Disconnected", true), state("Connected", false)).assertive).toBe(
+      "Session reconnected",
+    );
   });
 
   test("does not announce the initial Connecting… -> Connected transition", () => {
-    expect(computeLiveAnnouncement("Connecting…", "Connected", false, false)).toBeNull();
+    expect(computeLiveAnnouncements(state("Connecting…", false), state("Connected", false)).assertive).toBeNull();
   });
 
-  test("announces an error reason surfaced as the status string", () => {
-    expect(computeLiveAnnouncement("Connected", "Model not found", false, false)).toBe("Model not found");
+  test("announces an error reason surfaced as the status string while disconnected", () => {
+    expect(computeLiveAnnouncements(state("Connected", false), state("Model not found", true)).assertive).toBe(
+      "Model not found",
+    );
   });
 
-  test("announces agent started", () => {
-    expect(computeLiveAnnouncement("Connected", "Connected", false, true)).toBe("Agent started");
+  // Real App.tsx sequence: compaction finishes and resets status to
+  // "Connected" with no disconnect in between — must NOT announce reconnect.
+  test("compaction finishing (Compacting… -> Connected, never disconnected) does not announce reconnect", () => {
+    const result = computeLiveAnnouncements(state("Compacting…", false), state("Connected", false));
+    expect(result.assertive).toBeNull();
   });
 
-  test("announces agent stopped", () => {
-    expect(computeLiveAnnouncement("Connected", "Connected", true, false)).toBe("Agent stopped");
+  // Real App.tsx sequence: answering a plan/question resets status to
+  // "Connected" with no disconnect in between.
+  test("answering a question (Waiting for plan review… -> Connected) does not announce reconnect", () => {
+    const result = computeLiveAnnouncements(state("Waiting for plan review…", false), state("Connected", false));
+    expect(result.assertive).toBeNull();
   });
 
-  test("returns null when nothing meaningful changed", () => {
-    expect(computeLiveAnnouncement("Connected", "Connected", true, true)).toBeNull();
+  // Real App.tsx sequence: hydration progress ticks while connecting; none
+  // of these should ever be assertive.
+  test("hydration progress strings are never assertive", () => {
+    const steps = ["Connecting…", "Loading session (1 of 10 messages)…", "Loading session (5 of 10 messages)…", "Connected"];
+    for (let i = 1; i < steps.length; i++) {
+      const result = computeLiveAnnouncements(state(steps[i - 1], false), state(steps[i], false));
+      expect(result.assertive).toBeNull();
+    }
+  });
+
+  // A real disconnect -> reconnect across a CLI restart still announces.
+  test("real disconnect then reconnect across a CLI restart is announced both ways", () => {
+    const toOffline = computeLiveAnnouncements(state("Connected", false), state("Restarting CLI…", true));
+    expect(toOffline.assertive).toBe("Restarting CLI…");
+    const toOnline = computeLiveAnnouncements(state("Restarting CLI…", true), state("Connected", false));
+    expect(toOnline.assertive).toBe("Session reconnected");
+  });
+
+  test("agent started is announced politely, not assertively", () => {
+    const result = computeLiveAnnouncements(state("Connected", false, false), state("Connected", false, true));
+    expect(result.polite).toBe("Agent started");
+    expect(result.assertive).toBeNull();
+  });
+
+  test("agent stopped is announced politely", () => {
+    const result = computeLiveAnnouncements(state("Connected", false, true), state("Connected", false, false));
+    expect(result.polite).toBe("Agent stopped");
+    expect(result.assertive).toBeNull();
+  });
+
+  test("returns nothing when nothing meaningful changed", () => {
+    const result = computeLiveAnnouncements(state("Connected", false, true), state("Connected", false, true));
+    expect(result.assertive).toBeNull();
+    expect(result.polite).toBeNull();
   });
 
   test("ignores transitions between nominal statuses (Idle <-> Connecting…)", () => {
-    expect(computeLiveAnnouncement("Idle", "Connecting…", false, false)).toBeNull();
+    expect(computeLiveAnnouncements(state("Idle", false), state("Connecting…", false)).assertive).toBeNull();
+  });
+
+  test("still-offline reason change is announced", () => {
+    const result = computeLiveAnnouncements(state("Restarting CLI…", true), state("Connection failed", true));
+    expect(result.assertive).toBe("Connection failed");
   });
 });

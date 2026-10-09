@@ -66,6 +66,8 @@ export interface SessionViewerProps {
   lastHeartbeatAt?: number | null;
   /** Human-readable connection/activity status */
   viewerStatus?: string;
+  /** True only while the viewer's lifecycle phase represents a real connectivity loss (reconnecting/error), for ARIA live announcements. */
+  viewerDisconnected?: boolean;
   /** Auto-retry state from the CLI (provider error being retried) */
   retryState?: { errorMessage: string; detectedAt: number } | null;
   /** Messages queued while the agent is active */

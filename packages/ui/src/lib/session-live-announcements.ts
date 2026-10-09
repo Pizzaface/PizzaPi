@@ -1,32 +1,57 @@
 /**
- * Decides what (if anything) an assertive ARIA live region should announce
- * when session connectivity status or agent-active state changes. Keeps the
- * decision logic out of SessionViewer.tsx so it's unit-testable without
- * mounting the full component tree.
+ * Decides what (if anything) an ARIA live region should announce when
+ * session connectivity or agent-active state changes. Keeps the decision
+ * logic out of SessionViewer.tsx so it's unit-testable without mounting the
+ * full component tree.
+ *
+ * `disconnected` must come from the lifecycle's actual connectivity phase
+ * (e.g. `phase === "reconnecting" || phase === "error"` in
+ * use-session-lifecycle.ts), NOT from comparing status strings. The
+ * `viewerStatus` string is also used for a lot of non-connectivity status
+ * bar messages (toasts like "Copied", "Model set", "Compacting…", hydration
+ * progress, etc.) that must never be mistaken for a disconnect/reconnect.
  */
 
-const NOMINAL_STATUSES = new Set(["Connected", "Idle", "Connecting…"]);
+export interface LiveAnnouncementState {
+  /** The current status-bar text (used verbatim for disconnect/error wording). */
+  status: string | undefined;
+  /** True only while the lifecycle phase represents a real connectivity loss. */
+  disconnected: boolean;
+  /** Whether the agent is currently processing a turn. */
+  agentActive: boolean;
+}
 
-export function computeLiveAnnouncement(
-  prevStatus: string | undefined,
-  nextStatus: string | undefined,
-  prevAgentActive: boolean,
-  nextAgentActive: boolean,
-): string | null {
-  if (nextStatus !== prevStatus) {
-    if (nextStatus === "Connected" && prevStatus !== undefined && prevStatus !== "Connecting…") {
-      return "Session reconnected";
-    }
-    if (nextStatus && !NOMINAL_STATUSES.has(nextStatus)) {
-      // Covers disconnects, restarts, and surfaced error reasons — the
-      // status string itself is the user-facing message in all these cases.
-      return nextStatus;
+export interface LiveAnnouncements {
+  /** Urgent text for an assertive live region: disconnects and errors only. */
+  assertive: string | null;
+  /** Routine text for a polite live region: agent start/stop. */
+  polite: string | null;
+}
+
+export function computeLiveAnnouncements(
+  prev: LiveAnnouncementState,
+  next: LiveAnnouncementState,
+): LiveAnnouncements {
+  let assertive: string | null = null;
+
+  if (next.disconnected !== prev.disconnected || next.status !== prev.status) {
+    if (next.disconnected && !prev.disconnected) {
+      // Just went offline — surface the reason text as-is (e.g. "Restarting
+      // CLI…", "Disconnected", a surfaced provider error).
+      assertive = next.status || "Disconnected";
+    } else if (!next.disconnected && prev.disconnected) {
+      assertive = "Session reconnected";
+    } else if (next.disconnected && prev.disconnected && next.status !== prev.status) {
+      // Still offline, but the reason changed (e.g. a connect_error message
+      // replaced the initial "Restarting CLI…").
+      assertive = next.status || null;
     }
   }
 
-  if (nextAgentActive !== prevAgentActive) {
-    return nextAgentActive ? "Agent started" : "Agent stopped";
+  let polite: string | null = null;
+  if (next.agentActive !== prev.agentActive) {
+    polite = next.agentActive ? "Agent started" : "Agent stopped";
   }
 
-  return null;
+  return { assertive, polite };
 }

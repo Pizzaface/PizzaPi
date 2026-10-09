@@ -34,7 +34,7 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { cn } from "@/lib/utils";
-import { computeLiveAnnouncement } from "@/lib/session-live-announcements";
+import { computeLiveAnnouncements } from "@/lib/session-live-announcements";
 import { PizzaLogo } from "@/components/PizzaLogo";
 import {
   canSubmitSessionInput,
@@ -145,6 +145,7 @@ export function SessionViewer({
   tokenUsage,
   lastHeartbeatAt,
   viewerStatus,
+  viewerDisconnected,
   retryState,
   messageQueue,
   onRemoveQueuedMessage,
@@ -212,20 +213,32 @@ export function SessionViewer({
   // session…") long enough that the disabled composer needs an explanation.
   const [hydrationStuck, setHydrationStuck] = React.useState(false);
 
-  // Assertive ARIA live-region text for screen readers: session
-  // connect/disconnect/error state and agent start/stop. Reset whenever the
-  // viewed session changes so a leftover announcement doesn't bleed over.
-  const [liveAnnouncement, setLiveAnnouncement] = React.useState("");
-  const prevLiveStateRef = React.useRef({ status: viewerStatus, agentActive: !!agentActive, sessionId });
+  // Live-region text for screen readers: an assertive region for real
+  // connect/disconnect/error transitions, and a polite one for routine
+  // agent start/stop. `viewerDisconnected` must come from the lifecycle's
+  // actual phase (not inferred from the status string, which also carries
+  // unrelated toast-style messages like "Copied" or "Model set"). Reset
+  // whenever the viewed session changes so a leftover announcement doesn't
+  // bleed over.
+  const [assertiveAnnouncement, setAssertiveAnnouncement] = React.useState("");
+  const [politeAnnouncement, setPoliteAnnouncement] = React.useState("");
+  const prevLiveStateRef = React.useRef({
+    status: viewerStatus,
+    disconnected: !!viewerDisconnected,
+    agentActive: !!agentActive,
+    sessionId,
+  });
   React.useEffect(() => {
     const prev = prevLiveStateRef.current;
-    const announcement =
+    const next = { status: viewerStatus, disconnected: !!viewerDisconnected, agentActive: !!agentActive };
+    const { assertive, polite } =
       prev.sessionId === sessionId
-        ? computeLiveAnnouncement(prev.status, viewerStatus, prev.agentActive, !!agentActive)
-        : null;
-    prevLiveStateRef.current = { status: viewerStatus, agentActive: !!agentActive, sessionId };
-    setLiveAnnouncement(announcement ?? "");
-  }, [viewerStatus, agentActive, sessionId]);
+        ? computeLiveAnnouncements(prev, next)
+        : { assertive: null, polite: null };
+    prevLiveStateRef.current = { ...next, sessionId };
+    setAssertiveAnnouncement(assertive ?? "");
+    setPoliteAnnouncement(polite ?? "");
+  }, [viewerStatus, viewerDisconnected, agentActive, sessionId]);
 
   const sendActionSigilResponse = React.useCallback(
     async (text: string): Promise<boolean> => {
@@ -675,9 +688,12 @@ export function SessionViewer({
         <ArtifactHostContext.Provider value={artifactHost}>
         <div className="flex flex-col flex-1 min-h-0">
 
-          {/* Screen-reader-only announcer for connection/agent state changes. */}
+          {/* Screen-reader-only announcers for connection/agent state changes. */}
           <div aria-live="assertive" aria-atomic="true" className="sr-only">
-            {liveAnnouncement}
+            {assertiveAnnouncement}
+          </div>
+          <div aria-live="polite" aria-atomic="true" className="sr-only">
+            {politeAnnouncement}
           </div>
 
           {/* ── Session info bar ─────────────────────────────────────────── */}

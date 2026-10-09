@@ -39,6 +39,12 @@ export const Conversation = ({ className, ...props }: ConversationProps) => (
     resize="instant"
     role="log"
     aria-live="polite"
+    // Only announce whole new messages being appended, not in-place text
+    // mutations on existing nodes. Streaming writes tokens into an existing
+    // message's text node; without this, aria-relevant's default
+    // ("additions text") makes screen readers re-announce that node on
+    // every token instead of once when a completed message is appended.
+    aria-relevant="additions"
     {...props}
   />
 );
