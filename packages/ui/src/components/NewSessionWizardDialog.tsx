@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { formatPathTail, pathSegments } from "@/lib/path";
 import { filterFolders } from "@/lib/filterFolders";
 import { FolderBrowser } from "@/components/FolderBrowser";
+import { useRunnerModels } from "@/hooks/useRunnerModels";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -60,7 +61,7 @@ export interface NewSessionWizardDialogProps {
      * Called when the user clicks "Start Session".
      * `cwd` is `undefined` when the field is blank.
      */
-    onSpawn: (runnerId: string, cwd: string | undefined) => Promise<void>;
+    onSpawn: (runnerId: string, cwd: string | undefined, model?: { provider: string; id: string }) => Promise<void>;
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -68,6 +69,7 @@ export interface NewSessionWizardDialogProps {
 const ROW_HEIGHT = 36;
 const OVERSCAN = 8;
 const LIST_MAX_HEIGHT = 360;
+const MODEL_VALUE_SEPARATOR = "\t";
 
 function persistFolder(runnerId: string, folder: string): void {
     try { localStorage.setItem(`pp.newSession.lastFolder.${runnerId}`, folder); } catch { /* ignore */ }
@@ -125,6 +127,7 @@ export function NewSessionWizardDialog({
     const [spawning, setSpawning] = React.useState(false);
     const [spawnError, setSpawnError] = React.useState<string | null>(null);
     const [disconnectedMsg, setDisconnectedMsg] = React.useState<string | null>(null);
+    const [selectedModelKey, setSelectedModelKey] = React.useState("");
 
     // Recent folders state
     const [recentFolders, setRecentFolders] = React.useState<string[]>([]);
@@ -133,6 +136,17 @@ export function NewSessionWizardDialog({
 
     // Folder browser mode
     const [browsing, setBrowsing] = React.useState(false);
+
+    const { models: runnerModels, loading: modelsLoading } = useRunnerModels(
+        selectedRunnerId,
+        open && step === "folder",
+    );
+
+    React.useEffect(() => {
+        if (!selectedModelKey || modelsLoading) return;
+        const valid = runnerModels.some((model) => `${model.provider}${MODEL_VALUE_SEPARATOR}${model.id}` === selectedModelKey);
+        if (!valid) setSelectedModelKey("");
+    }, [modelsLoading, runnerModels, selectedModelKey]);
 
     // Filtered list (derived)
     const filteredFolders = React.useMemo(
@@ -166,6 +180,7 @@ export function NewSessionWizardDialog({
         setCwd(initialCwd ?? "");
         setSpawnError(null);
         setDisconnectedMsg(null);
+        setSelectedModelKey("");
         setRecentFolders([]);
         setBrowsing(false);
         autoAdvancedRef.current = false;
@@ -236,6 +251,7 @@ export function NewSessionWizardDialog({
             } else {
                 setSelectedRunnerId(null);
                 setStep("runner");
+                setSelectedModelKey("");
                 setRecentFolders([]);
                 setDisconnectedMsg("Runner disconnected. Please select another.");
             }
@@ -246,12 +262,14 @@ export function NewSessionWizardDialog({
 
     function handleSelectRunner(runnerId: string) {
         setSelectedRunnerId(runnerId);
+        setSelectedModelKey("");
         setDisconnectedMsg(null);
         setStep("folder");
     }
 
     function handleBack() {
         setStep("runner");
+        setSelectedModelKey("");
         setRecentFolders([]);
         setSpawnError(null);
         setBrowsing(false);
@@ -295,7 +313,9 @@ export function NewSessionWizardDialog({
         setSpawning(true);
         setSpawnError(null);
         try {
-            await onSpawn(selectedRunnerId, cwd.trim() || undefined);
+            const [provider, id] = selectedModelKey.split(MODEL_VALUE_SEPARATOR);
+            const model = provider && id ? { provider, id } : undefined;
+            await onSpawn(selectedRunnerId, cwd.trim() || undefined, model);
             if (cwd.trim()) persistFolder(selectedRunnerId, cwd.trim());
         } catch (err) {
             setSpawnError(err instanceof Error ? err.message : String(err));
@@ -308,6 +328,8 @@ export function NewSessionWizardDialog({
 
     const connectedRunners = runners.filter((r) => r.isOnline);
     const selectedRunner = runners.find((r) => r.runnerId === selectedRunnerId);
+    const totalSteps = isPreselected ? 1 : 2;
+    const currentStep = isPreselected ? 1 : step === "runner" ? 1 : 2;
 
     // ── Render ────────────────────────────────────────────────────────────
 
@@ -315,7 +337,12 @@ export function NewSessionWizardDialog({
         <Dialog open={open} onOpenChange={(o) => { if (!spawning) onOpenChange(o); }}>
             <DialogContent className="sm:max-w-lg">
                 <DialogHeader>
-                    <DialogTitle>New session</DialogTitle>
+                    <div className="flex items-center justify-between gap-3">
+                        <DialogTitle>New session</DialogTitle>
+                        <span className="text-xs text-muted-foreground" aria-live="polite">
+                            Step {currentStep} of {totalSteps}
+                        </span>
+                    </div>
                     <DialogDescription>
                         {step === "runner"
                             ? "Select a runner to start a session on."
@@ -397,6 +424,29 @@ export function NewSessionWizardDialog({
                 {/* ── Step 2: Folder picker ──────────────────────────────── */}
                 {step === "folder" && (
                     <div className="flex flex-col gap-3">
+                        <div className="flex flex-col gap-1.5">
+                            <Label htmlFor="wizard-model">Model</Label>
+                            <select
+                                id="wizard-model"
+                                value={selectedModelKey}
+                                onChange={(e) => setSelectedModelKey(e.target.value)}
+                                disabled={spawning || modelsLoading || runnerModels.length === 0}
+                                className="h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                                <option value="">Automatic (runner default)</option>
+                                {runnerModels.map((model) => (
+                                    <option key={`${model.provider}/${model.id}`} value={`${model.provider}${MODEL_VALUE_SEPARATOR}${model.id}`}>
+                                        {model.name ? `${model.name} — ${model.provider}/${model.id}` : `${model.provider}/${model.id}`}
+                                    </option>
+                                ))}
+                            </select>
+                            <p className="text-xs text-muted-foreground">
+                                {modelsLoading
+                                    ? "Loading models…"
+                                    : "Leave automatic to use the runner's configured default model."}
+                            </p>
+                        </div>
+
                         <div className="flex flex-col gap-1.5">
                             <Label htmlFor="wizard-cwd">
                                 Working directory{" "}

@@ -87,6 +87,34 @@ describe("useSessionLifecycle", () => {
     expect(apiRef.current!.refs.activeSessionId.current).toBe("session-2");
   });
 
+  test("spawnSession sends the requested model to the spawn endpoint", async () => {
+    const { apiRef } = renderHarness(
+      [
+        {
+          sessionId: "session-abc",
+          shareUrl: "",
+          cwd: "/tmp/foo",
+          startedAt: new Date().toISOString(),
+        },
+      ],
+      500,
+    );
+
+    await act(async () => {
+      await apiRef.current!.spawnSession("runner-1", "/tmp/foo", undefined, {
+        model: { provider: "openai", id: "gpt-5.5" },
+      });
+    });
+
+    const fetchMock = globalThis.fetch as unknown as { mock: { calls: Array<[string, RequestInit]> } };
+    const request = fetchMock.mock.calls[0]?.[1];
+    expect(JSON.parse(String(request?.body))).toEqual({
+      runnerId: "runner-1",
+      cwd: "/tmp/foo",
+      model: { provider: "openai", id: "gpt-5.5" },
+    });
+  });
+
   test("spawnSession resolves when the session is already live", async () => {
     // Delay the fetch so we exercise the waiter path after the API response.
     globalThis.fetch = mock(

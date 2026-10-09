@@ -4308,7 +4308,7 @@ export function App() {
   /** Spawn handler for the new wizard dialog. */
   const handleWizardSpawn = React.useCallback(
     createWizardSpawnHandler({
-      spawnSession: lifecycleSpawnSession,
+      spawnSession: (runnerId, cwd, model) => lifecycleSpawnSession(runnerId, cwd, undefined, { model }),
       openSession: handleOpenSession,
       setOpen: setNewSessionOpen,
     }),
