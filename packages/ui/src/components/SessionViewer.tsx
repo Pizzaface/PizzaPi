@@ -34,6 +34,7 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { cn } from "@/lib/utils";
+import { computeLiveAnnouncements } from "@/lib/session-live-announcements";
 import { PizzaLogo } from "@/components/PizzaLogo";
 import {
   canSubmitSessionInput,
@@ -144,6 +145,8 @@ export function SessionViewer({
   tokenUsage,
   lastHeartbeatAt,
   viewerStatus,
+  viewerDisconnected,
+  viewerStatusIsOverride,
   retryState,
   messageQueue,
   onRemoveQueuedMessage,
@@ -210,6 +213,61 @@ export function SessionViewer({
   // True when the session has been stuck hydrating ("Connecting…"/"Loading
   // session…") long enough that the disabled composer needs an explanation.
   const [hydrationStuck, setHydrationStuck] = React.useState(false);
+
+  // Live-region text for screen readers: an assertive region for real
+  // connect/disconnect/error transitions, and a polite one for routine
+  // agent start/stop. `viewerDisconnected` must come from the lifecycle's
+  // actual phase (not inferred from the status string, which also carries
+  // unrelated toast-style messages like "Copied" or "Model set"). Reset
+  // whenever the viewed session changes so a leftover announcement doesn't
+  // bleed over.
+  //
+  // A region is only ever SET when this run actually computed a new
+  // announcement — never cleared back to "" just because an unrelated dep
+  // (e.g. agentActive) changed, otherwise a pending announcement can be
+  // wiped within ms, before a screen reader gets to read it. To let the same
+  // text re-announce twice in a row (DOM text would otherwise be unchanged,
+  // so no mutation to pick up), a trailing zero-width space is toggled on
+  // each announcement instead of clearing the region in between.
+  const [assertiveAnnouncement, setAssertiveAnnouncement] = React.useState("");
+  const [politeAnnouncement, setPoliteAnnouncement] = React.useState("");
+  const assertiveToggleRef = React.useRef(false);
+  const politeToggleRef = React.useRef(false);
+  const prevLiveStateRef = React.useRef({
+    status: viewerStatus,
+    disconnected: !!viewerDisconnected,
+    agentActive: !!agentActive,
+    statusIsOverride: !!viewerStatusIsOverride,
+    sessionId,
+  });
+  React.useEffect(() => {
+    const prev = prevLiveStateRef.current;
+    const next = {
+      status: viewerStatus,
+      disconnected: !!viewerDisconnected,
+      agentActive: !!agentActive,
+      statusIsOverride: !!viewerStatusIsOverride,
+    };
+    const sessionChanged = prev.sessionId !== sessionId;
+    prevLiveStateRef.current = { ...next, sessionId };
+
+    if (sessionChanged) {
+      // Switching sessions: clear any leftover announcement from the
+      // previously viewed session rather than letting it bleed over.
+      setAssertiveAnnouncement("");
+      setPoliteAnnouncement("");
+      return;
+    }
+    const { assertive, polite } = computeLiveAnnouncements(prev, next);
+    if (assertive !== null) {
+      assertiveToggleRef.current = !assertiveToggleRef.current;
+      setAssertiveAnnouncement(assertive + (assertiveToggleRef.current ? "\u200B" : ""));
+    }
+    if (polite !== null) {
+      politeToggleRef.current = !politeToggleRef.current;
+      setPoliteAnnouncement(polite + (politeToggleRef.current ? "\u200B" : ""));
+    }
+  }, [viewerStatus, viewerDisconnected, viewerStatusIsOverride, agentActive, sessionId]);
 
   const sendActionSigilResponse = React.useCallback(
     async (text: string): Promise<boolean> => {
@@ -659,6 +717,14 @@ export function SessionViewer({
         <ArtifactHostContext.Provider value={artifactHost}>
         <div className="flex flex-col flex-1 min-h-0">
 
+          {/* Screen-reader-only announcers for connection/agent state changes. */}
+          <div aria-live="assertive" aria-atomic="true" className="sr-only">
+            {assertiveAnnouncement}
+          </div>
+          <div aria-live="polite" aria-atomic="true" className="sr-only">
+            {politeAnnouncement}
+          </div>
+
           {/* ── Session info bar ─────────────────────────────────────────── */}
           {sessionId && (
             <div className="border-b border-border px-3 py-2 flex items-center gap-2 min-w-0">
@@ -981,7 +1047,7 @@ export function SessionViewer({
                 )}
               </ConversationEmptyState>
             ) : shouldShowSessionTranscript(sessionId, viewerStatus, visibleMessages.length > 0) ? (
-              <Conversation key={sessionId} className="overflow-x-hidden">
+              <Conversation key={sessionId} className="overflow-x-hidden" aria-busy={!!agentActive}>
                 <ConversationContent className="w-full gap-0 p-0 py-2">
                   <PaginationSentinel
                     hasMore={hasMore || !!hasMoreServerMessages}

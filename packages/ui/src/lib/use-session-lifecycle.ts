@@ -49,6 +49,8 @@ export interface UseSessionLifecycleResult {
   state: SessionLifecycleState;
   /** Displayed connection status. */
   viewerStatus: string;
+  /** True when `viewerStatus` was last set by a manual toast override (STATUS_SET), not a phase-owning lifecycle action. */
+  viewerStatusIsOverride: boolean;
   /** True while connecting/hydrating. */
   isHydrating: boolean;
   /** True once the session is live or replay-only. */
@@ -359,6 +361,7 @@ export function useSessionLifecycle(
   return {
     state,
     viewerStatus: state.status,
+    viewerStatusIsOverride: state.statusIsOverride,
     isHydrating,
     isLive,
     refs: {

@@ -38,6 +38,14 @@ export const Conversation = ({ className, ...props }: ConversationProps) => (
     initial="instant"
     resize="instant"
     role="log"
+    // `role="log"` implies `aria-live="polite"` by default, and streamed
+    // markdown keeps adding element nodes (paragraphs, list items, code
+    // blocks, tool cards) as tokens arrive, plus "load older" prepends
+    // existing history — all of which would get announced as they're added.
+    // Turn the implicit live region off entirely; completed-turn
+    // announcements are made explicitly via SessionViewer's polite sr-only
+    // region (see computeLiveAnnouncements' "Agent stopped").
+    aria-live="off"
     {...props}
   />
 );

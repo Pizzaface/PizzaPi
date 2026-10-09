@@ -586,6 +586,11 @@ export function App() {
   const activeSessionId = lifecycle.state.activeSessionId;
   const viewerStatus = lifecycle.viewerStatus;
   const lifecycleState = lifecycle.state;
+  // Real connectivity loss only (not a status-string guess): used for ARIA
+  // live announcements so routine status-bar messages ("Copied", "Model
+  // set", hydration progress, etc.) never look like a disconnect/reconnect.
+  const viewerDisconnected = lifecycleState.phase === "reconnecting" || lifecycleState.phase === "error";
+  const viewerStatusIsOverride = lifecycleState.statusIsOverride;
   const lifecycleRefs = lifecycle.refs;
   const lifecycleDispatch = lifecycle.dispatch;
   const setLifecycleSpawnParams = lifecycle.setSpawnParams;
@@ -5708,6 +5713,8 @@ export function App() {
                         tokenUsage={tokenUsage}
                         lastHeartbeatAt={lastHeartbeatAt}
                         viewerStatus={viewerStatus}
+                        viewerDisconnected={viewerDisconnected}
+                        viewerStatusIsOverride={viewerStatusIsOverride}
                         retryState={retryState}
                         messageQueue={messageQueue}
                         onRemoveQueuedMessage={removeQueuedMessage}
