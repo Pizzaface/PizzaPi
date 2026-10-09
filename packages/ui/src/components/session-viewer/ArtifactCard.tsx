@@ -254,7 +254,7 @@ export function ArtifactCard({
         <Button
           size="icon"
           variant="ghost"
-          className="size-11 md:size-7"
+          className="size-11 md:size-7 pointer-coarse:min-h-11 pointer-coarse:min-w-11"
           onClick={openViewer}
           aria-label={`Expand ${fileName}`}
         >
@@ -262,14 +262,14 @@ export function ArtifactCard({
         </Button>
       )}
       {onOpen && (
-        <Button size="icon" variant="ghost" className="size-11 md:size-7" onClick={() => onOpen(resolvedPath)} aria-label={`Open ${fileName}`}>
+        <Button size="icon" variant="ghost" className="size-11 md:size-7 pointer-coarse:min-h-11 pointer-coarse:min-w-11" onClick={() => onOpen(resolvedPath)} aria-label={`Open ${fileName}`}>
           <ExternalLinkIcon className="size-3.5" />
         </Button>
       )}
       <Button
         size="icon"
         variant="ghost"
-        className="size-11 md:size-7"
+        className="size-11 md:size-7 pointer-coarse:min-h-11 pointer-coarse:min-w-11"
         onClick={() => void download()}
         disabled={downloading || (!runnerId && content === null)}
         aria-label={`Download ${fileName}`}
@@ -330,7 +330,7 @@ export function ArtifactCard({
                 <button
                   type="button"
                   onClick={openViewer}
-                  className="min-h-11 w-full border-t border-border px-3 py-2 text-center text-[0.65rem] text-muted-foreground hover:bg-muted/40"
+                  className="min-h-11 md:min-h-0 w-full border-t border-border px-3 py-2 md:py-1.5 text-center text-[0.65rem] text-muted-foreground hover:bg-muted/40 pointer-coarse:min-h-11 pointer-coarse:py-2"
                 >
                   Preview shows the start of this file — expand or download for the whole thing.
                 </button>
@@ -407,14 +407,14 @@ export function ArtifactViewerContent({
         {size !== undefined && <span className="shrink-0 text-[0.65rem] tabular-nums text-muted-foreground">{formatSize(size)}</span>}
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {onOpen && (
-            <Button size="icon" variant="ghost" className="size-11 md:size-7" onClick={() => onOpen(path)} aria-label={`Open ${fileName}`}>
+            <Button size="icon" variant="ghost" className="size-11 md:size-7 pointer-coarse:min-h-11 pointer-coarse:min-w-11" onClick={() => onOpen(path)} aria-label={`Open ${fileName}`}>
               <ExternalLinkIcon className="size-4" />
             </Button>
           )}
           <Button
             size="icon"
             variant="ghost"
-            className="size-11 md:size-7"
+            className="size-11 md:size-7 pointer-coarse:min-h-11 pointer-coarse:min-w-11"
             onClick={() => void download()}
             disabled={downloading}
             aria-label={`Download ${fileName}`}
@@ -422,7 +422,7 @@ export function ArtifactViewerContent({
             {downloading ? <Loader2Icon className="size-4 animate-spin" /> : <DownloadIcon className="size-4" />}
           </Button>
           {onClose && (
-            <Button size="icon" variant="ghost" className="size-11 md:size-7" onClick={onClose} aria-label="Close">
+            <Button size="icon" variant="ghost" className="size-11 md:size-7 pointer-coarse:min-h-11 pointer-coarse:min-w-11" onClick={onClose} aria-label="Close">
               <span className="text-lg leading-none">×</span>
             </Button>
           )}

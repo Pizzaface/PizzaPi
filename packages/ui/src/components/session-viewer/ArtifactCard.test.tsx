@@ -39,12 +39,22 @@ afterEach(() => {
 });
 
 describe("ArtifactCard", () => {
-    test("shows the file name and offers to open it", () => {
+    test("shows the file name and is 44px by default, shrinking to desktop density at md and regrowing on touch", () => {
         const { getByText, getByLabelText } = render(
             <ArtifactCard path="/w/reports/q3.csv" kind="csv" runnerId="r1" onOpen={() => {}} />,
         );
         expect(getByText("q3.csv")).toBeDefined();
-        expect(getByLabelText("Open q3.csv")).toBeDefined();
+        for (const label of ["Open q3.csv", "Download q3.csv", "Expand q3.csv"]) {
+            const button = getByLabelText(label);
+            expect(button).toBeDefined();
+            // Narrow screens (any pointer) get a 44px target; md: shrinks to the
+            // compact size-7 desktop density; pointer-coarse re-grows to 44px so
+            // touch laptops/desktops aren't shrunk either.
+            expect(button.className).toContain("size-11");
+            expect(button.className).toContain("md:size-7");
+            expect(button.className).toContain("pointer-coarse:min-h-11");
+            expect(button.className).toContain("pointer-coarse:min-w-11");
+        }
     });
 
     test("fetches text kinds as utf8 and renders the preview", async () => {
