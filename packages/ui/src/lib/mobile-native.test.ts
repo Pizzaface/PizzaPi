@@ -167,3 +167,73 @@ describe("mobile-native (android path)", () => {
         expect(pluginCalls.badgeClear).toBe(1);
     });
 });
+
+describe("registerAppResumeListener", () => {
+    test("calls back only when the app resumes to the foreground, not on backgrounding", async () => {
+        let listener: ((state: { isActive: boolean }) => void) | undefined;
+        const appPlugin = {
+            addListener: async (_event: "appStateChange", cb: (state: { isActive: boolean }) => void) => {
+                listener = cb;
+                return { remove: async () => {} };
+            },
+        };
+        const mod = await loadMobileNative(null, false);
+        let resumeCalls = 0;
+        mod.registerAppResumeListener(() => {
+            resumeCalls++;
+        }, appPlugin);
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(listener).toBeDefined();
+
+        listener!({ isActive: false }); // backgrounding must not trigger a reconnect
+        expect(resumeCalls).toBe(0);
+
+        listener!({ isActive: true }); // resuming must
+        expect(resumeCalls).toBe(1);
+
+        listener!({ isActive: true });
+        expect(resumeCalls).toBe(2);
+    });
+
+    test("an unimplemented native plugin (e.g. app not yet rebuilt with @capacitor/app) doesn't throw or reject unhandled", async () => {
+        // Mirrors what Capacitor's registerPlugin proxy does when the native
+        // side has no "App" plugin registered: addListener rejects instead of
+        // resolving. App.tsx's visibilitychange/online kickSockets listeners
+        // are registered independently of this one and keep working either way.
+        const appPlugin = {
+            addListener: async () => {
+                throw new Error("\"App\" plugin is not implemented on android");
+            },
+        };
+        const mod = await loadMobileNative(null, false);
+        let resumeCalls = 0;
+        const cleanup = mod.registerAppResumeListener(() => {
+            resumeCalls++;
+        }, appPlugin);
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(resumeCalls).toBe(0);
+        // cleanup must also be a no-op, not throw, even though no handle was ever set.
+        expect(() => cleanup()).not.toThrow();
+    });
+
+    test("removes the native listener once the returned cleanup runs", async () => {
+        let removeCalls = 0;
+        const appPlugin = {
+            addListener: async () => ({
+                remove: async () => {
+                    removeCalls++;
+                },
+            }),
+        };
+        const mod = await loadMobileNative(null, false);
+        const cleanup = mod.registerAppResumeListener(() => {}, appPlugin);
+        await Promise.resolve();
+        await Promise.resolve();
+        cleanup();
+        await Promise.resolve();
+        expect(removeCalls).toBe(1);
+    });
+});

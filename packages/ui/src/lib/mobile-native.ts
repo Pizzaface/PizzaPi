@@ -13,6 +13,7 @@
  */
 import * as React from "react";
 import { Capacitor } from "@capacitor/core";
+import { CapacitorApp, type CapacitorAppPlugin } from "./capacitor-app-plugin.js";
 import { LocalNotifications } from "@capacitor/local-notifications";
 import { Badge } from "@capawesome/capacitor-badge";
 import { getMobileRuntimeConfig } from "./mobile-runtime.js";
@@ -22,6 +23,39 @@ import { useNeedsResponseCount } from "../attention/index.js";
 /** True only when running inside the bundled Capacitor native shell. */
 function nativeEnabled(): boolean {
     return getMobileRuntimeConfig().isMobileBundled && Capacitor.isNativePlatform();
+}
+
+/**
+ * Call `callback` every time the native app resumes to the foreground.
+ * Returns a cleanup function. No-op (and a harmless no-op remove) on web,
+ * since the registered plugin never calls the listener there.
+ *
+ * `appPlugin` is parameterized for tests; production callers use the default.
+ */
+export function registerAppResumeListener(
+    callback: () => void,
+    appPlugin: Pick<CapacitorAppPlugin, "addListener"> = CapacitorApp,
+): () => void {
+    let cancelled = false;
+    let removeHandle: (() => void) | null = null;
+    void appPlugin
+        .addListener("appStateChange", (state) => {
+            if (state.isActive) callback();
+        })
+        .then((handle) => {
+            if (cancelled) {
+                void handle.remove();
+            } else {
+                removeHandle = () => void handle.remove();
+            }
+        })
+        .catch((err) => {
+            console.error("mobile-native: failed to register resume listener:", err);
+        });
+    return () => {
+        cancelled = true;
+        removeHandle?.();
+    };
 }
 
 /**

@@ -44,6 +44,7 @@
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { getMobileRuntimeConfig } from "./mobile-runtime.js";
 import { reportWarning } from "./frontend-log.js";
+import { CapacitorApp, type CapacitorAppPlugin } from "./capacitor-app-plugin.js";
 
 /** Build timestamp baked into THIS bundle (the currently-installed version). */
 declare const __PIZZAPI_BUILD_TIMESTAMP__: string;
@@ -137,33 +138,6 @@ class CapacitorUpdaterWeb implements CapgoUpdater {
 
 const CapacitorUpdater = registerPlugin<CapgoUpdater>("CapacitorUpdater", {
     web: async () => new CapacitorUpdaterWeb(),
-});
-
-interface AppStateChangeEvent {
-    /** True when foregrounded; false when backgrounded. */
-    isActive: boolean;
-}
-
-/** Minimal shape of the bits of @capacitor/app we call. */
-interface CapacitorAppPlugin {
-    addListener(
-        eventName: "appStateChange",
-        listenerFunc: (state: AppStateChangeEvent) => void,
-    ): Promise<{ remove: () => Promise<void> }>;
-}
-
-// Same by-name registerPlugin pattern as CapacitorUpdater above — @capacitor/app
-// is already pulled in transitively (via @aparajita/capacitor-secure-storage)
-// and `cap sync` installs the native App plugin, so there's no need to add a
-// direct npm dependency or import the @capacitor/app JS wrapper.
-class CapacitorAppWeb implements CapacitorAppPlugin {
-    async addListener(): Promise<{ remove: () => Promise<void> }> {
-        return { remove: async () => {} };
-    }
-}
-
-const CapacitorApp = registerPlugin<CapacitorAppPlugin>("App", {
-    web: async () => new CapacitorAppWeb(),
 });
 
 /**

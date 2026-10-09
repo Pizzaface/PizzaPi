@@ -16,7 +16,7 @@ import { getMobileRuntimeConfig } from "@/lib/mobile-runtime";
 import { FrontendLogOverlay } from "@/components/FrontendLogOverlay";
 import { subscribeToast, installGlobalErrorCapture, logFrontendEvent } from "@/lib/frontend-log";
 import { cancelRestoreIntent, createRestoreIntent, takeRestoreTarget, type RestoreIntent } from "@/lib/deep-link-restore";
-import { useMobileNativeActivity } from "@/lib/mobile-native";
+import { useMobileNativeActivity, registerAppResumeListener } from "@/lib/mobile-native";
 import type {
   ViewerServerToClientEvents,
   ViewerClientToServerEvents,
@@ -47,7 +47,7 @@ import type { PanelPosition } from "@/hooks/usePanelLayout";
 import { ViewerSocketContext } from "@/lib/viewer-socket-context";
 import { getViewerVisibilityPayload } from "@/lib/viewer-visibility";
 import { HubSocketContext } from "@/lib/hub-socket-context";
-import { resetStaleBaselineOnVisibilityChange, shouldStopViewerReconnect } from "@/lib/viewer-connection";
+import { resetStaleBaselineOnVisibilityChange, shouldStopViewerReconnect, shouldEvaluateStaleWatchdog, shouldTriggerStaleWatchdogReconnect, staleWatchdogBackoffMultiplier, shouldForceReconnectOnResume, shouldResetStaleBackoffOnEvent } from "@/lib/viewer-connection";
 import { mapUserError } from "@/lib/user-error-message";
 import { classifySessionInput } from "@/lib/session-empty-state";
 import { emitInputWithAck } from "@/lib/input-delivery";
@@ -818,6 +818,11 @@ export function App() {
   // because browser timer throttling can delay both heartbeat delivery and checks.
   const lastViewerEventAtRef = React.useRef<number>(0);
   const staleCheckTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  // Consecutive stale-connection reconnects that produced no proof-of-life
+  // event (see shouldTriggerStaleWatchdogReconnect / staleWatchdogBackoffMultiplier
+  // in lib/viewer-connection.ts). Reset to 0 by any event that isn't just the
+  // server replaying a cached heartbeat on connect.
+  const consecutiveStaleReconnectsRef = React.useRef(0);
   // When we last asked the server to hydrate, or null once hydration settled.
   // A hydration request has no ack, so this is the only way to notice one that
   // was answered with nothing.
@@ -834,6 +839,11 @@ export function App() {
   // re-request a full snapshot every 8s against a session that cannot answer.
   const HYDRATION_MAX_RETRIES = 2;
   const HEARTBEAT_INTERVAL_MS = 10_000;
+  // Debounce window for native app-resume reconnect checks: Capacitor can
+  // fire several appStateChange(active) events in a quick burst (e.g. a
+  // permission dialog flashing in and out), and each one re-running the
+  // reconnect decision is pointless.
+  const APP_RESUME_DEBOUNCE_MS = 2_000;
   const [isPageHidden, setIsPageHidden] = React.useState(() => document.visibilityState === "hidden");
   const staleThresholdMs = (isPageHidden ? 18 : 3) * HEARTBEAT_INTERVAL_MS;
   const staleThresholdMsRef = React.useRef(staleThresholdMs);
@@ -868,9 +878,54 @@ export function App() {
     };
     window.addEventListener("online", kickSockets);
     document.addEventListener("visibilitychange", kickSockets);
+    // Capacitor backgrounds a WebView's whole JS runtime on some Android OEMs,
+    // where document.visibilitychange doesn't reliably fire on resume — the
+    // native App plugin's appStateChange is the one signal that's always
+    // delivered when the app comes back to the foreground. This must NOT
+    // reuse kickSockets: that gates on document.visibilityState (the exact
+    // signal we can't trust here).
+    //
+    // appStateChange also fires on harmless foreground blips that never left
+    // the socket stale — iOS Control Center, the notification shade, a
+    // permission dialog popping up and dismissing. Forcing a full
+    // disconnect()+connect() cycle on every one of those kills in-flight
+    // requests (emitInputWithAck callers see "Failed to send message") and
+    // forces a full re-hydration for nothing. Only force the teardown+
+    // reconnect cycle — the same recovery the stale-connection watchdog
+    // performs — once enough time has passed since the last viewer event
+    // that the connection could plausibly be stale; otherwise just nudge any
+    // socket that's already reporting disconnected, same as kickSockets.
+    // Debounced so a burst of appStateChange events only runs this once.
+    let lastAppResumeHandledAt = 0;
+    const handleAppResume = () => {
+      const now = Date.now();
+      if (now - lastAppResumeHandledAt < APP_RESUME_DEBOUNCE_MS) return;
+      lastAppResumeHandledAt = now;
+      const forceReconnect = shouldForceReconnectOnResume(lastViewerEventAtRef.current, now, HEARTBEAT_INTERVAL_MS);
+      const viewer = viewerWsRef.current;
+      if (viewer) {
+        if (forceReconnect) {
+          if (viewer.connected) viewer.disconnect();
+          viewer.connect();
+        } else if (!viewer.connected) {
+          viewer.connect();
+        }
+      }
+      const hub = hubSocketRef.current;
+      if (hub) {
+        if (forceReconnect) {
+          if (hub.connected) hub.disconnect();
+          hub.connect();
+        } else if (!hub.connected) {
+          hub.connect();
+        }
+      }
+    };
+    const removeAppResumeListener = registerAppResumeListener(handleAppResume);
     return () => {
       window.removeEventListener("online", kickSockets);
       document.removeEventListener("visibilitychange", kickSockets);
+      removeAppResumeListener();
     };
   }, []);
   // How long to ignore runner queue syncs after a local queue mutation.
@@ -3232,6 +3287,11 @@ export function App() {
     localStorage.setItem("pp.lastSessionId", relaySessionId);
     lastSeqRef.current = null;
     lastViewerEventAtRef.current = Date.now(); // treat open as an "event" so we don't fire immediately
+    // The stale-watchdog backoff counter is per-connection, not per-session —
+    // a newly opened session hasn't failed any reconnects yet, so starting it
+    // at a leftover 8x multiplier from the previous (dead-runner) session
+    // would make its watchdog wait up to 240s instead of the base 30s.
+    consecutiveStaleReconnectsRef.current = 0;
     renderedMcpReportTsRef.current = null;
     pendingMcpReportRef.current = null;
     injectedMessagesRef.current = [];
@@ -3349,16 +3409,27 @@ export function App() {
 
       // Stale-connection watchdog: if the socket thinks it's connected but
       // no event has arrived for the current visibility-aware threshold, reconnect.
-      // Armed while the agent is active (events are expected, so silence is
-      // suspicious) and also while hydrating (a dead transport is exactly why a
-      // transcript never arrives). Idle, hydrated sessions are legitimately silent.
+      // Armed whenever there's an active session, regardless of agent activity:
+      // heartbeats arrive on a fixed ~10s cadence even while idle (see
+      // remote-heartbeat.ts), so a healthy idle connection keeps refreshing the
+      // last-event timestamp on its own — only a genuinely dead socket trips this.
+      //
+      // A hung/offline runner still leaves the server willing to ack this
+      // viewer connection (isActive stays true until the runner liveness
+      // sweep catches up, which can take minutes) and replays a stale cached
+      // heartbeat on every reconnect, which otherwise looks exactly like a
+      // fresh event and resets the clock. Without backoff that reconnects
+      // forever on a fixed ~30-45s cadence for no benefit. Each reconnect
+      // that turns up no proof of life (see the event/exec_result handlers
+      // below) doubles the effective threshold, capped; any event that does
+      // prove liveness resets it back to normal immediately.
       staleCheckTimerRef.current = setInterval(() => {
-        if (!lifecycleRefs.activeSessionId.current) return;
-        if (!nextSocket.connected) return;
-        if (!agentActiveRef.current && !lifecycleRefs.awaitingSnapshot.current) return;
+        if (!shouldEvaluateStaleWatchdog(!!lifecycleRefs.activeSessionId.current, nextSocket.connected)) return;
         const elapsed = Date.now() - lastViewerEventAtRef.current;
-        if (elapsed > staleThresholdMsRef.current) {
-          log.warn(`Stale connection detected (${Math.round(elapsed / 1000)}s since last event). Reconnecting…`);
+        if (shouldTriggerStaleWatchdogReconnect(elapsed, staleThresholdMsRef.current, consecutiveStaleReconnectsRef.current)) {
+          const backoff = staleWatchdogBackoffMultiplier(consecutiveStaleReconnectsRef.current);
+          consecutiveStaleReconnectsRef.current += 1;
+          log.warn(`Stale connection detected (${Math.round(elapsed / 1000)}s since last event, backoff x${backoff}). Reconnecting…`);
           nextSocket.disconnect();
           nextSocket.connect();
         }
@@ -3436,7 +3507,7 @@ export function App() {
           logFrontendEvent("viewer", "warning", "Malformed viewer event envelope", envelope.error);
           return;
         }
-        const { event: rawEvent, seq: envelopeSeq, deltaReplay, generation, sessionId: envelopeSessionId } = envelope.value;
+        const { event: rawEvent, seq: envelopeSeq, replay: isReplaySnapshot, deltaReplay, generation, sessionId: envelopeSessionId } = envelope.value;
 
         // Session-stamped envelopes from another session are cross-session
         // bleed (in-flight old-room broadcasts during a tab switch) — drop
@@ -3465,6 +3536,17 @@ export function App() {
         }
         if (!lifecycleRefs.activeSessionId.current) return;
         lastViewerEventAtRef.current = Date.now();
+        // A liveness-only heartbeat is the server replaying its last cached
+        // heartbeat on (re)connect (withLivenessOnlyHint in viewer.ts) — it
+        // arrives even when the runner that produced it is dead, so it must
+        // not count as proof of life for the stale-watchdog backoff.
+        const isLivenessOnlyHeartbeat =
+          eventType === "heartbeat" &&
+          rawEvent !== null && typeof rawEvent === "object" &&
+          (rawEvent as Record<string, unknown>)._livenessOnly === true;
+        if (shouldResetStaleBackoffOnEvent(isLivenessOnlyHeartbeat, isReplaySnapshot === true, deltaReplay === true)) {
+          consecutiveStaleReconnectsRef.current = 0;
+        }
 
         const seq = envelopeSeq ?? null;
         if (seq !== null) {
@@ -3528,6 +3610,7 @@ export function App() {
         // Also reject during snapshot acquisition — viewer isn't yet in sync.
         if (lifecycleRefs.awaitingSnapshot.current) return;
         lastViewerEventAtRef.current = Date.now();
+        consecutiveStaleReconnectsRef.current = 0;
         handleRelayEvent({ type: "exec_result", ...data });
       });
 
