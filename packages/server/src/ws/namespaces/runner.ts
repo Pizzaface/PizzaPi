@@ -1107,10 +1107,10 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
                 resolveSpawnError(data.sessionId, data.message ?? "Runner spawn failed");
                 if (data.parentSessionId && data.failure) {
                     try {
-                        const [{ createEngineDeps }, { publishChildSpawnFailure, isAuthorizedChildSpawnFailure }, { getPendingChildSpawn }] = await Promise.all([
+                        const [{ createEngineDeps }, { publishChildSpawnFailure, isAuthorizedChildSpawnFailure }, { getChildSpawnBinding }] = await Promise.all([
                             import("../../events/transport.js"),
                             import("./runner-spawn-failure.js"),
-                            import("../runner-control.js"),
+                            import("../sio-state.js"),
                         ]);
                         const socketData = socket.data as { userId?: string };
                         const runnerId = socket.data.runnerId;
@@ -1122,13 +1122,21 @@ export function registerRunnerNamespace(io: SocketIOServer, context: AuthContext
                             getSharedSession(data.parentSessionId),
                             getSharedSession(data.sessionId),
                         ]);
+                        // childSession is only present while the child is still
+                        // registered with the relay — its hash is deleted on the
+                        // FIRST disconnect (even transient ones, e.g. a crash).
+                        // The durable spawn binding survives until the child's
+                        // CONFIRMED terminal end, so it is the authority for any
+                        // report arriving after that (a crash, however long after
+                        // the child registered, not just before it ever did).
+                        const pendingSpawn = childSession ? undefined : await getChildSpawnBinding(data.sessionId);
                         const authorized = !!runnerId && isAuthorizedChildSpawnFailure({
                             runnerId,
                             runnerUserId: socketData.userId,
                             parentSessionId: data.parentSessionId,
                             parentSession,
                             childSession,
-                            pendingSpawn: childSession ? undefined : getPendingChildSpawn(data.sessionId),
+                            pendingSpawn,
                         });
                         if (!authorized) {
                             log.warn(`session_error: dropping child spawn failure report for session ${data.sessionId} (parent ${data.parentSessionId}) — runner ${runnerId ?? "unknown"} is not authorized for this parent/child pair`);

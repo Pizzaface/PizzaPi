@@ -38,6 +38,7 @@ import {
     clearParentSessionId,
     removePendingParentDelinkChild,
     getRunner as getRunnerState,
+    deleteChildSpawnBinding,
 } from "../sio-state/index.js";
 import {
     getPersistedRelaySessionRunner,
@@ -1063,6 +1064,14 @@ async function endSharedSessionUnlocked(
                 log.warn(`endSharedSession: failed to remove child ${sessionId} from parent ${parentId}:`, err);
             });
         }
+        // The spawn-failure authorization binding (see sio-state.ts) is only
+        // needed while the child could still legitimately self-report a
+        // crash; once this end is confirmed terminal it can be retired so a
+        // forged/stale session_error for a reused sessionId can't piggyback
+        // on it.
+        await deleteChildSpawnBinding(sessionId).catch((err) => {
+            log.warn(`endSharedSession: failed to delete spawn binding for ${sessionId}:`, err);
+        });
     }
 
     // ── Explicit policy: terminal close of a PARENT does NOT touch ITS OWN

@@ -27,9 +27,17 @@ export interface SpawnFailureDetails {
     exitCode?: number | null;
 }
 
+// Word-boundary anchored: an unanchored /auth|401|403/ matched "author",
+// "OAuth" (the "auth" inside is not itself word-bounded, but "author"'s is,
+// and so is the standalone "auth" below), and PIDs/ports like "14013"
+// (contains "401" as a free substring). \b requires a non-word boundary on
+// each side, so it only fires on "401"/"403" as their own token and on
+// "auth" as its own word (not as a prefix/substring of a longer word).
+const AUTH_FAILURE_PATTERN = /\b40[13]\b|\bunauthori[sz]ed\b|\bapi[-\s]?key\b|\bauth\b/;
+
 export function classifySpawnFailure(detail: string, exitCode?: number | null): SpawnFailureDetails {
     const lower = detail.toLowerCase();
-    const kind: SpawnFailureKind = /unauthorized|401|403|api key|no api key|auth/.test(lower)
+    const kind: SpawnFailureKind = AUTH_FAILURE_PATTERN.test(lower)
         ? "auth"
         : /timeout|timed out/.test(lower)
             ? "timeout"

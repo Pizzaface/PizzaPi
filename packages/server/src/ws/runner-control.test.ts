@@ -38,31 +38,8 @@ describe("runner spawn ack coordination", () => {
     });
 });
 
-describe("pending child spawn binding (review R2 security fix)", () => {
-    test("records and retrieves the (runnerId, parentSessionId) binding for a spawn request", async () => {
-        const { recordPendingChildSpawn, getPendingChildSpawn } = await loadRunnerControl();
-        recordPendingChildSpawn("child-1", { runnerId: "runner-a", parentSessionId: "parent-1", userId: "user-a" });
-
-        expect(getPendingChildSpawn("child-1")).toEqual({ runnerId: "runner-a", parentSessionId: "parent-1", userId: "user-a" });
-    });
-
-    test("records a null parentSessionId when no parent was requested", async () => {
-        const { recordPendingChildSpawn, getPendingChildSpawn } = await loadRunnerControl();
-        recordPendingChildSpawn("child-2", { runnerId: "runner-a" });
-
-        expect(getPendingChildSpawn("child-2")).toEqual({ runnerId: "runner-a", parentSessionId: null, userId: undefined });
-    });
-
-    test("returns undefined for a sessionId with no recorded pending spawn", async () => {
-        const { getPendingChildSpawn } = await loadRunnerControl();
-        expect(getPendingChildSpawn("never-requested")).toBeUndefined();
-    });
-
-    test("a later record for the same sessionId replaces the earlier one", async () => {
-        const { recordPendingChildSpawn, getPendingChildSpawn } = await loadRunnerControl();
-        recordPendingChildSpawn("child-3", { runnerId: "runner-a", parentSessionId: "parent-1" });
-        recordPendingChildSpawn("child-3", { runnerId: "runner-b", parentSessionId: "parent-2" });
-
-        expect(getPendingChildSpawn("child-3")).toEqual({ runnerId: "runner-b", parentSessionId: "parent-2", userId: undefined });
-    });
-});
+// Note: the (runnerId, parentSessionId, userId) spawn binding used to
+// authorize session_error reports moved to a durable Redis record
+// (recordChildSpawnBinding/getChildSpawnBinding in sio-state.ts) so it
+// survives both the full child lifetime and multi-node relays — see
+// sio-state-children.test.ts.

@@ -66,6 +66,7 @@ mock.module("../../events/reconcile.js", () => ({
 const childrenKey = (p: string) => `pizzapi:sio:children:${p}`;
 const pendingDelinkKey = (p: string) => `pizzapi:sio:pending-delink-children:${p}`;
 const sessionHashKey = (s: string) => `__hash__:pizzapi:sio:session:${s}`;
+const spawnBindingKey = (s: string) => `pizzapi:sio:child-spawn-binding:${s}`;
 
 mock.module("./hub.js", () => ({
     broadcastToHub: async () => {},
@@ -271,6 +272,27 @@ describe("endSharedSession confirmedTerminal membership removal", () => {
         const childRaw = store.get(sessionHashKey("child-of-dying-parent"));
         expect(childRaw).toBeTruthy();
         expect(JSON.parse(childRaw!).parentSessionId).toBe("parent-dying");
+    });
+
+    it("deletes the spawn-failure authorization binding on confirmed terminal end", async () => {
+        await seedSession("child-w", { parentSessionId: "parent-1" });
+        store.set(spawnBindingKey("child-w"), JSON.stringify({ runnerId: "runner-a", parentSessionId: "parent-1" }));
+
+        await endSharedSession("child-w", "Session ended", { confirmedTerminal: true });
+
+        expect(store.has(spawnBindingKey("child-w"))).toBe(false);
+    });
+
+    it("preserves the spawn-failure authorization binding on a transient disconnect", async () => {
+        await seedSession("child-v", { parentSessionId: "parent-1" });
+        store.set(spawnBindingKey("child-v"), JSON.stringify({ runnerId: "runner-a", parentSessionId: "parent-1" }));
+
+        // A crash-after-registration still has to authorize its session_error
+        // report against this binding, so a plain (non-terminal) disconnect
+        // must not delete it.
+        await endSharedSession("child-v", "Session ended");
+
+        expect(store.has(spawnBindingKey("child-v"))).toBe(true);
     });
 });
 

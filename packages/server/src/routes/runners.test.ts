@@ -80,8 +80,8 @@ mock.module("../ws/namespaces/runner.js", () => ({
     sendRunnerServiceRequest: mockSendRunnerServiceRequest,
     emitTriggerSubscriptionDelta: mockEmitTriggerSubscriptionDelta,
 }));
-const mockRecordPendingChildSpawn = mock((_sessionId: string, _info: { runnerId: string; parentSessionId?: string; userId?: string }) => {});
-mock.module("../ws/runner-control.js", () => ({ waitForSpawnAck: mock(() => Promise.resolve({ ok: true })), recordPendingChildSpawn: mockRecordPendingChildSpawn }));
+mock.module("../ws/runner-control.js", () => ({ waitForSpawnAck: mock(() => Promise.resolve({ ok: true })) }));
+const mockRecordChildSpawnBinding = mock((_sessionId: string, _info: { runnerId: string; parentSessionId: string | null; userId?: string }) => Promise.resolve());
 mock.module("../events/transport.js", () => ({ createEngineDeps: mock(() => ({}) ) }));
 const mockPublishEvent = mock(() => Promise.resolve({ event: { eventId: "event-test" } }));
 mock.module("../events/engine.js", () => ({ publishEvent: mockPublishEvent }));
@@ -98,6 +98,7 @@ const mockGetRunnerOwner = mock((_runnerId: string) => Promise.resolve(null as s
 spyOn(_runnerOwnerModule, "getRunnerOwner").mockImplementation(mockGetRunnerOwner as any);
 spyOn(_runnerRegistryModule, "getRunnerServices").mockImplementation(mockGetRunnerServices as any);
 spyOn(_sioStateModule, "getSession").mockImplementation(mockGetSession as any);
+spyOn(_sioStateModule, "recordChildSpawnBinding").mockImplementation(mockRecordChildSpawnBinding as any);
 
 const { handleRunnersRoute } = await import("./runners.js");
 
@@ -1138,7 +1139,7 @@ describe("runner spawn parent binding (review R2 security fix)", () => {
         mockGetRunnerData.mockReturnValue(Promise.resolve({ userId: "user-1", runnerId: "runner-A" } as any));
         mockGetLocalRunnerSocket.mockReset();
         mockGetSession.mockReset();
-        mockRecordPendingChildSpawn.mockReset();
+        mockRecordChildSpawnBinding.mockReset();
     });
 
     test("records the validated parentSessionId server-side before dispatching the spawn", async () => {
@@ -1154,7 +1155,7 @@ describe("runner spawn parent binding (review R2 security fix)", () => {
 
         expect(res!.status).toBe(200);
         expect(emit).toHaveBeenCalledWith("new_session", expect.objectContaining({ parentSessionId: "parent-1" }));
-        expect(mockRecordPendingChildSpawn).toHaveBeenCalledWith(
+        expect(mockRecordChildSpawnBinding).toHaveBeenCalledWith(
             expect.any(String),
             expect.objectContaining({ runnerId: "runner-A", parentSessionId: "parent-1", userId: "user-1" }),
         );
@@ -1174,9 +1175,9 @@ describe("runner spawn parent binding (review R2 security fix)", () => {
 
         expect(res!.status).toBe(200);
         expect(emit).toHaveBeenCalledWith("new_session", expect.not.objectContaining({ parentSessionId: expect.anything() }));
-        expect(mockRecordPendingChildSpawn).toHaveBeenCalledWith(
+        expect(mockRecordChildSpawnBinding).toHaveBeenCalledWith(
             expect.any(String),
-            expect.objectContaining({ runnerId: "runner-A", parentSessionId: undefined, userId: "user-1" }),
+            expect.objectContaining({ runnerId: "runner-A", parentSessionId: null, userId: "user-1" }),
         );
     });
 });

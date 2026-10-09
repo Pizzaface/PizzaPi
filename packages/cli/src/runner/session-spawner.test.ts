@@ -1084,3 +1084,33 @@ describe("session-spawner child", () => {
         }
     });
 });
+
+describe("classifySpawnFailure", () => {
+    test("classifies real auth failures", async () => {
+        const { classifySpawnFailure } = await import("./session-spawner.js");
+        expect(classifySpawnFailure("No API key found for anthropic").kind).toBe("auth");
+        expect(classifySpawnFailure("Request failed with status code 401").kind).toBe("auth");
+        expect(classifySpawnFailure("403 Forbidden").kind).toBe("auth");
+        expect(classifySpawnFailure("Unauthorized").kind).toBe("auth");
+        expect(classifySpawnFailure("unauthorised request").kind).toBe("auth");
+        expect(classifySpawnFailure("invalid api-key supplied").kind).toBe("auth");
+        expect(classifySpawnFailure("auth failed").kind).toBe("auth");
+    });
+
+    test("does not misclassify 'author', 'OAuth', or exit-code/PID substrings as auth failures", async () => {
+        const { classifySpawnFailure } = await import("./session-spawner.js");
+        // Regression for the unanchored /auth|401|403/ regex, which matched
+        // these as free substrings instead of whole words.
+        expect(classifySpawnFailure("Error: unknown author field in commit").kind).not.toBe("auth");
+        expect(classifySpawnFailure("OAuth helper process crashed").kind).not.toBe("auth");
+        expect(classifySpawnFailure("Session worker exited (code=14013, signal=null)").kind).not.toBe("auth");
+        expect(classifySpawnFailure("listening on port 8403").kind).not.toBe("auth");
+    });
+
+    test("classifies timeouts and spawn errors unaffected by the auth-pattern fix", async () => {
+        const { classifySpawnFailure } = await import("./session-spawner.js");
+        expect(classifySpawnFailure("Worker startup timed out").kind).toBe("timeout");
+        expect(classifySpawnFailure("spawn ENOENT").kind).toBe("spawn_error");
+        expect(classifySpawnFailure("Session worker exited (code=1, signal=null)").kind).toBe("crash");
+    });
+});
