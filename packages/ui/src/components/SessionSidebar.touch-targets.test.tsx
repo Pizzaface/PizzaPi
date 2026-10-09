@@ -116,13 +116,19 @@ describe("SessionSidebar touch targets", () => {
         }
 
         const expandButton = screen.getByRole("button", { name: "Expand linked sessions" });
-        // Chevron stays a small hit target on fine pointers, grows on touch.
-        expect(expandButton.className).toContain("-m-1.5");
-        expect(expandButton.className).toContain("p-1.5");
+        // Narrow screens get a 44px hit target by default (even fine-pointer
+        // narrow viewports); md: shrinks to the small desktop chevron;
+        // pointer-coarse re-grows it on touch desktops.
+        expect(expandButton.className).toContain("-m-3");
+        expect(expandButton.className).toContain("h-11");
+        expect(expandButton.className).toContain("w-11");
+        expect(expandButton.className).toContain("md:-m-1.5");
+        expect(expandButton.className).toContain("md:h-auto");
+        expect(expandButton.className).toContain("md:w-auto");
+        expect(expandButton.className).toContain("md:p-1.5");
         expect(expandButton.className).toContain("pointer-coarse:-m-3");
         expect(expandButton.className).toContain("pointer-coarse:h-11");
         expect(expandButton.className).toContain("pointer-coarse:w-11");
-        expect(expandButton.className).not.toContain(" h-11");
 
         // Expand the linked-session group so the child becomes visible/selectable —
         // Select all only selects what's currently visible (#948), so a collapsed

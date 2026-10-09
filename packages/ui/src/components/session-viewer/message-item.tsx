@@ -297,7 +297,7 @@ export const SessionMessageItem = React.memo(
               )}
               <MessageCopyButton
                 text={linked.text}
-                className="ml-auto opacity-0 pointer-events-none group-hover/msg:opacity-100 group-hover/msg:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto transition-opacity"
+                className="ml-auto opacity-0 pointer-events-none group-hover/msg:opacity-100 group-hover/msg:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto [@media(hover:none)]:opacity-100 [@media(hover:none)]:pointer-events-auto transition-opacity"
               />
             </div>
             {structuredLinked
@@ -363,7 +363,7 @@ export const SessionMessageItem = React.memo(
               {message.isError && <span className="text-destructive">• Error</span>}
               <MessageCopyButton
                 text={exportToMarkdown([message])}
-                className="ml-auto opacity-0 pointer-events-none group-hover/msg:opacity-100 group-hover/msg:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto transition-opacity"
+                className="ml-auto opacity-0 pointer-events-none group-hover/msg:opacity-100 group-hover/msg:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto [@media(hover:none)]:opacity-100 [@media(hover:none)]:pointer-events-auto transition-opacity"
               />
             </div>
             {isCustomMessage && message.display !== true ? (

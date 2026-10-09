@@ -1732,7 +1732,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                   return next;
                                                                 });
                                                               }}
-                                                              className="flex-shrink-0 -m-1.5 p-1.5 rounded flex items-center justify-center text-sidebar-foreground/50 hover:text-sidebar-foreground/70 hover:bg-sidebar-accent/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:-m-3 pointer-coarse:h-11 pointer-coarse:w-11"
+                                                              className="flex-shrink-0 -m-3 h-11 w-11 md:-m-1.5 md:h-auto md:w-auto md:p-1.5 pointer-coarse:-m-3 pointer-coarse:h-11 pointer-coarse:w-11 rounded flex items-center justify-center text-sidebar-foreground/50 hover:text-sidebar-foreground/70 hover:bg-sidebar-accent/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                                               aria-label={isExpanded ? "Collapse linked sessions" : "Expand linked sessions"}
                                                             >
                                                               {isExpanded ? (

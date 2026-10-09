@@ -279,7 +279,8 @@ export const ConversationExport = ({
       <DropdownMenuTrigger asChild>
         <Button
           className={cn(
-            "absolute top-4 right-4 rounded-full pointer-coarse:min-h-11 pointer-coarse:min-w-11 dark:bg-background dark:hover:bg-muted",
+            "absolute top-4 right-4 rounded-full size-11 md:size-9 pointer-coarse:min-h-11 pointer-coarse:min-w-11",
+            "dark:bg-background dark:hover:bg-muted",
             className,
           )}
           size="icon"

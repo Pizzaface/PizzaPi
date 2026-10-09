@@ -422,6 +422,12 @@ describe("SessionMessageItem structured inter-session messages", () => {
     expect(copyButton.className).toContain("pointer-events-none");
     expect(copyButton.className).toContain("group-hover/msg:pointer-events-auto");
     expect(copyButton.className).toContain("focus-visible:pointer-events-auto");
+    // Tailwind v4 scopes hover/group-hover variants to @media(hover:hover),
+    // so touch devices (no hover, no focus-visible on tap) would otherwise
+    // keep this at pointer-events-none forever — always-visible+tappable on
+    // touch via the @media(hover:none) escape hatch (#995-r3 finding 1).
+    expect(copyButton.className).toContain("[@media(hover:none)]:opacity-100");
+    expect(copyButton.className).toContain("[@media(hover:none)]:pointer-events-auto");
     expect(view.getByText(`• ${new Date(1_700_000_000_000).toLocaleTimeString()}`)).toBeTruthy();
     const sender = view.getByRole("button", { name: "Open session abc" });
     expect(sender.textContent).toBe("Sender");

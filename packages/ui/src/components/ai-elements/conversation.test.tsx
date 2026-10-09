@@ -17,9 +17,10 @@ const { SigilProvider } = await import("@/components/sigils/SigilContext");
 // reports `!isAtBottom` — happy-dom never measures a real scroll gap, so
 // stub the hook to exercise the "not at bottom" / visible-FAB branch.
 const scrollToBottomMock = mock(() => {});
-const StubStickToBottom = Object.assign((props: any) => props.children, {
-  Content: (props: any) => props.children,
-});
+const StubStickToBottom = Object.assign(
+  ({ children, ...rest }: any) => <div {...rest}>{children}</div>,
+  { Content: (props: any) => props.children },
+);
 mock.module("use-stick-to-bottom", () => ({
   StickToBottom: StubStickToBottom,
   useStickToBottomContext: () => ({ isAtBottom: false, scrollToBottom: scrollToBottomMock }),
@@ -79,7 +80,7 @@ test("message copy button keeps its 44px touch target (tracked separately in GM 
   expect(copy.className).toContain("-m-2.5");
 });
 
-test("export button keeps desktop density, growing to 44px only on touch", () => {
+test("export button never drops below 44px on narrow screens, shrinks to 36px from md up", () => {
   const view = render(
     <SigilProvider sigilDefs={sigilDefs} panels={[]} runnerId="runner-1">
       <ConversationExport messages={[]} />
@@ -87,9 +88,10 @@ test("export button keeps desktop density, growing to 44px only on touch", () =>
   );
 
   const exportButton = view.getByRole("button", { name: "Export conversation" });
-  // Desktop density preserved (size-9, the Button "icon" default) — only
-  // coarse pointers grow to 44px.
-  expect(exportButton.className).not.toContain("size-11");
+  // Narrow screens (including fine-pointer narrow viewports) keep the 44px
+  // floor; only md+ shrinks to size-9, and pointer-coarse re-grows it.
+  expect(exportButton.className).toContain("size-11");
+  expect(exportButton.className).toContain("md:size-9");
   expect(exportButton.className).toContain("pointer-coarse:min-h-11");
   expect(exportButton.className).toContain("pointer-coarse:min-w-11");
 });
