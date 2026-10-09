@@ -45,7 +45,9 @@ export function isReadOnlyRoute(route: Route): boolean {
 
 /** Short "who fired this" label for the feed. */
 export function eventSourceLabel(source: SourceIdentity): string {
-  if (source.kind === "session") return `session:${(source.id ?? "").slice(0, 8)}`;
+  if (source.name?.trim()) return source.name.trim();
+  if (source.kind === "session") return `session:${source.id.slice(0, 8)}`;
+  if (!source.id || source.id === source.kind) return source.kind.toUpperCase();
   return `${source.kind}:${source.id}`;
 }
 

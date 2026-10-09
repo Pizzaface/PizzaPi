@@ -371,6 +371,9 @@ function ManagedRouteRow({ route, schema, sessions, runners, onDeleted, onChange
   }, [route.history]);
   const [historyLoading, setHistoryLoading] = React.useState(false);
   const [historyUnavailable, setHistoryUnavailable] = React.useState(false);
+  const [testOpen, setTestOpen] = React.useState(false);
+  const [testExpectsResponse, setTestExpectsResponse] = React.useState(false);
+  const [testSuccess, setTestSuccess] = React.useState<string | null>(null);
   const readOnly = isReadOnlyRoute(route);
   const sessionLabel = (sessionId: string) => sessions.find((session) => session.sessionId === sessionId)?.sessionName?.trim() || `Session ${sessionId.slice(0, 8)}`;
   const schedule = /(^|:)schedule|time:/i.test(route.eventType) || Boolean(route.runtime?.nextFireAt);
@@ -401,15 +404,25 @@ function ManagedRouteRow({ route, schema, sessions, runners, onDeleted, onChange
   const test = async () => {
     const result = payloadForRouteFilters(route.filters, route.filterMode, schema);
     if (!result.ok) { setError(result.error); return; }
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setTestSuccess(null);
     try {
       const response = await api<{ deliveries?: Array<{ status?: string }> }>("/api/events", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: route.eventType, routeIds: [route.routeId], payload: result.payload, summary: "Test trigger" }),
+        body: JSON.stringify({
+          type: route.eventType,
+          routeIds: [route.routeId],
+          payload: result.payload,
+          summary: "Test trigger",
+          ...(testExpectsResponse ? { responseContract: { actions: ["ack"], escalate: true } } : {}),
+        }),
       });
       if (!response.deliveries?.length) setError("Test published, but no delivery matched this trigger.");
       else if (response.deliveries.every((delivery) => delivery.status === "failed")) setError("Test matched this trigger, but delivery failed.");
-      else onChanged();
+      else {
+        setTestSuccess(`Test trigger sent to ${response.deliveries.length} delivery${response.deliveries.length === 1 ? "" : "ies"}.`);
+        setTestOpen(false);
+        onChanged();
+      }
     } catch (err) { setError(err instanceof Error ? err.message : "Test failed"); }
     finally { setBusy(false); }
   };
@@ -425,12 +438,25 @@ function ManagedRouteRow({ route, schema, sessions, runners, onDeleted, onChange
       {routeTargetSessionId && onOpenSession ? <button type="button" className="text-[11px] text-muted-foreground hover:underline" onClick={() => onOpenSession(routeTargetSessionId)}>{sessionLabel(routeTargetSessionId)}</button> : <span className="text-[11px] text-muted-foreground">{routeTargetLabel(route.target, sessions, runners)}</span>}
       <Badge variant="outline" className="text-[10px]">{route.deliverAs}</Badge><OriginBadge origin={route.origin} />
       <div className="flex items-center gap-1">
-        <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={readOnly || route.disabled || busy} onClick={() => void test()} title="Publish a matching test event to this trigger only">Test</Button>
+        <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={readOnly || route.disabled || busy} onClick={() => { setTestSuccess(null); setTestOpen(true); }} title="Review and publish a matching test event to this trigger only">Test</Button>
         <Button size="icon" variant="ghost" className="size-7" disabled={readOnly || busy} onClick={() => void update({ disabled: !route.disabled })} aria-label={route.disabled ? "Resume route" : "Pause route"} title={route.disabled ? "Resume route" : "Pause route"}>{route.disabled ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}</Button>
         <Button size="icon" variant="ghost" className="size-7" disabled={readOnly || busy} onClick={() => onEdit(route)} aria-label="Edit route" title="Edit route"><Pencil className="size-3.5" /></Button>
         {confirming ? <Button size="sm" variant="destructive" className="h-7 px-2 text-xs" disabled={busy} onClick={() => void remove()}>Delete?</Button> : <Button size="icon" variant="ghost" className="size-7 text-muted-foreground hover:text-destructive" disabled={readOnly || busy} onClick={() => setConfirming(true)} aria-label="Delete route" title="Delete route"><Trash2 className="size-3.5" /></Button>}
       </div>
     </div>
+    {testOpen && <div role="dialog" aria-label="Send test trigger" className="mx-3 mb-2 space-y-2 rounded-md border border-border/60 bg-muted/20 p-3 text-xs">
+      <div className="grid gap-x-4 gap-y-1 sm:grid-cols-2">
+        <p><span className="text-muted-foreground">Source session: </span>None — sent by the web UI/API</p>
+        <p><span className="text-muted-foreground">Target session: </span>{routeTargetLabel(route.target, sessions, runners)}</p>
+        <p><span className="text-muted-foreground">Delivery mode: </span>{route.deliverAs === "steer" ? "steer interrupts the current turn" : "follow-up queues after the current turn"}</p>
+        <label className="flex items-center gap-2"><input type="checkbox" checked={testExpectsResponse} onChange={(e) => setTestExpectsResponse(e.target.checked)} /> Expects response</label>
+      </div>
+      <div className="flex gap-2">
+        <Button size="sm" className="h-7 px-2 text-xs" disabled={busy} onClick={() => void test()}>{busy ? <Spinner className="size-3" /> : "Send test trigger"}</Button>
+        <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" disabled={busy} onClick={() => setTestOpen(false)}>Cancel</Button>
+      </div>
+    </div>}
+    {testSuccess && <p className="px-3 pb-2 text-xs text-emerald-600" role="status">{testSuccess}</p>}
     {open && <div className="space-y-2 border-t border-border/60 px-3 py-2 text-xs">
       <div className="grid gap-x-4 gap-y-1 sm:grid-cols-2">
         <p><span className="text-muted-foreground">Destination: </span>{routeTargetLabel(route.target, sessions, runners)}</p>
