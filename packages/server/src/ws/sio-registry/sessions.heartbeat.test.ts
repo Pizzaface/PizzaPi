@@ -1,47 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
+import { createSioStateRedisFixture } from "../../tests/fixtures/sio-state-redis.js";
 
-const sessions = new Map<string, Record<string, unknown>>();
-
-const mockGetSession = mock(async (sessionId: string) => sessions.get(sessionId) ?? null);
-const mockUpdateSessionFields = mock(async (sessionId: string, fields: Record<string, unknown>) => {
-    const existing = sessions.get(sessionId);
-    if (!existing) return;
-    sessions.set(sessionId, { ...existing, ...fields });
-});
-const mockRefreshRunnerAssociationTTL = mock(async () => {});
-
+const stateRedis = createSioStateRedisFixture();
 const noopAsync = async () => {};
-
-mock.module("../sio-state/index.js", () => ({
-    acquireSessionOwnershipLock: noopAsync,
-    releaseSessionOwnershipLock: noopAsync,
-    deleteSessionIfOwner: async () => true,
-    setSession: noopAsync,
-    getSession: mockGetSession,
-    getSessionSummary: mockGetSession,
-    getSessionField: async () => null,
-    updateSessionFields: mockUpdateSessionFields,
-    deleteSession: noopAsync,
-    getAllSessionSummaries: noopAsync,
-    refreshSessionTTL: noopAsync,
-    incrementSeq: async () => 0,
-    getSeq: async () => 0,
-    setPendingRunnerLink: noopAsync,
-    getPendingRunnerLink: async () => null,
-    deletePendingRunnerLink: noopAsync,
-    getRunnerAssociation: async () => null,
-    setRunnerAssociation: noopAsync,
-    refreshRunnerAssociationTTL: mockRefreshRunnerAssociationTTL,
-    scanExpiredSessions: async () => [],
-    addChildSession: noopAsync,
-    addChildSessionMembership: noopAsync,
-    removeChildSession: noopAsync,
-    isChildDelinked: async () => false,
-    clearParentSessionId: noopAsync,
-    refreshChildSessionsTTL: noopAsync,
-    removePendingParentDelinkChild: noopAsync,
-    getRunner: async () => null,
-}));
 
 const mockExtractMetaFromHeartbeat = mock(async () => {});
 mock.module("./meta.js", () => ({
@@ -63,6 +24,8 @@ mock.module("../../sessions/store.js", () => ({
     recordRelaySessionState: noopAsync,
     recordRelaySessionStateSerialized: noopAsync,
     recordRelaySessionOverlay: noopAsync,
+    updateRelaySessionRunner: noopAsync,
+    updateRelaySessionName: noopAsync,
     touchRelaySession: noopAsync,
 }));
 
@@ -77,10 +40,11 @@ mock.module("../stale-parent-link.js", () => ({
 
 afterAll(() => mock.restore());
 
+const { initStateRedis, setSession, getSessionSummary } = await import("../sio-state.js");
 const { updateSessionHeartbeat } = await import("./sessions.js");
 
-function seedSession(sessionId: string, overrides: Record<string, unknown> = {}): void {
-    sessions.set(sessionId, {
+async function seedSession(sessionId: string, overrides: Record<string, unknown> = {}): Promise<void> {
+    await setSession(sessionId, {
         sessionId,
         isActive: false,
         lastHeartbeatAt: null,
@@ -90,27 +54,19 @@ function seedSession(sessionId: string, overrides: Record<string, unknown> = {})
         runnerId: null,
         userId: null,
         ...overrides,
-    });
+    } as never);
 }
 
 describe("updateSessionHeartbeat", () => {
-    beforeEach(() => {
-        sessions.clear();
-        mockGetSession.mockReset();
-        mockGetSession.mockImplementation(async (sessionId: string) => sessions.get(sessionId) ?? null);
-        mockUpdateSessionFields.mockReset();
-        mockUpdateSessionFields.mockImplementation(async (sessionId: string, fields: Record<string, unknown>) => {
-            const existing = sessions.get(sessionId);
-            if (!existing) return;
-            sessions.set(sessionId, { ...existing, ...fields });
-        });
-        mockRefreshRunnerAssociationTTL.mockReset();
+    beforeEach(async () => {
+        stateRedis.reset();
+        await initStateRedis(stateRedis.client as never);
         mockExtractMetaFromHeartbeat.mockReset();
         mockBroadcastToHub.mockReset();
     });
 
     it("skips meta extraction for slim heartbeats and only broadcasts on active transitions", async () => {
-        seedSession("s1", { sessionName: "persisted-name" });
+        await seedSession("s1", { sessionName: "persisted-name" });
 
         await updateSessionHeartbeat("s1", {
             _slim: true,
@@ -122,8 +78,8 @@ describe("updateSessionHeartbeat", () => {
 
         expect(mockExtractMetaFromHeartbeat).not.toHaveBeenCalled();
         expect(mockBroadcastToHub).not.toHaveBeenCalled();
-        expect(sessions.get("s1")?.sessionName).toBe("persisted-name");
-        expect(sessions.get("s1")?.lastHeartbeat).toBe(
+        expect((await getSessionSummary("s1"))?.sessionName).toBe("persisted-name");
+        expect((await getSessionSummary("s1"))?.lastHeartbeat).toBe(
             JSON.stringify({
                 _slim: true,
                 active: false,
@@ -164,7 +120,7 @@ describe("updateSessionHeartbeat", () => {
     });
 
     it("extracts meta from fat heartbeats and keeps broadcasting structured changes", async () => {
-        seedSession("s2", { sessionName: "old-name" });
+        await seedSession("s2", { sessionName: "old-name" });
 
         await updateSessionHeartbeat("s2", {
             active: false,

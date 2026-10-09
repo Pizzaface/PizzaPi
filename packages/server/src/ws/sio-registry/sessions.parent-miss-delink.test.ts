@@ -7,18 +7,23 @@ const setStore = new Map<string, Set<string>>();
 const ttlStore = new Map<string, number>();
 
 const mockMulti = () => {
-    const ops: Array<() => void> = [];
-    return {
-        hSet: mock((key: string, fields: Record<string, string>) => {
+    const ops: Array<() => unknown> = [];
+    const multi = {
+        hSet: mock((key: string, fieldsOrField: Record<string, string> | string, value?: string) => {
             ops.push(() => {
-                for (const [k, v] of Object.entries(fields)) {
-                    store.set(`${key}:${k}`, v);
-                }
+                const fields = typeof fieldsOrField === "string" ? { [fieldsOrField]: value ?? "" } : fieldsOrField;
                 const existing = JSON.parse(store.get(`__hash__:${key}`) ?? "{}");
                 Object.assign(existing, fields);
                 store.set(`__hash__:${key}`, JSON.stringify(existing));
             });
-            return mockMulti();
+            return multi;
+        }),
+        hGetAll: mock((key: string) => {
+            ops.push(() => {
+                const raw = store.get(`__hash__:${key}`);
+                return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+            });
+            return multi;
         }),
         sAdd: mock((key: string, ...members: string[]) => {
             ops.push(() => {
@@ -26,28 +31,32 @@ const mockMulti = () => {
                 for (const m of members.flat()) s.add(m);
                 setStore.set(key, s);
             });
-            return mockMulti();
+            return multi;
         }),
         sRem: mock((key: string, ...members: string[]) => {
             ops.push(() => {
                 const s = setStore.get(key);
                 if (s) for (const m of members.flat()) s.delete(m);
             });
-            return mockMulti();
+            return multi;
         }),
         expire: mock((key: string, ttl: number) => {
             ops.push(() => ttlStore.set(key, ttl));
-            return mockMulti();
+            return multi;
         }),
-        del: mock((key: string) => {
-            ops.push(() => store.delete(key));
-            return mockMulti();
+        del: mock((...keys: string[]) => {
+            ops.push(() => {
+                for (const key of keys) {
+                    store.delete(key);
+                    store.delete(`__hash__:${key}`);
+                    setStore.delete(key);
+                }
+            });
+            return multi;
         }),
-        exec: mock(async () => {
-            for (const op of ops) op();
-            return ops.map(() => "OK");
-        }),
+        exec: mock(async () => ops.map((op) => op())),
     };
+    return multi;
 };
 
 const listStore = new Map<string, string[]>();
@@ -91,8 +100,10 @@ const mockRedis = {
     on: mock(() => mockRedis),
     connect: mock(async () => {}),
     // String key store
-    set: mock(async (key: string, value: string, _opts?: unknown) => {
+    set: mock(async (key: string, value: string, opts?: { NX?: boolean }) => {
+        if (opts?.NX && store.has(key)) return null;
         store.set(key, value);
+        return "OK";
     }),
     get: mock(async (key: string) => store.get(key) ?? null),
     del: mock(async (key: string) => {
@@ -100,12 +111,15 @@ const mockRedis = {
         setStore.delete(key);
         ttlStore.delete(key);
     }),
-    exists: mock(async (key: string) => (store.has(key) ? 1 : 0)),
+    exists: mock(async (key: string) => (store.has(key) || store.has(`__hash__:${key}`) ? 1 : 0)),
     hGetAll: mock(async (key: string) => {
         const raw = store.get(`__hash__:${key}`);
         return raw ? (JSON.parse(raw) as Record<string, string>) : {};
     }),
-    hGet: mock(async () => null),
+    hGet: mock(async (key: string, field: string) => {
+        const raw = store.get(`__hash__:${key}`);
+        return raw ? (JSON.parse(raw) as Record<string, string>)[field] ?? null : null;
+    }),
     hSet: mock(async (key: string, field: string, value: string) => {
         const existing = JSON.parse(store.get(`__hash__:${key}`) ?? "{}");
         existing[field] = value;
@@ -113,7 +127,25 @@ const mockRedis = {
         store.set(`${key}:${field}`, value);
     }),
     incr: mock(async () => 1),
-    eval: mock(async () => 0),
+    eval: mock(async (_script: string, opts: { keys: string[]; arguments: string[] }) => {
+        if (opts.keys.length === 1) {
+            const [key] = opts.keys;
+            const [owner] = opts.arguments;
+            if (store.get(key) !== owner) return 0;
+            store.delete(key);
+            return 1;
+        }
+        const [sessionKey, seqKey, allSessionsKey] = opts.keys;
+        const [expectedToken, sessionId, userSessionsPrefix] = opts.arguments;
+        const raw = store.get(`__hash__:${sessionKey}`);
+        const hash = raw ? (JSON.parse(raw) as Record<string, string>) : {};
+        if (hash.token !== expectedToken) return 0;
+        store.delete(`__hash__:${sessionKey}`);
+        store.delete(seqKey);
+        setStore.get(allSessionsKey)?.delete(sessionId);
+        if (hash.userId) setStore.get(`${userSessionsPrefix}${hash.userId}`)?.delete(sessionId);
+        return 1;
+    }),
 };
 
 // No mock.module for redis — mock client is injected directly via initStateRedis().
@@ -136,6 +168,8 @@ mock.module("../../sessions/store.js", () => ({
     recordRelaySessionState: async () => {},
     recordRelaySessionStateSerialized: async () => {},
     recordRelaySessionOverlay: async () => {},
+    updateRelaySessionRunner: async () => {},
+    updateRelaySessionName: async () => {},
     touchRelaySession: async () => {},
 }));
 
@@ -146,77 +180,6 @@ mock.module("../../events/store.js", () => ({
     deleteSessionRoutes: async () => [],
     listRoutes: async () => [],
     sessionReferencedByOtherTenant: async () => false,
-}));
-
-mock.module("../sio-state/index.js", () => ({
-    acquireSessionOwnershipLock: async () => {},
-    releaseSessionOwnershipLock: async () => {},
-    deleteSessionIfOwner: async () => true,
-    initStateRedis: async () => {},
-    setSession: async (sessionId: string, data: Record<string, unknown>) => {
-        store.set(`__hash__:pizzapi:sio:session:${sessionId}`, JSON.stringify(data));
-    },
-    getSession: async (sessionId: string) => {
-        const raw = store.get(`__hash__:pizzapi:sio:session:${sessionId}`);
-        return raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
-    },
-    getSessionSummary: async (sessionId: string) => {
-        const raw = store.get(`__hash__:pizzapi:sio:session:${sessionId}`);
-        return raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
-    },
-    getSessionField: async () => null,
-    updateSessionFields: async (sessionId: string, fields: Record<string, unknown>) => {
-        const raw = store.get(`__hash__:pizzapi:sio:session:${sessionId}`);
-        if (!raw) return;
-        store.set(`__hash__:pizzapi:sio:session:${sessionId}`, JSON.stringify({ ...JSON.parse(raw), ...fields }));
-    },
-    deleteSession: async (sessionId: string) => {
-        store.delete(`__hash__:pizzapi:sio:session:${sessionId}`);
-    },
-    getAllSessionSummaries: async () => [],
-    refreshSessionTTL: async () => {},
-    incrementSeq: async () => 1,
-    getSeq: async () => 0,
-    setPendingRunnerLink: async () => {},
-    getPendingRunnerLink: async () => null,
-    deletePendingRunnerLink: async () => {},
-    getRunnerAssociation: async () => null,
-    setRunnerAssociation: async (sessionId: string, runnerId: string, runnerName: string | null) => {
-        store.set(
-            `pizzapi:sio:runner-assoc:${sessionId}`,
-            JSON.stringify({ runnerId, runnerName }),
-        );
-    },
-    refreshRunnerAssociationTTL: async () => {},
-    scanExpiredSessions: async () => [],
-    addChildSession: async (parentSessionId: string, childSessionId: string) => {
-        const s = setStore.get(`pizzapi:sio:children:${parentSessionId}`) ?? new Set();
-        s.add(childSessionId);
-        setStore.set(`pizzapi:sio:children:${parentSessionId}`, s);
-    },
-    addChildSessionMembership: async (parentSessionId: string, childSessionId: string) => {
-        const s = setStore.get(`pizzapi:sio:children:${parentSessionId}`) ?? new Set();
-        s.add(childSessionId);
-        setStore.set(`pizzapi:sio:children:${parentSessionId}`, s);
-    },
-    removeChildSession: async (parentSessionId: string, childSessionId: string) => {
-        setStore.get(`pizzapi:sio:children:${parentSessionId}`)?.delete(childSessionId);
-    },
-    isChildDelinked: async (childSessionId: string) => store.has(`pizzapi:sio:delinked:${childSessionId}`),
-    clearParentSessionId: async (childSessionId: string) => {
-        const raw = store.get(`__hash__:pizzapi:sio:session:${childSessionId}`);
-        if (!raw) return;
-        store.set(
-            `__hash__:pizzapi:sio:session:${childSessionId}`,
-            JSON.stringify({ ...JSON.parse(raw), parentSessionId: "", linkedParentId: "" }),
-        );
-    },
-    refreshChildSessionsTTL: async () => {},
-    removePendingParentDelinkChild: async () => {},
-    markChildAsDelinked: async (childSessionId: string) => {
-        store.set(`pizzapi:sio:delinked:${childSessionId}`, "1");
-    },
-    getRunner: async () => null,
 }));
 
 mock.module("./hub.js", () => ({
@@ -234,7 +197,7 @@ afterAll(() => {
 // Dynamic imports so that mock.module("../../sessions/store.js", …) is in place
 // before sessions.js (and its transitive store.js dependency) is resolved.
 // The redis mock has been removed — mockRedis is injected via initStateRedis() instead.
-const { initStateRedis, markChildAsDelinked } = await import("../sio-state/index.js");
+const { initStateRedis, markChildAsDelinked } = await import("../sio-state.js");
 const { registerTuiSession } = await import("./sessions.js");
 // registerTuiSession fire-and-forgets a `pushTriggerHistory()` call
 // (sessions.ts) whenever a child links to a parent. That goes through
