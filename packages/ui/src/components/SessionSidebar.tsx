@@ -1514,12 +1514,18 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         </button>
                                                     </div>}
 
-                                                    {/* Discoverable per-row actions — visible on hover/focus on desktop (md+); mobile keeps the swipe-reveal panel above */}
+                                                    {/* Discoverable per-row actions — visible on hover/focus on desktop (md+); mobile keeps the swipe-reveal panel above.
+                                                        tabIndex={-1} + pointer-events-none/auto: these buttons sit outside the
+                                                        treeitem's single Tab stop (keyboard access is the context menu or the
+                                                        "p" shortcut) and must be truly non-interactive while invisible — opacity
+                                                        alone still lets a tap land on a hidden destructive "End" button on
+                                                        touch devices with no hover. */}
                                                     {!selectMode && (
-                                                        <div className="hidden md:flex absolute right-1.5 top-1/2 -translate-y-1/2 z-10 items-center gap-0.5 rounded-md bg-sidebar-accent/95 p-0.5 shadow-sm opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                                                        <div className="hidden md:flex absolute right-1.5 top-1/2 -translate-y-1/2 z-10 items-center gap-0.5 rounded-md bg-sidebar-accent/95 p-0.5 shadow-sm opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto">
                                                             {s.runnerId && onDuplicateSession && (
                                                                 <button
                                                                     type="button"
+                                                                    tabIndex={-1}
                                                                     onClick={(e) => {
                                                                         e.stopPropagation();
                                                                         onDuplicateSession(s.runnerId!, s.cwd || "");
@@ -1533,6 +1539,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             )}
                                                             <button
                                                                 type="button"
+                                                                tabIndex={-1}
                                                                 disabled={isPinPending}
                                                                 onClick={(e) => {
                                                                     e.stopPropagation();
@@ -1548,6 +1555,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             {onEndSession && (
                                                                 <button
                                                                     type="button"
+                                                                    tabIndex={-1}
                                                                     onClick={(e) => {
                                                                         e.stopPropagation();
                                                                         setConfirmEndSessionId(s.sessionId);
@@ -1570,6 +1578,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         tabIndex={rovingSessionId === s.sessionId ? 0 : -1}
                                                         aria-level={depth + 1}
                                                         aria-expanded={childCount > 0 ? isExpanded : undefined}
+                                                        aria-selected={s.sessionId === activeSessionId}
                                                         onFocus={() => setRovingSessionId(s.sessionId)}
                                                         onClick={(_e) => {
                                                             if (selectMode) {
@@ -1599,6 +1608,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             return `${nm}, ${st}${isPinned ? ", pinned" : ""}`;
                                                         })()}
                                                         data-session-row=""
+                                                        data-session-depth={depth}
                                                         onKeyDown={(e) => {
                                                             // Child action buttons own their activation keys.
                                                             if (e.target !== e.currentTarget) return;
@@ -1621,6 +1631,50 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                 if (idx === -1) return;
                                                                 const next = e.key === "ArrowDown" ? idx + 1 : idx - 1;
                                                                 rows[Math.max(0, Math.min(rows.length - 1, next))]?.focus();
+                                                                return;
+                                                            }
+                                                            // ArrowRight/ArrowLeft expand/collapse linked-session groups and
+                                                            // move focus into/out of them, mirroring the standard tree
+                                                            // keyboard pattern (the chevron <button> itself is tabIndex={-1}
+                                                            // and purely a mouse target now).
+                                                            if (e.key === "ArrowRight") {
+                                                                e.preventDefault();
+                                                                if (childCount > 0 && !isExpanded) {
+                                                                    setExpandedNodeIds((prev) => new Set(prev).add(s.sessionId));
+                                                                    return;
+                                                                }
+                                                                if (childCount > 0 && isExpanded) {
+                                                                    const rows = Array.from(
+                                                                        document.querySelectorAll<HTMLElement>("[data-session-row]"),
+                                                                    );
+                                                                    const idx = rows.indexOf(e.currentTarget as HTMLElement);
+                                                                    if (idx !== -1) rows[idx + 1]?.focus();
+                                                                }
+                                                                return;
+                                                            }
+                                                            if (e.key === "ArrowLeft") {
+                                                                e.preventDefault();
+                                                                if (childCount > 0 && isExpanded) {
+                                                                    setExpandedNodeIds((prev) => {
+                                                                        const next = new Set(prev);
+                                                                        next.delete(s.sessionId);
+                                                                        return next;
+                                                                    });
+                                                                    return;
+                                                                }
+                                                                if (depth === 0) return;
+                                                                const rows = Array.from(
+                                                                    document.querySelectorAll<HTMLElement>("[data-session-row]"),
+                                                                );
+                                                                const idx = rows.indexOf(e.currentTarget as HTMLElement);
+                                                                if (idx === -1) return;
+                                                                for (let i = idx - 1; i >= 0; i--) {
+                                                                    const rowDepth = Number(rows[i]?.dataset.sessionDepth ?? "0");
+                                                                    if (rowDepth < depth) {
+                                                                        rows[i]?.focus();
+                                                                        break;
+                                                                    }
+                                                                }
                                                                 return;
                                                             }
                                                             if (selectMode) return;
@@ -1656,6 +1710,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         {childCount > 0 && (
                                                             <button
                                                               type="button"
+                                                              tabIndex={-1}
                                                               onPointerDown={(e) => {
                                                                 // Stop the parent row from capturing the pointer —
                                                                 // without this, setPointerCapture steals subsequent
@@ -1675,7 +1730,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                 });
                                                               }}
                                                               className="flex-shrink-0 -m-3 h-11 w-11 rounded flex items-center justify-center text-sidebar-foreground/50 hover:text-sidebar-foreground/70 hover:bg-sidebar-accent/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:-m-1.5 md:h-7 md:w-7"
-                                                              aria-expanded={isExpanded}
                                                               aria-label={isExpanded ? "Collapse linked sessions" : "Expand linked sessions"}
                                                             >
                                                               {isExpanded ? (
