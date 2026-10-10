@@ -343,7 +343,7 @@ describe("trigger transport delivery receipt", () => {
       expect(delivery?.status).toBe("pending");
       expect(delivery?.wakeRequested).toBe(true);
       expect(runnerEmits).toEqual([{
-        runnerId: "runner-1", event: "new_session", data: { sessionId, resumeId: sessionId },
+        runnerId: "runner-1", event: "new_session", data: { sessionId, resumeId: sessionId, wake: true },
       }]);
     });
   }
@@ -573,7 +573,10 @@ describe("distributed wake lock (multi-node)", () => {
     expect(runnerEmits).toEqual([{
       runnerId: "runner-1",
       event: "new_session",
-      data: expect.objectContaining({ sessionId: "s-wake", resumeId: "s-wake", cwd: "/work" }),
+      // `wake: true` (PR #994 P1 fix) lets the runner tell the worker this is
+      // the SAME conversation resuming, not a new generation — the worker
+      // uses it to skip delink_own_parent/delink_children on boot.
+      data: expect.objectContaining({ sessionId: "s-wake", resumeId: "s-wake", cwd: "/work", wake: true }),
     }]);
     // Compare-and-delete releases exactly the token this holder acquired.
     expect(evals).toHaveLength(1);

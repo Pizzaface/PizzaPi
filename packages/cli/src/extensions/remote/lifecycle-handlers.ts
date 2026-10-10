@@ -397,12 +397,24 @@ export function registerLifecycleHandlers(deps: LifecycleHandlersDeps): void {
         // next one). Only "new" used to run full cleanup here, which let a
         // /resume or /fork on the worker path inherit the prior generation's
         // stale children — see A1-007 follow-up (GM a8yAXXwa).
+        //
+        // "wake" is deliberately NOT a transition reason: it is a suspend-wake
+        // boot resume (initial-prompt.ts, tagged via sessionControlActions.
+        // switchSession's `reason` option — see runner/worker.ts), i.e. the
+        // SAME conversation continuing, not a new generation. Running
+        // performSessionTransitionCleanup there would delink the woken
+        // session from its parent (and cancel its trigger subscriptions)
+        // even though nothing about the conversation actually changed —
+        // only this boot transition is tagged "wake"; a later real /resume
+        // inside the same worker still passes no reason override and runs
+        // full cleanup below.
         if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
             performSessionTransitionCleanup({ state, rctx, triggerWaits, delinkManager, cancellationManager, followUpGrace });
         } else {
-            // Defensive fallback for any other/unknown reason: still reset
-            // session-complete generation state so a stale "fired" flag can't
-            // leak into the next conversation.
+            // Defensive fallback for "wake" and any other/unknown reason:
+            // still reset session-complete generation state (so the session
+            // can arm/fire session_complete again once idle) but skip delink
+            // and trigger cleanup — the parent link must stay intact.
             state.sessionCompleteFired = false;
             state.sessionCompleteGeneration += 1;
             state.pendingSessionCompleteDelivery = null;

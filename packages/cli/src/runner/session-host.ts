@@ -39,7 +39,14 @@ export interface SessionLifecycle {
     newSession(options?: Parameters<AgentSessionRuntime["newSession"]>[0]): Promise<{ cancelled: boolean }>;
     switchSession(
         sessionPath: string,
-        options?: Parameters<AgentSessionRuntime["switchSession"]>[1],
+        // `reason` is a PizzaPi worker-only extra: it lets the boot-time
+        // wake-resume path (initial-prompt.ts) tag its switchSession call so
+        // the remote extension's session_switch handler can tell a suspend
+        // wake apart from a real /resume (see runner/worker.ts's
+        // sessionControlActions.switchSession). The local-TUI host
+        // (runtimeSessionHost) just forwards it to pi's runtime, which
+        // ignores unknown fields.
+        options?: Parameters<AgentSessionRuntime["switchSession"]>[1] & { reason?: "resume" | "wake" },
     ): Promise<{ cancelled: boolean }>;
     fork(
         entryId: string,

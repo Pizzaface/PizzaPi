@@ -217,6 +217,7 @@ describe("runner — RunnerServerToClientEvents payloads", () => {
     expect(minimal.resumePath).toBeUndefined();
     expect(minimal.resumeId).toBeUndefined();
     expect(minimal.autoClose).toBeUndefined();
+    expect(minimal.wake).toBeUndefined();
 
     const full: Payload = {
       sessionId: "sess-new-2",
@@ -236,8 +237,10 @@ describe("runner — RunnerServerToClientEvents payloads", () => {
       resumePath: "/tmp/resume.jsonl",
       resumeId: "resume-sess",
       autoClose: true,
+      wake: true,
     };
     expect(full.cwd).toBe("/home/user/project");
+    expect(full.wake).toBe(true);
     expect(full.model?.provider).toBe("anthropic");
     expect(full.skills).toHaveLength(2);
     expect(full.hiddenModels).toHaveLength(1);

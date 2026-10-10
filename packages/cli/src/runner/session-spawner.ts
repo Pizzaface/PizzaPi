@@ -290,6 +290,15 @@ export function spawnSession(
         resumePath?: string;
         autoClose?: boolean;
         /**
+         * True only for a suspend-wake respawn resuming `resumePath` (see
+         * wakeOfflineSession in events/transport.ts): the SAME conversation
+         * continuing, not a new generation. Threaded to the worker as
+         * PIZZAPI_WAKE_RESUME so it skips session-transition cleanup
+         * (delink_own_parent/delink_children, trigger unsubscribe) that a
+         * real /resume runs — a wake must keep the parent link intact.
+         */
+        isWake?: boolean;
+        /**
          * Override the SIGTERM→SIGKILL escalation delay for tests.
          * @internal
          */
@@ -473,6 +482,7 @@ export function spawnSession(
         ...(options?.agent?.tools ? { PIZZAPI_WORKER_AGENT_TOOLS: options.agent.tools } : {}),
         ...(options?.agent?.disallowedTools ? { PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS: options.agent.disallowedTools } : {}),
         ...(options?.resumePath ? { PIZZAPI_WORKER_RESUME_PATH: options.resumePath } : {}),
+        ...(options?.isWake ? { PIZZAPI_WAKE_RESUME: "1" } : {}),
         ...(options?.autoClose ? { PIZZAPI_WORKER_AUTO_CLOSE: "true" } : {}),
     };
     // Pin pi packages' runtime pi imports to the host copy (see host-pi-node-path.ts).

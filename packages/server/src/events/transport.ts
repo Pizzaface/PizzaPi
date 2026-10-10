@@ -239,6 +239,11 @@ export function wakeOfflineSession(
           // gone it degrades to a fresh conversation under the same relay
           // session — still the schedule's home.
           resumeId: sessionId,
+          // This is the SAME conversation resuming, not a new generation —
+          // the daemon threads this through to the worker so it skips
+          // session-transition cleanup (delink_own_parent/delink_children)
+          // that a real /resume runs.
+          wake: true,
         });
       } catch (err) {
         log.warn(`wake: failed to send new_session for ${sessionId}:`, err);

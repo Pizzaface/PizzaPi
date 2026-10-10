@@ -624,7 +624,23 @@ async function main(): Promise<void> {
             return { cancelled: false };
         },
 
-        switchSession: async (sessionPath: string) => {
+        switchSession: async (
+            sessionPath: string,
+            // `reason` is a PizzaPi-only extra; `withSession` is unused here
+            // but kept in the type (any ctx shape — pi's ReplacedSessionContext
+            // isn't re-exported from the package root) purely for structural
+            // compatibility with ExtensionCommandContextActions.switchSession,
+            // which this object is assigned to below via bindExtensions().
+            options?: { reason?: "resume" | "wake"; withSession?: (ctx: any) => Promise<void> },
+        ) => {
+            // "wake" marks a suspend-wake boot resume (see initial-prompt.ts):
+            // the SAME conversation continuing, not a new generation. The
+            // remote extension's session_switch handler treats any reason
+            // other than new/resume/fork as a non-transition, so it skips
+            // delink_own_parent/delink_children/trigger-unsubscribe for this
+            // one call — a real /resume (no options passed) still defaults to
+            // "resume" and runs cleanup normally.
+            const switchReason = options?.reason ?? "resume";
             const extensionRunner = session.extensionRunner;
             const previousSessionFile = session.sessionFile;
 
@@ -664,7 +680,7 @@ async function main(): Promise<void> {
             if (extensionRunner) {
                 await extensionRunner.emit({
                     type: "session_switch" as any,
-                    reason: "resume",
+                    reason: switchReason,
                     previousSessionFile,
                 });
             }
@@ -735,7 +751,7 @@ async function main(): Promise<void> {
         () => session,
         {
             newSession: () => sessionControlActions.newSession(),
-            switchSession: (path) => sessionControlActions.switchSession(path),
+            switchSession: (path, options) => sessionControlActions.switchSession(path, options),
             fork: (entryId, o) => sessionControlActions.fork(entryId, o),
         },
         // replaceQueuedMessages: repopulate the queue with already-expanded text.

@@ -309,6 +309,14 @@ export interface RunnerServerToClientEvents {
     resumeId?: string;
     /** When true, the session should shut down automatically on successful completion. */
     autoClose?: boolean;
+    /**
+     * True only for a suspend-wake respawn (see wakeOfflineSession in
+     * events/transport.ts): the SAME conversation resuming, not a new
+     * generation. The worker uses this to skip session-transition cleanup
+     * (delink_own_parent, delink_children, trigger unsubscribe) that a real
+     * /resume runs — a wake must keep the parent link intact.
+     */
+    wake?: boolean;
   }) => void;
 
   /** Instructs runner to kill a session */
